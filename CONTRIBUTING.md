@@ -96,6 +96,24 @@ owns the render pipeline; `MIND_ARCHITECTURE.md` owns Mind's living state and it
 ledger. Docs here are hook-enforced and current, which is only true because that rule is
 kept.
 
+**The user documentation is split in two, and the halves have different rules.**
+`doc/guide/` is hand-written prose about how to *operate* Organon — update it when a
+user-visible behaviour changes. `doc/reference/` is **generated** and must never be edited
+by hand:
+
+```bash
+cargo run --bin organon -- docs          # regenerate doc/reference/
+cargo run --bin organon -- docs --check  # report drift without writing
+```
+
+Its content comes from the descriptions compiled into the binary — `agent.rs`'s
+`generator_desc` / `surface_desc` / `material_desc` / `param_desc` and `recipe.rs`. Adding
+a generator, a surface, a material or an actuatable param therefore means **writing its
+description in the Rust**, then regenerating. The `match`es are exhaustive and
+`every_actuatable_id_has_a_gloss` is a test, so you cannot land an undescribed one; and
+`generated_reference_is_current` fails the build if the checked-in Markdown no longer
+matches what the code emits. Regenerate in the same commit.
+
 ## Two things specific to this repository
 
 **It is generated, so do not send tidying patches.** This repo is produced from a private

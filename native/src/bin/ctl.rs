@@ -174,6 +174,20 @@ enum Cmd {
         /// The shell to generate for
         shell: clap_complete::Shell,
     },
+    /// Regenerate the Markdown reference under `doc/reference/` from the descriptions
+    /// compiled into the binary. Works with Organon offline — it reads no live state.
+    #[command(after_help = "The checked-in pages are pinned by a test \
+                            (`generated_reference_is_current`), so run this after changing \
+                            any description in `agent.rs` or `recipe.rs` and commit the \
+                            result alongside the code change.")]
+    Docs {
+        /// Where to write (default: `doc/reference` beside the `native/` directory)
+        #[arg(short, long, value_name = "DIR")]
+        out: Option<std::path::PathBuf>,
+        /// Report drift and exit non-zero instead of writing anything
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -211,7 +225,7 @@ fn to_ctl(cmd: Cmd) -> Result<cli::CtlCmd, String> {
         Cmd::Generator { which } => cli::CtlCmd::Generator { which },
         Cmd::Surface { which } => cli::CtlCmd::Surface { which },
         Cmd::Material { which } => cli::CtlCmd::Material { which },
-        Cmd::Completions { .. } | Cmd::Snap { .. } | Cmd::Record { .. } => {
+        Cmd::Completions { .. } | Cmd::Snap { .. } | Cmd::Record { .. } | Cmd::Docs { .. } => {
             unreachable!("handled before mapping")
         }
     })
@@ -247,6 +261,72 @@ fn absolutize(p: &std::path::Path) -> std::path::PathBuf {
         std::env::current_dir()
             .map(|d| d.join(p))
             .unwrap_or_else(|_| p.to_path_buf())
+    }
+}
+
+/// Write (or, with `check`, verify) the generated Markdown reference.
+///
+/// The default destination is the repo checkout this binary was built from, which is the
+/// only case that can be inferred — an installed `organon` on someone else's machine has
+/// no reference tree to update, so it is asked for `--out` rather than silently writing
+/// somewhere surprising. Exit codes: 0 ok · 1 an I/O failure · 2 no destination · 3 drift
+/// found under `--check`.
+fn write_docs(out: Option<std::path::PathBuf>, check: bool) {
+    let dir = match out {
+        Some(d) => absolutize(&d),
+        None => {
+            let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .map(|r| r.join(cli::DOCS_DIR));
+            match d.filter(|d| d.is_dir()) {
+                Some(d) => d,
+                None => {
+                    eprintln!(
+                        "organon: no default docs directory here — pass --out <DIR>.\n\
+                         (The default is the `{}` of the checkout this binary was built \
+                         from, which only exists on a development machine.)",
+                        cli::DOCS_DIR
+                    );
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
+
+    let mut stale = Vec::new();
+    for (name, want) in cli::docs_files() {
+        let path = dir.join(name);
+        let current = std::fs::read_to_string(&path).ok();
+        if current.as_deref() == Some(want.as_str()) {
+            continue;
+        }
+        if check {
+            stale.push(path.display().to_string());
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("organon: cannot create {}: {e}", parent.display());
+                std::process::exit(1);
+            }
+        }
+        if let Err(e) = std::fs::write(&path, &want) {
+            eprintln!("organon: cannot write {}: {e}", path.display());
+            std::process::exit(1);
+        }
+        println!("wrote {}", path.display());
+    }
+
+    if check {
+        if stale.is_empty() {
+            println!("doc/reference is current");
+        } else {
+            eprintln!("organon: stale reference pages (run `organon docs` and commit):");
+            for p in &stale {
+                eprintln!("  {p}");
+            }
+            std::process::exit(3);
+        }
     }
 }
 
@@ -291,6 +371,11 @@ fn main() {
 
     if let Cmd::Completions { shell } = parsed.cmd {
         clap_complete::generate(shell, &mut Cli::command(), "organon", &mut std::io::stdout());
+        return;
+    }
+
+    if let Cmd::Docs { out, check } = parsed.cmd {
+        write_docs(out, check);
         return;
     }
 
