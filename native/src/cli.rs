@@ -689,8 +689,9 @@ fn parameters_md() -> String {
         ));
     }
     out.push_str(
-        "\nA row with no range is not directly settable — reach it through a selector \
-         (`organon generator …`) or a preset.\n",
+        "\nA row with no range is **chosen by name rather than set by value** — use the \
+         matching selector (`organon generator …`, `organon surface …`, \
+         `organon material …`) or recall a preset.\n",
     );
     out
 }
@@ -1045,5 +1046,27 @@ mod tests {
             let d = generator_desc_at(i);
             assert!(d.len() > 40, "generator {i} has a stub description: {d:?}");
         }
+    }
+
+    /// Every id that reaches the published reference carries a gloss.
+    ///
+    /// `every_actuatable_id_has_a_gloss` guards `ACTUATABLE_IDS`, but the docs table is
+    /// built from `catalog_entries()` — the UNION of that set and `core_catalog()`. Three
+    /// ids sat in the gap (`continuous`, `mat_type`, `palette`) and shipped as a row with
+    /// an em dash in both the range and the meaning column, which reads as an unfinished
+    /// document rather than as the deliberate "chosen by name, not by value" that it is.
+    /// Guarding the union is what stops the next `core_catalog()` addition doing it again.
+    #[test]
+    fn every_documented_param_has_a_gloss() {
+        let missing: Vec<&str> = catalog_entries()
+            .iter()
+            .filter(|(id, _, _)| agent::param_desc(id).is_none())
+            .map(|(id, _, _)| *id)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these ids reach doc/reference/parameters.md with no description — add one to \
+             `agent::param_desc`: {missing:?}"
+        );
     }
 }
