@@ -1,0 +1,43 @@
+name: "Organon Mind: a readout looks dishonest"
+description: Something Mind displays is unlabeled, mislabeled, or implies more than it measures.
+labels: ["mind", "honesty-ledger"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form exists because it is the one bug class Organon Mind treats as
+        first-order. Mind's whole claim is that **every quantity on screen is labeled
+        with where it came from** — measured from the file, derived from what was
+        measured, a proxy standing in for something not yet instrumented, or a
+        projection. A readout that looks authoritative and is actually a proxy is a
+        defect even if the code is working exactly as written.
+
+        The current ledger is `MIND_ARCHITECTURE.md` §3.
+  - type: input
+    id: readout
+    attributes:
+      label: Which readout
+      description: What is on screen — the panel, the number, the glow.
+    validations:
+      required: true
+  - type: dropdown
+    id: claim
+    attributes:
+      label: What is wrong with its provenance
+      options:
+        - It carries no provenance label at all
+        - It is labeled measured but is derived or proxied
+        - It is labeled derived but is really a proxy
+        - The label is right but the interface implies more than it says
+        - The ledger in MIND_ARCHITECTURE.md §3 disagrees with the code
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: What it actually is
+      description: >-
+        What the number really comes from, as far as you can tell — and where you looked.
+        "I traced it to X and X is entropy, not activations" is exactly the report.
+    validations:
+      required: true

@@ -1,0 +1,52 @@
+# organon-render — the renderer, as a crate (#626 Tier 4, second half).
+#
+# ⚠️ NO nih_plug. Enforced: `cargo tree -p organon-render | grep nih_plug` must be
+# empty. The renderer never needed a plugin host — it draws into a wgpu surface and
+# reads its parameters out of `Shared`, both of which are host-free concerns.
+#
+# ⚠️ THIS CRATE IS `world::render`, NOT "the render set". Those are different things,
+# and #626's own scoping conflated them. `world.rs` is the *app state* — it owns the
+# agent chat client, the CLI reply protocol, `egui_platform`, `frame_ring` and
+# `scene_input` — and it is what carries every hard coupling the issue attributed to
+# "render". `world.rs` therefore stays in `organic-math-native`; extracting it is
+# blocked on #618's `World` decomposition, not on anything #626 scoped.
+#
+# What that leaves is remarkably clean: these 39 modules reach upstream for exactly
+# ONE — `math`, 23 references — and Tier 3 already put `math` in `organon-core`. The
+# six wire-format enum splits #626 specced were all `world.rs`'s coupling and are not
+# needed here.
+#
+# ⚠️ `axes` and `chamber` are here because `render.rs` reaches them SIDEWAYS, as
+# `super::axes` / `super::chamber` (10 refs). A `crate::X` scan reports zero upward
+# references and is telling the truth about the wrong question — the compiler is what
+# found these. Both were self-contained, so they simply moved.
+#
+# ⚠️ EVERY `include_str!` IS LOCAL, AND THAT IS LOAD-BEARING. The 50 shaders and the
+# BSC5 star catalogue sit beside the code that includes them, so no path reaches
+# outside this package root. That is what makes this crate publishable to crates.io —
+# in direct contrast to `organon-core`, which cannot be (its `include_str!`s reach up
+# into `native/assets/`; #626 Tier 5's critical path). Keep new assets in `src/`.
+[package]
+name = "organon-render"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Organon's renderer: the wgpu pipeline, its passes, and every generator surface."
+repository = "https://github.com/organonart/organon"
+
+[dependencies]
+organon-core = { path = "../organon-core" }
+wgpu = "30"
+glam = { version = "0.33", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+image = { version = "0.25", default-features = false, features = ["hdr", "png"] }
+# `half` is used inline as `half::f16` with no `use` statement anywhere — which is
+# why a `use`-only dependency scan reports this crate needs four deps and the
+# compiler reports five. Trust the compiler.
+half = { version = "2", features = ["bytemuck"] }
+
+[dev-dependencies]
+# `tests/wgsl.rs` validates this crate's 50 shaders offline. The RT MSL probe stays
+# upstream in `native/examples/` — it spans both crates (`rt_debug.wgsl` belongs to
+# `rt.rs`, which is still `world`'s), so it needs no dev-dep here.
+naga = { version = "30", features = ["wgsl-in"] }

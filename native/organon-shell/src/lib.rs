@@ -1,0 +1,37 @@
+//! Organon Shell — the agent-operating workstation (Shell #3).
+//!
+//! A native, GPU-composited workspace for collaborating with AI agents to build and
+//! operate living software systems. Product definition: `doc/organon_shell_prd.md`
+//! (private annex); living code state: `SHELL_ARCHITECTURE.md` at the repo root, which
+//! travels with this crate wherever it goes.
+//!
+//! Tier 1 scope (Shell #3): the compositor skeleton — the five PRD §2 regions
+//! as egui panels, dark, keyboard-first, with a command-palette stub. Everything here
+//! is a pure function of state + `Edition`, so it is unit-tested from a default
+//! (feature-off) build; only `src/main.rs` (the window binary) needs
+//! `--features shell-edition`.
+//!
+//! Shell #4 T1 adds [`session`]: the PRD §5 schema and the append-only
+//! session event log — the shared vocabulary #5 and #7 build against.
+//! Shell #5 T1 adds [`command`]: the typed command service — catalog as
+//! data, one dispatch entry point, every dispatch leaving a `CommandRun` record.
+//! Shell #7 T1 adds [`mock_agent`] (a scripted, pull-ticked stand-in for
+//! Pi) and [`timeline`] (the workspace's typed-card rendering of a session's
+//! events) — the workspace side of the agent bridge, real adapters to follow.
+
+//! Shell #10 T1 (PRD v3) adds [`term`] (the PTY + adopted VT core) and
+//! [`term_view`] (the egui glyph grid) — the terminal the product now IS. The
+//! v2-era modules below it remain compiled and tested: `session`/`command` are
+//! load-bearing foundations; `app`/`timeline`/`mock_agent` await re-homing into
+//! the block system (tree C) and the structured register (tree D).
+
+pub mod app;
+pub mod command;
+pub mod harness;
+pub mod mock_agent;
+pub mod platform;
+pub mod session;
+pub mod tabs;
+pub mod term;
+pub mod term_view;
+pub mod timeline;

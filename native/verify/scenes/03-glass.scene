@@ -1,0 +1,19 @@
+# Same frozen geometry, Glass material. Isolates the Fresnel-blended reflect/refract
+# branch plus the alpha-blended draw — the one material whose output depends on draw
+# order and blend state, so it is the most likely to change under a pipeline edit.
+#!desc     Frozen cube-of-cubes, Glass — Fresnel reflect/refract + alpha blending.
+#!checks   nonblack,golden
+#!tolerance 0.006
+
+generator "organic math"
+surface original
+material glass
+
+set rot_mod_x 0 rot_mod_y 0 rot_mod_z 0
+set rot_amp_x 0 rot_amp_y 0 rot_amp_z 0
+set trans_amp_x 0 trans_amp_y 0 trans_amp_z 0
+set scale_amp 0
+set cam_path 0 cam_speed 0 cam_kick 0
+
+set exposure 0 roughness 0.05 ior 1.45 opacity 0.6
+set ambient 0.3 glow 0.0 bloom_intensity 0.2

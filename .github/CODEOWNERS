@@ -1,0 +1,42 @@
+# Code owners (#673 Phase 2).
+#
+# One maintainer today, so every line below says the same thing — which makes this file
+# look pointless. It is not: it is the **shape** the repository is meant to grow into,
+# written while the directories are still clean enough to draw it. Each block is a real
+# ownership boundary already enforced by the crate graph, so adding a second maintainer
+# for the renderer or for Mind is a one-line edit rather than a reorganisation.
+#
+# GitHub applies the LAST matching pattern, so the specific blocks below the catch-all
+# are what actually take effect for those paths.
+
+*                           @james-andrew-walsh
+
+# The engine spine. Changes here reach all three products, and `ipc.rs` is the one file
+# whose byte layout is load-bearing across a process boundary.
+/native/organon-core/       @james-andrew-walsh
+/native/organon-render/     @james-andrew-walsh
+
+# Per-product front-of-house.
+/native/organon-mind/       @james-andrew-walsh
+/native/organon-shell/      @james-andrew-walsh
+
+# 🔒 Plugin identity and the parameter chain. `lib.rs` carries the VST3 class ID and the
+# CLAP ID; changing either orphans the plugin in every saved DAW session.
+/native/src/lib.rs          @james-andrew-walsh
+/native/src/params.rs       @james-andrew-walsh
+/native/src/param_table.rs  @james-andrew-walsh
+
+# Build, install and CI — the paths that decide what a user actually receives.
+/native/bundle.sh           @james-andrew-walsh
+/native/bundle.ps1          @james-andrew-walsh
+/native/deploy.sh           @james-andrew-walsh
+/native/deploy.ps1          @james-andrew-walsh
+/native/xtask/              @james-andrew-walsh
+/.github/                   @james-andrew-walsh
+
+# Licensing and the public face of the project.
+/LICENSE-MIT                @james-andrew-walsh
+/LICENSE-APACHE             @james-andrew-walsh
+/LICENSE-GPL                @james-andrew-walsh
+/LICENSING.md               @james-andrew-walsh
+/NOTICE                     @james-andrew-walsh

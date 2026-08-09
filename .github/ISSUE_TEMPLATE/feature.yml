@@ -1,0 +1,54 @@
+name: Feature or capability
+description: A new generator, surface, material, lens, or anything else the instrument should be able to do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Capability proposals are welcome, and they land faster when they name the seam
+        they plug into. `CONTRIBUTING.md` has the table — a motion algorithm is a
+        `GeneratorMode`, a way nodes become geometry is a `SurfaceMode`, a Mind lens is a
+        `NeuralGraph` builder, and so on.
+
+        **Large features here are built in tiers**: 3–5 increments where Tier 1 ships on
+        its own and each later tier defaults to inert. If you can sketch that shape, do —
+        it is the difference between a proposal that lands in pieces over weeks and one
+        that stalls as a long-lived branch.
+  - type: dropdown
+    id: product
+    attributes:
+      label: Which product?
+      options:
+        - Organon (visualizer — plugin or standalone)
+        - Organon Mind (watching a model think)
+        - Organon Shell (agent workstation)
+        - The engine itself (math, renderer, shaders)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What should it do
+      description: >-
+        Describe the *result* — what you would see or be able to play with. Reference
+        material (a paper, a shader, a video, a plugin) is genuinely useful; a lot of
+        this engine started from someone pointing at something.
+    validations:
+      required: true
+  - type: textarea
+    id: seam
+    attributes:
+      label: Where it plugs in (if you know)
+      description: >-
+        The extension point from CONTRIBUTING.md, and any parameters it would need.
+        Remember that a param is a chain, not a line.
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Invariants
+      description: Only relevant if you are proposing to implement it yourself.
+      options:
+        - label: This does not change the VST3 class ID or the CLAP ID.
+        - label: If it adds state to the IPC snapshot, it appends rather than reorders.
+        - label: It can default to inert — off, or reproducing today's output.

@@ -1,0 +1,38 @@
+[package]
+name = "nih_plug_egui"
+version = "0.0.0"
+edition = "2021"
+authors = ["Robbert van der Helm <mail@robbertvanderhelm.nl>"]
+license = "ISC"
+
+description = "An adapter to use egui GUIs with NIH-plug"
+
+[features]
+default = ["opengl", "default_fonts"]
+opengl = ["egui-baseview/opengl"]
+default_fonts = ["egui-baseview/default_fonts"]
+rayon = ["egui-baseview/rayon"]
+
+[dependencies]
+# ORGANON PATCH (#541 T2): upstream is `path = ".."` inside the nih-plug repo.
+# Vendoring only this one crate means pointing at the same git source the
+# workspace already resolves, so cargo unifies it to a SINGLE `nih_plug`
+# instance. Two instances would make `ParamSetter` a different type here than
+# in the plugin and nothing would compile.
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false }
+raw-window-handle = "0.5"
+# ORGANON PATCH (#541): must match the rev egui-baseview master uses, or the two
+# pull in SEPARATE copies of baseview and its `WindowHandle` / `PhySize` / window
+# options become different types across the boundary. (nih_plug's own root crate
+# still pins 9a0b42c for its standalone wrapper; that boundary is type-erased
+# through `Box<dyn Any>` and a raw NSView pointer, so the two can coexist.)
+baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3" }
+crossbeam = "0.8"
+# ORGANON PATCH (#541): upstream pins ec70c3f, which is egui 0.31.1. This is the
+# only reason this crate is vendored — cargo cannot `[patch]` a git source with a
+# different rev of itself, so controlling egui-baseview's rev means owning the
+# manifest that names it. Bumps the editor to egui 0.33 (egui-baseview 0.7.0).
+egui-baseview = { git = "https://github.com/BillyDM/egui-baseview.git", rev = "11f487fe915d6208961064e619474b98f971594a" }
+parking_lot = "0.12"
+# To make the state persistable
+serde = { version = "1.0", features = ["derive"] }

@@ -1,0 +1,34 @@
+# The other half of the inertness bracket: a capability that is inert at zero must
+# still DO something when turned up, or "inert at 0" is trivially true because the
+# feature is dead. 06 proves it costs nothing off; this proves it is not off-by-being-
+# broken.
+#
+# ✅ CONFIRMED on the first Mac run (2026-08-05): diff_frac=0.008427 against tol 0.004.
+# Surface FX does visibly apply to the Standard material at this roughness, so the
+# claim in the docs is now tested rather than asserted. (It was written as an
+# unverified prediction; that is what it stopped being.)
+#
+# Reference is 06-fx-baseline rather than 01-original-standard for the reason in
+# 06-fx-inert's header: the rotation-phase accumulator is not reset between scenes, so
+# a distant reference measures the clock as well as the feature. Adjacent is exact.
+#!desc      Surface FX turned up must visibly change the frame (else it does nothing).
+#!checks    nonblack
+#!expect    differs-from 06-fx-baseline
+#!tolerance 0.004
+
+generator "organic math"
+surface original
+material standard
+
+set rot_mod_x 0 rot_mod_y 0 rot_mod_z 0
+set rot_amp_x 0 rot_amp_y 0 rot_amp_z 0
+set trans_amp_x 0 trans_amp_y 0 trans_amp_z 0
+set scale_amp 0
+set cam_path 0 cam_speed 0 cam_kick 0
+
+set exposure 0 metallic 0.1 roughness 0.5
+set ambient 0.3 glow 0.2 bloom_intensity 0.2
+
+# Both FX driven hard — if neither moves a pixel, that is the finding.
+set iridescence 1.0 irid_scale 2.0 irid_shift 0.3
+set subsurface 0.8 sss_distortion 0.5 sss_power 2.0

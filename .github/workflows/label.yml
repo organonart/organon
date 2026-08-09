@@ -1,0 +1,29 @@
+# Path-based PR labelling (#673 Phase 2).
+#
+# Applies `.github/labeler.yml`, which derives product labels from the paths a PR
+# touches. Public-only: it exists to make an incoming PR legible at a glance (which
+# product, does it touch the IPC layout, does it touch plugin identity) without asking a
+# contributor to know this project's label vocabulary.
+#
+# `pull_request_target` rather than `pull_request` is deliberate and is the documented
+# pattern for labelling: a PR from a fork gets no write token under `pull_request`, so
+# labels would silently never appear on exactly the PRs that most need them. It is safe
+# **because this workflow checks out no code and runs none** — it only reads the changed
+# file list and writes labels. Do not add a checkout step here, and do not add a build.
+name: Label
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          sync-labels: true

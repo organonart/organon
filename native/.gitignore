@@ -1,0 +1,23 @@
+/target
+
+# Throwaway per-worktree dev deploy (custom plugin name/IDs); never commit.
+deploy-dev.sh
+
+# Runtime IPC / feedback mmap snapshots + sidecars (regenerated in $TMPDIR at
+# run time; a stray copy can land in native/ if TMPDIR is unset). These got
+# committed once by an over-broad `git add -A` — never track them.
+organic-math-ipc.bin
+organic-math-feedback.bin
+organic-math-*-ipc.bin
+organic-math-*-feedback.bin
+organic-math-hdr.txt
+organic-math-overlay.txt
+organic-math-*-hdr.txt
+organic-math-*-overlay.txt
+organic-math-panic.txt
+organic-math-*-panic.txt
+
+# Per-edition build dirs (#541): alternating editions against ONE target dir
+# makes every switch a near-full rebuild, so builds set
+# CARGO_TARGET_DIR=target-<edition>.
+/target-*

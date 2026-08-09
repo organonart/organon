@@ -1,0 +1,773 @@
+//! #452 Tiers 1–2: the `organon` CLI's brain — input validation, catalog /
+//! state formatting, and command-channel op building. Everything here is pure
+//! (no I/O except [`append_ops`]) so it unit-tests headless; `bin/ctl.rs` owns
+//! the **clap** argument surface (per-subcommand `--help`, suggestions, shell
+//! completions) and maps it onto [`CtlCmd`].
+//!
+//! The CLI exists so **external local agents** (Bianca, #452) can play Organon:
+//! - **read side (Tier 1)**: `catalog` / `get` / `watch` / `status` decode the
+//!   live `Shared` mmap directly — frame-fresh, no server, no round trip.
+//! - **write side (Tier 2)**: `set` / `do` / `release` / `generator` /
+//!   `surface` / `material` append [`CliOp`] lines to `ipc::cli_cmd_path()`;
+//!   the visual drains them each frame into the Performer's override lane
+//!   (last-touched-wins, slider mirroring, mind-log — all shared with #317).
+
+use crate::agent::{self, CliOp, SlotKind};
+use crate::ipc::{self, Shared};
+use crate::params::{GeneratorMode, MaterialType, SurfaceMode};
+use nih_plug::prelude::Enum;
+
+/// A parsed `organon` invocation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CtlCmd {
+    /// The whole vocabulary: params (id/kind/range) + selector enums. `verbose` inlines
+    /// every description (the "operating manual").
+    Catalog { json: bool, verbose: bool },
+    /// Describe one param / generator / surface / material / recipe (its prose + range/current).
+    Describe { query: String },
+    /// List the built-in recipe library (name + title + intent).
+    Recipes { json: bool },
+    /// Apply a recipe by name (or, with `dry_run`, print what it would do).
+    Recipe { name: String, dry_run: bool },
+    /// Read one param (`Some(id)`) or every actuatable param (`None`).
+    Get { id: Option<String>, json: bool },
+    /// Stream reads: one JSON line per tick.
+    Watch { ms: u64, fields: Vec<String> },
+    Status { json: bool },
+    /// Queue absolute sets (raw units) through the agent lane.
+    Set { pairs: Vec<(String, f32)> },
+    /// Queue a full phrase-plan JSON for the debug executor.
+    Do { json: String },
+    /// Release one hold, or all (`None`).
+    Release { id: Option<String> },
+    Generator { which: String },
+    Surface { which: String },
+    Material { which: String },
+}
+
+/// Validate + pair up `set`'s positional `<id> <value>` arguments.
+pub fn pairs_from(args: &[String]) -> Result<Vec<(String, f32)>, String> {
+    if args.is_empty() || args.len() % 2 != 0 {
+        return Err("set wants <id> <value> pairs".to_string());
+    }
+    let mut pairs = Vec::with_capacity(args.len() / 2);
+    for c in args.chunks(2) {
+        let id = c[0].to_string();
+        if agent::id_range(&id).is_none() {
+            return Err(format!(
+                "'{id}' is not an actuatable param — see `organon catalog`"
+            ));
+        }
+        let v: f32 = c[1]
+            .parse()
+            .map_err(|_| format!("set {id}: '{}' is not a number", c[1]))?;
+        pairs.push((id, v));
+    }
+    Ok(pairs)
+}
+
+/// Validate `watch --fields` names against the actuation routes.
+pub fn validate_fields(fields: &[String]) -> Result<(), String> {
+    for f in fields {
+        if agent::id_range(f).is_none() {
+            return Err(format!("watch: unknown param '{f}' — see `organon catalog`"));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a selector by ordinal, exact name, or unambiguous case-insensitive
+/// substring, against a nih-plug `Enum`'s variant names.
+pub fn resolve_enum<E: Enum>(which: &str) -> Result<u32, String> {
+    let vars = E::variants();
+    if let Ok(i) = which.parse::<u32>() {
+        if (i as usize) < vars.len() {
+            return Ok(i);
+        }
+        return Err(format!("ordinal {i} out of range (0..{})", vars.len()));
+    }
+    let lw = which.to_lowercase();
+    if let Some(i) = vars.iter().position(|v| v.to_lowercase() == lw) {
+        return Ok(i as u32);
+    }
+    let hits: Vec<usize> = vars
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.to_lowercase().contains(&lw))
+        .map(|(i, _)| i)
+        .collect();
+    match hits.len() {
+        1 => Ok(hits[0] as u32),
+        0 => Err(format!("no match for '{which}'; options: {}", vars.join(" | "))),
+        _ => Err(format!(
+            "'{which}' is ambiguous: {}",
+            hits.iter().map(|&i| vars[i]).collect::<Vec<_>>().join(" | ")
+        )),
+    }
+}
+
+/// Validate + normalize a phrase-plan JSON to a single line (the command
+/// channel is line-oriented). Round-trips through `PhrasePlan` so only plans
+/// the executor will accept get queued.
+pub fn normalize_plan(json: &str) -> Result<String, String> {
+    let plan = agent::PhrasePlan::parse(json)
+        .ok_or("not a valid phrase-plan JSON (see `organon help` / #317 plan format)")?;
+    serde_json::to_string(&plan).map_err(|e| e.to_string())
+}
+
+/// Build the command-channel ops for a write command. `None` for read commands.
+pub fn ops_for(cmd: &CtlCmd) -> Result<Option<Vec<CliOp>>, String> {
+    Ok(Some(match cmd {
+        CtlCmd::Set { pairs } => pairs
+            .iter()
+            .map(|(id, v)| CliOp::Set(id.clone(), *v))
+            .collect(),
+        CtlCmd::Do { json } => vec![CliOp::Plan(json.clone())],
+        CtlCmd::Release { id } => vec![CliOp::Release(id.clone())],
+        CtlCmd::Generator { which } => {
+            vec![CliOp::Generator(resolve_enum::<GeneratorMode>(which)?)]
+        }
+        CtlCmd::Surface { which } => vec![CliOp::Surface(resolve_enum::<SurfaceMode>(which)?)],
+        CtlCmd::Material { which } => vec![CliOp::Material(resolve_enum::<MaterialType>(which)?)],
+        _ => return Ok(None),
+    }))
+}
+
+/// Append ops to the command channel (one line each). The visual drains them
+/// on its next frame.
+pub fn append_ops(ops: &[CliOp]) -> std::io::Result<()> {
+    use std::io::Write;
+    let body: String = ops.iter().map(|o| format!("{}\n", o.to_line())).collect();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ipc::cli_cmd_path())?;
+    f.write_all(body.as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// #452 Tier 3 — "the eyes": the snap / record request+reply protocol.
+//
+// Unlike `set`/`do`/`release` (fire-and-forget [`CliOp`]s through the override
+// lane), `snap` and `record` need the VISUAL to do GPU work and hand a file
+// path BACK. The CLI is still never an IPC writer: it appends a request line to
+// `ipc::eyes_cmd_path()` (`<nonce> <verb>`), the visual drains it, acts, and
+// appends a reply line to `ipc::eyes_reply_path()` (`<nonce> ok|err <text>`).
+// The CLI polls the reply file for its own nonce. Both channels are append-only
+// text with the same file-length/cursor drain discipline as the command
+// channel. Everything here is pure (parse/format only); `bin/ctl.rs` owns the
+// nonce, the I/O, and the poll loop.
+// ---------------------------------------------------------------------------
+
+/// A parsed `organon` "eyes" request (the payload of one request line, minus the
+/// leading nonce).
+#[derive(Debug, Clone, PartialEq)]
+pub enum EyesReq {
+    /// Read one frame back to a PNG at this (absolute) path.
+    Snap { path: String },
+    /// Start the in-app recorder; `bars` = beat-synced auto-stop length (0 = free-run).
+    RecordStart { bars: u32 },
+    /// Stop the in-app recorder.
+    RecordStop,
+}
+
+impl EyesReq {
+    /// The request line for a given nonce (single line, newline-free).
+    pub fn to_line(&self, nonce: &str) -> String {
+        match self {
+            EyesReq::Snap { path } => format!("{nonce} snap {path}"),
+            EyesReq::RecordStart { bars } => format!("{nonce} record start {bars}"),
+            EyesReq::RecordStop => format!("{nonce} record stop"),
+        }
+    }
+
+    /// Parse a request line → `(nonce, req)`. Rejects unknown verbs / bad bars.
+    pub fn parse(line: &str) -> Option<(String, EyesReq)> {
+        let line = line.trim();
+        let (nonce, rest) = line.split_once(' ')?;
+        let req = if let Some(p) = rest.strip_prefix("snap ") {
+            let p = p.trim();
+            if p.is_empty() {
+                return None;
+            }
+            EyesReq::Snap { path: p.to_string() }
+        } else if let Some(b) = rest.strip_prefix("record start ") {
+            EyesReq::RecordStart { bars: b.trim().parse().ok()? }
+        } else if rest.trim() == "record stop" {
+            EyesReq::RecordStop
+        } else {
+            return None;
+        };
+        Some((nonce.to_string(), req))
+    }
+}
+
+/// Format one reply line (visual → CLI) for a nonce.
+pub fn eyes_reply_line(nonce: &str, result: &Result<String, String>) -> String {
+    match result {
+        Ok(t) => format!("{nonce} ok {t}"),
+        Err(e) => format!("{nonce} err {e}"),
+    }
+}
+
+/// Scan a reply-file body for `nonce`, returning its outcome (the path text on
+/// `ok`, the message on `err`) or `None` if no reply for it has landed yet.
+pub fn find_eyes_reply(body: &str, nonce: &str) -> Option<Result<String, String>> {
+    for line in body.lines() {
+        let line = line.trim();
+        let Some((n, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        if n != nonce {
+            continue;
+        }
+        if let Some(t) = rest.strip_prefix("ok ") {
+            return Some(Ok(t.to_string()));
+        }
+        if let Some(e) = rest.strip_prefix("err ") {
+            return Some(Err(e.to_string()));
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Formatting (read side)
+// ---------------------------------------------------------------------------
+
+fn kind_str(k: SlotKind) -> &'static str {
+    match k {
+        SlotKind::Num => "num",
+        SlotKind::Int => "int",
+        SlotKind::Flag => "flag",
+        SlotKind::Enum => "enum",
+    }
+}
+
+/// Every catalog entry: `(id, kind, range)`. The union of the curated agent
+/// catalog and the full actuatable set (some routes — `mat_hue`, `tempo`,
+/// `bell_physical` — live outside the curated prompt blocks).
+pub fn catalog_entries() -> Vec<(&'static str, &'static str, Option<(f32, f32)>)> {
+    let mut out: Vec<(&'static str, &'static str, Option<(f32, f32)>)> = Vec::new();
+    for c in agent::core_catalog() {
+        out.push((c.id, kind_str(c.kind), agent::id_range(c.id)));
+    }
+    for id in agent::ACTUATABLE_IDS {
+        if !out.iter().any(|(i, _, _)| i == id) {
+            out.push((id, "num", agent::id_range(id)));
+        }
+    }
+    out
+}
+
+/// Description of a selector variant by ordinal (Layer 1 of the #452 "describe surface" —
+/// the compile-enforced generator/surface/material prose, surfaced through the CLI).
+fn generator_desc_at(i: usize) -> &'static str {
+    agent::generator_desc(<GeneratorMode as Enum>::from_index(i))
+}
+fn surface_desc_at(i: usize) -> &'static str {
+    agent::surface_desc(<SurfaceMode as Enum>::from_index(i))
+}
+fn material_desc_at(i: usize) -> &'static str {
+    agent::material_desc(<MaterialType as Enum>::from_index(i))
+}
+
+/// The full vocabulary as JSON: params + the three selector enums. Every entry carries its
+/// `desc` (Layer 1/2 prose) so an agent gets the whole queryable knowledge base in one shot.
+pub fn catalog_json(s: Option<&Shared>) -> String {
+    let params: Vec<serde_json::Value> = catalog_entries()
+        .iter()
+        .map(|(id, kind, range)| {
+            serde_json::json!({
+                "id": id,
+                "kind": kind,
+                "settable": range.is_some(),
+                "min": range.map(|r| r.0),
+                "max": range.map(|r| r.1),
+                "current": s.and_then(|s| agent::current(s, id)),
+                "desc": agent::param_desc(id),
+            })
+        })
+        .collect();
+    let selector = |names: &[&'static str], desc: &dyn Fn(usize) -> &'static str| {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| serde_json::json!({ "ordinal": i, "name": name, "desc": desc(i) }))
+            .collect::<Vec<_>>()
+    };
+    serde_json::json!({
+        "params": params,
+        "generators": selector(GeneratorMode::variants(), &generator_desc_at),
+        "surfaces": selector(SurfaceMode::variants(), &surface_desc_at),
+        "materials": selector(MaterialType::variants(), &material_desc_at),
+    })
+    .to_string()
+}
+
+/// The vocabulary as a human/agent-readable text table. With `verbose`, each param and each
+/// selector variant is followed by its one-line description — the "operating manual" form.
+pub fn catalog_text(s: Option<&Shared>, verbose: bool) -> String {
+    let mut out = String::from("PARAMS (set with `organon set <id> <value>`):\n");
+    for (id, kind, range) in catalog_entries() {
+        match range {
+            Some((lo, hi)) => {
+                out.push_str(&format!("  {id:<18} {kind:<5} {lo} .. {hi}"));
+                if let Some(v) = s.and_then(|s| agent::current(s, id)) {
+                    out.push_str(&format!("   = {v}"));
+                }
+                out.push('\n');
+            }
+            None => out.push_str(&format!(
+                "  {id:<18} {kind:<5} (not directly settable — use select_*/presets)\n"
+            )),
+        }
+        if verbose {
+            if let Some(d) = agent::param_desc(id) {
+                out.push_str(&format!("      {d}\n"));
+            }
+        }
+    }
+    let mut section = |title: &str, names: &[&'static str], desc: &dyn Fn(usize) -> &'static str| {
+        out.push_str(&format!("\n{title}\n"));
+        for (i, v) in names.iter().enumerate() {
+            out.push_str(&format!("  {i:>2}  {v}\n"));
+            if verbose {
+                out.push_str(&format!("      {}\n", desc(i)));
+            }
+        }
+    };
+    section(
+        "GENERATORS (`organon generator <name|ordinal>`):",
+        GeneratorMode::variants(),
+        &generator_desc_at,
+    );
+    section(
+        "SURFACES (`organon surface <name|ordinal>`):",
+        SurfaceMode::variants(),
+        &surface_desc_at,
+    );
+    section(
+        "MATERIALS (`organon material <name|ordinal>`):",
+        MaterialType::variants(),
+        &material_desc_at,
+    );
+    out
+}
+
+/// `organon describe <query>` — the targeted knowledge lookup. Resolves `query` to a param
+/// id (exact) → its kind/range/current + gloss; otherwise to any matching generator / surface
+/// / material name-or-ordinal → the entity prose (a name shared across kinds, e.g. `original`,
+/// prints every match, each labelled). `Err` lists no-match.
+pub fn describe_text(s: Option<&Shared>, query: &str) -> Result<String, String> {
+    let q = query.trim();
+    // Additive: a query can name more than one thing (a recipe AND a generator, an
+    // ordinal valid in all three enums, …). Show every match, labelled — the agent
+    // gets the fullest answer rather than a single arbitrary winner.
+    let mut out = String::new();
+    // A recipe name → its full breakdown (Layer 3).
+    if let Some(detail) = recipe_detail(q) {
+        out.push_str(&detail);
+    }
+    // A settable param → its full card.
+    if let Some((lo, hi)) = agent::id_range(q) {
+        let kind = catalog_entries()
+            .into_iter()
+            .find(|(id, _, _)| *id == q)
+            .map(|(_, k, _)| k)
+            .unwrap_or("num");
+        out.push_str(&format!("{q}  ({kind}, {lo} .. {hi})"));
+        if let Some(v) = s.and_then(|s| agent::current(s, q)) {
+            out.push_str(&format!("  = {v}"));
+        }
+        out.push('\n');
+        out.push_str(&format!("  {}\n", agent::param_desc(q).unwrap_or("(no description)")));
+    }
+    // Any selector kind the name/ordinal matches.
+    if let Ok(i) = resolve_enum::<GeneratorMode>(q) {
+        let (i, name) = (i as usize, GeneratorMode::variants()[i as usize]);
+        out.push_str(&format!("GENERATOR {i}  {name}\n  {}\n", generator_desc_at(i)));
+    }
+    if let Ok(i) = resolve_enum::<SurfaceMode>(q) {
+        let (i, name) = (i as usize, SurfaceMode::variants()[i as usize]);
+        out.push_str(&format!("SURFACE {i}  {name}\n  {}\n", surface_desc_at(i)));
+    }
+    if let Ok(i) = resolve_enum::<MaterialType>(q) {
+        let (i, name) = (i as usize, MaterialType::variants()[i as usize]);
+        out.push_str(&format!("MATERIAL {i}  {name}\n  {}\n", material_desc_at(i)));
+    }
+    if out.is_empty() {
+        Err(format!(
+            "'{q}' is not a known param, generator, surface, material, or recipe — see \
+             `organon catalog` / `organon recipes`"
+        ))
+    } else {
+        Ok(out)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #452 Layer 3 — the recipe library (built-in described starting-points).
+// ---------------------------------------------------------------------------
+
+/// The full breakdown of one recipe (used by `describe` + `recipe --dry-run`).
+pub fn recipe_detail(name: &str) -> Option<String> {
+    let r = crate::recipe::recipe(name)?;
+    let mut out = format!("RECIPE {}  \"{}\"\n  {}\n", r.name, r.title, r.intent);
+    out.push_str("  apply: `organon recipe ");
+    out.push_str(r.name);
+    out.push_str("`\n");
+    if let Some(g) = r.generator {
+        out.push_str(&format!("    generator {g}\n"));
+    }
+    if let Some(sf) = r.surface {
+        out.push_str(&format!("    surface   {sf}\n"));
+    }
+    if let Some(m) = r.material {
+        out.push_str(&format!("    material  {m}\n"));
+    }
+    for (id, v) in r.params {
+        out.push_str(&format!("    set {id} {v}\n"));
+    }
+    Some(out)
+}
+
+/// `organon recipes` — the library list (name · title · intent), text or JSON.
+pub fn recipes_text(json: bool) -> String {
+    if json {
+        let arr: Vec<serde_json::Value> = crate::recipe::recipes()
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "title": r.title,
+                    "intent": r.intent,
+                    "generator": r.generator,
+                    "surface": r.surface,
+                    "material": r.material,
+                    "params": r.params.iter().map(|(id, v)| serde_json::json!({ "id": id, "value": v })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        return serde_json::Value::Array(arr).to_string();
+    }
+    let mut out = String::from("RECIPES (apply with `organon recipe <name>`):\n");
+    for r in crate::recipe::recipes() {
+        out.push_str(&format!("  {:<10} {}\n      {}\n", r.name, r.title, r.intent));
+    }
+    out
+}
+
+/// Translate a recipe into the command-channel ops that apply it: the generator / surface /
+/// material selects followed by the param sets. `Err` if the name is unknown or (defensively)
+/// a param/selector fails to resolve.
+pub fn recipe_ops(name: &str) -> Result<Vec<CliOp>, String> {
+    let r = crate::recipe::recipe(name).ok_or_else(|| {
+        format!("no recipe '{name}' — see `organon recipes`")
+    })?;
+    let mut ops = Vec::new();
+    if let Some(g) = r.generator {
+        ops.push(CliOp::Generator(resolve_enum::<GeneratorMode>(g)?));
+    }
+    if let Some(sf) = r.surface {
+        ops.push(CliOp::Surface(resolve_enum::<SurfaceMode>(sf)?));
+    }
+    if let Some(m) = r.material {
+        ops.push(CliOp::Material(resolve_enum::<MaterialType>(m)?));
+    }
+    for (id, v) in r.params {
+        if agent::id_range(id).is_none() {
+            return Err(format!("recipe '{name}': '{id}' is not actuatable"));
+        }
+        ops.push(CliOp::Set((*id).to_string(), *v));
+    }
+    Ok(ops)
+}
+
+fn variant_name<E: Enum>(ordinal: u32) -> String {
+    let vars = E::variants();
+    vars.get(ordinal as usize)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| format!("?{ordinal}"))
+}
+
+/// One-shot status: selectors, tempo, transport — text form.
+pub fn status_text(s: &Shared) -> String {
+    let playing = s.transport[0] > 0.5;
+    format!(
+        "generator: {} \"{}\"   surface: {} \"{}\"   material: {} \"{}\"\n\
+         tempo: {} bpm (sync {})   transport: {}, beat {:.2}{}\n",
+        s.generator,
+        variant_name::<GeneratorMode>(s.generator),
+        s.surface_mode,
+        variant_name::<SurfaceMode>(s.surface_mode),
+        s.lighting[7] as u32,
+        variant_name::<MaterialType>(s.lighting[7] as u32),
+        s.tempo,
+        if s.tempo_sync != 0 { "on" } else { "off" },
+        if playing { "playing" } else { "stopped" },
+        s.transport[1],
+        if s.transport[3] > 0.5 {
+            format!(" (host {} bpm)", s.transport[2])
+        } else {
+            String::new()
+        },
+    )
+}
+
+/// One-shot status as JSON.
+pub fn status_json(s: &Shared) -> String {
+    serde_json::json!({
+        "generator": { "ordinal": s.generator, "name": variant_name::<GeneratorMode>(s.generator) },
+        "surface": { "ordinal": s.surface_mode, "name": variant_name::<SurfaceMode>(s.surface_mode) },
+        "material": { "ordinal": s.lighting[7] as u32, "name": variant_name::<MaterialType>(s.lighting[7] as u32) },
+        "tempo_bpm": s.tempo,
+        "tempo_sync": s.tempo_sync != 0,
+        "playing": s.transport[0] > 0.5,
+        "beat": s.transport[1],
+        "host_tempo_bpm": if s.transport[3] > 0.5 { Some(s.transport[2]) } else { None },
+    })
+    .to_string()
+}
+
+/// `get` output — one id or all actuatable ids, text or JSON.
+pub fn get_output(s: &Shared, id: Option<&str>, json: bool) -> Result<String, String> {
+    match id {
+        Some(id) => {
+            let v = agent::current(s, id)
+                .ok_or_else(|| format!("unknown/unreadable param '{id}' — see `organon catalog`"))?;
+            Ok(if json {
+                serde_json::json!({ id: v }).to_string()
+            } else {
+                format!("{v}")
+            })
+        }
+        None => {
+            let mut map = serde_json::Map::new();
+            for id in agent::ACTUATABLE_IDS {
+                if let Some(v) = agent::current(s, id) {
+                    map.insert(id.to_string(), serde_json::json!(v));
+                }
+            }
+            if json {
+                Ok(serde_json::Value::Object(map).to_string())
+            } else {
+                Ok(map
+                    .iter()
+                    .map(|(k, v)| format!("{k} = {v}\n"))
+                    .collect::<String>())
+            }
+        }
+    }
+}
+
+/// One `watch` tick: a compact JSON line — beat + the requested fields
+/// (default: every actuatable id).
+pub fn watch_line(s: &Shared, fields: &[String]) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert("beat".into(), serde_json::json!(s.transport[1]));
+    map.insert("playing".into(), serde_json::json!(s.transport[0] > 0.5));
+    if fields.is_empty() {
+        for id in agent::ACTUATABLE_IDS {
+            if let Some(v) = agent::current(s, id) {
+                map.insert(id.to_string(), serde_json::json!(v));
+            }
+        }
+    } else {
+        for f in fields {
+            if let Some(v) = agent::current(s, f) {
+                map.insert(f.clone(), serde_json::json!(v));
+            }
+        }
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(s: &[&str]) -> Vec<String> {
+        s.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn set_pairs_and_watch_fields_validate() {
+        assert_eq!(
+            pairs_from(&args(&["metallic", "0.9", "glow", "1.5"])).unwrap(),
+            vec![("metallic".to_string(), 0.9), ("glow".to_string(), 1.5)]
+        );
+        assert!(pairs_from(&args(&["metallic"])).is_err()); // odd
+        assert!(pairs_from(&args(&[])).is_err()); // empty
+        assert!(pairs_from(&args(&["nonsense", "1"])).is_err()); // unknown id
+        assert!(pairs_from(&args(&["metallic", "abc"])).is_err()); // not a number
+        assert!(validate_fields(&args(&["glow", "metallic"])).is_ok());
+        assert!(validate_fields(&args(&["nonsense"])).is_err());
+    }
+
+    #[test]
+    fn resolves_selectors_by_ordinal_name_and_substring() {
+        assert_eq!(resolve_enum::<GeneratorMode>("0"), Ok(0));
+        assert_eq!(resolve_enum::<GeneratorMode>("dna").unwrap(), {
+            GeneratorMode::Dna.to_index() as u32
+        });
+        assert_eq!(
+            resolve_enum::<MaterialType>("chrome").unwrap(),
+            MaterialType::Chrome.to_index() as u32
+        );
+        // Substring must be unambiguous.
+        assert!(resolve_enum::<GeneratorMode>("neural").is_err()); // field vs network
+        assert!(resolve_enum::<GeneratorMode>("zzz").is_err());
+        assert!(resolve_enum::<GeneratorMode>("9999").is_err());
+    }
+
+    #[test]
+    fn write_commands_become_channel_ops() {
+        let ops = ops_for(&CtlCmd::Set {
+            pairs: vec![("glow".into(), 1.5)],
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(ops, vec![CliOp::Set("glow".into(), 1.5)]);
+        let ops = ops_for(&CtlCmd::Material { which: "glass".into() }).unwrap().unwrap();
+        assert_eq!(ops, vec![CliOp::Material(MaterialType::Glass.to_index() as u32)]);
+        assert_eq!(ops_for(&CtlCmd::Status { json: false }).unwrap(), None);
+        assert!(ops_for(&CtlCmd::Generator { which: "zzz".into() }).is_err());
+    }
+
+    #[test]
+    fn plan_normalizes_to_one_line_the_executor_accepts() {
+        let multi = "{\n  \"name\": \"warm\",\n  \"moves\": [\n    {\"op\":\"set_param\",\"id\":\"glow\",\"value\":1.0}\n  ]\n}";
+        let one = normalize_plan(multi).unwrap();
+        assert!(!one.contains('\n'));
+        assert!(agent::PhrasePlan::parse(&one).is_some());
+        assert!(normalize_plan("not json").is_err());
+    }
+
+    #[test]
+    fn catalog_covers_every_actuatable_id_and_the_selectors() {
+        let entries = catalog_entries();
+        for id in agent::ACTUATABLE_IDS {
+            assert!(entries.iter().any(|(i, _, r)| i == id && r.is_some()), "{id} missing");
+        }
+        // No duplicate ids.
+        let mut seen = std::collections::BTreeSet::new();
+        for (id, _, _) in &entries {
+            assert!(seen.insert(*id), "duplicate catalog id {id}");
+        }
+        let j: serde_json::Value = serde_json::from_str(&catalog_json(None)).unwrap();
+        assert!(j["params"].as_array().unwrap().len() >= agent::ACTUATABLE_IDS.len());
+        assert_eq!(
+            j["generators"].as_array().unwrap().len(),
+            GeneratorMode::variants().len()
+        );
+        assert!(!j["surfaces"].as_array().unwrap().is_empty());
+        assert!(j["materials"].as_array().unwrap().len() >= 3);
+    }
+
+    #[test]
+    fn eyes_requests_round_trip_and_replies_match_by_nonce() {
+        // Round-trip every request kind through its line form.
+        for req in [
+            EyesReq::Snap { path: "/tmp/a b.png".into() },
+            EyesReq::RecordStart { bars: 8 },
+            EyesReq::RecordStop,
+        ] {
+            let line = req.to_line("N1");
+            assert!(!line.contains('\n'));
+            assert_eq!(EyesReq::parse(&line), Some(("N1".to_string(), req)));
+        }
+        // Bad/empty verbs reject.
+        assert!(EyesReq::parse("N1 snap ").is_none());
+        assert!(EyesReq::parse("N1 record start xx").is_none());
+        assert!(EyesReq::parse("N1 frobnicate").is_none());
+        assert!(EyesReq::parse("noverb").is_none());
+
+        // Reply scanning keys strictly off the nonce, ok vs err.
+        let body = "N0 ok /x.png\nN1 err ffmpeg missing\nN2 ok /y.png\n";
+        assert_eq!(find_eyes_reply(body, "N0"), Some(Ok("/x.png".into())));
+        assert_eq!(find_eyes_reply(body, "N1"), Some(Err("ffmpeg missing".into())));
+        assert_eq!(find_eyes_reply(body, "N2"), Some(Ok("/y.png".into())));
+        assert_eq!(find_eyes_reply(body, "N9"), None);
+        // A nonce prefix must not match a different nonce.
+        assert_eq!(find_eyes_reply("N10 ok /z.png\n", "N1"), None);
+        // A half-written trailing line is simply ignored until complete.
+        assert_eq!(find_eyes_reply("N1 o", "N1"), None);
+    }
+
+    #[test]
+    fn read_formatters_speak_valid_json_over_a_default_snapshot() {
+        let s = Shared::default();
+        let st: serde_json::Value = serde_json::from_str(&status_json(&s)).unwrap();
+        assert_eq!(st["generator"]["ordinal"], 0);
+        assert_eq!(st["generator"]["name"], "Organic Math (cube field)");
+        let g: serde_json::Value =
+            serde_json::from_str(&get_output(&s, Some("metallic"), true).unwrap()).unwrap();
+        assert!(g["metallic"].is_number());
+        assert!(get_output(&s, Some("nonsense"), true).is_err());
+        let all: serde_json::Value =
+            serde_json::from_str(&get_output(&s, None, true).unwrap()).unwrap();
+        assert!(all.as_object().unwrap().len() >= 40);
+        let w: serde_json::Value =
+            serde_json::from_str(&watch_line(&s, &["glow".into()])).unwrap();
+        assert!(w["beat"].is_number());
+        assert!(w["glow"].is_number());
+        // Human text forms render without panicking and mention the selectors.
+        assert!(catalog_text(Some(&s), false).contains("GENERATORS"));
+        assert!(status_text(&s).contains("generator: 0"));
+    }
+
+    #[test]
+    fn describe_resolves_params_and_selectors_with_prose() {
+        let s = Shared::default();
+        // A param → kind/range/current + its gloss.
+        let d = describe_text(Some(&s), "metallic").unwrap();
+        assert!(d.contains("metallic") && d.contains("(num,") && d.to_lowercase().contains("metal"));
+        // A material name → the material prose.
+        let d = describe_text(Some(&s), "glass").unwrap();
+        assert!(d.contains("MATERIAL") && d.to_lowercase().contains("refract"));
+        // A pure generator name (not also a recipe) → the generator prose.
+        let d = describe_text(None, "strange").unwrap();
+        assert!(d.contains("GENERATOR") && d.to_lowercase().contains("attractor"));
+        // A surface name → the surface prose.
+        assert!(describe_text(None, "metaball").unwrap().contains("SURFACE"));
+        // A name that is BOTH a recipe and a generator substring shows both (additive).
+        let d = describe_text(None, "dna").unwrap();
+        assert!(d.contains("RECIPE dna") && d.contains("GENERATOR"));
+        // An ordinal that is valid in every kind shows all three (multi-match).
+        let d = describe_text(None, "0").unwrap();
+        assert!(d.contains("GENERATOR") && d.contains("SURFACE") && d.contains("MATERIAL"));
+        // A recipe name → its breakdown (Layer 3), via the same `describe`.
+        let d = describe_text(None, "helix").unwrap();
+        assert!(d.contains("RECIPE helix") && d.contains("generator") && d.contains("set ior"));
+        // Unknown → error.
+        assert!(describe_text(None, "nonsense_xyz").is_err());
+
+        // Verbose catalog inlines the descriptions; JSON carries `desc` on every entry.
+        let v = catalog_text(Some(&s), true);
+        assert!(v.contains("metallic") && v.to_lowercase().contains("mirror-sharp"));
+        let j: serde_json::Value = serde_json::from_str(&catalog_json(Some(&s))).unwrap();
+        assert!(j["params"][0]["desc"].is_string() || j["params"][0]["desc"].is_null());
+        assert!(j["generators"][0]["desc"].is_string());
+        assert!(j["generators"][0]["name"].is_string());
+    }
+
+    #[test]
+    fn recipes_list_and_apply_to_valid_ops() {
+        // The list mentions a known recipe (text + JSON).
+        assert!(recipes_text(false).contains("helix"));
+        let j: serde_json::Value = serde_json::from_str(&recipes_text(true)).unwrap();
+        assert!(j.as_array().unwrap().iter().any(|r| r["name"] == "helix"));
+
+        // Applying resolves to selects + sets, all valid.
+        let ops = recipe_ops("helix").unwrap();
+        assert!(matches!(ops[0], CliOp::Generator(_)));
+        assert!(ops.iter().any(|o| matches!(o, CliOp::Set(id, _) if id == "ior")));
+        // Every op round-trips through the wire format the visual drains.
+        for op in &ops {
+            assert!(CliOp::parse(&op.to_line()).is_some(), "op {op:?} won't parse back");
+        }
+        // Unknown recipe → error, not a panic.
+        assert!(recipe_ops("no_such_recipe").is_err());
+    }
+}

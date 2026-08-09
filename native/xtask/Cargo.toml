@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+description = "Bundles the Organon plugin into .vst3/.clap via `cargo xtask bundle`"
+# Permissive despite bundling a GPL plugin: this crate is a BUILD TOOL. It shells out
+# to cargo and copies the result into a bundle — it never links `vst3-sys`, so the root
+# crate's forced GPL (see native/Cargo.toml) does not reach it. `nih_plug_xtask` is ISC,
+# which is compatible with this dual licence. (#673 Phase 2)
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+nih_plug_xtask = { git = "https://github.com/robbert-vdh/nih-plug.git" }

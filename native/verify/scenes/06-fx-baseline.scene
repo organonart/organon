@@ -1,0 +1,38 @@
+# The local reference for the Surface FX bracket (06-fx-inert / 07-fx-active).
+#
+# ⚠️ WHY THIS EXISTS, given 01-original-standard sets the identical parameters.
+#
+# The frozen scenes freeze rotation *speed*, not rotation *phase*. `world.rs`'s frame
+# step integrates `self.angle += rot_mod[0..2] * rot_mod[3] * speed_mult` (and
+# `self.wind_phase` alongside it) once per frame; zeroing `rot_mod_*` stops the
+# integration but leaves the accumulator wherever it had already got to. No `set`, and
+# no `organon release`, resets it — it is `World` state in the visual, not a param.
+#
+# So a frozen frame is a function of (parameters, accumulated phase at the moment the
+# clock stopped), and that second term depends on every scene that ran *before* it.
+# 06-fx-inert used to assert `same-as 01-original-standard`, five scenes upstream with
+# the deliberately-animating 05-motion in between — so the two frames were the same
+# scene at two different rotation phases, and the check measured the clock rather than
+# Surface FX. It failed on its first real run (2026-08-05, diff_frac=0.005258 against
+# tol 0.002) for exactly that reason, with the FX params innocent.
+#
+# The fix is to keep the comparison *local*: this scene is 01-original-standard's
+# parameter set, captured immediately before the FX pair, so all three share one
+# accumulated phase and the only difference left is the thing under test. The shared
+# `06-` prefix is load-bearing — it is what keeps the three adjacent under the
+# harness's filename ordering. Do not renumber one without the others.
+#!desc      Local reference frame for the Surface FX bracket — 01's look, captured adjacent.
+#!checks    nonblack
+
+generator "organic math"
+surface original
+material standard
+
+set rot_mod_x 0 rot_mod_y 0 rot_mod_z 0
+set rot_amp_x 0 rot_amp_y 0 rot_amp_z 0
+set trans_amp_x 0 trans_amp_y 0 trans_amp_z 0
+set scale_amp 0
+set cam_path 0 cam_speed 0 cam_kick 0
+
+set exposure 0 metallic 0.1 roughness 0.5
+set ambient 0.3 glow 0.2 bloom_intensity 0.2

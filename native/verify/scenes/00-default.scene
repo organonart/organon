@@ -1,0 +1,10 @@
+# The launch canary: no commands at all, just whatever the visual boots into.
+#
+# No golden — the default look animates, so it is not pixel-stable by construction.
+# What this scene proves is the thing that breaks most often and costs the most round
+# trips: the visual came up, built its pipelines, drew a real frame, and is still
+# advancing its clock. A pipeline/bind-group mismatch (#519) fails here, at frame one,
+# with a log — not three sessions later.
+#!desc    Boots to the default look, draws a live frame, and keeps animating.
+#!checks  nonblack,animates
+#!settle  1200

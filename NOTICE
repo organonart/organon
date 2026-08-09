@@ -1,0 +1,53 @@
+Organon — third-party notices
+=============================
+
+This file records material in this repository that Organon did not author, and
+the terms it arrives under. It is informational; each item's own licence text
+governs. See LICENSING.md for how Organon's *own* code is licensed.
+
+
+Yale Bright Star Catalog, 5th Revised Edition (BSC5)
+----------------------------------------------------
+    native/organon-render/src/BSC5   (~292 KB, binary)
+
+Embedded verbatim and parsed at runtime by `organon-render`'s `stars.rs`, which
+draws the HDR starfield. 9,110 entries; the file is the standard binary format
+distributed by the Astronomical Data Center.
+
+    Hoffleit, D. & Warren, W. H., Jr. (1991),
+    "The Bright Star Catalogue, 5th Revised Edition"
+    Yale University Observatory.
+
+The catalogue is a scientific reference dataset published for unrestricted
+scholarly use and carries no licence text of its own. It is included here with
+attribution, unmodified. If you redistribute Organon, keep this notice.
+
+
+Vendored crates
+---------------
+    native/vendor/nih_plug_egui   — ISC, © Robbert van der Helm
+    native/vendor/egui-wgpu       — MIT OR Apache-2.0, © the egui authors
+                                    (Emil Ernerfeldt, Nils Hasenbanck, embotech)
+
+Both are minimal vendorings of upstream crates, kept in-tree because a version
+constraint could not be expressed through Cargo alone; each retains its upstream
+licence file and author attribution. See the header of `native/Cargo.toml` for
+why each one is vendored and what was changed.
+
+
+Plugin formats
+--------------
+    VST3   — the VST3 bindings reached through nih-plug's `nih_export_vst3!` are
+             `vst3-sys`, licensed GPLv3. This is why the root crate is
+             GPL-3.0-or-later; see LICENSING.md.
+    CLAP   — `clap-sys`, MIT OR Apache-2.0.
+
+VST3 is a trademark of Steinberg Media Technologies GmbH. CLAP is an open
+standard. Organon is not affiliated with or endorsed by either.
+
+
+The name
+--------
+The Organon name, wordmark and marks are the author's, and are not covered by
+the code licences: a licence grants copyright, not trademark.
+Fork the code freely; ship it under your own name.

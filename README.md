@@ -1,0 +1,149 @@
+# Organon
+
+**A hyperscope for the space of possible forms.** Organon is a parametric generative
+visualizer: 27 generators, a PBR/HDR/ray-traced render stack, 50+ WGSL shaders, driven by
+MIDI, tempo and audio. It runs as a **VST3/CLAP plugin and as a standalone app**, with the
+visual in its own fullscreen process so it can own a projector while the host owns the
+parameters. → [organon.art](https://organon.art)
+
+Two instruments are built on its engine:
+
+| | What it is | |
+|---|---|---|
+| **Organon Mind** | A standalone instrument for **watching a language model think**. Load a `.gguf` and it draws the model's true wiring, read from the file, then lights it up while it runs. | [organonmind.org](https://organonmind.org) |
+| **Organon Shell** | An agent-operating workstation: a GPU-composited terminal for working with AI agents on living software. | |
+
+The direction is one-way: Mind and Shell are spin-outs of capabilities that live primarily
+in Organon, drawing on its engine, algorithm, shaders and preset store.
+
+They are **editions, not forks**. The algorithm (`math.rs`), every shader, the IPC snapshot
+layout and the preset store are identical across all three; a compile-time `Edition` chooses
+the product name, the IPC namespace and the visible surface.
+
+```bash
+cd native
+cargo build --release                                              # Organon
+cargo build --release --features mind-edition  --bin organon-mind  # Organon Mind
+cargo build --release --features shell-edition --bin organon-shell # Organon Shell
+```
+
+## Build
+
+Rust via [rustup](https://rustup.rs). macOS, Windows and Linux. On Linux the engine pulls in
+ALSA/JACK and X11/GL, so install the dev headers first — without them the build dies inside a
+*build script*, which reads like a code error but is not:
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  libasound2-dev libjack-jackd2-dev \
+  libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev libxi-dev \
+  libxext-dev libgl1-mesa-dev libxkbcommon-dev libwayland-dev
+```
+
+```bash
+cd native
+cargo test --workspace     # unit tests + offline shader validation, no GPU needed
+```
+
+`cargo test` includes `tests/wgsl.rs`, which parse-and-validates **every** shader with naga on
+the CPU — shader errors are caught without a GPU, on any machine, in CI.
+
+⚠️ `--workspace` is load-bearing, not tidiness: `native/` is a workspace whose root package is
+the plugin, and a bare `cargo test` runs that package **only**. That silently skipped an entire
+crate's tests once, and the suite stayed green while it did.
+
+## Run it
+
+The quickest way to see something is the standalone plus its visual — no DAW involved:
+
+```bash
+cd native
+cargo run --release --bin organon-standalone     # the editor: every parameter, as sliders
+```
+
+Then **Open Visual Window** in the editor. The visual is a separate process, fullscreen-capable
+— the editor owns the controls, the visual owns the pixels, and they talk through a
+memory-mapped snapshot.
+
+**Drive it from a terminal** with the `organon` CLI, which is the fastest way to explore and the
+one built for scripting and for agents:
+
+```bash
+cargo build --release --bin organon
+./target/release/organon catalog --manual        # the whole vocabulary, with ranges
+./target/release/organon generator dna           # pick a generator
+./target/release/organon set metallic 0.9 exposure -1.5
+./target/release/organon snap -o /tmp/look.png   # look at what you made
+```
+
+The loop that matters is **see → act → see**: read the state, change one thing, take a snapshot
+and check. `organon describe <id>` explains any control in prose, with its range.
+
+⚠️ **A first `snap` can time out while the visual is still coming up.** Retry it — startup takes
+a few seconds and a covered or unfocused window does not render. Note also that `status`, `get`
+and `watch` need something *writing* the snapshot (the editor or the plugin), while `snap`,
+`set` and `generator` work against the visual alone.
+
+`ORGANON_IPC_NS=<name>` forks the IPC namespace, so two of these run side by side without
+trampling each other. The CLI reads it too — export it in the same shell.
+
+**The other two instruments:**
+
+```bash
+cargo run --release --features mind-edition  --bin organon-mind    # load a .gguf
+cargo run --release --features shell-edition --bin organon-shell   # a terminal; --help works
+```
+
+**As a plugin:** `./bundle.sh` writes `target/bundled/Organon.{vst3,clap}` with the visual
+embedded inside each (`bundle.ps1` on Windows). Then `./deploy.sh --dest ~/Library/Audio/Plug-Ins/VST3`
+installs it where a DAW will look; on Windows `deploy.ps1 -Dest F:\vst3`. macOS Gatekeeper
+blocks self-built plugins and the "Allow Anyway" button does **not** work for them — you need
+`sudo spctl --global-disable`. Then rescan in your DAW.
+
+⚠️ **One exception: the CLAP on Windows carries no visual.** nih-plug emits it as a bare DLL,
+so there is no bundle directory to embed anything into — "Open Visual Window" under a Windows
+CLAP host does nothing until you point `ORGANIC_MATH_VISUAL` at the full path of
+`organic-math-visual.exe`. `bundle.ps1` prints this on every run rather than skipping it
+silently. The VST3 is unaffected on either platform, as is the CLAP on macOS.
+
+## The shape of it
+
+```
+native/src              the plugin, the standalone, the visual, the `organon` CLI
+native/organon-core     the host-free spine: math, IPC, params, GGUF, editions
+native/organon-render   the renderer — 36 surface modules, 50 shaders
+native/organon-mind     Organon Mind's own code
+native/organon-shell    Organon Shell's compositor and terminal
+```
+
+That is the whole repository: Rust, and the documentation for it. No npm, no
+TypeScript, no build step outside cargo.
+
+Two processes, on purpose: the editor owns the controls and a separate binary owns the
+fullscreen visual, communicating through a memory-mapped snapshot. `ARCHITECTURE.md` §4
+explains why and how they attach.
+
+| Doc | What it is |
+|---|---|
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The durable engine reference — the algorithm, the IPC model, the file map. A reference, not a read-through. |
+| [`doc/arch/render.md`](doc/arch/render.md) | The render pipeline in depth: passes, hardware RT, IBL, shaders. |
+| [`doc/arch/topology.md`](doc/arch/topology.md) | The crate graph, and what may depend on what. |
+| [`MIND_ARCHITECTURE.md`](MIND_ARCHITECTURE.md) | What exists **right now** in Organon Mind, plus its honesty ledger. |
+| [`SHELL_ARCHITECTURE.md`](SHELL_ARCHITECTURE.md) | The same, for Organon Shell. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How changes get made here — start here before writing code. |
+| [`SECURITY.md`](SECURITY.md) | How to report privately, and what the real attack surface is. |
+| [`LICENSING.md`](LICENSING.md) | Why the engine is permissive and the plugin is GPL. |
+
+## Licence
+
+Split, and the split is deliberate — see [`LICENSING.md`](LICENSING.md).
+
+- **The engine** (`organon-core`, `organon-render`, `organon-mind`, `organon-shell`, and the
+  WASM/codegen/build tools): **MIT OR Apache-2.0**, your choice. This is the part worth
+  reusing, and it is unencumbered.
+- **The root crate** — the plugin, standalone, visual and CLI: **GPL-3.0-or-later**, forced by
+  the GPLv3 VST3 bindings that `nih_export_vst3!` is built on. Not a preference; nih-plug
+  itself is ISC.
+
+Third-party material, including the embedded Yale Bright Star Catalog: [`NOTICE`](NOTICE).
+The Organon name and marks are the author's — a licence grants copyright, not trademark.

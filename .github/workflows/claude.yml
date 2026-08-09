@@ -1,0 +1,55 @@
+name: Claude
+
+# Interactive @claude responder — the back-and-forth loop.
+# Mention @claude in a PR comment, an inline review-thread reply, a review body,
+# or an issue, and Claude wakes up, reads the thread, and responds in place.
+# Same subscription OAuth auth as the review workflow.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    # `opened` only. `assigned` was deliberately dropped: the guard below can
+    # only test whether the title/body still *contains* @claude, and that text
+    # persists for the life of the issue — so every later re-assignment of an
+    # old @claude issue would re-run this job (duplicate replies, wasted turns,
+    # and a possible duplicate commit if the original ask was an implementation
+    # request). Reacting to assignment properly needs the action's
+    # `assignee_trigger` input, which is not configured here.
+    types: [opened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read   # lets Claude read CI results on the PR
+
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30   # runaway backstop
+    # Only spend a run when someone actually mentions @claude.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && github.event.action == 'opened' && (contains(github.event.issue.title, '@claude') || contains(github.event.issue.body, '@claude')))
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}   # required — OAuth path 401s without it (issue #721)
+          # No `prompt:` → tag mode: Claude responds to the @claude mention in context.
+          # 15 turns was not enough to read a thread, make a change and commit it —
+          # the review workflow died on exactly that ceiling. This one has never
+          # actually fired (no @claude mention yet), so treat 40 as untested.
+          claude_args: "--max-turns 40"

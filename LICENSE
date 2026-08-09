@@ -1,0 +1,36 @@
+Organon is not under a single licence, and this file exists so that nothing —
+a tool, a sidebar badge, or a person in a hurry — can conclude otherwise.
+
+  The engine crates                          MIT OR Apache-2.0
+    native/organon-core                      (licensee's choice of either)
+    native/organon-render
+    native/organon-mind
+    native/organon-shell
+    native/xtask
+
+  The root crate                             GPL-3.0-or-later
+    native/  (the VST3/CLAP plugin, the standalone,
+              the visual, the `organon` CLI)
+
+The split is forced, not chosen. The root crate calls nih-plug's
+`nih_export_vst3!`, which is implemented over `vst3-sys`, which is GPLv3 — so
+anything built from the root crate must be distributable under the GPL. nih-plug
+itself is ISC and CLAP is MIT/Apache-2.0; only the VST3 arm carries the
+obligation. Collapsing the two "for consistency" would relicense roughly 100,000
+lines of reusable engine onto the terms of a plugin binding, which is the
+opposite of the intent.
+
+Full texts, all three, in this directory:
+
+  LICENSE-MIT      the MIT licence
+  LICENSE-APACHE   the Apache Licence 2.0
+  LICENSE-GPL      the GNU General Public License v3
+
+LICENSING.md explains which terms reach which artifact, and why, in more detail
+than fits here. Read it before changing any crate's `license` field.
+
+Third-party code carries its own terms alongside its own source: see NOTICE, and
+the LICENSE files under native/vendor/.
+
+A licence grants copyright, not trademark. The Organon name and brand remain the
+author's.

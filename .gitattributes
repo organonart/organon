@@ -1,0 +1,100 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# ─── LF pins (#658 Tier 1, item 10) ──────────────────────────────────────────────────
+#
+# `text=auto` above stores everything as LF in the repo and checks it out in the
+# platform's native ending — which on a Windows working tree means CRLF. That is
+# harmless for Rust, WGSL, Markdown and JSON, and actively breaks the files below.
+# Each pin exists for a specific failure, not for tidiness:
+
+# Shebangs. A `#!/usr/bin/env bash` line ending in CRLF makes an interpreter lookup
+# search for the program `bash\r`, which does not exist; the error is
+# `bad interpreter: /usr/bin/env^M: no such file or directory`, which reads like a
+# missing tool rather than a line-ending bug.
+#
+# ⚠️ **MEASURED CORRECTION (organon#658, the RTX 5090 workstation, 2026-08-07).** This
+# pin originally justified itself with that failure happening *on the Windows box*, and
+# **it does not.** The CRLF is real there — `#!/usr/bin/env bash\r\n` confirmed at byte
+# level, `core.autocrlf=true` system-wide — but that box's shell is MSYS2/MINGW64 bash
+# 5.3.15, which **strips the CR** from both shebangs and `[ "$V" = "x" ]` comparisons.
+# `./verify.sh --help` and `./deploy.sh --help` both run correctly and exit 0. Git Bash
+# is not the victim this pin was written for.
+#
+# The pin is kept anyway, on narrower and honest grounds:
+#   * **WSL and any non-MSYS bash** do NOT strip the CR — a checkout shared with WSL, or
+#     a script run under a plain Linux bash on a mounted Windows tree, hits the real
+#     failure. MSYS's leniency is a property of one shell, not of the platform.
+#   * **Editor and tooling churn.** A CRLF working copy invites an editor or formatter to
+#     write CRLF back into files the repo stores as LF, producing whole-file diffs on
+#     untouched scripts.
+#   * It is free, and it removes a variable rather than relying on a lenient shell.
+#
+# Affected: `native/verify.sh`, `native/bundle.sh`, `native/deploy.sh`, the ten
+# `.claude/hooks/*.sh`, `scripts/export-public.sh`, `web/devloop.sh`.
+*.sh text eol=lf
+
+# Same mechanism, different interpreter — and the same correction applies, since these
+# are launched from the same shell: `native/tools/check-world-bindings.py` and
+# `check-editor-extract.py` are mode 755 and run as `./check-….py`. Python source itself
+# is newline-agnostic, so this pin is about the shebang only, and it is kept for the WSL
+# / non-MSYS / editor-churn reasons above rather than for a Git Bash failure.
+*.py text eol=lf
+
+# ─── .ps1 is deliberately NOT pinned (#658 Tier 3) ───────────────────────────────────
+#
+# `native/bundle.ps1` and `native/deploy.ps1` are the Windows deploy pipeline. Every pin
+# above exists to stop a CRLF checkout breaking a file that a Unix tool reads; these two
+# are the exact inverse — they only ever run on Windows, under a parser that accepts LF
+# and CRLF identically, and CRLF is the native convention for the editors that will open
+# them there. So `text=auto` (LF in the repo, CRLF in a Windows working tree) is already
+# the right answer and a pin would be cargo-culting the shebang rule onto a file with no
+# shebang.
+#
+# The one case that WOULD need a pin is Authenticode-signed scripts — a signature block
+# covers the literal bytes, so line-ending translation invalidates it. Nothing here is
+# signed (see deploy.ps1's header on why Windows needs no signing step). If that ever
+# changes, this is the note that says to add `*.ps1 text eol=crlf` and why.
+
+# The frame harness's scene files. `verify.sh` pulls directives out of them with
+# `sed -n "s/^#![[:space:]]*<key>[[:space:]]\{1,\}\(.*\)$/\1/p"`, and `.*` happily
+# captures a trailing CR — so `#!settle 1200` yields the value `1200\r` (breaking the
+# arithmetic) and `#!checks nonblack,animates` yields the check name `animates\r`
+# (which matches nothing). Both `verify/scenes/` and `verify/pr/` use this extension.
+#
+# ⚠️ **This one is REASONED, NOT MEASURED, and the distinction matters** (organon#658).
+# Unlike the shebang case above — which the workstation tested and disproved for Git Bash
+# — nobody has watched a `.scene` directive come back with a trailing CR, because
+# `verify.sh` exits at its line-136 platform gate before it ever parses a scene on
+# Windows. MSYS's CR-stripping is a property of *bash reading its own input*; it says
+# nothing about what `sed` does to a data file, so the leniency that rescued the shebangs
+# is not expected to apply here. Treat this as a prediction with a mechanism behind it,
+# and confirm it once the line-136 gate is fixed and the harness actually runs.
+*.scene text eol=lf
+
+# ─── Binary pins ─────────────────────────────────────────────────────────────────────
+#
+# `text=auto` already detects all of these correctly today (`git ls-files --eol` reports
+# them `-text`), so these lines change nothing right now. They are insurance: detection
+# is a heuristic over the first 8000 bytes, and a golden frame that got CRLF-mangled on
+# checkout would fail `verify.sh` as a *rendering* regression — days of chasing the GPU
+# for a line-ending bug. Cheap to state, expensive to discover.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.bin binary
+*.gguf binary
+*.wav binary
+*.mp3 binary
+*.mp4 binary
+*.mov binary
+*.ttf binary
+*.otf binary
+
+# The Yale Bright Star Catalog, `include_bytes!`d by `organon-render/src/stars.rs`. The
+# only extensionless binary in the tree, so it is the one file where the heuristic is
+# working without a net; a mangled byte here decodes into a wrong sky.
+native/organon-render/src/BSC5 binary

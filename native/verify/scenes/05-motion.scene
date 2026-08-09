@@ -1,0 +1,18 @@
+# The moving case. No golden — this scene is deliberately non-deterministic; what it
+# asserts is that the machinery that MOVES still moves. Both the geometry clock
+# (rot_mod_* integrated per frame) and the auto-orbit camera are driven here, so a
+# frozen clock, a wedged camera, or a redraw loop that stopped advancing all fail.
+#!desc     Rotation + auto-orbit camera running — proves the clock still turns.
+#!checks   nonblack,animates
+#!settle   900
+
+generator "organic math"
+surface original
+material standard
+
+set rot_mod_x 0.4 rot_mod_y 0.25 rot_mod_z 0.0
+set rot_amp_x 0.3 rot_amp_y 0.3 rot_amp_z 0.0
+set cam_path 1 cam_speed 0.25 cam_kick 0.3
+
+set exposure 0 metallic 0.2 roughness 0.5
+set ambient 0.3 glow 0.25 bloom_intensity 0.25

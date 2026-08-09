@@ -1,0 +1,16 @@
+# Issue routing (#673 Phase 2).
+#
+# Blank issues stay ON. The forms below are here to make the common cases easy and to
+# get a product label on without asking anyone to know the label names — not to stop
+# somebody reporting something that doesn't fit a template.
+blank_issues_enabled: true
+contact_links:
+  - name: Which product am I filing against?
+    url: https://github.com/organonart/organon#organon
+    about: >-
+      Organon (the visualizer/plugin), Organon Mind (watching a model think), or
+      Organon Shell (the agent workstation). One engine underneath all three — if the
+      bug is in the renderer or the math, any of them is the right place.
+  - name: Security or privacy report
+    url: https://github.com/organonart/organon/security/advisories/new
+    about: Please report privately through a security advisory rather than a public issue.

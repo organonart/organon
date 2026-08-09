@@ -1,0 +1,54 @@
+# organon-mind — the interpretability instrument's own code (#626 Tier 4).
+#
+# ⚠️ NO nih_plug. Enforced: `cargo tree -p organon-mind | grep nih_plug` must be
+# empty (#536 T5). `mind_ui.rs`/`mind_viz.rs` reached egui through
+# `nih_plug_egui::egui`, a re-export path rather than an API dependency; they now
+# use `egui` directly, which is what lets this crate exist without a plugin host.
+#
+# ⚠️ DEPENDENCY DIRECTION — organon-render depends on THIS crate, never the
+# reverse. The visual builds the neural graph, so the renderer is the consumer.
+# #536 T5 asks for this to be recorded so nobody later "fixes" it into a cycle;
+# ARCHITECTURE.md §19.0 carries it too.
+[package]
+name = "organon-mind"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Organon Mind: activation rings, lenses, and the model-analysis surface."
+repository = "https://github.com/organonart/organon"
+
+[features]
+mind-edition = ["organon-core/mind-edition"]
+
+# ⚠️ FIVE DEPENDENCIES, AND THAT IS STILL THE POINT. The first draft of this file
+# had nine: `organon-core`'s list copied wholesale, on the assumption that a crate
+# carved out of the engine needs what the engine's spine needs. It does not.
+# `glam`, `serde`, `serde_json` and `half` appear nowhere in these six modules, and
+# neither did `dirs` — which was not even a transitive dep of `organon-core`, so it
+# was pure addition. (`mind_log.rs` had its own `fn home_dir()`; that is what made
+# `dirs` look used at a glance.)
+#
+# A crate whose whole claim is "no nih-plug, minimal surface" cannot carry dead
+# weight and mean it. If you add a dependency here, it is because a `use` in
+# `src/` needs it — `cargo build -p organon-mind` is the check, since an unused
+# dep is silent by default.
+#
+# 📌 `dirs` came back in #658 Tier 1, under exactly that rule and no other. The
+# hand-rolled `home_dir()` read `$HOME`, which is unset on Windows, so the Mind
+# corpus landed in `%TEMP%\mind-log\` instead of the store. The fix could have been
+# a hand-written platform branch that kept the count at four; it is a dependency
+# because the defect *is* divergence from the store, and a second resolver is a
+# second thing to drift. `mind_log.rs` carries the full argument above its tests.
+# This is a returning dead dep earning its place, not the count creeping — the next
+# one has to make the same case.
+[dependencies]
+organon-core = { path = "../organon-core" }
+egui = "0.33.3"
+# #658 T1: the one store-path resolver, shared with `preset.rs` / `keymap.rs` /
+# `controller.rs` / `theme_config.rs`. Already in the workspace via the root crate,
+# so this edge downloads and compiles nothing new.
+dirs = "5"
+# `min_const_generics` for the same reason organon-core needs it: `MindFrame` has
+# arrays past bytemuck's hand-written impls (`MR_MAX_LAYERS`/`MR_MAX_HEADS` = 64).
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+memmap2 = "0.9"

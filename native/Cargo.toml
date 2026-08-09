@@ -1,0 +1,397 @@
+[workspace]
+# #626 Tier 3 — organon-core is the engine's host-free spine (no nih_plug, no
+# wgpu, no egui; `cargo tree -p organon-core` is the acceptance test).
+#
+# ⚠️ Keep this list in step with `scripts/mirror-platform.manifest`. Every member
+# crosses into the public repo and therefore needs its own INCLUDE line there;
+# `export-public.sh`'s member guard fails on the one that is missing, rather than
+# shipping a manifest that names a member nobody exported. That failure is the system
+# working, not an obstacle to route around.
+members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-shell"]
+
+[package]
+name = "organic-math-native"
+version = "0.1.0"
+edition = "2021"
+description = "Organon — native MIDI-responsive generative visualizer (Rust): VST3 plugin + standalone"
+# 🔒 **GPL-3.0-or-later is FORCED, not chosen** (#673 Phase 2, verified 2026-08-08).
+# `nih_plug` itself is ISC — but `nih_export_vst3!` (lib.rs, bottom) is implemented over
+# `vst3-sys`, which is `license = "GPLv3"`, and nih-plug's own README says so outright:
+# "any VST3 plugins built with NIH-plug need to be able to comply with the terms of the
+# GPLv3 license." So this crate is GPL because it exports a VST3, and everything in it
+# — the visual binary, the standalone, the `organon` CLI — inherits that, because they
+# are all this one crate.
+#
+# ⚠️ The four sibling crates are `MIT OR Apache-2.0` and MUST STAY THAT WAY. They carry
+# no nih_plug (enforced for organon-core by `cargo tree`), so the GPL does not reach
+# them, and they are the part of the engine an outside project can actually reuse. The
+# split is the whole licensing design; collapsing it "for consistency" would relicense
+# ~100k lines of reusable engine onto the terms of a plugin binding.
+#
+# CLAP is not the constraint here: `clap-sys` is MIT/Apache-2.0. Only the VST3 arm is.
+# Dropping `nih_export_vst3!` (or replacing the bindings) is what would free this crate.
+license = "GPL-3.0-or-later"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+# Standalone app (host-less): opens the same editor (sliders).
+#
+# Named `organon-standalone`, NOT `organic-math-standalone`. CLAUDE.md's naming
+# convention keeps `organic-math` in internal identifiers on purpose, but the reason it
+# gives is specific: the VST3 class ID orphans saved Ableton sets, and the IPC/sidecar
+# paths + the app-support store are read by other processes and by installs already on
+# disk. A binary's FILE NAME is neither — nothing spawns this one (`spawn_visual` looks
+# for `organic-math-visual`; the plugin never launches an editor), so it is a leaf, and
+# `organon-mind` had already established that a leaf binary may carry the product name.
+[[bin]]
+name = "organon-standalone"
+path = "src/standalone.rs"
+
+# #483 Tier 1 — **Organon Mind**: the standalone LLM-analysis instrument. Same crate,
+# same editor machinery, Mind-only front-of-house (see `src/edition.rs`). Requires the
+# `mind-edition` feature, so a default build never produces it.
+[[bin]]
+name = "organon-mind"
+path = "src/mind_main.rs"
+required-features = ["mind-edition"]
+
+# Shell #3 T1 — **Organon Shell**: the agent-operating workstation. The
+# compositor UI lives in the `organon-shell` crate (nih_plug-free, Edition-parametric);
+# this bin is the window — it sits HERE, like organon-mind's, because the embedded
+# viewport (Shell #6) renders `World`, which is this crate's until #618
+# extracts it. Requires `shell-edition`, so a default build never produces it.
+[[bin]]
+name = "organon-shell"
+path = "src/shell_main.rs"
+required-features = ["shell-edition"]
+
+# Separate-process visual window (winit + wgpu). Reads params from shared memory.
+[[bin]]
+name = "organic-math-visual"
+path = "src/bin/visual.rs"
+
+# #367 Tier 2 — synthetic activation-ring writer. Emits fake per-token model
+# activations into the mind ring so the Live-streaming visual can be exercised with
+# zero inference. The real writer (embedded llama.cpp runtime) is the bin below.
+[[bin]]
+name = "organon"
+path = "src/bin/ctl.rs"
+
+[[bin]]
+name = "organic-math-mind-writer"
+path = "src/bin/mind_writer.rs"
+
+# #367 Tier 2b — the REAL activation-ring writer: an embedded llama.cpp runtime that
+# loads the natively-selected .gguf, runs live inference on a typed prompt, and taps
+# per-token activations into the mind ring. Gated behind the `embedded-llm` feature
+# (default OFF) so the default build stays llama.cpp-free (no C++ toolchain needed).
+# Build with `cargo build --release --features embedded-llm` (Metal backend on Mac).
+[[bin]]
+name = "organic-math-mind-runtime"
+path = "src/bin/mind_runtime.rs"
+required-features = ["embedded-llm"]
+
+[features]
+# #483 Tier 1 — the **Organon Mind** edition: a build-time front-of-house swap, NOT a
+# fork. OFF by default, so `cargo build`/`cargo test`/`bundle.sh`/`deploy.sh` keep
+# producing exactly today's Organon (byte-identical). With it on, `src/edition.rs`
+# resolves `EDITION` to `Mind`, which renames the product, forks the `$TMPDIR` IPC
+# namespace (so a Mind session and an Organon session coexist), and filters the
+# editor down to the Mind lane. Build the standalone with:
+#   cargo build --release --features mind-edition --bin organon-mind
+# Pure plumbing — pulls in no extra dependencies. See `doc/organon_mind_prd.md`.
+# FORWARDED to organon-core, which is where `edition.rs` now lives (#626 Tier 3).
+# One switch, not two that can disagree: turning this on here turns it on there,
+# so `EDITION` resolves to `Edition::Mind` in exactly one place.
+mind-edition = ["organon-core/mind-edition", "organon-mind/mind-edition"]
+
+# Shell #3 T1 — the **Organon Shell** edition switch, mind-symmetric:
+#   cargo build --release --features shell-edition --bin organon-shell
+# Forwarded to organon-core (EDITION's one resolution site) and through the
+# organon-shell crate's own feature, so the two cannot disagree. Mutually exclusive
+# with mind-edition (compile_error! in organon-core's edition.rs).
+shell-edition = ["organon-core/shell-edition", "organon-shell/shell-edition"]
+
+# Pulls in the llama.cpp binding (which statically links + builds llama.cpp itself).
+# OFF by default: the plugin, standalone, visual, and mind-writer bins never touch it.
+# #522 Tier 1 — the raw `llama-cpp-sys-2` dep is GONE: it existed only for the
+# `LLAMA_FLASH_ATTN_TYPE_*` constants `llama-cpp-2` didn't re-export, and `llama-cpp-4`
+# ships a safe `LlamaFlashAttnType` enum. The tap bump *removes* an unsafe dependency.
+embedded-llm = ["dep:llama-cpp-4", "dep:minijinja", "dep:minijinja-contrib"]
+
+[dependencies]
+organon-core = { path = "organon-core" }
+organon-mind = { path = "organon-mind" }
+organon-render = { path = "organon-render" }
+# Shell #3 T1 — the Shell compositor UI. Unconditional like its siblings
+# (the lib is tiny and Edition-parametric); only the BIN is feature-gated.
+organon-shell = { path = "organon-shell" }
+# #367 Tier 2b / #522 Tier 1 — llama.cpp bindings for the embedded inference runtime.
+# OPTIONAL + feature-gated: nothing links it unless `--features embedded-llm`. Bundles
+# + statically links llama.cpp, with the GPU backend chosen per target (see below).
+#
+# Bumped `llama-cpp-2` 0.1.150 → **`llama-cpp-4` 0.4.2** for #522: it exposes ggml's
+# `cb_eval` graph tap as a SAFE API (`TensorCapture` + `LlamaContextParams::
+# with_tensor_capture`, returning per-layer `Vec<f32>`), which is what retires the
+# activation proxy. Four issues had independently specified that work as an unsafe
+# raw-`llama-cpp-sys-2` project; it is a crate bump instead.
+#
+# ⚠️ `default-features = false` is LOAD-BEARING. `llama-cpp-4` 0.4.2 defaults to
+# `["openmp", "mtmd", "dynamic-link"]`, and taking those defaults silently broke two things
+# `llama-cpp-2` had given us for free (the line above describes the intent; the defaults
+# stopped honouring it):
+#   1. **`dynamic-link` → shared libs.** llama.cpp built as 12 `.dylib`s, and the runtime
+#      links them via `@rpath` with **no `LC_RPATH`** — so it dies at launch with
+#      `Library not loaded: @rpath/libggml-base.0.dylib` the instant it is copied out of
+#      `target/release/` (i.e. always, once installed in a bundle).
+#   2. **`metal` is NOT a default**, and `llama-cpp-sys-4`'s build.rs forces
+#      `GGML_METAL=OFF` without it — so inference silently became CPU-only. The old
+#      runtime carries ~292 Metal symbols; the defaults build carries **zero**.
+# So: re-enable `openmp` + `mtmd` (the defaults we do want) explicitly, and keep
+# `dynamic-link` off.
+#
+# 🖥️ **The GPU backend is per-target, which is why this entry is split** (organon#658 Tier 5).
+# Point 2 above is not a macOS quirk — it is the general rule: `llama-cpp-sys-4`'s build.rs
+# turns *every* GGML backend off unless its feature is on, and the feature names differ per
+# vendor. One shared list cannot express "Metal on the Mac, CUDA on the 5090"; a `metal`
+# feature in a Windows build is a no-op that leaves inference on the CPU, which on a machine
+# bought for its GPU is the whole failure this tier exists to fix. Cargo **unions** the
+# features of every active declaration of a dependency, so the shared entry below carries
+# what both platforms want and each target block adds its own backend. Two rules go with that:
+#   * `default-features = false` and `optional = true` must be repeated in every block —
+#     cargo warns (and can disagree) if the declarations don't match.
+#   * `bin/mind_runtime.rs`'s `n_gpu_layers` is keyed on the same `target_os` values. Adding a
+#     third backend (Vulkan, HIP) means editing **both** places, or the runtime will offload
+#     to a backend that was never compiled in — or, worse, silently won't.
+llama-cpp-4 = { version = "0.4.2", optional = true, default-features = false, features = [
+    "openmp",
+    "mtmd",
+] }
+# #367 Tier 2c — Jinja2 engine to render each model's OWN embedded `tokenizer.chat_template`
+# (the way LM Studio / Ollama do), so exotic tool-calling templates llama.cpp's built-in
+# engine can't parse still format correctly. Pure Rust; only linked with `embedded-llm`.
+# `-contrib` adds the `pycompat` shim for templates that use Python string methods.
+minijinja = { version = "2", optional = true, features = ["loop_controls", "builtins"] }
+minijinja-contrib = { version = "2", optional = true, features = ["pycompat"] }
+# #452 — the `organon` CLI's argument layer: clap derive gives per-subcommand
+# --help/-V, styled errors with "did you mean" suggestions; clap_complete
+# generates bash/zsh/fish tab completions (incl. param-id value completion).
+# Only `bin/ctl.rs` references them, so nothing links into the plugin cdylib.
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap_complete = "4"
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+glam = { version = "0.33", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+memmap2 = "0.9"
+libc = "0.2" # dladdr: find the plugin's own bundle path to launch the bundled visual
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+arc-swap = "1" # wait-free publish of the GUI-edited key→preset map to the audio thread
+midly = "0.5" # write Standard MIDI Files (preset → CC-burst clip)
+realfft = "3" # real-input FFT for audio-reactive band analysis (RT-safe once planned)
+# Used only by the visual binary (not linked into the plugin cdylib).
+wgpu = "30"
+winit = "0.30"
+pollster = "0.4"
+# #593 Tier 0 — `src/editor_probe.rs` (a wgpu surface on the host's parent view).
+#
+# Both of these are ALREADY in the dependency graph of every build — baseview via
+# `nih_plug_egui` → `egui-baseview`, raw-window-handle 0.5 via baseview itself — so naming
+# them here downloads nothing, resolves nothing new, and leaves the plugin cdylib byte
+# count where it was. They are declared only so `editor_probe.rs` can *say* their names.
+#
+# The rev is load-bearing: it must be the one `vendor/nih_plug_egui/Cargo.toml` pins, or
+# cargo compiles a THIRD copy of baseview and its `Window` / `WindowHandle` become
+# different types across the boundary. `opengl` is likewise the feature set the rest of the
+# graph already turns on; matching it keeps `WindowOpenOptions.gl_config` present (that
+# field is `#[cfg(feature = "opengl")]`) instead of depending on someone else's unification.
+#
+# raw-window-handle 0.5 is renamed because 0.6 is in this tree too — reached as `wgpu::rwh`,
+# which wgpu 30 re-exports, so the *other* side of the conversion needs no entry at all.
+baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3", features = [
+    "opengl",
+] }
+raw-window-handle-05 = { package = "raw-window-handle", version = "0.5" }
+# `src/baseview_input.rs` (#599) — baseview events → `egui::RawInput`, the winit-free half of
+# the editor path. baseview's key events ARE `keyboard_types::KeyboardEvent`: it takes the type
+# in its public API but does not re-export the crate, so the translation must name it directly.
+# Same version baseview itself pins, so cargo unifies to one copy.
+#
+# ⚠️ **Moved up from `[dev-dependencies]` by #593 Tier 2, which is the commit that declares the
+# module in `lib.rs` and deletes `tests/baseview_input.rs`** — exactly the trade #599 wrote into
+# that shim. The cost is the one #599 measured: naming a crate here changes this package's
+# `-C metadata` hash, which rehashes every mangled symbol's `17h<hash>E` suffix and shifts
+# codegen-unit partitioning, so the shipping binaries are no longer byte-identical to #599's
+# even where no `baseview_input` symbol reaches them. That was always the price of using it.
+keyboard-types = { version = "0.6.1", default-features = false }
+# #554 Tier 4 — egui drawn on the RENDERER'S OWN wgpu device, in the visual's window.
+#
+# `egui-wgpu` is vendored for exactly one reason: every published version pins a wgpu older
+# than ours (0.33 → ^27, 0.34/0.35 → ^29; wgpu 30 is the newest wgpu), so cargo can never
+# resolve the pair. That version wall — recorded in four places in this repo as the reason the
+# viewport had to go through CPU memory — turned out to be **eight mechanical fixes** behind a
+# constraint, not an API gap. `vendor/egui-wgpu/src/lib.rs` documents each one.
+#
+# 0.33.3 is deliberately the version taken: it matches the egui the editor already resolves
+# (via egui-baseview), so there is exactly ONE egui in the tree and the plugin editor is
+# untouched. Taking 0.35 instead would have forced egui 0.35 everywhere, which egui-baseview
+# does not ship.
+egui-wgpu = { path = "vendor/egui-wgpu" }
+# Window/input plumbing for the same layer. Unpatched from crates.io: it wants
+# `winit ^0.30.12` and we already resolve winit 0.30.13, so no port was needed here.
+#
+# Features, stated because one of them is not yet exercised: `links` (webbrowser) is DROPPED —
+# the interface opens no URLs. `clipboard` is KEPT even though this PR's payload is a read-only
+# status panel that cannot use it, because the layer exists to host Mind's workstation UI (model
+# paths, preset names, agent prompts) and copy/paste in a text field is not optional in a tool.
+# It is the heaviest thing here — arboard + smithay-clipboard + an image-decode tail, ~13 of the
+# 16 crates this dependency adds — but most of that tail is Linux-only and the product ships on
+# macOS. If the workstation move stalls, this is the first feature to drop again.
+egui-winit = { version = "0.33.3", default-features = false, features = [
+    "clipboard",
+    "x11",
+    "wayland",
+] }
+# Declared directly so `src/ui_layer.rs` can say `egui::` rather than reaching through one of
+# the integration crates' re-exports. It MUST stay on the same minor as the editor's egui
+# (0.33, via egui-baseview) — cargo then resolves exactly one, which is what keeps
+# `egui::Context` the same type on both sides of the crate.
+egui = "0.33.3"
+# --- IBL environment-map overhaul ---
+# Native file-open dialog: plugin editor "Open HDR…" button + visual 'O' key.
+rfd = "0.17"
+# Radiance .hdr decode (→ linear f32 RGBA); "png" decodes the bundled #135 overlay
+# formula images (assets/overlay → src/overlay/formula_*.png).
+image = { version = "0.25", default-features = false, features = ["hdr", "png"] }
+# f32 → f16 conversion for the Rgba16Float env texture upload (bytemuck cast_slice).
+half = { version = "2", features = ["bytemuck"] }
+# CPU glyph rasterizer for the #135 capture-overlay text atlas (already in the tree
+# transitively; a direct dep here). Used only by the visual binary.
+ab_glyph = "0.2"
+
+# macOS-only: reach the CAMetalLayer to turn on EDR (true HDR) output. Both crates
+# are already in the dependency graph via winit/wgpu, so this adds no new download.
+# Used only by the visual binary's hdr_macos.rs.
+#
+# ⚠️ There is deliberately **no Windows counterpart to these two** (organon#658 Tier 4). The
+# obvious symmetry — `windows-sys` for a raw-DXGI `hdr_windows.rs` — is not needed: wgpu 30
+# exposes the scRGB swapchain colour space and the `IDXGIOutput6::GetDesc1` headroom query as
+# first-class API, so `src/hdr_windows.rs` is pure Rust over wgpu with no new dependency at
+# all. That file's header documents the investigation. (#658 Tier 3's `current_dylib_dir`
+# *does* want `windows-sys`; that is a different tier and a different PR.)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+raw-window-handle = "0.6"
+# The Metal GGML backend for the embedded runtime — see the long note on the shared
+# `llama-cpp-4` entry above. Unioned with that entry's `openmp` + `mtmd`, so the macOS
+# feature set is exactly what it has always been: openmp + mtmd + metal.
+llama-cpp-4 = { version = "0.4.2", optional = true, default-features = false, features = [
+    "metal",
+] }
+
+# 🚨 **THE ONE Windows dependency table — add a line here, never a second header.**
+#
+# This section is the merge of two independent additions (#658 Tier 5's CUDA `llama-cpp-4`
+# from PR #660, and Tier 1's `windows-sys` from PR #663), and folding them was NOT optional:
+# git auto-merged the two `[target.'cfg(target_os = "windows")'.dependencies]` headers
+# **cleanly**, because they arrived as separate hunks — producing a manifest with a repeated
+# table, which cargo rejects outright ("redefinition of table"). A clean merge here is not
+# evidence of a correct one; both PRs predicted this in their bodies and it happened anyway.
+[target.'cfg(target_os = "windows")'.dependencies]
+
+# organon#658 Tier 5 — the CUDA GGML backend, so a `.gguf` on the RTX 5090 runs on the GPU
+# instead of the CPU. Needs the CUDA toolkit + cmake at build time, which is why it rides the
+# already-opt-in `embedded-llm` feature and nothing else — a plain
+# `cargo build --target x86_64-pc-windows-msvc` never touches it.
+llama-cpp-4 = { version = "0.4.2", optional = true, default-features = false, features = [
+    "cuda",
+] }
+
+# Windows-only (#658 Tier 1): the raw Win32 bindings `lib.rs`'s `current_dylib_dir()`
+# needs — `GetModuleHandleExW` + `GetModuleFileNameW`, the Win32 counterpart of the
+# `dladdr` call the Unix arm makes. That is how the plugin finds the visual embedded
+# next to its own DLL inside the `.vst3` when a host has loaded it.
+#
+# `windows-sys` (the raw `extern` declarations) rather than `windows` (the wrapped,
+# generated API): two functions do not justify the larger crate, and 0.61 is already
+# in `Cargo.lock` via winit/wgpu's own Windows tail, so on a Windows build this
+# resolves to a crate that was going to be compiled anyway. The two features named
+# are the minimum: `Win32_Foundation` for `HMODULE` / `GetLastError` /
+# `ERROR_INSUFFICIENT_BUFFER`, `Win32_System_LibraryLoader` for the two calls and
+# their `GET_MODULE_HANDLE_EX_FLAG_*` constants.
+#
+# `Win32_UI_HiDpi` + `Win32_UI_WindowsAndMessaging` were added for `src/standalone.rs`'s
+# HiDPI fix: `SetProcessDpiAwarenessContext` + `GetDpiForSystem` to learn the display's
+# scale factor, and `SystemParametersInfoW(SPI_GETWORKAREA)` to clamp it to a window that
+# still fits. See that file's header for why the app has to answer this itself.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+# Offline WGSL parse + validation (same version wgpu/naga resolves to), so the
+# shaders are checked in CI/`cargo test` without a GPU. See tests/wgsl.rs.
+naga = { version = "30", features = ["wgsl-in"] }
+
+# `baseview` and `keyboard-types` moved to `[dependencies]` in #593 Tier 2 — see the note
+# there. `src/baseview_input.rs` is now declared by `lib.rs` and used by `src/wgpu_editor.rs`,
+# so both are real dependencies rather than test-only ones, and `tests/baseview_input.rs`
+# (the shim that existed only to compile the module) is gone.
+#
+# ⚠️ **baseview's rev is load-bearing and must stay equal to `vendor/nih_plug_egui`'s.** Two
+# revs of baseview in one tree are two DIFFERENT `baseview::Event` types, so the translation
+# would compile and then never match the events the editor's window actually delivers. That is
+# the same trap the vendored manifest documents for `WindowHandle`/`PhySize`; pinned by a test.
+
+# The `objc` 0.2 crate's `sel_impl!` macro expands a legacy `feature =
+# "cargo-clippy"` cfg (used by hdr_macos.rs's EDR message sends). Declare it as a
+# known cfg so those macro-expansion warnings stay quiet without a blanket allow.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev]
+opt-level = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #541 — egui 0.31.1 → 0.33, via a minimally vendored `nih_plug_egui`.
+#
+# WHY VENDOR AT ALL. The editor's egui version is decided by the `egui-baseview` rev
+# that `nih_plug_egui` pins (ec70c3f = egui 0.31.1). Cargo cannot `[patch]` a git
+# source with a different rev of ITSELF — it errors "failed to resolve patches" — so
+# the only way to move that rev is to own the manifest naming it.
+#
+# WHAT WE CHANGED, in full — two lines:
+#   1. `egui-baseview` rev → upstream master 11f487f (0.7.0, egui 0.33).
+#   2. `nih_plug` path dep → the git source, so cargo unifies it with ours. Two
+#      `nih_plug` instances would make `ParamSetter` a different type here than in
+#      the plugin and nothing would compile.
+# Everything else, including the default feature set, is upstream verbatim, which
+# keeps this cheap to rebase.
+#
+# WHY 0.33 AND NOT 0.35 (latest egui). No upstream egui-baseview ships 0.35 —
+# master is 0.33 — so reaching it would mean forking egui-baseview and porting it.
+# 0.33 is also what makes #554 T4 cheap: the vendored `egui-wgpu` above is 0.33.3,
+# the SAME egui, so there is exactly one egui in the tree and the plugin editor is
+# untouched by the in-window viewport work.
+#
+# ⚠️ CORRECTED BY #554 T4. This note used to add "…and downgrading the renderer's
+# wgpu — touching the HDR/EDR path to benefit the slider panel", and that claim,
+# repeated in three other files, was never measured. Porting egui-wgpu **up** to
+# wgpu 30 is eight mechanical fixes (`vendor/egui-wgpu`, compiled + tested here).
+# The version constraint is real — cargo cannot resolve `egui-wgpu` against wgpu 30
+# — but it is a manifest problem, not an API one, and nothing had to be downgraded.
+#
+# Vendored from nih-plug f36931f7af4646065488a9845d8f8c2f95252c23.
+# ─────────────────────────────────────────────────────────────────────────────
+[patch."https://github.com/robbert-vdh/nih-plug.git"]
+nih_plug_egui = { path = "vendor/nih_plug_egui" }

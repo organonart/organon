@@ -1,0 +1,44 @@
+[package]
+name = "egui-wgpu"
+version = "0.33.3"
+edition = "2021"
+authors = [
+    "Nils Hasenbanck <nils@hasenbanck.de>",
+    "embotech <opensource@embotech.com>",
+    "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>",
+]
+license = "MIT OR Apache-2.0"
+description = "Bindings for using egui natively using the wgpu library (Organon: minimally vendored, ported to wgpu 30)"
+repository = "https://github.com/emilk/egui/tree/main/crates/egui-wgpu"
+publish = false
+
+# ORGANON PATCH (#554 Tier 4): upstream ships this as `egui_wgpu`; keep the same
+# lib name so `use egui_wgpu::…` reads exactly as it would against crates.io.
+[lib]
+name = "egui_wgpu"
+path = "src/lib.rs"
+
+[features]
+# Upstream feature, referenced by a `cfg` in `renderer.rs`. Declared (not enabled)
+# so `unexpected_cfgs` stays quiet; it only ever applies to wasm32, which we
+# do not target.
+fragile-send-sync-non-atomic-wasm = []
+
+[dependencies]
+# ORGANON PATCH (#554 Tier 4) — THE ONE REASON THIS CRATE IS VENDORED:
+# upstream 0.33.3 pins `wgpu = "27.0.1"`, and no published `egui-wgpu` has ever
+# accepted wgpu 30 (0.34/0.35 moved to `^29`, and wgpu 30 is the newest release).
+# Organon's renderer is on wgpu 30, so the version constraint — NOT the API —
+# is what kept egui and the renderer from sharing a device. See `src/lib.rs`.
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
+
+# Everything below is upstream verbatim. egui/epaint MUST stay at the version the
+# rest of the tree resolves (0.33.3, via egui-baseview): two egui instances would
+# make `egui::Context` a different type here than in the editor.
+egui = { version = "0.33.3", default-features = false }
+epaint = { version = "0.33.3", default-features = false, features = ["bytemuck"] }
+ahash = { version = "0.8.12", default-features = false, features = ["no-rng", "std"] }
+bytemuck = "1"
+log = { version = "0.4.33", features = ["std"] }
+profiling = { version = "1.0", default-features = false }
+type-map = "0.5.1"

@@ -1,0 +1,25 @@
+{
+  "name": "comb jelly",
+  "_note": "A translucent ovoid ctenophore: a smooth egg-shaped body with FOUR meridian rows of bright comb-plates riding its surface (top, bottom, both flanks), swimming along +Z. Each comb row's plates track the body radius so they sit half-proud of the skin — visible ridges, not buried. Turn the Creature 'band amount' up: the metachronal wave runs a pulse of light down every comb row, the signature ctenophore shimmer. For the glassy gel look, pick the Glass material + a cool Palette (Deep Sea / Bioluminescence).",
+  "emit": [
+    { "kind": "chain", "of": "ellipsoid", "count": 12,
+      "a": [0, 0, -0.92], "b": [0, 0, 0.92],
+      "size0": [0.18, 0.20, 0.16], "size1": [0.32, 0.34, 0.16],
+      "k": 0.18, "glow": 0.08 },
+
+    { "kind": "chain", "of": "ellipsoid", "count": 11,
+      "a": [0.185, 0, -0.82], "b": [0.325, 0, 0.82],
+      "size0": [0.05, 0.05, 0.07], "size1": [0.05, 0.05, 0.07],
+      "k": 0.03, "glow": 1.7, "mirror_x": true },
+
+    { "kind": "chain", "of": "ellipsoid", "count": 11,
+      "a": [0, 0.205, -0.82], "b": [0, 0.345, 0.82],
+      "size0": [0.05, 0.05, 0.07], "size1": [0.05, 0.05, 0.07],
+      "k": 0.03, "glow": 1.7 },
+
+    { "kind": "chain", "of": "ellipsoid", "count": 11,
+      "a": [0, -0.205, -0.82], "b": [0, -0.345, 0.82],
+      "size0": [0.05, 0.05, 0.07], "size1": [0.05, 0.05, 0.07],
+      "k": 0.03, "glow": 1.7 }
+  ]
+}

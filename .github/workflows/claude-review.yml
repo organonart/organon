@@ -1,0 +1,94 @@
+name: Claude PR Review
+
+# Automated Organon-aware review on every PR open / update.
+# Posts inline review comments + a tracking/summary comment, following
+# .github/organon-review-guide.md. Bills against the Claude subscription via the
+# OAuth token (no ANTHROPIC_API_KEY).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read          # load-bearing — see the allowlist note below
+  pull-requests: write
+  id-token: write
+  actions: read           # `gh pr checks` and the github_ci MCP server 403 without it
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   # a review is ~3-5 min; this is a runaway backstop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so the reviewer can diff against the base
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}   # required — OAuth path 401s without it (issue #721)
+          # track_progress forces "tag mode": the action posts a tracking comment
+          # and gives Claude the full PR context + the inline-comment posting flow.
+          # WITHOUT it the review runs but silently posts nothing ("No buffered
+          # inline comments"). This is the missing piece from the canonical
+          # pr-review example.
+          track_progress: true
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in
+            ${{ github.repository }}.
+
+            Your rubric is .github/organon-review-guide.md — read that one file
+            first and follow it.
+
+            Do NOT read ARCHITECTURE.md or CLAUDE.md end to end. ARCHITECTURE.md
+            is ~2,800 lines and BOTH are already in your context (CLAUDE.md is
+            auto-loaded; ARCHITECTURE.md is injected by the project's
+            SessionStart hook). Re-reading them wastes most of your turn budget
+            and can trigger a compaction. Grep them only for a specific fact you
+            still need.
+
+            Get the diff with `gh pr diff ${{ github.event.pull_request.number }}`
+            and open only the changed files you actually need in order to judge a
+            finding.
+
+            Post each finding as an inline review comment anchored to the
+            specific changed line, using the
+            mcp__github_inline_comment__create_inline_comment tool. Summarise in
+            the tracking comment. Tag findings blocker / should-fix / nit. Only
+            flag real issues — if the diff is clean, say so briefly and post no
+            inline comments.
+
+            Spend your turns on the diff, not on reading documentation.
+          # --max-turns budget: track_progress spends turns on tracking-comment
+          # updates and each inline comment is its own turn, so a real review with
+          # a handful of findings needs ~20. The old limit of 25 left no headroom
+          # and every run died on `error_max_turns` (see CHANGELOG 2026-07-28);
+          # 60 leaves room for a wide diff while staying inside the 20-minute
+          # timeout above.
+          #
+          # The allowlist is deliberately generous over *read-only* tools. It is an
+          # allowlist: anything unlisted is denied in headless mode, and each denial
+          # still costs a turn — the failing runs burned 10-11 of 26 turns that way.
+          #
+          # ⚠ The allowlist is NOT the security boundary. claude-code-action merges
+          # its own defaults into whatever we pass here — a run's resolved tool list
+          # also contains Bash(git add:*), Bash(git commit:*), Bash(git rm:*) and the
+          # action's git-push.sh, no matter what this line says (verified from a run
+          # log with `show_full_output`). What actually stops an injected instruction
+          # in an untrusted PR diff from changing anything is `permissions:
+          # contents: read` above: the GITHUB_TOKEN simply cannot push. Keep it at
+          # read.
+          #
+          # `gh pr comment` is deliberately absent: it posts arbitrary *new* PR
+          # comments outside the single tracked comment track_progress manages, which
+          # is a soft target for injection. The two MCP comment tools cover
+          # everything the reviewer legitimately needs to write.
+          #
+          # Debugging a future failure: set `show_full_output: true` above to see
+          # which tool calls were denied (it is off by default for security).
+          claude_args: >-
+            --allowedTools
+            "mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment,Read,Grep,Glob,LS,TodoWrite,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(ls:*),Bash(rg:*)"
+            --model claude-sonnet-5
+            --max-turns 60

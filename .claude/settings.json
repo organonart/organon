@@ -1,0 +1,65 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/load-architecture-doc.sh\"",
+            "timeout": 15,
+            "statusMessage": "Loading ARCHITECTURE.md into the session\u2026"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/doc-staleness-check.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking the durable docs for drift\u2026"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/structure-drift-check.sh\"",
+            "timeout": 20,
+            "statusMessage": "Measuring code structure drift\u2026"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/context-budget-check.sh\"",
+            "timeout": 20,
+            "statusMessage": "Pricing what this session injects\u2026"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/architecture-doc-check.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking ARCHITECTURE.md is current\u2026"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/doc-coherence.sh\" \"$CLAUDE_PROJECT_DIR/ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/MIND_ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/web/ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/doc/arch/render.md\" \"$CLAUDE_PROJECT_DIR/CLAUDE.md\"",
+            "timeout": 15,
+            "statusMessage": "Checking the durable docs agree with themselves\u2026"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/web-architecture-doc-check.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking web/ARCHITECTURE.md is current\u2026"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/status-week-check.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking STATUS.md week\u2026"
+          }
+        ]
+      }
+    ]
+  }
+}

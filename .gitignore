@@ -1,0 +1,28 @@
+node_modules
+dist
+*.local
+.DS_Store
+.vercel
+*.tsbuildinfo
+.claude/worktrees/
+
+# Python bytecode cache from the doc PDF builders
+__pycache__/
+
+# The doc-builder virtualenv (reportlab). The shop-note skill points at
+# doc-venv/bin/python; it is a local tool, not a repo artifact.
+doc-venv/
+
+# Environment / secrets — never commit real values (they live in the private ops notes)
+.env
+.env.*
+!.env.example
+
+# organon#618 T0c: per-machine structure-watch state, written by the SessionStart hook.
+.claude/.structure-drift.json
+.claude/.context-budget.json
+
+.repowise/
+
+# Repowise's local index — machine-generated, re-buildable, never committed.
+.repowise/

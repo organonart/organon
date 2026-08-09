@@ -1,0 +1,30 @@
+{
+  "name": "bell jelly",
+  "_note": "A moon-jelly bell: a wide, shallow translucent dome with a soft glowing gastric centre, a full fringe of TWELVE thin rim tentacles hanging all the way around, and four longer frilly oral arms trailing from the mouth. For the water-clear gel, pick the Glass material (turn Glass 'thin film' up a touch for the pearly sheen) + a pale Palette (Jellyfish / Bioluminescence). The Creature 'band amount' pulses light out through the bell on the beat.",
+  "emit": [
+    { "kind": "ellipsoid", "center": [0, 0.12, 0], "radii": [0.95, 0.55, 0.95],
+      "k": 0.2, "glow": 0.1 },
+    { "kind": "ellipsoid", "center": [0, 0.04, 0], "radii": [0.5, 0.36, 0.5],
+      "k": 0.28, "glow": 0.55 },
+
+    { "kind": "cone", "a": [0.78, -0.05, 0.0], "b": [0.98, -0.98, 0.0],
+      "r0": 0.028, "r1": 0.008, "k": 0.05, "glow": 0.35, "mirror_x": true },
+    { "kind": "cone", "a": [0.675, -0.05, 0.39], "b": [0.849, -0.98, 0.49],
+      "r0": 0.028, "r1": 0.008, "k": 0.05, "glow": 0.35, "mirror_x": true },
+    { "kind": "cone", "a": [0.39, -0.05, 0.675], "b": [0.49, -0.98, 0.849],
+      "r0": 0.028, "r1": 0.008, "k": 0.05, "glow": 0.35, "mirror_x": true },
+    { "kind": "cone", "a": [0.0, -0.05, 0.78], "b": [0.0, -0.98, 0.98],
+      "r0": 0.028, "r1": 0.008, "k": 0.05, "glow": 0.35 },
+    { "kind": "cone", "a": [0.675, -0.05, -0.39], "b": [0.849, -0.98, -0.49],
+      "r0": 0.028, "r1": 0.008, "k": 0.05, "glow": 0.35, "mirror_x": true },
+    { "kind": "cone", "a": [0.39, -0.05, -0.675], "b": [0.49, -0.98, -0.849],
+      "r0": 0.028, "r1": 0.008, "k": 0.05, "glow": 0.35, "mirror_x": true },
+    { "kind": "cone", "a": [0.0, -0.05, -0.78], "b": [0.0, -0.98, -0.98],
+      "r0": 0.028, "r1": 0.008, "k": 0.05, "glow": 0.35 },
+
+    { "kind": "cone", "a": [0.12, -0.15, 0.12], "b": [0.34, -1.4, 0.34],
+      "r0": 0.06, "r1": 0.018, "k": 0.09, "glow": 0.45, "mirror_x": true },
+    { "kind": "cone", "a": [0.12, -0.15, -0.12], "b": [0.34, -1.4, -0.34],
+      "r0": 0.06, "r1": 0.018, "k": 0.09, "glow": 0.45, "mirror_x": true }
+  ]
+}

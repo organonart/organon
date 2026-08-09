@@ -1,0 +1,550 @@
+# Organon — CI
+#
+# Builds and tests the native engine, every edition. #626 Tier 1.
+#
+# ── What this can and cannot tell you ───────────────────────────────────────────
+# It can tell you: it compiles, the unit tests pass, and every WGSL shader parses
+# and validates (naga, on the CPU — `native/tests/wgsl.rs`). It cannot tell you
+# whether anything renders, how fast, whether the plugin loads in a host, or
+# whether live inference works. A green run means **"green and ready to deploy"**,
+# never "verified working". The Mac and a GPU-capable host own the rest.
+#
+# ── Why four jobs, and why none is redundant ────────────────────────────────────
+# Two axes, not one: the EDITION (a default-off cargo feature) and the PLATFORM.
+#
+# `mind-edition` is a default-OFF cargo feature, so the two builds cover disjoint
+# code and each is blind where the other sees:
+#
+#   default       covers the plugin, `frame_ring`, `viewport_pane`, full Organon's
+#                 tab set — and compiles NONE of `src/mind_main.rs`.
+#   mind-edition  covers the Mind edition, `wgpu_editor`, the gated `world.rs` —
+#                 and compiles none of the `cfg(not(feature = "mind-edition"))`
+#                 arms.
+#
+# That asymmetry is the hazard CLAUDE.md warns about in prose ("you can break the
+# Mind edition and see a green suite"). Running both here is what makes the
+# warning unnecessary. Do not collapse them into one job to save minutes — the
+# saving would be the entire point of the check.
+#
+# ── The platform axis (organon#658 Tier 1) ──────────────────────────────────────
+# Windows is a first-class target: Organon and Organon Mind both ship there. The
+# two legs above run on `ubuntu-latest` and cannot see a Windows regression, so a
+# `cfg(unix)` assumption creeping into a shared file would land green. Two more
+# jobs close that, and they are deliberately ASYMMETRIC because they cost wildly
+# different amounts:
+#
+#   check (windows cross)   ubuntu-latest. `cargo check --target
+#                           x86_64-pc-windows-msvc`, BOTH editions, all targets.
+#                           1x billing on a fast runner.
+#   build (windows)         windows-latest. Real build + real `cargo test`,
+#                           default edition only.
+#
+# ⚠️ THE CROSS-CHECK NEEDS NO SYSTEM PACKAGES, AND THAT IS NOT AN OVERSIGHT. It
+# is the single most surprising fact about this workflow, so it is written down
+# rather than left to look like a missing step:
+#
+#   * `native/` has NO `build.rs` anywhere in the workspace, so the default build
+#     compiles no C/C++ at all.
+#   * The Linux legs' apt step exists for ALSA/JACK (nih-plug's standalone audio
+#     backends) and X11/GL (baseview). On Windows those resolve to WASAPI and
+#     Win32 through pure-Rust binding crates — no headers to install.
+#   * `cargo check` type- and borrow-checks WITHOUT LINKING, so no MSVC SDK and
+#     no import libraries are needed either.
+#
+# Measured 2026-08-07 in a fresh Linux container: a native `cargo check` FAILS
+# there (`alsa-sys` build script, no headers) while the Windows cross-check
+# passes clean, both editions. Windows is currently the CHEAPEST target to prove
+# compiles. That is also why contributors can run it locally in seconds — see the
+# contributor note below.
+#
+# ⚠️ WHAT THE CROSS-CHECK CANNOT SEE, so nobody reads it as more than it is: it
+# does not link, does not run a test, and knows nothing about runtime behaviour.
+# Every defect organon#658 Tier 1 fixes — `.exists()` on a path missing `.exe`, a
+# hardcoded `Library/Application Support`, `set_len` on a mapped file — is
+# invisible to it. It catches the "someone typed `std::os::unix` in a shared
+# file" class and nothing else. `build (windows)` is what links and runs tests;
+# the workstation is what judges pixels.
+#
+# ── Spend, stated because this file's own rule is to ask ────────────────────────
+# The block below already rules that bigger runners and cache-warming jobs are
+# "spend decisions, not code ones — ask before adding either". A Windows runner
+# is the same kind of decision, so here is the arithmetic rather than a surprise
+# on the next invoice: GitHub bills `windows-latest` at **2x** the per-minute
+# rate of Linux and it is slower on the I/O-heavy work cargo does, so ONE Windows
+# leg costs roughly 4x one Linux leg.
+#
+#   ► THE CHOICE MADE HERE: **one** Windows job, default edition only, plus the
+#     cheap cross-check covering BOTH editions on Linux. Mind's Windows compile
+#     coverage therefore comes from the 1x job, not the 4x one.
+#
+# That asymmetry is a considered trade, not an omission. `cargo test --workspace`
+# on the default edition already runs everything platform-sensitive — the
+# `organon-core` IPC suite, the seqlock tests, the layout goldens — because those
+# live in a workspace member both editions share. What `mind-edition` adds on top
+# is Mind UI logic that is pure and platform-independent. So the second Windows
+# job would cost another 4x to re-run platform-agnostic tests on a platform that
+# cannot make them behave differently.
+#
+# If a Windows-specific Mind defect ever DOES slip through, that trade is what
+# let it, and the fix is to promote the cross-check job to a second
+# `windows-latest` build+test leg. Do that deliberately, with the cost above in
+# hand — do not let it happen by accident.
+#
+# ── Native only ─────────────────────────────────────────────────────────────────
+# No `web/` job. The WebGPU port (#418) is parked; a green check on unpursued work
+# is exactly the waste #626 removes. `web/` is in `paths-ignore` below.
+#
+# ── Contributors ────────────────────────────────────────────────────────────────
+# To reproduce a leg locally, run the two `run:` lines of the job you care about
+# from `native/`, with `CARGO_PROFILE_RELEASE_LTO=false` exported. On a fresh
+# Linux box install the dev headers from the apt step first — without them the
+# build dies inside a *build script* and the real error ("system library
+# `x11-xcb` not found") is buried in that script's stderr, far below a wall of
+# `rerun-if-env-changed` lines.
+#
+# The Windows cross-check is the exception and needs none of that — two commands
+# from any Linux or macOS box, no Windows machine, no MSVC SDK, no apt:
+#
+#   rustup target add x86_64-pc-windows-msvc
+#   cd native && cargo check --target x86_64-pc-windows-msvc --workspace --all-targets
+#
+# Use it as the inner loop for any `cfg(windows)` work — it is fast and it means
+# the Windows arms are compiler-verified rather than written blind. Read the
+# caveat above before quoting a green result at anyone.
+
+name: CI
+
+# ── Trigger: pull_request only. No `push:`, deliberately. ───────────────────────
+# Every commit reaching `main` arrives through a PR that was already green, so a
+# push trigger would re-run this whole matrix a second time on the merge result
+# and roughly double the spend for a near-duplicate signal. `workflow_dispatch`
+# stays so the matrix can be run by hand after a merge if something looks off.
+# (#626, the maintainer's ruling 2026-08-04.)
+#
+# Accepted consequence #1: a merge commit is never tested *as* a merge commit. If
+# a semantic conflict ever slips through, the answer is a `merge_group` trigger —
+# not a blanket `push`.
+#
+# ⚠️ Accepted consequence #2: EVERY RUN REBUILDS THE CRATE, and the first run of
+# each PR also rebuilds its dependencies. Neither is a misconfiguration of the
+# cache below, so do not go looking for the bug there. Two separate reasons:
+#
+# 1. `Swatinem/rust-cache` caches DEPENDENCIES ONLY. It deliberately prunes the
+#    workspace crate's own artifacts before saving, because a workspace crate
+#    changes with every commit and its artifacts are stale the moment they are
+#    written. So `organic-math-native` — the 125k-line crate, and the bulk of the
+#    ~9 minutes below — is recompiled on EVERY run, warm cache or not. What the
+#    cache buys is the dependency graph (~400 crates), which is real but is not
+#    the dominant term.
+#
+# 2. GitHub scopes a cache written by a `pull_request` run to the merge ref
+#    (`refs/pull/N/merge`); a run may restore only from its own scope, its base
+#    branch, or the default branch. With no `push:` trigger nothing ever writes
+#    into the default-branch scope, so:
+#
+#      • re-runs and later pushes on the SAME PR  → dependencies restored
+#      • a different PR, or the first run of one  → dependencies rebuilt too
+#
+# Measured on this workflow's own first two runs (PR #631, both legs in parallel),
+# so you have a real baseline rather than a guess. Note the build step is what the
+# cache moves; nothing else is:
+#
+#                          BUILD STEP          cold → warm
+#   build (default)        9m19s → 4m01s       −57%
+#   build (mind-edition)   8m49s → 3m47s       −57%
+#
+# So the split is roughly: ~4 minutes of crate (recompiled always, per reason 1)
+# and ~5 minutes of dependency graph (cached, restored on same-PR re-runs). The
+# cache earns its keep — it just cannot take the build to zero, and the residue
+# is the crate, not a misconfiguration.
+#
+# Whole-job totals, cold. The named steps do NOT sum to the total; the ~50-60s
+# remainder is checkout, the apt step, toolchain setup and the cache restore/save:
+#
+#   build (default)        ~13m58s total    9m19s build + 3m49s test + ~50s setup
+#   build (mind-edition)   ~14m17s total    8m49s build + 4m27s test + ~61s setup
+#
+# The build dominates; the test step is small and is NOT the risk the mirror's
+# SIGTERM lesson warned about, so long as LTO stays off (see the env block).
+# `timeout-minutes: 90` is therefore a runaway backstop with ~6× headroom, not a
+# budget anyone is close to spending.
+#
+# If the spend ever does become binding, the lever is NOT a bigger cache — see
+# reason 1, the crate is uncacheable by design. It is either a build-only
+# cache-warming job on `push: branches: [main]` (seeds the default-branch scope,
+# helping every PR's first run) or a larger runner. Both are spend decisions, not
+# code ones — ask before adding either.
+#
+# ⚠️ PATH FILTERS AND REQUIRED CHECKS DEADLOCK. `paths-ignore` means a docs-only
+# PR never starts these jobs, so the checks never report. If they are ALSO marked
+# *required* in branch protection, GitHub waits forever for a report that will
+# never come and the PR can never merge.
+#
+#   ► THE CHOICE MADE HERE: **these checks are NOT marked required.** They are
+#     advisory — read the run, then merge. Nothing in branch protection blocks on
+#     `build (default)` or `build (mind-edition)`.
+#
+# If you ever want them required, you must first break the deadlock, and there are
+# only two ways: drop `paths-ignore` entirely (every PR pays the matrix), or add a
+# second workflow with the same `name:` and job names, the *inverse* path filter,
+# and a body that just reports success. Do not mark them required and leave this
+# block as-is.
+on:
+  pull_request:
+    # A deny-list, not an allow-list — the reverse of the export manifest, and on
+    # purpose. For the export, default-deny means new code stays private, which is
+    # safe. For CI, default-deny would mean new code is silently untested, which is
+    # not. So a new top-level directory gets tested until someone says
+    # otherwise. Everything listed here is either a separate app, a static site, or
+    # prose — none of it can change the outcome of `cargo build`.
+    #
+    # ⚠️ These patterns are anchored at the REPO ROOT, and one of them looks like it
+    # is not. `src/**` is the legacy React app at `/src`; it does NOT match
+    # `native/src/**`, because a leading path segment is literal and `*` does not
+    # cross a `/`. If that were wrong, every pure-Rust PR would silently run
+    # nothing — which is why it is written down rather than assumed. Nothing under
+    # `native/` is ignored except its `*.md` files.
+    #
+    # ⚠️ **The filter is evaluated against the PR's WHOLE diff, not the newest push**
+    # (observed on #677, 2026-08-08: a commit touching only two `.md` files re-ran all
+    # five legs, because the PR also carried `native/src/lib.rs`). So "docs-only" is a
+    # property of the *pull request*, not of the commit you just pushed:
+    #   * a PR whose entire diff is prose never starts these jobs — that is the
+    #     deadlock case the block above is about;
+    #   * a code PR pays the full matrix again for every follow-up commit, including a
+    #     CHANGELOG fix. That is not a misconfiguration, and it is the reason a
+    #     docs-only fixup to an open code PR is not free. Batch them if it matters.
+    paths-ignore:
+      - 'site/**'            # organon.art
+      - 'site-mind/**'       # organonmind.org
+      - 'web/**'             # the WebGPU port (#418, parked)
+      - 'src/**'             # the legacy React-Three-Fiber app — NOT native/src
+      - 'doc/**'             # PRD, papers, shop notes, status archive
+      - 'brand/**'
+      - 'songs/**'
+      - 'original_code/**'   # the C++ reference
+      - 'skills/**'          # organon-cli (symlinked into .claude/skills)
+      - '.claude/**'         # hooks, skills, settings
+      - '**.md'              # CLAUDE.md, ARCHITECTURE.md, STATUS.md, CHANGELOG.md…
+      # Added by #626 T2 after the filter's first miss: that PR changed only
+      # `.claude/**` + `**.md` + this file, and CI ran anyway — two full matrix
+      # legs for one ignored line. `.gitignore` meets the criterion above, and
+      # the reason is worth stating because it is the opposite of the intuition:
+      # `actions/checkout` materialises TRACKED files, and .gitignore has no say
+      # over those. It governs what git *adds*, and CI adds nothing. Note this is
+      # the ROOT .gitignore only — `native/.gitignore` is a different file and
+      # equally inert here, but it is covered by neither this line nor any other,
+      # which is fine: nothing has ever changed it in a Rust-free PR.
+      - '.gitignore'
+      - 'index.html'         # ↓ the legacy web app's build config
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+  workflow_dispatch:
+
+# One matrix per PR head. A force-push supersedes the run it interrupted rather
+# than racing it — the cheapest minutes are the ones spent on a stale commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # LESSON 2 of 3 — CI ONLY, never in `Cargo.toml`. CI's question is "does it
+  # compile and do the tests pass", not "produce a shipping binary", so trade the
+  # optimizer for headroom. `[profile.release]` uses thin LTO, and
+  # link-time-optimizing several large test binaries at once is what exhausts a
+  # hosted runner: the mirror's first published run died with SIGTERM 16 minutes
+  # after its last line of output, mid-link, having never printed a single test
+  # result. Set here rather than per-job so both legs inherit it.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+
+jobs:
+  # ── Leg 1: full Organon (the plugin, the standalone, the visual) ──────────────
+  default-edition:
+    name: build (default)
+    runs-on: ubuntu-latest
+    # A hang should fail loudly in an hour, not silently burn the 6-hour default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # LESSON 3a of 3 — the engine pulls in ALSA/JACK (nih-plug's standalone audio
+      # backends) and X11/GL (baseview). See the contributor note in the header for
+      # what skipping this looks like. The list is duplicated in CLAUDE.md's
+      # toolchain section; keep the two in step.
+      - name: Install system dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev \
+            libxi-dev libxext-dev libgl1-mesa-dev libxkbcommon-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      # LESSON 3b of 3 — `workspaces: native` because the crate is not at the repo
+      # root. The two legs get DISTINCT cache keys: cargo fingerprints per feature
+      # set, so a shared key would have each leg evicting artifacts the other just
+      # wrote, and neither would ever hit.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: default-edition
+
+      # LESSON 1 of 3 — ONE profile and ONE feature set for both steps below, so
+      # the dependency graph compiles once and is then reused. This matters more
+      # than it looks: cargo fingerprints per feature set AND per profile, so
+      # mixing them meant three full builds of a 125k-line crate in one job.
+      #
+      # ⚠️ Note `--release` on the test step. CLAUDE.md tells a human to run
+      # `cargo build --release && cargo test`, which is a dev-profile test run and
+      # therefore a second full compile of the whole dependency graph. That is
+      # affordable on a warm laptop and is not affordable here. The test COUNT is
+      # identical either way; only the compile is paid twice.
+      - name: Build (default edition)
+        working-directory: native
+        run: cargo build --release
+
+      # Includes `tests/wgsl.rs` — naga parse+validates every shader offline, the
+      # closest thing to GPU coverage available without a GPU.
+
+      # ⚠️ `--workspace` is LOAD-BEARING as of #626 Tier 3, not tidiness.
+      # native/ is now a workspace whose root package is organic-math-native, and
+      # a bare `cargo test` runs THE ROOT PACKAGE ONLY. When organon-core was
+      # extracted, that silently stopped running its 44 tests — including the
+      # IPC namespace-pinning test in edition.rs, which is the one guarding the
+      # invariant that lets a Mind session and an Organon session coexist.
+      # The suite went 1146 -> 1102 and stayed green, which is exactly how a
+      # coverage loss hides. Every new workspace member is covered by this flag;
+      # a per-crate `-p` list would have to be maintained and would rot.
+      - name: Test (incl. offline WGSL validation)
+        working-directory: native
+        run: cargo test --release --workspace
+
+  # ── Leg 2: the Organon Mind edition ──────────────────────────────────────────
+  # NOT optional and NOT a subset of leg 1. `mind-edition` is default-off, so leg 1
+  # compiles none of this and a green leg 1 says nothing about it.
+  mind-edition:
+    name: build (mind-edition)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev \
+            libxi-dev libxext-dev libgl1-mesa-dev libxkbcommon-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: mind-edition
+
+      # `organon-mind` carries `required-features = ["mind-edition"]`, so naming
+      # the bin is what asks for the Mind front-of-house specifically. Same profile
+      # and feature set as the test step below, per lesson 1.
+      - name: Build Organon Mind
+        working-directory: native
+        run: cargo build --release --features mind-edition --bin organon-mind
+
+      # Higher count than leg 1: `mind-edition` unlocks tests leg 1 never compiles.
+      # The two numbers are both real and they are not interchangeable —
+      # STATUS.md's "Test bar" line carries the current pair.
+      - name: Test (mind-edition, incl. offline WGSL validation)
+        working-directory: native
+        run: cargo test --release --workspace --features mind-edition
+
+  # ── Leg 2b: the Organon Shell edition (Shell #3 T1) ──────────────────────────
+  # Same asymmetry argument as leg 2: `shell-edition` is default-off, so legs 1–2
+  # compile none of `src/shell_main.rs` and none of the `Edition::Shell` arms.
+  # Mind-symmetric commands: the bin lives in the root crate (the window will
+  # render `World`, which lives here until #618), the compositor lib in the
+  # `organon-shell` package.
+  shell-edition:
+    name: build (shell-edition)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev \
+            libxi-dev libxext-dev libgl1-mesa-dev libxkbcommon-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: shell-edition
+
+      - name: Build Organon Shell
+        working-directory: native
+        run: cargo build --release --features shell-edition --bin organon-shell
+
+      - name: Test (shell-edition, incl. offline WGSL validation)
+        working-directory: native
+        run: cargo test --release --workspace --features shell-edition
+
+  # ── Leg 3: the Windows cross-check — ALL editions, on a Linux runner ──────────
+  # organon#658 Tier 1. The cheap half of the platform axis: 1x billing, no apt
+  # step, no Windows machine. See the header for why it needs no system packages
+  # and, more importantly, for the list of things it cannot see.
+  windows-crosscheck:
+    name: check (windows cross)
+    runs-on: ubuntu-latest
+    # Far below the build legs' 90: this compiles metadata only, never links.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `Install system dev headers` step, deliberately — see the header. The
+      # Windows target reaches WASAPI/Win32 through pure-Rust binding crates, so
+      # the ALSA/X11 packages the Linux legs need have nothing to install here.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # Its own cache key: cargo fingerprints per TARGET as well as per feature
+      # set and profile, so sharing a key with a Linux leg would have each
+      # evicting artifacts the other just wrote — the same trap the two build
+      # legs avoid between themselves.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: windows-crosscheck
+
+      # `--all-targets` so tests and examples are checked too, not just the lib
+      # and bins. A `cfg(unix)` slip inside a test module is still a slip.
+      #
+      # ⚠️ Note the profile: `check` runs on the DEV profile here, unlike the
+      # build legs' `--release`. That is on purpose — `check` never links, so
+      # there is no optimizer to trade away, and the dev profile is what a
+      # contributor's local inner loop uses. Matching it keeps CI and the
+      # contributor note above reproducing each other exactly.
+      - name: Check (default edition, Windows target)
+        working-directory: native
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets
+
+      # THE reason this job covers both editions while `build (windows)` covers
+      # one: this is the 1x runner. See the spend block in the header.
+      - name: Check (mind-edition, Windows target)
+        working-directory: native
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets --features mind-edition
+
+      # Shell #3 T1 — same 1x-runner argument that put Mind here: Shell's
+      # Windows compile coverage comes from this cheap leg, not a second 4x one.
+      - name: Check (shell-edition, Windows target)
+        working-directory: native
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets --features shell-edition
+
+  # ── Leg 4: Windows, for real — the only leg that links and runs tests there ───
+  # organon#658 Tier 1. The expensive half (~4x a Linux leg), so it is used only
+  # for what ONLY it can do: produce actual binaries and execute the suite on
+  # Windows. Default edition only; Mind's Windows compile coverage is leg 3's.
+  windows:
+    name: build (windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ The checkout arrives with CRLF line endings — the repo's root
+      # `.gitattributes` sets `* text=auto`. That is fine for Rust and WGSL, and
+      # it is NOT fine for the `*.sh` scripts, which is why organon#658 Tier 1
+      # also pins those to LF in a separate change. Nothing in this job runs a
+      # shell script, so the two are independent; if this leg ever goes red with
+      # a `bad interpreter` or `\r` in an error message, that is the coupling
+      # and the `.gitattributes` fix is what closes it.
+      # organon#658 Tier 3 — the deploy scripts are PowerShell, and PowerShell is
+      # only ever parsed on the machine that runs it. `bundle.ps1` / `deploy.ps1`
+      # are therefore the one part of this repo whose FIRST syntax check would
+      # otherwise be a person on a Windows box trying to deploy, which is the worst
+      # possible moment to discover a stray brace. This step is seconds, needs no
+      # toolchain, and runs before the 45-minute build so the feedback is immediate.
+      #
+      # It parses via the AST rather than executing: both scripts guard on Windows
+      # and would happily start a real `cargo build` if simply run. Dot-sourcing
+      # bundle.ps1 then asserting `Find-PluginBinaryDir` exists is a second, smaller
+      # check — it proves the "run unless dot-sourced" gate at the bottom of that
+      # file still works, which is what keeps its helpers testable without building.
+      - name: Validate the PowerShell deploy scripts
+        shell: pwsh
+        working-directory: native
+        run: |
+          $failed = $false
+          foreach ($f in @('bundle.ps1', 'deploy.ps1')) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "::error file=native/$f::$($errors.Count) parse error(s)"
+              foreach ($e in $errors) {
+                Write-Host "::error file=native/$f,line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            } else {
+              Write-Host "OK  native/$f"
+            }
+          }
+          if ($failed) { exit 1 }
+          . ./bundle.ps1
+          if (-not (Get-Command Find-PluginBinaryDir -ErrorAction SilentlyContinue)) {
+            Write-Host '::error::dot-sourcing bundle.ps1 did not define Find-PluginBinaryDir'
+            exit 1
+          }
+          Write-Host 'OK  bundle.ps1 dot-source gate'
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: windows
+
+      # Same lesson 1 as the Linux legs: ONE profile and ONE feature set across
+      # build and test, so the dependency graph compiles once and is reused.
+      - name: Build (default edition, Windows)
+        working-directory: native
+        run: cargo build --release
+
+      # The payload this whole leg exists for. `--workspace` is as load-bearing
+      # here as anywhere else — it is what runs `organon-core`'s IPC suite, and
+      # the IPC layer is where the known Windows runtime risks live (resizing a
+      # file another process has mapped fails on Windows with
+      # ERROR_USER_MAPPED_FILE, where Unix does not care). If this step is going
+      # to find something, that is where.
+      #
+      # ⚠️ `--no-fail-fast` IS DELIBERATE, AND IT IS NOT TIDINESS. It was added
+      # after this leg's first-ever run, which failed exactly one test — the
+      # ERROR_USER_MAPPED_FILE case above, in `organon-mind` — and in doing so
+      # STOPPED THE RUN, leaving every later target in the workspace unrun and
+      # unknown. Three properties compound to make that the wrong default here:
+      #
+      #   1. Windows failures arrive in CLASSES, not singly. A platform rule Unix
+      #      does not have (mapped files, path separators, line endings) tends to
+      #      be violated in several places at once, and fail-fast reveals them one
+      #      per run.
+      #   2. This is the SLOWEST leg (~4x a Linux one). Each masked failure costs
+      #      a full round trip to learn, so N clustered failures cost N x 45min
+      #      instead of one run and one fix.
+      #   3. It is nearly free. The test step is ~3 minutes of a ~45-minute job,
+      #      and running the remainder after a failure adds a rounding error.
+      #
+      # The Linux legs deliberately do NOT carry this: they are fast, they are
+      # long-established, and a failure there is far more likely to be the one
+      # thing the PR just broke than a platform-wide class.
+      - name: Test (incl. offline WGSL validation, Windows)
+        working-directory: native
+        run: cargo test --release --workspace --no-fail-fast

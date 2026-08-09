@@ -1,0 +1,67 @@
+name: Bug report
+description: Something behaves wrongly, crashes, or does not render as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The most useful bug report here answers one question
+        well: **what did you see, and what did you expect instead?** Everything below is
+        in service of that.
+  - type: dropdown
+    id: product
+    attributes:
+      label: Which product?
+      description: One engine underneath all three — if you are unsure, pick where you saw it.
+      options:
+        - Organon (visualizer — plugin or standalone)
+        - Organon Mind (watching a model think)
+        - Organon Shell (agent workstation)
+        - The engine itself (math, renderer, shaders)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: >-
+        What you saw, and what you expected. A screenshot or a short clip is worth a lot
+        for anything visual — this is a renderer, and "the glass looks wrong" is a real
+        report we can act on.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >-
+        Steps, and the generator/surface/material if it is visual. If you use the
+        `organon` CLI, the exact commands are ideal — they are exactly reproducible.
+      placeholder: |
+        1. cargo run --release --bin organon-standalone
+        2. Generator → Plexus, Surface → Swept Tubes
+        3. Raise Dispersion above 0.4
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Platform and GPU
+      description: OS + version, GPU, and the host (Ableton, standalone, …) if relevant.
+      placeholder: "macOS 15.3, M2 Max, Ableton Live 12 / Windows 11, RTX 5090, standalone"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: "`git rev-parse --short HEAD`, or the release you installed."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: >-
+        Anything the terminal printed. For a plugin, the host's log. Pasting it as text
+        beats a screenshot of text.
+      render: shell

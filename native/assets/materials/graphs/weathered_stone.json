@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "weathered_stone",
+  "projection": "triplanar",
+  "scale": 1.0,
+  "bake_res": 512,
+  "layers": [
+    { "enabled": true, "noise": "fbm", "channel": "height", "scale": 5, "octaves": 6, "gain": 0.55 },
+    { "enabled": true, "noise": "cells", "channel": "height", "blend": "min", "scale": 12, "contrast": 2.0 }
+  ],
+  "derive": { "normal": true, "ao": true, "normal_strength": 2.0, "ao_strength": 1.0, "ao_radius": 3 }
+}

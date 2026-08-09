@@ -1,0 +1,4 @@
+font_regular.ttf, font_bold.ttf — Inter (latin subset), by Rasmus Andersson.
+SIL Open Font License 1.1. https://github.com/rsms/inter
+Fetched via Fontsource (cdn.jsdelivr.net/fontsource/fonts/inter). Bundled into the
+visual binary (include_bytes!) for the #135 capture overlay glyph atlas.

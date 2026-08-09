@@ -1,0 +1,82 @@
+# organon-core — the engine's host-free spine (#626 Tier 3, spec'd as #536 Tier 4).
+#
+# ⚠️ THE POINT OF THIS CRATE IS WHAT IT DOES **NOT** DEPEND ON:
+#
+#     NO nih_plug.  NO wgpu.  NO egui.  NO winit.
+#
+# That is the tier's acceptance test — `cargo tree -p organon-core` — and it is
+# the property to defend. Before adding ANY dependency, ask whether the thing
+# needing it belongs in core at all; usually it belongs in the crate that has
+# the dependency already.
+#
+# 📌 The six deps below are deliberate, and the honest history is worth keeping:
+# this file first shipped claiming `[dependencies]` was EMPTY. It wasn't —
+# gguf_data.rs reaches `memmap2::` and `half::` through inline fully-qualified
+# paths, which a scan of `use` lines does not see. The compiler said so
+# immediately. Both are pure data crates (an mmap wrapper, an f16 type) with no
+# host, GPU, or UI surface, so the real invariant above is untouched — but
+# "empty" was a stronger claim than the spec ever made, and it was wrong.
+#
+# Versions are pinned to match native/Cargo.toml exactly. They must stay in
+# step: two versions of memmap2 in one graph is a silent duplicate-crate bug.
+#
+# Under #626 §2.5 this is also the crate published to crates.io — it is the
+# engine's independent developer identity, not merely an internal seam. Its
+# public API is therefore a commitment, which is the second reason to keep the
+# surface small.
+
+[package]
+name = "organon-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "The Organon engine's pure core: GGUF parsing, the product edition, and the editor's tab taxonomy."
+repository = "https://github.com/organonart/organon"
+
+[features]
+# Mirrors the native crate's `mind-edition` feature, which is what selects
+# `EDITION` at compile time (see src/edition.rs). The native crate FORWARDS its
+# own feature to this one — `mind-edition = ["organon-core/mind-edition"]` — so
+# there is exactly one switch, not two that can disagree.
+#
+# OFF by default, preserving the default-inert contract: a plain `cargo build`
+# still resolves EDITION to `Edition::Full`.
+mind-edition = []
+
+# Same mechanism, third product (Shell #3 T1): selects `EDITION =
+# Edition::Shell`. Forwarded from the native crate's `shell-edition` and from
+# `organon-shell`'s own feature — every switch lands here, where EDITION lives.
+# Mutually exclusive with `mind-edition` (compile_error! in src/edition.rs).
+# OFF by default: the default-inert contract is unchanged.
+shell-edition = []
+
+# 🚨 BLOCKS `cargo publish` UNTIL TIER 5 DEALS WITH IT (#626 §2.5).
+#
+# math.rs carries 7 `include_str!("../../assets/…")` sites reaching UP OUT of this
+# package into native/assets/. That is correct for a path dependency in the workspace
+# and for the public export — and it is fatal to `cargo package`, which only bundles
+# files under the package root. A published organon-core would fail to build for anyone.
+#
+# The assets cannot simply move here: deploy.sh installs assets/networks/*.json as the
+# #226 runtime gallery, and the export manifest documents them as a build dependency.
+# So Tier 5 has a real decision (vendor a copy under the package? a build script? split
+# the gallery from the compiled-in data?), and it should make it deliberately rather
+# than hit this at publish time. #626 §2.5 names crates.io as this crate's identity, so
+# the constraint is on the critical path, not a footnote.
+
+[dependencies]
+# gguf_data.rs only. Pure data crates: no host, no GPU, no UI. Pinned to match
+# native/Cargo.toml — see the header.
+memmap2 = "0.9"
+half = { version = "2", features = ["bytemuck"] }
+# math.rs (PR B). Pure math/data — glam is vectors, bytemuck is Pod casts, serde is the
+# field-program/gallery JSON. None carries a host, GPU, or UI surface.
+glam = { version = "0.33", features = ["bytemuck"] }
+# `min_const_generics` is REQUIRED, not decorative: ipc.rs's `Shared` has arrays
+# larger than bytemuck's hand-written impls cover (e.g. `[f32; 260]`), and without
+# it `Pod`/`Zeroable` fail to derive. It compiled inside the old workspace only
+# because ANOTHER crate happened to enable the feature and cargo unified it —
+# `cargo check -p organon-core` alone is what exposed the missing declaration.
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

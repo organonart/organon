@@ -1,0 +1,75 @@
+# Path-based PR labels (#673 Phase 2), for actions/labeler v5.
+#
+# Product labels are derived from paths rather than asked for, because the honest answer
+# is usually "several": one engine, three front-of-house, and a change to the renderer is
+# a change to all three. A PR carrying `explore`, `mind` and `engine` at once is not a
+# mislabel — it is the repository being what it is.
+#
+# ⚠️ `src/**` is the LEGACY React app at the repo root. It is NOT `native/src/**`.
+# Getting that backwards would mislabel every Rust PR; the CI workflow's own path filter
+# carries the same warning for the same reason.
+
+engine:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/organon-core/**'
+          - 'native/src/math.rs'
+          - 'native/src/ipc.rs'
+
+renderer:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/organon-render/**'
+          - 'native/src/**/*.wgsl'
+
+explore:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/src/**'
+          - 'native/bundler.toml'
+          - 'native/xtask/**'
+
+mind:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/organon-mind/**'
+          - 'native/src/mind_*.rs'
+          - 'native/src/bin/mind_*.rs'
+          - 'native/organon-core/src/gguf*.rs'
+          - 'MIND_ARCHITECTURE.md'
+
+shell:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/organon-shell/**'
+          - 'native/src/shell_main.rs'
+          - 'SHELL_ARCHITECTURE.md'
+
+plugin:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/src/lib.rs'
+          - 'native/src/params.rs'
+          - 'native/src/param_table.rs'
+          - 'native/src/clip.rs'
+          - 'native/deploy.*'
+          - 'native/bundle.*'
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*.md'
+          - 'doc/**'
+
+# Deliberately loud: these are the two invariants that break saved sessions and cross the
+# process boundary. A label is not a gate, but it puts the words in front of a reviewer.
+ipc-layout:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/organon-core/src/ipc.rs'
+          - 'native/src/ipc.rs'
+
+plugin-identity:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/src/lib.rs'

@@ -1,0 +1,5 @@
+{
+  "name": "brick",
+  "maps": ["albedo","normal","roughness","metallic","ao","height"],
+  "tiling": true
+}

@@ -1,0 +1,23 @@
+# The baseline still life: the cube-of-cubes with every motion source zeroed, lit by
+# the standard PBR path. This is the reference every other golden scene is a variation
+# of — if this one moves, the change is in geometry, lighting, or tone-mapping rather
+# than in any one material branch.
+#!desc     Frozen cube-of-cubes, Standard material — the baseline still life.
+#!checks   nonblack,golden
+#!tolerance 0.004
+
+generator "organic math"
+surface original
+material standard
+
+# Freeze everything that advances with the clock, so the frame is a function of the
+# parameters alone. rot_mod_* is the rotation SPEED the clock integrates; the amp
+# terms oscillate translation and scale; cam_path drives the auto-orbit.
+set rot_mod_x 0 rot_mod_y 0 rot_mod_z 0
+set rot_amp_x 0 rot_amp_y 0 rot_amp_z 0
+set trans_amp_x 0 trans_amp_y 0 trans_amp_z 0
+set scale_amp 0
+set cam_path 0 cam_speed 0 cam_kick 0
+
+set exposure 0 metallic 0.1 roughness 0.5
+set ambient 0.3 glow 0.2 bloom_intensity 0.2
