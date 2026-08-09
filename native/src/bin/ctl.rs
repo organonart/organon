@@ -296,8 +296,11 @@ fn write_docs(out: Option<std::path::PathBuf>, check: bool) {
     let mut stale = Vec::new();
     for (name, want) in cli::docs_files() {
         let path = dir.join(name);
+        // Content, not bytes: a Windows checkout is CRLF (see `cli::docs_match`). A
+        // byte compare here would report every page stale and rewrite all of them on
+        // every run, on the one platform least able to tell that was wrong.
         let current = std::fs::read_to_string(&path).ok();
-        if current.as_deref() == Some(want.as_str()) {
+        if current.as_deref().is_some_and(|c| cli::docs_match(c, &want)) {
             continue;
         }
         if check {

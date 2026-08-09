@@ -755,6 +755,24 @@ fn reference_index_md() -> String {
     out
 }
 
+/// Does a checked-out page still match what the code would emit?
+///
+/// ⚠️ **Compare CONTENT, not bytes — the difference is a platform, not a nicety.**
+/// The repository's `.gitattributes` sets `* text=auto`, so Markdown is stored LF and
+/// checked out **CRLF on Windows**, while [`docs_files`] always emits LF. A byte-exact
+/// comparison therefore passes on every Linux leg and fails on Windows for *every* file,
+/// which is exactly how this shipped: three green Linux legs and a red `build (windows)`.
+/// `ci.yml`'s header already warns that the Windows checkout arrives CRLF and calls it
+/// "fine for Rust and WGSL" — true, and not true for a comparison.
+///
+/// The fix belongs here rather than in `.gitattributes`. Pinning these files to LF would
+/// also turn the leg green, but it would change the repository's checkout policy to suit
+/// a test, and that file's own rule is that each pin exists for a specific failure. CRLF
+/// Markdown is not a failure; a test that cannot read it is.
+pub fn docs_match(on_disk: &str, generated: &str) -> bool {
+    on_disk.replace("\r\n", "\n") == generated
+}
+
 /// Every generated reference page as `(filename, contents)`. Pure — it reads no
 /// running app and no filesystem, so it runs offline, in CI, and inside a test.
 pub fn docs_files() -> Vec<(&'static str, String)> {
@@ -1015,9 +1033,8 @@ mod tests {
                     path.display()
                 )
             });
-            assert_eq!(
-                got,
-                want,
+            assert!(
+                docs_match(&got, &want),
                 "{} is stale. Regenerate it: cargo run --bin organon -- docs",
                 path.display()
             );
@@ -1046,6 +1063,27 @@ mod tests {
             let d = generator_desc_at(i);
             assert!(d.len() > 40, "generator {i} has a stub description: {d:?}");
         }
+    }
+
+    /// A CRLF checkout of a generated page still counts as current.
+    ///
+    /// This is the `build (windows)` failure as a unit test, and it has to be one: the
+    /// defect is invisible to every Linux leg by construction, so without this the only
+    /// thing standing between it and `main` is a Windows runner nobody is required to
+    /// look at. Asserting both directions also pins the asymmetry — the on-disk side is
+    /// normalized, the generated side is not, because `docs_files()` emits LF and a
+    /// generator that started emitting CRLF would be a real bug worth failing on.
+    #[test]
+    fn a_crlf_checkout_is_not_drift() {
+        let (_, want) = &docs_files()[0];
+        let crlf = want.replace('\n', "\r\n");
+        assert_ne!(crlf, *want, "the fixture must actually differ byte-wise");
+        assert!(docs_match(&crlf, want), "a CRLF checkout must read as current");
+        assert!(docs_match(want, want), "an LF checkout must read as current");
+        assert!(
+            !docs_match("# Something else\n", want),
+            "genuinely different content must still read as drift"
+        );
     }
 
     /// Every id that reaches the published reference carries a gloss.
