@@ -23,7 +23,18 @@ writer at a time, always.
 
 **Repository.** `organonart/organon` — the public platform repo, checked out locally at
 `C:\Users\james\Documents\GitHub\organon`. This is where console development happens; the
-private annex keeps strategy only. Confirm you are on `main` and up to date before branching.
+private annex keeps strategy only.
+
+**Branch.** The spike lives on **`organon-console-spike`**, already created, pushed and
+tracking. It is the home for the whole spike — the plan, the brief, the demo script and every
+tier. It is checked out and ready; do not start by branching off `main`.
+
+How tiers land on it: give each tier its own short branch off the spike branch
+(`console/spike-t1`, `console/spike-t2`, …) and PR it **into `organon-console-spike`** as its
+beat check passes. That is what gets `claude-review.yml` running once per tier instead of once
+on an enormous diff at the end. The spike branch itself PRs to `main` when the spike lands.
+Phase 0's brief is the first such PR, before Tier 1 — its explicit job is to correct this plan,
+and that correction should be a reviewable diff rather than a silent edit.
 
 **Machine.** ORGANON-ONE — Ryzen Threadripper PRO 9955WX, RTX 5090, Windows 11 Pro,
 Windows PowerShell 5.1 (`&&` is a parse error; use `cmd; if ($?) { next }`). `cargo`/`rustc`
