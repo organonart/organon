@@ -100,6 +100,32 @@ surfaces in the tree and a spacing or wiring diff conflicts on every hunk.
 
 No tier begins before the previous tier's beat check passes.
 
+### 3.5 Model assignment
+
+The coordinator runs on **Fable 5**. **Every sub-agent runs on Opus 5** — pass
+`model: "opus"` explicitly on every dispatch rather than relying on inheritance.
+
+**The coordinator writes no implementation code.** Reconnaissance, leaf modules and
+integration are all dispatched. What stays with the coordinator is everything that is not
+typing:
+
+- deciding what gets dispatched and to whom, under §6's ownership rules
+- reading what comes back, and rejecting it when it is wrong
+- running the build and the tests
+- the beat checks
+- the commits
+
+**This is a feature, not a constraint.** The standard failure of a coordinator session is
+that it starts implementing, stops coordinating, and then dispatches an agent into a file it
+is itself editing. A coordinator that does not write code cannot make that mistake, which is
+what makes §6's one-writer-per-file rule enforceable rather than aspirational.
+
+⚠️ **"Delegate everything" does not mean "delegate everything at once."** The integrator lane
+is **one sub-agent at a time**, and the coordinator waits for it to finish
+(`run_in_background: false`) before dispatching anything that touches the same files. The
+same applies to Tier 3's schema design: it is a vocabulary, it settles first, and only then
+do the leaves fan out.
+
 ---
 
 ## 4. Phase 0 — reconnaissance fan-out
@@ -243,8 +269,12 @@ finished without the Mac is not.
 
 ## 8. What the coordinator never delegates
 
-- The branch, and every integration commit.
-- Beat checks. They require eyes and judgment.
+Per §3.5 the coordinator delegates all the *writing*. These are not writing:
+
+- The branch, and every integration commit. A sub-agent may author the change; the
+  coordinator reads it, builds it, and commits it.
+- Beat checks. They require eyes on a display and a judgment about how something looks, which
+  is the one thing that cannot be handed to a sub-agent or inferred from a green build.
 - The demo script, kept in the repo and updated as beats land, so what we can actually show is
   never a matter of memory.
 - Any decision that amends the spec — notably Tier 3's amendment of the "top strip is the one
@@ -287,11 +317,16 @@ Read these, in this order, before doing anything:
   4. gh issue view 3                       — the console: the design the spike slices
   5. CLAUDE.md and CONTRIBUTING.md         — this repo's rules
 
-Your role is coordinator, not sole author. You own the branch, every integration
-commit, and every beat check. You dispatch sub-agents for reconnaissance and for
-leaf modules, under the file-ownership rules in section 6 of the plan. You never
-let two agents into shell_main.rs, term_view.rs, native/src/lib.rs, Cargo.toml, or
-SHELL_ARCHITECTURE.md at the same time.
+You are the coordinator and you write no implementation code. Dispatch all of it —
+reconnaissance, leaf modules, and integration — to sub-agents, passing
+model: "opus" explicitly on every dispatch. What is yours: deciding what gets
+dispatched and to whom, reading what comes back and rejecting it when it is wrong,
+running the build and tests, the beat checks, and the commits.
+
+Section 6 of the plan governs file ownership. Never let two agents into
+shell_main.rs, term_view.rs, native/src/lib.rs, Cargo.toml, or SHELL_ARCHITECTURE.md
+at the same time. The integrator lane is one sub-agent at a time and you wait for it
+(run_in_background: false) before dispatching anything touching the same files.
 
 Start with section 2 of the plan: prove Tier 0 on this machine. Build both binaries,
 launch the console, open a Pi or Claude Code tab, run htop in a third, and confirm
