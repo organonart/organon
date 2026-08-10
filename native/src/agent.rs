@@ -336,6 +336,23 @@ pub fn param_desc(id: &str) -> Option<&'static str> {
             "How much each node grows with its index — 0 = uniform cubes, higher tapers the \
              field larger toward its far corners. (Original generator only.)"
         }
+        "continuous" => {
+            "Rotation STYLE for the base grid: off = pendulum (each axis swings back and \
+             forth through `sin`), on = continuous (rotation winds monotonically and keeps \
+             flowing forward). (Original generator only.)"
+        }
+        // ---- Selector slots: in the catalog, but chosen by name rather than by value ----
+        "mat_type" => {
+            "Which shading model the geometry uses — Standard PBR, Chrome, Glass, Refractive, \
+             Anisotropic, Clearcoat, Velvet or Subsurface. Choose it by name \
+             (`organon material glass`), not by setting a number."
+        }
+        "palette" => {
+            "The colour ramp laid over the whole look. Native reproduces the original \
+             per-node RGB; the rest (Spectrum, Coral Reef, Deep Sea, Bioluminescence, Plasma, \
+             Neon, …) retint everything through one shared ramp. The quickest way to change \
+             the mood of a look without touching its form."
+        }
         // ---- Lighting ----
         "ambient" => {
             "Strength of the environment (IBL) ambient term — the soft fill from the whole \

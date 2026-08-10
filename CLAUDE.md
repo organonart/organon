@@ -65,6 +65,8 @@ already.
 | **`doc/arch/topology.md`** | the crate graph and what may depend on what | same |
 | **`MIND_ARCHITECTURE.md`** | **Organon Mind**'s living state — what exists *right now* (not a spec, not a roadmap), plus the honesty ledger | update in the **same change** as every Mind PR |
 | **`SHELL_ARCHITECTURE.md`** | **Organon Shell**'s living state | update in the **same change** as every Shell PR |
+| **`doc/guide/`** | **the user documentation** — installing into a DAW, the generator/surface/material model, playing it from clips and controllers, presets, output. Narrative and hand-written; describes *mechanisms*, never counts | update when a user-visible behaviour changes |
+| **`doc/reference/`** | every generator / surface / material / parameter / recipe. **GENERATED** by `organon docs` from the prose in `agent.rs` + `recipe.rs`; never hand-edit — a test (`generated_reference_is_current`) fails the build on drift | regenerate in the **same commit** as any description change |
 | **`CONTRIBUTING.md`** | **the process**: how to scope work, the tier pattern, the review cycle, the verification bar | read before scoping feature work |
 | **`SECURITY.md`** | how to report privately, and what the real attack surface is — including which parts are by design | update when you change a trust boundary |
 | **`LICENSING.md`** | why the licence is split across crates, and what that constrains | read before touching a `license` field |

@@ -77,7 +77,8 @@ cargo build --release --bin organon
 ```
 
 The loop that matters is **see → act → see**: read the state, change one thing, take a snapshot
-and check. `organon describe <id>` explains any control in prose, with its range.
+and check. `organon describe <id>` explains any control in prose, with its range — and
+[`doc/guide/`](doc/guide/README.md) is the same material written out, starting from a DAW.
 
 ⚠️ **A first `snap` can time out while the visual is still coming up.** Retry it — startup takes
 a few seconds and a covered or unfocused window does not render. Note also that `status`, `get`
@@ -125,6 +126,8 @@ explains why and how they attach.
 
 | Doc | What it is |
 |---|---|
+| [`doc/guide/`](doc/guide/README.md) | **Using Organon** — install it in a DAW, the three choices, playing it from clips and controllers, presets, output and capture. Start here if you want to *operate* it. |
+| [`doc/reference/`](doc/reference/README.md) | Every generator, surface, material, parameter and recipe. Generated from the source and pinned by a test, so it cannot fall behind the code. |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | The durable engine reference — the algorithm, the IPC model, the file map. A reference, not a read-through. |
 | [`doc/arch/render.md`](doc/arch/render.md) | The render pipeline in depth: passes, hardware RT, IBL, shaders. |
 | [`doc/arch/topology.md`](doc/arch/topology.md) | The crate graph, and what may depend on what. |
