@@ -223,7 +223,7 @@ the integrator.
 | Leaf B | command specs | `organon console background <name>`, registered so `--help` lists it, args validated |
 | Integrator | `shell_main.rs`, dispatch path | dispatch → live substrate change, under a second, no grid relayout |
 
-### Tier 3 — the strip *(the biggest tier; do the design serially)*
+### Tier 3 — the strip *(the biggest tier)*
 
 ✅ **The schema is already settled** — `doc/console_discover_schema.md`, decided 2026-08-10
 away from the demo deadline. **Tier 3 implements it; it does not design it.** Read the two
@@ -335,6 +335,39 @@ Per §3.5 the coordinator delegates all the *writing*. These are not writing:
 - **Scope creep into #3's later tiers.** The spike deliberately excludes icons beyond font
   glyphs, persistence, theme files, structured agent protocols, foreign-CLI mapping,
   agent-authored strips, and camera motion. Each is real work; none of it is this work.
+
+---
+
+## 10. Docs that move with the work
+
+Per tier, in the tier's own change — never as a cleanup pass at the end:
+
+- **`CONSOLE_ARCHITECTURE.md`** — every tier. A Stop hook enforces it for
+  `native/organon-shell/*`.
+- **`CHANGELOG.md`** — every tier.
+- **`doc/console_spike_demo_script.md`** — the status column, in the same change as the tier
+  that delivers the beat. What we can actually show should never be a matter of memory.
+- **`doc/console_spike_execution_plan.md`** — this file, whenever Phase 0 or a tier proves part
+  of it wrong. It is a plan, not a monument.
+
+### 🚨 Any tier that adds or changes a command updates `skills/organon-cli/SKILL.md`
+
+That is **Tier 2** (`organon console background`) and **Tier 3** (`organon discover`,
+`organon describe --json`) — not Tier 3 alone. The tier's own agent does it.
+
+**A skill is what an agent reads *instead of* the source, so a stale one does not degrade
+gracefully.** It makes an agent confidently call a command that does not exist, or miss one
+that does. Wrong is materially worse than absent here, which is why this is not a tidy-up item.
+
+`.claude/hooks/doc-rules.sh` lists the skill as accountable for `native/src/bin/ctl.rs` and
+`native/src/cli.rs`, so a Stop hook will remind you. ⚠️ **Treat the hook as the safety net, not
+the instruction.** It fires after the fact, and a sub-agent may never see it at all.
+
+**What goes in: the shape. What never goes in: an enumeration.** The skill already makes this
+split correctly — *"the live catalog is the authority … ask the tool, not your memory"* — and it
+is the only reason a 150-line file can describe a ~1,370-parameter surface without rotting. A
+new command gets its grammar and its place in the loop; what lives *inside* it stays
+discoverable from the tool.
 
 ---
 
