@@ -591,11 +591,21 @@ struct Shell {
     /// The session log every console dispatch is recorded in. `None` when the store could not
     /// be opened — see [`Shell::dispatch_console`], which says exactly what is lost.
     session_log: Option<SessionLog>,
-    /// The terminal pane's size in **points** and the scale that turns it into physical
-    /// pixels, recorded at the end of each frame and consumed by the next frame's
-    /// [`Shell::render_backdrop`]. `None` until the first frame has laid the panel out.
+    /// The terminal pane's size in **points**, and the whole window's beside it, recorded at
+    /// the end of each frame and consumed by the next frame's [`Shell::render_backdrop`].
+    /// `None` until the first frame has laid the panel out.
+    ///
+    /// ⚠️ **A pair of point sizes, deliberately — not a size and a scale.** The scale that
+    /// turns points into pixels is an egui frame *output*, so remembering one means starting
+    /// from a stand-in, and the stand-in that reads naturally (`1.0`) is a real 100 % display
+    /// as far as the multiply is concerned: the backdrop comes out sized in **points**, 2.25×
+    /// too small on this display, and any epoch snapshot copied from it in that window keeps
+    /// the small picture for the session. Two point sizes give
+    /// [`scene_input::pane_pixels_in`] a *ratio* to apply to the swapchain, which is physical
+    /// by definition — so the scale cancels instead of being guessed. That function's doc
+    /// owns the argument and the measurement.
     pane_points: Option<(f32, f32)>,
-    pane_scale: f32,
+    window_points: Option<(f32, f32)>,
     /// Whether the last [`Shell::render_backdrop`] recreated the backdrop texture — the
     /// pane changed size. Carried on `Shell` rather than returned because it is
     /// [`EpochLedger::plan`]'s `pane_resized` argument, consumed one call later; it is the
@@ -674,7 +684,7 @@ impl Shell {
             console_len,
             session_log,
             pane_points: None,
-            pane_scale: 1.0,
+            window_points: None,
             pane_resized: false,
             shared_writer: None,
             shared,
@@ -1190,6 +1200,16 @@ impl Shell {
     /// means re-deriving a past look's `Shared` and drawing the world again per epoch, which
     /// is the unbounded cost the cap exists to prevent. A stretched history is honest — it is
     /// the picture that was there — and the live band, the one the eye is on, is always exact.
+    ///
+    /// 📌 **That cut only stays honest while the live texture is the size it claims to be**,
+    /// which is why [`scene_input::pane_pixels_in`] exists. The first version of the sizing
+    /// sized the backdrop as `pane_points × remembered_scale`, and the value standing in for a
+    /// scale nobody had measured yet multiplied like a real 100 % display — so the live
+    /// texture spent its first frames in POINTS, and a look closing in that window filed a
+    /// picture 2.25× too small on this machine's display. The live target rebound itself a
+    /// frame later; the snapshot could not, and every band painted from it was magnified back
+    /// up for the rest of the session (measured: a 1100×690 epoch picture across a 2475×1553
+    /// pane). A frozen size is a cut; a frozen *wrong* size was a bug.
     fn snapshot_live_backdrop(&mut self) -> Option<Rc<CachedEpoch>> {
         let device = self.world.device()?.clone();
         let queue = self.world.queue()?.clone();
@@ -1332,13 +1352,20 @@ impl Shell {
         //
         // One frame behind by construction — the world is drawn before the interface that
         // reserves its rect runs — and clamped rather than trusted, both exactly as
-        // `wgpu_editor::render_scene_pane` does it. `pane_pixels` carries the clamps and their
-        // reason: egui hands back a zero or negative rect for a frame mid-resize, and a
+        // `wgpu_editor::render_scene_pane` does it. `pane_pixels_in` carries the clamps and
+        // their reason: egui hands back a zero or negative rect for a frame mid-resize, and a
         // zero-sized texture is a validation error rather than a blank pane. Frame one has no
         // rect yet and falls back to the swapchain, i.e. to today's behaviour for one frame.
-        let (w, h) = match self.pane_points {
-            Some(pt) => scene_input::pane_pixels(pt, self.pane_scale),
-            None => swapchain,
+        //
+        // ⚠️ **The pane's share of the window applied to the swapchain — never points times a
+        // remembered scale.** Sizing it `points × scale` was the Tier 4 band blur: the scale is
+        // a frame output, the value standing in for "not measured yet" multiplies like a real
+        // 100 % display, and the backdrop comes out in points. The live texture rebinds itself
+        // one frame later; the epoch snapshot copied from it never does. `pane_pixels_in` owns
+        // the argument, the measurement and the regression test.
+        let (w, h) = match (self.pane_points, self.window_points) {
+            (Some(pane), Some(window)) => scene_input::pane_pixels_in(swapchain, pane, window),
+            _ => swapchain,
         };
 
         // Total over the source rather than only the substrate arm, so a runtime switch
@@ -1503,7 +1530,13 @@ impl Shell {
         // (see `render_backdrop`). Taken from the same `ui` and by the same call
         // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
         let mut pane_rect: Option<egui::Rect> = None;
+        // …and the whole window beside it, in the SAME points, so the two divide into the
+        // ratio `render_backdrop` applies to the swapchain. Read from the same frame as
+        // `pane_rect` for exactly that reason: a ratio only cancels the scale if both halves
+        // were measured under it.
+        let mut window_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
+            window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
             ctx.input(|i| {
                 for ev in &i.events {
@@ -1551,10 +1584,11 @@ impl Shell {
                 });
         });
         state.handle_platform_output(window, out.platform_output);
-        // What the next frame's backdrop is sized to. Points plus the scale, never pixels:
-        // the conversion belongs with the clamps in `pane_pixels`.
+        // What the next frame's backdrop is sized to. Two point sizes, never pixels and never
+        // a scale: the conversion belongs with the clamps in `pane_pixels_in`, and it is the
+        // *ratio* of these two that survives a scale nobody has measured yet.
         self.pane_points = pane_rect.map(|r| (r.width(), r.height()));
-        self.pane_scale = out.pixels_per_point;
+        self.window_points = window_rect.map(|r| (r.width(), r.height()));
         if let Some(action) = action {
             self.apply(action);
         }
@@ -2342,6 +2376,39 @@ mod cli_tests {
                 .expect("every row is covered by exactly one band");
             assert_eq!(quad.texture, want, "row {v} (absolute line {line})");
         }
+    }
+
+    /// **A closed epoch's picture is the pane at its PHYSICAL size, or history is magnified.**
+    ///
+    /// [`Shell::snapshot_live_backdrop`] copies the live backdrop at `Backdrop::size`, so the
+    /// epoch's resolution is whatever [`Shell::render_backdrop`] decided — and that decision is
+    /// the one the first beat check caught. Sized `pane_points × remembered_scale`, the
+    /// backdrop is sized in **points** for as long as the scale is still the value that stood
+    /// in for "egui has not reported one yet"; the live texture rebinds a frame later, the
+    /// snapshot never does, and every band painted from it is magnified for the session. This
+    /// pins the console's own geometry through the decision, at the ratio it was measured at.
+    ///
+    /// [`scene_input::pane_pixels_in`]'s tests own the general property; this one owns the
+    /// numbers — the window `resumed` asks for, the 30-point strip `redraw` declares, and the
+    /// 2.25 the display reports.
+    #[test]
+    fn a_closed_epoch_is_the_pane_at_its_physical_size() {
+        // The console's own shape: `Window::default_attributes().with_inner_size(1100×720)`
+        // logical, a `TopBottomPanel::top(…).exact_height(30.0)`, on a 225 % display.
+        let (window_points, ppp) = ((1100.0f32, 720.0f32), 2.25f32);
+        let pane_points = (window_points.0, window_points.1 - 30.0);
+        let swapchain =
+            ((window_points.0 * ppp).round() as u32, (window_points.1 * ppp).round() as u32);
+        assert_eq!(swapchain, (2475, 1620));
+
+        // `snapshot_live_backdrop` copies `Backdrop::size` verbatim, so an epoch's texture IS
+        // whatever this returns — which is why the epoch invariant is asserted here.
+        let live = scene_input::pane_pixels_in(swapchain, pane_points, window_points);
+        assert_eq!(live, (2475, 1553), "the backdrop, and so the epoch, is the pane in PIXELS");
+        // And what it must never be: the pane measured in points, which is what a scale
+        // standing in at 1.0 produces and what a band then magnifies 2.25× back up.
+        assert_eq!(scene_input::pane_pixels(pane_points, 1.0), (1100, 690));
+        assert_ne!(live, (1100, 690), "an epoch sized in points is the Tier 4 band blur");
     }
 
     /// A pane that has no picture of a look — the backdrop was `off` while those rows were

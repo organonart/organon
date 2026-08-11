@@ -93,6 +93,17 @@ position.
   generative world, glaring on a flat plane. Sized one frame behind and clamped,
   `wgpu_editor::render_scene_pane`'s pattern. **This changes `=1`'s rendering too**, and
   is meant to.
+  ⚠️ **And sized as the pane's *share of the window*, never as points times a remembered
+  scale** (`scene_input::pane_pixels_in`). The scale that converts points to pixels is an
+  egui frame *output*, so a caller that remembers one starts from a stand-in — and the
+  stand-in that reads harmlessly (`1.0`) multiplies exactly like a real 100 % display, so
+  the backdrop comes out sized in **points**: 1100×690 where 2475×1553 was meant, 2.25×
+  too small in each axis on ORGANON-ONE's 225 % display. The live texture rebinds itself
+  the moment a real scale lands, which is why nobody saw it — but T4's epoch cache
+  *copies* that texture, so a look closing inside that window filed a picture 2.25× too
+  small and every band painted from it stayed magnified for the session. A pane/window
+  **ratio** applied to the swapchain (physical by definition, correct before any scale is
+  known) makes the error cancel instead of being guessed.
   The **legibility scrim** is structural: `ORGANON_SHELL_SCRIM` tunes, but
   `term_view::scrim_alpha` clamps at a floor no setting crosses — now a pure function
   with that floor pinned by a test rather than an unguarded expression inside `draw`.
@@ -346,6 +357,14 @@ path silently breaks the three-products-simultaneously guarantee that
   eye is actually on, is always exact; only history is approximate, and only after a
   resize. `EpochLedger::plan` still reports those epochs as `Rerender`; the integrator
   declines that arm on purpose, in a comment that says so.
+  ✏️ **That cut is only honest while the live texture is the size it claims to be.** The
+  first beat check found wide historical bands rendering as blurred washes with the live
+  band crisp — the same stretch, but from a size nothing had resized: the backdrop was
+  built as `pane_points × remembered_scale` and spent its first frames in points (see
+  §"sized to the terminal pane" above). Measured on this machine: an epoch picture of
+  1100×690 painted across a 2475×1553 pane. So "history is stretched **after a resize**"
+  now means what it says; a picture that was never the right size was a bug, and
+  `scene_input::pane_pixels_in`'s regression test is what keeps it one.
 - **A closed World epoch's band is one frozen frame of something that was moving.**
   Switching *to* `world` collapses history, for the reason the plan gives — a live world is
   not a still life. Switching *away* from it (`world` → `graphite`) snapshots like any other
@@ -371,11 +390,18 @@ path silently breaks the three-products-simultaneously guarantee that
   collapsed at line 0 with whatever the console is wearing, because it has no rows from
   before it existed. `EpochId`s are unique only *within* a pane, which is why the texture
   cache lives on the pane rather than on `Shell`.
-- 🚨 **No GPU has seen the banding.** Every claim above is arithmetic pinned by headless
-  tests — the row→band mapping, the tiling, the length law, the beat as a state machine.
-  Whether the bands *line up with the glyphs* on screen, whether the seam between two
-  looks reads as a seam or as a defect, and whether a stretched history looks acceptable
-  are all things only the beat check can answer.
+- ✏️ **The banding has now been seen on a GPU, and it cost one bug.** Every claim above is
+  still arithmetic pinned by headless tests — the row→band mapping, the tiling, the length
+  law, the beat as a state machine — and the beat check (ORGANON-ONE, RTX 5090, 225 %
+  display) confirmed the parts only a screen can answer: the boundaries are row-aligned,
+  they stay pinned to the text through a full scroll, and the new look scrolls in from the
+  bottom. What it also found is the sizing defect recorded three entries above — wide
+  historical bands reading as blurred washes while the live band stayed crisp. Instrumented
+  at the capture site, a cached epoch's band was then measured **pixel-identical** to a live
+  render of the same look at the same pane size, twice (`paper` and the undressed
+  substrate), which is what located the fault in the size rather than in the bands. Still
+  unjudged: whether the seam between two looks reads as a seam or as a defect, and whether a
+  stretched history after a genuine window resize looks acceptable.
 - **A console command applies whether or not it can be recorded.** Every drained op goes
   through `CommandService::dispatch`, so in the normal case it leaves a `CommandRun` in a
   real `SessionLog`. If the store cannot be opened there is no service to dispatch

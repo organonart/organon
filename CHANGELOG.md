@@ -39,6 +39,17 @@ From here on, this file gets an entry per meaningful change, newest first.
   bookkeeping, and the alternate screen is always exactly one band) and
   `native/src/substrate_epochs.rs` (the ledger, the cap, the merge, and the texture
   decisions as data).
+- **Fixed on the beat check: the backdrop was sized in points, so history was magnified.**
+  The first run on a 225 % display showed wide historical bands as blurred washes with the
+  live band crisp. The bands were right — a cached epoch measured pixel-identical to a live
+  render of the same look at the same pane size — and the *size* was wrong: the backdrop
+  texture was built as `pane_points × remembered_scale`, and the value standing in for a
+  scale egui had not reported yet multiplies exactly like a real 100 % display. So the live
+  texture spent its first frames at 1100×690 where 2475×1553 was meant, and a look closing
+  in that window filed a picture 2.25× too small — which the live texture then outgrew and
+  the snapshot never could. The pane is now sized as its **share of the window** applied to
+  the swapchain (`scene_input::pane_pixels_in`), so the scale cancels rather than being
+  guessed, and a point-sized backdrop is unrepresentable rather than merely unlikely.
 - Known and recorded rather than hidden: a resized pane **stretches** cached history into
   its bands (the live band stays exact), the eviction counter under-counts rather than
   over-counts once scrollback is full, and a column resize can slide a band edge by the
