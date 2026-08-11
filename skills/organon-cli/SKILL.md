@@ -68,6 +68,20 @@ organon do '{"moves":[{"op":"set_param","id":"glow","value":1.0}]}'   # a batch 
 organon recipe nebula                                # a whole described look at once
 ```
 
+`organon console …` is a **separate namespace, and it dresses the console itself** —
+the lit surface behind the terminal text, not the world in front of it:
+
+```
+organon console background <name>    # the surface behind the glyphs
+organon console rig <name>           # how that surface is lit
+```
+
+Reach for it when the ask is about *the workspace* ("make the background darker",
+"warmer light"); reach for the world verbs above when the ask is about *what Organon
+is rendering*. It only means anything while an Organon Console is running, and it
+changes nothing a `snap` would show. `--help` lists the accepted names — ask it
+rather than guessing, exactly as with parameters.
+
 Your changes ride an **override lane**. Two rules follow from that:
 
 - **The human always wins.** If a person moves a physical slider for a parameter
