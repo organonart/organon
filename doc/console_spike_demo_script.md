@@ -45,12 +45,19 @@ library are Tier 2's.
 
 ---
 
-### 3 — "Watch — I'll ask for a different one." · Tier 2 · **not yet**
+### 3 — "Watch — I'll ask for a different one." · Tier 2 · **landed** (perform with slate/metal)
 
 Ask the agent in English for a different surface. It issues `organon console background`.
 
 *The point:* not the render — that you asked in a sentence and a real machine changed.
 *Check:* under a second, no flicker, no relayout of the grid.
+*Checked 2026-08-11 on organon-one:* `background metal` / `rig daylight` / back to `slate`
+land within a frame of the drain, prompt row pixel-identical across switches. **Two of the
+four materials are demo-grade today** — slate (Tier 1's look, formalized) and metal (dark
+anisotropic brushed steel, genuinely good). Graphite reads as light corduroy and paper as
+blotchy static — taste-debt with named dials (graphite: darken the albedo stops, widen the
+stripe period; paper: pull contrast/AO, tighten the gradient), fix in flight. Perform the
+beat with slate ↔ metal ↔ world until then.
 
 ---
 
