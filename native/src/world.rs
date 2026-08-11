@@ -1385,6 +1385,13 @@ pub struct World {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    // Console Spike Tier 1 — the substrate rig: an ABSOLUTE camera, where everything
+    // above it is relative. `Some((center, yaw, pitch, distance, roll, fov_deg))`
+    // overrides all six at the finalization below, exactly as the rails branch does,
+    // and latches off the `cam_center` auto-follow while it is installed. Set by
+    // `set_substrate_rig`; the only caller today is Organon Shell's backdrop, which
+    // frames a flat plane and cannot have the field's AABB dragging the centre.
+    substrate_rig: Option<(Vec3, f32, f32, f32, f32, f32)>,
     // Rails mode (#187): set each frame from the active generator. While riding,
     // drag steers `rail_off` (a bore-clamped X/Y camera offset) instead of the
     // orbit; `rails_bore` mirrors the ACTIVE block's bore for the input clamp.
@@ -1745,6 +1752,7 @@ impl World {
             yaw: 0.7,
             pitch: 0.45,
             distance: 520.0,
+            substrate_rig: None,
             rails_active: false,
             rails_ride: false,
             channel_yaw: 0.0,
@@ -5267,7 +5275,14 @@ impl World {
         if !bounds.min.is_finite() || !bounds.max.is_finite() {
             bounds = math::Bounds { min: Vec3::splat(-1.0), max: Vec3::splat(1.0) };
         }
-        self.cam_center = self.cam_center.lerp(bounds.center(), 0.05);
+        // Console Spike Tier 1: latched off while a substrate rig is installed. That rig
+        // supplies its own centre, so the lerp would not move this frame's camera — but it
+        // would keep integrating against the field's AABB and then resume mid-flight the
+        // moment the rig is cleared. A plane centred on the origin makes the auto-follow a
+        // fixed point *by coincidence*; this is the part that does not depend on that.
+        if self.substrate_rig.is_none() {
+            self.cam_center = self.cam_center.lerp(bounds.center(), 0.05);
+        }
 
         // Metaball mode (surface_mode 3): turn the node set into field points. The
         // colour is the per-node tint when a palette/HSV sweep is active, else the
@@ -6486,15 +6501,31 @@ impl World {
         // FOV (#307 Tier 2): base × the move's fov_mul × the dolly-zoom couple (push
         // in → widen, pull out → narrow, keeping the subject sized — the vertigo).
         let fov_base = if s.cam_frame[1] > 1.0 { s.cam_frame[1] } else { 45.0 };
+        // ⚠️ The floor is 4°, not 10°, and it is clamped in TWO places — here and in
+        // `build_uniforms` (the `perspective_rh` call). They clamp the same number, so moving
+        // one alone is a silent no-op. Widened by the Console Spike's Tier 1: framing a flat
+        // backdrop plane wants a long lens, and 10° was the floor a near-orthographic rig ran
+        // into first. `CAM_NEAR`/`CAM_FAR` did not move with it — a 127-unit plane frames at
+        // ≈408 world units at 10° and ≈1023 at 4°, both well inside 0.1..5000.
         let fov_deg = (fov_base * off.fov_mul * (1.0 + s.cam_frame[2] * (1.0 - auto_dist)))
-            .clamp(10.0, 120.0);
+            .clamp(4.0, 120.0);
+        // Substrate (Console Spike Tier 1): a third arm on this selection, and the first one
+        // tried because it is the most absolute — the whole tuple is computed at once by
+        // `substrate_camera::SubstrateRig::frame_plane` (cover framing for a flat plane at a
+        // named vertical FOV), so nudging any single one of the six would void the framing it
+        // guarantees. It lands HERE and not downstream on purpose: TAA post-multiplies
+        // `view_proj`, so a matrix injected after this point fights the jitter, not rides it.
+        //
         // Rails (#187): forward flight replaces the orbit. The camera sits at
         // the drag-set (bore-clamped) X/Y offset looking straight down −Z; the
         // same eye = center + distance·dir formula produces it with yaw/pitch 0
         // and the look-at center pushed down the corridor, so build_uniforms
         // (and the axes/decoration eye) need no rails-specific path. Auto-orbit
         // and scroll-zoom don't apply while riding.
-        let (cam_center, yaw, pitch, distance, cam_roll, fov_deg) = if self.rails_ride {
+        let substrate = self.substrate_rig;
+        let (cam_center, yaw, pitch, distance, cam_roll, fov_deg) = if let Some(rig) = substrate {
+            rig
+        } else if self.rails_ride {
             let max = self.rails_bore * 0.8;
             let off = Vec3::new(
                 self.rail_off.0.clamp(-max, max),
@@ -10220,6 +10251,30 @@ impl World {
         }
     }
 
+    /// Install (or clear) an **absolute** camera rig — Console Spike Tier 1, for Organon
+    /// Shell's substrate backdrop.
+    ///
+    /// The tuple is `(center, yaw, pitch, distance, roll, fov_deg)` — the six the camera
+    /// finalization selects between, in that order, which is exactly what
+    /// `substrate_camera::SubstrateRig::camera_arm` returns. `Some` overrides all six for as
+    /// long as it is set and **latches off the `cam_center` auto-follow** (the 5 %/frame lerp
+    /// toward the generator field's AABB centre, which a flat backdrop plane must not be
+    /// dragged by); `None` hands the camera back to the orbit/rails rig with nothing left
+    /// behind.
+    ///
+    /// **Absolute is the whole point.** [`apply_camera_input`](World::apply_camera_input) is
+    /// the relative API — deltas onto `yaw`/`pitch`/`distance` — and framing a plane off
+    /// ratcheted deltas is not a rig. Call this again to re-frame; the caller owns the
+    /// arithmetic, and it must re-frame when the render target's **aspect** changes, since the
+    /// engine reads aspect from the target every frame and a rig computed for another one
+    /// stops covering the viewport.
+    // Dead in `bin/visual.rs`, which `#[path]`-includes this file and calls neither this nor
+    // the world's other host-facing setters — same reason `queue()` carries the allow.
+    #[allow(dead_code)]
+    pub fn set_substrate_rig(&mut self, rig: Option<(Vec3, f32, f32, f32, f32, f32)>) {
+        self.substrate_rig = rig;
+    }
+
     /// Whether the world currently wants to be fullscreen (**F**). The host applies it — a
     /// winit window via `set_fullscreen`, an embedded pane by ignoring it (#572 stage 3).
     pub fn wants_fullscreen(&self) -> bool {
@@ -10594,7 +10649,10 @@ fn build_uniforms(
     // Near plane 0.1 (was 1.0) so zooming to the centre doesn't clip geometry off
     // right as you arrive; far 5000 keeps the skybox. The wider ratio costs some
     // depth precision but the scene sits near the origin, so it's not noticeable.
-    let proj = Mat4::perspective_rh(fov_deg.clamp(10.0, 120.0).to_radians(), aspect, CAM_NEAR, CAM_FAR);
+    // The SECOND of the two FOV clamps (the other is at the camera finalization). 4°, widened
+    // from 10° by the Console Spike's Tier 1 for the substrate backdrop's long lens; both had
+    // to move or neither did.
+    let proj = Mat4::perspective_rh(fov_deg.clamp(4.0, 120.0).to_radians(), aspect, CAM_NEAR, CAM_FAR);
     let view_proj = proj * view;
     // The sky reconstructs ray directions from the *unscaled* inverse, so the
     // backdrop stays put while the scene breathes against it.

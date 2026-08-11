@@ -33,6 +33,22 @@ pub const SCRIM_DEFAULT: u8 = 185;
 /// The floor is the inviolable half of PRD §4.6: no setting may trade the glyphs away.
 pub const SCRIM_FLOOR: u8 = 96;
 
+/// The scrim's alpha for a given `ORGANON_SHELL_SCRIM` value — parse, default, **floor**.
+/// `None` is "unset".
+///
+/// Extracted from [`draw`] by the Console Spike's Tier 1 (brief R1 (b)): the floor is the one
+/// inviolable rule in this file and it lived in an expression nothing could reach. As a
+/// function it is a test — over every byte, and over the inputs that do *not* parse.
+///
+/// ⚠️ **A value that fails the `u8` parse falls back to the DEFAULT, not to the floor.** `300`,
+/// `-1`, `0.5` and `abc` are all "unset" as far as this is concerned, which is the same
+/// swallowing that made `--help`'s original `<0..1>` a silent no-op. It is the tolerant
+/// behaviour and it is deliberate — but it means the floor is what protects the glyphs, and the
+/// default is merely where a typo lands.
+pub fn scrim_alpha(env: Option<&str>) -> u8 {
+    env.and_then(|v| v.parse::<u8>().ok()).unwrap_or(SCRIM_DEFAULT).max(SCRIM_FLOOR)
+}
+
 /// The 16 ANSI colors, phosphor-leaning but conventional enough that TUI color
 /// schemes read as intended.
 const ANSI16: [egui::Color32; 16] = [
@@ -206,12 +222,8 @@ pub fn draw(ui: &mut egui::Ui, session: &mut TermSession, backdrop: Option<egui:
             // The legibility scrim over the render: the engine glows through, the
             // text never fights it. `ORGANON_SHELL_SCRIM` tunes the reveal — but the
             // floor is structural, so no setting can trade the glyphs away
-            // (PRD §4.6, the inviolable half). See [`SCRIM_DEFAULT`]/[`SCRIM_FLOOR`].
-            let scrim: u8 = std::env::var("ORGANON_SHELL_SCRIM")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(SCRIM_DEFAULT)
-                .max(SCRIM_FLOOR);
+            // (PRD §4.6, the inviolable half). See [`scrim_alpha`], which owns the rule.
+            let scrim = scrim_alpha(std::env::var("ORGANON_SHELL_SCRIM").ok().as_deref());
             painter.rect_filled(
                 rect,
                 0.0,
@@ -339,6 +351,29 @@ pub fn draw(ui: &mut egui::Ui, session: &mut TermSession, backdrop: Option<egui:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The floor holds against anything.** PRD §4.6's inviolable half, as a test rather than
+    /// a comment: no `ORGANON_SHELL_SCRIM` value — in range, out of range, negative, empty,
+    /// unset or nonsense — can put the scrim below [`SCRIM_FLOOR`] and trade the glyphs away.
+    #[test]
+    fn no_scrim_setting_can_cross_the_floor() {
+        // The hostile set: the two ends of the byte scale, the forms that fail the parse (an
+        // out-of-range number, a negative, the `<0..1>` spelling the first `--help` invented),
+        // and unset.
+        assert_eq!(scrim_alpha(Some("0")), SCRIM_FLOOR, "0 must be lifted to the floor");
+        assert_eq!(scrim_alpha(Some("95")), SCRIM_FLOOR);
+        assert_eq!(scrim_alpha(Some("255")), 255, "the top of the scale is honoured");
+        assert_eq!(scrim_alpha(None), SCRIM_DEFAULT, "unset is the default");
+        for junk in ["", " ", "abc", "0.5", "-1", "300", "96 ", "0x60"] {
+            assert_eq!(scrim_alpha(Some(junk)), SCRIM_DEFAULT, "{junk:?} must fall back");
+        }
+        // And exhaustively over the whole byte scale — the property, not a sample of it.
+        for v in 0u16..=255 {
+            let a = scrim_alpha(Some(&v.to_string()));
+            assert!(a >= SCRIM_FLOOR, "scrim {v} produced {a}, below the floor");
+            assert_eq!(a, (v as u8).max(SCRIM_FLOOR));
+        }
+    }
 
     /// The 256-color cube math, pinned at its corners.
     #[test]

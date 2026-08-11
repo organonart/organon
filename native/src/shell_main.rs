@@ -9,13 +9,18 @@
 //! a default-limits device opens the window and then fails to create the engine's
 //! pipelines, so the shell window always negotiates like the renderer host it is.
 //!
-//! Backdrop contract (PRD §4.6): summoned, never imposed — `ORGANON_SHELL_BACKDROP=1`
+//! Backdrop contract (PRD §4.6): summoned, never imposed — `ORGANON_SHELL_BACKDROP`
 //! is tonight's dev summons (the typed `surface` command is tree E's real one), and
-//! the legibility scrim over the render is not optional at any setting.
+//! the legibility scrim over the render is not optional at any setting. The Console
+//! Spike's Tier 1 gave that summons a second value: `1` is the live world, `substrate`
+//! is one flat lit plane. See [`BackdropSource`].
 
 use std::sync::Arc;
 
 use organic_math_native::params::OrganicMathParams;
+use organic_math_native::scene_input;
+use organic_math_native::substrate_camera::SubstrateRig;
+use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
@@ -45,8 +50,101 @@ struct Gpu {
 const BACKDROP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const BACKDROP_SAMPLE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// The engine's frame behind the glyphs: window-sized, recreated on resize only,
-/// rebound to the same egui id (`register_scene_texture`'s no-leak discipline).
+/// Console Spike Tier 1 — what fills the backdrop texture.
+///
+/// `ORGANON_SHELL_BACKDROP`'s value space is **widened, not replaced**: unset and `0` are
+/// off, anything else is the World exactly as before, and one new spelling selects the lit
+/// substrate plane. Keeping the World selectable is not politeness — the CLI's override lane
+/// (`organon set`/`generator`/`recipe`) drains inside `World::frame_body`, so a substrate
+/// that *replaced* the World would silently kill the live response the console demos
+/// (brief R1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackdropSource {
+    Off,
+    World,
+    Substrate,
+}
+
+/// The one new `ORGANON_SHELL_BACKDROP` value, quoted by the parser *and* by `--help` so the
+/// two cannot drift — the discipline `SCRIM_DEFAULT` already earned here.
+const BACKDROP_SUBSTRATE: &str = "substrate";
+
+/// `ORGANON_SHELL_BACKDROP` → a source. `None` is "unset". Pure, so the value space is a
+/// test rather than a claim.
+fn parse_backdrop_source(v: Option<&str>) -> BackdropSource {
+    match v {
+        None | Some("0") => BackdropSource::Off,
+        Some(s) if s.eq_ignore_ascii_case(BACKDROP_SUBSTRATE) => BackdropSource::Substrate,
+        Some(_) => BackdropSource::World,
+    }
+}
+
+/// The substrate lens, in **vertical** degrees — vertical is what the engine takes
+/// (`world.rs:10564-10567`), and an axis mix-up is silent.
+///
+/// 10°, and the width is the deliverable rather than a framing detail: a flat plane under a
+/// uniform material shades to one constant colour when the view vector does not vary (brief
+/// R5), so the frustum's diagonal half-angle **is** the shading gradient. At 10° / 16:9 that
+/// is `substrate_camera::max_view_deviation_deg` ≈ 10.1°. Narrower is now reachable — this
+/// tier moved the engine's FOV clamp floor to 4° at both sites — and 4° frames the same plane
+/// from ≈1023 world units with ≈4.1° of gradient. That headroom is deliberate and unspent: it
+/// is the dial to turn if the backdrop reads as too much perspective.
+const SUBSTRATE_FOV_DEG: f32 = 10.0;
+
+/// The substrate plane's side in world units, **derived from the sheet the look actually
+/// builds** rather than restated: `substrate_scene`'s lattice is `SUBSTRATE_GRID_X` nodes at
+/// the membrane path's hard-coded 1-unit pitch, so it spans one less than that (127). Change
+/// the grid and the framing follows.
+const SUBSTRATE_EXTENT: f32 = substrate_scene::SUBSTRATE_GRID_X - 1.0;
+
+/// The substrate key light's azimuth in degrees — **re-derived for the camera this file
+/// installs**, and the one value of `substrate_scene`'s look that is overridden here.
+///
+/// Leaf B chose −10° against the *stock* camera (yaw 0.7 rad ≈ 40°, pitch 0.45), where it
+/// reads as above-left, and says in as many words that the constant is coupled to whatever rig
+/// the integrator installs. This rig is top-down (yaw 0, pitch ≈ π/2). Under
+/// `look_at_rh(eye ≈ +Y·d, origin, Vec3::Y)` the screen basis comes out
+/// **right = world +X, up = world −Z**: with the ε tilt aside the camera's up-vector has no
+/// world Y left in it, so the key's *elevation* contributes nothing to where the light appears
+/// to be and its azimuth alone decides the compass point. `dir_from_angles` builds the
+/// direction **to** the light as `(cos e·sin a, sin e, cos e·cos a)`, which lands on screen at
+/// `(sin a, −cos a)·cos e` — azimuth 0 reads bottom, 90 right, ±180 top, −90 left. Upper-left
+/// at 45° is therefore **−135°**, and Leaf B's −10° would have read as lower-*left*: the same
+/// light, a different camera. The derived fill follows for free at `a − 120° ≡ +105°`, from the
+/// right and slightly above. In range (−180..180, `params.rs:8554`).
+///
+/// 📌 Checked, because it would have made this constant inert: `build_uniforms` **replaces**
+/// `key_dir` with the terrain sun when the terrain backdrop is on with "sun lights scene". It
+/// is gated on `terrain[0]`, and `terrain_enabled` defaults to **false** (`params.rs:8908`) —
+/// `substrate_scene` writes neither, so the key stays ours. (That gate is the *terrain*
+/// backdrop, not the atmosphere: `atmos_enabled` does default true and is exactly the sky this
+/// rig wants for its IBL.)
+///
+/// It lives here and not in `substrate_scene.rs` because the coupling runs this way round: the
+/// look is camera-agnostic, and the camera is this file's.
+const SUBSTRATE_KEY_AZIMUTH_DEG: f32 = -135.0;
+
+/// The `Shared` snapshot the console publishes every redraw, for a given backdrop source.
+///
+/// The substrate look is a **one-shot** write into it — the publisher (`redraw`'s
+/// `w.write(*self.shared)`) then carries it every frame, so there is no per-frame substrate
+/// path to keep in step. This function is the *only* place substrate state reaches the
+/// snapshot, and it is a function rather than four lines inside `Shell::new` precisely so
+/// "at any other source the bytes are exactly today's default look" is a test.
+fn initial_shared(source: BackdropSource) -> Box<ipc::Shared> {
+    let mut s = Box::new(OrganicMathParams::default().to_shared());
+    if source == BackdropSource::Substrate {
+        substrate_scene::apply_substrate_look(&mut s);
+        // Last, and deliberately after the look: see [`SUBSTRATE_KEY_AZIMUTH_DEG`] for why
+        // this one value is the camera's business and not the look's.
+        s.lighting[4] = SUBSTRATE_KEY_AZIMUTH_DEG;
+    }
+    s
+}
+
+/// The engine's frame behind the glyphs: sized to the **pane it is painted into** (not the
+/// window — see [`Shell::render_backdrop`]), recreated when that size changes, rebound to the
+/// same egui id (`register_scene_texture`'s no-leak discipline).
 struct Backdrop {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -76,7 +174,12 @@ struct Shell {
     /// only into [`Shell::backdrop`], never the swapchain.
     world: World,
     backdrop: Option<Backdrop>,
-    backdrop_on: bool,
+    backdrop_source: BackdropSource,
+    /// The terminal pane's size in **points** and the scale that turns it into physical
+    /// pixels, recorded at the end of each frame and consumed by the next frame's
+    /// [`Shell::render_backdrop`]. `None` until the first frame has laid the panel out.
+    pane_points: Option<(f32, f32)>,
+    pane_scale: f32,
     /// The `Shared` snapshot writer (organon-shell namespace). In the two-process
     /// design the PLUGIN writes this; Shell has no plugin, so the terminal writes
     /// the default look itself — which is what makes `organon status`/`get`/`watch`
@@ -95,6 +198,9 @@ impl Shell {
     fn new() -> Self {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
+        let source =
+            parse_backdrop_source(std::env::var("ORGANON_SHELL_BACKDROP").ok().as_deref());
+        let shared = initial_shared(source);
         Self {
             window: None,
             gpu: None,
@@ -110,9 +216,11 @@ impl Shell {
             quit: false,
             world: World::new(),
             backdrop: None,
-            backdrop_on: std::env::var("ORGANON_SHELL_BACKDROP").is_ok_and(|v| v != "0"),
+            backdrop_source: source,
+            pane_points: None,
+            pane_scale: 1.0,
             shared_writer: None,
-            shared: Box::new(OrganicMathParams::default().to_shared()),
+            shared,
             occluded: false,
         }
     }
@@ -340,13 +448,50 @@ impl Shell {
         self.sync_title();
     }
 
-    /// The engine's frame, window-sized, behind the glyphs (tree E Tier 1).
+    /// The engine's frame, sized to the pane it is painted into, behind the glyphs (tree E
+    /// Tier 1; Console Spike Tier 1 fixed its aspect and gave it a second source).
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
-        if !self.backdrop_on {
+        if self.backdrop_source == BackdropSource::Off {
             return None;
         }
-        let gpu = self.gpu.as_ref()?;
-        let (w, h) = (gpu.config.width.max(1), gpu.config.height.max(1));
+        let swapchain = {
+            let gpu = self.gpu.as_ref()?;
+            (gpu.config.width.max(1), gpu.config.height.max(1))
+        };
+        // ⚠️ **The pane, not the window.** `term_view` paints this texture at UV 0..1 into the
+        // CentralPanel's rect, which egui has already shrunk by the 30-point tab strip declared
+        // ahead of it — so a swapchain-sized texture is stretched vertically by exactly that
+        // strip. Brief R1 and R4 found the same defect from two directions; it is invisible on
+        // a generative world and glaring on a flat plane, which is why it is fixed here in the
+        // same tier that puts a plane behind the glyphs. This changes `BACKDROP=1`'s rendering
+        // too, on purpose.
+        //
+        // One frame behind by construction — the world is drawn before the interface that
+        // reserves its rect runs — and clamped rather than trusted, both exactly as
+        // `wgpu_editor::render_scene_pane` does it. `pane_pixels` carries the clamps and their
+        // reason: egui hands back a zero or negative rect for a frame mid-resize, and a
+        // zero-sized texture is a validation error rather than a blank pane. Frame one has no
+        // rect yet and falls back to the swapchain, i.e. to today's behaviour for one frame.
+        let (w, h) = match self.pane_points {
+            Some(pt) => scene_input::pane_pixels(pt, self.pane_scale),
+            None => swapchain,
+        };
+
+        // Total over the source rather than only the substrate arm, so a runtime switch
+        // (Tier 2's `organon console background`) needs no new wiring: the World arm actively
+        // CLEARS the rig instead of leaving the camera framing a plane that is no longer
+        // being drawn. Under `=1` this writes `None` over `None` every frame.
+        if self.backdrop_source == BackdropSource::Substrate {
+            // Re-framed every frame, which is how resize is handled without a staleness flag
+            // to get wrong: the rig is computed for ONE aspect and the engine reads its own
+            // from the render target, so a stale rig is a plane that no longer covers the
+            // pane — Leaf A's re-frame warning. It costs six floats of trigonometry.
+            let aspect = w as f32 / h.max(1) as f32;
+            let rig = SubstrateRig::frame_plane(SUBSTRATE_EXTENT, SUBSTRATE_FOV_DEG, aspect);
+            self.world.set_substrate_rig(Some(rig.camera_arm()));
+        } else {
+            self.world.set_substrate_rig(None);
+        }
 
         let rebind = self.backdrop.as_ref().is_none_or(|b| b.size != (w, h));
         if rebind {
@@ -456,6 +601,10 @@ impl Shell {
         let default_harness = self.default_harness.as_str();
         let sessions = &mut self.sessions;
         let mut action: Option<TabAction> = None;
+        // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
+        // (see `render_backdrop`). Taken from the same `ui` and by the same call
+        // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
+        let mut pane_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
             ctx.input(|i| {
@@ -481,6 +630,9 @@ impl Shell {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(term_view::DEFAULT_BG))
                 .show(ctx, |ui| {
+                    // Before anything is allocated in it — `term_view::draw`'s own first act
+                    // is this same call.
+                    pane_rect = Some(ui.available_rect_before_wrap());
                     if let Some(session) = sessions.get_mut(active) {
                         term_view::draw(ui, session, backdrop);
                     } else {
@@ -491,6 +643,10 @@ impl Shell {
                 });
         });
         state.handle_platform_output(window, out.platform_output);
+        // What the next frame's backdrop is sized to. Points plus the scale, never pixels:
+        // the conversion belongs with the clamps in `pane_pixels`.
+        self.pane_points = pane_rect.map(|r| (r.width(), r.height()));
+        self.pane_scale = out.pixels_per_point;
         if let Some(action) = action {
             self.apply(action);
         }
@@ -641,7 +797,8 @@ fn help_text() -> String {
              -V, --version    print the version and exit\n\
          \n\
          Environment:\n    \
-             ORGANON_SHELL_BACKDROP=1     render the Organon world behind the glyphs\n    \
+             ORGANON_SHELL_BACKDROP=<src> behind the glyphs: 0/unset off, 1 the world,\n                                 \
+             {substrate} the lit substrate plane\n    \
              ORGANON_SHELL_SCRIM=<0..255> legibility scrim alpha (default {scrim_default}, floor {scrim_floor})\n    \
              ORGANON_SHELL_TABS=a,b,c     open these harness ids at start\n    \
              ORGANON_SHELL_DEFAULT=<id>   harness for the first tab (else Pi if installed)\n    \
@@ -653,6 +810,7 @@ fn help_text() -> String {
          Docs: SHELL_ARCHITECTURE.md\n",
         EDITION.product_name(),
         EDITION.tagline(),
+        substrate = BACKDROP_SUBSTRATE,
         scrim_default = term_view::SCRIM_DEFAULT,
         scrim_floor = term_view::SCRIM_FLOOR,
     )
@@ -722,6 +880,62 @@ mod cli_tests {
             h.contains(&format!("floor {}", organon_shell::term_view::SCRIM_FLOOR)),
             "help does not quote SCRIM_FLOOR"
         );
+    }
+
+    /// The backdrop's value space, both halves: the new spelling reaches the substrate, and
+    /// **every other value still means what it meant before**. That second half is the point —
+    /// Tier 1 widened `ORGANON_SHELL_BACKDROP` rather than redefining it, and a console that
+    /// quietly stopped rendering the World would take the CLI's live override lane with it.
+    #[test]
+    fn the_backdrop_value_space_is_widened_not_redefined() {
+        assert_eq!(parse_backdrop_source(None), BackdropSource::Off);
+        assert_eq!(parse_backdrop_source(Some("0")), BackdropSource::Off);
+        assert_eq!(parse_backdrop_source(Some(BACKDROP_SUBSTRATE)), BackdropSource::Substrate);
+        assert_eq!(parse_backdrop_source(Some("SUBSTRATE")), BackdropSource::Substrate);
+        // Every spelling that was "on" before is still the World, including the ones nobody
+        // types: the old rule was literally `!= "0"`.
+        for on in ["1", "2", "", "true", "yes", "substrat", "substratee"] {
+            assert_eq!(parse_backdrop_source(Some(on)), BackdropSource::World, "{on:?}");
+        }
+    }
+
+    /// **`ORGANON_SHELL_BACKDROP=1` publishes today's bytes, unchanged.** The snapshot the
+    /// console writes every redraw is what `organon status`/`get`/`watch` read and what the
+    /// world renders from, so a substrate write leaking into the World source would change the
+    /// product's whole default look — quietly, since it would still render something. The
+    /// claim is checked against the raw bytes rather than a field list, which is the only form
+    /// that cannot be outgrown by a future look constant.
+    #[test]
+    fn only_the_substrate_source_touches_the_published_snapshot() {
+        let base = OrganicMathParams::default().to_shared();
+        for src in [BackdropSource::Off, BackdropSource::World] {
+            assert_eq!(
+                bytemuck::bytes_of(&*initial_shared(src)),
+                bytemuck::bytes_of(&base),
+                "{src:?} must publish exactly today's default look"
+            );
+        }
+        let sub = initial_shared(BackdropSource::Substrate);
+        assert_ne!(bytemuck::bytes_of(&*sub), bytemuck::bytes_of(&base), "substrate is a look");
+        // The azimuth override is applied AFTER the look, and really does replace it — the
+        // ordering is the whole content of that constant's doc comment.
+        assert_eq!(sub.lighting[4], SUBSTRATE_KEY_AZIMUTH_DEG);
+        assert_ne!(
+            SUBSTRATE_KEY_AZIMUTH_DEG,
+            substrate_scene::SUBSTRATE_KEY_AZIMUTH_DEG,
+            "if the leaf ever adopts this camera's azimuth, delete the override rather than \
+             keeping two constants that agree"
+        );
+    }
+
+    /// The new value is documented, and quoted from the constant the parser uses — the same
+    /// reason the scrim line is formatted rather than restated. A `substrate` that worked and
+    /// was undocumented would be `ORGANON_SHELL_PTY_DEBUG`'s mistake a second time.
+    #[test]
+    fn the_backdrop_line_documents_the_substrate_value() {
+        let h = help_text();
+        assert!(h.contains(BACKDROP_SUBSTRATE), "help does not name the substrate source");
+        assert!(h.contains("0/unset off"), "help does not say what unset means");
     }
 
     /// The help text has to name the environment variables, because they ARE the interface —
