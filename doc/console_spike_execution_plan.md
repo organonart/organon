@@ -70,6 +70,13 @@ Code tab, run `htop` (WSL) in a third, and confirm `ORGANON_SHELL_BACKDROP=1` sh
 behind the glyphs. **If Tier 0 does not work on this machine, nothing below is a plan — it is
 a wish.** Fix that first and record what it took.
 
+✅ **Verified 2026-08-10 on organon-one** — the full record, including what did not work
+(the native `claude` harness is not on this machine's PATH; the default look is not
+demo-grade at rest; `snap`/`record` have no reply side in-console), is the Tier 0 section
+of `console_spike_as_built_brief.md`. One rule it produced: **a second console instance
+always forks `ORGANON_IPC_NS`** — two instances in one namespace are two seqlock writers
+on one mmap.
+
 ---
 
 ## 3. The parallelization model
@@ -146,6 +153,10 @@ point of settling it away from a demo deadline.
 Six independent read-only questions. Dispatch all six at once; none depends on another.
 Each returns a written answer with file paths and line references, no code changes.
 
+✅ **Ran 2026-08-10; the brief is ANSWERED.** Read `console_spike_as_built_brief.md` before
+dispatching any tier — several tier descriptions below were corrected by it, and the
+corrections are folded into §5 and §6.
+
 **R1 — the compositing seam.** In `shell_main.rs`, where exactly is the `World` rendered and
 painted under the glyphs? Function signatures, the render-target format, and what the
 "measured render-sRGB/sample-linear gamma pair" concretely is. **What would a second,
@@ -208,20 +219,24 @@ it — do not power through a conflict.**
 
 | Lane | Owns | Output |
 |---|---|---|
-| Leaf A | new `substrate/camera.rs` | near-ortho rig as a pure function; tests for projection, and edge-to-centre view-vector deviation within a documented bound |
-| Leaf B | new substrate scene + shader (path per R5) | one plane, one material, one lighting rig |
-| Integrator | `shell_main.rs`, `SHELL_ARCHITECTURE.md` | wire into the backdrop seam; assert `SCRIM_FLOOR` holds |
+| Leaf A | new `substrate/camera.rs` (root crate) | narrow-FOV **perspective** rig as a pure function (not true ortho — R2); tests for projection, and edge-to-centre view-vector deviation **as a function of aspect** — vertical FOV is what the engine takes |
+| Leaf B | new substrate `Shared`-state builder (pure, root crate) | one plane via `RenderPath::Membrane` — **no new shader** (R5); per-vertex albedo + the narrow FOV carry the read |
+| Integrator | `shell_main.rs`, `world.rs`, `term_view.rs`, `SHELL_ARCHITECTURE.md`, `doc/arch/render.md` | wire into the backdrop seam **fixing its aspect** (size the texture to the panel rect — R1/R4: it is stretched today); the `world.rs` camera arm + both FOV clamps + the auto-follow latch (R2); extract a testable `scrim_alpha` and assert `SCRIM_FLOOR` holds |
 
-Leaves A and B are genuinely concurrent — A is arithmetic, B is a surface. They meet only at
-the integrator.
+Leaves A and B are genuinely concurrent — A is arithmetic, B is a state builder. They meet
+only at the integrator. **The World stays selectable as a backdrop source beside the
+substrate** — replacing it kills the live `organon set/generator/recipe` response (the
+override lane drains inside `World::frame_body`; R1). If the plane wants the #472 material
+maps, that gate lift (`render.rs:3640-3654`) is Tier 2's; Tier 1 ships per-vertex albedo
+and FOV shading only.
 
 ### Tier 2 — change it by asking
 
 | Lane | Owns | Output |
 |---|---|---|
-| Leaf A | the material set | four materials worth showing, two lighting rigs |
-| Leaf B | command specs | `organon console background <name>`, registered so `--help` lists it, args validated |
-| Integrator | `shell_main.rs`, dispatch path | dispatch → live substrate change, under a second, no grid relayout |
+| Leaf A | the material set, + the map-gate lift in `render.rs:3640-3654` | four materials worth showing (graphite/paper/slate need the #472 maps, which the Membrane path cannot sample until the gate lifts — R5); two lighting rigs (the fill's direction is derived, not aimable — promise intensity only) |
+| Leaf B | the CLI arm: `ctl.rs` + `cli.rs` `console` subcommand | `organon console background <name>` in clap `--help`, args validated; ops written to a NEW `ns_file("console.txt")` sidecar — **not** `CliOp`/`cli.txt`, which the World drains, not the Shell (R3) |
+| Integrator | `shell_main.rs`, `SHELL_ARCHITECTURE.md` | stand up the product's **first `CommandService` instance** (specs must register into something real — none exists in the product today, R3); drain `console.txt` in the frame path; dispatch → live substrate change, under a second, no grid relayout |
 
 ### Tier 3 — the strip *(the biggest tier)*
 
@@ -235,14 +250,23 @@ Because the vocabulary is settled, all four leaves fan out at once:
 
 | Lane | Owns | Output |
 |---|---|---|
-| Leaf A | schema types + serde + the `organon --discover` emitter | round-trip tests, tolerant defaults, the test list at the end of the schema doc |
-| Leaf B | catalog → command-service adapter | `core_catalog` entries become `CommandSpec`s — the one-table keystone. Also where descriptors get **generated** rather than authored (schema doc, I2), guarded by `taper_round_trips_against_the_engine_range` |
-| Leaf C | new reserved-row module | pure arithmetic: window rows − strip rows → PTY rows, tested across resize and fractional scale |
-| Leaf D | the strip widget | the existing tab strip extracted to be data-driven: labels in, index out, callback |
-| Integrator | `shell_main.rs`, `term_view.rs`, `term.rs` | bottom region, PTY resize, click → compose into the input line, prompt-ready buffering |
+| Leaf A | schema types + serde + the emitter; owns `ctl.rs` and `cli.rs` this tier | `cmd` becomes optional; top-level `--discover/--describe/--at/--all` (global flags) handled **before** `to_ctl`, skipping the ~150 ms `is_live` probe (R3); round-trip tests, tolerant defaults, the test list at the end of the schema doc |
+| Leaf B | a NEW root-crate module (e.g. `native/src/console_catalog.rs`) — **not** `organon-shell`, which is forbidden nih-plug (R6) | two pieces, budgeted separately: the field-name↔wire-id **namespace bridge**, generated from `param_table.rs`'s slot lists (a hand-written table would be the fourth copy of the one that already drifted); then `core_catalog` entries → `CommandSpec`s + descriptors **generated** (I2), guarded by `taper_round_trips_against_the_engine_range`. Its `pub mod` line in `lib.rs` belongs to the integrator, added up front |
+| Leaf C | new reserved-row module in `organon-shell` | pure arithmetic, **both directions**: `grid_rows(avail_h, cell_h, strip_rows)` AND `strip_height(strip_rows, cell_h)` — one number, two projections, or points and rows diverge at fractional DPI (R4); saturating sub, floor ≥ 2; empty payload → 0 rows (that IS auto-hide); tested across resize, fractional cell heights, ppp ∈ {1.0, 1.25, 1.5, 2.0, 2.25} |
+| Leaf D | the strip widget (`tabs.rs`) | the existing tab strip extracted to be data-driven: labels in, index out, callback. Fix the stale "along the bottom" module doc and the upward-anchored `+` menu while there (R4) |
+| Integrator | `shell_main.rs`, `term_view.rs`, `term.rs`, `native/src/lib.rs`, `SHELL_ARCHITECTURE.md` | the strip is a bottom `TopBottomPanel` declared **before** the CentralPanel — under that approach `term_view.rs`/`term.rs` need **no arithmetic change** (R4); the one forced structural change is `cell_h` escaping `term_view::draw` (a public `cell_metrics`); suppress auto-hide while scrolled into history (a toggle is a real `Term::resize` and the view jumps a row); tap → compose into the input line, prompt-ready buffering. Taps come from egui widgets in the panel — click→cell mapping is explicitly dropped unless a need appears |
 
 ⚠️ **`term_view.rs` and `term.rs` both belong to the integrator in this tier.** Leaf C writes
-arithmetic in its own file and never calls it from theirs.
+arithmetic in its own file and never calls it from theirs. The `[grid]` debug line keeps
+reporting the **PTY's** rows, or the htop canary goes blind (R4).
+
+📌 **Pre-Tier-3 gate — make the range tables true first.** `agent.rs::id_range` and
+`clip.rs::RANGES` have drifted from `params.rs` on **9 of 45 actuatable ids** (`trans_amp`
+10× on the max; the published `doc/reference/parameters.md` ships the wrong range — R6).
+Land, as its own change before any Tier 3 leaf dispatches: the round-trip test (it fails on
+9 ids today — that is the point), the tables re-derived from or pinned to `params.rs`,
+`recipe.rs` bounds included, `doc/reference/` regenerated. Tier 3 then builds on a table
+that is already true.
 
 ### Tier 4 — it scrolls, and it remembers
 
@@ -268,7 +292,10 @@ check passes, ship T1–T4 and cut it.
 1. **One writer per file, declared before dispatch.** No exceptions, no "I'll just add one
    line."
 2. **No sub-agent touches `shell_main.rs`, `term_view.rs`, `native/src/lib.rs`, `Cargo.toml`,
-   or `SHELL_ARCHITECTURE.md`** except the current tier's integrator.
+   `SHELL_ARCHITECTURE.md`, `native/src/world.rs`, or `organon-render/src/render.rs`** except
+   the current tier's integrator — the last two joined the list in Phase 0 (R2/R3/R5: the
+   camera arm, the CLI drain and the membrane path all live in them). `ctl.rs`, `cli.rs` and
+   `agent.rs` are one-writer-per-tier by the declarations in §5.
 3. **Every leaf lands with tests that pass without a GPU and without an egui context.** A
    leaf that cannot be tested headless is integration in disguise — reclassify it.
 4. **If two agents must touch overlapping ground, give them isolated worktrees** rather than
