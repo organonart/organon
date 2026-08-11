@@ -11,6 +11,40 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — Tier 4: it scrolls, and it remembers
+
+- **A look applies forward; history keeps its own.** `organon console background <name>`
+  now closes the current backdrop look at the line the cursor is on and opens the next one
+  below it, so the new look **scrolls in from the bottom** as output pushes the old text up,
+  and every older region of scrollback keeps the look it was written under. Scroll up
+  through a session with three changes in it and you scroll back through three looks.
+  Nothing is ever restyled after the fact — there is no restyle-everything path, on purpose.
+- **The picture of a look is taken when it stops being live.** The backdrop texture already
+  *is* that look's rendering, so it is copied into a texture of its own the moment the look
+  changes, before the next one renders. That is the whole mechanism: no past look is ever
+  re-derived or re-rendered, which is what keeps the cost bounded and the history honest.
+- **A small, honest, logged cap.** Eight epochs — 63 MiB of pane-sized textures at 1080p,
+  253 MiB at 4K, stated rather than described. Past it the two oldest merge, the newer look
+  surviving so what is lost is furthest from the cursor, and every eviction prints
+  `[epochs] evicted <look> @ line <n> (cap 8)` to stderr. Eight is deliberately small enough
+  that the eviction path actually runs in a long session instead of being untested safety
+  code.
+- **`background world` and `background off` collapse the history** instead of adding a look.
+  A live world is not a still life and freezing a frame of it would be a lie labelled a
+  look; `off` has no picture at all. The rows written while the backdrop was off keep their
+  plain background afterwards, because the epoch that owns them has no picture to paint.
+- **Two new pure modules, both testable without a GPU or a window**:
+  `organon-shell/src/scroll_anchor.rs` (absolute line indices → viewport bands: emission
+  ages a boundary for free, scrolling moves the window not the text, a row resize needs no
+  bookkeeping, and the alternate screen is always exactly one band) and
+  `native/src/substrate_epochs.rs` (the ledger, the cap, the merge, and the texture
+  decisions as data).
+- Known and recorded rather than hidden: a resized pane **stretches** cached history into
+  its bands (the live band stays exact), the eviction counter under-counts rather than
+  over-counts once scrollback is full, and a column resize can slide a band edge by the
+  number of wrapped rows above it. `SHELL_ARCHITECTURE.md`'s honesty ledger carries each
+  one with its reason.
+
 ### Console Spike — Tier 2: a backdrop you can type at
 
 - **`organon console background <name>` changes the console's backdrop live.** Four

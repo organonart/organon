@@ -182,6 +182,67 @@ position.
   exactly as it found it. Nothing else moves on a switch: the backdrop texture is keyed
   on the pane size, which a command does not change, so no texture is recreated, no egui
   id is rebound and no glyph is re-laid-out.
+- **Look-epochs — the backdrop applies FORWARD, history keeps its own (#4 T4)** — a
+  `background` or `rig` command closes the live look at the current absolute scrollback
+  line and opens the next one **just below the cursor**, so the new look scrolls in from
+  the bottom as output pushes the old text up, and every older region of the buffer keeps
+  the look it was written under. Nothing is ever restyled after the fact; there is no
+  restyle-everything path and building one was explicitly declined (the execution plan's
+  ⚡ Sequence amendment).
+
+  Three pieces, each of which knows nothing about the other two:
+
+  1. **`scroll_anchor.rs` (organon-shell) — the arithmetic.** Absolute line indices:
+     `abs = screen_top + grid_line`, `screen_top = dropped + history_size`, **derived every
+     frame rather than accumulated**, which is what makes emission age a boundary for free,
+     scrolling move the window rather than the text, and a *row* resize need no bookkeeping
+     at all (`grow_lines` pulls lines out of history and the cursor follows by the same
+     count). Bands partition the viewport, edges monotone, and the **alt screen is always
+     exactly one band** — the alt grid is built with zero scrollback, so its geometry says
+     nothing about absolute lines. No egui, no alacritty, no wgpu.
+  2. **`substrate_epochs.rs` (root crate) — the ledger.** Which look ran from which line,
+     `Look` = `(material, rig)` **names**, never bytes. `MAX_EPOCHS = 8`, which is a
+     stateable ceiling rather than an adjective: 63.3 MiB of pane-sized RGBA8 at 1080p,
+     253.1 MiB at 4K (`worst_case_bytes`, pinned by test). Past the cap the two oldest
+     epochs **merge**, the **newer** of the pair surviving so the loss concentrates on the
+     rows furthest from the cursor, and the loser comes back carrying the exact stderr line
+     to print (`[epochs] evicted graphite/studio @ line 1200 (cap 8)`). `plan()` returns
+     the texture decisions as data — releases first, the live epoch second, the rest oldest
+     first. It owns no GPU object and no scroll geometry.
+  3. **`shell_main.rs` — the wiring.** One `PaneLooks` per tab (anchor + ledger + texture
+     cache), **index-aligned with `sessions`**, because scrollback is per tab: each pane
+     records the same look change at its own cursor, in its own coordinate.
+
+  Four things about that wiring are load-bearing:
+
+  - **Snapshot on close is the only way a picture is ever made.** When a look stops being
+    live, the backdrop texture *is* its rendering — so it is copied
+    (`copy_texture_to_texture` into a `COPY_DST` twin, the same `Rgba8UnormSrgb` storage
+    with an `Rgba8Unorm` sample view, `COPY_SRC` newly added to the live texture) and keyed
+    by `EpochId` **before the new look's first frame renders**. This happens in the command
+    drain, which runs before `render_backdrop`, i.e. in the last frame that picture exists.
+    Ids, not band indices: an eviction shifts every index and would look like "all of them
+    changed". One copy per change for the whole window, shared across tabs by `Rc` and
+    freed when the last tab drops it.
+  - **One counter, one site.** `term_view::PaneAnchor::pump` is the only place the anchor's
+    `dropped` advances, and it is the only pump the console calls — the redraw loop pumps
+    every tab and `term_view::draw` pumps the active one again, so "exactly one site" has
+    to mean one *function*, not one call. The bracket holds the pump and nothing else:
+    `resize` moves `history_size` and the wheel moves `display_offset` without a line being
+    emitted, and either inside it would be counted as output.
+  - **The band table drops the ledger's first boundary.** The ledger records the line every
+    epoch opened at, including the oldest; `scroll_anchor` counts boundaries at or below a
+    line, so it wants only the changes *between* looks (`textures.len() ==
+    boundaries.len() + 1`). Handing it the list unfiltered shifts every row one epoch
+    younger — uniformly and plausibly. `every_row_paints_the_look_it_was_written_under`
+    checks each visible row against the ledger's independent `band_for_line`.
+  - **`background world` / `off` collapse the history** rather than adding a look. A live
+    World is not a still life and freezing a frame of it would be a lie labelled a look;
+    `off` has no picture at all. Both keep one live epoch and log every epoch they forget.
+    `off` additionally takes **no** snapshot when it later gives way to a substrate look —
+    `render_backdrop` returns before rendering while it is off, so the texture still holds
+    the look from *before* it, and copying that would file a picture under rows it was
+    never behind. Those rows keep the plain background, which is what they were written on.
 - **The landed v2 foundations** (session/event log with torn-tail recovery, the
   typed command service, mock-agent event cards) remain in the crate, feeding
   trees C/D. **`command::CommandService` is no longer only its own tests**: #4 T2 stands
@@ -276,6 +337,45 @@ path silently breaks the three-products-simultaneously guarantee that
   wire. The fix is a `pub const` in `cli.rs` beside `parse_console_op`, already the
   declared home of "both ends speak one vocabulary from one place"; it was left undone
   because `cli.rs` is another leaf's file this tier only reads.
+- **History is STRETCHED after a pane resize, and that is the honest choice.** A cached
+  epoch picture is frozen at the size the pane was when that look closed; a resize leaves
+  it at the old resolution and `band_quads` samples it into the new band anyway. The
+  alternative is re-deriving a past look's `Shared` and re-rendering the world once per
+  epoch, which is precisely the unbounded GPU cost the cap exists to prevent — and it is
+  what "do not build a restyle-everything path" rules out. The **live** band, the one the
+  eye is actually on, is always exact; only history is approximate, and only after a
+  resize. `EpochLedger::plan` still reports those epochs as `Rerender`; the integrator
+  declines that arm on purpose, in a comment that says so.
+- **A closed World epoch's band is one frozen frame of something that was moving.**
+  Switching *to* `world` collapses history, for the reason the plan gives — a live world is
+  not a still life. Switching *away* from it (`world` → `graphite`) snapshots like any other
+  close, so the rows written while the World was live keep a single frame of it. That is
+  true about what was behind those rows and it is still a still of a moving thing; the live
+  band, which renders every frame, is the only one that animates.
+- **A band whose look has no picture paints nothing.** An epoch that closed while the
+  backdrop was `off`, or that predates the tab it is in, has no texture and no way to get
+  one. Its rows show the panel's own background — which is what was behind them at the
+  time — rather than borrowing the neighbouring look's picture. The scrim over it is a
+  no-op by construction: it is `DEFAULT_BG` with an alpha, painted onto `DEFAULT_BG`.
+- **The `dropped` counter UNDER-counts in two regimes, never over-counts.** Once
+  scrollback is full (10 000 lines), an eviction is only observable through the display
+  pin — so at the live edge (`display_offset == 0`), and parked against the top of a full
+  buffer, the counter stalls. History then looks *older* than it is, band edges stop
+  ageing until the pin comes free, and the count is exact again the moment it does. The
+  two honest fixes are outside this tier: raise `SCROLLBACK_LINES`, or count
+  `Grid::scroll_up` at the source (a counter inside `alacritty_terminal`, or a `Handler`
+  decorator around `Term`). The demo is three orders of magnitude away from the cap.
+  Separately, a **column** resize re-wraps rows and genuinely renumbers lines, so a band
+  edge can slide by the number of wrapped rows above it; row changes are exact.
+- **Look history is per tab, and a tab opened later has none.** Each pane's ledger starts
+  collapsed at line 0 with whatever the console is wearing, because it has no rows from
+  before it existed. `EpochId`s are unique only *within* a pane, which is why the texture
+  cache lives on the pane rather than on `Shell`.
+- 🚨 **No GPU has seen the banding.** Every claim above is arithmetic pinned by headless
+  tests — the row→band mapping, the tiling, the length law, the beat as a state machine.
+  Whether the bands *line up with the glyphs* on screen, whether the seam between two
+  looks reads as a seam or as a defect, and whether a stretched history looks acceptable
+  are all things only the beat check can answer.
 - **A console command applies whether or not it can be recorded.** Every drained op goes
   through `CommandService::dispatch`, so in the normal case it leaves a `CommandRun` in a
   real `SessionLog`. If the store cannot be opened there is no service to dispatch
