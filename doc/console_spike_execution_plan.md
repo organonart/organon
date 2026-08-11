@@ -143,7 +143,7 @@ point of settling it away from a demo deadline.
 
 ## 4. Phase 0 — reconnaissance fan-out
 
-Five independent read-only questions. Dispatch all five at once; none depends on another.
+Six independent read-only questions. Dispatch all six at once; none depends on another.
 Each returns a written answer with file paths and line references, no code changes.
 
 **R1 — the compositing seam.** In `shell_main.rs`, where exactly is the `World` rendered and
@@ -171,7 +171,28 @@ shaders) that a flat lit plane could reuse rather than reinvent? Which existing 
 closest to "a plane with a material and a light"? What is the cheapest honest path to one
 good-looking lit surface?
 
-**Gather:** the coordinator merges the five answers into a single *as-built brief* committed
+**R6 — the parameter model, and what a descriptor can honestly say.**
+
+`console_discover_schema.md`'s control descriptor claims `min`, `max`, `value`, `default`,
+`unit`, `format` and — critically — `taper`, all in the **display domain**. The schema
+deliberately declines to pin the permitted taper set from memory and defers it to
+implementation. **Answer it here instead, because it is reconnaissance, not implementation.**
+
+- What range types does `param_table.rs` actually use? **Enumerate every variant**, including
+  nih-plug's float ranges and any of our own. Which are expressible as `linear` / `log` /
+  `skewed{factor}`, and **what can the schema currently not say?**
+- Is a parameter's current value readable outside the audio thread, and in which domain —
+  normalized `0..1`, or display?
+- Where do unit and display formatting live today — the plugin's value-to-string, `param_desc`,
+  somewhere else?
+- Which of `core_catalog()`, `ACTUATABLE_IDS` and `param_desc` is the right source for each
+  descriptor field? Is there one place carrying all of them, or must the emitter join?
+
+🚨 **If the schema cannot express a range the engine actually uses, the schema gets widened
+here in Phase 0 — not worked around in Tier 3.** A taper the schema cannot say is a control the
+console renders wrong, and it will look approximately right.
+
+**Gather:** the coordinator merges the six answers into a single *as-built brief* committed
 alongside this plan. Every tier below reads the brief instead of re-deriving it. If two
 answers contradict each other, resolve it before writing code — that contradiction is the
 most valuable thing the recon found.

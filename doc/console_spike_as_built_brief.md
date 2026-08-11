@@ -1,7 +1,7 @@
 # Console Spike — as-built brief
 
 **Status: UNANSWERED.** This file is the gather point for the Phase 0 reconnaissance
-fan-out in `console_spike_execution_plan.md` §4. Five read-only questions, dispatched
+fan-out in `console_spike_execution_plan.md` §4. Six read-only questions, dispatched
 concurrently, answered here.
 
 **Why it exists.** Several assumptions in the spike's tier breakdown are educated guesses
@@ -86,6 +86,29 @@ and a light"? What is the cheapest honest path to one good-looking lit surface?*
 **Answer:**
 
 **Files/lines:**
+
+**Consequences for the plan:**
+
+---
+
+## R6 — The parameter model, and what a descriptor can honestly say
+
+*What range types does `param_table.rs` actually use — every variant, including nih-plug's
+float ranges and any of our own? Which are expressible as `linear` / `log` / `skewed{factor}`,
+and what can `console_discover_schema.md` currently **not** say? Is a parameter's current value
+readable outside the audio thread, and in which domain — normalized or display? Where do unit
+and display formatting live? Which of `core_catalog()`, `ACTUATABLE_IDS`, `param_desc` sources
+each descriptor field, and must the emitter join them?*
+
+🚨 If the schema cannot express a range the engine uses, **widen the schema here** — do not
+work around it in Tier 3. A taper the schema cannot say is a control the console renders
+wrong, and it will look approximately right.
+
+**Answer:**
+
+**Files/lines:**
+
+**Schema changes required (if any):**
 
 **Consequences for the plan:**
 
