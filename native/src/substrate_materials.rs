@@ -63,38 +63,48 @@
 //! `mat_uv`'s world-planar-XZ projection". Every material here names that projection rather
 //! than relying on Triplanar's dominant-axis pick happening to agree.
 //!
-//! # The sampling arithmetic — why [`MATERIAL_UV_SCALE`] is one number for all four
+//! # The sampling arithmetic — feature sizes, in pixels, on the real pane
 //!
 //! The baked channel textures are **512² with `mip_level_count: 1`** — no mipmaps
 //! (`render.rs`'s `MaterialBaker::make_target`). Minification therefore aliases with nothing
-//! to catch it, so the sample rate is a correctness constraint, not a taste one, and it is
-//! fixed once for every material:
+//! to catch it, so the sample rate is a correctness constraint and not a taste one.
 //!
-//! | quantity | value |
+//! 📌 **These figures are calibrated against a capture, not assumed.** The first pass sized
+//! everything for a 1080-px pane; the Tier 2 beat check ran at **2000 × 1314**, and
+//! `SubstrateRig::frame_plane` is *cover* framing, so on a landscape pane the **horizontal**
+//! axis governs (`substrate_camera::governing_axis`) and the plane's 127 world units
+//! (`substrate_scene::SUBSTRATE_GRID_X` − 1) fill the **width**:
+//!
+//! | quantity | at 2000 px wide |
 //! |---|---|
-//! | plane framed across the pane | 127 world units (`substrate_scene::SUBSTRATE_GRID_X` − 1) |
-//! | at a 1080-px pane | ≈ 8.5 px per world unit |
-//! | one UV tile at scale 0.02 | 50 world units ≈ 425 px |
-//! | texels per pixel | 512 / 425 ≈ **1.20** |
+//! | px per world unit | 2000 / 127 ≈ **15.75** |
+//! | one UV tile at scale `s` | `1/s` world units = `15.75/s` px |
+//! | texels per pixel | `512·s / 15.75` = **32.5·s** |
 //!
-//! 1.20 texels/px is a hair past 1:1 — bilinear without mips is clean to about 2:1, and the
-//! scene is **static** (Tier 1 stopped every clock), so whatever residue there is sits still
-//! rather than crawling. Doubling `MATERIAL_UV_SCALE` would double that ratio; 0.02 is also
-//! the parameter's declared floor (`params.rs:8425`), so this is the least-aliasing value the
-//! range admits.
+//! So at `s = 0.02` the rate is **0.65 texels/px** — magnification, the safest case, and
+//! considerably better than the 1.20 the 1080-px estimate predicted. The prediction that
+//! mattered was checked the other way too: this model said graphite's `p48` stripes would
+//! land at 32.8 px and the capture read them at ≈ 40 px, so the two formulas below are
+//! trustworthy enough to revise blind.
+//!
+//! ```text
+//!     fractal feature   =  15.75 / (s · p)        px      (finest octave: ÷ lacunarity^(oct−1))
+//!     Stripes period    =  31.5  / (s · p)        px      (sin(p.x·π): period 2 in noise space,
+//!                                                          material_bake.wgsl:236-238)
+//! ```
+//!
+//! **`uv_scale` is per-material, and only because one material needed it.** `mp_scale` caps
+//! at 64 (`params.rs:8432`), which at `s = 0.02` bottoms out at a 24.6 px stripe — fine for
+//! metal, far too coarse for graphite's lamination. Raising `s` is the only remaining lever,
+//! so [`SubstrateMaterial::uv_scale`] exists; three of the four still take
+//! [`MATERIAL_UV_SCALE`]. Raising `s` costs sampling headroom (32.5·s), which is affordable
+//! only for **bandlimited** content — a sine stripe is, a Sobel-derived normal is not, and
+//! the two materials that derive normals therefore stay at the floor.
 //!
 //! 🚨 **The limit this leaves, recorded rather than hidden:** the ratio is inversely
-//! proportional to the pane's pixel height. A backdrop pane 540 px tall doubles it to 2.4
-//! and the fine layers will sparkle. There is no `Shared` field that can fix it (the range
-//! floor is already in use); the fixes are mipmaps on the baked targets or a coarser
-//! `mp_scale`, and both are outside this leaf.
-//!
-//! Because the sample rate is fixed, **feature size is controlled entirely by `mp_scale`**
-//! (the noise period *inside* the bake) — which does not change the texel rate at all. So
-//! each material's character is one readable number: a period-`p` feature is `425 / p` px on
-//! the pane, and a `Stripes` layer is `2 · 425 / p` (its field is `sin(p.x·π)`, period 2 in
-//! noise space — `material_bake.wgsl:236-238`). Fractal layers put their finest octave at
-//! `feature / lacunarity^(octaves−1)`; every layer below is sized so that stays above ≈ 5 px.
+//! proportional to the pane's pixel width. A backdrop pane 1000 px wide doubles it. There is
+//! no `Shared` field that fixes it once `s` is chosen; the fixes are mipmaps on the baked
+//! targets or a coarser `mp_scale`, and both are outside this leaf.
 //!
 //! # Invariants honoured
 //!
@@ -146,9 +156,10 @@ pub const GATE: () = ();
 pub const MATERIAL_PROJECTION: f32 = 1.0;
 
 /// `material[2]` — world units → UV tiles, reaching the shader as `Uniforms.mtl.z`
-/// (`world.rs:10854`). **0.02 for every material**; the module doc's sampling table is the
-/// derivation, and the short version is that 512² maps with no mip chain make this a
-/// correctness constraint. Range 0.02..16.0 (`params.rs:8425`) — this is the floor.
+/// (`world.rs:10854`). The **default** three of the four materials take, and the parameter's
+/// declared floor (range 0.02..16.0, `params.rs:8425`) — i.e. the least-aliasing value the
+/// range admits, 0.65 texels/px on a 2000-px pane. See the module doc for why `graphite`
+/// departs from it and what that costs.
 pub const MATERIAL_UV_SCALE: f32 = 0.02;
 
 /// `material_layer[17]` — the bake resolution in **pixels**, not the `BakeRes` ordinal.
@@ -381,6 +392,10 @@ const MATERIAL_LIVE_STILL: [f32; 8] = [0.0, 0.1, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
 pub struct SubstrateMaterial {
     /// The name the CLI takes, matched case-insensitively.
     pub name: &'static str,
+    /// → `material[2]`, world units → UV tiles. [`MATERIAL_UV_SCALE`] unless the material's
+    /// finest layer cannot be reached inside `mp_scale`'s 0.25..64 range at the floor — see
+    /// the module doc's sampling section. Per-material only because `graphite` needed it.
+    pub uv_scale: f32,
     /// → `material_layer` + `material_grad`. Always enabled: `[16]` is the global
     /// procedural switch, so a material with no base layer would have no material at all.
     pub base: Layer,
@@ -439,11 +454,22 @@ pub struct SubstrateMaterial {
 //
 // A note on where these numbers come from, because it changes how to read them. The layer
 // shapes, channel routing, ranges and sampling rates are **derived** — from the bake shader,
-// the range table and the arithmetic in the module doc. The *taste* — how dark graphite is,
-// how much sheen metal keeps — is chosen, and this leaf has no GPU: it is `cargo test`
-// green, not "verified working". The coordinator's beat check is the first time any of it is
-// seen. Each material therefore names the ONE dial to turn if it reads wrong, so that the
-// judgement is cheap to act on.
+// the range table and the arithmetic in the module doc. The *taste* is chosen, and this leaf
+// has no GPU, so each material names the ONE dial to turn if it reads wrong.
+//
+// ✅ **All four have now been through a beat check on the RTX 5090** (2000 × 1314, scrim 96,
+// studio rig). `slate` and `metal` passed untouched; `graphite` and `paper` failed and were
+// revised. Their doc comments carry the verdict, the diagnosis and what moved — kept rather
+// than tidied away, because in both cases the *reported* symptom pointed at the wrong dial
+// and the shader said which one it really was. That is the part worth being able to re-read:
+//
+//   * graphite read as light-grey wallpaper, and the albedo bake was innocent — a dielectric's
+//     specular does not scale with albedo, so a glossy near-black plane is a dark mirror.
+//   * paper read as black-and-white camouflage, and the albedo span was 0.11 — far too narrow
+//     to reach either end. The patches were derived AO multiplying the ambient term.
+//
+// Both diagnoses were reached by re-reading `material_bake.wgsl` and `cube.wgsl` against the
+// captured symptom, not by nudging constants until something looked different.
 
 /// **slate** — Tier 1's shipped look, formalized, plus the grain it could not have.
 ///
@@ -457,11 +483,14 @@ pub struct SubstrateMaterial {
 ///
 /// The output band is arithmetic, not a guess. `contrast` 0.20 compresses the shaped noise to
 /// \[0.40, 0.60\]; `gamma` 1.30 maps that to **\[0.304, 0.515\], mean ≈ 0.406** — Tier 1's
-/// `SUBSTRATE_ROUGHNESS` of 0.42, ±0.10. Feature size 425/6 ≈ 71 px, finest octave ≈ 9 px.
+/// `SUBSTRATE_ROUGHNESS` of 0.42, ±0.10. Feature size 131 px, finest octave ≈ 16 px.
+///
+/// ✅ **Tier 2 beat check: correct — Tier 1's look exactly.** Unchanged since.
 ///
 /// *Dial:* `contrast` — up for a busier stone, down toward Tier 1's flat sheen.
 pub const SLATE: SubstrateMaterial = SubstrateMaterial {
     name: "slate",
+    uv_scale: MATERIAL_UV_SCALE,
     base: Layer {
         channel: 1.0, // Roughness
         scale: 6.0,
@@ -484,18 +513,47 @@ pub const SLATE: SubstrateMaterial = SubstrateMaterial {
 
 /// **graphite** — a dark, laminated sheen with a directional grain.
 ///
+/// ❌ **Tier 2 beat check, first pass: FAIL** — "light-grey corduroy wallpaper". Mid-grey
+/// ≈ 0.5+ on screen where graphite should sit near-black, and the stripes read as wide soft
+/// columns. Both causes were found in the shader rather than guessed at, and the revision
+/// below follows from them. **The albedo bake was NOT the culprit and was never bright:**
+/// `remap` \[0.15, 0.90\] expands the field to the full \[0, 1\] and `contrast` 1.10 with
+/// `gamma` 1.0 leaves it there, so `mix(grad_lo, grad_hi, v)` spanned exactly the near-black
+/// \[0.030, 0.115\] it was asked for. Nothing compressed toward mid.
+///
+/// 🚨 **What lifted it was the specular, and the physics says it had to.** A dielectric's
+/// specular does not scale with albedo — `F0` is 0.04 no matter how black the pigment — so a
+/// *glossy* near-black plane under a full-sky IBL is a dark mirror, and a dark mirror of a
+/// bright sky is bright. The first pass's roughness band was \[0.197, 0.513\]: at that gloss
+/// the sheen carried the entire read and the albedo was irrelevant, which is precisely why it
+/// looked like wallpaper rather than like graphite. The fix is therefore **roughness first,
+/// albedo second** — darkening the stops alone would have changed almost nothing.
+///
 /// Three cues, each on its own mechanism:
 ///
-/// * **Albedo** — an FBM through a near-black gradient. The stops are graphite's real linear
-///   reflectance (≈ 0.04–0.12), so the darkness is arrived at physically. `warp` 0.35 smears
-///   the field, which is what makes it read as laminated rather than as noise.
+/// * **Albedo** — an FBM through a near-black gradient, now \[0.012, 0.055\] linear: the dark
+///   end of real graphite's ≈ 0.02–0.08 reflectance. `warp` 0.30 smears the field, which is
+///   what makes it read as laminated rather than as noise.
 /// * **Roughness** — a `Stripes` overlay running **along world +Z** (the field is
 ///   `sin(p.x·π)`, `material_bake.wgsl:236-238`, and world-planar XZ puts noise-x on world x,
-///   so the lines run along z). `contrast` 0.30 → \[0.35, 0.65\], `gamma` 1.55 →
-///   **\[0.197, 0.513\]**: a near-bimodal alternation of gloss and matte, ≈ 18 px per period.
-/// * **Normal** — derived from the albedo's own luminance (`derive[2] = 1`), so the bumps
-///   agree with the pigment instead of being a second, unrelated field. This is the R5 item
-///   the gate lift bought: real normal variation on a geometrically flat plane.
+///   so the lines run along z). `contrast` 0.30 → \[0.35, 0.65\], `gamma` **0.83** →
+///   **\[0.418, 0.699\], mean ≈ 0.56**: matte-to-satin rather than gloss-to-mirror. The
+///   lamination still reads — a 0.28 gloss delta is plenty — but the sheen stops being the
+///   light source.
+/// * **Scale** — the one material that leaves [`MATERIAL_UV_SCALE`]. At `s = 0.02` the
+///   coarsest possible stripe is `mp_scale = 64` → 24.6 px, and metal proves 24.6 px reads as
+///   a *brush*; graphite wants lamination, several times finer. `s = 0.055` with `p = 64`
+///   gives **8.95 px**. Affordable because a sine is bandlimited: 1.79 texels/px on a
+///   16-texel period is eight samples per cycle, nowhere near Nyquist.
+///
+/// **No derived normal any more, and the reason is a real limitation worth keeping.** The
+/// first pass derived one from albedo luminance, and it was inert: `derive_normal`'s Sobel
+/// (`material_bake.wgsl:412-413`) scales with the *range* of what it reads, and this albedo's
+/// luminance spans 0.085 — so `dx`/`dy` were ~0.05 at most and `normalize(−dx, −dy, 1)` came
+/// out flat. Darkening the stops makes it flatter still; matching a unit-range height field
+/// would need `strength` ≈ 14 against a 0..4 range. **Deriving a normal from albedo only
+/// works on a material bright enough to have a luminance range** — `paper` can, `graphite`
+/// cannot. It is off rather than left in as a parameter that does nothing.
 ///
 /// "Anisotropic-adjacent" rather than anisotropic: the material stays **Standard** and takes
 /// the anisotropy **overlay** (`aniso[2] = 1`), which `cube.wgsl:1494` scales as
@@ -504,87 +562,114 @@ pub const SLATE: SubstrateMaterial = SubstrateMaterial {
 /// conductivity is real, but a metallic near-black albedo tints its own specular to nothing
 /// and the material disappears.
 ///
-/// *Dial:* the gradient stops — the whole material's level, in two numbers.
+/// *Dial:* `overlay.gamma` — the roughness band's centre, and so the whole material's level.
+/// Down brightens (glossier), up darkens (matter). The gradient stops are the second dial.
 pub const GRAPHITE: SubstrateMaterial = SubstrateMaterial {
     name: "graphite",
+    uv_scale: 0.055, // see "Scale" above; range 0.02..16 (params.rs:8425)
     base: Layer {
         channel: 0.0, // Albedo
-        scale: 5.0,
-        octaves: 5.0,
+        scale: 8.0,   // 35.8 px mottle at s = 0.055
+        octaves: 3.0, // 3 not 5: at s = 0.055 a 5th octave lands near the texel
         gain: 0.55,
-        warp: 0.35,
+        warp: 0.30,
         contrast: 1.10,
         remap: [0.15, 0.90],
         seed: 3.0,
         ..Layer::DEFAULT
     },
-    base_grad: grad([0.030, 0.030, 0.034], [0.115, 0.115, 0.124]),
+    base_grad: grad([0.012, 0.012, 0.015], [0.055, 0.055, 0.062]),
     overlay: Some(Layer {
         noise: 12.0,  // Stripes
         channel: 1.0, // Roughness
-        scale: 48.0,
+        scale: 64.0,  // the range maximum; 8.95 px per period at s = 0.055
         octaves: 1.0, // single-scale kind: unread, stated rather than left at 5
-        warp: 0.20,
+        warp: 0.10,   // 5% of a stripe — enough to unprint it, too little to alias
         contrast: 0.30,
-        gamma: 1.55,
+        gamma: 0.83,
         seed: 5.0,
         ..Layer::DEFAULT
     }),
     overlay_grad: GRAD_UNUSED,
-    derive: derive(true, false, true, 0.60, 1.0),
-    mat_type: 0.0,   // Standard + the anisotropy overlay
+    derive: DERIVE_NONE, // albedo-sourced normals need a luminance range; see above
+    mat_type: 0.0,       // Standard + the anisotropy overlay
     metallic: 0.0,
-    roughness: 0.33, // ≈ the roughness map's mean, for the map-absent case
+    roughness: 0.56, // ≈ the roughness map's new mean, for the map-absent case
     aniso: [0.45, 0.0, 1.0, 0.65],
     matcol: [0.0, 0.0, 0.35, 1.0], // a whisper of the gradient's cool cast survives
 };
 
 /// **paper** — a bright fibrous matte, sized for legibility.
 ///
-/// The only material whose character is **relief**, not gloss: paper's roughness really is
-/// uniform, so nothing bakes roughness and the scalar 0.78 stands alone. What varies is the
-/// surface itself — a Height layer, from which **both** a normal map and an AO map are
-/// derived. This is the one material that may honestly ask for derived AO, because it is the
-/// one that bakes the height the AO pass reads (see [`derive`]'s warning).
+/// ❌ **Tier 2 beat check, first pass: FAIL** — "high-contrast blotchy static/camouflage;
+/// dark clots fight the glyphs".
 ///
-/// 🚨 **The scrim is why this is not white.** A backdrop is read *through*
-/// `SCRIM_FLOOR = 96` (`term_view.rs:34`, `scrim_alpha`), i.e. 96/255 ≈ 0.376 of black over
-/// it, so a backdrop pixel shows at 0.624× behind glyphs — and glyphs must stay legible over
-/// what is left. Real paper is ≈ 0.7 linear; under Tier 1's studio rig that lands far too
-/// hot. The stops here mean ≈ 0.28 linear, which the rig's diffuse sum (≈ 1.22×, module
-/// arithmetic) carries to ≈ 0.34 linear ≈ 0.61 sRGB, and ≈ 0.38 behind the scrim. So this is
-/// a paper *surface* at a *backdrop* level, and the departure is named rather than hidden.
+/// 🚨 **The albedo was not the blotch, and this matters because it decides which dial to
+/// turn.** The reported symptom was near-black-to-white patches, but the albedo bake could
+/// not produce them: `remap` \[0.20, 0.85\] expands to \[0, 1\], `contrast` 0.70 compresses
+/// to \[0.15, 0.85\], and the gradient maps that to **\[0.224, 0.336\]** — a span of 0.11,
+/// which cannot reach either end. The patches came from the two **derived** maps multiplying
+/// the light instead:
+///
+/// * **Derived AO was the clot machine.** `material_bake.wgsl:437` computes
+///   `ao = 1 − occ · 4 · ao_strength` — note the **×4**, so `ao_strength` 0.50 meant a ×2 on
+///   occlusion — and `cube.wgsl:1419` applies it as `ambient_mul *= m_ao` at full strength.
+///   Under a rig whose env is most of the light, a noisy height field therefore stamps dark
+///   holes straight into the image. **It is off now.** My own `KNOWN_LIMITS` flagged this
+///   derive as the riskiest of the pair; it was right for a reason I had not anticipated —
+///   not the height/AO pairing, but the gain.
+/// * **The derived normal was the static.** Strength 0.85 off a `contrast` 1.40 height field
+///   gives large Sobel gradients at 1-texel spacing, so `N` swung hard and `N·L` with it.
+///   Fixed at both ends: strength 0.85 → **0.22**, and the height's own `contrast` 1.40 →
+///   **0.55** so the gradient is smaller *at the source* rather than merely scaled down after.
+/// * **The camouflage scale was the albedo mottle**, at `p = 3` ≈ **262 px** on a 2000-px
+///   pane — enormous. `p = 10` puts it at 79 px, and `contrast` 0.70 → **0.45** flattens the
+///   variation to a span of 0.063: a sheet's formation, not a pattern.
+///
+/// Relief stays the material's character — a Height layer feeding a *whisper* of normal — but
+/// nothing modulates the ambient any more, which is what makes it safe behind glyphs.
+///
+/// 🚨 **The scrim is why this is not white, and why it is not much brighter now either.** A
+/// backdrop is read *through* `SCRIM_FLOOR = 96` (`term_view.rs:34`, `scrim_alpha`), i.e.
+/// 96/255 ≈ 0.376 of black over it, so a backdrop pixel shows at 0.624× behind glyphs. Real
+/// paper is ≈ 0.7 linear; under Tier 1's studio rig that lands far too hot. The revised stops
+/// mean ≈ **0.37** linear (up from 0.28), which the rig's diffuse sum (≈ 1.22×, module
+/// arithmetic) carries to ≈ 0.45 linear ≈ 0.68 sRGB and ≈ 0.42 behind the scrim. The bigger
+/// legibility win is at the **dark** end: the old low was 0.224 *and then multiplied down by
+/// AO*, where the new low is 0.339 and nothing attenuates it. So this is a paper *surface* at
+/// a *backdrop* level, and the departure is named rather than hidden.
 ///
 /// *Dial:* the gradient stops, and only them — `matcol[3]` (value) is left at identity on
 /// purpose so there is exactly one place the brightness lives.
 pub const PAPER: SubstrateMaterial = SubstrateMaterial {
     name: "paper",
+    uv_scale: MATERIAL_UV_SCALE, // stays at the floor: a Sobel normal is not bandlimited
     base: Layer {
         channel: 0.0, // Albedo
-        scale: 3.0,   // ≈ 142 px per feature: the sheet's formation, not its fibre
+        scale: 10.0,  // 79 px: the sheet's formation. Was 3.0 = 262 px, the "camouflage".
         octaves: 4.0,
         lacunarity: 2.2,
         gain: 0.45,
         warp: 0.60,
-        contrast: 0.70,
+        contrast: 0.45, // → albedo span 0.063; a formation, not a pattern
         remap: [0.20, 0.85],
         seed: 7.0,
         ..Layer::DEFAULT
     },
-    base_grad: grad([0.200, 0.195, 0.175], [0.360, 0.350, 0.320]),
+    base_grad: grad([0.300, 0.290, 0.265], [0.440, 0.430, 0.395]),
     overlay: Some(Layer {
-        channel: 3.0, // Height — read by BOTH derive passes
-        scale: 20.0,  // ≈ 21 px per feature, finest octave ≈ 10 px
+        channel: 3.0, // Height — read by the normal derive only, now that AO is off
+        scale: 40.0,  // 19.7 px fibre, finest octave ≈ 9 px
         octaves: 2.0, // deliberately shallow: the Sobel derive already works at texel scale
         lacunarity: 2.2,
         warp: 0.15,
-        contrast: 1.40,
+        contrast: 0.55, // was 1.40 — the Sobel gradient shrinks at the source
         seed: 11.0,
         ..Layer::DEFAULT
     }),
     overlay_grad: GRAD_UNUSED,
-    derive: derive(true, true, false, 0.85, 0.50),
-    mat_type: 0.0,   // Standard
+    derive: derive(true, false, false, 0.22, 1.0), // AO OFF; a whisper of normal
+    mat_type: 0.0,                                 // Standard
     metallic: 0.0,
     roughness: 0.78, // scalar and unopposed: no roughness channel is baked
     aniso: [0.0, 0.0, 0.0, 1.0],
@@ -610,12 +695,17 @@ pub const PAPER: SubstrateMaterial = SubstrateMaterial {
 /// reflectance (0.52–0.72, faintly cool) rather than a diffuse grey. Roughness
 /// `contrast` 0.25 → \[0.375, 0.625\], `gamma` 2.20 → **\[0.116, 0.356\]**, mean ≈ 0.21: a
 /// polished brush, not a satin one. No derived normal: the anisotropic lobe *is* the brushed
-/// cue, and a Sobel normal off the same stripes would double it at texel scale — the one
-/// place the module's 1.20 texels/px would show.
+/// cue, and a Sobel normal off the same stripes would double it at texel scale.
+///
+/// ✅ **Tier 2 beat check: good under both rigs** — dark blue-steel, the vertical brushing
+/// reads, calm sheen, legible. Unchanged since. Its stripes land at **24.6 px** and that is
+/// now the calibrated reference for "a brush that reads without becoming corduroy" — the
+/// number `graphite` was re-sized against.
 ///
 /// *Dial:* `aniso[0]` — the whole streak, in one number.
 pub const METAL: SubstrateMaterial = SubstrateMaterial {
     name: "metal",
+    uv_scale: MATERIAL_UV_SCALE,
     base: Layer {
         noise: 12.0,  // Stripes
         channel: 0.0, // Albedo
@@ -776,7 +866,7 @@ pub fn apply_material(s: &mut Shared, name: &str) -> bool {
     // `material_layer[16]` alone. Writing it would express nothing. `material[3..8]` are
     // reserved (`param_table.rs:1210-1214`) and read by no shader — likewise untouched.
     s.material[1] = MATERIAL_PROJECTION;
-    s.material[2] = MATERIAL_UV_SCALE;
+    s.material[2] = m.uv_scale;
     s.material_layer = m.base.pack_base();
     s.material_grad = m.base_grad;
     s.material_layer2 = match m.overlay {
@@ -882,13 +972,17 @@ pub fn rig_field_manifest() -> &'static [(&'static str, FieldRestore)] {
 /// What Tier 2's material set still cannot do or cannot honestly claim — **integrator and
 /// follow-up items**, recorded rather than fudged.
 ///
-/// 1. **No GPU saw any of this.** The layer shapes, channel routing and sampling rates are
-///    derived from the bake shader and the range table; the taste is not verified. This leaf
-///    is `cargo test` green, never "verified working". Each material names its one dial.
-/// 2. **The texel rate is tied to the pane's pixel height** (module doc). At 1080 px it is
-///    1.20 texels/px; halve the pane and it doubles. `MATERIAL_UV_SCALE` is already at its
-///    range floor, so the fixes are a mip chain on `MaterialBaker::make_target` or a coarser
-///    `mp_scale` — both outside this leaf, and neither urgent while the pane is large.
+/// 1. **All four have been seen once, at one size, under one rig.** The beat check ran at
+///    2000 × 1314 with the studio rig (plus `metal` under `daylight`); `slate` and `metal`
+///    passed, `graphite` and `paper` were revised against it and have **not** been re-captured.
+///    The revisions are arithmetic on mechanisms the captures confirmed — the model predicted
+///    graphite's stripe pitch to within an eyeball estimate — but arithmetic is not a
+///    photograph. Six of the eight material×rig pairs remain unseen.
+/// 2. **The texel rate is tied to the pane's pixel width** (module doc, and it is *width*
+///    because cover framing on a landscape pane is governed by the horizontal axis). At 2000 px
+///    the floor gives 0.65 texels/px and `graphite`'s 0.055 gives 1.79. Halve the pane and both
+///    double, which puts `graphite` past the no-mip budget. The fixes are a mip chain on
+///    `MaterialBaker::make_target` or a coarser `mp_scale` — both outside this leaf.
 /// 3. **`apply_substrate_look` does not turn the maps off.** Tier 1 predates them and writes
 ///    no `material_*` field, so re-running it over a material leaves the material on. There is
 ///    no "none" material name here on purpose — an off switch belongs with whoever owns the
@@ -898,14 +992,27 @@ pub fn rig_field_manifest() -> &'static [(&'static str, FieldRestore)] {
 ///    the layer bytes), but a rapid sequence of `background <name>` commands dispatches a
 ///    full six-channel composite plus the derive passes each time. Fine for a human at a
 ///    prompt; worth knowing before anything drives it from a clock.
-/// 5. **Derived AO is only honest over a baked Height layer** (see [`derive`]). Nothing in
-///    `Shared` enforces the pairing, so a future material that sets `derive[1]` without a
-///    Height layer will derive cavities from a stale texture and no test will catch it. Only
-///    `paper` does both.
-/// 6. **A rig cannot aim anything** (see the rig section). Key elevation and azimuth are left
+/// 5. **Derived AO is off everywhere, and should probably stay off.** The beat check found it
+///    is not merely fussy about its Height pairing (see [`derive`]) — it is *loud*:
+///    `material_bake.wgsl:437` multiplies the occlusion by **4** before `ao_strength` scales
+///    it, and `cube.wgsl:1419` then multiplies the whole ambient term by the result at full
+///    strength. On an env-forward rig that is a hole punched in the backdrop. Anything wanting
+///    contact shading here should reach for a gentler `ao_strength` **and** a much smoother
+///    height field, and be captured before it is believed.
+/// 6. **Deriving a normal from albedo luminance needs a bright albedo.** The Sobel scales with
+///    the range of what it reads (`material_bake.wgsl:412-413`), so on `graphite`'s ≈ 0.085
+///    luminance span it produced a flat normal and the parameter was doing nothing. There is
+///    no in-range `strength` that compensates. Bake a Height layer instead — height is unit
+///    range whatever the albedo does.
+/// 7. **A rig cannot aim anything** (see the rig section). Key elevation and azimuth are left
 ///    to Tier 1 and the integrator, so "two lighting rigs" means two *levels*, not two
 ///    directions — which is the same limit R5 recorded for the fill, applied honestly to the
 ///    key as well.
+/// 8. **`graphite`'s level now lives in its roughness, which is a coupling worth knowing.**
+///    Because a dielectric's specular is albedo-independent, the gradient stops set how dark it
+///    *can* be and `overlay.gamma` sets how much sheen is added on top. Darkening the stops
+///    alone will not darken the material; that was the first pass's mistake and it is easy to
+///    repeat.
 pub const KNOWN_LIMITS: () = ();
 
 #[cfg(test)]
@@ -940,16 +1047,45 @@ mod tests {
 
     /// The shared map-stack preamble, identical for all four.
     #[test]
-    fn every_material_writes_the_same_projection_scale_and_bake_size() {
+    fn every_material_writes_the_same_projection_and_bake_size() {
         for name in MATERIAL_NAMES {
             let s = with_material(name);
             assert_eq!(s.material[1], 1.0, "{name}: projection must be world-planar XZ");
-            assert_eq!(s.material[2], 0.02, "{name}: uv scale");
             assert_eq!(s.material_layer[16], 1.0, "{name}: procedural must be ON");
             assert_eq!(s.material_layer[17], 512.0, "{name}: bake size in PIXELS, not the enum");
             // The stillness pair — a material must not animate or displace.
             assert_eq!(s.material_live[0], 0.0, "{name}: the material bake must not animate");
             assert_eq!(s.material_live[5], 0.0, "{name}: height→vertex displace must stay off");
+        }
+    }
+
+    /// `uv_scale` is per-material, but only one material may depart from the floor — and only
+    /// because `mp_scale` caps at 64. A departure costs sampling headroom (32.5·s texels/px),
+    /// which is affordable for bandlimited content and not for a Sobel-derived normal, so the
+    /// rule is pinned rather than left as prose: **any material that derives a normal stays at
+    /// [`MATERIAL_UV_SCALE`].** `paper` is the case this protects.
+    #[test]
+    fn only_bandlimited_materials_leave_the_uv_scale_floor() {
+        for name in MATERIAL_NAMES {
+            let s = with_material(name);
+            let derives_normal = s.material_derive[0] > 0.5;
+            if derives_normal {
+                assert_eq!(
+                    s.material[2], MATERIAL_UV_SCALE,
+                    "{name} derives a normal, so it must sample at the floor"
+                );
+            }
+            // Whatever it chose, the sampling rate must stay inside the range where bilinear
+            // without mips is honest (see the module doc's table).
+            let texels_per_px = 32.5 * s.material[2];
+            assert!(
+                texels_per_px <= 2.0,
+                "{name}: {texels_per_px} texels/px on a 2000-px pane is past the no-mip budget"
+            );
+        }
+        assert_eq!(GRAPHITE.uv_scale, 0.055, "graphite is the one departure");
+        for m in [&SLATE, &PAPER, &METAL] {
+            assert_eq!(m.uv_scale, MATERIAL_UV_SCALE, "`{}` must stay at the floor", m.name);
         }
     }
 
@@ -972,23 +1108,50 @@ mod tests {
     #[test]
     fn graphite_sets_every_declared_field() {
         let s = with_material("graphite");
+        assert_eq!(s.material[2], 0.055, "the one material off the uv_scale floor");
         assert_eq!(
             s.material_layer,
-            [3.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0, 2.0, 0.55, 0.35, 1.10, 1.0, 0.15, 0.90, 0.0, 3.0, 1.0, 512.0]
+            [3.0, 0.0, 8.0, 0.0, 0.0, 0.0, 3.0, 2.0, 0.55, 0.30, 1.10, 1.0, 0.15, 0.90, 0.0, 3.0, 1.0, 512.0]
         );
-        assert_eq!(s.material_grad, [0.030, 0.030, 0.034, 0.0, 0.115, 0.115, 0.124, 0.0]);
+        assert_eq!(s.material_grad, [0.012, 0.012, 0.015, 0.0, 0.055, 0.055, 0.062, 0.0]);
         assert_eq!(
             s.material_layer2,
-            [12.0, 1.0, 48.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.5, 0.20, 0.30, 1.55, 0.0, 1.0, 0.0, 5.0, 1.0, 0.0]
+            [12.0, 1.0, 64.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.5, 0.10, 0.30, 0.83, 0.0, 1.0, 0.0, 5.0, 1.0, 0.0]
         );
-        // derive normal FROM ALBEDO — graphite bakes no height, so height-sourced derive
-        // would read a texture it never wrote. `[1]` (AO) is off for exactly that reason.
-        assert_eq!(s.material_derive, [1.0, 0.0, 1.0, 0.60, 1.0, 2.0, 0.0, 0.0]);
+        // No derived maps: an albedo-sourced normal is inert on a material this dark (the
+        // Sobel scales with the albedo's luminance range — see the doc comment).
+        assert_eq!(s.material_derive, DERIVE_NONE);
         assert_eq!(s.lighting[7], 0.0, "Standard — the anisotropy is an OVERLAY");
         assert_eq!(s.pbr[0], 0.0, "metallic 0: a near-black metal has no specular colour");
-        assert_eq!(s.pbr[1], 0.33);
+        assert_eq!(s.pbr[1], 0.56);
         assert_eq!(s.aniso, [0.45, 0.0, 1.0, 0.65]);
         assert_eq!(s.matcol[2], 0.35, "saturation");
+    }
+
+    /// The beat-check regression, stated as the physics rather than as a number: graphite is a
+    /// **dielectric**, so its specular does not scale with its albedo (`F0` = 0.04 however
+    /// black the pigment). The first pass shipped a \[0.197, 0.513\] roughness band, and at
+    /// that gloss a near-black plane under a full-sky IBL read as mid-grey wallpaper — the
+    /// sheen, not the albedo, was the light. Pin the band well clear of mirror territory.
+    #[test]
+    fn graphite_is_matte_enough_that_its_albedo_carries_the_read() {
+        // The bake's own arithmetic (material_bake.wgsl:315-322), restated.
+        let band = |contrast: f32, gamma: f32, raw: f32| {
+            ((raw - 0.5) * contrast + 0.5).clamp(0.0, 1.0).powf(gamma.max(1e-3))
+        };
+        let l = GRAPHITE.overlay.expect("graphite bakes a roughness overlay");
+        assert_eq!(l.channel, 1.0, "…to the Roughness channel");
+        let (lo, hi) = (band(l.contrast, l.gamma, 0.0), band(l.contrast, l.gamma, 1.0));
+        assert!(lo > 0.40, "graphite's glossiest stripe is {lo}, still a mirror");
+        assert!(hi < 0.75, "graphite's mattest stripe is {hi} — the lamination would vanish");
+        // And the scalar fallback must agree with the map's mean, or a dropped roughness bit
+        // silently restores the failure.
+        let mean = band(l.contrast, l.gamma, 0.5);
+        assert!(
+            (GRAPHITE.roughness - mean).abs() < 0.02,
+            "scalar roughness {} disagrees with the map's mean {mean}",
+            GRAPHITE.roughness
+        );
     }
 
     #[test]
@@ -996,17 +1159,45 @@ mod tests {
         let s = with_material("paper");
         assert_eq!(
             s.material_layer,
-            [3.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0, 2.2, 0.45, 0.60, 0.70, 1.0, 0.20, 0.85, 0.0, 7.0, 1.0, 512.0]
+            [3.0, 0.0, 10.0, 0.0, 0.0, 0.0, 4.0, 2.2, 0.45, 0.60, 0.45, 1.0, 0.20, 0.85, 0.0, 7.0, 1.0, 512.0]
         );
-        assert_eq!(s.material_grad, [0.200, 0.195, 0.175, 0.0, 0.360, 0.350, 0.320, 0.0]);
+        assert_eq!(s.material_grad, [0.300, 0.290, 0.265, 0.0, 0.440, 0.430, 0.395, 0.0]);
         assert_eq!(
             s.material_layer2,
-            [3.0, 3.0, 20.0, 0.0, 0.0, 0.0, 2.0, 2.2, 0.5, 0.15, 1.40, 1.0, 0.0, 1.0, 0.0, 11.0, 1.0, 0.0]
+            [3.0, 3.0, 40.0, 0.0, 0.0, 0.0, 2.0, 2.2, 0.5, 0.15, 0.55, 1.0, 0.0, 1.0, 0.0, 11.0, 1.0, 0.0]
         );
-        assert_eq!(s.material_derive, [1.0, 1.0, 0.0, 0.85, 0.50, 2.0, 0.0, 0.0]);
+        assert_eq!(s.material_derive, [1.0, 0.0, 0.0, 0.22, 1.0, 2.0, 0.0, 0.0]);
         assert_eq!(s.pbr[1], 0.78, "matte, and unopposed: no roughness channel is baked");
         assert_eq!(s.aniso, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(s.matcol[3], 1.0, "value stays identity — the gradient is the one level dial");
+    }
+
+    /// The beat-check regression: **nothing may modulate the ambient term.** Derived AO is
+    /// applied as `ambient_mul *= m_ao` at full strength (`cube.wgsl:1419`) after
+    /// `material_bake.wgsl:437` has already multiplied the occlusion by **4**, so on a rig
+    /// whose environment is most of the light it stamps dark holes into the backdrop — the
+    /// "clots that fight the glyphs". No material here derives AO any more.
+    ///
+    /// The second half is the legibility floor the scrim implies, checked at the **dark** end,
+    /// because that is where glyph contrast is actually lost.
+    #[test]
+    fn paper_cannot_clot_behind_the_glyphs() {
+        for name in MATERIAL_NAMES {
+            let s = with_material(name);
+            assert_eq!(s.material_derive[1], 0.0, "{name}: derived AO modulates the ambient");
+        }
+        // The albedo the bake can actually produce, restated from material_bake.wgsl:315-322
+        // + :338-340 — remap expands, contrast compresses, then the gradient maps it.
+        let l = PAPER.base;
+        let shaped = |raw: f32| {
+            let v = ((raw - l.remap[0]) / (l.remap[1] - l.remap[0])).clamp(0.0, 1.0);
+            ((v - 0.5) * l.contrast + 0.5).clamp(0.0, 1.0)
+        };
+        let albedo = |raw: f32| PAPER.base_grad[0] + (PAPER.base_grad[4] - PAPER.base_grad[0]) * shaped(raw);
+        let (lo, hi) = (albedo(0.0), albedo(1.0));
+        assert!(lo > 0.30, "paper's darkest albedo is {lo} — the clot end");
+        assert!(hi < 0.46, "paper's brightest albedo is {hi} — too hot behind a 96 scrim");
+        assert!(hi - lo < 0.10, "a {} albedo span reads as pattern, not formation", hi - lo);
     }
 
     #[test]
@@ -1416,8 +1607,8 @@ mod tests {
             m
         };
         assert_eq!(mask_of(&with_material("slate")), 4, "slate: roughness only");
-        assert_eq!(mask_of(&with_material("graphite")), 1 | 4 | 2, "graphite: albedo + rough + derived normal");
-        assert_eq!(mask_of(&with_material("paper")), 1 | 32 | 2 | 16, "paper: albedo + height + derived normal + AO");
+        assert_eq!(mask_of(&with_material("graphite")), 1 | 4, "graphite: albedo + roughness");
+        assert_eq!(mask_of(&with_material("paper")), 1 | 32 | 2, "paper: albedo + height + derived normal");
         assert_eq!(mask_of(&with_material("metal")), 1 | 4, "metal: albedo + roughness");
 
         // The pairing nothing in `Shared` enforces (see `derive`'s warning): the AO derive
