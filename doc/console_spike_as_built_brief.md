@@ -229,12 +229,18 @@ sidecar drained in `shell_main.rs`: **there is no transport from the CLI to Shel
 today** — `cli.txt` is drained by the World, and a background swap is `Shell` state, not
 `World` state.
 
-**Where `--discover`/`--describe --at` attach:** the `Cli` struct (`ctl.rs:37-40`). `cmd`
-is **required** today, so `organon --discover` is a clap usage error — it must become
-`Option<Cmd>` with top-level `#[arg(long, global)]` flags, handled **before** `to_ctl`
-beside the existing early exits (`:375-413`). Naming collision: `organon describe <query>`
-already exists and prints prose (`ctl.rs:63-66`); the schema's `--describe` prints JSON.
-They can coexist; decide wording deliberately.
+**Where discovery attaches — superseded mid-Phase-0, in the right direction.** R3 mapped
+the schema's original flag form (`--discover --at <path>`) onto clap: `cmd` is **required**
+(`ctl.rs:37-40`), so flags would have needed `Option<Cmd>` plus global args handled before
+`to_ctl`, and `organon describe <query>` (prose, `ctl.rs:63-66`) would have collided with a
+flag-styled `--describe` (JSON). While this recon was in flight, `acae19a` re-settled the
+schema to the CLI's own grammar instead: **`organon discover [path]` is a new subcommand,
+and the descriptor JSON is `organon describe <query> --json` — a second *rendering* of the
+existing `describe`, never a second implementation.** That dissolves both the clap
+restructuring and the naming collision this recon flagged. What survives unchanged: the
+implementation branches beside the existing early exits (`:375-413`), and the
+`discover`/`describe --json` path must skip the unconditional ~150 ms `is_live` probe at
+`ctl.rs:452` — the strip must never block on liveness theatre.
 
 **The `is_live()` story — SHELL_ARCHITECTURE.md §3 had the wrong channel, and the recon
 initially had the wrong writer.** `is_live` (`organon-core/src/ipc.rs:3446-3460`) probes
