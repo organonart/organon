@@ -62,13 +62,35 @@ position.
   install URLs. ⌘T/⌘W/⌘1-9/⌘⇧[] via a pure, tested key table. Default tab =
   `$ORGANON_SHELL_DEFAULT` → Pi if installed → plain shell. All sessions pump
   every frame; the active one draws; closing the last quits.
-- **The living backdrop (#14 T1, in `shell_main.rs`)** — the `World` rendered
-  window-sized each frame and painted UNDER the glyphs (the measured
-  render-sRGB/sample-linear gamma pair, same-id rebinds). The **legibility scrim**
-  is structural: `ORGANON_SHELL_SCRIM` tunes, but clamps at a floor no setting
-  crosses. Summoned, never imposed: `ORGANON_SHELL_BACKDROP=1`. The bin negotiates
-  the FULL engine feature set (bind groups, RT, timestamps) — a default-limits
-  device opens a window and then fails to create engine pipelines.
+- **The living backdrop (#14 T1 + Console Spike T1, in `shell_main.rs`)** — a frame
+  rendered each redraw and painted UNDER the glyphs (the measured
+  render-sRGB/sample-linear gamma pair, same-id rebinds). Summoned, never imposed, and
+  now with **two sources** chosen by `ORGANON_SHELL_BACKDROP`: unset/`0` off, `1` the
+  live `World` exactly as before, `substrate` a flat lit plane. The World stays
+  selectable on purpose — the CLI's override lane drains inside `World::frame_body`, so
+  a substrate that *replaced* it would silently kill `organon set`/`generator`/`recipe`.
+  The substrate is `substrate_scene::apply_substrate_look` written **once** into the
+  `Shared` the console already publishes every frame, framed by
+  `substrate_camera::SubstrateRig` at a 10° **vertical** lens and re-framed each frame
+  from the pane's aspect. That rig reaches the engine through a **third arm on
+  `world.rs`'s camera finalization** (beside rails), overriding all six of
+  `(centre, yaw, pitch, distance, roll, fov)` and latching off the `cam_center`
+  auto-follow while installed; the FOV clamp floor moved 10° → **4°** at *both* sites that
+  clamp it (the finalization and `build_uniforms` — moving one is a silent no-op). The
+  key azimuth is the one look value the shell overrides, because "above-left" is a fact
+  about the camera and not about the light: under this top-down rig screen-up is world
+  −Z, which puts above-left at −135°, not the −10° a 40°-yaw camera wanted.
+  **The texture is sized to the terminal pane, not the window** — Console Spike T1's bug
+  fix. It is painted at UV 0..1 into a `CentralPanel` already 30 points shorter than the
+  swapchain, so a window-sized texture was vertically squashed; invisible on a
+  generative world, glaring on a flat plane. Sized one frame behind and clamped,
+  `wgpu_editor::render_scene_pane`'s pattern. **This changes `=1`'s rendering too**, and
+  is meant to.
+  The **legibility scrim** is structural: `ORGANON_SHELL_SCRIM` tunes, but
+  `term_view::scrim_alpha` clamps at a floor no setting crosses — now a pure function
+  with that floor pinned by a test rather than an unguarded expression inside `draw`.
+  The bin negotiates the FULL engine feature set (bind groups, RT, timestamps) — a
+  default-limits device opens a window and then fails to create engine pipelines.
 - **Process launching is platform data, not `#[cfg]` (`platform.rs`, 2026-08-08)** —
   `Platform` is a **value**, so the Windows decisions are unit-tested from a Mac.
   `default_shell` (Unix: `$SHELL` → `/bin/zsh`, `-l`; Windows: `pwsh` → `powershell`
@@ -163,6 +185,18 @@ path silently breaks the three-products-simultaneously guarantee that
   backdrop or blocks is later-tier work, never implied by pixels existing.
 - **The legibility scrim's floor is structural** (clamped in code) — no
   configuration can trade the glyphs away.
+- **The substrate backdrop is a LOOK, not a system** (Console Spike T1) — one flat lit
+  plane, written into the same default `Shared` the console publishes. It ships
+  `MaterialType::Standard` with **no #472 channel maps**: the map gate
+  (`render.rs:3640-3654`) forces `mtl[0] = 0` on every non-instanced path, the membrane
+  included, and lifting it is Tier 2's. What carries the read is the narrow lens (the
+  frustum's diagonal half-angle **is** the shading gradient on a flat plane — ≈10.1° at
+  10°/16:9) plus a per-vertex albedo ramp. Nothing more, and nothing claimed.
+- **The backdrop's framing is verified by arithmetic, not by eyes.** `SubstrateRig`'s
+  coverage guarantee is a headless test; whether the plane actually fills the pane also
+  depends on the texture being **pane-sized**, and nothing in the tree tests that seam
+  (Phase 0 R1 said so). The two landed in the same tier for exactly that reason — the
+  beat check is what closes it, not the suite.
 - **⌘-keys never reach the PTY** — a harness cannot see or shadow the host's tab
   chrome, and the host never steals bare-Ctrl from the harness.
 - The mock-agent demo machinery (v2) retains its rule if ever re-homed: a replay

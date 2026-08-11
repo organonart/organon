@@ -9,6 +9,30 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ---
 
+## Unreleased
+
+### Console Spike — Tier 1: the lit substrate
+
+- **A second backdrop source for Organon Shell.** `ORGANON_SHELL_BACKDROP=substrate` puts
+  one flat, still, lit plane behind the glyphs instead of the generative world: a pure
+  `Shared`-state builder (`substrate_scene`) drawn through the existing
+  `RenderPath::Membrane` — no new shader — and framed by a pure narrow-lens camera rig
+  (`substrate_camera`) at a 10° vertical FOV, re-framed on every resize. `=1` still selects
+  the world, unchanged, because the `organon` CLI's override lane drains inside the world's
+  frame path and replacing it would kill the console's live response.
+- **The world gained an absolute camera rig.** A third arm on the camera finalization
+  overrides centre/yaw/pitch/distance/roll/FOV as a set and latches off the auto-follow while
+  it is installed; the FOV clamp floor moved 10° → 4° at *both* of the two sites that clamp it
+  (moving one alone does nothing).
+- **Fixed: the backdrop was vertically squashed.** The texture was sized to the window and
+  then painted at UV 0..1 into a panel 30 points shorter. It is now sized to that panel, one
+  frame behind, with the same clamps the Mind editor's viewport uses — which also changes, and
+  corrects, the existing `ORGANON_SHELL_BACKDROP=1` rendering.
+- The legibility scrim's alpha is now a pure `term_view::scrim_alpha`, with its structural
+  floor pinned by a test against hostile input.
+
+---
+
 ## Before this repository
 
 ### The instrument

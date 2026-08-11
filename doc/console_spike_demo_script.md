@@ -30,13 +30,18 @@ unmodified agent harnesses beside it.
 
 ---
 
-### 2 — "…except the background is a lit surface, not a colour." · Tier 1 · **not yet**
+### 2 — "…except the background is a lit surface, not a colour." · Tier 1 · **landed**
 
-Reveal the substrate behind the glyphs.
+Reveal the substrate behind the glyphs: `ORGANON_SHELL_BACKDROP=substrate`.
 
 *The point:* that surface is being lit, in real time, behind a working shell.
 *Check:* put it beside a stock terminal on the same screen. If nobody looks twice, the
 material is wrong — not the mechanism.
+*Checked 2026-08-10 on organon-one:* slate plane, directional sheen (the sky's bright
+quadrant + key), dither holding the gradient band-free, prompt legible at the scrim floor —
+against a stock Windows Terminal it is unmistakably a lit surface. Taste headroom deliberately
+unspent: the 4° lens, the key azimuth (live-tunable over the override lane), and the material
+library are Tier 2's.
 
 ---
 

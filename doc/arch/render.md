@@ -117,6 +117,17 @@ loop, forward. Two rules make that work and are easy to break:
   ⚠️ **The one unit trap: egui reports drags in *points*, the winit arm in *physical pixels*.**
   `scene_input::orbit_pixels` converts, and skipping it would orbit the editor at half rate on
   every Retina display — working, so nobody would look for it.
+- **A third camera entry point, and it is *absolute* where #621's is relative** (Console Spike
+  Tier 1, for Organon Shell's substrate backdrop). `set_substrate_rig(Option<(center, yaw,
+  pitch, distance, roll, fov_deg)>)` installs the whole tuple; the camera finalization then
+  selects it as a **third arm** on the same `if` the rails branch already overrode all six
+  from, and latches off the `cam_center` auto-follow (the 5 %/frame lerp toward the generator
+  field's AABB centre) for as long as it is installed. It has to land *there* and not later:
+  TAA post-multiplies `view_proj`, so anything injected downstream fights the jitter.
+  ⚠️ **The FOV clamp floor moved 10° → 4° at BOTH sites** — the camera finalization and
+  `build_uniforms`' `perspective_rh` call clamp the same number twice, and moving one alone is
+  a silent no-op. `CAM_NEAR`/`CAM_FAR` are deliberately unchanged: a 127-unit plane frames at
+  ≈408 world units at 10° and ≈1023 at 4°, both comfortably inside 0.1..5000.
 - **`world.rs` is compiled twice** in a `mind-edition` build: once as `organic_math_native::world`,
   once via the binary's `#[path = "../world.rs"]`. Build time, not correctness, and it keeps one
   source of truth. It also means `render.rs` has two hosts, which is why its sibling references

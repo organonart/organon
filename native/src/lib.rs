@@ -118,6 +118,13 @@ pub mod recipe;
 /// because both editions compile `editor_ui`; only a host that draws a scene behind the panel
 /// (`EditorCtx::scene_behind`) ever registers the region.
 pub mod scene_input;
+/// Console Spike Tier 1 Leaf A — the substrate camera rig: where the camera goes and how
+/// narrow the lens is, so a flat plane exactly fills the console's backdrop. Pure glam
+/// arithmetic; ungated because the default `cargo test --workspace` is the only thing that
+/// covers it (`world`, which consumes it, compiles only under mind/shell-edition).
+pub mod substrate_camera;
+/// Console Spike Tier 1 Leaf B — the substrate LOOK as a pure function over `Shared`.
+pub mod substrate_scene;
 pub mod synth;
 /// #542 Tier 1 — the house style: design tokens, the egui theme, and the control-row
 /// grid. Everything that decides how the editor *looks* resolves here rather than being
