@@ -45,7 +45,7 @@ library are Tier 2's.
 
 ---
 
-### 3 — "Watch — I'll ask for a different one." · Tier 2 · **landed** (perform with slate/metal)
+### 3 — "Watch — I'll ask for a different one." · Tier 2 · **landed** (perform with slate/metal/paper)
 
 Ask the agent in English for a different surface. It issues `organon console background`.
 
@@ -58,6 +58,11 @@ anisotropic brushed steel, genuinely good). Graphite reads as light corduroy and
 blotchy static — taste-debt with named dials (graphite: darken the albedo stops, widen the
 stripe period; paper: pull contrast/AO, tighten the gradient), fix in flight. Perform the
 beat with slate ↔ metal ↔ world until then.
+*Updated 2026-08-11 (materials revision `6da6af4`, re-seen on the Tier 4 beat check):*
+paper's clots were the bake shader's hidden ×4 AO derive — fixed, and paper is demo-grade;
+perform with **slate / metal / paper**. Graphite's lamination is right (fine, matte, no
+moiré) but its value still reads light — one more matte iteration, ledgered, not blocking
+the beat.
 
 ---
 
@@ -73,13 +78,25 @@ flow; if the sizing is off by a row, stop.
 
 ---
 
-### 5 — "And it remembers." · Tier 4 · **not yet**
+### 5 — "And it remembers." · Tier 4 · **landed**
 
 Scroll up through the session. The material changes back through its own history.
 
 *The point:* it is not a wallpaper — it is the material of the page, and the page has a
 history.
 *Check:* three look changes, then one continuous scroll bottom to top.
+*Checked 2026-08-11 on organon-one (225 % display):* three switches (metal → paper →
+graphite) with output between, then one continuous wheel-scroll to the top — four
+materials banded in one transcript, every band crisp at full width including the oldest,
+boundaries row-aligned and pinned to their rows through the scroll, the newest look
+scrolling in from the bottom. The first check caught wide bands washing out at exactly
+2.25× — the DPI-sized snapshot bug; fixed (`scene_input::pane_pixels_in` — the pane is
+sized as its share of the window, so the scale cancels instead of being guessed) and
+regression-pinned before this flip. `background substrate → world → substrate` probed
+live between looks, no crash. One operational note for the demo: the boundary lands at
+the row that is current when the command drains, so a switch fired while nothing is
+printing puts the new look *below* the last line — switch while the agent is talking,
+not after it stops.
 
 ---
 

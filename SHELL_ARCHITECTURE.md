@@ -399,9 +399,10 @@ path silently breaks the three-products-simultaneously guarantee that
   historical bands reading as blurred washes while the live band stayed crisp. Instrumented
   at the capture site, a cached epoch's band was then measured **pixel-identical** to a live
   render of the same look at the same pane size, twice (`paper` and the undressed
-  substrate), which is what located the fault in the size rather than in the bands. Still
-  unjudged: whether the seam between two looks reads as a seam or as a defect, and whether a
-  stretched history after a genuine window resize looks acceptable.
+  substrate), which is what located the fault in the size rather than in the bands. The
+  second beat check answered the seam question: a boundary reads as a clean, deliberate
+  material edge — row-aligned, no bleed into the neighbouring band. Still unjudged: whether
+  a stretched history after a genuine window resize looks acceptable.
 - **A console command applies whether or not it can be recorded.** Every drained op goes
   through `CommandService::dispatch`, so in the normal case it leaves a `CommandRun` in a
   real `SessionLog`. If the store cannot be opened there is no service to dispatch
