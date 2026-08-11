@@ -104,8 +104,11 @@ position.
   `COLORTERM`, so an `organon` invocation inside a Shell tab resolved the **default
   `organic-math` namespace** and addressed a different product entirely. `term.rs`
   now injects `ORGANON_IPC_NS = ipc::namespace()` into every session. Known
-  cosmetic: the CLI's op-path liveness heuristic reads the Feedback channel Shell
-  does not write yet.
+  cosmetic: the CLI's op-path liveness heuristic (`ipc::Reader::is_live`) samples
+  the `Shared` seqlock for motion; Shell bumps it once per redraw, so a console
+  that is repainting reads live and one whose redraws have stalled can print a
+  spurious "queued" warning (Phase 0 correction, 2026-08-10 — this line previously
+  blamed the Feedback channel, which `is_live` never reads).
 - **The landed v2 foundations** (session/event log with torn-tail recovery, the
   typed command service, mock-agent event cards) remain in the crate, feeding
   trees C/D.
@@ -164,9 +167,15 @@ path silently breaks the three-products-simultaneously guarantee that
   chrome, and the host never steals bare-Ctrl from the harness.
 - The mock-agent demo machinery (v2) retains its rule if ever re-homed: a replay
   is labeled a replay, on its face.
-- The CLI op-path prints a cosmetic "queued" warning in-Shell (its liveness
-  heuristic reads the Feedback channel Shell does not yet write) — the ops drain
-  fine; silence it by writing Feedback, not by patching the CLI.
+- The CLI op-path can print a cosmetic "queued" warning in-Shell — the ops drain
+  fine. ✏️ **Phase 0 (2026-08-10) corrected this entry:** `is_live()` probes the
+  `Shared` seq counter for motion (`organon-core/src/ipc.rs`) and never reads the
+  Feedback channel, and Shell **does** write `Shared` each redraw
+  (`shell_main.rs` — the publish under `redraw`). The warning is a redraw-cadence
+  artifact, not a missing channel. Silence it by keeping `seq` moving while ops
+  are pending (or teaching the probe about event-driven writers) — not by writing
+  Feedback, and not by patching the CLI. Measured during Tier 0: with the
+  backdrop animating, in-console `status`/`recipe` ran with no spurious warning.
 - **A WSL harness's "installed" only proves the BRIDGE.** `pi-wsl` and friends
   detect on `wsl.exe`, not on the harness existing inside the distro — probing that
   means booting WSL on every launch. So a WSL row can be selectable and still fail
