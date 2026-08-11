@@ -43,7 +43,7 @@ on PATH. No Node/npm.
 **Build.**
 
 ```
-cargo build --release --features shell-edition --bin organon-shell
+cargo build --release --features shell-edition --bin organon-console
 cargo build --release --bin organon
 ```
 
@@ -51,7 +51,7 @@ The console requires `shell-edition`; the `organon` CLI does not. `shell-edition
 `mind-edition` are mutually exclusive (a `compile_error!` in `organon-core`'s `edition.rs`
 enforces it).
 
-**Run.** `organon-shell --help` is the documentation for every dev flag —
+**Run.** `organon-console --help` is the documentation for every dev flag —
 `ORGANON_SHELL_BACKDROP`, `ORGANON_SHELL_SCRIM`, `ORGANON_SHELL_CMD`, `ORGANON_SHELL_TABS`,
 `ORGANON_SHELL_DEFAULT`, `ORGANON_SHELL_PTY_DEBUG`. Read it before inventing a flag; the
 scrim line is formatted from constants deliberately, so add a flag and update the help in the
@@ -442,7 +442,7 @@ Do not start Tier 1 until the brief exists and I have seen it.
 
 Notes on this environment: Windows 11, PowerShell 5.1 (&& is a parse error — use
 `cmd; if ($?) { next }`), RTX 5090, cargo/rustc on PATH, no Node/npm. The console
-requires --features shell-edition. `organon-shell --help` documents every dev flag.
+requires --features shell-edition. `organon-console --help` documents every dev flag.
 Hooks in .claude/hooks/ will require SHELL_ARCHITECTURE.md to move in the same change
 as any native/organon-shell/* edit — that is deliberate; do not work around it.
 

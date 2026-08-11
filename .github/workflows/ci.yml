@@ -380,7 +380,9 @@ jobs:
   # compile none of `src/shell_main.rs` and none of the `Edition::Shell` arms.
   # Mind-symmetric commands: the bin lives in the root crate (the window will
   # render `World`, which lives here until #618), the compositor lib in the
-  # `organon-shell` package.
+  # `organon-shell` package. Those two names differ on purpose — the ARTIFACT is
+  # `--bin organon-console` (the public name), the PACKAGE is still
+  # `-p organon-shell`. Don't "fix" one to match the other.
   shell-edition:
     name: build (shell-edition)
     runs-on: ubuntu-latest
@@ -404,7 +406,7 @@ jobs:
 
       - name: Build Organon Shell
         working-directory: native
-        run: cargo build --release --features shell-edition --bin organon-shell
+        run: cargo build --release --features shell-edition --bin organon-console
 
       - name: Test (shell-edition, incl. offline WGSL validation)
         working-directory: native

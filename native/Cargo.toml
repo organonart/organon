@@ -61,8 +61,15 @@ required-features = ["mind-edition"]
 # this bin is the window — it sits HERE, like organon-mind's, because the embedded
 # viewport (Shell #6) renders `World`, which is this crate's until #618
 # extracts it. Requires `shell-edition`, so a default build never produces it.
+#
+# ⚠️ The ARTIFACT is `organon-console`; the CRATE is still `organon-shell`. That gap is
+# deliberate, not an oversight mid-rename: the public name is Organon Console, but the
+# crate name, the `shell-edition` feature, the `ORGANON_SHELL_*` variables (a shipped flag
+# surface) and the `organon-shell` IPC namespace (a WIRE identifier the `organon` CLI joins
+# on) are each read by something else. Issue #3 owns closing the gap with deprecation
+# aliases; renaming them here would be find-and-replace across a process boundary.
 [[bin]]
-name = "organon-shell"
+name = "organon-console"
 path = "src/shell_main.rs"
 required-features = ["shell-edition"]
 
@@ -107,7 +114,7 @@ required-features = ["embedded-llm"]
 mind-edition = ["organon-core/mind-edition", "organon-mind/mind-edition"]
 
 # Shell #3 T1 — the **Organon Shell** edition switch, mind-symmetric:
-#   cargo build --release --features shell-edition --bin organon-shell
+#   cargo build --release --features shell-edition --bin organon-console
 # Forwarded to organon-core (EDITION's one resolution site) and through the
 # organon-shell crate's own feature, so the two cannot disagree. Mutually exclusive
 # with mind-edition (compile_error! in organon-core's edition.rs).

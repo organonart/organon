@@ -13,7 +13,7 @@ Statuses: `landed` · `partial` (say what is missing) · `not yet`.
 | | |
 |---|---|
 | Machine | ORGANON-ONE — RTX 5090, Windows 11 |
-| Build | `cargo build --release --features shell-edition --bin organon-shell` and `cargo build --release --bin organon` |
+| Build | `cargo build --release --features shell-edition --bin organon-console` and `cargo build --release --bin organon` |
 | Before starting | Close anything else on the GPU. Full screen. Cursor parked off-window between beats. |
 | Fallback | If a beat fails live, the previous beat is the stopping point — never improvise past a broken one. |
 

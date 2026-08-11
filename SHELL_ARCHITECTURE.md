@@ -14,6 +14,13 @@
 >
 > **Not auto-injected.** Open it deliberately when working on Shell, like
 > `MIND_ARCHITECTURE.md` and `doc/arch/render.md`.
+>
+> ⚠️ **The binary is `organon-console`; everything else is still `organon-shell`.** The
+> artifact carries the public name (`cargo build --features shell-edition --bin
+> organon-console`); the crate `native/organon-shell`, the `shell-edition` feature, the
+> `ORGANON_SHELL_*` variables, the `organon-shell` IPC namespace and this file's name
+> keep the working one, because each is read by something else. The gap is deliberate —
+> issue #3 owns closing it with deprecation aliases, not find-and-replace.
 
 ---
 
@@ -137,7 +144,7 @@ position.
 - **Dev flags**: `ORGANON_SHELL_CMD` (one plain-command tab, headless proof),
   `ORGANON_SHELL_TABS` (comma harness ids), `ORGANON_SHELL_DEFAULT`,
   `ORGANON_SHELL_BACKDROP`, `ORGANON_SHELL_SCRIM`, **`ORGANON_SHELL_PTY_DEBUG`**.
-  **`organon-shell --help` is their documentation** (2026-08-09) — the binary had no
+  **`organon-console --help` is their documentation** (2026-08-09) — the binary had no
   argument handling at all until then, so `--help` started the event loop and hung. The
   scrim line is **formatted from `term_view::SCRIM_DEFAULT`/`SCRIM_FLOOR`**, not restated:
   the first draft documented `<0..1>` when the value is a `u8` alpha, and `0.5` fails the

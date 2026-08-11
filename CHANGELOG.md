@@ -11,6 +11,25 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the binary is `organon-console`
+
+- **The artifact is renamed; nothing an identifier is read by changes.** The `[[bin]]`
+  target `organon-shell` is now **`organon-console`** — so it is
+  `cargo build --release --features shell-edition --bin organon-console`, and the old
+  spelling now fails with "no bin target named `organon-shell`". Explicitly *not* renamed,
+  because each of these is read by something outside this crate: the **crate**
+  `native/organon-shell` (`-p organon-shell` still names it), the cargo **feature**
+  `shell-edition`, every **`ORGANON_SHELL_*` environment variable**
+  (a shipped flag surface), the **`organon-shell` IPC namespace** (a wire identifier the
+  `organon` CLI joins on), `%APPDATA%\OrganonShell`, and `SHELL_ARCHITECTURE.md`'s filename.
+  Collapsing those needs deprecation aliases and a coordinated change, not find-and-replace.
+- **The console introduces itself as Organon Console.** The window title, the `--help`
+  header and usage line, `--version`, the startup banner and the `organon-console:`
+  diagnostic prefixes now read the public name from a local `PRODUCT_NAME`, deliberately
+  shadowing `EDITION.product_name()` — which stays "Organon Shell" because `organon-core`'s
+  `Edition` is shared spine. A test pins the split: the header must not say "Organon Shell",
+  and `ORGANON_SHELL_BACKDROP` must still be there.
+
 ### Console Spike — Tier 1: the lit substrate
 
 - **A second backdrop source for Organon Shell.** `ORGANON_SHELL_BACKDROP=substrate` puts

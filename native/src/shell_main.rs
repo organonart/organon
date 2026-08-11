@@ -69,6 +69,25 @@ enum BackdropSource {
 /// two cannot drift — the discipline `SCRIM_DEFAULT` already earned here.
 const BACKDROP_SUBSTRATE: &str = "substrate";
 
+/// **How this binary introduces itself**: the window title, the `--help` header, `--version`,
+/// and the startup banner. Deliberately *not* `EDITION.product_name()`, which still answers
+/// "Organon Shell".
+///
+/// The artifact is `organon-console` and the public name is **Organon Console**, so a console
+/// whose title bar and `--help` said "Organon Shell" would introduce itself as a product that
+/// is not what you launched. Everything the rename does *not* touch is what something else
+/// reads: `EDITION` is `organon-core`'s shared spine (the compositor lib's heading and the
+/// edition tests quote it too), the crate is `organon-shell`, the feature is `shell-edition`,
+/// the variables below are a shipped flag surface, and `organon-shell` is a *wire* identifier
+/// — the IPC namespace the `organon` CLI joins on. Issue #3 owns collapsing the two names;
+/// this constant is the honest seam until then, not a half-done rename.
+const PRODUCT_NAME: &str = "Organon Console";
+
+/// What a user types. Kept beside [`PRODUCT_NAME`] because `--help`'s usage line is the one
+/// place the *command* is quoted rather than the product, and the two went out of sync the
+/// moment the bin target was renamed.
+const INVOCATION_NAME: &str = "organon-console";
+
 /// `ORGANON_SHELL_BACKDROP` → a source. `None` is "unset". Pure, so the value space is a
 /// test rather than a claim.
 fn parse_backdrop_source(v: Option<&str>) -> BackdropSource {
@@ -272,7 +291,7 @@ impl Shell {
         }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("organon-shell"),
+            label: Some("organon-console"),
             required_features,
             required_limits,
             experimental_features,
@@ -332,7 +351,7 @@ impl Shell {
         // `redraw` — that heartbeat is what `organon watch` follows.
         match ipc::Writer::create() {
             Ok(w) => self.shared_writer = Some(w),
-            Err(e) => eprintln!("organon-shell: Shared writer unavailable: {e}"),
+            Err(e) => eprintln!("organon-console: Shared writer unavailable: {e}"),
         }
 
         // The registry: built-ins + the user's harnesses.json, detection by real
@@ -391,7 +410,7 @@ impl Shell {
     /// Windows.
     fn open_harness_tab(&mut self, id: &str) {
         let Some(spec) = self.registry.iter().find(|h| h.id == id).cloned() else {
-            eprintln!("organon-shell: unknown harness {id:?}");
+            eprintln!("organon-console: unknown harness {id:?}");
             return;
         };
         let (argv, cwd) = harness::launch_argv(
@@ -418,7 +437,7 @@ impl Shell {
             // The failure a user actually hits is "this harness will not start", so
             // say what was tried, not just the OS error.
             Err(e) => eprintln!(
-                "organon-shell: failed to spawn {title:?}: {e}\n  \
+                "organon-console: failed to spawn {title:?}: {e}\n  \
                  (harness {hid:?}; if this is a WSL entry, check `wsl.exe -- bash -lic 'command -v …'`)"
             ),
         }
@@ -426,7 +445,7 @@ impl Shell {
 
     fn sync_title(&self) {
         if let (Some(w), Some(tab)) = (self.window.as_ref(), self.strip.active_tab()) {
-            w.set_title(&format!("{} — {}", tab.title, EDITION.product_name()));
+            w.set_title(&format!("{} — {}", tab.title, PRODUCT_NAME));
         }
     }
 
@@ -715,7 +734,7 @@ impl ApplicationHandler for Shell {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title(EDITION.product_name())
+            .with_title(PRODUCT_NAME)
             .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.init_gpu(window);
@@ -767,8 +786,9 @@ enum Invocation {
     Run,
 }
 
-/// ⚠️ **`organon-shell --help` used to hang forever.** There was no argument handling at
-/// all: the flag was ignored, the banner printed, and the winit event loop started — so the
+/// ⚠️ **`organon-console --help` used to hang forever** (back when the binary was still named
+/// `organon-shell`). There was no argument handling at all: the flag was ignored, the banner
+/// printed, and the winit event loop started — so the
 /// obvious way to probe a new product ate the terminal until the user found the window or
 /// killed it. The first public-repo trial gave up after three minutes. Every other binary in
 /// this tree answers `--help`; this one is a GUI app, which is a reason to keep the answer
@@ -788,9 +808,9 @@ fn invocation(args: &[String]) -> Invocation {
 /// Listing flags this binary does not have would be worse than the silence it replaces.
 fn help_text() -> String {
     format!(
-        "{} — {}\n\
+        "{PRODUCT_NAME} — {}\n\
          \n\
-         Usage: organon-shell            (no flags; the surface is environment variables)\n\
+         Usage: {INVOCATION_NAME}          (no flags; the surface is environment variables)\n\
          \n\
          Options:\n    \
              -h, --help       print this and exit\n    \
@@ -808,7 +828,6 @@ fn help_text() -> String {
          \n\
          Inside a tab the `organon` CLI addresses this process — the namespace is inherited.\n\
          Docs: SHELL_ARCHITECTURE.md\n",
-        EDITION.product_name(),
         EDITION.tagline(),
         substrate = BACKDROP_SUBSTRATE,
         scrim_default = term_view::SCRIM_DEFAULT,
@@ -823,13 +842,13 @@ fn main() {
             return;
         }
         Invocation::Version => {
-            println!("{} {}", EDITION.product_name(), env!("CARGO_PKG_VERSION"));
+            println!("{} {}", PRODUCT_NAME, env!("CARGO_PKG_VERSION"));
             return;
         }
         Invocation::Run => {}
     }
 
-    eprintln!("{} — {}", EDITION.product_name(), EDITION.tagline());
+    eprintln!("{} — {}", PRODUCT_NAME, EDITION.tagline());
     let event_loop = EventLoop::new().expect("event loop");
     let mut shell = Shell::new();
     event_loop.run_app(&mut shell).expect("run app");
@@ -845,21 +864,21 @@ mod cli_tests {
 
     #[test]
     fn help_and_version_are_answered_not_swallowed() {
-        for spelling in [v(&["organon-shell", "--help"]), v(&["organon-shell", "-h"])] {
+        for spelling in [v(&[INVOCATION_NAME, "--help"]), v(&[INVOCATION_NAME, "-h"])] {
             assert_eq!(invocation(&spelling), Invocation::Help, "{spelling:?}");
         }
-        for spelling in [v(&["organon-shell", "--version"]), v(&["organon-shell", "-V"])] {
+        for spelling in [v(&[INVOCATION_NAME, "--version"]), v(&[INVOCATION_NAME, "-V"])] {
             assert_eq!(invocation(&spelling), Invocation::Version, "{spelling:?}");
         }
     }
 
-    /// argv[0] is a path, and on Windows it can be `...\organon-shell.exe` — neither may be
+    /// argv[0] is a path, and on Windows it can be `...\organon-console.exe` — neither may be
     /// mistaken for a flag, or the app would print help instead of starting.
     #[test]
     fn argv0_is_never_read_as_a_flag() {
-        assert_eq!(invocation(&v(&["/usr/local/bin/organon-shell"])), Invocation::Run);
-        assert_eq!(invocation(&v(&[r"C:\tools\help\organon-shell.exe"])), Invocation::Run);
-        assert_eq!(invocation(&v(&["organon-shell"])), Invocation::Run);
+        assert_eq!(invocation(&v(&["/usr/local/bin/organon-console"])), Invocation::Run);
+        assert_eq!(invocation(&v(&[r"C:\tools\help\organon-console.exe"])), Invocation::Run);
+        assert_eq!(invocation(&v(&[INVOCATION_NAME])), Invocation::Run);
     }
 
     /// The scrim line is quoted from `term_view`'s constants, not restated — the first draft
@@ -936,6 +955,30 @@ mod cli_tests {
         let h = help_text();
         assert!(h.contains(BACKDROP_SUBSTRATE), "help does not name the substrate source");
         assert!(h.contains("0/unset off"), "help does not say what unset means");
+    }
+
+    /// **The binary introduces itself as what you launched.** `--help`'s header and usage line
+    /// are the console's front door, and they are the one place the rename is *visible*: the
+    /// artifact is `organon-console`, so a header reading "Organon Shell" would name a product
+    /// that is not what ran. This is a real regression risk rather than a hypothetical —
+    /// [`PRODUCT_NAME`] deliberately shadows `EDITION.product_name()`, which still answers
+    /// "Organon Shell" and will keep tempting a future tidy-up back onto it.
+    ///
+    /// ⚠️ The **variable names** below are the opposite case: `ORGANON_SHELL_*` is a shipped
+    /// flag surface and stays. Presentation renames, identifiers do not — that split is the
+    /// whole content of this change.
+    #[test]
+    fn the_console_does_not_introduce_itself_as_the_shell() {
+        let h = help_text();
+        assert!(h.starts_with(PRODUCT_NAME), "help header does not name the product");
+        assert!(
+            h.contains(&format!("Usage: {INVOCATION_NAME}")),
+            "usage line names the wrong command"
+        );
+        assert!(!h.contains("Organon Shell"), "the console must not present as Organon Shell");
+        assert!(!h.contains("organon-shell "), "the usage line still names the old binary");
+        // …and the environment variables are untouched by all of the above.
+        assert!(h.contains("ORGANON_SHELL_BACKDROP"), "the flag surface is NOT renamed");
     }
 
     /// The help text has to name the environment variables, because they ARE the interface —

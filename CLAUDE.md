@@ -182,7 +182,7 @@ every shader, the `Shared` layout, and the preset store are identical across the
 ```bash
 cargo build --release                                              # Organon (default)
 cargo build --release --features mind-edition --bin organon-mind   # Organon Mind
-cargo build --release --features shell-edition --bin organon-shell # Organon Shell
+cargo build --release --features shell-edition --bin organon-console # Organon Shell
 ```
 
 `organon-core/src/edition.rs` holds a compile-time `Edition` (`Full` | `Mind` |
@@ -271,7 +271,7 @@ runs the *original* algorithm and has diverged — see `ARCHITECTURE.md` §3.
 ```
 native/       THE ENGINE — a cargo WORKSPACE → THREE products and 8 binaries
               (plugin cdylib, standalone, visual, `organon` CLI, mind-writer,
-              mind-runtime, organon-mind, organon-shell). Count the root crate's
+              mind-runtime, organon-mind, organon-console). Count the root crate's
               files (`ls native/src/*.rs native/src/bin/*.rs | wc -l`) rather
               than trusting a number in prose.
                                 → ARCHITECTURE.md · MIND_ARCHITECTURE.md
@@ -332,7 +332,7 @@ cargo test --workspace          # math, params, IPC goldens + offline WGSL valid
 
 # The other editions — the default build does NOT cover them
 cargo build --release --features mind-edition  --bin organon-mind
-cargo build --release --features shell-edition --bin organon-shell
+cargo build --release --features shell-edition --bin organon-console
 cargo test  --workspace --features mind-edition
 cargo test  --workspace --features shell-edition
 cargo test  -p organon-shell    # the compositor lib alone — the tight loop

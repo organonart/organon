@@ -76,7 +76,7 @@ too**, because their features are default-off and a green suite says nothing abo
 
 ```bash
 cargo build --release --features mind-edition  --bin organon-mind
-cargo build --release --features shell-edition --bin organon-shell
+cargo build --release --features shell-edition --bin organon-console
 ```
 
 CI runs exactly this matrix (default / mind / shell / Windows) on every PR.
