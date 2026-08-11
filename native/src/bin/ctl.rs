@@ -835,6 +835,50 @@ mod tests {
         assert!(parse(&["console", "frobnicate", "x"]).is_err());
     }
 
+    /// **The drift guard the block comment at the top of this file asks for** (#4 Tier 2,
+    /// closed by the integrator). `--help`'s value lists and the renderer's tables are now
+    /// one table: a material added to `substrate_materials` reaches this CLI's completion and
+    /// its "did you mean" with no hand edit, and a material *removed* from there fails here
+    /// rather than leaving clap accepting a name nothing can draw.
+    ///
+    /// An equality test rather than a re-import, deliberately: clap wants `&'static str`
+    /// possible values and the failure should *name* the drift. This is the fix for exactly
+    /// the failure `agent::id_range` demonstrated by hand-maintaining a second copy of
+    /// `params.rs`'s ranges — drifted on 9 of 45 ids (brief R6).
+    ///
+    /// ⚠️ **`CONSOLE_SOURCES` is pinned by a literal, not bound.** `world`/`off`/`substrate`
+    /// are `BackdropSource`'s value space, and `BackdropSource` lives in `src/shell_main.rs`
+    /// — another `[[bin]]`, which no `bin` can import. The other half of this literal is
+    /// `BACKDROP_SOURCE_WORDS` there, asserted against `console_source` by
+    /// `every_source_word_resolves_and_a_typed_name_is_stricter_than_the_env_var`. Two
+    /// alarms, one wire missing; the fix is a `pub const` in `cli.rs` beside
+    /// `parse_console_op` (already the declared home of "both ends speak one vocabulary from
+    /// one place"), and it is in SHELL_ARCHITECTURE.md's honesty ledger.
+    #[test]
+    fn the_console_vocabularies_are_bound_to_the_tables_that_draw_them() {
+        use organic_math_native::substrate_materials;
+        assert_eq!(
+            CONSOLE_MATERIALS,
+            &substrate_materials::MATERIAL_NAMES[..],
+            "clap offers a material list the renderer does not have"
+        );
+        assert_eq!(
+            CONSOLE_RIGS,
+            &substrate_materials::RIG_NAMES[..],
+            "clap offers a rig list the renderer does not have"
+        );
+        assert_eq!(
+            CONSOLE_SOURCES,
+            &["world", "off", "substrate"][..],
+            "the other half of this literal is BACKDROP_SOURCE_WORDS in src/shell_main.rs"
+        );
+        // The two vocabularies must stay disjoint, or `background studio` would parse.
+        for r in CONSOLE_RIGS {
+            assert!(!CONSOLE_MATERIALS.contains(r), "`{r}` is in both vocabularies");
+            assert!(!CONSOLE_SOURCES.contains(r), "`{r}` is in both vocabularies");
+        }
+    }
+
     /// The console lane must not leak into the World's. Two ends of the same claim: a
     /// console verb never reaches `to_ctl` (it branches in `main` first, so reaching the
     /// mapping is the `unreachable!`), and the op it does produce parses back through the

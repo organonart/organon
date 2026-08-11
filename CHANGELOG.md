@@ -11,6 +11,37 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — Tier 2: a backdrop you can type at
+
+- **`organon console background <name>` changes the console's backdrop live.** Four
+  substrate materials (`graphite`, `paper`, `slate`, `metal`) and two lighting rigs
+  (`studio`, `daylight`), plus the three sources `world` / `off` / `substrate` — typed in a
+  console tab, applied on the next frame, with no window flicker and no terminal
+  relayout. `organon console rig <name>` picks the light.
+- **A third command transport, because it has a third destination.** Console verbs append
+  to their own namespaced sidecar (`<ns>-console.txt`) drained by the **console**, not to
+  `cli.txt`, which is drained by the World and cannot reach `Shell` state at all. The
+  drain reuses the World's own file-length watermark and its construction-time seed
+  verbatim, so a backlog from before the console started never replays while a command
+  typed a moment after launch always does. Unknown verbs and unknown names are both
+  skipped in silence — that is the format's whole versioning story.
+- **The #472 material gate now admits the membrane sheet.** `render.rs` split one
+  predicate into `cube_draw` (the bevel morph, unchanged) and `material_draw`, so a flat
+  lit plane can carry a procedural map stack — the thing Tier 1 recorded as the reason its
+  substrate had no surface variation. A uniform-value gate, not a pipeline one, and inert
+  with no material configured.
+- **The command service is live in the product for the first time.** `console.background`
+  and `console.rig` are registered on `organon-shell`'s `CommandService`, with their
+  argument schemas built from the material and rig tables themselves, and every drained op
+  is dispatched through it — so each one leaves a `CommandRun` record in a real session
+  log, success and rejection alike.
+- **One table, one guard.** The `organon` CLI's clap value lists are now asserted equal to
+  the tables the renderer draws from, so a name that completes is a name that can be drawn.
+  (The three *source* words are pinned by a literal on each side rather than bound — the
+  two ends are separate `[[bin]]`s; recorded in `SHELL_ARCHITECTURE.md`'s honesty ledger.)
+- Launching with `ORGANON_SHELL_BACKDROP=substrate` still publishes Tier 1's snapshot byte
+  for byte: no material is applied until one is named.
+
 ### Console Spike — the binary is `organon-console`
 
 - **The artifact is renamed; nothing an identifier is read by changes.** The `[[bin]]`
