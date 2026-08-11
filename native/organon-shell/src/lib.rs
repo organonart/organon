@@ -24,12 +24,18 @@
 //! v2-era modules below it remain compiled and tested: `session`/`command` are
 //! load-bearing foundations; `app`/`timeline`/`mock_agent` await re-homing into
 //! the block system (tree C) and the structured register (tree D).
+//!
+//! Console Spike Tier 4 adds [`scroll_anchor`]: absolute line coordinates over the
+//! scrollback, so the backdrop's look-epochs can be painted as viewport bands that
+//! age with the text instead of with the window. Pure arithmetic — its caller
+//! contract is the checklist in its module doc.
 
 pub mod app;
 pub mod command;
 pub mod harness;
 pub mod mock_agent;
 pub mod platform;
+pub mod scroll_anchor;
 pub mod session;
 pub mod tabs;
 pub mod term;

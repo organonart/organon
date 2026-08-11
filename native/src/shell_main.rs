@@ -35,6 +35,7 @@ use organic_math_native::cli;
 use organic_math_native::params::OrganicMathParams;
 use organic_math_native::scene_input;
 use organic_math_native::substrate_camera::SubstrateRig;
+use organic_math_native::substrate_epochs::{EpochId, EpochLedger, Look, SlotAction};
 use organic_math_native::substrate_materials;
 use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
@@ -48,9 +49,9 @@ use organon_shell::platform::Platform;
 use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::TermSession;
-use organon_shell::term_view;
+use organon_shell::term_view::{self, BandedBackdrop, PaneAnchor};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -223,6 +224,41 @@ const SUBSTRATE_KEY_AZIMUTH_DEG: f32 = -135.0;
 struct ConsoleLook {
     material: Option<String>,
     rig: Option<String>,
+}
+
+/// The rig an **unnamed** rig is. `an_unnamed_rig_is_studio` proves the published bytes are
+/// identical, so spelling it here is what stops `rig studio` from opening an epoch that
+/// changes no pixel — [`EpochLedger::open`]'s no-op rule compares names, and `None` would
+/// compare unequal to the same picture.
+const UNNAMED_RIG: &str = "studio";
+
+/// The `(source, look)` pair as the epoch ledger's [`Look`] — **two names, compared for
+/// equality and printed**, never resolved back to bytes.
+///
+/// The ledger's material slot holds either a material name or one of
+/// [`BACKDROP_SOURCE_WORDS`], and that widening is load-bearing rather than tidy:
+///
+/// * **`world` and `off` must not compare equal to a material.** `background world` then
+///   `background graphite` publishes the same `(material, rig)` [`ConsoleLook`] it had before
+///   the detour — so a ledger keyed on that pair alone would see no change, open no epoch, and
+///   claim the rows written under the live World were substrate.
+/// * **An undressed substrate is not `slate`.** `ConsoleLook::material: None` is Tier 1's
+///   shipped plane with no `#472` map stack at all, and
+///   `startup_is_tier_ones_substrate_untouched_by_tier_two` pins that it differs from every
+///   named material. There is no "none" material to name it with, so it takes the source
+///   word — which is exactly what a user typed to get it.
+///
+/// The three source words cannot collide with a material name; a test below pins that they
+/// are disjoint, because the day they are not, two different looks quietly become one epoch.
+fn ledger_look(source: BackdropSource, look: &ConsoleLook) -> Look {
+    let rig = look.rig.as_deref().unwrap_or(UNNAMED_RIG);
+    match source {
+        BackdropSource::Off => Look::new("off", rig),
+        BackdropSource::World => Look::new("world", rig),
+        BackdropSource::Substrate => {
+            Look::new(look.material.as_deref().unwrap_or(BACKDROP_SUBSTRATE), rig)
+        }
+    }
 }
 
 /// What `organon console background substrate` selects when no material has been named yet.
@@ -478,6 +514,43 @@ struct Backdrop {
     id: Option<egui::TextureId>,
 }
 
+/// One **closed** look-epoch's picture: the live backdrop as it stood the instant that look
+/// stopped being live (Console Spike Tier 4).
+///
+/// The same `(texture, view, id)` triple as [`Backdrop`], with two differences that follow
+/// from it being history rather than a render target: it is `COPY_DST` instead of
+/// `RENDER_ATTACHMENT` (nothing ever draws into it again), and it carries **no size**,
+/// because nothing needs one — the pixels are frozen at whatever the pane was when the copy
+/// was taken, and [`term_view::band_quads`] samples in UV fractions, so a later resize
+/// stretches rather than mismatches. See [`Shell::snapshot_live_backdrop`] for why that is
+/// honest rather than lazy.
+///
+/// Shared by `Rc` across tabs: a look change closes an epoch in *every* pane's ledger, and
+/// the picture they are closing is the same one picture — one backdrop, one window. Each pane
+/// keys it by its own [`EpochId`], so the id spaces stay independent while the GPU pays once.
+struct CachedEpoch {
+    #[allow(dead_code)] // the texture must outlive the view and the egui registration
+    texture: wgpu::Texture,
+    #[allow(dead_code)] // …and the view must outlive the registration
+    view: wgpu::TextureView,
+    id: egui::TextureId,
+}
+
+/// One tab's look history: where it sits in absolute lines, which looks its rows were
+/// written under, and the pictures of the closed ones.
+///
+/// **Per session, because scrollback is per session.** Every tab pumps every frame and every
+/// tab has its own buffer, so `dropped` and the boundary lines are its own; the *looks* are
+/// the window's, and every pane's ledger receives every look change. Two consequences worth
+/// knowing: a tab opened after some look changes starts with one epoch (it has no rows from
+/// before it existed), and [`EpochId`]s are only unique **within** a pane — which is why the
+/// cache lives here rather than on [`Shell`].
+struct PaneLooks {
+    anchor: PaneAnchor,
+    ledger: EpochLedger,
+    cache: HashMap<EpochId, Rc<CachedEpoch>>,
+}
+
 struct Shell {
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
@@ -490,6 +563,9 @@ struct Shell {
     /// default tab runs the default HARNESS (Pi first among equals), and the
     /// bare terminal is one menu entry, not the opening position.
     sessions: Vec<TermSession>,
+    /// The look history of each tab, **index-aligned with `sessions`** (Console Spike Tier
+    /// 4). Created and dropped in the same two places a session is.
+    pane_looks: Vec<PaneLooks>,
     strip: TabStrip,
     registry: Vec<HarnessSpec>,
     installed: HashSet<String>,
@@ -515,11 +591,26 @@ struct Shell {
     /// The session log every console dispatch is recorded in. `None` when the store could not
     /// be opened — see [`Shell::dispatch_console`], which says exactly what is lost.
     session_log: Option<SessionLog>,
-    /// The terminal pane's size in **points** and the scale that turns it into physical
-    /// pixels, recorded at the end of each frame and consumed by the next frame's
-    /// [`Shell::render_backdrop`]. `None` until the first frame has laid the panel out.
+    /// The terminal pane's size in **points**, and the whole window's beside it, recorded at
+    /// the end of each frame and consumed by the next frame's [`Shell::render_backdrop`].
+    /// `None` until the first frame has laid the panel out.
+    ///
+    /// ⚠️ **A pair of point sizes, deliberately — not a size and a scale.** The scale that
+    /// turns points into pixels is an egui frame *output*, so remembering one means starting
+    /// from a stand-in, and the stand-in that reads naturally (`1.0`) is a real 100 % display
+    /// as far as the multiply is concerned: the backdrop comes out sized in **points**, 2.25×
+    /// too small on this display, and any epoch snapshot copied from it in that window keeps
+    /// the small picture for the session. Two point sizes give
+    /// [`scene_input::pane_pixels_in`] a *ratio* to apply to the swapchain, which is physical
+    /// by definition — so the scale cancels instead of being guessed. That function's doc
+    /// owns the argument and the measurement.
     pane_points: Option<(f32, f32)>,
-    pane_scale: f32,
+    window_points: Option<(f32, f32)>,
+    /// Whether the last [`Shell::render_backdrop`] recreated the backdrop texture — the
+    /// pane changed size. Carried on `Shell` rather than returned because it is
+    /// [`EpochLedger::plan`]'s `pane_resized` argument, consumed one call later; it is the
+    /// existing `backdrop.size != (w, h)` condition and nothing new.
+    pane_resized: bool,
     /// The `Shared` snapshot writer (organon-shell namespace). In the two-process
     /// design the PLUGIN writes this; Shell has no plugin, so the terminal writes
     /// the default look itself — which is what makes `organon status`/`get`/`watch`
@@ -578,6 +669,7 @@ impl Shell {
             egui_state: None,
             renderer: None,
             sessions: Vec::new(),
+            pane_looks: Vec::new(),
             strip: TabStrip::default(),
             registry: Vec::new(),
             installed: HashSet::new(),
@@ -592,7 +684,8 @@ impl Shell {
             console_len,
             session_log,
             pane_points: None,
-            pane_scale: 1.0,
+            window_points: None,
+            pane_resized: false,
             shared_writer: None,
             shared,
             occluded: false,
@@ -787,6 +880,18 @@ impl Shell {
         match TermSession::spawn(80, 24, command, cwd.as_deref()) {
             Ok(s) => {
                 self.sessions.push(s);
+                // A new tab's look history starts collapsed at line 0 with whatever the
+                // console is wearing right now: it has no rows from before it existed, so
+                // there is no older epoch for it to describe. This is `EpochLedger::new`
+                // used as the collapse it is — the same shape `background world` produces.
+                self.pane_looks.push(PaneLooks {
+                    anchor: PaneAnchor::new(),
+                    ledger: EpochLedger::new(
+                        ledger_look(self.backdrop_source, &self.console_look),
+                        0,
+                    ),
+                    cache: HashMap::new(),
+                });
                 self.strip.add(Tab { title, harness_id: hid });
             }
             // The failure a user actually hits is "this harness will not start", so
@@ -813,6 +918,14 @@ impl Shell {
             TabAction::Close(i) => {
                 if i < self.sessions.len() {
                     self.sessions.remove(i);
+                }
+                // The tab's scrollback is gone, so its look history describes nothing. Free
+                // every picture it held that no other tab is still using.
+                if i < self.pane_looks.len() {
+                    let gone = self.pane_looks.remove(i);
+                    for (_, cached) in gone.cache {
+                        self.free_cached(cached);
+                    }
                 }
                 if !self.strip.close(i) {
                     self.quit = true;
@@ -943,14 +1056,278 @@ impl Shell {
         if source == self.backdrop_source && look == self.console_look {
             return;
         }
+        // Tier 4: the look that is about to stop being live is the one on screen *right
+        // now*, and `self.backdrop` still holds its rendering — `drain_console` runs before
+        // `render_backdrop`, so this is the last frame in which that picture exists.
+        self.record_look_change(source, ledger_look(source, &look));
         self.backdrop_source = source;
         self.console_look = look;
         *self.shared = *look_shared(self.backdrop_source, &self.console_look);
     }
 
+    /// Close the live look-epoch in every pane and open the next one — the Tier 4 half of
+    /// [`Shell::apply_console`].
+    ///
+    /// **Every pane, not just the visible one.** A look change is the window's, and each tab
+    /// records it at its own cursor, in its own absolute-line coordinate; a tab that is
+    /// nowhere near the screen still accumulates rows under the new look and will have to
+    /// paint them correctly the moment it is switched to.
+    ///
+    /// The order inside is [`EpochLedger::plan`]'s order, for its reason: **evictions are
+    /// released before the new picture is allocated**, so the transient peak never exceeds
+    /// `substrate_epochs::MAX_EPOCHS` textures even on the change that fills the ledger.
+    fn record_look_change(&mut self, next_source: BackdropSource, next: Look) {
+        // `world` / `off` — collapse. A live World is not a still life, and an `off` backdrop
+        // has no picture at all, so none of the cached substrate epochs describes what is on
+        // screen any more. History is forgotten deliberately and loudly (every eviction logs);
+        // what it buys is that the rows written *under* `off` end up in an epoch with no
+        // image, so they keep the plain background they were actually written on.
+        if next_source != BackdropSource::Substrate {
+            let mut evicted: Vec<(usize, EpochId, String)> = Vec::new();
+            for (i, pane) in self.pane_looks.iter_mut().enumerate() {
+                for ev in pane.ledger.collapse_to(next.clone()) {
+                    evicted.push((i, ev.id, ev.log_line()));
+                }
+            }
+            self.retire_epochs(evicted);
+            return;
+        }
+
+        // A substrate look. Where each pane opens it: just below its own cursor, so the
+        // change is visible in the frame it is asked for rather than a screenful later.
+        //
+        // 📌 `scroll_anchor::push_boundary` is deliberately NOT used, and this is the one
+        // place its absence could look like an oversight. It exists to keep a bare
+        // `Vec<u64>` ascending; here the ledger owns the list and `EpochLedger::open`
+        // already clamps to `previous + 1` — **strictly** forward, where `push_boundary`
+        // clamps to `>=` — so the ledger's rule is the stronger of the two and adding the
+        // weaker one on top would be a second place that decides where an epoch starts.
+        let opening: Vec<u64> = self
+            .sessions
+            .iter()
+            .zip(&self.pane_looks)
+            .map(|(session, pane)| pane.anchor.boundary_now(session))
+            .collect();
+
+        let mut evicted: Vec<(usize, EpochId, String)> = Vec::new();
+        // Which epoch each pane just closed — read before `open` mints the new one, and the
+        // key its picture will be filed under below.
+        let mut closing: Vec<(usize, EpochId)> = Vec::new();
+        for (i, (pane, at)) in self.pane_looks.iter_mut().zip(opening).enumerate() {
+            let was = pane.ledger.current_id();
+            let out = pane.ledger.open(next.clone(), at);
+            if !out.opened {
+                continue; // the same look, or the line coordinate is exhausted — no churn.
+            }
+            closing.push((i, was));
+            if let Some(ev) = out.evicted {
+                evicted.push((i, ev.id, ev.log_line()));
+            }
+        }
+        self.retire_epochs(evicted);
+
+        // **Snapshot on close.** The live backdrop texture IS the closing look's rendering —
+        // there is no path here that re-renders an arbitrary past look, deliberately (the
+        // plan: "do not build a restyle-everything path"), so this one copy is the only
+        // moment that picture can be kept. One copy for the whole window, shared by `Rc`:
+        // every pane closed the same picture.
+        if closing.is_empty() {
+            return;
+        }
+        // ⚠️ **Not while the closing look is `off`.** `render_backdrop` returns early at
+        // `off` without rendering, so the backdrop texture still holds whatever was there
+        // *before* `off` — copying it would hand the `off` epoch a picture of a look those
+        // rows were never written under. `self.backdrop_source` is still the closing source
+        // here; the caller updates it after this returns.
+        let picture = if self.backdrop_source == BackdropSource::Off {
+            None
+        } else {
+            self.snapshot_live_backdrop()
+        };
+        let Some(picture) = picture else {
+            // No live texture to copy — the backdrop was `off`, or this is the first frame
+            // and nothing has rendered yet. The closed epoch keeps no image, and its band
+            // paints the plain background, which is what those rows were written on.
+            return;
+        };
+        for (i, id) in closing {
+            self.pane_looks[i].cache.insert(id, picture.clone());
+        }
+    }
+
+    /// Log and free a batch of evicted epochs: the two things `substrate_epochs::Evicted`
+    /// asks its integrator for, in one place so neither can be forgotten.
+    fn retire_epochs(&mut self, evicted: Vec<(usize, EpochId, String)>) {
+        for (pane, id, line) in evicted {
+            // Unconditional: a cap that silently drops history is indistinguishable from a
+            // bug in the anchor arithmetic. `[epochs]` is the tag to grep for.
+            eprintln!("{line}");
+            self.release_epoch(pane, id);
+        }
+    }
+
+    /// Drop one pane's claim on a cached picture, and free the GPU objects if it was the
+    /// last claim on it. The one release site; [`Shell::apply_epoch_plans`] is the belt.
+    fn release_epoch(&mut self, pane: usize, id: EpochId) {
+        let Some(cached) = self.pane_looks.get_mut(pane).and_then(|p| p.cache.remove(&id))
+        else {
+            return;
+        };
+        self.free_cached(cached);
+    }
+
+    /// Free a cached picture's egui registration **iff** no other pane still holds it —
+    /// `register_native_texture`'s no-leak discipline, refcounted.
+    fn free_cached(&mut self, cached: Rc<CachedEpoch>) {
+        let Ok(cached) = Rc::try_unwrap(cached) else {
+            return; // another tab's ledger still describes this look.
+        };
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.free_texture(&cached.id);
+        }
+    }
+
+    /// Copy the live backdrop into a texture of its own and register it with egui.
+    ///
+    /// The formats are the [`Backdrop`] pair exactly — `Rgba8UnormSrgb` storage with an
+    /// `Rgba8Unorm` sample view (brief R1's measured gamma arrangement), so a band sampling
+    /// history linearizes exactly once, like the live band beside it. `COPY_DST` replaces
+    /// `RENDER_ATTACHMENT`: nothing renders into a closed epoch, by design.
+    ///
+    /// ⚠️ **The size is frozen at the moment of the copy.** A later pane resize leaves every
+    /// cached picture at the old resolution, and [`term_view::band_quads`] stretches it into
+    /// the band. That is a deliberate cut rather than an oversight: re-rendering it correctly
+    /// means re-deriving a past look's `Shared` and drawing the world again per epoch, which
+    /// is the unbounded cost the cap exists to prevent. A stretched history is honest — it is
+    /// the picture that was there — and the live band, the one the eye is on, is always exact.
+    ///
+    /// 📌 **That cut only stays honest while the live texture is the size it claims to be**,
+    /// which is why [`scene_input::pane_pixels_in`] exists. The first version of the sizing
+    /// sized the backdrop as `pane_points × remembered_scale`, and the value standing in for a
+    /// scale nobody had measured yet multiplied like a real 100 % display — so the live
+    /// texture spent its first frames in POINTS, and a look closing in that window filed a
+    /// picture 2.25× too small on this machine's display. The live target rebound itself a
+    /// frame later; the snapshot could not, and every band painted from it was magnified back
+    /// up for the rest of the session (measured: a 1100×690 epoch picture across a 2475×1553
+    /// pane). A frozen size is a cut; a frozen *wrong* size was a bug.
+    fn snapshot_live_backdrop(&mut self) -> Option<Rc<CachedEpoch>> {
+        let device = self.world.device()?.clone();
+        let queue = self.world.queue()?.clone();
+        let (texture, view) = {
+            let pane = self.backdrop.as_ref()?;
+            // No egui id means this texture has never been painted; there is nothing on
+            // screen for it to be a picture of.
+            pane.id?;
+            let (w, h) = pane.size;
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("shell-backdrop-epoch"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: BACKDROP_FORMAT,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[BACKDROP_SAMPLE_FORMAT],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("shell-backdrop-epoch-sample"),
+                format: Some(BACKDROP_SAMPLE_FORMAT),
+                ..Default::default()
+            });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("shell-backdrop-epoch-copy"),
+            });
+            encoder.copy_texture_to_texture(
+                pane.texture.as_image_copy(),
+                texture.as_image_copy(),
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+            // Submitted here rather than folded into the frame's encoder: this runs from the
+            // command drain, before the egui pass exists, and the copy has to land before
+            // the next `render_to_texture` overwrites the source with the new look.
+            queue.submit(std::iter::once(encoder.finish()));
+            (texture, view)
+        };
+        let renderer = self.renderer.as_mut()?;
+        let id = renderer.register_native_texture(&device, &view, wgpu::FilterMode::Linear);
+        Some(Rc::new(CachedEpoch { texture, view, id }))
+    }
+
+    /// Reconcile every pane's texture set against its ledger, once per frame.
+    ///
+    /// [`EpochLedger::plan`] is a **total** description of what should exist, so this is the
+    /// place where a texture cannot quietly outlive the epoch it belongs to. Four of the five
+    /// arms are deliberate no-ops, and each one is a decision rather than an omission:
+    ///
+    /// * **the live epoch** — whatever the plan says about it, its texture is the live
+    ///   backdrop, owned by [`Shell::render_backdrop`], which already recreates it on resize;
+    /// * **`Create` for a closed epoch** — there is no picture and no way to make one: a
+    ///   closed look is only ever captured by [`Shell::snapshot_live_backdrop`], at the
+    ///   instant it closed. This fires for epochs that closed while the backdrop was off, and
+    ///   for a tab whose history predates its ledger. Those bands paint nothing;
+    /// * **`Rerender` for a closed epoch** — the pane resized; the picture is stale-sized and
+    ///   gets stretched (see [`Shell::snapshot_live_backdrop`]);
+    /// * **`Retain`** — nothing to do, which is the steady state.
+    ///
+    /// `Release` is the arm that does work, and it is a *belt*: evictions already release
+    /// directly in [`Shell::record_look_change`], so anything reaching here is drift.
+    fn apply_epoch_plans(&mut self) {
+        let live_backdrop = self.backdrop.as_ref().and_then(|b| b.id).is_some();
+        let mut releases: Vec<(usize, EpochId, String)> = Vec::new();
+        for (i, pane) in self.pane_looks.iter().enumerate() {
+            let mut held: Vec<EpochId> = pane.cache.keys().copied().collect();
+            if live_backdrop {
+                // The live epoch's texture exists — it is the backdrop being rendered this
+                // frame — so declaring it held is what makes the plan describe reality.
+                held.push(pane.ledger.current_id());
+            }
+            for action in pane.ledger.plan(&held, self.pane_resized) {
+                if let SlotAction::Release { id } = action {
+                    releases.push((
+                        i,
+                        id,
+                        format!("[epochs] released orphaned texture for epoch {id} (pane {i})"),
+                    ));
+                }
+            }
+        }
+        self.retire_epochs(releases);
+    }
+
+    /// The active pane's backdrop, cut into look-epochs: the boundary list
+    /// [`term_view::band_quads`] consumes, and one texture per epoch, oldest first.
+    ///
+    /// ⚠️ **The first boundary is dropped, and that is the seam between the two leaves.**
+    /// [`EpochLedger::boundaries`] records the line every epoch opened at, *including the
+    /// oldest*; `scroll_anchor` counts boundaries at or below a line to get an epoch index,
+    /// so it wants only the changes **between** looks. Hand it the ledger's list unfiltered
+    /// and every row shifts one epoch younger — a silent, uniform mis-colouring. The
+    /// `textures.len() == boundaries.len() + 1` law is what makes the mistake catchable, and
+    /// the test below is what catches it.
+    fn band_table(
+        ledger: &EpochLedger,
+        live: Option<egui::TextureId>,
+        cached: impl Fn(EpochId) -> Option<egui::TextureId>,
+    ) -> (Vec<u64>, Vec<Option<egui::TextureId>>) {
+        let live_id = ledger.current_id();
+        let textures = ledger
+            .epochs()
+            .iter()
+            .map(|e| if e.id == live_id { live } else { cached(e.id) })
+            .collect();
+        let mut boundaries = ledger.boundaries();
+        if !boundaries.is_empty() {
+            boundaries.remove(0);
+        }
+        (boundaries, textures)
+    }
+
     /// The engine's frame, sized to the pane it is painted into, behind the glyphs (tree E
     /// Tier 1; Console Spike Tier 1 fixed its aspect and gave it a second source).
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
+        // Nothing is re-sized on a frame that renders nothing; the flag is read by
+        // [`Shell::apply_epoch_plans`] whether or not this function reached its own body.
+        self.pane_resized = false;
         if self.backdrop_source == BackdropSource::Off {
             // ⚠️ **`off` clears the rig too, and it has to be said here** because this is the
             // one arm that returns before the source→rig block below. Tier 1 could leave it
@@ -975,13 +1352,20 @@ impl Shell {
         //
         // One frame behind by construction — the world is drawn before the interface that
         // reserves its rect runs — and clamped rather than trusted, both exactly as
-        // `wgpu_editor::render_scene_pane` does it. `pane_pixels` carries the clamps and their
-        // reason: egui hands back a zero or negative rect for a frame mid-resize, and a
+        // `wgpu_editor::render_scene_pane` does it. `pane_pixels_in` carries the clamps and
+        // their reason: egui hands back a zero or negative rect for a frame mid-resize, and a
         // zero-sized texture is a validation error rather than a blank pane. Frame one has no
         // rect yet and falls back to the swapchain, i.e. to today's behaviour for one frame.
-        let (w, h) = match self.pane_points {
-            Some(pt) => scene_input::pane_pixels(pt, self.pane_scale),
-            None => swapchain,
+        //
+        // ⚠️ **The pane's share of the window applied to the swapchain — never points times a
+        // remembered scale.** Sizing it `points × scale` was the Tier 4 band blur: the scale is
+        // a frame output, the value standing in for "not measured yet" multiplies like a real
+        // 100 % display, and the backdrop comes out in points. The live texture rebinds itself
+        // one frame later; the epoch snapshot copied from it never does. `pane_pixels_in` owns
+        // the argument, the measurement and the regression test.
+        let (w, h) = match (self.pane_points, self.window_points) {
+            (Some(pane), Some(window)) => scene_input::pane_pixels_in(swapchain, pane, window),
+            _ => swapchain,
         };
 
         // Total over the source rather than only the substrate arm, so a runtime switch
@@ -1003,6 +1387,9 @@ impl Shell {
         }
 
         let rebind = self.backdrop.as_ref().is_none_or(|b| b.size != (w, h));
+        // The same condition, under the name `EpochLedger::plan` knows it by. A pane that
+        // changed size stales every cached epoch picture — see `snapshot_live_backdrop`.
+        self.pane_resized = rebind && self.backdrop.is_some();
         if rebind {
             let device = self.world.device()?;
             let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1012,8 +1399,12 @@ impl Shell {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: BACKDROP_FORMAT,
+                // `COPY_SRC` is Tier 4's one addition: when a look closes, this texture is
+                // copied into that epoch's own picture (`snapshot_live_backdrop`). It costs
+                // nothing when no look ever changes.
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[BACKDROP_SAMPLE_FORMAT],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -1091,6 +1482,9 @@ impl Shell {
         // The engine first, the terminal over it — the backdrop texture this frame
         // paints under the glyphs is the one just rendered.
         let backdrop = self.render_backdrop();
+        // …and the epochs behind it: which cached pictures should still exist, now that the
+        // pane's size for this frame is known.
+        self.apply_epoch_plans();
 
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),
@@ -1107,22 +1501,42 @@ impl Shell {
         let raw = state.take_egui_input(window);
         // Every tab pumps every frame — a background agent keeps streaming into
         // its grid; only the active one draws.
-        for session in &mut self.sessions {
-            session.pump();
+        //
+        // Through the pane's anchor, never bare: `PaneAnchor::pump` is the ONE site that
+        // advances the scroll-anchor's `dropped` counter, and every tab needs its own kept
+        // current whether or not it is the tab being banded (its rows are accumulating under
+        // the live look right now, and it will be switched to later).
+        for (session, pane) in self.sessions.iter_mut().zip(self.pane_looks.iter_mut()) {
+            pane.anchor.pump(session);
         }
         let active = self.strip.active;
+        // The active pane's look history, resolved to textures before the closure borrows
+        // `pane_looks` mutably for its anchor. `None` when there is no backdrop at all, which
+        // is the pre-Tier-4 path exactly.
+        let bands = backdrop.and_then(|live| {
+            self.pane_looks.get(active).map(|pane| {
+                Self::band_table(&pane.ledger, Some(live), |id| pane.cache.get(&id).map(|c| c.id))
+            })
+        });
         let strip = &self.strip;
         let registry = &self.registry;
         let installed = &self.installed;
         let plus_open = &mut self.plus_open;
         let default_harness = self.default_harness.as_str();
         let sessions = &mut self.sessions;
+        let pane_looks = &mut self.pane_looks;
         let mut action: Option<TabAction> = None;
         // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
         // (see `render_backdrop`). Taken from the same `ui` and by the same call
         // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
         let mut pane_rect: Option<egui::Rect> = None;
+        // …and the whole window beside it, in the SAME points, so the two divide into the
+        // ratio `render_backdrop` applies to the swapchain. Read from the same frame as
+        // `pane_rect` for exactly that reason: a ratio only cancels the scale if both halves
+        // were measured under it.
+        let mut window_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
+            window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
             ctx.input(|i| {
                 for ev in &i.events {
@@ -1150,8 +1564,18 @@ impl Shell {
                     // Before anything is allocated in it — `term_view::draw`'s own first act
                     // is this same call.
                     pane_rect = Some(ui.available_rect_before_wrap());
-                    if let Some(session) = sessions.get_mut(active) {
-                        term_view::draw(ui, session, backdrop);
+                    if let (Some(session), Some(pane)) =
+                        (sessions.get_mut(active), pane_looks.get_mut(active))
+                    {
+                        term_view::draw(
+                            ui,
+                            session,
+                            &mut pane.anchor,
+                            bands.as_ref().map(|(boundaries, textures)| BandedBackdrop {
+                                boundaries,
+                                textures,
+                            }),
+                        );
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.monospace("no live tab — ⌘T opens one");
@@ -1160,10 +1584,11 @@ impl Shell {
                 });
         });
         state.handle_platform_output(window, out.platform_output);
-        // What the next frame's backdrop is sized to. Points plus the scale, never pixels:
-        // the conversion belongs with the clamps in `pane_pixels`.
+        // What the next frame's backdrop is sized to. Two point sizes, never pixels and never
+        // a scale: the conversion belongs with the clamps in `pane_pixels_in`, and it is the
+        // *ratio* of these two that survives a scale nobody has measured yet.
         self.pane_points = pane_rect.map(|r| (r.width(), r.height()));
-        self.pane_scale = out.pixels_per_point;
+        self.window_points = window_rect.map(|r| (r.width(), r.height()));
         if let Some(action) = action {
             self.apply(action);
         }
@@ -1789,6 +2214,214 @@ mod cli_tests {
         {
             assert!(h.contains(name), "help does not offer `{name}`");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // The look history (#4 Tier 4)
+    // -------------------------------------------------------------------------
+
+    /// **What the epoch ledger compares.** Three properties, each of which silently merges
+    /// two different pictures into one epoch if it fails.
+    #[test]
+    fn the_ledger_look_names_the_source_and_never_collides_with_a_material() {
+        let cold = ConsoleLook::default();
+        assert_eq!(ledger_look(BackdropSource::Off, &cold), Look::new("off", UNNAMED_RIG));
+        assert_eq!(ledger_look(BackdropSource::World, &cold), Look::new("world", UNNAMED_RIG));
+        assert_eq!(
+            ledger_look(BackdropSource::Substrate, &cold),
+            Look::new(BACKDROP_SUBSTRATE, UNNAMED_RIG),
+            "an undressed plane is not `slate`; the source word is what the user typed"
+        );
+        assert_eq!(
+            ledger_look(BackdropSource::Substrate, &look(Some("graphite"), Some("daylight"))),
+            Look::new("graphite", "daylight")
+        );
+
+        // 1. A source word can never be read as a material.
+        for w in BACKDROP_SOURCE_WORDS {
+            assert!(
+                !substrate_materials::MATERIAL_NAMES.contains(&w),
+                "`{w}` is both a source and a material — two looks would share one epoch"
+            );
+        }
+        // 2. The detour through `world` is visible even though the `ConsoleLook` is not: the
+        //    console remembers the material across it, so the pair alone cannot tell.
+        let dressed = look(Some("graphite"), None);
+        assert_ne!(
+            ledger_look(BackdropSource::World, &dressed),
+            ledger_look(BackdropSource::Substrate, &dressed),
+            "`background world` then `background graphite` must open a new epoch"
+        );
+        // 3. An unnamed rig is not a secret third state — it is `studio`, byte for byte
+        //    (`an_unnamed_rig_is_studio`), so `rig studio` must not churn the ledger.
+        assert_eq!(
+            ledger_look(BackdropSource::Substrate, &look(Some("metal"), None)),
+            ledger_look(BackdropSource::Substrate, &look(Some("metal"), Some(UNNAMED_RIG)))
+        );
+    }
+
+    /// **The Tier 4 beat, as a state machine.** Three `background` changes in one session and
+    /// then `background world`, driven through the real chain — `console_step` →
+    /// [`ledger_look`] → [`EpochLedger`] over `scroll_anchor`'s own boundary arithmetic. This
+    /// is the only place all three modules run together without a window.
+    #[test]
+    fn the_beat_opens_one_epoch_per_change_and_collapses_at_world() {
+        let mut source = BackdropSource::Substrate;
+        let mut dressing = ConsoleLook::default();
+        let mut ledger = EpochLedger::new(ledger_look(source, &dressing), 0);
+        assert_eq!(ledger.current_look(), &Look::new(BACKDROP_SUBSTRATE, UNNAMED_RIG));
+
+        let mut history = 0usize; // lines that have scrolled into scrollback between changes
+        let mut opened_at: Vec<u64> = Vec::new();
+        for (i, name) in ["graphite", "paper", "metal"].iter().enumerate() {
+            history += 40;
+            let state = organon_shell::scroll_anchor::ViewState {
+                rows: 24,
+                display_offset: 0,
+                history,
+                dropped: 0,
+                alt_screen: false,
+            };
+            let (s, l) = console_step(source, &dressing, &bg(name)).expect("a known material");
+            source = s;
+            dressing = l;
+            let at = organon_shell::scroll_anchor::boundary_now(state, 5);
+            let out = ledger.open(ledger_look(source, &dressing), at);
+            assert!(out.opened, "`background {name}` must close the epoch before it");
+            assert_eq!(out.boundary, at, "and open exactly where the cursor is");
+            assert_eq!(out.evicted, None, "three changes cannot reach the cap");
+            assert_eq!(ledger.epoch_count(), i + 2);
+            opened_at.push(at);
+        }
+        assert!(opened_at.windows(2).all(|w| w[1] > w[0]), "epochs open forward: {opened_at:?}");
+        assert_eq!(
+            ledger.epochs().iter().map(|e| e.look.material.as_str()).collect::<Vec<_>>(),
+            vec![BACKDROP_SUBSTRATE, "graphite", "paper", "metal"],
+            "oldest first, and the launch look is still the oldest"
+        );
+
+        // Ask again for what is already on screen: no epoch, no picture, no churn.
+        let repeat = ledger.open(ledger_look(source, &dressing), 9_999);
+        assert!(!repeat.opened);
+        assert_eq!(ledger.epoch_count(), 4);
+
+        // `background world` is not a fifth look, it is a collapse — and every epoch it
+        // forgets comes back with the line to print.
+        let (s, l) = console_step(source, &dressing, &bg("world")).unwrap();
+        let evicted = ledger.collapse_to(ledger_look(s, &l));
+        assert_eq!(evicted.len(), 4, "every prior epoch goes");
+        assert_eq!(ledger.epoch_count(), 1);
+        assert_eq!(ledger.current_look(), &Look::new("world", UNNAMED_RIG));
+        for ev in &evicted {
+            assert!(ev.log_line().starts_with("[epochs] evicted"), "{}", ev.log_line());
+            assert!(ev.log_line().ends_with("(collapsed)"), "a collapse must not blame the cap");
+        }
+    }
+
+    /// **The seam between the two leaves, row by row.** [`Shell::band_table`] hands
+    /// `scroll_anchor` a boundary list with the ledger's first entry dropped; get that wrong
+    /// and every row lands one epoch younger — uniformly, silently, and with the picture
+    /// still moving, so it looks plausible. Asserted per visible row against the ledger's own
+    /// `band_for_line`, which is the independent answer.
+    #[test]
+    fn every_row_paints_the_look_it_was_written_under() {
+        let mut ledger = EpochLedger::new(Look::new("graphite", UNNAMED_RIG), 0);
+        assert!(ledger.open(Look::new("paper", UNNAMED_RIG), 105).opened);
+        assert!(ledger.open(Look::new("metal", UNNAMED_RIG), 112).opened);
+
+        let ids: Vec<EpochId> = ledger.epochs().iter().map(|e| e.id).collect();
+        let live = egui::TextureId::User(99);
+        // The two closed epochs were snapshotted when they closed; the live one is the
+        // backdrop being rendered this frame and holds no cache entry at all.
+        let cached: HashMap<EpochId, egui::TextureId> = ids[..2]
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, egui::TextureId::User(i as u64)))
+            .collect();
+
+        let (boundaries, textures) =
+            Shell::band_table(&ledger, Some(live), |id| cached.get(&id).copied());
+        assert_eq!(
+            boundaries,
+            vec![105, 112],
+            "the ledger records where the OLDEST epoch opened too; that is not a look CHANGE"
+        );
+        assert_eq!(textures.len(), boundaries.len() + 1, "the length law bands are indexed by");
+        assert_eq!(textures.last().copied().flatten(), Some(live), "the live look is last");
+
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 200.0));
+        let cell_h = 10.0;
+        let state = organon_shell::scroll_anchor::ViewState {
+            rows: 20,
+            display_offset: 0,
+            history: 100,
+            dropped: 0,
+            alt_screen: false,
+        };
+        let quads = term_view::band_quads(&boundaries, &textures, state, rect, cell_h);
+        assert_eq!(quads.len(), 3, "two changes inside the viewport, three bands");
+
+        for v in 0..state.rows {
+            let line = state.first_line() + u64::from(v);
+            let band = ledger.band_for_line(line).expect("inside the ledger's range");
+            let want = if band + 1 == ledger.epoch_count() {
+                Some(live)
+            } else {
+                cached.get(&ids[band]).copied()
+            };
+            let mid = rect.top() + f32::from(v) * cell_h + cell_h * 0.5;
+            let quad = quads
+                .iter()
+                .find(|q| q.rect.top() <= mid && mid < q.rect.bottom())
+                .expect("every row is covered by exactly one band");
+            assert_eq!(quad.texture, want, "row {v} (absolute line {line})");
+        }
+    }
+
+    /// **A closed epoch's picture is the pane at its PHYSICAL size, or history is magnified.**
+    ///
+    /// [`Shell::snapshot_live_backdrop`] copies the live backdrop at `Backdrop::size`, so the
+    /// epoch's resolution is whatever [`Shell::render_backdrop`] decided — and that decision is
+    /// the one the first beat check caught. Sized `pane_points × remembered_scale`, the
+    /// backdrop is sized in **points** for as long as the scale is still the value that stood
+    /// in for "egui has not reported one yet"; the live texture rebinds a frame later, the
+    /// snapshot never does, and every band painted from it is magnified for the session. This
+    /// pins the console's own geometry through the decision, at the ratio it was measured at.
+    ///
+    /// [`scene_input::pane_pixels_in`]'s tests own the general property; this one owns the
+    /// numbers — the window `resumed` asks for, the 30-point strip `redraw` declares, and the
+    /// 2.25 the display reports.
+    #[test]
+    fn a_closed_epoch_is_the_pane_at_its_physical_size() {
+        // The console's own shape: `Window::default_attributes().with_inner_size(1100×720)`
+        // logical, a `TopBottomPanel::top(…).exact_height(30.0)`, on a 225 % display.
+        let (window_points, ppp) = ((1100.0f32, 720.0f32), 2.25f32);
+        let pane_points = (window_points.0, window_points.1 - 30.0);
+        let swapchain =
+            ((window_points.0 * ppp).round() as u32, (window_points.1 * ppp).round() as u32);
+        assert_eq!(swapchain, (2475, 1620));
+
+        // `snapshot_live_backdrop` copies `Backdrop::size` verbatim, so an epoch's texture IS
+        // whatever this returns — which is why the epoch invariant is asserted here.
+        let live = scene_input::pane_pixels_in(swapchain, pane_points, window_points);
+        assert_eq!(live, (2475, 1553), "the backdrop, and so the epoch, is the pane in PIXELS");
+        // And what it must never be: the pane measured in points, which is what a scale
+        // standing in at 1.0 produces and what a band then magnifies 2.25× back up.
+        assert_eq!(scene_input::pane_pixels(pane_points, 1.0), (1100, 690));
+        assert_ne!(live, (1100, 690), "an epoch sized in points is the Tier 4 band blur");
+    }
+
+    /// A pane that has no picture of a look — the backdrop was `off` while those rows were
+    /// written — must report `None` for it rather than borrowing the neighbouring look's
+    /// texture. The band then paints nothing, which is what `off` looked like.
+    #[test]
+    fn an_epoch_with_no_picture_reports_no_texture() {
+        let mut ledger = EpochLedger::new(Look::new("off", UNNAMED_RIG), 0);
+        assert!(ledger.open(Look::new("slate", UNNAMED_RIG), 60).opened);
+        let (boundaries, textures) =
+            Shell::band_table(&ledger, Some(egui::TextureId::User(1)), |_| None);
+        assert_eq!(boundaries, vec![60]);
+        assert_eq!(textures, vec![None, Some(egui::TextureId::User(1))]);
     }
 
     /// The help text has to name the environment variables, because they ARE the interface —
