@@ -65,15 +65,25 @@ agent's scarce resource is context, not round trips, and the CLI surfaces ~1,370
 
 ## Invocation
 
-Canonical form, and the only one the console uses:
+**These are subcommands, not flags, and `describe` already exists.** The `organon` CLI is
+subcommand-styled throughout — `catalog`, `describe`, `status`, `get`, `set`, `snap`, `recipe`,
+`watch` — so a `--discover` flag would be foreign to it. More importantly,
+`skills/organon-cli/SKILL.md` already documents `organon describe <query>` returning *"its
+kind, range, current value, and what it does."* **That is the control descriptor, in prose.**
 
 ```
-<source> --discover --at <path>          # path omitted = root
-<source> --describe --at <path> [--all]
+organon discover [path]            # path omitted = root
+organon describe <query> --json    # the descriptor, machine-readable
 ```
 
-Ergonomic form for humans, equivalent to the above — `organon explore surface --discover`
-means `--at explore.surface`.
+🚨 **`--json` is a second rendering of `describe`, never a second implementation.** One
+command, two outputs, one source — the same discipline that makes the CLI, the agent's
+catalog and the strip three renderings of one table. If the prose and the JSON can disagree
+about a range, this whole schema is decorative.
+
+The source's *invocation* is configuration, never payload (I1). The forms above are Organon's;
+a foreign source is invoked however its Tier 5 mapping recorded, and the console does not care
+which — it consumes documents, not command lines.
 
 **Requirements on an emitter:**
 
@@ -279,9 +289,10 @@ on the right side of the line.
 
 ---
 
-## `--describe`
+## `describe --json`
 
-Returns descriptors for a node.
+The existing `organon describe` rendered as data instead of prose. Returns descriptors for a
+node.
 
 ```json
 {
@@ -295,6 +306,27 @@ Returns descriptors for a node.
 Default page size applies — **a panel with 84 controls is a menu, not an instrument.** `--all`
 lifts it for programmatic consumers. `coverage` is required here in practice for the same
 reason it matters on the strip.
+
+---
+
+## The skill moves with the CLI
+
+`skills/organon-cli/SKILL.md` is the agent-facing teaching document for this CLI, and it
+already makes the correct split: it teaches the loop and the grammar, and defers the surface
+to the live catalog — *"the live catalog is the authority … ask the tool, not your memory."*
+
+**Keep that split.** Adding `discover`, `describe --json`, or an `organon console` branch means
+the skill gains the *shape* of the new vocabulary; it must never gain an enumeration of what
+lives inside it, because an enumeration is what rots.
+
+📌 `.claude/hooks/doc-rules.sh` now lists the skill as accountable for `native/src/bin/ctl.rs`
+and `native/src/cli.rs` — the files that define the command *shape*. Parameter-level detail is
+deliberately not a trigger: that is already guarded by `generated_reference_is_current`, and a
+rule that fires on every parameter change is a rule everyone learns to ignore.
+
+⚠️ The skill currently covers 45 of ~1,370 parameters without saying so. **That is the same
+lie `coverage` exists to prevent**, one layer up — worth a sentence in the skill stating it is
+a curated teaching subset, not an index.
 
 ---
 
