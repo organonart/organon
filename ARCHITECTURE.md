@@ -163,7 +163,7 @@ byte-identical to the historical layout.
 | **`organic-math-mind-writer`** | bin | #367 Tier 2 — synthetic activation-ring writer (fake per-token frames, zero inference; the model-free proof) |
 | **`organic-math-mind-runtime`** | bin | #367 Tier 2b — the **real** activation-ring writer: an embedded llama.cpp runtime that loads the `.gguf`, runs live inference on a typed prompt, and taps per-token activations into the ring. **`required-features = ["embedded-llm"]`** — the default build never compiles it (no llama.cpp/C++ dep) |
 | **`organon-mind`** | bin | #483 Tier 1 — **Organon Mind**, the standalone LLM-analysis instrument: the same editor, Mind-only front-of-house. **`required-features = ["mind-edition"]`** — the default build never compiles it. See §4.1 |
-| **`organon-shell`** | bin | Shell #3 T1 — **Organon Shell**, the agent-operating workstation: a winit/wgpu/egui window (`src/shell_main.rs`) over the compositor lib in `native/organon-shell` (which is nih_plug-free by rule: `cargo tree -p organon-shell | grep nih_plug` must stay empty). The bin sits in this crate, like `organon-mind`'s, because the embedded viewport (Shell #6) renders `World`. **`required-features = ["shell-edition"]`** — the default build never compiles it. See §4.1 + `SHELL_ARCHITECTURE.md` |
+| **`organon-console`** | bin | Shell #3 T1 — **Organon Shell**, the agent-operating workstation: a winit/wgpu/egui window (`src/shell_main.rs`) over the compositor lib in `native/organon-shell` (which is nih_plug-free by rule: `cargo tree -p organon-shell | grep nih_plug` must stay empty). The bin sits in this crate, like `organon-mind`'s, because the embedded viewport (Shell #6) renders `World`. **`required-features = ["shell-edition"]`** — the default build never compiles it. ⚠️ **The bin is `organon-console`, the crate is `organon-shell`** — the artifact carries the public name, the crate keeps the working one (issue #3 owns closing that gap). `--bin organon-console`, `-p organon-shell`. See §4.1 + `SHELL_ARCHITECTURE.md` |
 
 `nih-plug` is a **git dependency** (not crates.io) — a remote/Linux session may be
 unable to fetch it, in which case the compile gate must be cleared on the Mac.
@@ -180,7 +180,7 @@ critically — the **visual binary** are byte-identical between them.
 ```
 cargo build --release                                      # Organon (default; unchanged)
 cargo build --release --features mind-edition --bin organon-mind   # Organon Mind
-cargo build --release --features shell-edition --bin organon-shell   # Organon Shell
+cargo build --release --features shell-edition --bin organon-console # Organon Shell
 ```
 
 `organon-core/src/edition.rs` holds a compile-time `Edition` (`Full` | `Mind` |
