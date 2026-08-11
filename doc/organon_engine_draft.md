@@ -252,11 +252,11 @@ wins, always. A CLI opens the same nervous system to the terminal — read the
 live state, set anything, snap a frame, roll a take — which means an external
 agent gets hands and eyes with no daemon in between; an in-process AI performer
 plays the same lane, its every action mirrored back through the host's parameter
-setter so the sliders never lie. And the whole thing ships three ways from one
-workspace: the plugin, **Organon Mind** — load a language model and watch it
-think, every readout labeled measured, derived, or projection — and **Organon
-Shell**, a GPU terminal for working with agents, the engine glowing under the
-glyphs.
+setter so the sliders never lie. And it is all one instrument, shipping three ways
+from one workspace: the plugin; **Organon Mind** — load a language model and watch
+it think, every readout labeled measured, derived, or projection — and the
+**Organon Console**, a GPU terminal for working with agents, the engine glowing
+under the glyphs.
 
 Organon is what happens when you take the demoscene's ambition, a PBR
 engine's discipline, and a physics textbook's index, and make them all dance to

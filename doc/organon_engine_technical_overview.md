@@ -4,9 +4,9 @@
 > the system is, how it is put together, what it can do, and where the seams are. It is
 > distilled from the repo's working architecture references (`ARCHITECTURE.md` for the
 > native engine, `doc/arch/render.md` for the render pipeline, `MIND_ARCHITECTURE.md`
-> for Organon Mind, `SHELL_ARCHITECTURE.md` for Organon Shell) with the implementation
-> minutiae — byte offsets, slot indices, layout versions, per-PR history — deliberately
-> left out.
+> for the Mind lane, `SHELL_ARCHITECTURE.md` for the Organon Console — which the code
+> still calls *Shell* internally) with the implementation minutiae — byte offsets, slot
+> indices, layout versions, per-PR history — deliberately left out.
 >
 > **Audience:** an engineer, a technically literate reader, or a writer who needs an
 > accurate account of the whole system in one pass.
@@ -35,12 +35,13 @@ an audio plugin. It has three defining properties:
 The founding algorithm is a cube-field visualizer that began life in 2000 as an OpenGL
 exercise. That algorithm is still generator zero. Everything else grew around it.
 
-**Three products now share the engine** (§2.4): **Organon** itself, **Organon Mind** — a
-standalone instrument for watching a language model think (§11) — and **Organon
-Shell** — an agent-operating workstation whose terminal runs over the live engine
-(§12). They are editions of one workspace, not forks. This repository is the native
-engine and its documentation; a browser port of the founding algorithm exists in the
-project's history but is parked and does not live here.
+**It is all one product.** Organon builds two more faces of itself from the same
+workspace (§2.4): **Organon Mind** — the lane for watching a language model think,
+buildable as its own standalone instrument (§11) — and the **Organon Console** — an
+agent-operating workstation whose terminal runs over the live engine (§12). Editions of
+one engine, not separate products and not forks. This repository is the native engine
+and its documentation; a browser port of the founding algorithm exists in the project's
+history but is parked and does not live here.
 
 Everything below describes the native engine unless stated otherwise.
 
@@ -54,7 +55,7 @@ A cargo workspace of five crates — a root crate plus **`organon-core`** (the h
 spine: math, IPC, params, GGUF, editions — no plugin framework, no GPU, no UI, enforced
 by dependency test), **`organon-render`** (the renderer and its ~50 shaders — no plugin
 framework, no UI toolkit, no windowing), **`organon-mind`** (Mind's own code), and
-**`organon-shell`** (Shell's compositor and terminal) — compiles into:
+**`organon-shell`** (the console's compositor and terminal) — compiles into:
 
 | Binary | What it is |
 |---|---|
@@ -65,7 +66,7 @@ framework, no UI toolkit, no windowing), **`organon-mind`** (Mind's own code), a
 | **mind-writer** | a synthetic activation-frame generator (exercises the live LLM path with zero inference) |
 | **mind-runtime** | an embedded llama.cpp runtime that loads a `.gguf`, runs real inference, and streams activations (opt-in build feature) |
 | **organon-mind** | **Organon Mind** — the LLM-analysis edition (opt-in build feature) |
-| **organon-shell** | **Organon Shell** — the agent-operating workstation (opt-in build feature) |
+| **organon-shell** | the **Organon Console** — Organon as an agent-operating workstation (opt-in build feature; binary and crate keep the internal *shell* name) |
 
 Module compilation is split by binary: the plugin dylib never compiles the renderer or
 the inference runtime. The pure mathematics (`math.rs`) lives in `organon-core`, is
@@ -113,20 +114,21 @@ to prove it.
 
 ### 2.4 Editions
 
-**Organon** (the visualizer), **Organon Mind** (a standalone instrument for analysing
-local language models), and **Organon Shell** (the agent-operating workstation) are the
-same engine with a different front-of-house, selected at build time by a cargo feature.
-This is an edition, not a fork: the algorithm, every shader, the snapshot layout, the
-preset store, and — critically — the *visual binary* are byte-identical across them.
+**Organon** (the visualizer), **Organon Mind** (the analysis lane as its own standalone
+instrument), and the **Organon Console** (internally the *Shell* edition) are the same
+engine wearing a different front-of-house, selected at build time by a cargo feature.
+This is one product in three builds — an edition, not a fork: the algorithm, every
+shader, the snapshot layout, the preset store, and — critically — the *visual binary*
+are byte-identical across them.
 
-An edition drives six behaviors: the product name; the IPC namespace (so the products'
-memory-mapped files never collide, and two of them can run simultaneously); which
+An edition drives six behaviors: the displayed product name; the IPC namespace (so the
+editions' memory-mapped files never collide, and two of them can run simultaneously); which
 editor tabs are visible; whether the visual window is an instrument window or a
 projector feed; whether the on-scene UI layer starts visible; and whether the world
 module compiles into the library at all. Each is a pure function of the edition value,
-so every product's behaviour is unit-tested from a single default build. An environment
+so every edition's behaviour is unit-tested from a single default build. An environment
 override on the namespace is how one compiled visual binary serves every edition. Mind
-and Shell are standalone-only permanently — no second plugin identity, ever.
+and the Console are standalone-only permanently — no second plugin identity, ever.
 
 ---
 
@@ -760,7 +762,7 @@ engine, and it carries no plugin framework at all.
 
 ### 11.2 The honesty ledger
 
-The product commits to three things: structure is read from the file, the live signal
+The Mind lane commits to three things: structure is read from the file, the live signal
 comes from the real forward pass, and every projection is labelled *as* a projection.
 Concretely, what is displayed carries a provenance marker:
 
@@ -772,7 +774,7 @@ Concretely, what is displayed carries a provenance marker:
 | The embedding galaxy | **projection — labelled** (a streamed PCA of the real embedding matrix) |
 | The per-layer glow during generation | **proxy — labelled, pending verification**: entropy and confidence, not real activations |
 
-That last row is the product's number-one honesty gap, and it is mid-closure: the real
+That last row is the lane's number-one honesty gap, and it is mid-closure: the real
 activation tap — reading per-layer tensors out of the inference graph through a safe
 evaluation-callback API — is implemented in the runtime, which reports on its first token
 whether the tap measured real activations or fell back to the proxy. The ledger keeps the
@@ -788,12 +790,16 @@ ledger's last row.
 
 ---
 
-## 12. The shell
+## 12. The console
 
-**Organon Shell** is the third edition: an agent-operating workstation, and the newest
-lane. Its current form is a **GPU terminal with the engine behind the glyphs** — tabs of
-agent harnesses (Claude Code, Pi, and friends, plus a plain shell) drawn as a real
-terminal emulator inside a wgpu window, with the Organon world rendered underneath.
+The **Organon Console** is Organon used as an agent-operating workstation — the third
+edition and the newest lane, not a separate product. When you are using the console you
+are using Organon. (It grew under the working name *Organon Shell*, and the code keeps
+that name internally: the `organon-shell` crate and binary, the `shell-edition` feature,
+`SHELL_ARCHITECTURE.md`.) Its current form is a **GPU terminal with the engine behind
+the glyphs** — tabs of agent harnesses (Claude Code, Pi, and friends, plus a plain
+shell) drawn as a real terminal emulator inside a wgpu window, with the Organon world
+rendered underneath.
 
 What exists right now:
 
@@ -808,16 +814,16 @@ What exists right now:
 - **The living backdrop.** The engine's world renders window-sized under the glyphs,
   behind a legibility scrim whose floor is structural — no setting can trade the glyphs
   away. Summoned, never imposed.
-- **A self-steering loop.** Shell publishes its own control snapshot in its own IPC
-  namespace, so the `organon` CLI works from *inside* its terminal: an agent running in a
-  Shell tab can read the live state and switch the generator of the very backdrop it is
-  sitting on.
+- **A self-steering loop.** The console publishes its own control snapshot in its own
+  IPC namespace, so the `organon` CLI works from *inside* its terminal: an agent running
+  in a console tab can read the live state and switch the generator of the very backdrop
+  it is sitting on.
 
-Shell is standalone-only permanently, an edition like Mind, with its own namespace — a
-Shell session, a Mind session and an Organon session can run simultaneously without
-trampling each other. The deeper workstation — command surfaces, viewport interaction,
-richer agent panes — is planned work, *in flight*, with its groundwork (session/event
-log, typed command service, event cards) already in the crate.
+The console is standalone-only permanently, an edition like Mind, with its own
+namespace — a console session, a Mind session and a plugin session can run
+simultaneously without trampling each other. The deeper workstation — command surfaces,
+viewport interaction, richer agent panes — is planned work, *in flight*, with its
+groundwork (session/event log, typed command service, event cards) already in the crate.
 
 ---
 
@@ -886,7 +892,7 @@ mechanically rather than remembered.
   editor body, partitioning the world's state — ship with checker scripts that diff the
   result against a mechanical rewrite of the base commit and fail on any deviation, so a
   type-compatible mis-mapping cannot hide in a thousand-line diff.
-- **CI builds every edition.** The default build compiles neither Mind nor Shell, so a
+- **CI builds every edition.** The default build compiles neither the Mind nor the Console edition, so a
   green default suite says nothing about them; CI builds and tests each edition, plus
   Windows legs, on every pull request, and every PR closes at least one automated review
   cycle.
@@ -936,7 +942,7 @@ contract, from the original cube field and Frenet–Serret frames to Maxwell and
 fields, aperiodic tilings, minimal surfaces, arbitrary field equations with a PDE solver,
 and the live internals of a language model. Every parameter is host-automatable, the beat
 clock is phase-locked to the transport, and the camera, the modulation routing, the media
-simulations and the audio analysis all run off that one clock. The same engine ships
-three ways from one workspace: the plugin, a standalone instrument for watching a
-language model think, and an agent-operating workstation whose terminal glows from
-underneath.
+simulations and the audio analysis all run off that one clock. It is one product that
+ships three ways from one workspace: the plugin, the Mind instrument for watching a
+language model think, and the console for working with agents, its terminal glowing
+from underneath.
