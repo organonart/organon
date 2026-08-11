@@ -133,9 +133,11 @@ what makes §6's one-writer-per-file rule enforceable rather than aspirational.
 
 ⚠️ **"Delegate everything" does not mean "delegate everything at once."** The integrator lane
 is **one sub-agent at a time**, and the coordinator waits for it to finish
-(`run_in_background: false`) before dispatching anything that touches the same files. The
-same applies to Tier 3's schema design: it is a vocabulary, it settles first, and only then
-do the leaves fan out.
+(`run_in_background: false`) before dispatching anything that touches the same files.
+
+📌 **Tier 3's schema no longer needs a serial design step** — it was settled ahead of the
+spike in `console_discover_schema.md`, so Tier 3's leaves fan out immediately. That was the
+point of settling it away from a demo deadline.
 
 ---
 
@@ -202,15 +204,18 @@ the integrator.
 
 ### Tier 3 — the strip *(the biggest tier; do the design serially)*
 
-🚨 **The `--discover` schema is a vocabulary. One person designs it, alone, first.** Fanning
-out before the shape is settled produces four incompatible halves that compile.
+✅ **The schema is already settled** — `doc/console_discover_schema.md`, decided 2026-08-10
+away from the demo deadline. **Tier 3 implements it; it does not design it.** Read the two
+invariants there before dispatching anything: nothing from a payload is ever executed, and
+descriptors are generated from the parameter table rather than hand-written. Both fail
+silently if broken.
 
-Once the schema exists:
+Because the vocabulary is settled, all four leaves fan out at once:
 
 | Lane | Owns | Output |
 |---|---|---|
-| Leaf A | schema types + serde | round-trip tests, tolerant defaults |
-| Leaf B | catalog → command-service adapter | `core_catalog` entries become `CommandSpec`s — the one-table keystone |
+| Leaf A | schema types + serde + the `organon --discover` emitter | round-trip tests, tolerant defaults, the test list at the end of the schema doc |
+| Leaf B | catalog → command-service adapter | `core_catalog` entries become `CommandSpec`s — the one-table keystone. Also where descriptors get **generated** rather than authored (schema doc, I2), guarded by `taper_round_trips_against_the_engine_range` |
 | Leaf C | new reserved-row module | pure arithmetic: window rows − strip rows → PTY rows, tested across resize and fractional scale |
 | Leaf D | the strip widget | the existing tab strip extracted to be data-driven: labels in, index out, callback |
 | Integrator | `shell_main.rs`, `term_view.rs`, `term.rs` | bottom region, PTY resize, click → compose into the input line, prompt-ready buffering |
@@ -326,7 +331,8 @@ Read these, in this order, before doing anything:
   2. SHELL_ARCHITECTURE.md                 — the code-grounded state of the console
   3. gh issue view 4                       — the spike: the beats and the tiers
   4. gh issue view 3                       — the console: the design the spike slices
-  5. CLAUDE.md and CONTRIBUTING.md         — this repo's rules
+  5. doc/console_discover_schema.md        — the settled wire format Tier 3 implements
+  6. CLAUDE.md and CONTRIBUTING.md         — this repo's rules
 
 You are the coordinator and you write no implementation code. Dispatch all of it —
 reconnaissance, leaf modules, and integration — to sub-agents, passing
