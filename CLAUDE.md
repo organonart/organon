@@ -12,7 +12,7 @@
    while it runs. Not a feature of Organon and not a fork of it: **its own crate**
    (`native/organon-mind`, nih-plug-free) over a shared engine.
 3. **Organon Shell** — an **agent-operating workstation**: a native GPU-composited
-   workspace for collaborating with AI agents on living software systems. Its own crate
+   workspace for working with AI agents. Its own crate
    (`native/organon-shell`, nih_plug-free, standalone-only permanently — no plugin
    identity, ever) + a third `Edition`.
 

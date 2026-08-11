@@ -1731,7 +1731,7 @@ fn invocation(args: &[String]) -> Invocation {
 /// Listing flags this binary does not have would be worse than the silence it replaces.
 fn help_text() -> String {
     format!(
-        "{PRODUCT_NAME} — {}\n\
+        "{PRODUCT_NAME}\n\
          \n\
          Usage: {INVOCATION_NAME}          (no flags; the surface is environment variables)\n\
          \n\
@@ -1754,7 +1754,6 @@ fn help_text() -> String {
              organon console rig <{rigs}>\n\
          \n\
          Docs: SHELL_ARCHITECTURE.md\n",
-        EDITION.tagline(),
         substrate = BACKDROP_SUBSTRATE,
         scrim_default = term_view::SCRIM_DEFAULT,
         scrim_floor = term_view::SCRIM_FLOOR,
@@ -1784,7 +1783,7 @@ fn main() {
         Invocation::Run => {}
     }
 
-    eprintln!("{} — {}", PRODUCT_NAME, EDITION.tagline());
+    eprintln!("{PRODUCT_NAME}");
     let event_loop = EventLoop::new().expect("event loop");
     let mut shell = Shell::new();
     event_loop.run_app(&mut shell).expect("run app");

@@ -230,7 +230,6 @@ pub fn ui(ctx: &egui::Context, app: &mut ShellApp) {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.35);
                 ui.heading(app.edition.product_name());
-                ui.weak(app.edition.tagline());
                 ui.add_space(12.0);
                 ui.weak("The agent workspace — conversation, plans, tool events,");
                 ui.weak("diffs, artifacts, and live surfaces land here.");
