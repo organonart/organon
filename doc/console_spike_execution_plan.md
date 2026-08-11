@@ -238,6 +238,30 @@ and FOV shading only.
 | Leaf B | the CLI arm: `ctl.rs` + `cli.rs` `console` subcommand | `organon console background <name>` in clap `--help`, args validated; ops written to a NEW `ns_file("console.txt")` sidecar — **not** `CliOp`/`cli.txt`, which the World drains, not the Shell (R3) |
 | Integrator | `shell_main.rs`, `SHELL_ARCHITECTURE.md` | stand up the product's **first `CommandService` instance** (specs must register into something real — none exists in the product today, R3); drain `console.txt` in the frame path; dispatch → live substrate change, under a second, no grid relayout |
 
+### ⚡ Sequence amendment (2026-08-11, coordinator + James): Tier 4 lands before Tier 3
+
+Tier 4's beat — a look change scrolling in from the bottom while history keeps its own
+styling — is the night's priority, and it has **no technical dependency on Tier 3**: it
+needs Tier 2's command lane and R4's scrollback map, not the strip. Tier 3 (the biggest
+tier, plus its pre-gate) follows. Pacing note: a tier's **leaves** (pure, conflict-free by
+construction) may dispatch once the previous tier's leaves have fixed its shape; a tier's
+**integration** still waits for the previous tier's beat check to pass.
+
+Tier 4 design cuts, decided now so the leaves build the same thing:
+
+- **Look-epochs are substrate looks only.** Each `organon console background <material>`
+  (or `rig`) change closes the current epoch at the current absolute scrollback line and
+  opens a new one. Substrate looks are still lifes, so each epoch renders to **one cached
+  texture** (re-rendered on resize only) and the viewport paints row-aligned band quads —
+  no per-frame multi-world rendering. `background world` collapses history to a single
+  live epoch (a live world is not a still life; freezing it would be a lie labelled look).
+- **Band edges snap to cell rows** — the pure module owns (epoch ledger, display_offset,
+  rows, history_size) → bands, with property tests: bands partition the viewport, edges
+  monotone, pre-first-change is one epoch, **alt screen is always exactly one band** (no
+  scrollback there).
+- **The cap is small, honest and logged**: bounded epoch textures; evicted epochs merge
+  into their older neighbour, logged to stderr. No restyle-everything path exists.
+
 ### Tier 3 — the strip *(the biggest tier)*
 
 ✅ **The schema is already settled** — `doc/console_discover_schema.md`, decided 2026-08-10

@@ -676,6 +676,22 @@ pass two). The ~600-line body is unchanged — it derives the old local bools fr
   surface on non-graph generators. `cull_mode = None`, so most swaps need no winding
   care (all four extra meshes are still wound outward for the opaque early-Z path).
 - Instanced: one static mesh + per-instance model matrix + per-instance colour tint.
+- **Which draws sample the #472 material set** — `render()` scopes it with `material_draw`,
+  a predicate **separate from** the bevel's `cube_draw` even though they were one until the
+  Console Spike's Tier 2. They scope different things: `cube_draw` protects the shared cube
+  *mesh* from a morph meant only for the generator's cubes, while the material set is a
+  surface *response* any draw shading through `cube.wgsl` on the main uniform can carry.
+  `material_draw = cube_draw || (membrane && !membrane_arms)`, so the **Membrane** path's
+  lofted sheet (and its optional boundary strands, which share every other material dial)
+  now sample the maps — that is what lets the Organon Console's flat substrate backdrop wear
+  a procedural material at all. It is a **uniform-value** gate, never a pipeline one: group(5)
+  was already bound at both membrane sites (the scene branch and the depth prepass, which
+  read the same uniform, so a height-displacing material stays consistent between them).
+  Byte-identical by default — `u.mtl.x` comes from `material[0] || material_layer[16]`
+  (`world.rs`), both 0 at the stock defaults. Everything else still zeroes `mtl[0]`: the five
+  patched uniform copies (plexus overlay, liquid, scenery, scenery water, demo sub-batches)
+  do it because their geometry has a material of its **own**; the membrane has none, it
+  shares the generator's.
 - **Neural Tissue multi-mesh draw** (#260 Tier 1): when `Surface.neural_batches` is set
   (the Neural Network generator under the Neural Tissue surface), the ONE instance/tint
   buffer holds three **contiguous sub-batches** — somata `[0,soma)`, capsules

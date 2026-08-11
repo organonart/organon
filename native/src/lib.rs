@@ -123,6 +123,11 @@ pub mod scene_input;
 /// arithmetic; ungated because the default `cargo test --workspace` is the only thing that
 /// covers it (`world`, which consumes it, compiles only under mind/shell-edition).
 pub mod substrate_camera;
+/// Console Spike Tier 2 Leaf A — four substrate MATERIALS and two lighting RIGS, each a pure
+/// delta on [`substrate_scene`]'s snapshot. Ungated for the same reason as its two Tier 1
+/// siblings: the default `cargo test --workspace` is the only leg that covers it, and the
+/// `organon` CLI (a default-build binary) binds its name tables.
+pub mod substrate_materials;
 /// Console Spike Tier 1 Leaf B — the substrate LOOK as a pure function over `Shared`.
 pub mod substrate_scene;
 pub mod synth;

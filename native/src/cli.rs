@@ -1,8 +1,8 @@
 //! #452 Tiers 1–2: the `organon` CLI's brain — input validation, catalog /
 //! state formatting, and command-channel op building. Everything here is pure
-//! (no I/O except [`append_ops`]) so it unit-tests headless; `bin/ctl.rs` owns
-//! the **clap** argument surface (per-subcommand `--help`, suggestions, shell
-//! completions) and maps it onto [`CtlCmd`].
+//! (no I/O except [`append_ops`] and [`append_console_ops`]) so it unit-tests
+//! headless; `bin/ctl.rs` owns the **clap** argument surface (per-subcommand
+//! `--help`, suggestions, shell completions) and maps it onto [`CtlCmd`].
 //!
 //! The CLI exists so **external local agents** (Bianca, #452) can play Organon:
 //! - **read side (Tier 1)**: `catalog` / `get` / `watch` / `status` decode the
@@ -11,6 +11,10 @@
 //!   `surface` / `material` append [`CliOp`] lines to `ipc::cli_cmd_path()`;
 //!   the visual drains them each frame into the Performer's override lane
 //!   (last-touched-wins, slider mirroring, mind-log — all shared with #317).
+//! - **the console lane (#4 Tier 2)**: `console background` / `console rig`
+//!   append [`ConsoleOp`] lines to [`console_cmd_path`], drained by the
+//!   **console**, not by the World. A separate destination needs a separate
+//!   channel — see that section's comment.
 
 use crate::agent::{self, CliOp, SlotKind};
 use crate::ipc::{self, Shared};
@@ -229,6 +233,102 @@ pub fn find_eyes_reply(body: &str, nonce: &str) -> Option<Result<String, String>
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// The console lane (#4 Tier 2) — the CLI's write path to the **console**.
+//
+// This is a third transport, not a third verb on an existing one, because it has
+// a third destination (brief R3). `CliOp` lines on `ipc::cli_cmd_path()` are
+// drained by the **World**, inside `World::frame_body`; the eyes channel is
+// answered by the **visual**. A backdrop or a lighting rig is neither: it is
+// `Shell` state, owned by `shell_main.rs`, and nothing in the World can reach it.
+// Routing a console verb over `cli.txt` would put it in a queue read by a process
+// that cannot act on it — green, silent, and wrong. So: its own sidecar,
+// [`console_cmd_path`], drained in the console's frame path.
+//
+// The discipline is copied from the command channel deliberately: append-only
+// UTF-8, one op per line, created on first write, reader self-detects growth by
+// file length, and the CLI is never an IPC writer. Plain text, verb first — no
+// JSON, matching [`CliOp`]'s simplicity.
+//
+// **Versioning is the verb.** There is no version token and there should not be
+// one: a reader that meets a verb it does not know skips the line
+// ([`parse_console_op`] returns `None`), so a newer CLI talking to an older
+// console degrades to "that op did nothing" instead of to a parse error that
+// poisons the rest of the drain. Adding a verb is how this format changes.
+// ---------------------------------------------------------------------------
+
+/// One console command, as it crosses the CLI→console sidecar.
+///
+/// The payload is an unvalidated name on purpose. `bin/ctl.rs` rejects an unknown one
+/// at the clap boundary — before a line is ever written — so validation lives where the
+/// error message can be good ("did you mean"), and the drain resolves what it is given.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConsoleOp {
+    /// What sits behind the glyphs: a substrate material, or a backdrop *source*
+    /// (`world` / `off` / `substrate` — `shell_main.rs`'s `BackdropSource` value space).
+    Background(String),
+    /// The substrate's lighting rig.
+    Rig(String),
+}
+
+/// `$TMPDIR/<namespace>-console.txt` — the console command channel.
+///
+/// Namespace-derived through [`ipc::ns_file`] like every other IPC file, which is the one
+/// cross-product invariant: it is what lets a console and a plain Organon run at once
+/// without either steering the other. A hard-coded `$TMPDIR` path would silently break
+/// that co-existence.
+///
+/// It lives here rather than beside `cli_cmd_path` in `organon-core`'s `ipc.rs` because
+/// `ns_file` is **public**: this lane is between the CLI and the console, and adding a
+/// sidecar needs no edit to the host-free spine. If a third party ever has to build this
+/// path too, moving it into `ipc.rs` is the moment — not before.
+pub fn console_cmd_path() -> std::path::PathBuf {
+    ipc::ns_file("console.txt")
+}
+
+/// Serialize one console op to a single sidecar line (newline-free).
+pub fn console_op_to_line(op: &ConsoleOp) -> String {
+    match op {
+        ConsoleOp::Background(name) => format!("background {name}"),
+        ConsoleOp::Rig(name) => format!("rig {name}"),
+    }
+}
+
+/// Parse one sidecar line. `None` for a malformed line **or an unknown verb** — the
+/// drain skips those rather than failing, which is what makes the format
+/// forward-compatible (see the section comment above).
+///
+/// Paired with [`console_op_to_line`] so both ends of the lane — this CLI writing and
+/// the console reading — speak one vocabulary from one place. That pairing is the whole
+/// reason these are here and not inlined at either end.
+pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
+    let mut it = line.trim().split_whitespace();
+    match it.next()? {
+        "background" => Some(ConsoleOp::Background(it.next()?.to_string())),
+        "rig" => Some(ConsoleOp::Rig(it.next()?.to_string())),
+        _ => None,
+    }
+}
+
+/// Append console ops to the console command channel (one line each), creating the file
+/// if it is not there yet.
+///
+/// Fire-and-forget, exactly like [`append_ops`]: the console drains them on its next
+/// frame, and ops written while no console is running are never read — deliberately not
+/// replayed at its next start.
+pub fn append_console_ops(ops: &[ConsoleOp]) -> std::io::Result<()> {
+    use std::io::Write;
+    let body: String = ops
+        .iter()
+        .map(|o| format!("{}\n", console_op_to_line(o)))
+        .collect();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(console_cmd_path())?;
+    f.write_all(body.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,5 +1206,82 @@ mod tests {
             "these ids reach doc/reference/parameters.md with no description — add one to \
              `agent::param_desc`: {missing:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The console lane (#4 Tier 2)
+    // -----------------------------------------------------------------------
+
+    /// The format/parse pair is the shared vocabulary of two processes, so the round trip
+    /// is the contract, not a nicety: the CLI writes with `console_op_to_line` and the
+    /// console reads with `parse_console_op`, and if they ever disagree the failure is a
+    /// silently ignored command rather than an error anybody sees.
+    #[test]
+    fn console_ops_round_trip_through_the_wire_format() {
+        for op in [
+            ConsoleOp::Background("graphite".into()),
+            ConsoleOp::Background("paper".into()),
+            ConsoleOp::Background("slate".into()),
+            ConsoleOp::Background("metal".into()),
+            // The three backdrop *sources* ride the same verb as the materials.
+            ConsoleOp::Background("world".into()),
+            ConsoleOp::Background("off".into()),
+            ConsoleOp::Background("substrate".into()),
+            ConsoleOp::Rig("studio".into()),
+            ConsoleOp::Rig("daylight".into()),
+        ] {
+            let line = console_op_to_line(&op);
+            assert!(!line.contains('\n'), "a line must be one line: {line:?}");
+            assert_eq!(parse_console_op(&line), Some(op.clone()), "line was {line:?}");
+            // The drain reads whole lines from a file; trailing whitespace is not a
+            // different command.
+            assert_eq!(parse_console_op(&format!("  {line}  ")), Some(op));
+        }
+
+        // The exact bytes on the wire, pinned — the console's drain is written against
+        // these, and "the round trip works" would still hold if both ends changed together
+        // while an already-running console spoke the old spelling.
+        assert_eq!(
+            console_op_to_line(&ConsoleOp::Background("slate".into())),
+            "background slate"
+        );
+        assert_eq!(console_op_to_line(&ConsoleOp::Rig("studio".into())), "rig studio");
+    }
+
+    /// An unknown verb parses to `None` so the drain SKIPS it. That is the whole
+    /// forward-compatibility story of this format: a newer CLI writing a verb an older
+    /// console has never heard of must degrade to "that op did nothing", never to a parse
+    /// failure that poisons the rest of the file.
+    #[test]
+    fn an_unknown_console_verb_is_skipped_not_fatal() {
+        assert_eq!(parse_console_op("scrim 0.5"), None); // a plausible future verb
+        assert_eq!(parse_console_op("frobnicate x"), None);
+        assert_eq!(parse_console_op(""), None);
+        assert_eq!(parse_console_op("   "), None);
+        // A known verb with no argument is malformed, not a different command.
+        assert_eq!(parse_console_op("background"), None);
+        assert_eq!(parse_console_op("rig"), None);
+        // `CliOp`'s vocabulary is a DIFFERENT lane's — a `cli.txt` line landing here (a
+        // mis-wired drain) must be skipped rather than half-understood.
+        assert_eq!(parse_console_op("set metallic 0.9"), None);
+        assert_eq!(parse_console_op("gen 3"), None);
+    }
+
+    /// The console sidecar is namespace-derived like every other IPC file. This is the
+    /// invariant that lets a console and a plain Organon run side by side; a hard-coded
+    /// `$TMPDIR` name would break co-existence silently, which is precisely the failure
+    /// `ns_file` exists to prevent.
+    #[test]
+    fn the_console_channel_is_namespaced() {
+        let p = console_cmd_path();
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(name, format!("{}-console.txt", ipc::namespace()));
+        // Same directory as its sibling channels — compared against one of them rather
+        // than against `temp_dir()` so the assertion cannot drift from `ns_file`.
+        assert_eq!(p.parent(), ipc::cli_cmd_path().parent());
+        // …and it is its OWN file: routing console ops onto the World's lane is the exact
+        // mistake this channel exists to avoid (brief R3).
+        assert_ne!(console_cmd_path(), ipc::cli_cmd_path());
+        assert_ne!(console_cmd_path(), ipc::eyes_cmd_path());
     }
 }

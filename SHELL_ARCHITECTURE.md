@@ -98,6 +98,18 @@ position.
   with that floor pinned by a test rather than an unguarded expression inside `draw`.
   The bin negotiates the FULL engine feature set (bind groups, RT, timestamps) — a
   default-limits device opens a window and then fails to create engine pipelines.
+  **Console Spike T2 dressed that plane and made the choice live.** Four materials and
+  two lighting rigs (`substrate_materials.rs`: `graphite` / `paper` / `slate` / `metal`;
+  `studio` / `daylight`), each a pure delta on the T1 snapshot, written by
+  `apply_material` / `apply_rig`. They are only visible because the **#472 map gate
+  moved in the same tier** — `render.rs` split one predicate into `cube_draw` (the bevel
+  morph, unchanged) and `material_draw`, which now admits the Membrane sheet; see
+  `doc/arch/render.md` §"Which draws sample the #472 material set". The snapshot is
+  recomputed from one pure function of `(source, material, rig)` — `look_shared`, order
+  **look → material → rig → the camera's key azimuth** — so every change is a fresh
+  derivation rather than a patch on the last one, and `world`/`off` publish exactly
+  today's default bytes however the console is dressed. Startup applies **no** material:
+  `ORGANON_SHELL_BACKDROP=substrate` is byte-identical to T1 until a command arrives.
 - **Process launching is platform data, not `#[cfg]` (`platform.rs`, 2026-08-08)** —
   `Platform` is a **value**, so the Windows decisions are unit-tested from a Mac.
   `default_shell` (Unix: `$SHELL` → `/bin/zsh`, `-l`; Windows: `pwsh` → `powershell`
@@ -138,9 +150,51 @@ position.
   that is repainting reads live and one whose redraws have stalled can print a
   spurious "queued" warning (Phase 0 correction, 2026-08-10 — this line previously
   blamed the Feedback channel, which `is_live` never reads).
+- **The console command lane (#4 T2, `cli.rs` + `shell_main.rs`)** — the first typed
+  sentence that changes the console: `organon console background <name>` and
+  `organon console rig <name>`. **A third transport, because it has a third
+  destination.** `cli.txt` is drained by the `World` and the eyes sidecar is answered by
+  the visual; a backdrop is `Shell` state and neither of them can reach it, so routing a
+  console verb over the existing lane would queue it where nothing can act on it —
+  green, silent, wrong. The lane end to end — **validate · write · drain · validate ·
+  apply**:
+
+  1. clap's `PossibleValuesParser` over the material / rig / source lists rejects a bad
+     name *before a byte is written*, with exit 2 and "did you mean" for free.
+  2. `cli::append_console_ops` appends one line per op to `cli::console_cmd_path()` =
+     `ns_file("console.txt")` — append-only UTF-8, verb first, no JSON.
+  3. `Shell::drain_console` reads it once per frame on the **file-length watermark**,
+     reusing `agent::cli_drain_step` + `agent::cli_seed` verbatim (the CLI is never an
+     IPC writer, so there is no `seq` to watch). Seeded at construction from ONE read: a
+     backlog from before the process existed never replays, a command typed a moment
+     after launch always drains.
+  4. `CommandService::dispatch` re-validates against a `Choice` schema built from the
+     same tables, and records the run.
+  5. `console_step` folds the op into `(source, look)`; `look_shared` recomputes the
+     published `Shared`.
+
+  It drains **immediately before** the per-frame `Shared` publication, so a command
+  reaches the World on the frame it arrives, not the next one. **Versioning is the
+  verb**: `parse_console_op` returns `None` for anything it does not know and the drain
+  skips the line, so a newer `organon` against an older console degrades to "that op did
+  nothing" instead of poisoning the rest of the drain — and `console_step` carries the
+  same contract down to the *argument*, so an unknown material leaves the backdrop
+  exactly as it found it. Nothing else moves on a switch: the backdrop texture is keyed
+  on the pane size, which a command does not change, so no texture is recreated, no egui
+  id is rebound and no glyph is re-laid-out.
 - **The landed v2 foundations** (session/event log with torn-tail recovery, the
   typed command service, mock-agent event cards) remain in the crate, feeding
-  trees C/D.
+  trees C/D. **`command::CommandService` is no longer only its own tests**: #4 T2 stands
+  up the product's first live instance, registering `console.background` and
+  `console.rig` (`TargetKind::Viewport`, one required `name` of `ArgKind::Choice` built
+  from `substrate_materials`' own tables) and routing every drained op through
+  `dispatch`, so each one leaves a `CommandRun` record in a real `SessionLog`. Two
+  shapes worth knowing: the service is built **per batch** rather than held on `Shell`
+  (it borrows `&mut SessionLog`, and a struct holding both would be self-referential —
+  `command.rs` says as much: "the log outlives any one service"), and its target
+  **banks** the validated ops for the caller to apply, because `Box<dyn CommandTarget>`
+  is `'static` and cannot hold `&mut Shell`. The op that gets applied is the op the
+  service handed back, so dispatch is in the path, not beside it.
 - **Dev flags**: `ORGANON_SHELL_CMD` (one plain-command tab, headless proof),
   `ORGANON_SHELL_TABS` (comma harness ids), `ORGANON_SHELL_DEFAULT`,
   `ORGANON_SHELL_BACKDROP`, `ORGANON_SHELL_SCRIM`, **`ORGANON_SHELL_PTY_DEBUG`**.
@@ -176,7 +230,7 @@ position.
 |---|---|---|
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
-| Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant); T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
+| Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -193,12 +247,56 @@ path silently breaks the three-products-simultaneously guarantee that
 - **The legibility scrim's floor is structural** (clamped in code) — no
   configuration can trade the glyphs away.
 - **The substrate backdrop is a LOOK, not a system** (Console Spike T1) — one flat lit
-  plane, written into the same default `Shared` the console publishes. It ships
-  `MaterialType::Standard` with **no #472 channel maps**: the map gate
-  (`render.rs:3640-3654`) forces `mtl[0] = 0` on every non-instanced path, the membrane
-  included, and lifting it is Tier 2's. What carries the read is the narrow lens (the
-  frustum's diagonal half-angle **is** the shading gradient on a flat plane — ≈10.1° at
-  10°/16:9) plus a per-vertex albedo ramp. Nothing more, and nothing claimed.
+  plane, written into the same default `Shared` the console publishes. ✏️ **T2 lifted the
+  gate this entry used to end on**: `render.rs` no longer forces `mtl[0] = 0` on the
+  Membrane path, so the four materials really do reach the sheet. What carries the read
+  is still the narrow lens (the frustum's diagonal half-angle **is** the shading gradient
+  on a flat plane — ≈10.1° at 10°/16:9), now plus a procedural map stack. It is a
+  surface, never a readout: no material or rig name means anything about a system.
+- 🚨 **No GPU has seen Tier 2's materials.** The layer shapes, channel routing and
+  sampling rates are derived from the bake shader and `params.rs`'s range table and are
+  pinned by tests; the *taste* — how dark graphite is, how much sheen metal keeps — is
+  chosen and unverified. Each material names its one dial in its doc comment for exactly
+  that reason (`substrate_materials.rs`). The suite is green; that is not "verified
+  working", and the coordinator's beat check is the first time any of it is seen.
+- **The material texel rate is tied to the pane's pixel height.** The baked channel maps
+  are 512² with **no mip chain**, and `MATERIAL_UV_SCALE` is already at its declared range
+  floor (0.02), so a 1080-px pane samples at ≈1.20 texels/px and a 540-px pane at ≈2.4,
+  where the fine layers will sparkle. No `Shared` field can fix it; the fixes are mipmaps
+  on `MaterialBaker::make_target` or a coarser `mp_scale`, both outside this tier.
+- **The console's name lists are guarded in three places and *bound* in two.** The
+  materials and rigs are bound: `bin/ctl.rs`'s clap lists are asserted equal to
+  `substrate_materials::MATERIAL_NAMES` / `RIG_NAMES`, and `shell_main.rs`'s command
+  schema is built from those same constants and asserted to accept exactly what its
+  resolver does. ⚠️ **The three source words are not.** `world`/`off`/`substrate` are
+  `BackdropSource`'s value space, which lives in `shell_main.rs` — another `[[bin]]`, and
+  no `bin` can import another — so the literal appears twice (`CONSOLE_SOURCES` there,
+  `BACKDROP_SOURCE_WORDS` here) with each side asserting it against its own resolver.
+  Change one and that side's test fails naming the other: two smoke alarms, one missing
+  wire. The fix is a `pub const` in `cli.rs` beside `parse_console_op`, already the
+  declared home of "both ends speak one vocabulary from one place"; it was left undone
+  because `cli.rs` is another leaf's file this tier only reads.
+- **A console command applies whether or not it can be recorded.** Every drained op goes
+  through `CommandService::dispatch`, so in the normal case it leaves a `CommandRun` in a
+  real `SessionLog`. If the store cannot be opened there is no service to dispatch
+  through, and the console **still applies the command** — the shortfall is announced once
+  on stderr at startup and recorded here rather than hidden. It is not a silent
+  equivalent: the apply path is total over its own vocabulary (an unknown name changes
+  nothing), so schema validation is defence in depth, not the only gate.
+- **The session log is per console process and nothing prunes it.** Each launch opens
+  `<data dir>/OrganonShell/sessions/console-<unix ms>-<pid>/events.jsonl`. Per-process is
+  required — two consoles co-existing is the whole point of the IPC namespace fork, and
+  sharing one file would give them two independently-advancing `seq` counters — but it
+  means a directory per launch, with no retention policy yet.
+- **A command that arrives while the console is occluded waits for the next frame.**
+  `redraw` returns early on an `Occluded` surface, before the drain, so a `background`
+  typed at a hidden window applies when it is shown again. Same behaviour the World has
+  for `cli.txt`, and invisible by construction — there is nothing to see while occluded —
+  but it is a real "under a second" caveat if anything ever scripts this.
+- **`Issuer::Worker("organon-cli")` is what is KNOWN, not who acted.** A line on the
+  console sidecar could have been typed by a person in a tab or written by an agent in
+  another process, and the console cannot tell. The record names the transport rather
+  than guessing a person; do not read it as attribution.
 - **The backdrop's framing is verified by arithmetic, not by eyes.** `SubstrateRig`'s
   coverage guarantee is a headless test; whether the plane actually fills the pane also
   depends on the texture being **pane-sized**, and nothing in the tree tests that seam

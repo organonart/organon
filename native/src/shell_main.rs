@@ -14,22 +14,42 @@
 //! the legibility scrim over the render is not optional at any setting. The Console
 //! Spike's Tier 1 gave that summons a second value: `1` is the live world, `substrate`
 //! is one flat lit plane. See [`BackdropSource`].
+//!
+//! **Console Spike Tier 2 turns that summons into a sentence you can type.**
+//! `organon console background <name>` / `console rig <name>` append one line each to
+//! `cli::console_cmd_path()` — the console's own sidecar, not the World's `cli.txt`,
+//! because a backdrop is `Shell` state and nothing in the World can reach it (brief R3).
+//! [`Shell::drain_console`] drains that file every frame on the same file-length
+//! watermark the World uses for `cli.txt`, routes each op through the product's first
+//! live [`organon_shell::command::CommandService`], and applies the survivors by
+//! recomputing the published snapshot from one pure function of
+//! `(source, material, rig)` — [`look_shared`]. No texture is recreated, no pane is
+//! re-measured, so a live switch costs one frame and moves no glyph.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
+use organic_math_native::agent;
+use organic_math_native::cli;
 use organic_math_native::params::OrganicMathParams;
 use organic_math_native::scene_input;
 use organic_math_native::substrate_camera::SubstrateRig;
+use organic_math_native::substrate_materials;
 use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
+use organon_shell::command::{
+    ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
+};
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
-use organon_shell::session::SessionLog;
+use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::TermSession;
 use organon_shell::term_view;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -98,6 +118,45 @@ fn parse_backdrop_source(v: Option<&str>) -> BackdropSource {
     }
 }
 
+/// The three words `organon console background <name>` accepts that are **sources** rather
+/// than materials — [`BackdropSource`]'s value space, spelled.
+///
+/// 🚨 **This list is one half of a two-literal pin, not a binding.** The other half is
+/// `CONSOLE_SOURCES` in `src/bin/ctl.rs`, and the two cannot be bound the way the material
+/// and rig tables are: those live in a **library** module (`substrate_materials`) both
+/// binaries can import, while `BackdropSource` is this binary's own type and no `bin` can
+/// see another `bin`. Each side asserts the triple against its own resolver, so a change to
+/// one fails that side's test naming the other — which is a smoke alarm, not a wire. The
+/// real fix is a `pub const` in `cli.rs` beside `parse_console_op` (already the declared home
+/// of "both ends speak one vocabulary from one place"); it is a four-line change and it is
+/// recorded in SHELL_ARCHITECTURE.md's honesty ledger rather than done here, because
+/// `cli.rs` is another leaf's file this tier only reads.
+const BACKDROP_SOURCE_WORDS: [&str; 3] = ["world", "off", BACKDROP_SUBSTRATE];
+
+/// A `background` argument that names a **source**. `None` means "not a source" — which is
+/// how the caller knows to look the name up as a material instead.
+///
+/// Deliberately NOT [`parse_backdrop_source`]: that function's job is an environment
+/// variable whose historical contract is "anything not `0`/unset is the World", so it maps
+/// `frobnicate` to `World` on purpose. A typed command must not. Two readers, two rules, and
+/// the case where they differ is exactly the one a shared function would get wrong.
+fn console_source(name: &str) -> Option<BackdropSource> {
+    match name {
+        n if n.eq_ignore_ascii_case("world") => Some(BackdropSource::World),
+        n if n.eq_ignore_ascii_case("off") => Some(BackdropSource::Off),
+        n if n.eq_ignore_ascii_case(BACKDROP_SUBSTRATE) => Some(BackdropSource::Substrate),
+        _ => None,
+    }
+}
+
+/// The canonical spelling of `name` in `names`, matched case-insensitively — or `None`.
+///
+/// The console stores the canonical form, never what was typed, so [`ConsoleLook`] is a
+/// value Tier 4's epoch ledger can compare rather than a transcript of keystrokes.
+fn canonical<'a>(names: &[&'a str], name: &str) -> Option<&'a str> {
+    names.iter().copied().find(|n| n.eq_ignore_ascii_case(name))
+}
+
 /// The substrate lens, in **vertical** degrees — vertical is what the engine takes
 /// (`world.rs:10564-10567`), and an axis mix-up is silent.
 ///
@@ -143,22 +202,270 @@ const SUBSTRATE_EXTENT: f32 = substrate_scene::SUBSTRATE_GRID_X - 1.0;
 /// look is camera-agnostic, and the camera is this file's.
 const SUBSTRATE_KEY_AZIMUTH_DEG: f32 = -135.0;
 
-/// The `Shared` snapshot the console publishes every redraw, for a given backdrop source.
+/// The console's substrate dressing: **the (material, rig) pair** and nothing else.
 ///
-/// The substrate look is a **one-shot** write into it — the publisher (`redraw`'s
-/// `w.write(*self.shared)`) then carries it every frame, so there is no per-frame substrate
-/// path to keep in step. This function is the *only* place substrate state reaches the
-/// snapshot, and it is a function rather than four lines inside `Shell::new` precisely so
-/// "at any other source the bytes are exactly today's default look" is a test.
-fn initial_shared(source: BackdropSource) -> Box<ipc::Shared> {
+/// Named for what consumes it. Tier 4's epoch ledger records exactly this pair beside each
+/// backdrop change, so it is one value with one name rather than two loose fields on
+/// [`Shell`] that a ledger would have to re-pair.
+///
+/// Both are `Option` because **absent is not the same as default**, and the difference is
+/// Tier 1's shipped bytes:
+///
+/// * `material: None` — the substrate as Tier 1 built it, with no `#472` map stack at all.
+///   There is no "none" material in Leaf A's table (its `KNOWN_LIMITS` #3 says so and says
+///   why), so `None` here is the only way to express "before any material was named", and it
+///   is what startup publishes.
+/// * `rig: None` — indistinguishable from `studio` **by construction**: Leaf A's
+///   `studio_is_exactly_tier_ones_shipped_rig` proves `apply_rig(studio)` over a fresh
+///   substrate snapshot is a no-op. A test below re-states it from this side, so the day
+///   `studio` stops being Tier 1's rig, this stops silently meaning two things.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ConsoleLook {
+    material: Option<String>,
+    rig: Option<String>,
+}
+
+/// What `organon console background substrate` selects when no material has been named yet.
+///
+/// `slate` because it is the one material defined as Tier 1's surface formalized — it keeps
+/// `SUBSTRATE_METALLIC`/`SUBSTRATE_ROUGHNESS`/`SUBSTRATE_MATERIAL_TYPE` and adds no albedo
+/// map, so the per-vertex ramp survives (Leaf A's
+/// `slate_keeps_tier_ones_surface_scalars_and_its_per_vertex_ramp`). Asking for "the
+/// substrate" and getting a look that is not Tier 1's would make the bare source word mean
+/// something the tier before it did not.
+const CONSOLE_DEFAULT_MATERIAL: &str = "slate";
+
+/// The `Shared` snapshot the console publishes every redraw, for a given backdrop source and
+/// substrate dressing.
+///
+/// **Total over the source**, and that totality is the whole reason live switching needed no
+/// new state machine: every command recomputes the snapshot from scratch rather than
+/// patching the one before it, so `graphite → world → substrate` cannot leave a lane behind
+/// and there is no "have we installed the look yet?" flag to get wrong. The cost is one
+/// `Shared`-sized memcpy per typed command, on the frame it is typed.
+///
+/// The order is `look → material → rig`, and only the first edge of it is load-bearing:
+///
+/// 1. **`apply_substrate_look` must go first** — it owns the geometry, the stillness
+///    switches, the palette and the background, and it *also* writes whole `lighting`,
+///    `pbr` and `matcol` blocks (its manifest declares them at block granularity). A
+///    material or a rig applied before it would be overwritten wholesale.
+/// 2. **material before rig is a free choice**, taken defensively. Leaf A's two manifests
+///    are disjoint at lane granularity — material owns `lighting[7]`, `pbr[0..2]`,
+///    `matcol[0..4]`, `aniso`; the rig owns `lighting[0..3]`, `pbr[2]`, `pbr[3]` — and
+///    `material_and_rig_commute` proves both orders give identical bytes for all eight
+///    combinations. This order is the one that stays correct if a future material ever grows
+///    a lighting-adjacent lane, and costs nothing today.
+/// 3. **The key azimuth is last, always.** `SUBSTRATE_KEY_AZIMUTH_DEG` is the *camera's*
+///    correction, not the look's, and Leaf A's rigs write no direction at all (their section
+///    comment says so, and names this override as the reason). Applying it after everything
+///    makes that survive any future rig that forgets.
+///
+/// 🚨 **Residue verdict, checked rather than assumed.** `apply_material` is *total over its
+/// block*: it writes every lane a material can use on every call, including a disabled
+/// overlay and unused gradient stops, and Leaf A's
+/// `switching_between_any_two_materials_converges` proves all **16** ordered pairs land
+/// byte-identical. So material→material needs no reset. The reset sequence here is not for
+/// that: it is for `world → substrate`, where the previous snapshot is the plain default and
+/// the substrate look was never applied at all.
+///
+/// 📌 It also dissolves Leaf A's `KNOWN_LIMITS` #3 — "`apply_substrate_look` does not turn
+/// the maps off, so re-running it over a material leaves the material on" — without needing
+/// the "none" material it declined to invent. Starting from
+/// `OrganicMathParams::default().to_shared()` every time means there is never a previous
+/// material to leave on: `background world` publishes a snapshot whose `material_*` blocks
+/// are the engine's own defaults, not graphite's with the plane taken away.
+fn look_shared(source: BackdropSource, look: &ConsoleLook) -> Box<ipc::Shared> {
     let mut s = Box::new(OrganicMathParams::default().to_shared());
     if source == BackdropSource::Substrate {
         substrate_scene::apply_substrate_look(&mut s);
+        if let Some(name) = look.material.as_deref() {
+            // A `false` return is impossible by construction (`console_step` canonicalizes
+            // against `MATERIAL_NAMES` before a name ever reaches a `ConsoleLook`) and inert
+            // if it ever happened — Leaf A's unknown-name contract is "touched nothing".
+            let _ = substrate_materials::apply_material(&mut s, name);
+        }
+        if let Some(name) = look.rig.as_deref() {
+            let _ = substrate_materials::apply_rig(&mut s, name);
+        }
         // Last, and deliberately after the look: see [`SUBSTRATE_KEY_AZIMUTH_DEG`] for why
         // this one value is the camera's business and not the look's.
         s.lighting[4] = SUBSTRATE_KEY_AZIMUTH_DEG;
     }
     s
+}
+
+/// The snapshot at startup: [`look_shared`] with **nothing dressed** — Tier 1's bytes
+/// exactly, so a console launched with `ORGANON_SHELL_BACKDROP=substrate` looks in Tier 2
+/// precisely as it looked in Tier 1 until someone types a command.
+fn initial_shared(source: BackdropSource) -> Box<ipc::Shared> {
+    look_shared(source, &ConsoleLook::default())
+}
+
+// ---------------------------------------------------------------------------
+// The console command lane (#4 Tier 2)
+// ---------------------------------------------------------------------------
+
+/// The catalog names the two console verbs dispatch under. Dotted, `<surface>.<verb>`, which
+/// is `command.rs`'s convention (`session.note`, `shell.echo`) and what makes
+/// `CommandService::suggest("console.")` a usable palette feed on the day there is a palette.
+const CMD_BACKGROUND: &str = "console.background";
+/// See [`CMD_BACKGROUND`].
+const CMD_RIG: &str = "console.rig";
+/// The single argument both verbs take. One name, because the sidecar's wire form is
+/// `<verb> <word>` and inventing two spellings for one slot is how a schema drifts from its
+/// transport.
+const CMD_ARG: &str = "name";
+
+/// The console's vocabulary, as [`CommandService`] catalog data.
+///
+/// The `Choice` options are built **from Leaf A's tables** rather than restated, so the
+/// service validates against the same list the renderer draws from. That is the shell-side
+/// half of the drift guard; the CLI-side half lives in `ctl.rs`'s tests, which bind its clap
+/// `PossibleValuesParser` lists to the same two constants.
+///
+/// [`TargetKind::Viewport`] is the honest one of the five: a backdrop is what the console
+/// *shows*, not a project, a runtime, or an artifact. It reaches the log as the literal
+/// `"viewport"` (`TargetKind::as_str`), so a reader of `events.jsonl` sees where the command
+/// landed without a decoder ring.
+fn console_specs() -> Vec<CommandSpec> {
+    let backgrounds: Vec<String> = substrate_materials::MATERIAL_NAMES
+        .iter()
+        .chain(BACKDROP_SOURCE_WORDS.iter())
+        .map(|s| (*s).to_string())
+        .collect();
+    let rigs: Vec<String> =
+        substrate_materials::RIG_NAMES.iter().map(|s| (*s).to_string()).collect();
+    vec![
+        CommandSpec {
+            name: CMD_BACKGROUND.into(),
+            doc: "What sits behind the glyphs: a substrate material, or a backdrop source"
+                .into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: CMD_ARG.into(),
+                kind: ArgKind::Choice(backgrounds),
+                required: true,
+            }],
+        },
+        CommandSpec {
+            name: CMD_RIG.into(),
+            doc: "The substrate's lighting rig".into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: CMD_ARG.into(),
+                kind: ArgKind::Choice(rigs),
+                required: true,
+            }],
+        },
+    ]
+}
+
+/// Catalog name ↔ sidecar op, both directions, in one place.
+fn spec_name(op: &cli::ConsoleOp) -> &'static str {
+    match op {
+        cli::ConsoleOp::Background(_) => CMD_BACKGROUND,
+        cli::ConsoleOp::Rig(_) => CMD_RIG,
+    }
+}
+
+/// See [`spec_name`]. `None` for a catalog name this console does not implement — which the
+/// service's own `UnknownCommand` path already excludes, so it is a belt on a brace.
+fn op_from(name: &str, arg: &str) -> Option<cli::ConsoleOp> {
+    match name {
+        CMD_BACKGROUND => Some(cli::ConsoleOp::Background(arg.to_string())),
+        CMD_RIG => Some(cli::ConsoleOp::Rig(arg.to_string())),
+        _ => None,
+    }
+}
+
+/// The op's payload — the one word after the verb.
+fn op_arg(op: &cli::ConsoleOp) -> &str {
+    match op {
+        cli::ConsoleOp::Background(n) | cli::ConsoleOp::Rig(n) => n,
+    }
+}
+
+/// Where a **validated** console command lands: a bank the drain reads after the service is
+/// gone.
+///
+/// It banks rather than applies because of a real constraint, not a preference.
+/// `CommandService::register_target` takes `Box<dyn CommandTarget>` — implicitly `'static` —
+/// so a target cannot hold `&mut Shell`, and the apply needs one. `MockTarget`'s
+/// `Rc<RefCell<…>>` shape is the answer already in the file: the target keeps one handle, the
+/// caller keeps another, and the caller reads the bank once the borrow of the session log has
+/// ended.
+///
+/// What this arrangement buys is that **the op that gets applied is the op the service
+/// returned**, not a parallel copy of it — dispatch is in the path, not beside it.
+#[derive(Clone, Default)]
+struct ConsoleTarget {
+    accepted: Rc<RefCell<Vec<cli::ConsoleOp>>>,
+}
+
+impl CommandTarget for ConsoleTarget {
+    fn execute(&mut self, name: &str, args: &Value) -> Result<Value, CommandError> {
+        // Presence, type and membership were all checked by `validate_args` against the
+        // `Choice` schema above; a miss here is a wiring bug, and it is reported as an
+        // execution failure (which still leaves a `Failed` record) rather than panicking
+        // inside a redraw.
+        let arg = args.get(CMD_ARG).and_then(Value::as_str).unwrap_or_default();
+        match op_from(name, arg) {
+            Some(op) => {
+                self.accepted.borrow_mut().push(op);
+                Ok(json!({ CMD_ARG: arg }))
+            }
+            None => Err(CommandError::Execution {
+                command: name.to_string(),
+                message: format!("no console op for {name:?} / {arg:?}"),
+            }),
+        }
+    }
+}
+
+/// One console op applied to the `(source, look)` pair — **pure**, so the entire command
+/// vocabulary is a test rather than a claim about a `Shell` that needs a window server.
+///
+/// `None` = the op named nothing this console knows, and **nothing changes**. That is the
+/// forward-compatibility contract of `cli::parse_console_op` ("an unknown verb is skipped,
+/// not fatal") carried one level down to the argument: a newer CLI naming a material this
+/// build does not have must leave the backdrop exactly as it found it.
+///
+/// The two asymmetries are deliberate:
+///
+/// * A **material** name implies its source. `background graphite` means "put graphite
+///   behind the glyphs", and requiring `background substrate` first would be a mode to
+///   remember. So a material sets `Substrate` as well as itself.
+/// * A **rig** never touches the source, and is remembered even at `world`/`off` where it
+///   draws nothing. `rig daylight` then `background substrate` does what it reads like.
+fn console_step(
+    source: BackdropSource,
+    look: &ConsoleLook,
+    op: &cli::ConsoleOp,
+) -> Option<(BackdropSource, ConsoleLook)> {
+    let mut source = source;
+    let mut look = look.clone();
+    match op {
+        cli::ConsoleOp::Background(name) => match console_source(name) {
+            Some(src) => {
+                source = src;
+                // The bare source word needs *a* material to name; every other spelling
+                // carries its own. See [`CONSOLE_DEFAULT_MATERIAL`].
+                if src == BackdropSource::Substrate && look.material.is_none() {
+                    look.material = Some(CONSOLE_DEFAULT_MATERIAL.to_string());
+                }
+            }
+            None => {
+                let m = canonical(&substrate_materials::MATERIAL_NAMES, name)?;
+                source = BackdropSource::Substrate;
+                look.material = Some(m.to_string());
+            }
+        },
+        cli::ConsoleOp::Rig(name) => {
+            look.rig = Some(canonical(&substrate_materials::RIG_NAMES, name)?.to_string());
+        }
+    }
+    Some((source, look))
 }
 
 /// The engine's frame behind the glyphs: sized to the **pane it is painted into** (not the
@@ -194,6 +501,20 @@ struct Shell {
     world: World,
     backdrop: Option<Backdrop>,
     backdrop_source: BackdropSource,
+    /// The substrate dressing the backdrop is currently wearing — **the pair Tier 4's epoch
+    /// ledger records**. Changed only by [`Shell::apply_console`], read only by
+    /// [`look_shared`].
+    console_look: ConsoleLook,
+    /// The console command sidecar's drain state: lines already consumed, and the file length
+    /// they were consumed at. Exactly the `CmdChannel::cli_cursor` / `cli_len` pair the World
+    /// keeps for `cli.txt` (`world.rs:809-810`), and seeded the same way — at CONSTRUCTION,
+    /// from ONE read, so a command typed a moment after launch still drains while a backlog
+    /// from before this process existed never replays.
+    console_cursor: usize,
+    console_len: u64,
+    /// The session log every console dispatch is recorded in. `None` when the store could not
+    /// be opened — see [`Shell::dispatch_console`], which says exactly what is lost.
+    session_log: Option<SessionLog>,
     /// The terminal pane's size in **points** and the scale that turns it into physical
     /// pixels, recorded at the end of each frame and consumed by the next frame's
     /// [`Shell::render_backdrop`]. `None` until the first frame has laid the panel out.
@@ -220,6 +541,36 @@ impl Shell {
         let source =
             parse_backdrop_source(std::env::var("ORGANON_SHELL_BACKDROP").ok().as_deref());
         let shared = initial_shared(source);
+        // #4 Tier 2: seed the console sidecar from ONE read, for the reason `World::new`
+        // gives at `world.rs:1585-1594` — a split `read_to_string`/`metadata` pair can leave
+        // the cached length already matching while the cursor missed the line written
+        // between the two calls, and that line is then never drained.
+        let (console_cursor, console_len) = match std::fs::read_to_string(cli::console_cmd_path())
+        {
+            Ok(body) => (agent::cli_seed(&body), body.len() as u64),
+            Err(_) => (0, 0),
+        };
+        // One session per console process. The pid is what keeps two consoles (the co-existence
+        // the IPC namespace fork exists for) from interleaving into one file with two
+        // independently-advancing `next_seq` counters.
+        let session_id = format!(
+            "console-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            std::process::id()
+        );
+        let session_log = match SessionLog::open_default(&session_id) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!(
+                    "organon-console: session log unavailable ({e}) — console commands will \
+                     still apply, but nothing will record that they ran"
+                );
+                None
+            }
+        };
         Self {
             window: None,
             gpu: None,
@@ -236,6 +587,10 @@ impl Shell {
             world: World::new(),
             backdrop: None,
             backdrop_source: source,
+            console_look: ConsoleLook::default(),
+            console_cursor,
+            console_len,
+            session_log,
             pane_points: None,
             pane_scale: 1.0,
             shared_writer: None,
@@ -467,10 +822,143 @@ impl Shell {
         self.sync_title();
     }
 
+    /// Drain the console command sidecar and apply whatever survives (#4 Tier 2).
+    ///
+    /// Called once per frame from [`Shell::redraw`], immediately before the snapshot is
+    /// published — so a command applied here reaches the World *in the same frame* it drains,
+    /// not the next one.
+    ///
+    /// The transport discipline is the World's for `cli.txt` (`world.rs:9735-9754`),
+    /// deliberately and line for line, because it is the same problem: the `organon` CLI is
+    /// never an IPC writer, so there is no `Shared` generation counter to watch and growth is
+    /// self-detected by file length — one `stat` per frame when idle. `agent::cli_drain_step`
+    /// is *reused*, not re-implemented: it already carries the two findings that make this
+    /// safe (a failed read commits nothing, so the next frame retries; a shrunk file replays
+    /// from zero rather than dropping its content).
+    ///
+    /// Unknown verbs vanish here without a word — `cli::parse_console_op` returns `None` for
+    /// them, which is that format's whole versioning story ("adding a verb is how this format
+    /// changes"). A newer `organon` talking to this console degrades to "that op did nothing".
+    fn drain_console(&mut self) {
+        let path = cli::console_cmd_path();
+        let len_now = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let body = if len_now != self.console_len {
+            if len_now == 0 {
+                Some(String::new())
+            } else {
+                std::fs::read_to_string(&path).ok()
+            }
+        } else {
+            None
+        };
+        let Some((lines, new_len, new_cursor)) = agent::cli_drain_step(
+            self.console_len,
+            len_now,
+            body.as_deref(),
+            self.console_cursor,
+        ) else {
+            return;
+        };
+        self.console_len = new_len;
+        self.console_cursor = new_cursor;
+
+        let ops: Vec<cli::ConsoleOp> =
+            lines.iter().filter_map(|l| cli::parse_console_op(l)).collect();
+        if ops.is_empty() {
+            return;
+        }
+        for op in self.dispatch_console(&ops) {
+            self.apply_console(&op);
+        }
+    }
+
+    /// Route each drained op through the product's first live [`CommandService`], and return
+    /// the ones that came back validated.
+    ///
+    /// **The service is built per batch, not held on `Shell`, and that is the shape
+    /// `command.rs` asks for.** `CommandService<'log>` borrows `&'log mut SessionLog`; a
+    /// `Shell` holding both would be self-referential and is not expressible in safe Rust.
+    /// Its own doc says the arrangement out loud — "borrows the log rather than owning it —
+    /// the log outlives any one service (the app owns it)". Construction costs four
+    /// binary-search inserts (two built-ins plus the two console specs) and only happens on a
+    /// frame where a command actually arrived.
+    ///
+    /// `Issuer::Worker("organon-cli")` because that is **what is actually known**. A line on
+    /// the sidecar could have been typed by James in a tab or written by an agent in another
+    /// process; the console cannot tell, and `Issuer::User` would be a guess recorded as a
+    /// fact. The one certainty is the transport, so the record names the transport.
+    ///
+    /// 🚨 **The no-log path applies without recording, and says so.** If the store could not
+    /// be opened there is no service to dispatch through, and the choice is between dropping
+    /// the command and applying it unaudited. It applies — the beat outranks the plumbing —
+    /// and the shortfall is in SHELL_ARCHITECTURE.md's honesty ledger rather than hidden here.
+    /// It is not a silent equivalent: `Shell::new` has already printed why on stderr, and the
+    /// apply path is total over its own vocabulary regardless (an unknown name changes
+    /// nothing), so validation is defence in depth rather than the only gate.
+    fn dispatch_console(&mut self, ops: &[cli::ConsoleOp]) -> Vec<cli::ConsoleOp> {
+        let target = ConsoleTarget::default();
+        let bank = target.accepted.clone();
+        let Some(log) = self.session_log.as_mut() else {
+            return ops.to_vec();
+        };
+        let mut service = CommandService::new(log);
+        for spec in console_specs() {
+            service.register_spec(spec);
+        }
+        service.register_target(TargetKind::Viewport, Box::new(target));
+        for op in ops {
+            let args = json!({ CMD_ARG: op_arg(op) });
+            let issuer = Issuer::Worker("organon-cli".into());
+            if let Err(e) = service.dispatch(issuer, spec_name(op), args) {
+                // The record is already written (every dispatch leaves one, however it
+                // ended); this is the human-facing half.
+                eprintln!("organon-console: {e}");
+            }
+        }
+        // The binding is required, not stylistic: as a tail expression `bank.borrow()`'s
+        // `Ref` would outlive `bank` itself (E0597). Naming it drops the borrow at the end
+        // of this statement, before the local goes.
+        let accepted = bank.borrow().clone();
+        accepted
+    }
+
+    /// Apply one validated console op: fold it into `(backdrop_source, console_look)` and
+    /// recompute the published snapshot.
+    ///
+    /// Nothing else moves. The backdrop texture is keyed on the **pane size**, which a
+    /// command does not change, so no texture is recreated and no egui id is rebound; the
+    /// terminal grid is sized from the same rect it was last frame, so no glyph moves. What
+    /// changes is `*self.shared`, which `redraw` publishes a few lines later and the World
+    /// reads on the same frame — including the `#472` bake, which re-dispatches because the
+    /// layer bytes changed and is a no-op on every frame after (Leaf A's `KNOWN_LIMITS` #4).
+    fn apply_console(&mut self, op: &cli::ConsoleOp) {
+        let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
+        else {
+            eprintln!(
+                "organon-console: `{}` names nothing this console knows — ignored",
+                cli::console_op_to_line(op)
+            );
+            return;
+        };
+        if source == self.backdrop_source && look == self.console_look {
+            return;
+        }
+        self.backdrop_source = source;
+        self.console_look = look;
+        *self.shared = *look_shared(self.backdrop_source, &self.console_look);
+    }
+
     /// The engine's frame, sized to the pane it is painted into, behind the glyphs (tree E
     /// Tier 1; Console Spike Tier 1 fixed its aspect and gave it a second source).
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
         if self.backdrop_source == BackdropSource::Off {
+            // ⚠️ **`off` clears the rig too, and it has to be said here** because this is the
+            // one arm that returns before the source→rig block below. Tier 1 could leave it
+            // out: the source was read once at startup, so nothing ever *became* `off`. With
+            // `organon console background off` it can, and a rig left set is a camera framing
+            // a plane nobody is drawing — invisible until some later path draws with it.
+            // Total over the source means no exceptions, including the early ones.
+            self.world.set_substrate_rig(None);
             return None;
         }
         let swapchain = {
@@ -499,7 +987,9 @@ impl Shell {
         // Total over the source rather than only the substrate arm, so a runtime switch
         // (Tier 2's `organon console background`) needs no new wiring: the World arm actively
         // CLEARS the rig instead of leaving the camera framing a plane that is no longer
-        // being drawn. Under `=1` this writes `None` over `None` every frame.
+        // being drawn. Under `=1` this writes `None` over `None` every frame. Tier 2 closed
+        // the one gap this could not reach from here — see the `Off` arm at the top, which
+        // returns before this block and so has to clear the rig itself.
         if self.backdrop_source == BackdropSource::Substrate {
             // Re-framed every frame, which is how resize is handled without a staleness flag
             // to get wrong: the rig is computed for ONE aspect and the engine reads its own
@@ -583,9 +1073,17 @@ impl Shell {
             }
         };
 
+        // #4 Tier 2: the console command lane, drained immediately BEFORE the publication
+        // below rather than after it — a `background` typed this frame reaches the World this
+        // frame, not next. See [`Shell::drain_console`].
+        self.drain_console();
+
         // The plugin's job, done by the terminal: publish the snapshot the world
-        // and the CLI read. Same bytes every frame (the default look) — the CLI
-        // lane mutates the world's working copy, not this base, per #317's rule.
+        // and the CLI read. The same bytes every frame until a console command
+        // rewrites them — the CLI's *param* lane (`organon set`/`generator`/…)
+        // mutates the world's working copy, not this base, per #317's rule, while
+        // the console lane rewrites the base itself because a backdrop is not a
+        // param override.
         if let Some(w) = self.shared_writer.as_mut() {
             w.write(*self.shared);
         }
@@ -826,12 +1324,25 @@ fn help_text() -> String {
              ORGANON_SHELL_PTY_DEBUG=1    trace the PTY byte path to stderr ([pty]/[grid])\n    \
              ORGANON_IPC_NS=<name>        IPC namespace; fork it to run beside another Organon\n\
          \n\
-         Inside a tab the `organon` CLI addresses this process — the namespace is inherited.\n\
+         Inside a tab the `organon` CLI addresses this process — the namespace is inherited:\n    \
+             organon console background <{backgrounds}>\n    \
+             organon console rig <{rigs}>\n\
+         \n\
          Docs: SHELL_ARCHITECTURE.md\n",
         EDITION.tagline(),
         substrate = BACKDROP_SUBSTRATE,
         scrim_default = term_view::SCRIM_DEFAULT,
         scrim_floor = term_view::SCRIM_FLOOR,
+        // Quoted from the tables the drain resolves against, never restated — the discipline
+        // the scrim line already earned here, and the reason `--help` cannot advertise a
+        // material this build cannot draw.
+        backgrounds = substrate_materials::MATERIAL_NAMES
+            .iter()
+            .chain(BACKDROP_SOURCE_WORDS.iter())
+            .copied()
+            .collect::<Vec<_>>()
+            .join("|"),
+        rigs = substrate_materials::RIG_NAMES.join("|"),
     )
 }
 
@@ -979,6 +1490,305 @@ mod cli_tests {
         assert!(!h.contains("organon-shell "), "the usage line still names the old binary");
         // …and the environment variables are untouched by all of the above.
         assert!(h.contains("ORGANON_SHELL_BACKDROP"), "the flag surface is NOT renamed");
+    }
+
+    // -------------------------------------------------------------------------
+    // The console command lane (#4 Tier 2)
+    // -------------------------------------------------------------------------
+
+    fn look(material: Option<&str>, rig: Option<&str>) -> ConsoleLook {
+        ConsoleLook { material: material.map(str::to_string), rig: rig.map(str::to_string) }
+    }
+
+    fn bg(name: &str) -> cli::ConsoleOp {
+        cli::ConsoleOp::Background(name.to_string())
+    }
+
+    fn rig_op(name: &str) -> cli::ConsoleOp {
+        cli::ConsoleOp::Rig(name.to_string())
+    }
+
+    /// The whole command grammar as one state machine, stated once: a material implies its
+    /// source, a bare source word fills in a default material *once*, and a rig never moves
+    /// the source. All three are decisions a reader could reasonably expect to go the other
+    /// way, so all three are pinned rather than commented.
+    #[test]
+    fn a_typed_name_folds_into_the_source_and_the_look() {
+        let cold = ConsoleLook::default();
+
+        // A material names its own source — `background substrate` is not a prior mode.
+        let (src, l) = console_step(BackdropSource::Off, &cold, &bg("graphite")).unwrap();
+        assert_eq!(src, BackdropSource::Substrate);
+        assert_eq!(l, look(Some("graphite"), None));
+
+        // The bare source word fills in the default material…
+        let (s2, l2) = console_step(BackdropSource::Off, &cold, &bg(BACKDROP_SUBSTRATE)).unwrap();
+        assert_eq!((s2, l2), (BackdropSource::Substrate, look(Some(CONSOLE_DEFAULT_MATERIAL), None)));
+        // …and never overwrites one already chosen.
+        let (_, l3) = console_step(src, &l, &bg(BACKDROP_SUBSTRATE)).unwrap();
+        assert_eq!(l3, look(Some("graphite"), None));
+
+        // A rig changes the rig and nothing else — including at a source that draws none of
+        // it, so `rig daylight` then `background substrate` reads as it looks.
+        let (s4, l4) = console_step(BackdropSource::World, &cold, &rig_op("daylight")).unwrap();
+        assert_eq!((s4, l4.clone()), (BackdropSource::World, look(None, Some("daylight"))));
+
+        // `world` / `off` keep the dressing so `substrate` restores it rather than resetting.
+        let (s5, l5) = console_step(src, &l, &bg("world")).unwrap();
+        assert_eq!((s5, l5.clone()), (BackdropSource::World, look(Some("graphite"), None)));
+        let (s6, l6) = console_step(s5, &l5, &bg("off")).unwrap();
+        assert_eq!((s6, l6.clone()), (BackdropSource::Off, look(Some("graphite"), None)));
+        let (s7, l7) = console_step(s6, &l6, &bg(BACKDROP_SUBSTRATE)).unwrap();
+        assert_eq!((s7, l7), (BackdropSource::Substrate, look(Some("graphite"), None)));
+    }
+
+    /// Whatever was typed, the *canonical* spelling is stored — so [`ConsoleLook`] is a value
+    /// Tier 4's epoch ledger can compare, not a transcript of keystrokes.
+    #[test]
+    fn names_are_stored_canonically_however_they_were_typed() {
+        let cold = ConsoleLook::default();
+        for (typed, want) in [("GRAPHITE", "graphite"), ("Slate", "slate"), ("mEtAl", "metal")] {
+            let (_, l) = console_step(BackdropSource::Off, &cold, &bg(typed)).unwrap();
+            assert_eq!(l, look(Some(want), None), "{typed}");
+        }
+        let (_, l) = console_step(BackdropSource::Off, &cold, &rig_op("DAYLIGHT")).unwrap();
+        assert_eq!(l, look(None, Some("daylight")));
+        // The source words too, though they leave no name behind.
+        assert_eq!(console_source("Off"), Some(BackdropSource::Off));
+    }
+
+    /// The sidecar format's forward-compatibility contract, carried one level down from the
+    /// verb to the argument: `parse_console_op` skips a verb this build does not know, and a
+    /// **name** it does not know must be just as inert — the backdrop stays exactly as it was.
+    #[test]
+    fn an_unknown_name_changes_nothing_at_all() {
+        let dressed = look(Some("metal"), Some("daylight"));
+        for op in [
+            bg("nonsense"),
+            bg("studio"), // a rig is not a background
+            bg(""),
+            bg("substrat"), // the near-miss `parse_backdrop_source` deliberately accepts
+            rig_op("slate"), // …and a material is not a rig
+            rig_op("sunset"),
+            rig_op(""),
+        ] {
+            assert_eq!(console_step(BackdropSource::Substrate, &dressed, &op), None, "{op:?}");
+        }
+    }
+
+    /// **Default-inertness, extended to the live paths.** Tier 1 pinned it for
+    /// `initial_shared`; a console that can now *arrive* at `world` from a dressed substrate
+    /// has to publish today's default bytes there too, whatever look it is still remembering.
+    /// Otherwise `background world` would hand the World a frozen membrane and call it the
+    /// default look.
+    #[test]
+    fn world_and_off_publish_todays_default_bytes_whatever_look_is_remembered() {
+        let base = OrganicMathParams::default().to_shared();
+        for src in [BackdropSource::Off, BackdropSource::World] {
+            for l in [
+                ConsoleLook::default(),
+                look(Some("metal"), Some("daylight")),
+                look(Some("paper"), None),
+                look(None, Some("studio")),
+            ] {
+                assert_eq!(
+                    bytemuck::bytes_of(&*look_shared(src, &l)),
+                    bytemuck::bytes_of(&base),
+                    "{src:?} must publish exactly today's default look, look was {l:?}"
+                );
+            }
+        }
+    }
+
+    /// **Startup is Tier 1's substrate, byte for byte.** Tier 2 adds a vocabulary, not a new
+    /// opening position: a console launched with `ORGANON_SHELL_BACKDROP=substrate` looks
+    /// exactly as it did before this tier until somebody types a command.
+    #[test]
+    fn startup_is_tier_ones_substrate_untouched_by_tier_two() {
+        let mut want = OrganicMathParams::default().to_shared();
+        substrate_scene::apply_substrate_look(&mut want);
+        want.lighting[4] = SUBSTRATE_KEY_AZIMUTH_DEG;
+        assert_eq!(
+            bytemuck::bytes_of(&*initial_shared(BackdropSource::Substrate)),
+            bytemuck::bytes_of(&want),
+            "startup must apply no material at all"
+        );
+        assert_eq!(ConsoleLook::default().material, None, "…which is what `None` means");
+    }
+
+    /// **The residue verdict, from the integrator's side.** Leaf A proves all 16 ordered
+    /// material pairs converge *within its own block*; this proves the whole published
+    /// snapshot converges through the reset sequence, including a detour via the two sources
+    /// that wipe it. If `look_shared` ever became a patch instead of a recompute, this is the
+    /// test that would fail.
+    #[test]
+    fn every_route_to_a_dressing_lands_on_the_same_bytes() {
+        for to in substrate_materials::MATERIAL_NAMES {
+            for rig in [None, Some("studio"), Some("daylight")] {
+                let cold = look_shared(BackdropSource::Substrate, &look(Some(to), rig));
+                for from in substrate_materials::MATERIAL_NAMES {
+                    let mut src = BackdropSource::Off;
+                    let mut l = ConsoleLook::default();
+                    let mut walk = vec![bg(from), bg("world"), bg("off"), bg(to)];
+                    if let Some(r) = rig {
+                        walk.push(rig_op(r));
+                    }
+                    for op in &walk {
+                        let (s, next) = console_step(src, &l, op).expect("every step is known");
+                        src = s;
+                        l = next;
+                    }
+                    assert_eq!(src, BackdropSource::Substrate);
+                    assert_eq!(
+                        bytemuck::bytes_of(&*look_shared(src, &l)),
+                        bytemuck::bytes_of(&*cold),
+                        "`{from}` → world → off → `{to}` / {rig:?} did not converge"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `rig: None` and `rig studio` are the same picture, which is what lets startup name no
+    /// rig without being a secret third state. The day Leaf A's `studio` stops being Tier 1's
+    /// shipped rig, this is where the two stop agreeing.
+    #[test]
+    fn an_unnamed_rig_is_studio() {
+        for m in substrate_materials::MATERIAL_NAMES {
+            assert_eq!(
+                bytemuck::bytes_of(&*look_shared(BackdropSource::Substrate, &look(Some(m), None))),
+                bytemuck::bytes_of(&*look_shared(
+                    BackdropSource::Substrate,
+                    &look(Some(m), Some("studio"))
+                )),
+                "{m}"
+            );
+        }
+    }
+
+    /// **The camera's azimuth override survives every dressing.** It is applied after the
+    /// look, the material *and* the rig precisely so nothing downstream can take it back;
+    /// Leaf A's rigs write no direction today and name this override as the reason, so a rig
+    /// that started writing one would fail here instead of silently re-aiming the key light.
+    #[test]
+    fn the_key_azimuth_override_survives_every_material_and_rig() {
+        for m in substrate_materials::MATERIAL_NAMES {
+            for r in substrate_materials::RIG_NAMES {
+                let s = look_shared(BackdropSource::Substrate, &look(Some(m), Some(r)));
+                assert_eq!(s.lighting[4], SUBSTRATE_KEY_AZIMUTH_DEG, "{m} / {r}");
+            }
+        }
+    }
+
+    /// **The shell-side half of the name-list drift guard.** The `CommandService` schema and
+    /// the resolver are two independent code paths over the same tables — the schema is built
+    /// from `MATERIAL_NAMES`/`RIG_NAMES`/[`BACKDROP_SOURCE_WORDS`], the resolver goes through
+    /// `console_source` + `canonical` — so this pins that they admit *exactly* the same names.
+    /// A vocabulary the catalog validates but the resolver refuses would log `Ok` and change
+    /// nothing. The CLI-side half (clap's lists against the same two tables) is in
+    /// `bin/ctl.rs`'s tests.
+    #[test]
+    fn the_catalog_and_the_resolver_accept_exactly_the_same_names() {
+        let specs = console_specs();
+        let choice = |name: &str| -> Vec<String> {
+            let spec = specs.iter().find(|s| s.name == name).expect("spec registered");
+            assert_eq!(spec.target, TargetKind::Viewport, "{name}: a backdrop is the viewport");
+            let arg = spec.args.iter().find(|a| a.name == CMD_ARG).expect("one `name` argument");
+            assert!(arg.required, "{name}: the name is not optional");
+            match &arg.kind {
+                ArgKind::Choice(v) => v.clone(),
+                k => panic!("{name}: {k:?} is not a Choice — unknown names would reach the apply"),
+            }
+        };
+        let backgrounds = choice(CMD_BACKGROUND);
+        let rigs = choice(CMD_RIG);
+
+        // Everything the schema admits, the resolver applies.
+        let cold = ConsoleLook::default();
+        for name in &backgrounds {
+            assert!(
+                console_step(BackdropSource::Off, &cold, &bg(name)).is_some(),
+                "the catalog offers background `{name}` but the resolver refuses it"
+            );
+        }
+        for name in &rigs {
+            assert!(
+                console_step(BackdropSource::Off, &cold, &rig_op(name)).is_some(),
+                "the catalog offers rig `{name}` but the resolver refuses it"
+            );
+        }
+        // …and everything the tables hold, the schema admits.
+        for m in substrate_materials::MATERIAL_NAMES {
+            assert!(backgrounds.iter().any(|c| c == m), "material `{m}` is not in the catalog");
+        }
+        for w in BACKDROP_SOURCE_WORDS {
+            assert!(backgrounds.iter().any(|c| c == w), "source `{w}` is not in the catalog");
+        }
+        for r in substrate_materials::RIG_NAMES {
+            assert!(rigs.iter().any(|c| c == r), "rig `{r}` is not in the catalog");
+            assert!(
+                !backgrounds.iter().any(|c| c == r),
+                "`{r}` leaked into the background vocabulary — the two lists are separate"
+            );
+        }
+    }
+
+    /// The three source words, and the reason they do NOT go through
+    /// [`parse_backdrop_source`]: that function's contract is an environment variable whose
+    /// historical rule is "anything not `0`/unset is the World", and a typed command that
+    /// resolved garbage to a working source would be unable to report a typo.
+    #[test]
+    fn every_source_word_resolves_and_a_typed_name_is_stricter_than_the_env_var() {
+        assert_eq!(
+            BACKDROP_SOURCE_WORDS,
+            ["world", "off", "substrate"],
+            "the other half of this literal is `CONSOLE_SOURCES` in src/bin/ctl.rs"
+        );
+        let got: Vec<BackdropSource> =
+            BACKDROP_SOURCE_WORDS.iter().map(|w| console_source(w).expect(w)).collect();
+        assert_eq!(
+            got,
+            [BackdropSource::World, BackdropSource::Off, BackdropSource::Substrate],
+            "the three words must cover the whole value space, one each"
+        );
+        for bad in ["", "1", "frobnicate", "substrat", "graphite", "studio"] {
+            assert_eq!(console_source(bad), None, "{bad:?} is not a source");
+        }
+        assert_eq!(
+            parse_backdrop_source(Some("frobnicate")),
+            BackdropSource::World,
+            "the ENV rule stays deliberately looser than the typed one"
+        );
+    }
+
+    /// Catalog name ↔ sidecar op, both directions. The service hands back the op it
+    /// validated, so a mismatch here applies a command nobody issued.
+    #[test]
+    fn every_op_round_trips_through_its_catalog_name() {
+        for op in [bg("slate"), bg("world"), bg("off"), rig_op("daylight")] {
+            assert_eq!(op_from(spec_name(&op), op_arg(&op)).as_ref(), Some(&op), "{op:?}");
+        }
+        // A catalog name this console does not implement produces no op — the belt under
+        // `CommandService`'s own unknown-command brace.
+        assert_eq!(op_from("session.note", "x"), None);
+        assert_eq!(op_from("console.scrim", "0.5"), None);
+    }
+
+    /// `--help` advertises exactly what the drain resolves — quoted from the tables, so it
+    /// cannot offer a material this build has no way to draw. Same discipline as the scrim
+    /// line, for the same reason.
+    #[test]
+    fn help_names_the_console_verbs_and_every_name_they_take() {
+        let h = help_text();
+        assert!(h.contains("organon console background"), "help omits the background verb");
+        assert!(h.contains("organon console rig"), "help omits the rig verb");
+        for name in substrate_materials::MATERIAL_NAMES
+            .iter()
+            .chain(substrate_materials::RIG_NAMES.iter())
+            .chain(BACKDROP_SOURCE_WORDS.iter())
+        {
+            assert!(h.contains(name), "help does not offer `{name}`");
+        }
     }
 
     /// The help text has to name the environment variables, because they ARE the interface —
