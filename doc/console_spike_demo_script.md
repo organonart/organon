@@ -212,6 +212,27 @@ rate limits and `tool_use_result` render nothing yet; the composer is single-lin
 no backdrop behind a conversation — banding is scrollback arithmetic and a conversation has no
 scrollback to anchor to.
 
+*Panel half checked 2026-08-12, by James at the keyboard:* `/panel` puts a live control panel
+**in the conversation flow** — framed, titled, four material buttons and three labelled sliders.
+Clicking `metal` changes the substrate, **seen on the Shell (WSL) tab**. End to end: a control
+in a conversation drove real engine state.
+
+🚨 **And the awkwardness in that sentence is the finding.** The effect appears on a *different
+tab from the one you clicked in*, because a conversation has no scrollback for a backdrop to
+band across. A control whose consequence you cannot see from where you are sitting is a bad
+instrument, and no amount of wiring fixes it. **That is the argument for the next step:** the
+panel should drive an artifact *in its own view* — a rendered surface a few elements up,
+changing as you drag. Control and consequence in one glance.
+
+⚠️ **Two measurement failures, both mine, both worth more than the bugs they impersonated.**
+The coordinator's synthetic mouse input **never reaches this app** — a click on a tab did not
+switch it — so every "I clicked and nothing happened" from that direction was worthless
+evidence, and the live check had to be James's. And the command first offered for enabling the
+backdrop, `set X=y && oc`, **fails silently in both shells**: PowerShell's `set` is an alias for
+`Set-Variable` and never touches the environment, and cmd.exe captures the space before `&&`
+into the value. `oc` now takes the backdrop as an argument (`oc substrate`) so neither trap can
+recur.
+
 ⚠️ **Capture note for whoever documents this next:** `GetWindowRect` reports **logical** points
 (1100×720 here), so at 225 % the window is **2475×1620 physical**. A 2300×1600 bitmap silently
 crops the right edge and reads exactly like a text-wrapping bug. Oversize the bitmap.
