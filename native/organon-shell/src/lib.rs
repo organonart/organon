@@ -33,6 +33,7 @@
 pub mod app;
 pub mod block_anchor;
 pub mod command;
+pub mod conversation;
 pub mod harness;
 pub mod mock_agent;
 pub mod platform;
