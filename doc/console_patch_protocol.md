@@ -271,6 +271,43 @@ schema's guardrail, unchanged.
 
 ---
 
+## §7 — What is built, and where it differs from this document
+
+**Status 2026-08-12.** A first implementation landed and was verified on screen. This section
+is the honest delta; do not read the sections above as descriptions of the code.
+
+| | Specified here | Built |
+|---|---|---|
+| Who makes the hole | the writer (P1) | ✅ the writer — `organon console patch --up N --rows M` |
+| How the claim travels | in band, OSC 8, payload in the URI (§1) | ⚠️ **out of band**, over the `console.txt` sidecar |
+| How the anchor resolves | which cells carry the attribute (§2) | ⚠️ the cursor's line **at sidecar drain time** |
+| Coordinate frame | relative, in cells (§3) | ✅ `up` counts back from the line the writer is on |
+| `kind` | required field (§3) | ✅ `--kind scene\|panel` |
+| Width change | invalidates the patch (P3) | ⚠️ not yet enforced — a width change is currently allowed to look wrong |
+
+**The one consequence that bites today.** The sidecar drains once per frame, so the anchor
+resolves at drain time rather than at the byte. **A writer that prints its gap and claims it in
+one breath is fine; one that keeps printing in between is not.** That is precisely the race §1
+and §2 exist to remove, and it is the reason the in-band claim is still wanted rather than a
+nicety — but the out-of-band version was the cheapest thing that could be looked at, and
+looking at it is what found the far bigger error below.
+
+🚨 **P1 has now been confirmed the hard way, and the confirmation is worth more than the
+specification.** The first implementation had the *console* feed blank rows at the cursor.
+Measured on screen: the prompt stranded at the top, an eight-row hole below it, and the cursor
+marooned under that. The cursor is the live input point — the row a prompt sits on and a
+keystroke lands in — so feeding there opens a hole **between the prompt and the typing**, which
+no terminal does. It is worst when the shell is **idle**, because idle is when a prompt is
+sitting there; "works against an idle shell" was written twice in these docs and was exactly
+backwards. Against a real Claude Code tab the harness's whole frame shifted and it repainted
+over everything.
+
+**So P1 is not a preference about ownership — it is the only arrangement that can be correct.**
+There is no console-side injection worth keeping, not even as a fallback. This document reached
+that conclusion from ConPTY's byte behaviour; the screen reached it independently the same day.
+
+---
+
 ## Tests that must exist
 
 Pure, headless, no GPU, no egui context — the house shape.

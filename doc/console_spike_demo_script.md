@@ -131,21 +131,36 @@ not after it stops.
 
 ---
 
-### 6 — "…and that's the instrument, inline." · Tier 5 · **not yet**
+### 6 — "…and that's the instrument, inline." · Tier 5 · **partial — the rendered patch landed; the control panel is in flight**
 
-The agent writes a paragraph with a rectangular gap in it, and something of ours is rendered
-into the gap while the text flows around it.
+The writer prints a paragraph with a rectangular gap in it, claims the gap, and something of
+ours is rendered into it while the text flows around it.
 
-*The point:* the closer — and note what it is *not*. The agent did not ask the console for a
-window. It wrote its own page and left a space, the way a newspaper leaves a space, and the
-console filled it.
-*Check:* survives a scroll past and back without stalling the grid.
-*Order to perform, cheapest first:* a panel of working controls in the gap needs only the rect
-and one paint call. A live Organon scene in the gap additionally needs a second render whose
-frame cost is unmeasured and whose clocks are shared with the backdrop — real risk, named in
-the execution plan. Rehearse the controls version first; it is the one that cannot stall.
-*No longer a stretch goal* (2026-08-11, James): this is the beat the spike is now aimed at, and
-Tier 3's integration parked behind it.
+*The point:* the closer — and note what it is *not*. Nothing asked the console for a window. A
+program wrote its own page and left a space, the way a newspaper leaves a space, and the
+console filled it. With the backdrop off (per the amendment above) this is the only rendered
+thing on screen, which is exactly the claim: **an object in the page, not a picture behind it.**
+
+*Checked 2026-08-11 on organon-one:* prose, a twelve-row figure, prose resuming beneath it, and
+the prompt with its cursor **directly after the text** — no hole between. The page ends where
+the text ends.
+
+🚨 **What that check cost, and why it is the most valuable thing in this file.** The first
+implementation had the *console* feed blank rows at the cursor. James caught it by looking at
+the capture — *"you're filling in below the cursor; that's not possible in a console."* The
+cursor is the live input point, so feeding there opens a hole **between the prompt and the
+typing**, which no terminal does. It is worst precisely when the shell is **idle**, because
+idle is when a prompt is sitting there waiting — so "it works against an idle shell," written
+twice in these docs, was exactly backwards. Against a real Claude Code tab it was worse again:
+the harness's whole frame shifted and it repainted over everything.
+
+**There is no console-side injection that can be correct.** The writer must make its own gap.
+`doc/console_patch_protocol.md` reached the same conclusion from ConPTY's byte behaviour before
+this was built; the screen reached it independently. Two routes, one answer.
+
+*Check for the panel half:* the pointer must claim the panel's rect — a slider drag must not
+also scroll the transcript underneath it.
+*Still unrehearsed:* a full scroll past the patch and back without stalling the grid.
 
 ---
 
