@@ -23,6 +23,18 @@ From here on, this file gets an entry per meaningful change, newest first.
   selects the paint and nothing before it — the claim, the anchor arithmetic and the per-pane
   ledger are common to both, which is where an error would be invisible on screen.
 
+### Console Spike — the console grows a second front-end: a conversation, rendered natively
+
+- **A conversation tab drives an agent over pipes and draws its event stream itself** — no
+  PTY, no ConPTY, no character grid. `ORGANON_SHELL_TABS=claude-chat` opens one beside the
+  terminal tabs, which are unchanged and remain the universal fallback. A tool call renders
+  as a **card** (name, arguments as fields, running/ok/error, clipped output) and an `Edit`
+  as a real diff, because both arrive as structure rather than as the text a terminal would
+  have printed. Five modules: `agent_event` decodes the NDJSON, `conversation` folds the
+  transcript, `agent_map` is the seam between them, `agent_session` owns the child process,
+  `conversation_view` draws it. `SHELL_ARCHITECTURE.md` §1.1 owns the shape and the honesty
+  ledger says what has and has not been seen running.
+
 ### Console Spike — the console can open a hole in its own transcript
 
 - **`organon console block <rows>` reserves a contiguous run of blank rows** in the active

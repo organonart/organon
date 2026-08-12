@@ -467,6 +467,112 @@ position.
   DSR-CPR stall** described above: four bytes in and then silence, with sane `[grid]`
   metrics eliminating the render side in the very same trace.
 
+### 1.1 The conversation view — the console's SECOND front-end (Console Spike §5.9)
+
+**Everything in §1 above assumed a character grid is the canvas. It is now one of two.**
+Three measurements retired the assumption: ConPTY rewrites the byte stream (APC stripped,
+a private OSC hoisted out of stream order, OSC 8's params rewritten) and a WSL tab is
+`wsl.exe` under ConPTY, so there is no ConPTY-free path on this machine; console-side row
+injection against a real Claude Code tab shifted the harness's whole frame and rendered
+nothing; and against an *idle* shell the hole lands between the prompt and the cursor,
+which is where you type.
+
+The conclusion is not that the console owns too little. **It owns every pixel already** —
+it runs the PTY, parses it and paints the grid itself. What it does not own is **the
+conversation**: the grid is a lossy encoding of something that had structure before it was
+flattened, and every wound above came from trying to recover that structure afterwards.
+
+So a tab is now one of two things ([`Pane`] in `shell_main.rs`):
+
+| | What it is | Status |
+|---|---|---|
+| **Terminal host** | runs any program, paints its grid, patches only by cooperation | **unchanged.** It is how `htop` runs and it is the universal fallback |
+| **Conversation view** | consumes an agent's structured event stream and renders it natively | **new.** No claim protocol, no anchoring, no PTY, no ConPTY |
+
+They share the window, the tab strip, the harness registry, the console command lane and
+the backdrop. Below that they share nothing, which is why `Pane` is an enum rather than a
+flag: a conversation has no grid, no cursor, no scrollback and no absolute-line
+coordinate, so every terminal-only path (`open_block`, `claim_patch`, the anchor pump, the
+epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
+
+**Five modules, four of them harness-agnostic.**
+
+- **`agent_event.rs` — the decoder.** NDJSON → typed events. `EventStream::push(&[u8])`
+  owns its own line buffering, because a chunk boundary mid-line is the normal case (one
+  `tool_result` can carry a whole file). Events carry `session_id`, an `AgentScope`
+  (`Main` / `Subagent { tool_use_id }`, decoded from `parent_tool_use_id`, whose `null` is
+  meaningful) and a `kind`. An unknown *event* is never an error — it decodes to
+  `Unknown` with the body preserved. Tested against three committed captures in
+  `organon-shell/fixtures/`, two of them real.
+- **`conversation.rs` — the transcript model.** `Transcript::apply(AgentEvent) -> Change`,
+  folding into ordered `Element`s (`Human | Assistant | Tool | RunEnd`) with stable
+  `ElementId`s. Its `AgentEvent` is **its own input enum, deliberately not the decoder's**
+  — two modules cannot own one type, and a transcript fluent in the wire format would
+  change shape every time the wire did. No egui, no clock, no I/O.
+- **`agent_map.rs` — the seam, and the only file in the tree that knows both types.** A
+  second harness (Pi, §5.9.1) is written here or the model is wrong.
+- **`agent_session.rs` — one live child.** The same shape as `term.rs`: a reader thread
+  that only moves bytes, a channel, a pull drained once per frame. Pipes, not a PTY.
+- **`conversation_view.rs` — the drawing.** Scrollback above, composer below.
+
+**The mapping's five load-bearing rules**, each from a measurement, each producing a view
+that looks *nearly* right if got wrong:
+
+1. 🚨 **An `assistant` line carries ONE content block, not a whole message.** Three
+   consecutive lines in the capture share message id `msg_…0001`: prose, tool call #1,
+   tool call #2. `MessageId` is unique *per rendered block* and same-id blocks replace each
+   other, so passing `message_id` straight through would let the tool call overwrite the
+   prose and **silently lose the assistant's text**. The key is `"{message_id}#{ordinal}"`,
+   counted as blocks settle; the streamed path takes the same ordinal from
+   `BlockDelta { index }`. Every block consumes one **even when nothing is rendered for
+   it** (thinking, unknown kinds) or every later key shifts by one.
+2. 🚨 **The human turn comes back on the stream.** `--replay-user-messages` echoes injected
+   input; the composer writes to stdin and renders nothing. Ordering is then free rather
+   than a splice-and-hope.
+3. 🚨 **`system/init` recurs mid-stream** — a second one arrived before turn two of the
+   live capture. Only the first establishes identity.
+4. **`result` ends a TURN, not the stream.** Two arrived in one session. Nothing closes the
+   process on it, and `result.result` is dropped rather than rendered — it is the prose the
+   `assistant` lines already delivered.
+5. **Subagent-scoped events are dropped in milestone 1**, and counted
+   (`MapStats::subagent_dropped`). They belong *inside* the tool card that spawned them.
+
+**The process contract (§5.9.2, measured):** `-p --input-format stream-json
+--output-format stream-json --include-partial-messages --replay-user-messages --verbose`
+keeps **one session alive across many turns** — one `session_id`, a `result` per turn.
+Spawn once per tab and never let the process go. Resume is the recovery path, not the
+interaction model. There is **no attach**: every programmatic surface is a child process
+you spawn, so a conversation tab cannot mirror a Claude Code session running elsewhere —
+it must *be* the session.
+
+**The inline artifact, and why it is the milestone.** A terminal receives a tool call as
+whatever text the harness chose to print. The event stream carries it structured — name,
+the complete input object, a correlation id, a later result — so `conversation_view` draws
+a **card**: the tool's name, its arguments as fields, an accent that says running (amber)
+/ ok (green) / error (red), and the output clipped with a count of what was clipped.
+`Edit` goes one further and renders its `old_string`/`new_string` as a real diff, because
+those arrive as *fields* rather than as a patch someone has to parse back out of prose.
+"A tool is running" has no event anywhere in the stream; it is derived from an unresolved
+id, and it stops being true when the result arrives.
+
+**How a tab opens one.** `HarnessSpec::conversation` — the registry is data, so the
+front-end is a field. `claude-chat` is the one built-in row that sets it, on every
+platform, **beside** the terminal `claude` row rather than instead of it. `command`,
+`wsl` and the whole `launch_argv` decision are inert for a conversation spec (the flags
+above are the CLI's own and a user argv could silently break the persistence); `cwd` and
+`detect` still apply.
+
+```
+ORGANON_SHELL_TABS=claude-chat organon-console          # one conversation tab
+ORGANON_SHELL_TABS=claude-chat,shell organon-console    # a conversation beside a terminal
+```
+
+**Rule 5′ governs the split** (execution plan §6, which repealed the old harness-agnostic
+rule *in writing* so nobody enforces it against the pivot later): the terminal host is
+harness-agnostic in full; the conversation view is harness-specific and says which
+harness; and **degrading to a terminal tab is always available** — a harness we have not
+integrated is not unsupported, it is supported the old way.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -474,6 +580,7 @@ position.
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
+| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab). Next, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); approvals over the control protocol; then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -483,6 +590,45 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **The conversation view has never been run against a live agent by the session that
+  wrote it.** Every rule in §1.1 is pinned by headless tests against committed captures —
+  the per-block key, the replayed human turn, the recurring `init`, the per-turn `result`,
+  the dropped subagent scope, the card's clipping and the `Edit` diff — and that is
+  **replay, not a conversation**. What no fixture can answer: whether the CLI stays alive
+  when it is spawned with no prompt and nothing on stdin yet (it prints `Warning: no stdin
+  data received in 3s…` and the pane logs it, but "proceeds without it" could mean it
+  exits), whether stdin's line write reaches it promptly enough to feel live, and what the
+  layout looks like at real width. A person on the machine is the first to know.
+- **A conversation tab REPLACES an invocation; it never observes one.** There is no attach
+  in any of Claude Code's programmatic surfaces, so the tab cannot mirror a session
+  already running in a terminal. This is a product consequence wearing a protocol costume
+  and is recorded as such (§5.9.1).
+- **Subagent output is dropped, and on a coordinator run that is most of the activity.**
+  Token deltas from subagents are never forwarded by the CLI at all, so even in milestone
+  2 a fan-out session arrives as complete-message bursts rather than live text. Milestone
+  1 drops those messages entirely (counted, not silent). A view of a coordinator will look
+  much quieter than the work actually is.
+- **The card's clipping is the VIEW's, and it says what it hid.** `conversation.rs` leaves
+  per-element text unbounded on purpose — a tool result can be a whole file, and
+  truncating it in the model would misrepresent the tool's output while looking like the
+  tool's output. So the card draws ten lines and then says "+N more lines"; the full text
+  is still in the transcript. Same for an argument value: flattened to one line with a
+  character count, never quietly cut.
+- **Nothing about permissions is implemented.** §5.9.1 measured `permission_denials: []`
+  for a read-only tool with no callback attached, which is what makes a plain stdio
+  consumer able to render a real conversation today. A **write** tool is a different
+  question and this milestone does not answer it: a denied tool will simply appear as a
+  card whose result says so. Approvals are milestone 2.
+- **The `Edit` diff is a field render, not a diff algorithm.** It prints `old_string`'s
+  lines as removals and `new_string`'s as additions — there is no alignment, so an edit
+  that changes one character in the middle of a ten-line block shows ten removals and ten
+  additions. That is honest about what arrived; it is not `diff`.
+- **A conversation pane carries an inert look-epoch ledger.** The three per-tab vectors
+  stay index-aligned so every `zip` and `get(active)` in `shell_main.rs` remains safe, so
+  a conversation gets a `PaneLooks` it never uses and opens epochs at line 0. The backdrop
+  is not drawn behind a conversation at all yet — the banding is scrollback arithmetic and
+  there is no scrollback. Painting the substrate behind a transcript is available and
+  unclaimed, not attempted.
 - **The backdrop is the DEFAULT LOOK of the engine**, not a live external system:
   Shell writes the default `Shared` itself and the CLI's override lane mutates the
   world's working copy. Provenance for showing any *external* system's state in the

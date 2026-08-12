@@ -41,6 +41,14 @@
 //! through the rows and `panel` puts a live egui control panel in the same rect, whose
 //! buttons re-enter this file at [`Shell::apply_console`], the same call a typed
 //! `organon console background <name>` reaches.
+//!
+//! **Console Spike §5.9 forks the console into two front-ends over one renderer, and this
+//! file hosts both.** The terminal host above is unchanged and is the universal fallback:
+//! it runs any program and knows nothing about it. Beside it now sits the **conversation
+//! view** — a tab that spawns no PTY at all, drives an agent over pipes, and renders its
+//! structured event stream natively ([`Pane`], [`organon_shell::conversation_view`]). The
+//! window, the tab strip, the command lane and the backdrop are shared; only what a tab
+//! *is* differs. `SHELL_ARCHITECTURE.md` owns the shape.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -62,6 +70,7 @@ use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
+use organon_shell::conversation_view::{self, ConversationPane};
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::session::{Issuer, SessionLog};
@@ -707,18 +716,60 @@ struct PaneLooks {
     blocks: Vec<Patch>,
 }
 
+/// What one tab actually is (Console Spike §5.9): the console has **two front-ends over
+/// one renderer**, and this is the fork.
+///
+/// [`Pane::Term`] is everything that came before and is unchanged — a real PTY, the VT
+/// core, the glyph grid. It runs `htop`, it runs `vim`, it runs an unmodified Claude Code
+/// tab, and none of them will ever know the console exists (§6 Rule 5′, which still
+/// governs it in full).
+///
+/// [`Pane::Conversation`] has **no PTY at all**. It drives an agent over pipes and
+/// renders its structured event stream natively, so a tool call is a card rather than the
+/// text a terminal would have printed. The two share the window, the tab strip, the
+/// command lane and the backdrop; they share nothing below that, which is why this is an
+/// enum rather than a flag on one type.
+enum Pane {
+    Term(TermSession),
+    /// Boxed: a conversation carries a transcript and a child process, and the terminal
+    /// variant is already large. Without it every `Vec<Pane>` slot pays the bigger size.
+    Conversation(Box<ConversationPane>),
+}
+
+impl Pane {
+    /// The PTY behind this tab, if it has one. **Every terminal-only path goes through
+    /// here** — the Tier 5 block/patch verbs, the anchor pump, the epoch boundary — so a
+    /// conversation tab is skipped by construction rather than by remembering to check.
+    fn term_mut(&mut self) -> Option<&mut TermSession> {
+        match self {
+            Pane::Term(session) => Some(session),
+            Pane::Conversation(_) => None,
+        }
+    }
+
+    fn term(&self) -> Option<&TermSession> {
+        match self {
+            Pane::Term(session) => Some(session),
+            Pane::Conversation(_) => None,
+        }
+    }
+}
+
 struct Shell {
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
     renderer: Option<egui_wgpu::Renderer>,
-    /// One PTY session per tab, index-aligned with `strip.tabs`. ALL sessions
-    /// pump every frame (a background agent keeps streaming); only the active
-    /// one draws. The 2026-08-08 reframe (PRD v3.2): Shell is a TUI HOST — the
-    /// default tab runs the default HARNESS (Pi first among equals), and the
-    /// bare terminal is one menu entry, not the opening position.
-    sessions: Vec<TermSession>,
+    /// One pane per tab, index-aligned with `strip.tabs`. ALL panes pump every frame
+    /// (a background agent keeps streaming); only the active one draws. The 2026-08-08
+    /// reframe (PRD v3.2): Shell is a TUI HOST — the default tab runs the default
+    /// HARNESS (Pi first among equals), and the bare terminal is one menu entry, not the
+    /// opening position.
+    ///
+    /// Console Spike §5.9 made the element type an enum: a pane is a terminal **or** a
+    /// conversation. See [`Pane`].
+    sessions: Vec<Pane>,
     /// The look history of each tab, **index-aligned with `sessions`** (Console Spike Tier
     /// 4). Created and dropped in the same two places a session is.
     pane_looks: Vec<PaneLooks>,
@@ -1017,6 +1068,28 @@ impl Shell {
             eprintln!("organon-console: unknown harness {id:?}");
             return;
         };
+        // §5.9: which front-end this tab gets. A conversation spec never reaches
+        // `launch_argv` — the flags that make the CLI a persistent session are the
+        // agent session's own, not a user-editable argv (see `HarnessSpec::conversation`).
+        if spec.conversation {
+            let cwd = spec.cwd.as_deref().map(|c| {
+                organon_shell::platform::expand_tilde(
+                    c,
+                    organon_shell::platform::home_dir(Platform::current(), |k| {
+                        std::env::var(k).ok()
+                    })
+                    .as_deref(),
+                )
+            });
+            let pane = ConversationPane::new(cwd.as_deref());
+            // The pane keeps its own failure and shows it; the log line is for whoever
+            // started the console from a terminal and is watching stderr.
+            if let Some(failure) = pane.failure.as_deref() {
+                eprintln!("organon-console: {} — {failure}", spec.name);
+            }
+            self.push_pane(Pane::Conversation(Box::new(pane)), spec.name.clone(), spec.id.clone());
+            return;
+        }
         let (argv, cwd) = harness::launch_argv(
             &spec,
             Platform::current(),
@@ -1034,23 +1107,7 @@ impl Shell {
         hid: String,
     ) {
         match TermSession::spawn(80, 24, command, cwd.as_deref()) {
-            Ok(s) => {
-                self.sessions.push(s);
-                // A new tab's look history starts collapsed at line 0 with whatever the
-                // console is wearing right now: it has no rows from before it existed, so
-                // there is no older epoch for it to describe. This is `EpochLedger::new`
-                // used as the collapse it is — the same shape `background world` produces.
-                self.pane_looks.push(PaneLooks {
-                    anchor: PaneAnchor::new(),
-                    ledger: EpochLedger::new(
-                        ledger_look(self.backdrop_source, &self.console_look),
-                        0,
-                    ),
-                    cache: HashMap::new(),
-                    blocks: Vec::new(),
-                });
-                self.strip.add(Tab { title, harness_id: hid });
-            }
+            Ok(s) => self.push_pane(Pane::Term(s), title, hid),
             // The failure a user actually hits is "this harness will not start", so
             // say what was tried, not just the OS error.
             Err(e) => eprintln!(
@@ -1058,6 +1115,28 @@ impl Shell {
                  (harness {hid:?}; if this is a WSL entry, check `wsl.exe -- bash -lic 'command -v …'`)"
             ),
         }
+    }
+
+    /// Add a pane and the tab that shows it, keeping the three index-aligned vectors
+    /// (`sessions`, `pane_looks`, `strip.tabs`) in step. One place, because they are only
+    /// ever correct together.
+    fn push_pane(&mut self, pane: Pane, title: String, hid: String) {
+        self.sessions.push(pane);
+        // A new tab's look history starts collapsed at line 0 with whatever the
+        // console is wearing right now: it has no rows from before it existed, so
+        // there is no older epoch for it to describe. This is `EpochLedger::new`
+        // used as the collapse it is — the same shape `background world` produces.
+        //
+        // A conversation pane gets one too, and it stays inert: the ledger is scrollback
+        // arithmetic, and there is no scrollback here. Keeping the vectors the same
+        // length is what makes every `zip` and every `get(active)` in this file safe.
+        self.pane_looks.push(PaneLooks {
+            anchor: PaneAnchor::new(),
+            ledger: EpochLedger::new(ledger_look(self.backdrop_source, &self.console_look), 0),
+            cache: HashMap::new(),
+            blocks: Vec::new(),
+        });
+        self.strip.add(Tab { title, harness_id: hid });
     }
 
     fn sync_title(&self) {
@@ -1258,9 +1337,13 @@ impl Shell {
     /// not a defect of this one.
     fn open_block(&mut self, rows: u16) {
         let pane = self.strip.active;
-        let (Some(session), Some(looks)) =
-            (self.sessions.get_mut(pane), self.pane_looks.get_mut(pane))
-        else {
+        // A conversation tab has no grid to punch a hole in — its inline artifacts are
+        // elements in a flow, which is the whole reason §5.9 split the front-ends. The
+        // verb is silently inapplicable rather than wrong.
+        let (Some(Some(session)), Some(looks)) = (
+            self.sessions.get_mut(pane).map(Pane::term_mut),
+            self.pane_looks.get_mut(pane),
+        ) else {
             return;
         };
         if rows == 0 {
@@ -1317,9 +1400,11 @@ impl Shell {
     /// `organon console background metal` are the same act.
     fn claim_patch(&mut self, up: u16, rows: u16, kind: cli::PatchKind) {
         let pane = self.strip.active;
-        let (Some(session), Some(looks)) =
-            (self.sessions.get_mut(pane), self.pane_looks.get_mut(pane))
-        else {
+        // Terminal-only, for [`Shell::open_block`]'s reason.
+        let (Some(Some(session)), Some(looks)) = (
+            self.sessions.get_mut(pane).map(Pane::term_mut),
+            self.pane_looks.get_mut(pane),
+        ) else {
             return;
         };
         if rows == 0 {
@@ -1387,11 +1472,18 @@ impl Shell {
         // already clamps to `previous + 1` — **strictly** forward, where `push_boundary`
         // clamps to `>=` — so the ledger's rule is the stronger of the two and adding the
         // weaker one on top would be a second place that decides where an epoch starts.
+        //
+        // A conversation pane opens at 0: it has no cursor and no scrollback, so there
+        // is no line to name. `EpochLedger::open` clamps to `previous + 1`, so the
+        // ledger stays well-formed and inert — which is what an unused ledger should be.
         let opening: Vec<u64> = self
             .sessions
             .iter()
             .zip(&self.pane_looks)
-            .map(|(session, pane)| pane.anchor.boundary_now(session))
+            .map(|(pane, looks)| match pane.term() {
+                Some(session) => looks.anchor.boundary_now(session),
+                None => 0,
+            })
             .collect();
 
         let mut evicted: Vec<(usize, EpochId, String)> = Vec::new();
@@ -1838,8 +1930,18 @@ impl Shell {
         // advances the scroll-anchor's `dropped` counter, and every tab needs its own kept
         // current whether or not it is the tab being banded (its rows are accumulating under
         // the live look right now, and it will be switched to later).
-        for (session, pane) in self.sessions.iter_mut().zip(self.pane_looks.iter_mut()) {
-            pane.anchor.pump(session);
+        //
+        // A conversation pane pumps too, for the same reason and by the same rule: an
+        // agent keeps answering while you are looking at another tab. Its drain is the
+        // event channel rather than the PTY, and it touches no anchor because it has no
+        // scrollback to anchor into.
+        for (pane, looks) in self.sessions.iter_mut().zip(self.pane_looks.iter_mut()) {
+            match pane {
+                Pane::Term(session) => looks.anchor.pump(session),
+                Pane::Conversation(chat) => {
+                    chat.pump();
+                }
+            }
         }
         let active = self.strip.active;
         // The active pane's look history, resolved to textures before the closure borrows
@@ -1911,30 +2013,42 @@ impl Shell {
                     // Before anything is allocated in it — `term_view::draw`'s own first act
                     // is this same call.
                     pane_rect = Some(ui.available_rect_before_wrap());
-                    if let (Some(session), Some(pane)) =
-                        (sessions.get_mut(active), pane_looks.get_mut(active))
-                    {
-                        // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of the
-                        // same pane, which is exactly why the patch ledger lives on
-                        // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
-                        // `Shell` that would have to be indexed in step with it. The ledger is
-                        // `&mut` because a panel's sliders are real: a value dragged this frame
-                        // has to still be there on the next one.
-                        block_actions = term_view::draw(
-                            ui,
-                            session,
-                            &mut pane.anchor,
-                            bands.as_ref().map(|(boundaries, textures)| BandedBackdrop {
-                                boundaries,
-                                textures,
-                            }),
-                            &mut pane.blocks,
-                            patch_image,
-                        );
-                    } else {
-                        ui.centered_and_justified(|ui| {
-                            ui.monospace("no live tab — ⌘T opens one");
-                        });
+                    // §5.9's fork, at the one place it shows: the same panel, the same
+                    // window, two renderings. The terminal branch is what it was — Tier 5's
+                    // patch ledger and the actions its panels return included; a conversation
+                    // tab has neither because it has no transcript of terminal lines to claim
+                    // a rectangle in.
+                    match (sessions.get_mut(active), pane_looks.get_mut(active)) {
+                        (Some(Pane::Term(session)), Some(pane)) => {
+                            // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of
+                            // the same pane, which is exactly why the patch ledger lives on
+                            // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
+                            // `Shell` that would have to be indexed in step with it. The ledger
+                            // is `&mut` because a panel's sliders are real: a value dragged this
+                            // frame has to still be there on the next one.
+                            block_actions = term_view::draw(
+                                ui,
+                                session,
+                                &mut pane.anchor,
+                                bands.as_ref().map(|(boundaries, textures)| BandedBackdrop {
+                                    boundaries,
+                                    textures,
+                                }),
+                                &mut pane.blocks,
+                                patch_image,
+                            );
+                        }
+                        (Some(Pane::Conversation(chat)), _) => {
+                            // No PTY, so no patch ledger and no block actions: `block_actions`
+                            // stays the empty `Vec` it was initialised to and the loop below
+                            // does nothing.
+                            conversation_view::draw(ui, chat);
+                        }
+                        _ => {
+                            ui.centered_and_justified(|ui| {
+                                ui.monospace("no live tab — ⌘T opens one");
+                            });
+                        }
                     }
                 });
         });
@@ -2112,7 +2226,14 @@ fn help_text() -> String {
              ORGANON_SHELL_DEFAULT=<id>   harness for the first tab (else Pi if installed)\n    \
              ORGANON_SHELL_CMD=<cmd>      one plain-command tab, for headless checks\n    \
              ORGANON_SHELL_PTY_DEBUG=1    trace the PTY byte path to stderr ([pty]/[grid])\n    \
+             ORGANON_CLAUDE_BIN=<path>    the CLI a conversation tab drives (default: claude)\n    \
              ORGANON_IPC_NS=<name>        IPC namespace; fork it to run beside another Organon\n\
+         \n\
+         Two front-ends, one window. A harness id opens a terminal tab unless the registry\n\
+         marks it a conversation — `claude-chat` is the one that does, and it renders the\n\
+         agent's event stream natively instead of its character grid:\n    \
+             ORGANON_SHELL_TABS=claude-chat        one conversation tab\n    \
+             ORGANON_SHELL_TABS=claude-chat,shell  a conversation beside a terminal\n\
          \n\
          Inside a tab the `organon` CLI addresses this process — the namespace is inherited:\n    \
              organon console background <{backgrounds}>\n    \
@@ -2911,9 +3032,22 @@ mod cli_tests {
             "ORGANON_SHELL_DEFAULT",
             "ORGANON_SHELL_CMD",
             "ORGANON_SHELL_PTY_DEBUG",
+            "ORGANON_CLAUDE_BIN",
             "ORGANON_IPC_NS",
         ] {
             assert!(h.contains(var), "help does not mention {var}");
         }
+    }
+
+    /// §5.9's second front-end is reached by a harness id, so `--help` has to name the
+    /// id — a feature nobody can spell is a feature nobody has.
+    #[test]
+    fn help_names_the_conversation_tab() {
+        let h = help_text();
+        assert!(h.contains("claude-chat"), "the conversation harness id is the whole interface");
+        assert!(
+            harness::builtin().iter().any(|s| s.id == "claude-chat" && s.conversation),
+            "…and it must be a real registry row, not just prose"
+        );
     }
 }
