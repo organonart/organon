@@ -24,8 +24,25 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 
+use crate::block_anchor::{self, Block};
 use crate::scroll_anchor::{self, Snapshot, ViewState};
 use crate::term::{self, TermSession};
+
+/// The grid's type size, in points. One definition, because [`cell_metrics`] and
+/// [`draw`] must not be able to disagree about what a cell is.
+pub const FONT_PT: f32 = 14.0;
+
+/// The cell box, in points: `(width, height)`.
+///
+/// **A free function of the font, deliberately — not a value `draw` returns.** Both numbers
+/// depend only on the [`egui::FontId`] and the loaded fonts, never on a rect, so a caller
+/// that needs to size something *before* the grid exists (a reserved strip row, a patch
+/// rect) can ask now rather than reading last frame's answer. A `draw`-returns-metrics shape
+/// would import the one-frame lag the backdrop already has to reason about, for nothing.
+pub fn cell_metrics(ui: &mut egui::Ui) -> (f32, f32) {
+    let font_id = egui::FontId::monospace(FONT_PT);
+    ui.fonts_mut(|f| (f.glyph_width(&font_id, 'M'), f.row_height(&font_id)))
+}
 
 /// The default screen: near-black with a whisper of green, phosphor foreground.
 pub const DEFAULT_BG: egui::Color32 = egui::Color32::from_rgb(0x0a, 0x0d, 0x0a);
@@ -442,6 +459,61 @@ pub fn band_quads(
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Patches in the transcript (Console Spike Tier 5)
+// ---------------------------------------------------------------------------
+
+/// One visible block's rect and the slice of the source image it shows.
+pub struct BlockQuad {
+    pub rect: egui::Rect,
+    /// The **UV slice**, on the same policy as [`band_quads`] — see [`block_quads`].
+    pub uv: egui::Rect,
+}
+
+/// Place each visible block as a rect over the rows it reserved.
+///
+/// # Why the same UV policy as [`band_quads`], and not `0..1`
+///
+/// A block is a *window*, not a thumbnail. Painting the whole source image squeezed into a
+/// twelve-row rect would distort it by more than an order of magnitude on the vertical, and
+/// — worse — the picture would change shape as the block scrolled, which is exactly the
+/// artefact the band policy exists to avoid. Sampling the slice that sits where the block
+/// sits means the surface stays put and the transcript moves over it, so the block reads as
+/// a hole cut through to something continuous behind the page rather than a picture pasted
+/// onto it.
+///
+/// The rect is clamped to the grid rect at both ends, so a half-scrolled block paints its
+/// visible part and nothing outside the pane. `BlockBand::block_row` — the offset into the
+/// block of the row at `first_vrow` — is not needed for this policy and is deliberately
+/// unused here; it becomes load-bearing the moment a block owns its own texture rather than
+/// sampling a pane-sized one.
+pub fn block_quads(
+    blocks: &[Block],
+    state: ViewState,
+    rect: egui::Rect,
+    cell_h: f32,
+) -> Vec<BlockQuad> {
+    let h = rect.height().max(f32::EPSILON);
+    block_anchor::visible_blocks(blocks, state)
+        .into_iter()
+        .map(|b| {
+            let top = (rect.top() + f32::from(b.first_vrow) * cell_h).min(rect.bottom());
+            let bottom = (rect.top() + f32::from(b.last_vrow + 1) * cell_h).min(rect.bottom());
+            let bottom = bottom.max(top);
+            BlockQuad {
+                rect: egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), top),
+                    egui::pos2(rect.right(), bottom),
+                ),
+                uv: egui::Rect::from_min_max(
+                    egui::pos2(0.0, (top - rect.top()) / h),
+                    egui::pos2(1.0, (bottom - rect.top()) / h),
+                ),
+            }
+        })
+        .collect()
+}
+
 /// One frame of the terminal: pump the session, size the grid to the rect, feed
 /// input, paint. The caller gives us the whole window (PRD v3 §7.5: no chrome).
 ///
@@ -459,10 +531,10 @@ pub fn draw(
     session: &mut TermSession,
     anchor: &mut PaneAnchor,
     backdrop: Option<BandedBackdrop<'_>>,
+    blocks: &[Block],
 ) {
-    let font_id = egui::FontId::monospace(14.0);
-    let (cell_w, cell_h) =
-        ui.fonts_mut(|f| (f.glyph_width(&font_id, 'M'), f.row_height(&font_id)));
+    let font_id = egui::FontId::monospace(FONT_PT);
+    let (cell_w, cell_h) = cell_metrics(ui);
 
     let rect = ui.available_rect_before_wrap();
     let cols = (rect.width() / cell_w).floor().max(2.0) as u16;
@@ -536,6 +608,10 @@ pub fn draw(
     // viewport's bands and its glyphs come from the same `display_offset` in the same frame.
     let state = anchor.view(session);
     let painter = ui.painter_at(rect);
+    // The live look's picture, read before the match consumes the backdrop. Tier 5's first
+    // light paints blocks from it: the console already renders and registers this texture
+    // every frame, so a patch costs one more quad and no second scene.
+    let live_image = backdrop.as_ref().and_then(|b| b.textures.last().copied().flatten());
     match backdrop {
         Some(bands) => {
             for quad in band_quads(bands.boundaries, bands.textures, state, rect, cell_h) {
@@ -559,6 +635,25 @@ pub fn draw(
         }
         None => {
             painter.rect_filled(rect, 0.0, DEFAULT_BG);
+        }
+    }
+
+    // ── Patches (Console Spike Tier 5) ─────────────────────────────────────
+    // After the scrim and before the glyphs, and both halves of that are deliberate.
+    //
+    // **After the scrim**, because a block is a hole cut *through* the legibility layer, not
+    // a surface behind it. PRD §4.6's floor protects rows that carry text; a block's rows
+    // carry none — the console reserved them precisely so nothing would be written there —
+    // so dimming them buys no legibility and costs the whole effect. The visible consequence
+    // is the point: the patch reads brighter than the transcript around it, because it is
+    // the only part of the frame not behind the scrim.
+    //
+    // **Before the glyphs**, because the cursor and any text that does land on those rows
+    // (a stray write, a resize that reflowed something into them) must still win. A patch
+    // never hides characters.
+    if let Some(image) = live_image {
+        for quad in block_quads(blocks, state, rect, cell_h) {
+            painter.image(image, quad.rect, quad.uv, egui::Color32::WHITE);
         }
     }
 

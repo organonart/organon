@@ -48,6 +48,7 @@ use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
+use organon_shell::block_anchor::Block;
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
@@ -612,6 +613,15 @@ struct PaneLooks {
     anchor: PaneAnchor,
     ledger: EpochLedger,
     cache: HashMap<EpochId, Rc<CachedEpoch>>,
+    /// Tier 5: the patches this transcript is carrying, in the order they were opened.
+    ///
+    /// **Per pane for the same reason the anchor is** — a block names a line in *this*
+    /// tab's absolute-line coordinate, and that coordinate means nothing in another tab.
+    /// No cap and no eviction yet: first light paints from the live backdrop texture, which
+    /// the console allocates anyway, so a block owns no GPU resource of its own to leak.
+    /// The moment one does, this wants `substrate_epochs`' bounded-and-logged discipline
+    /// rather than a second invention.
+    blocks: Vec<Block>,
 }
 
 struct Shell {
@@ -954,6 +964,7 @@ impl Shell {
                         0,
                     ),
                     cache: HashMap::new(),
+                    blocks: Vec::new(),
                 });
                 self.strip.add(Tab { title, harness_id: hid });
             }
@@ -1165,7 +1176,11 @@ impl Shell {
         else {
             return;
         };
+        if rows == 0 {
+            return;
+        }
         let at = looks.anchor.feed_local(session, &term::block_bytes(rows));
+        looks.blocks.push(Block { first_abs: at, rows });
         // Unconditional, and in `[epochs]`' register: the absolute index is the one number a
         // painter will place a rect from, and an arithmetic error in it is invisible on screen
         // until something is painted into the wrong rows. `[block]` is the tag to grep for.
@@ -1682,6 +1697,7 @@ impl Shell {
                                 boundaries,
                                 textures,
                             }),
+                            &pane.blocks,
                         );
                     } else {
                         ui.centered_and_justified(|ui| {
