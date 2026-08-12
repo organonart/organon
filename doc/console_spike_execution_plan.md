@@ -523,6 +523,42 @@ Run on this machine with two user messages written to the CLI's stdin across a 2
 messages to stdin, read NDJSON events from stdout, and never let the process go. Resume is the
 recovery path, not the interaction model.
 
+### 5.9.3 The mapping contract — decoder → transcript, and the six measured facts that shape it
+
+The decoder (`agent_event.rs`) and the transcript model (`conversation.rs`) were written by
+independent leaves against a deliberate seam: **two agents cannot own one type.** The
+integrator writes the mapping. These rules are not style — each comes from something measured
+in a real capture, and getting any of them wrong produces a view that looks nearly right.
+
+1. 🚨 **An `assistant` line carries ONE content block, not a whole message.** Three consecutive
+   lines shared message id `msg_…RU4dqFxH14d2HJ1S`: prose, then tool call #1, then tool call #2.
+   `conversation::MessageId` is documented as unique **per rendered text block**, and same-id
+   blocks *replace* each other — so mapping `message_id` straight through would let the tool
+   call overwrite the prose and silently lose it. **Derive a per-block key** (`message_id` plus
+   the block's ordinal), and key the streamed path off `BlockDelta{index}` so streaming and
+   authoritative text land on the same element.
+2. 🚨 **The human turn comes back on the stream, and must not also be inserted locally.**
+   `--replay-user-messages` echoes injected input, flagged `isReplay: true`, as an array of text
+   blocks. **The composer writes to stdin and renders nothing**; the transcript renders only
+   what returns. That is what makes ordering free rather than a splice-and-hope.
+3. 🚨 **`system/init` recurs mid-stream** — a second one arrived before turn two of the live
+   session, same `session_id`, different field count. Only the first establishes identity; a
+   later one must not reset or re-initialise the transcript.
+4. **`total_cost_usd` is session-cumulative while the sibling `usage` is per-turn.** Turn two's
+   cache-read figure was exactly turn one's plus its own. **Never sum costs across results** —
+   take the latest.
+5. **Subagent-scoped events are dropped in milestone 1.** The decoder distinguishes them
+   (`AgentScope::Subagent { tool_use_id }`, from `parent_tool_use_id`). Rendered naively they
+   appear as free-floating turns belonging to nobody. They belong *inside* the tool card that
+   spawned them, which is milestone 2.
+6. **The first line of a real run is not JSON.** It is `Warning: no stdin data received in 3s…`,
+   plain text on the same pipe. Log and continue; a decoder that treats non-JSON as fatal dies
+   before the conversation starts.
+
+📌 Held for milestone 2, deliberately: `tool_use_result` (an undocumented sibling of `message`
+carrying structured per-tool detail — for `Read`, `filePath`/`numLines`/`totalLines`, which is
+what a rich tool card wants), `Notice`/`post_turn_summary`, `RateLimit`, and approvals.
+
 **Why Pi second, and genuinely second rather than dismissed.** `pi --mode rpc` is documented in
 its first sentence as being for "embedding the agent in other applications, IDEs, or custom
 UIs" — it is purpose-built for this, and it carries **strictly more lifecycle events** than
