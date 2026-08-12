@@ -16,6 +16,7 @@ pub mod audio;
 pub mod audio_ring;
 pub mod cli;
 pub mod clip;
+pub mod console_catalog;
 mod controller;
 
 /// #626 Tier 3 — **`organon-core`'s modules, re-exported so `crate::` paths still resolve.**

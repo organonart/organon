@@ -82,6 +82,28 @@ macro_rules! param_block {
             pub(crate) fn catalog(out: &mut ::std::vec::Vec<crate::agent::CatSlot>) {
                 $( param_block!(@cat out, $slot); )*
             }
+
+            /// Walk this block's slots for the **console control facts** (#4 Tier 3) —
+            /// the same slot list again, read through the *live param objects* rather
+            /// than through their names alone.
+            ///
+            /// This is what makes a control descriptor generated rather than
+            /// hand-written (`doc/console_discover_schema.md` I2). Each arm touches
+            /// `p.<field>` at its declared type, exactly as `@from_param` does, so a
+            /// renamed field or a retyped param is a **build error** and never a
+            /// descriptor that quietly disagrees with the engine. Ranges, defaults and
+            /// labels are read off the parameter itself in `console_catalog`; nothing is
+            /// restated here. `_` / `(lit, …)` / `(expr, …)` slots contribute no facts,
+            /// for the same reason they contribute no vocabulary.
+            #[allow(dead_code)]
+            pub(crate) fn facts(
+                p: &OrganicMathParams,
+                out: &mut ::std::vec::Vec<crate::console_catalog::SlotFacts>,
+            ) {
+                let _ = p; // silence unused when a block is all-reserved
+                let _ = &out;
+                $( param_block!(@facts out, p, $slot); )*
+            }
         }
     };
     (@cat $out:ident, _) => {};
@@ -92,6 +114,25 @@ macro_rules! param_block {
     (@cat $out:ident, (lit, $v:expr)) => {};
     (@cat $out:ident, (expr, |$a:ident| $e:expr)) => {};
     (@cat $out:ident, (expr, |$a:ident| $e:expr, |$b:ident| $e2:expr)) => {};
+
+    // --- console control facts (#4 Tier 3): the slot list walked at the DECLARED TYPE.
+    // Same shape as `@from_param` on purpose — the type annotation is the check.
+    (@facts $out:ident, $p:ident, _) => {};
+    (@facts $out:ident, $p:ident, (f32, $f:ident)) => {
+        $out.push(crate::console_catalog::float_facts(stringify!($f), &$p.$f));
+    };
+    (@facts $out:ident, $p:ident, (i32, $f:ident)) => {
+        $out.push(crate::console_catalog::int_facts(stringify!($f), &$p.$f));
+    };
+    (@facts $out:ident, $p:ident, (bool, $f:ident)) => {
+        $out.push(crate::console_catalog::bool_facts(stringify!($f), &$p.$f));
+    };
+    (@facts $out:ident, $p:ident, (enum, $f:ident)) => {
+        $out.push(crate::console_catalog::enum_facts(stringify!($f), &$p.$f));
+    };
+    (@facts $out:ident, $p:ident, (lit, $v:expr)) => {};
+    (@facts $out:ident, $p:ident, (expr, |$a:ident| $e:expr)) => {};
+    (@facts $out:ident, $p:ident, (expr, |$a:ident| $e:expr, |$b:ident| $e2:expr)) => {};
 
     // --- per-slot extraction (live params) ---
     (@from_param $p:ident, _) => { 0.0 };
