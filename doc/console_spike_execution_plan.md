@@ -476,9 +476,24 @@ stream-json`), because the recon had no shell and everything it said was doc-der
 - `tool_use` carries the **complete structured input** (`{"name":"Read","input":{"file_path":…}}`),
   and `tool_result` correlates by `tool_use_id`. Start and end are distinct messages.
 - 🚨 **`permission_denials: []` — a read tool executed with no callback and was not denied.**
-  The recon's "no callback means deny" warning does not bite for read-only tools, so **a plain
-  stdio consumer can render a real conversation today** without an SDK, an MCP server, or the
-  undocumented control protocol. Write tools are a milestone-2 problem.
+  The recon's "no callback means deny" warning does not bite for every tool, so **a plain stdio
+  consumer can render a real conversation today** without an SDK, an MCP server, or the
+  undocumented control protocol.
+
+  ⚠️ **Refined 2026-08-12, from James driving the finished view:** "read-only tools pass" is too
+  generous. `Read` passed; three tools in his first real session were **refused**, each with a
+  distinct reason — a PowerShell script block ("may execute arbitrary code"), a non-filesystem
+  provider path (`Env:`), and a compound `Bash` pipeline whose `env` part "requires approval".
+  So the gate is not read-versus-write, it is **whatever the permission layer wants to ask
+  about** — and with no callback there is nobody to ask, so it fails.
+
+  **The failure is at least honest**: refusals arrive as ordinary `tool_result`s with
+  `is_error`, so the view renders them as error cards carrying the refusal reason, and the agent
+  can see and explain them. Nothing is silent. But it means **approvals are the next thing worth
+  building, not a comfortable milestone-2 item** — a conversation view where a third of the
+  agent's tools bounce is a demo, not a workspace. `canUseTool` is a documented SDK callback
+  that can allow, deny, *modify the input*, or persist a rule; over the bare CLI the documented
+  route is an MCP `--permission-prompt-tool`. Choosing between those is the next real decision.
 - Undocumented events observed that the docs do not list and a view would want:
   `rate_limit_event`, and `system/post_turn_summary` carrying `status_category`,
   `status_detail`, `needs_action`.
