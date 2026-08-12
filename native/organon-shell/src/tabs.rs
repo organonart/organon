@@ -1,19 +1,207 @@
-//! Tabs (Shell #11 Tier 1): the Superconductor model in terminal clothes.
+//! Strips, and the tab strip built from one (Shell #11 Tier 1, generalized in
+//! Tier 3): the Superconductor model in terminal clothes.
 //!
-//! Each tab is one harness session in its own PTY; the strip along the bottom is
+//! A **strip** is a single row of monospace chips pinned to one edge of the window —
 //! the ONE permitted piece of chrome (PRD v3.1 FR-T11), styled like the founder's
-//! Kitty setup — monospace chips on the dark ground, nothing rounded, nothing
-//! glossy. The **+** control drops the numbered harness list exactly like the
-//! Superconductor screenshot: installed entries selectable, missing ones greyed
-//! with their install URL on hover.
+//! Kitty setup: nothing rounded, nothing glossy. The console gets two of them from
+//! this one widget, and the widget is careful to know about neither: the **tab strip**
+//! runs along the **top**, one chip per harness session in its own PTY, and the
+//! **discover strip** (Tier 3, wired up by the host — not here) runs along the
+//! **bottom**, one chip per entry of a discovery document. [`strip`] takes labels in
+//! and hands back the index the human tapped ([`StripHit`]); what an activation
+//! *means* belongs to the caller.
 //!
-//! The model ([`TabStrip`]) is pure and fully tested; the renderer ([`tab_bar`])
-//! returns a [`TabAction`] for the host to apply — the strip never mutates itself
-//! mid-frame, which is what keeps session lifetimes (spawn/kill) in the host where
-//! they belong.
+//! The tab-specific extras stay in [`tab_bar`]: the close affordance, and the **+**
+//! control that drops the numbered harness list exactly like the Superconductor
+//! screenshot — installed entries selectable, missing ones greyed with their install
+//! URL on hover.
+//!
+//! The model ([`TabStrip`]) is pure and fully tested, as is the arithmetic deciding
+//! how much of a payload fits ([`strip_fit`]) and what a chip says ([`tab_items`]);
+//! the renderers only paint, and return an action for the host to apply — a strip
+//! never mutates itself mid-frame, which is what keeps session lifetimes (spawn/kill)
+//! in the host where they belong.
 
 use crate::harness::HarnessSpec;
 use std::collections::HashSet;
+
+// ---------------------------------------------------------------------------
+// The strip widget: labels in, an index out.
+// ---------------------------------------------------------------------------
+
+/// The hard cap on how many chips a strip draws. From `doc/console_discover_schema.md`
+/// ("Console behaviour and failure modes"): more than ten entries **truncates to the
+/// cap and never scrolls**. A strip is a row you take in at a glance; one that scrolls
+/// is a menu wearing a strip's clothes.
+pub const STRIP_ITEM_CAP: usize = 10;
+
+const STRIP_FONT_SIZE: f32 = 12.0;
+/// The strip's left margin, ahead of the first chip.
+const STRIP_LEAD_SPACE: f32 = 6.0;
+/// How far a strip's popup clears the control it hangs off.
+const MENU_GAP: f32 = 8.0;
+const CHIP_SELECTED: egui::Color32 = egui::Color32::from_rgb(0xc8, 0xe6, 0xc8);
+const CHIP_IDLE: egui::Color32 = egui::Color32::from_rgb(0x60, 0x6c, 0x60);
+const CHIP_DISABLED: egui::Color32 = egui::Color32::from_rgb(0x50, 0x5a, 0x50);
+/// What a chip shows when its source offers no glyph of its own.
+const FALLBACK_GLYPH: char = '❯';
+
+/// Which edge of the window a strip is pinned to.
+///
+/// A popup belonging to a strip opens *away* from that edge, so the direction is a
+/// property of where the strip sits and never a constant: the tab strip is at the top
+/// and its menus hang down, a bottom strip's menus rise. (The **+** menu was anchored
+/// upward for a strip that was imagined at the bottom and shipped at the top; this is
+/// the type that stops that from being a guess.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripEdge {
+    Top,
+    Bottom,
+}
+
+impl StripEdge {
+    /// Which corner of the popup is pinned to [`Self::menu_origin`].
+    pub fn menu_pivot(self) -> egui::Align2 {
+        match self {
+            Self::Top => egui::Align2::LEFT_TOP,
+            Self::Bottom => egui::Align2::LEFT_BOTTOM,
+        }
+    }
+
+    /// Where a popup anchored to `control` hangs from: just clear of it, on the side
+    /// away from the strip's own edge.
+    pub fn menu_origin(self, control: egui::Rect) -> egui::Pos2 {
+        let gap = egui::vec2(0.0, MENU_GAP);
+        match self {
+            Self::Top => control.left_bottom() + gap,
+            Self::Bottom => control.left_top() - gap,
+        }
+    }
+}
+
+/// One chip: what it says, an optional single-character glyph in front of it, and
+/// whether it can be tapped at all. A disabled chip still draws — greyed, present,
+/// unclickable — because a strip that silently omits what it cannot offer teaches the
+/// wrong shape of the world.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripItem {
+    pub label: String,
+    pub glyph: Option<char>,
+    pub enabled: bool,
+}
+
+impl StripItem {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self { label: label.into(), glyph: None, enabled: true }
+    }
+
+    pub fn glyph(mut self, glyph: char) -> Self {
+        self.glyph = Some(glyph);
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// The text the chip paints: `"<glyph> <label>"`, or the bare label without one.
+    pub fn text(&self) -> String {
+        match self.glyph {
+            Some(g) => format!("{g} {}", self.label),
+            None => self.label.clone(),
+        }
+    }
+}
+
+/// A glyph is *one* character by contract (`doc/console_discover_schema.md`: "A single
+/// character"). A longer string is refused rather than narrowed to its first char —
+/// half a glyph is a rendering bug wearing a valid value's clothes — and the caller
+/// falls back to something it can vouch for.
+pub fn sole_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
+/// How much of a payload a strip draws, and how much it had to leave out. `dropped` is
+/// what a `coverage` line reports; it is never a scrollbar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StripFit {
+    pub shown: usize,
+    pub dropped: usize,
+}
+
+/// Apply [`STRIP_ITEM_CAP`]. Truncation keeps the payload's own order — the emitter
+/// ranked it, and a strip that reordered would be lying about that ranking.
+pub fn strip_fit(count: usize) -> StripFit {
+    let shown = count.min(STRIP_ITEM_CAP);
+    StripFit { shown, dropped: count - shown }
+}
+
+/// The prefix of `items` a strip may draw. Empty in, empty out: zero entries is a strip
+/// with nothing to say, and the host hides the row entirely rather than drawing an
+/// empty one.
+pub fn visible(items: &[StripItem]) -> &[StripItem] {
+    &items[..strip_fit(items.len()).shown]
+}
+
+/// What the human did to a strip this frame. Both fields are **indices into the slice
+/// that was drawn**; what they mean is the caller's business — the widget knows nothing
+/// about tabs, terminals or discovery documents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StripHit {
+    /// Tapped with the primary button.
+    pub activated: Option<usize>,
+    /// Middle-clicked — "be rid of this one" wherever the caller has such a meaning.
+    /// The tab strip closes the tab; a strip without that meaning ignores it.
+    pub dismissed: Option<usize>,
+}
+
+/// Draw `items` as chips in the **current row** and report what was tapped.
+///
+/// Call this inside a horizontal layout when the row holds more than the chips (the tab
+/// strip's **+** sits after them); [`strip_row`] is the one-call form for a caller that
+/// owns the whole row. `selected` is the chip drawn lit, if any — `None` for a strip
+/// where nothing is current, and an index past the end simply lights nothing.
+///
+/// No cap is applied here: a fixed set of chips is the caller's own count, while a
+/// payload that arrived as data should come through [`visible`] first.
+pub fn strip(ui: &mut egui::Ui, items: &[StripItem], selected: Option<usize>) -> StripHit {
+    let mut hit = StripHit::default();
+    let font = egui::FontId::monospace(STRIP_FONT_SIZE);
+    ui.add_space(STRIP_LEAD_SPACE);
+    for (i, item) in items.iter().enumerate() {
+        let is_selected = selected == Some(i);
+        let color = match (item.enabled, is_selected) {
+            (false, _) => CHIP_DISABLED,
+            (true, true) => CHIP_SELECTED,
+            (true, false) => CHIP_IDLE,
+        };
+        let text = egui::RichText::new(item.text()).font(font.clone()).color(color);
+        // The enabled arm is the tab strip's call verbatim — this is a refactor, and a
+        // chip's geometry is not something to re-derive. Greying is a wrapper around it.
+        let resp = if item.enabled {
+            ui.selectable_label(is_selected, text)
+        } else {
+            ui.add_enabled_ui(false, |ui| ui.selectable_label(is_selected, text)).inner
+        };
+        if resp.clicked() {
+            hit.activated = Some(i);
+        }
+        if resp.middle_clicked() {
+            hit.dismissed = Some(i);
+        }
+    }
+    hit
+}
+
+/// A strip that owns its whole row: vertically centred, and capped per the schema.
+pub fn strip_row(ui: &mut egui::Ui, items: &[StripItem], selected: Option<usize>) -> StripHit {
+    ui.horizontal_centered(|ui| strip(ui, visible(items), selected)).inner
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
@@ -121,39 +309,57 @@ pub fn command_key_action(
     }
 }
 
-/// The strip itself: chips + the **+** menu. Returns at most one action.
+/// The tab strip's payload, as data. Each session becomes one chip carrying the glyph
+/// of the harness that spawned it; a tab whose harness has left the registry keeps its
+/// title and falls back to [`FALLBACK_GLYPH`], because a session that is still running
+/// must still be reachable.
+pub fn tab_items(tabs: &TabStrip, registry: &[HarnessSpec]) -> Vec<StripItem> {
+    tabs.tabs
+        .iter()
+        .map(|tab| {
+            let glyph = registry
+                .iter()
+                .find(|h| h.id == tab.harness_id)
+                .and_then(|h| sole_char(&h.glyph))
+                .unwrap_or(FALLBACK_GLYPH);
+            StripItem::new(tab.title.clone()).glyph(glyph)
+        })
+        .collect()
+}
+
+/// The tab strip: [`strip`] plus the tab-only extras — the close affordance and the
+/// **+** menu. Along the top of the window; returns at most one action.
 pub fn tab_bar(
     ui: &mut egui::Ui,
-    strip: &TabStrip,
+    tabs: &TabStrip,
+    registry: &[HarnessSpec],
+    installed: &HashSet<String>,
+    plus_open: &mut bool,
+) -> Option<TabAction> {
+    tab_bar_at(ui, StripEdge::Top, tabs, registry, installed, plus_open)
+}
+
+/// [`tab_bar`] with the edge spelled out — the host decides where its chrome lives, and
+/// the **+** menu follows from that rather than from a hard-coded direction.
+pub fn tab_bar_at(
+    ui: &mut egui::Ui,
+    edge: StripEdge,
+    tabs: &TabStrip,
     registry: &[HarnessSpec],
     installed: &HashSet<String>,
     plus_open: &mut bool,
 ) -> Option<TabAction> {
     let mut action = None;
-    let font = egui::FontId::monospace(12.0);
+    let font = egui::FontId::monospace(STRIP_FONT_SIZE);
+    let items = tab_items(tabs, registry);
     ui.horizontal_centered(|ui| {
-        ui.add_space(6.0);
-        for (i, tab) in strip.tabs.iter().enumerate() {
-            let active = i == strip.active;
-            let glyph = registry
-                .iter()
-                .find(|h| h.id == tab.harness_id)
-                .map(|h| h.glyph.as_str())
-                .unwrap_or("❯");
-            let text = egui::RichText::new(format!("{glyph} {}", tab.title))
-                .font(font.clone())
-                .color(if active {
-                    egui::Color32::from_rgb(0xc8, 0xe6, 0xc8)
-                } else {
-                    egui::Color32::from_rgb(0x60, 0x6c, 0x60)
-                });
-            let resp = ui.selectable_label(active, text);
-            if resp.clicked() && !active {
-                action = Some(TabAction::Switch(i));
-            }
-            if resp.middle_clicked() {
-                action = Some(TabAction::Close(i));
-            }
+        let hit = strip(ui, &items, Some(tabs.active));
+        // Tapping the tab you are already in is not a switch; middle-click is close.
+        if let Some(i) = hit.activated.filter(|i| *i != tabs.active) {
+            action = Some(TabAction::Switch(i));
+        }
+        if let Some(i) = hit.dismissed {
+            action = Some(TabAction::Close(i));
         }
         let plus = ui.add(
             egui::Button::new(
@@ -170,10 +376,9 @@ pub fn tab_bar(
         // The + menu, Superconductor-exact in T1 form: numbered, installed
         // selectable, missing greyed with the install URL as hover text.
         if *plus_open {
-            let below = plus.rect.left_top() - egui::vec2(0.0, 8.0);
             egui::Area::new(egui::Id::new("harness-menu"))
-                .fixed_pos(below)
-                .pivot(egui::Align2::LEFT_BOTTOM)
+                .fixed_pos(edge.menu_origin(plus.rect))
+                .pivot(edge.menu_pivot())
                 .show(ui.ctx(), |ui| {
                     egui::Frame::menu(ui.style())
                         .fill(egui::Color32::from_rgb(0x10, 0x14, 0x10))
@@ -277,5 +482,90 @@ mod tests {
             None,
             "bare Ctrl belongs to the shell, never the chrome"
         );
+    }
+
+    fn items(labels: &[&str]) -> Vec<StripItem> {
+        labels.iter().map(|l| StripItem::new(*l)).collect()
+    }
+
+    #[test]
+    fn payload_past_the_cap_truncates_and_never_scrolls() {
+        assert_eq!(strip_fit(3), StripFit { shown: 3, dropped: 0 });
+        assert_eq!(strip_fit(STRIP_ITEM_CAP), StripFit { shown: 10, dropped: 0 });
+        assert_eq!(
+            strip_fit(14),
+            StripFit { shown: 10, dropped: 4 },
+            "the schema truncates to the cap and reports the rest in `coverage`"
+        );
+        let many = items(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]);
+        let drawn = visible(&many);
+        assert_eq!(drawn.len(), STRIP_ITEM_CAP);
+        assert_eq!(
+            drawn.first().map(|i| i.label.as_str()),
+            Some("a"),
+            "truncation keeps the emitter's own ranking — it is a prefix, not a reshuffle"
+        );
+        assert_eq!(drawn.last().map(|i| i.label.as_str()), Some("j"));
+    }
+
+    #[test]
+    fn an_empty_payload_yields_nothing_to_draw() {
+        assert_eq!(strip_fit(0), StripFit { shown: 0, dropped: 0 });
+        assert!(visible(&[]).is_empty(), "zero entries hides the strip; it never draws an empty row");
+    }
+
+    #[test]
+    fn a_chip_says_glyph_then_label() {
+        assert_eq!(StripItem::new("Roughness").glyph('◈').text(), "◈ Roughness");
+        assert_eq!(StripItem::new("Roughness").text(), "Roughness", "no glyph, no leading space");
+        assert!(StripItem::new("x").enabled, "a chip is tappable unless it says otherwise");
+        assert!(!StripItem::new("x").enabled(false).enabled);
+    }
+
+    #[test]
+    fn a_glyph_is_one_character_or_none() {
+        assert_eq!(sole_char("π"), Some('π'));
+        assert_eq!(sole_char("❯"), Some('❯'));
+        assert_eq!(sole_char(""), None);
+        assert_eq!(sole_char(">>"), None, "half a glyph is worse than the fallback");
+    }
+
+    fn spec(id: &str, glyph: &str) -> HarnessSpec {
+        HarnessSpec {
+            id: id.into(),
+            name: id.into(),
+            glyph: glyph.into(),
+            command: vec![],
+            detect: vec![],
+            install_url: None,
+            cwd: None,
+            wsl: false,
+            wsl_distro: None,
+        }
+    }
+
+    #[test]
+    fn tab_items_carry_the_harnesss_glyph_and_fall_back() {
+        let s = strip3();
+        let registry = vec![spec("shell", "❯"), spec("pi", "π")];
+        let drawn = tab_items(&s, &registry);
+        assert_eq!(drawn.len(), 3);
+        assert_eq!(drawn[0].text(), "❯ zsh");
+        assert_eq!(drawn[1].text(), "π Pi");
+        assert_eq!(
+            drawn[2].text(),
+            "❯ Claude Code",
+            "a tab whose harness left the registry keeps its title and stays reachable"
+        );
+        assert!(drawn.iter().all(|i| i.enabled), "every live session is switchable");
+    }
+
+    #[test]
+    fn a_menu_opens_away_from_its_strips_edge() {
+        let control = egui::Rect::from_min_max(egui::pos2(10.0, 4.0), egui::pos2(30.0, 24.0));
+        assert_eq!(StripEdge::Top.menu_origin(control), egui::pos2(10.0, 24.0 + MENU_GAP));
+        assert_eq!(StripEdge::Top.menu_pivot(), egui::Align2::LEFT_TOP, "top strip: hang down");
+        assert_eq!(StripEdge::Bottom.menu_origin(control), egui::pos2(10.0, 4.0 - MENU_GAP));
+        assert_eq!(StripEdge::Bottom.menu_pivot(), egui::Align2::LEFT_BOTTOM, "bottom strip: rise");
     }
 }
