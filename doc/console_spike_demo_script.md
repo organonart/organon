@@ -181,6 +181,43 @@ also scroll the transcript underneath it.
 
 ---
 
+### 7 — "That was never a terminal." · the conversation view · **landed**
+
+Open a conversation tab (`ORGANON_SHELL_TABS=claude-chat`, or the **+** menu → *◈ Claude Code
+(conversation)*). Type into the composer. The agent answers, calls a tool, and the tool call
+arrives as **an object on the page** — a bordered card with the tool's name, a status badge,
+its correlated id, its arguments as labelled rows, and its output — not as text a terminal
+printed.
+
+*The point:* every earlier beat negotiated with a character grid. This one never had one. The
+same window, the same renderer, a second front-end — and the terminal host is still right
+there in the next tab, unchanged.
+
+*Checked 2026-08-12 on organon-one (225 % display), by the coordinator, on screen:* a real
+two-turn conversation. Human turn framed and labelled, assistant prose beneath it, a **Bash
+tool card** carrying `toolu_01PGPtYjUu3FQ5YyKGEpTbVv` with its command wrapped across two lines
+and honestly truncated (`… (181 chars)`), its description, and its output; then the assistant's
+reply, a `turn complete · success` marker, and the session id in the status line. Text wraps,
+nothing clips, the composer holds focus, and the human turn renders **only** from the replayed
+stream — the composer draws nothing locally.
+
+📌 **The second turn was not scripted.** The spawned agent tripped a repo Stop hook, which
+arrived as a genuine second human turn and produced the tool call. So multi-turn, tool
+correlation and result rendering were all exercised by a real conversation rather than a rigged
+one — which is a better check than the one that was planned.
+
+⚠️ **Known and stated rather than hidden:** the `Edit` diff has no alignment (a one-character
+change in a ten-line block shows as ten removals and ten additions); thinking blocks, notices,
+rate limits and `tool_use_result` render nothing yet; the composer is single-line; and there is
+no backdrop behind a conversation — banding is scrollback arithmetic and a conversation has no
+scrollback to anchor to.
+
+⚠️ **Capture note for whoever documents this next:** `GetWindowRect` reports **logical** points
+(1100×720 here), so at 225 % the window is **2475×1620 physical**. A 2300×1600 bitmap silently
+crops the right edge and reads exactly like a text-wrapping bug. Oversize the bitmap.
+
+---
+
 ## Rehearsal log
 
 *One line per full run-through: date, platform, which beat broke, what was done about it.*
