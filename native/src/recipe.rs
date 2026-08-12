@@ -10,7 +10,10 @@
 //!
 //! Pure + unit-tested: `recipes_are_valid` resolves every recipe's generator/surface/material
 //! name and checks every param id + value against `agent::id_range`, so a recipe cannot ship
-//! referencing a bad param or an unresolvable selector.
+//! referencing a bad param or an unresolvable selector. That check is only as good as the
+//! ruler it holds — and for a while the ruler was wrong, `id_range` having drifted from
+//! `params.rs` on nine ids. It no longer can: `taper_round_trips_against_the_engine_range`
+//! pins `id_range` to the param objects, so an in-range recipe here is in range in the engine.
 
 /// One recipe: a named look with an intent, the three selectors (by resolvable name), and the
 /// key params to set. `None` selectors leave that dimension untouched.

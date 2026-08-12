@@ -1141,6 +1141,231 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // The range tables, pinned to the engine
+    // -----------------------------------------------------------------------
+
+    /// The engine's own answer for every id the two hand-written range tables speak for:
+    /// `params.rs` field name → `(min, max)`.
+    ///
+    /// **No bound is restated here** — every number is read off the real param object, which
+    /// is the whole point: a third hand-written copy would just be a third thing to drift.
+    /// The one hand-written part is the id → field *join*, and the compiler checks that. Every
+    /// arm below touches `p.<field>` at a declared type, so a renamed field, a retyped param
+    /// or a mis-paired enum is a build error rather than a silent disagreement.
+    ///
+    /// `OrganicMathParams::default()` constructs all 1372 host params with no host, no audio
+    /// thread and no GPU, so reading them is as headless as the tables being checked.
+    fn engine_ranges() -> std::collections::BTreeMap<&'static str, (f32, f32)> {
+        use crate::params::{CamPath, HostFuncName, OrganicMathParams};
+        use nih_plug::prelude::{BoolParam, EnumParam, FloatParam, IntParam, Param};
+
+        let p = OrganicMathParams::default();
+        let mut m = std::collections::BTreeMap::new();
+
+        /// A float's range IS `preview_plain` at the two ends of normalized space.
+        macro_rules! float {
+            ($($f:ident),* $(,)?) => {$({
+                let q: &FloatParam = &p.$f;
+                m.insert(stringify!($f), (q.preview_plain(0.0), q.preview_plain(1.0)));
+            })*};
+        }
+        /// Same for an int — the actuation lane carries every id as an `f32` regardless.
+        macro_rules! int {
+            ($($f:ident),* $(,)?) => {$({
+                let q: &IntParam = &p.$f;
+                m.insert(
+                    stringify!($f),
+                    (q.preview_plain(0.0) as f32, q.preview_plain(1.0) as f32),
+                );
+            })*};
+        }
+        /// A bool carries no range of its own; the lane spells it 0/1.
+        macro_rules! boolean {
+            ($($f:ident),* $(,)?) => {$({
+                let _: &BoolParam = &p.$f;
+                m.insert(stringify!($f), (0.0, 1.0));
+            })*};
+        }
+        /// An enum is an `IntParam` over variant INDICES, so its top is `variants() - 1` —
+        /// exactly the bound `cam_path` got wrong, by one, in the direction that admits a
+        /// variant which does not exist.
+        macro_rules! choice {
+            ($($f:ident: $e:ty),* $(,)?) => {$({
+                let _: &EnumParam<$e> = &p.$f;
+                m.insert(stringify!($f), (0.0, (<$e as Enum>::variants().len() - 1) as f32));
+            })*};
+        }
+
+        float!(
+            rot_amp_x, rot_amp_y, rot_amp_z, rot_mod_x, rot_mod_y, rot_mod_z, //
+            trans_amp_x, trans_amp_y, trans_amp_z, trans_mod_x, trans_mod_y, trans_mod_z,
+            scale_amp, //
+            ambient, key_intensity, fill_intensity, elevation, azimuth, glow, opacity, //
+            metallic, roughness, exposure, env_intensity, env_rotation, bloom_intensity,
+            bloom_threshold, ior, //
+            subsurface, sss_distortion, sss_power, iridescence, irid_scale, irid_shift, //
+            cam_speed, cam_kick, cam_damping, mat_hue, tempo,
+        );
+        int!(loop_count_x, loop_count_y, loop_count_z, loop_count_q);
+        boolean!(bell_physical, animate, pulse);
+        choice!(
+            cam_path: CamPath,
+            rot_func: HostFuncName,
+            trans_func: HostFuncName,
+            scale_func: HostFuncName,
+        );
+        m
+    }
+
+    /// `clip::RANGES` slot → the `params.rs` field whose value that slot carries, in the
+    /// canonical CC order `clip::get`/`clip::set` route. `None` marks a slot **no single param
+    /// backs**; both are argued at the assertion below rather than waved through here.
+    const CLIP_SLOT_FIELDS: [Option<&str>; crate::clip::N] = [
+        Some("loop_count_x"), Some("loop_count_y"), Some("loop_count_z"), Some("loop_count_q"),
+        Some("rot_amp_x"), Some("rot_amp_y"), Some("rot_amp_z"),
+        Some("rot_mod_x"), Some("rot_mod_y"), Some("rot_mod_z"),
+        Some("trans_amp_x"), Some("trans_amp_y"), Some("trans_amp_z"),
+        Some("trans_mod_x"), Some("trans_mod_y"), Some("trans_mod_z"),
+        None, // 16 — the effective-speed EXPRESSION slot, not a param
+        Some("scale_amp"),
+        Some("ambient"), Some("key_intensity"), Some("fill_intensity"),
+        Some("elevation"), Some("azimuth"), Some("glow"), Some("opacity"),
+        Some("tempo"),
+        None, // 26 — reserved/inert; `to_shared` hard-codes 0.0, no param exists
+        Some("rot_func"), Some("trans_func"), Some("scale_func"),
+        Some("animate"), Some("pulse"),
+    ];
+
+    /// The gate: **the hand-written range tables equal the engine's ranges**, and the engine's
+    /// taper is the linear law those tables assume.
+    ///
+    /// `agent::id_range` and `clip::RANGES` are hand-written mirrors of `params.rs`. Nothing
+    /// pinned them and they drifted — 9 of the 45 actuatable ids were wrong when this test was
+    /// written: `trans_amp_x/y/z` by **10× on the maximum** (which the published
+    /// `doc/reference/parameters.md` shipped to readers), plus `exposure`, `bloom_intensity`,
+    /// `sss_power`, `irid_scale`, `cam_damping`, and `cam_path`, whose top admitted a 12th
+    /// `CamPath` variant that does not exist. An agent told a param runs to 200 when it stops
+    /// at 20 gets no error — it gets a silent clamp and a look it did not ask for, and
+    /// `recipe.rs` was validating against the same wrong bounds. That is the failure mode a
+    /// mirror with no mirror-check always ends in, so the fix is not "be careful": it is this.
+    ///
+    /// Two claims, one test, because they are one claim from both ends:
+    ///
+    /// 1. **The tables equal the engine** — every [`agent::ACTUATABLE_IDS`] entry and every
+    ///    [`crate::clip::RANGES`] slot, against the param object that owns the bound.
+    /// 2. **The engine's taper is linear**, over all ~1372 host params — the law the tables,
+    ///    the CC lane's `apply_normalized`, and any descriptor built on a `(min, max)` pair
+    ///    all assume when they treat a range as two numbers. `FloatRange::Linear` is hard-coded
+    ///    in `params.rs::flin` today; the day someone reaches for `Skewed`, two numbers stop
+    ///    describing the parameter, and this fails instead of letting the tables lie again.
+    ///
+    /// Headless by construction, so it runs everywhere `cargo test --workspace` does.
+    #[test]
+    fn taper_round_trips_against_the_engine_range() {
+        use crate::params::OrganicMathParams;
+        use nih_plug::prelude::{Param, ParamPtr, Params};
+
+        let engine = engine_ranges();
+        let mut wrong: Vec<String> = Vec::new();
+
+        // --- 1. `agent::id_range` ------------------------------------------------------
+        for id in agent::ACTUATABLE_IDS {
+            let want = *engine.get(id).unwrap_or_else(|| {
+                panic!("{id} is actuatable but has no `engine_ranges` join — add one")
+            });
+            let got = agent::id_range(id).unwrap_or_else(|| panic!("{id} has no range"));
+            if got != want {
+                wrong.push(format!("agent::id_range {id}: table {got:?}, engine {want:?}"));
+            }
+        }
+
+        // --- 2. `clip::RANGES` ---------------------------------------------------------
+        //
+        // Two slots have no param behind them, and each is exempt for a stated reason, not
+        // because checking them was inconvenient:
+        //
+        // * **16 — effective global speed.** The slot carries `rot_mod[3]`, which
+        //   `param_table.rs` packs as the EXPRESSION `inc_scale × 10^speed_exp`, not as a
+        //   parameter. Its `(0, 0.1)` is a deliberate playable-range choice for the CC lane
+        //   (the product's default is 0.01 and its ceiling is 1.0, so a full-span CC would
+        //   spend 90% of its travel past anything usable) — see the comment at the table.
+        // * **26 — reserved.** The Pulse Depth knob was removed; `params.rs::to_shared`
+        //   hard-codes `pulse_depth: 0.0` and no param exists to check against.
+        //
+        // A slot gaining a param must therefore be *joined here*, not left as `None`.
+        for (i, field) in CLIP_SLOT_FIELDS.iter().enumerate() {
+            let Some(field) = field else { continue };
+            let want = *engine.get(field).unwrap_or_else(|| {
+                panic!("clip slot {i} names `{field}`, which `engine_ranges` has no join for")
+            });
+            let got = crate::clip::RANGES[i];
+            if got != want {
+                wrong.push(format!(
+                    "clip::RANGES[{i}] ({field}): table {got:?}, engine {want:?}"
+                ));
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "{} range table entries disagree with `params.rs`:\n  {}",
+            wrong.len(),
+            wrong.join("\n  ")
+        );
+
+        // --- 3. The engine's taper, over every host param -------------------------------
+        let p = OrganicMathParams::default();
+        for (wire_id, ptr, _group) in p.param_map() {
+            // SAFETY: `Params::param_map`'s contract — the pointers are valid for as long as
+            // the object they came from is, and `p` outlives this loop.
+            unsafe {
+                match ptr {
+                    ParamPtr::FloatParam(q) => {
+                        let q = &*q;
+                        let (lo, hi) = (q.preview_plain(0.0), q.preview_plain(1.0));
+                        assert!(lo <= hi, "{wire_id}: min {lo} > max {hi}");
+                        let d = q.default_plain_value();
+                        assert!(d >= lo && d <= hi, "{wire_id}: default {d} outside {lo}..{hi}");
+                        for step in 0..=20 {
+                            let n = step as f32 / 20.0;
+                            let want = lo + n * (hi - lo);
+                            let got = q.preview_plain(n);
+                            let tol = (want.abs().max(1.0)) * 1.0e-5;
+                            assert!(
+                                (got - want).abs() <= tol,
+                                "{wire_id} is not linear: preview_plain({n}) = {got}, \
+                                 linear law says {want}"
+                            );
+                        }
+                    }
+                    // An int (and an enum, which is an int over variant indices) rounds to the
+                    // nearest step, so the law is the linear one THEN `.round()`.
+                    ParamPtr::IntParam(q) => check_int(&*q, &wire_id),
+                    ParamPtr::EnumParam(q) => check_int(&*q, &wire_id),
+                    // A bool has no range to round-trip.
+                    ParamPtr::BoolParam(_) => {}
+                }
+            }
+        }
+
+        fn check_int<P: Param<Plain = i32>>(q: &P, wire_id: &str) {
+            let (lo, hi) = (q.preview_plain(0.0), q.preview_plain(1.0));
+            assert!(lo <= hi, "{wire_id}: min {lo} > max {hi}");
+            let d = q.default_plain_value();
+            assert!(d >= lo && d <= hi, "{wire_id}: default {d} outside {lo}..{hi}");
+            for step in 0..=20 {
+                let n = step as f32 / 20.0;
+                let want = (n * (hi - lo) as f32).round() as i32 + lo;
+                let got = q.preview_plain(n);
+                assert_eq!(
+                    got, want,
+                    "{wire_id} is not linear: preview_plain({n}) = {got}, linear law says {want}"
+                );
+            }
+        }
+    }
+
     /// Every generator, surface and material reaches the docs, and every one of them
     /// carries real prose. The `match`es in `agent.rs` are exhaustive, so a new variant
     /// cannot compile undescribed — but it *could* land with a placeholder, and a

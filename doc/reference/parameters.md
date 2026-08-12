@@ -26,9 +26,9 @@ The editor exposes far more than this — every control on every card is a host 
 | `rot_mod_x` | num | `-2` … `2` | Per-axis rotation SPEED the beat clock integrates — how fast this axis winds over time. Negative reverses; 0 = a static orientation. (Original generator only.) |
 | `rot_mod_y` | num | `-2` … `2` | Per-axis rotation SPEED the beat clock integrates — how fast this axis winds over time. Negative reverses; 0 = a static orientation. (Original generator only.) |
 | `rot_mod_z` | num | `-2` … `2` | Per-axis rotation SPEED the beat clock integrates — how fast this axis winds over time. Negative reverses; 0 = a static orientation. (Original generator only.) |
-| `trans_amp_x` | num | `0` … `200` | Per-axis translation amplifier — how far func(angle) pushes each node outward, scaled by its index. 0 = the clean unit grid; raise to splay the field open. (Original generator only.) |
-| `trans_amp_y` | num | `0` … `200` | Per-axis translation amplifier — how far func(angle) pushes each node outward, scaled by its index. 0 = the clean unit grid; raise to splay the field open. (Original generator only.) |
-| `trans_amp_z` | num | `0` … `200` | Per-axis translation amplifier — how far func(angle) pushes each node outward, scaled by its index. 0 = the clean unit grid; raise to splay the field open. (Original generator only.) |
+| `trans_amp_x` | num | `0` … `20` | Per-axis translation amplifier — how far func(angle) pushes each node outward, scaled by its index. 0 = the clean unit grid; raise to splay the field open. (Original generator only.) |
+| `trans_amp_y` | num | `0` … `20` | Per-axis translation amplifier — how far func(angle) pushes each node outward, scaled by its index. 0 = the clean unit grid; raise to splay the field open. (Original generator only.) |
+| `trans_amp_z` | num | `0` … `20` | Per-axis translation amplifier — how far func(angle) pushes each node outward, scaled by its index. 0 = the clean unit grid; raise to splay the field open. (Original generator only.) |
 | `trans_mod_x` | num | `-200` … `200` | Per-axis translation offset (bipolar) added to every node — a rigid shift of the whole field along this axis. (Original generator only.) |
 | `trans_mod_y` | num | `-200` … `200` | Per-axis translation offset (bipolar) added to every node — a rigid shift of the whole field along this axis. (Original generator only.) |
 | `trans_mod_z` | num | `-200` … `200` | Per-axis translation offset (bipolar) added to every node — a rigid shift of the whole field along this axis. (Original generator only.) |
@@ -42,23 +42,23 @@ The editor exposes far more than this — every control on every card is a host 
 | `mat_type` | enum | — | Which shading model the geometry uses — Standard PBR, Chrome, Glass, Refractive, Anisotropic, Clearcoat, Velvet or Subsurface. Choose it by name (`organon material glass`), not by setting a number. |
 | `metallic` | num | `0` … `1` | Metalness — 0 = dielectric/plastic (has its own diffuse colour), 1 = raw metal (colour comes from what it reflects). |
 | `roughness` | num | `0` … `1` | Microsurface roughness — 0 = mirror-sharp reflections, 1 = fully matte/diffuse. The single biggest lever on how polished a material reads. |
-| `exposure` | num | `-8` … `8` | Overall exposure in EV STOPS — 0 is neutral, +3 is roughly 8× brighter and usually blows the scene to white. Move it in small steps. |
+| `exposure` | num | `-8` … `4` | Overall exposure in EV STOPS — 0 is neutral, +3 is roughly 8× brighter and usually blows the scene to white. Move it in small steps. |
 | `env_intensity` | num | `0` … `4` | Brightness of the environment map / skybox lighting — scales the whole image-based lighting contribution up or down. |
 | `env_rotation` | num | `0` … `360` | Spin the environment map around (degrees) — moves the reflections and the 'sun' direction without touching the analytic lights. |
-| `bloom_intensity` | num | `0` … `2` | Bloom (glow bleed) strength. Keep it modest (~0.2–0.4) unless you deliberately want a hazy, blown-out glow. |
+| `bloom_intensity` | num | `0` … `1` | Bloom (glow bleed) strength. Keep it modest (~0.2–0.4) unless you deliberately want a hazy, blown-out glow. |
 | `bloom_threshold` | num | `0` … `4` | Brightness above which bloom kicks in — higher = only the hottest highlights bloom, lower = the whole image starts to glow. |
 | `ior` | num | `1` … `2.5` | Index of refraction for the Glass / Refractive material — how hard light bends. ~1.33 water, ~1.5 glass, ~2.4 diamond. |
 | `subsurface` | num | `0` … `1` | Subsurface-scattering (translucency) amount — light passing through thin parts. Needs a Subsurface (or Glass) material to read; wax, jade, marble, skin. |
 | `sss_distortion` | num | `0` … `1` | How much the subsurface glow wraps toward the light direction — higher = more forward, waxy scatter around the silhouette. |
-| `sss_power` | num | `0` … `8` | Falloff sharpness of the subsurface glow — higher = a tighter, more concentrated translucency at the thin edges. |
+| `sss_power` | num | `1` … `16` | Falloff sharpness of the subsurface glow — higher = a tighter, more concentrated translucency at the thin edges. |
 | `iridescence` | num | `0` … `1` | View-angle rainbow sheen amount — the soap-film / beetle-shell colour shift. 0 = off. |
-| `irid_scale` | num | `0` … `8` | Frequency of the iridescent bands — higher = more, tighter rainbow rings across the surface. |
+| `irid_scale` | num | `0.1` … `6` | Frequency of the iridescent bands — higher = more, tighter rainbow rings across the surface. |
 | `irid_shift` | num | `0` … `1` | Hue offset of the iridescence — rotates where the rainbow sweep begins. |
 | `palette` | enum | — | The colour ramp laid over the whole look. Native reproduces the original per-node RGB; the rest (Spectrum, Coral Reef, Deep Sea, Bioluminescence, Plasma, Neon, …) retint everything through one shared ramp. The quickest way to change the mood of a look without touching its form. |
-| `cam_path` | enum | `0` … `11` | Auto-orbit camera path (0 = off, 1 = horizontal circle, 2 = vertical circle, 4 = spiral, …). This is how you make ANY generator visibly turn or spin — the geometry rotation params only move the Original cube-field. |
+| `cam_path` | enum | `0` … `10` | Auto-orbit camera path (0 = off, 1 = horizontal circle, 2 = vertical circle, 4 = spiral, …). This is how you make ANY generator visibly turn or spin — the geometry rotation params only move the Original cube-field. |
 | `cam_speed` | num | `0` … `1` | Auto-orbit speed — 0.1–0.3 is a slow, musical drift; 1 is a fast spin. |
 | `cam_kick` | num | `0` … `1` | How hard each beat kicks the orbit's angular velocity — the momentum 'pump' that makes the camera lurch on the beat, then coast. |
-| `cam_damping` | num | `0` … `1` | How quickly the beat-kick decays — low = a long coasting glide, high = a snappy settle back to the base speed. |
+| `cam_damping` | num | `0.01` … `0.99` | How quickly the beat-kick decays — low = a long coasting glide, high = a snappy settle back to the base speed. |
 | `scale_amp` | num | `0` … `0.5` | How much each node grows with its index — 0 = uniform cubes, higher tapers the field larger toward its far corners. (Original generator only.) |
 | `mat_hue` | num | `0` … `1` | Master material hue tint around the colour wheel (~0 red, ~0.33 green, ~0.6 blue) — the quickest way to recolour the whole look. |
 | `bell_physical` | num | `0` … `1` | Spherical-harmonics generator only: morphs the pulsing sphere into a soft-body JELLYFISH bell. 1 = a full jellyfish. |
