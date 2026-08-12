@@ -70,7 +70,7 @@ use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
-use organon_shell::conversation_view::{self, ConversationPane};
+use organon_shell::conversation_view::{self, ArtifactAction, ConversationPane};
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::session::{Issuer, SessionLog};
@@ -1081,7 +1081,14 @@ impl Shell {
                     .as_deref(),
                 )
             });
-            let pane = ConversationPane::new(cwd.as_deref());
+            // The labels an inline panel offers, handed down for `claim_patch`'s reason:
+            // `organon-shell` cannot see `substrate_materials` and must not learn to. It
+            // draws them and says which was pressed; this file is the only place that knows
+            // a `metal` button and `organon console background metal` are the same act.
+            let pane = ConversationPane::new(
+                cwd.as_deref(),
+                substrate_materials::MATERIAL_NAMES.iter().map(|s| (*s).to_string()).collect(),
+            );
             // The pane keeps its own failure and shows it; the log line is for whoever
             // started the console from a terminal and is watching stderr.
             if let Some(failure) = pane.failure.as_deref() {
@@ -1975,6 +1982,12 @@ impl Shell {
         // same way `action` is and for the same reason: applying one needs `&mut self`, and
         // `self` is split into disjoint borrows for the duration of `egui_ctx.run`.
         let mut block_actions: Vec<BlockAction> = Vec::new();
+        // The same thing from the other front-end: a button pressed inside an *inline
+        // artifact* in a conversation. A second vector rather than a shared one because the
+        // two name their panel differently — a patch by its ledger index, an artifact by the
+        // transcript's `ElementId` — and collapsing them would need one of the two to lie.
+        // They converge one screen down, at the `apply_console` both of them call.
+        let mut artifact_actions: Vec<ArtifactAction> = Vec::new();
         // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
         // (see `render_backdrop`). Taken from the same `ui` and by the same call
         // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
@@ -2041,8 +2054,10 @@ impl Shell {
                         (Some(Pane::Conversation(chat)), _) => {
                             // No PTY, so no patch ledger and no block actions: `block_actions`
                             // stays the empty `Vec` it was initialised to and the loop below
-                            // does nothing.
-                            conversation_view::draw(ui, chat);
+                            // does nothing. An inline artifact needs none of that machinery —
+                            // it is an element in a flow that draws itself — so what comes
+                            // back is the buttons, and nothing about where they were.
+                            artifact_actions = conversation_view::draw(ui, chat);
                         }
                         _ => {
                             ui.centered_and_justified(|ui| {
@@ -2069,6 +2084,16 @@ impl Shell {
         // into `apply_console`'s own "names nothing" arm and says so on stderr; nothing here
         // has to re-check it.)
         for act in block_actions {
+            self.apply_console(&cli::ConsoleOp::Background(act.button));
+        }
+        // …and the conversation view's inline panel arrives at the same call, which is the
+        // point of routing it rather than giving the second front-end its own effects.
+        //
+        // ⚠️ **The state changes; whether it is visible from here does not follow.** The
+        // backdrop is not drawn behind a conversation yet (the banding is scrollback
+        // arithmetic and there is no scrollback), so a material clicked in a chat tab is
+        // seen on a terminal tab, not under the transcript that requested it.
+        for act in artifact_actions {
             self.apply_console(&cli::ConsoleOp::Background(act.button));
         }
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (

@@ -246,10 +246,20 @@ pub fn pointer_inside(placements: &[Placement], pointer: Option<egui::Pos2>) -> 
 /// The panel's own surface: dark enough to read widgets against, translucent enough that the
 /// scene behind the glass still shows. A rounded rect and a phosphor hairline, so the block
 /// announces itself as a thing rather than a smudge.
-const PANEL_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x0b, 0x12, 0x0e, 0xe6);
-const PANEL_EDGE: egui::Color32 = egui::Color32::from_rgb(0x3e, 0x7a, 0x52);
+///
+/// **Public because the console has two front-ends and only one panel look.**
+/// [`crate::conversation_view`] draws a panel as an element in a flow rather than at a
+/// claimed rectangle — different anchoring, same object — and a second set of constants
+/// there would be a second visual language arrived at by copy-paste.
+pub const PANEL_FILL: egui::Color32 =
+    egui::Color32::from_rgba_premultiplied(0x0b, 0x12, 0x0e, 0xe6);
+pub const PANEL_EDGE: egui::Color32 = egui::Color32::from_rgb(0x3e, 0x7a, 0x52);
+/// The title line's phosphor green.
+pub const PANEL_TITLE: egui::Color32 = egui::Color32::from_rgb(0x8f, 0xe0, 0xa8);
 /// Inset from the block's rows to the content, in points. One padding, used for both axes.
-const PAD: f32 = 8.0;
+pub const PAD: f32 = 8.0;
+/// How wide a panel's sliders are drawn, in points.
+pub const SLIDER_WIDTH: f32 = 150.0;
 
 /// Draw every visible panel and report the buttons that were pressed.
 ///
@@ -313,16 +323,11 @@ pub fn draw(
         );
         // Both meanings at once (module doc): what is painted, and what the pointer reaches.
         child.set_clip_rect(pl.band.intersect(ui.clip_rect()));
-        child.spacing_mut().slider_width = 150.0;
+        child.spacing_mut().slider_width = SLIDER_WIDTH;
         child.spacing_mut().item_spacing.y = 4.0;
         child.visuals_mut().override_text_color = Some(DEFAULT_FG);
 
-        child.label(
-            egui::RichText::new(&panel.title)
-                .monospace()
-                .strong()
-                .color(egui::Color32::from_rgb(0x8f, 0xe0, 0xa8)),
-        );
+        child.label(egui::RichText::new(&panel.title).monospace().strong().color(PANEL_TITLE));
 
         child.horizontal_wrapped(|ui| {
             for label in &panel.buttons {

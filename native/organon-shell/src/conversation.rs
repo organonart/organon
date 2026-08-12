@@ -73,6 +73,12 @@
 //! view may key per-element state (a scroll anchor, an expanded/collapsed bit, a GPU
 //! texture for an inline artifact) on it across frames.
 //!
+//! That is not hypothetical any more: [`Body::Artifact`] is an element the console puts in
+//! the flow itself, and a live control panel is the first thing drawn for one. The element
+//! carries a **description** — a title, slider names, button names — and nothing else; every
+//! value a hand can move lives in the view, in a side map keyed by [`ElementId`]. This split
+//! is the reason ids have to be stable rather than a nice property of them being so.
+//!
 //! Ids are also **contiguous** over the retained window, because every id issued is
 //! immediately appended and eviction only ever happens at the front. That is what makes
 //! [`Transcript::get`] O(1) index arithmetic instead of a map, and
@@ -268,6 +274,48 @@ pub struct HumanBlock {
     pub text: String,
 }
 
+/// One inline artifact — something the conversation shows that is not text.
+///
+/// **This is a description, not a thing on screen.** There is no rect here, no colour, no
+/// widget and no closure, for the same reason there is no egui anywhere else in this
+/// module: the moment the model knows about layout it stops being a testable state machine
+/// and becomes a bad UI framework. It says *what* to show; the view decides how, and owns
+/// every pixel of the answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactBlock {
+    /// The line naming the artifact, so it is obviously the console's and not the agent's.
+    pub title: String,
+    pub content: ArtifactContent,
+}
+
+/// What kind of artifact it is. One arm today; the shape is here so a second kind — an
+/// engine-rendered picture, which needs a render-to-texture path and an eviction cap — is a
+/// variant rather than a second [`Body`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArtifactContent {
+    /// A control panel: named sliders and named buttons, in draw order.
+    Panel(PanelSpec),
+}
+
+/// A control panel's controls, **by name only**.
+///
+/// ⚠️ **A slider's value is deliberately absent.** A value changes as fast as a hand can
+/// drag, and the transcript is derived from an event stream whose elements mutate as events
+/// arrive — so a value living here would be state with two owners, and the visible symptom
+/// is a slider that snaps back while the agent is talking. The view keys the live values off
+/// [`ElementId`], which is exactly what stable ids are for. What starts at what is then the
+/// first of those values, i.e. also the view's.
+///
+/// The buttons are named rather than numbered for the reason
+/// [`crate::block_panel::BlockAction`] gives: this crate cannot see what a button *means*
+/// (the console's material table is in the binary, not here), so it draws a label and
+/// reports the label that was pressed, and a shared index would be two lists free to drift.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PanelSpec {
+    pub sliders: Vec<String>,
+    pub buttons: Vec<String>,
+}
+
 /// The end of a run, as an element so it keeps its place in the flow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunEnd {
@@ -284,6 +332,10 @@ pub enum Body {
     Assistant(AssistantBlock),
     Tool(ToolCard),
     RunEnd(RunEnd),
+    /// An inline artifact. Unlike the other four this arrives through
+    /// [`Transcript::insert_artifact`] rather than from an [`AgentEvent`] — see that
+    /// method for why the summoning path is deliberately not an event.
+    Artifact(ArtifactBlock),
 }
 
 /// One renderable thing, with stable identity and a turn it belongs to.
@@ -319,6 +371,13 @@ impl Element {
     pub fn run_end(&self) -> Option<&RunEnd> {
         match &self.body {
             Body::RunEnd(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    pub fn artifact(&self) -> Option<&ArtifactBlock> {
+        match &self.body {
+            Body::Artifact(a) => Some(a),
             _ => None,
         }
     }
@@ -681,6 +740,26 @@ impl Transcript {
         }
     }
 
+    /// Append an inline artifact to the current turn.
+    ///
+    /// # Why this is a method and not a ninth [`AgentEvent`]
+    ///
+    /// The events are *what a harness said*, and no harness said this. An artifact is
+    /// summoned by the console: today by a local composer command the view handles and never
+    /// forwards (`/panel`), and next by the integrator noticing a tool call and answering it
+    /// with a panel — at which point the tool card is the anchor and this call is what the
+    /// handler makes. Both callers want the same thing: *put this in the flow, here, now*.
+    /// Putting it in the event enum instead would oblige every harness mapping to carry an
+    /// event none of them can produce, and would put the summoning path inside the fold it
+    /// is supposed to be independent of.
+    ///
+    /// It is an ordinary element in every other respect — it takes the next id, lands in the
+    /// current turn, counts against the cap, and evicts from the front like anything else.
+    pub fn insert_artifact(&mut self, artifact: ArtifactBlock) -> Change {
+        let turn = self.ensure_turn();
+        Change::Appended(self.append(turn, Body::Artifact(artifact)))
+    }
+
     // ---- internals -------------------------------------------------------------
 
     fn index_of(&self, id: ElementId) -> Option<usize> {
@@ -767,7 +846,10 @@ impl Transcript {
                         self.stats.dropped_unresolved_tools += 1;
                     }
                 }
-                Body::Human(_) | Body::RunEnd(_) => {}
+                // An artifact holds no correlation and no running-ness; the view's
+                // per-element widget state goes with it, keyed off an id that
+                // `Transcript::get` now answers `None` for.
+                Body::Human(_) | Body::RunEnd(_) | Body::Artifact(_) => {}
             }
             if let Some(i) = self.turn_index(gone.turn) {
                 self.turns[i].retained = self.turns[i].retained.saturating_sub(1);
@@ -1133,6 +1215,103 @@ mod tests {
         assert_eq!(t.turns().len(), 1, "turns with nothing left are pruned, the newest is kept");
     }
 
+    fn panel(title: &str) -> ArtifactBlock {
+        ArtifactBlock {
+            title: title.to_string(),
+            content: ArtifactContent::Panel(PanelSpec {
+                sliders: vec!["depth".into(), "bloom".into()],
+                buttons: vec!["metal".into(), "glass".into()],
+            }),
+        }
+    }
+
+    /// **The property the whole feature rests on**: an artifact is summoned once and then
+    /// the stream keeps moving *around* it. Text streams in, a card resolves, a run ends —
+    /// and the artifact keeps its index, its id and its contents, so a view holding widget
+    /// state under that id finds the same element on the next frame.
+    ///
+    /// The failure this pins is the one that would be invisible in a screenshot and obvious
+    /// in the hand: a slider that resets mid-sentence because the element it belongs to
+    /// moved, was rebuilt, or was replaced by a same-keyed neighbour.
+    #[test]
+    fn an_artifact_holds_its_place_while_the_stream_moves_around_it() {
+        let mut t = Transcript::new();
+        feed(&mut t, vec![human("show me"), delta("m1", "here"), call("t1", "Read", Some("{}"))]);
+
+        let change = t.insert_artifact(panel("◈ organon · panel"));
+        let art_id = match change {
+            Change::Appended(id) => id,
+            other => panic!("an artifact must append: {other:?}"),
+        };
+        assert_eq!(art_id, ElementId(3));
+        let turn = t.current_turn().unwrap().id;
+        assert_eq!(t.get(art_id).unwrap().turn, turn, "it lands in the turn being written");
+        assert_eq!(t.turn(turn).unwrap().retained, 4, "and is counted like any element");
+
+        let before = ids(&t);
+        let body = t.get(art_id).unwrap().body.clone();
+
+        // Everything the stream can do to the elements on either side of it.
+        feed(
+            &mut t,
+            vec![
+                delta("m1", " is what I found"),
+                complete("m1", "Here is what I found."),
+                result("t1", "fn main() {}"),
+                complete("m2", "…and one more thing."),
+                finished(),
+            ],
+        );
+
+        assert_eq!(&ids(&t)[..before.len()], &before[..], "nothing renumbered");
+        assert_eq!(t.elements()[3].id, art_id, "the artifact did not move");
+        assert_eq!(t.get(art_id).unwrap().body, body, "nor change under it");
+        assert_eq!(t.get(art_id).unwrap().turn, turn, "nor migrate turns");
+        assert_eq!(t.get(art_id).unwrap().artifact().unwrap().title, "◈ organon · panel");
+        // The neighbours did all of the changing, which is what makes the check mean
+        // something: an artifact that survived a *static* transcript would prove nothing.
+        assert_eq!(t.elements()[1].assistant().unwrap().text, "Here is what I found.");
+        assert!(!t.elements()[2].tool().unwrap().state.is_running());
+        assert!(!t.is_working());
+    }
+
+    /// An artifact is an ordinary element to the cap: it evicts from the front, is counted,
+    /// and its id then resolves to **nothing** rather than to a neighbour. That last part is
+    /// the view's only truth source for dropping the widget state it kept under that id.
+    #[test]
+    fn an_artifact_evicts_like_anything_else_and_its_id_stops_resolving() {
+        let mut t = Transcript::with_limits(Limits { max_elements: 3 });
+        t.insert_artifact(panel("first"));
+        let old = t.elements()[0].id;
+        feed(&mut t, vec![human("a"), complete("m1", "b")]);
+        assert_eq!(t.len(), 3);
+        assert!(t.get(old).is_some(), "still retained at the cap");
+
+        t.insert_artifact(panel("second"));
+        assert_eq!(t.len(), 3);
+        assert_eq!(t.stats().dropped_elements, 1);
+        assert_eq!(t.get(old), None, "an evicted artifact resolves to nothing");
+        assert_eq!(t.elements().back().unwrap().artifact().unwrap().title, "second");
+        assert_eq!(
+            t.elements().iter().filter(|e| e.artifact().is_some()).count(),
+            1,
+            "one in, one out — an artifact is not exempt from the cap"
+        );
+    }
+
+    /// Two artifacts summoned in a row are two elements with two ids. They carry no
+    /// correlation key of any sort, so nothing can make the second replace the first — the
+    /// way a same-id assistant block replaces its predecessor.
+    #[test]
+    fn artifacts_never_replace_each_other() {
+        let mut t = Transcript::new();
+        t.insert_artifact(panel("one"));
+        t.insert_artifact(panel("one"));
+        assert_eq!(t.len(), 2, "identical descriptions are still two elements");
+        assert_ne!(t.elements()[0].id, t.elements()[1].id);
+        assert_eq!(t.stats().events, 0, "insertion is not an event and is not counted as one");
+    }
+
     /// Deterministic, dependency-free — the `scroll_anchor` precedent; there is no new
     /// dev-dependency in this crate for a sweep.
     struct Lcg(u64);
@@ -1205,6 +1384,15 @@ mod tests {
                     }
                 }
 
+                // An artifact, occasionally, so every invariant below sweeps the element the
+                // console inserts itself and not only the ones a harness produces.
+                if step % 37 == 0 {
+                    t.insert_artifact(ArtifactBlock {
+                        title: format!("panel {step}"),
+                        content: ArtifactContent::Panel(PanelSpec::default()),
+                    });
+                }
+
                 let ctx = format!("seed {seed} cap {cap} step {step}");
 
                 // 1. Order and identity: ids ascending, contiguous, addressable.
@@ -1219,6 +1407,7 @@ mod tests {
                         Body::Assistant(_) => "assistant",
                         Body::Tool(_) => "tool",
                         Body::RunEnd(_) => "run_end",
+                        Body::Artifact(_) => "artifact",
                     };
                     let was = kinds.entry(e.id.0).or_insert(kind);
                     assert_eq!(*was, kind, "{ctx}: element {} changed kind", e.id.0);
