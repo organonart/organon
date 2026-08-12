@@ -504,6 +504,25 @@ view cannot mirror the Claude Code session James is already running in a termina
 On a coordinator session that fans out to a dozen agents, a large fraction of visible activity
 arrives as complete-message bursts, not as live text.
 
+### 5.9.2 The interaction model, measured — a live session, not a series of one-shots
+
+Run on this machine with two user messages written to the CLI's stdin across a 25-second gap
+(`-p --input-format stream-json --output-format stream-json --replay-user-messages`):
+
+- **One `session_id` across both turns.** The process stays live. This is not `--resume`, and
+  it does not pay resume's cost (a new process, the transcript re-read, the history re-sent).
+- 🚨 **A `result` object arrives per TURN, not per session** — two of them in one stream. So
+  `result` is a *turn* terminator and the stream continues past it. Anything that treats it as
+  end-of-stream will close a live conversation after its first exchange. `num_turns` was `1` on
+  each: it counts that run's turns, it does not accumulate.
+- **`--replay-user-messages` echoes the injected human turn back into the output stream**, so a
+  human message arrives as an ordinary ordered event rather than something the view splices in
+  locally and hopes it ordered correctly.
+
+**The integrator's contract, therefore:** spawn once per conversation tab, write NDJSON user
+messages to stdin, read NDJSON events from stdout, and never let the process go. Resume is the
+recovery path, not the interaction model.
+
 **Why Pi second, and genuinely second rather than dismissed.** `pi --mode rpc` is documented in
 its first sentence as being for "embedding the agent in other applications, IDEs, or custom
 UIs" — it is purpose-built for this, and it carries **strictly more lifecycle events** than
