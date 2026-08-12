@@ -538,6 +538,53 @@ Run on this machine with two user messages written to the CLI's stdin across a 2
 messages to stdin, read NDJSON events from stdout, and never let the process go. Resume is the
 recovery path, not the interaction model.
 
+### 5.9.25 The agentic API is the CLI, and the skill teaches it — settled 2026-08-12 (James)
+
+**The question the pivot raised:** now that the console owns the whole visual and *spawns* the
+agent itself, is the `organon` CLI still the way an agent reaches these capabilities?
+
+**Yes, and the argument is stronger than "it already exists": the CLI is the only interface
+every agent already has.** Claude Code has Bash, Pi has bash, Codex and Cursor and any foreign
+CLI can run a command. Nothing has to implement anything. That is the same property that made
+§6's harness-agnostic rule right for the terminal host, and it is the one thing in that
+document the pivot did *not* invalidate.
+
+**The genuine alternative, and why it is a supplement at most.** Because the console spawns the
+process, it could also hand Claude Code tools over **MCP** (`--mcp-config`) — typed arguments,
+no shell quoting, and the call already lands as an element in our transcript. But MCP reaches
+only harnesses that support it *and* that we spawn: the terminal host cannot use it, Pi's RPC
+is a different shape, a foreign CLI has nothing.
+
+🚨 **If MCP is ever added, it is GENERATED from the same table the CLI is generated from.** One
+vocabulary, many renderings — the CLI, the agent's catalog, `doc/reference/`, and MCP as a
+fourth if it earns its place. A hand-written MCP server beside a hand-maintained CLI is exactly
+the failure this tree already paid for: three hand-written range tables, **9 of 45 ids silently
+wrong**, published documentation shipping the wrong bounds.
+
+**Three things the pivot changes about the CLI itself:**
+
+1. **It gains a return path it never had.** In the terminal host, `organon console …` was
+   fire-and-forget into a sidecar and the console could not answer. Now the command's stdout
+   comes back as a tool result the agent reads *and* the view renders — so commands can be
+   **queries**, not only imperatives. `console_discover_schema.md` always assumed this; the
+   terminal host could never fully exploit it.
+2. **The position arguments disappear.** `--up N --rows M` existed because the agent had to say
+   *where* in a character grid. In the conversation view **the tool call is the anchor**. Same
+   verb, fewer required arguments.
+3. 🚨 **The front-end distinction belongs in the CLI, never in the skill.** An agent in a
+   terminal tab must print its own gap and claim it; an agent in a conversation tab must not.
+   The wrong fix is teaching the skill to explain the difference. The console already injects
+   its namespace per tab, so **the CLI can detect which front-end invoked it and do the right
+   thing.** A skill that says "if you are in a terminal, first print twelve newlines" is an
+   instruction that rots and that agents get wrong under pressure.
+
+⚠️ **The coupling this creates, worth acting on:** if the CLI is the agentic API, the agent's
+**permission layer** is the gate on it. Three tools bounced on approval in the first real
+session. If `organon console <verb>` needs approval every time, the artifact never appears —
+and unlike a refused `env` read, that failure reads as *our feature is broken* rather than as a
+policy working correctly. This is an argument for doing approvals **before** the rendered-patch
+work, not after.
+
 ### 5.9.3 The mapping contract — decoder → transcript, and the six measured facts that shape it
 
 The decoder (`agent_event.rs`) and the transcript model (`conversation.rs`) were written by
