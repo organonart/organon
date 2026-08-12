@@ -87,6 +87,42 @@ removes the card entirely.
 
 ---
 
+### 🚨 7. The model cannot call the handler — Claude Code filters it out
+
+The obvious way this design could have been decorative: the handler is an ordinary tool on an
+ordinary MCP server, so if the **model** could call it, it could hand itself
+`{"behavior":"allow"}` and route around the human entirely.
+
+**Measured: it cannot.** With `approve_tool` wired as `--permission-prompt-tool`, `system/init`'s
+`tools` array contained only `mcp__probe__echo_probe` — advertised in the *same* `tools/list`
+response, from the *same* server. `approve_tool` appeared **zero** times in the init event.
+
+Two ways this measurement could have fooled us, both checked:
+
+- **Deferred listing.** MCP tools arrive deferred in this build, so absence might have meant
+  "not preloaded" rather than "unreachable." Ruled out: in the earlier run `echo_probe` *was*
+  listed in init while deferred. Absence is genuine.
+- **A server that never started.** "No `tools/call` received" is indistinguishable from a dead
+  server. Ruled out by the server log showing startup and a served `tools/list`, then zero calls.
+
+Prompted to search for the tool by name and call it, the model's `ToolSearch` returned
+`"matches":[]` and it stopped. **The route is closed at the tool-exposure layer** — the model
+cannot form the call at all, rather than forming it and being refused, which is the stronger
+place to close it.
+
+⚠️ **The guarantee is tied to the flag.** Claude Code removes the handler from the model's tool
+set *because* `--permission-prompt-tool` names it. **An approval-shaped tool that is not the
+designated permission tool would be an ordinary model-callable tool with no such protection.**
+Never serve a second one.
+
+📌 Defence in depth, **plausible but unverified**: a client-initiated request carries a `_meta`
+block the model has no way to author — `{"claudecode/toolUseId":…,"progressToken":…}` — so a
+server could require it. This was *not* measured against a model-authored call, because
+producing one would have meant deliberately re-opening the hole. Treat it as a belt, not the
+braces.
+
+---
+
 ## What this decides
 
 **The console runs one MCP server serving two distinct things:**
