@@ -303,11 +303,67 @@ that is already true.
 **Do not build a restyle-everything path.** Nothing restyles history; patches stay where they
 were created. That is both the cheap implementation and the correct one.
 
-### Tier 5 — the instrument inline *(stretch)*
+### ⚡ Sequence amendment #2 (2026-08-11, James): Tier 5 lands before Tier 3, and Tier 5 is no longer a stretch
 
-Almost entirely integration. **One agent, coordinator supervising, no fan-out.** If Tier 4's
-anchor is not solid, this tier cannot start — and if it has not started by the time T4's beat
-check passes, ship T1–T4 and cut it.
+James's ask, in his words: *to see this working to the point where we are able to insert a
+particular set of lines of GPU-rendered content into the scrollback with anything we want
+rendered on it.* That is Tier 5, and **Tier 3 is not on the path to it** — Tier 5 depends on
+Tier 4's anchor, which landed and beat-checked, not on the strip. Tier 3's *leaves* stay
+valuable (Leaf B's generated descriptors are what make a panel of controls renderable at all),
+so wave 1 lands and merges; Tier 3's integration is parked behind Tier 5.
+
+**Tier 5 stops being a stretch goal.** It is the point of the exercise now, and the beat that
+was "the closer" is the beat that gets built.
+
+### Tier 5 — patches in the transcript
+
+**The design changed on 2026-08-11 and the change is load-bearing: the console does not create
+the hole — the agent does.**
+
+The original shape had the console inject rows into the terminal buffer behind the child's
+back. That works (recon proved the mechanism exactly: feed `\r\n` × N to the parser the console
+already owns, which is the *same* code path the child's own newlines take, and the absolute-line
+identity survives it) but it carries one risk that cannot be settled from source: ConPTY keeps
+its own screen-buffer model and repaints by absolute cursor positioning, so rows it does not
+know about may be painted over.
+
+**James's inversion removes that risk entirely.** An agent in a console tab already has a skill
+teaching it the `organon` CLI. It knows what it is about to print. So it writes its paragraph
+with a rectangular gap — ordinary spaces and newlines, ordinary stdout, through the ordinary
+PTY — and claims the gap. The rows are real output through the normal path, so the shell,
+ConPTY and the console cannot disagree that they exist.
+
+Three consequences, each a simplification:
+
+- **Text flow around a patch costs the console nothing.** The agent does the flow; it is just
+  text. The console's job collapses to *given a rect and a texture, paint* — newspaper-style
+  wrap included, with no wrapping logic anywhere in our tree.
+- **The layout intent stays with the author.** The console holds a rect and a texture; the
+  agent holds why the gap is that shape. That is what makes resize survivable: the console
+  cannot reflow a figure, but the agent can re-emit the passage.
+- **It degrades honestly.** The claim rides an in-band escape sequence in the agent's own
+  output, which an unaware terminal swallows silently. The same output in Windows Terminal or
+  through a pipe is a paragraph with a gap in it.
+
+⚠️ **This does not breach §6 rule 5 (harness-agnostic or it does not ship)** — checked
+deliberately, because that rule would kill it otherwise. Nothing here requires Pi, ACP, or any
+cooperation a harness must implement: it requires an agent that can print spaces and call a
+CLI, which is every agent with a shell. The console works identically with no agent at all; it
+simply has nothing interesting to paint.
+
+🚨 **The wire format is settled in `doc/console_patch_protocol.md` before implementation**,
+the same discipline that kept Tier 3's schema out of a 2 a.m. design session. Tier 5 implements
+it; it does not design it.
+
+| Lane | Owns | Output |
+|---|---|---|
+| Leaf A | new `block_anchor.rs` in `organon-shell` | ✅ **landed** (`console/t5-anchor`) — blocks → viewport row ranges, with the texture-slice offset for a half-scrolled block; model-agnostic, so the design change above cost it nothing |
+| Leaf B | the marker scanner | the in-band claim recognised on the way to the VT parser, split-read safe; pure, headless |
+| Integrator | `term.rs`, `term_view.rs`, `shell_main.rs`, `cli.rs`, `ctl.rs`, docs | `feed_local` + the bracket (the **fallback** path, for when nobody is writing); the paint call; the patch ledger |
+
+**Known, accepted, and written into the protocol rather than solved:** a gap made of spaces does
+not survive a width change — reflow rewraps the paragraph and the rectangle is destroyed. The
+protocol says what happens instead of pretending.
 
 ---
 
@@ -403,8 +459,17 @@ Per tier, in the tier's own change — never as a cleanup pass at the end:
 
 ### 🚨 Any tier that adds or changes a command updates `skills/organon-cli/SKILL.md`
 
-That is **Tier 2** (`organon console background`) and **Tier 3** (`organon discover`,
-`organon describe --json`) — not Tier 3 alone. The tier's own agent does it.
+That is **Tier 2** (`organon console background`), **Tier 3** (`organon discover`,
+`organon describe --json`) and **Tier 5** (the patch verbs) — not Tier 3 alone. The tier's own
+agent does it.
+
+📌 **Tier 5 is the first tier where the skill is not documentation — it is the mechanism.** A
+patch exists because an agent left a gap in its own output and claimed it, and the only way an
+agent knows how to do that is the skill. `doc/console_patch_protocol.md` is the contract (the
+sequence, the fields, what the console guarantees); the skill is that contract taught in the
+shape an agent needs, with the surface still deferred to the live tool. Two renderings of one
+source, exactly as with the Discover schema — and here a stale one does not degrade to a
+missing feature, it degrades to an agent printing escape sequences nothing will ever claim.
 
 **A skill is what an agent reads *instead of* the source, so a stale one does not degrade
 gracefully.** It makes an agent confidently call a command that does not exist, or miss one
