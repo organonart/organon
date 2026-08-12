@@ -235,12 +235,13 @@ position.
     Ids, not band indices: an eviction shifts every index and would look like "all of them
     changed". One copy per change for the whole window, shared across tabs by `Rc` and
     freed when the last tab drops it.
-  - **One counter, one site.** `term_view::PaneAnchor::pump` is the only place the anchor's
-    `dropped` advances, and it is the only pump the console calls — the redraw loop pumps
-    every tab and `term_view::draw` pumps the active one again, so "exactly one site" has
-    to mean one *function*, not one call. The bracket holds the pump and nothing else:
-    `resize` moves `history_size` and the wheel moves `display_offset` without a line being
-    emitted, and either inside it would be counted as output.
+  - **One counter, one site.** `term_view::PaneAnchor::bracketed` is the only place the
+    anchor's `dropped` advances, and every parser advance the console makes goes through it —
+    the redraw loop pumps every tab, `term_view::draw` pumps the active one again, and T5's
+    `feed_local` advances it a third way, so "exactly one site" has to mean one *function*,
+    not one call. The bracket holds the advance and nothing else: `resize` moves
+    `history_size` and the wheel moves `display_offset` without a line being emitted, and
+    either inside it would be counted as output.
   - **The band table drops the ledger's first boundary.** The ledger records the line every
     epoch opened at, including the oldest; `scroll_anchor` counts boundaries at or below a
     line, so it wants only the changes *between* looks (`textures.len() ==
@@ -254,12 +255,92 @@ position.
     `render_backdrop` returns before rendering while it is off, so the texture still holds
     the look from *before* it, and copying that would file a picture under rows it was
     never behind. Those rows keep the plain background, which is what they were written on.
+- **Reserved rows — a hole in the transcript that text flows around (#4 T5, first
+  increment)** — `organon console block <rows>` opens a contiguous run of blank rows in the
+  **active** tab, just below the cursor, and the next prompt lands underneath it. Nothing is
+  painted into them yet; making the rows genuinely exist is the increment, and a GPU texture
+  pinned into them is the next one.
+
+  **The mechanism is the parser the console already owns.** `TermSession::feed_local` advances
+  `vte::ansi::Processor` against bytes the console generated itself — the same call `pump`
+  makes, so a `\r\n` fed here goes through `Handler::linefeed` → `Term::scroll_up` →
+  `Grid::scroll_up` exactly as the shell's own newline does. There is no second representation
+  of a row and no second set of invariants: a reserved row ages, scrolls, evicts at the cap and
+  reflows on a width change **because it is an ordinary scrollback row**. Three things it is
+  deliberately not:
+
+  - not `TermSession::input`, which writes to the pty **master** — that is input *to the
+    child*, and N newlines there returns N shell prompts, not N blank rows;
+  - not `Handler::insert_blank_lines` (IL), which pushes rows off the bottom and discards
+    them, so nothing enters history;
+  - not `grid_mut().scroll_up()`, which bypasses selection rotation, the vi cursor and damage
+    tracking, and does not move the cursor.
+
+  `term::block_bytes(rows)` is the sequence, pure and pinned by a test: `rows + 1` repetitions
+  of `\r\n\x1b[2K`. The `\r` because `linefeed` does not reset the column; the EL because a
+  linefeed only *blanks* the row it enters when the grid actually scrolled, and reserving means
+  claiming rather than passing over; the **+1** because the last linefeed is what puts the
+  cursor *below* the block instead of on its final row.
+
+  🚨 **The feed must be bracketed exactly as a real pump is**, and that is the one hard
+  constraint in the increment. `TermSession::feed_local` is **`pub(crate)`**, so from outside
+  `organon-shell` — which is where the whole console lives — it is unreachable; the only caller
+  is `term_view::PaneAnchor::feed_local`, and `PaneAnchor::bracketed` is now the single function
+  both it and `PaneAnchor::pump` route through. Unbracketed, a feed against a full buffer with
+  the user scrolled into history evicts lines that `advance_dropped` never sees, which raises
+  the true `screen_top` without raising the derived one — and every absolute index recorded
+  before the feed is then permanently wrong, silently.
+
+  `PaneAnchor::feed_local` returns the **absolute line index of the first reserved row**, taken
+  from the *pre-feed* `ViewState` by the same `boundary_now` a look-epoch uses. The identity a
+  painter gets: the block occupies `at ..= at + rows - 1` and the cursor rests on `at + rows`.
+  `Shell::open_block` logs it unconditionally — `[block] opened 12 rows @ line 1187 (pane 0)`,
+  `[block]` being the tag to grep, in `[epochs]`' register and for its reason: an arithmetic
+  error here is invisible until something is painted into the wrong rows.
+
+  **The active pane only** — the opposite of a look change, and for the same reason it is the
+  opposite. A look is the window's and every tab must paint its own rows under it; a block is a
+  hole in *one* transcript, asked for by someone looking at one tab.
+
+  Known limits, all accepted rather than pending (they are written out in
+  `PaneAnchor::feed_local`'s doc, in `scroll_anchor.rs`'s register):
+
+  - **A width change reflows and the anchor drifts.** Row/height resize is exact; a width
+    change re-wraps every wrapped line above the block, so its index slides by the net wrap
+    delta — and `grow_columns` can drop the block's topmost row outright, because a
+    `row.is_clear()` row is skipped rather than pushed and a reserved row is clear by
+    construction. The policy is **a width change invalidates a block**; it is recorded here,
+    not implemented yet.
+  - **Eviction erodes a block from the top**, one row at a time, and at the live edge
+    evictions are not observable at all — so the console can believe an eroded block is whole.
+  - **`\x1b[3J` wipes the scrollback silently** (`grid.clear_history()`); `clear` and `reset`
+    emit it.
+  - **A resize while the alternate screen is up moves the primary grid invisibly.**
+  - **Feeding under the alt screen writes into the alt grid**, which has no scrollback, so the
+    returned index describes a row the feed did not touch. A block during a full-screen
+    application is meaningless.
+  - **The sidecar is drained once per frame and is out of band with the PTY byte stream**, so
+    the index a block gets is "wherever the cursor was at drain time" — correct only while the
+    child is idle. The in-band fix is a private OSC scanned in `pump`, so the console learns
+    the position *from the byte stream itself*, in order with everything else on it. A later
+    increment.
+
+  On the CLI side the verb is `ConsoleOp::Block(u16)`, wire form `block <n>`, bounded by
+  `cli::MAX_BLOCK_ROWS = 200`. It is the **first op on this lane whose argument is a number**,
+  which costs two things: `parse_console_op` skips a count that does not parse or does not fit
+  (a malformed line is skipped like an unknown verb — never clamped, since a clamp opens a
+  block nobody asked for), and the range is gated **twice on purpose** — clap's `value_parser`,
+  where a human gets a good error before a byte is written, and `op_from`, where a
+  hand-written sidecar line meets it, because `ArgKind::Int` carries no bounds and the schema
+  cannot state the range the way a `Choice` states a table.
 - **The landed v2 foundations** (session/event log with torn-tail recovery, the
   typed command service, mock-agent event cards) remain in the crate, feeding
   trees C/D. **`command::CommandService` is no longer only its own tests**: #4 T2 stands
   up the product's first live instance, registering `console.background` and
   `console.rig` (`TargetKind::Viewport`, one required `name` of `ArgKind::Choice` built
-  from `substrate_materials`' own tables) and routing every drained op through
+  from `substrate_materials`' own tables) — joined by T5's `console.block` (one required
+  `rows` of `ArgKind::Int`, the first argument on this lane that is a number rather than a
+  word) — and routing every drained op through
   `dispatch`, so each one leaves a `CommandRun` record in a real `SessionLog`. Two
   shapes worth knowing: the service is built **per batch** rather than held on `Shell`
   (it borrows `&mut SessionLog`, and a struct holding both would be self-referential —

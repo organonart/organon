@@ -25,6 +25,13 @@
 //! recomputing the published snapshot from one pure function of
 //! `(source, material, rig)` — [`look_shared`]. No texture is recreated, no pane is
 //! re-measured, so a live switch costs one frame and moves no glyph.
+//!
+//! **Console Spike Tier 5 puts a third verb on that lane, and it changes the transcript
+//! rather than the dressing.** `organon console block <rows>` reserves a contiguous run of
+//! blank rows in the active tab, by feeding `\r\n` bytes the console generated itself through
+//! the terminal's own parser ([`Shell::open_block`]). They are ordinary scrollback rows, so
+//! text written afterwards flows **below** them. Nothing is painted into them yet — the hole
+//! is the increment.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -48,7 +55,7 @@ use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
-use organon_shell::term::TermSession;
+use organon_shell::term::{self, TermSession};
 use organon_shell::term_view::{self, BandedBackdrop, PaneAnchor};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -348,10 +355,16 @@ fn initial_shared(source: BackdropSource) -> Box<ipc::Shared> {
 const CMD_BACKGROUND: &str = "console.background";
 /// See [`CMD_BACKGROUND`].
 const CMD_RIG: &str = "console.rig";
-/// The single argument both verbs take. One name, because the sidecar's wire form is
-/// `<verb> <word>` and inventing two spellings for one slot is how a schema drifts from its
-/// transport.
+/// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
+const CMD_BLOCK: &str = "console.block";
+/// The single argument the two **dressing** verbs take. One name, because the sidecar's wire
+/// form is `<verb> <word>` and inventing two spellings for one slot is how a schema drifts
+/// from its transport.
 const CMD_ARG: &str = "name";
+/// [`CMD_BLOCK`]'s argument. A **second** slot name rather than a reuse of [`CMD_ARG`],
+/// because it is a different kind: `name` is a `Choice` over a table and `rows` is an `Int`,
+/// and a palette showing "name: 12" would be describing the wrong thing.
+const CMD_ROWS: &str = "rows";
 
 /// The console's vocabulary, as [`CommandService`] catalog data.
 ///
@@ -394,6 +407,18 @@ fn console_specs() -> Vec<CommandSpec> {
                 required: true,
             }],
         },
+        // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
+        // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
+        // therefore lives in TWO places that are both real gates rather than one that is
+        // decorative: clap's `value_parser` range (which is where a human gets a good error,
+        // before a byte is written) and [`op_from`] (which is where a hand-written sidecar
+        // line meets it, and fails the dispatch with a record).
+        CommandSpec {
+            name: CMD_BLOCK.into(),
+            doc: "Reserve a run of blank rows in the transcript".into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec { name: CMD_ROWS.into(), kind: ArgKind::Int, required: true }],
+        },
     ]
 }
 
@@ -402,23 +427,55 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
     match op {
         cli::ConsoleOp::Background(_) => CMD_BACKGROUND,
         cli::ConsoleOp::Rig(_) => CMD_RIG,
+        cli::ConsoleOp::Block(_) => CMD_BLOCK,
     }
 }
 
-/// See [`spec_name`]. `None` for a catalog name this console does not implement — which the
-/// service's own `UnknownCommand` path already excludes, so it is a belt on a brace.
-fn op_from(name: &str, arg: &str) -> Option<cli::ConsoleOp> {
+/// See [`spec_name`]. `Err` carries the message the target reports as an execution failure.
+///
+/// Two shapes of failure land here, and only one of them is a wiring bug. An unrecognised
+/// catalog name cannot happen — the service's own `UnknownCommand` path excludes it — so that
+/// arm is a belt on a brace. **A block row count out of range genuinely can**: `ArgKind::Int`
+/// carries no bounds (see [`console_specs`]), and a line written straight onto the sidecar
+/// never met clap's range. That one is a real gate, and it reports a real message.
+fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
+    let word = |slot: &str| -> Result<String, String> {
+        args.get(slot)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("{name}: `{slot}` is missing or is not a string"))
+    };
     match name {
-        CMD_BACKGROUND => Some(cli::ConsoleOp::Background(arg.to_string())),
-        CMD_RIG => Some(cli::ConsoleOp::Rig(arg.to_string())),
-        _ => None,
+        CMD_BACKGROUND => Ok(cli::ConsoleOp::Background(word(CMD_ARG)?)),
+        CMD_RIG => Ok(cli::ConsoleOp::Rig(word(CMD_ARG)?)),
+        CMD_BLOCK => {
+            let n = args
+                .get(CMD_ROWS)
+                .and_then(Value::as_i64)
+                .ok_or_else(|| format!("{name}: `{CMD_ROWS}` is missing or is not an integer"))?;
+            match u16::try_from(n) {
+                Ok(rows) if (1..=cli::MAX_BLOCK_ROWS).contains(&rows) => {
+                    Ok(cli::ConsoleOp::Block(rows))
+                }
+                _ => Err(format!(
+                    "{name}: `{CMD_ROWS}` must be 1..={}, got {n}",
+                    cli::MAX_BLOCK_ROWS
+                )),
+            }
+        }
+        _ => Err(format!("no console op for {name:?}")),
     }
 }
 
-/// The op's payload — the one word after the verb.
-fn op_arg(op: &cli::ConsoleOp) -> &str {
+/// The op's payload, as the dispatch arguments its spec declares.
+///
+/// A `Value` rather than a `&str` since Tier 5: `block`'s argument is a **number**, and
+/// spelling it as a string would pass `ArgKind::Int`'s `as_i64` check to nobody's benefit —
+/// it would simply fail validation, one lane's type error reported as another's.
+fn op_args(op: &cli::ConsoleOp) -> Value {
     match op {
-        cli::ConsoleOp::Background(n) | cli::ConsoleOp::Rig(n) => n,
+        cli::ConsoleOp::Background(n) | cli::ConsoleOp::Rig(n) => json!({ CMD_ARG: n }),
+        cli::ConsoleOp::Block(rows) => json!({ CMD_ROWS: rows }),
     }
 }
 
@@ -441,20 +498,20 @@ struct ConsoleTarget {
 
 impl CommandTarget for ConsoleTarget {
     fn execute(&mut self, name: &str, args: &Value) -> Result<Value, CommandError> {
-        // Presence, type and membership were all checked by `validate_args` against the
-        // `Choice` schema above; a miss here is a wiring bug, and it is reported as an
-        // execution failure (which still leaves a `Failed` record) rather than panicking
-        // inside a redraw.
-        let arg = args.get(CMD_ARG).and_then(Value::as_str).unwrap_or_default();
-        match op_from(name, arg) {
-            Some(op) => {
+        // Presence, type and — for the two `Choice` slots — membership were all checked by
+        // `validate_args` against the schema above, so a miss on those is a wiring bug. The
+        // one thing the schema cannot state is `block`'s row range (`ArgKind::Int` has no
+        // bounds), so [`op_from`] is a real gate as well as a belt. Either way the failure is
+        // reported as an execution error — which still leaves a `Failed` record — rather than
+        // panicking inside a redraw.
+        match op_from(name, args) {
+            Ok(op) => {
                 self.accepted.borrow_mut().push(op);
-                Ok(json!({ CMD_ARG: arg }))
+                Ok(args.clone())
             }
-            None => Err(CommandError::Execution {
-                command: name.to_string(),
-                message: format!("no console op for {name:?} / {arg:?}"),
-            }),
+            Err(message) => {
+                Err(CommandError::Execution { command: name.to_string(), message })
+            }
         }
     }
 }
@@ -500,6 +557,12 @@ fn console_step(
         cli::ConsoleOp::Rig(name) => {
             look.rig = Some(canonical(&substrate_materials::RIG_NAMES, name)?.to_string());
         }
+        // **A block is not a look.** It reserves rows in one pane's transcript and touches
+        // neither the backdrop source nor the dressing, so it has no `(source, look)` to fold
+        // into and never reaches here: [`Shell::apply_console`] routes it first. `None` is
+        // the honest answer for a resolver whose whole domain is looks — and it is also the
+        // safe one, since `None` here means "changed nothing".
+        cli::ConsoleOp::Block(_) => return None,
     }
     Some((source, look))
 }
@@ -1020,7 +1083,7 @@ impl Shell {
         }
         service.register_target(TargetKind::Viewport, Box::new(target));
         for op in ops {
-            let args = json!({ CMD_ARG: op_arg(op) });
+            let args = op_args(op);
             let issuer = Issuer::Worker("organon-cli".into());
             if let Err(e) = service.dispatch(issuer, spec_name(op), args) {
                 // The record is already written (every dispatch leaves one, however it
@@ -1045,6 +1108,13 @@ impl Shell {
     /// reads on the same frame — including the `#472` bake, which re-dispatches because the
     /// layer bytes changed and is a no-op on every frame after (Leaf A's `KNOWN_LIMITS` #4).
     fn apply_console(&mut self, op: &cli::ConsoleOp) {
+        // Tier 5: a block changes the transcript, not the dressing. It is routed before
+        // `console_step` because that function's domain is `(source, look)` and a block has
+        // neither — see its `Block` arm.
+        if let cli::ConsoleOp::Block(rows) = op {
+            self.open_block(*rows);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -1063,6 +1133,43 @@ impl Shell {
         self.backdrop_source = source;
         self.console_look = look;
         *self.shared = *look_shared(self.backdrop_source, &self.console_look);
+    }
+
+    /// Reserve `rows` blank rows in the **active** pane's transcript (Console Spike Tier 5).
+    ///
+    /// The mechanism is [`organon_shell::term_view::PaneAnchor::feed_local`]: bytes the
+    /// console generated itself, through the same parser the child's bytes go through, inside
+    /// the same bracket that keeps the scroll anchor's `dropped` counter honest. The rows are
+    /// ordinary scrollback rows — they scroll, age, evict and reflow like every other row —
+    /// which is the whole reason for doing it this way rather than keeping a parallel list of
+    /// "reserved" lines beside the buffer. Nothing is painted into them yet; this increment
+    /// makes the hole, and a later one fills it.
+    ///
+    /// **The active pane, not every pane** — the opposite of [`Shell::record_look_change`],
+    /// and for the same reason it is the opposite. A look change is the *window's*: every tab
+    /// accumulates rows under it and must paint them correctly when switched to. A block is a
+    /// hole in *one transcript*, asked for by someone looking at one tab; opening it in every
+    /// tab would punch holes in transcripts nobody asked about.
+    ///
+    /// ⚠️ **The sidecar is drained once per frame and is out of band with the PTY byte
+    /// stream**, so the line this block opens at is "wherever the cursor was at drain time" —
+    /// correct only while the child is idle. A shell that is mid-output when the drain lands
+    /// gets its rows opened in the middle of that output. The in-band fix is a private OSC
+    /// sequence scanned in `pump`, so that the console learns where the block goes *from the
+    /// byte stream itself*, in order with everything else on it; that is a later increment,
+    /// not a defect of this one.
+    fn open_block(&mut self, rows: u16) {
+        let pane = self.strip.active;
+        let (Some(session), Some(looks)) =
+            (self.sessions.get_mut(pane), self.pane_looks.get_mut(pane))
+        else {
+            return;
+        };
+        let at = looks.anchor.feed_local(session, &term::block_bytes(rows));
+        // Unconditional, and in `[epochs]`' register: the absolute index is the one number a
+        // painter will place a rect from, and an arithmetic error in it is invisible on screen
+        // until something is painted into the wrong rows. `[block]` is the tag to grep for.
+        eprintln!("[block] opened {rows} rows @ line {at} (pane {pane})");
     }
 
     /// Close the live look-epoch in every pane and open the next one — the Tier 4 half of
@@ -2157,6 +2264,53 @@ mod cli_tests {
         }
     }
 
+    /// **The block verb's row range is a gate on both sides of the sidecar, and this is the
+    /// console-side half.** `ArgKind::Int` carries no bounds, so unlike a material name the
+    /// count is *not* fully checked by the schema — `op_from` is what stands between a
+    /// hand-written `block 9000` line and a command that opens a block of 9000 rows. The
+    /// CLI-side half (clap's `value_parser` range) is in `bin/ctl.rs`'s tests.
+    #[test]
+    fn the_block_verb_bounds_its_row_count_where_the_schema_cannot() {
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_BLOCK)
+            .expect("console.block is registered");
+        assert_eq!(spec.target, TargetKind::Viewport, "a hole in the transcript is the viewport");
+        let arg = spec.args.iter().find(|a| a.name == CMD_ROWS).expect("one `rows` argument");
+        assert!(arg.required, "the count is not optional");
+        assert_eq!(arg.kind, ArgKind::Int, "rows is a number, not a word");
+
+        for rows in [1u16, 12, cli::MAX_BLOCK_ROWS] {
+            assert_eq!(
+                op_from(CMD_BLOCK, &json!({ CMD_ROWS: rows })),
+                Ok(cli::ConsoleOp::Block(rows)),
+                "{rows} rows is inside the range"
+            );
+        }
+        for bad in [0i64, -1, i64::from(cli::MAX_BLOCK_ROWS) + 1, 70_000, i64::MAX] {
+            let e = op_from(CMD_BLOCK, &json!({ CMD_ROWS: bad })).expect_err("out of range");
+            assert!(e.contains(CMD_ROWS), "the message must name the slot: {e}");
+        }
+        assert!(op_from(CMD_BLOCK, &json!({ CMD_ROWS: "twelve" })).is_err());
+        assert!(op_from(CMD_BLOCK, &json!({})).is_err(), "a missing count is not zero");
+    }
+
+    /// A block is not a look, and `console_step` must say so rather than quietly folding it
+    /// into one. `None` is what the apply path reads as "changed nothing", so if the routing
+    /// in `apply_console` were ever removed the failure would be an ignored command with a
+    /// stderr line — not a backdrop that silently changed.
+    #[test]
+    fn a_block_is_not_a_dressing() {
+        let cold = ConsoleLook::default();
+        for rows in [1u16, 12, cli::MAX_BLOCK_ROWS] {
+            assert_eq!(
+                console_step(BackdropSource::Substrate, &cold, &cli::ConsoleOp::Block(rows)),
+                None,
+                "a block must not touch the source or the look"
+            );
+        }
+    }
+
     /// The three source words, and the reason they do NOT go through
     /// [`parse_backdrop_source`]: that function's contract is an environment variable whose
     /// historical rule is "anything not `0`/unset is the World", and a typed command that
@@ -2189,13 +2343,15 @@ mod cli_tests {
     /// validated, so a mismatch here applies a command nobody issued.
     #[test]
     fn every_op_round_trips_through_its_catalog_name() {
-        for op in [bg("slate"), bg("world"), bg("off"), rig_op("daylight")] {
-            assert_eq!(op_from(spec_name(&op), op_arg(&op)).as_ref(), Some(&op), "{op:?}");
+        for op in
+            [bg("slate"), bg("world"), bg("off"), rig_op("daylight"), cli::ConsoleOp::Block(7)]
+        {
+            assert_eq!(op_from(spec_name(&op), &op_args(&op)), Ok(op.clone()), "{op:?}");
         }
         // A catalog name this console does not implement produces no op — the belt under
         // `CommandService`'s own unknown-command brace.
-        assert_eq!(op_from("session.note", "x"), None);
-        assert_eq!(op_from("console.scrim", "0.5"), None);
+        assert!(op_from("session.note", &json!({ CMD_ARG: "x" })).is_err());
+        assert!(op_from("console.scrim", &json!({ CMD_ARG: "0.5" })).is_err());
     }
 
     /// `--help` advertises exactly what the drain resolves — quoted from the tables, so it

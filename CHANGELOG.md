@@ -11,6 +11,45 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the console can open a hole in its own transcript
+
+- **`organon console block <rows>` reserves a contiguous run of blank rows** in the active
+  tab, just below the cursor, and the next prompt lands underneath them. Nothing is painted
+  into them yet — a GPU-rendered scene or panel pinned into exactly those rows is the next
+  increment. What this one buys is that the rows genuinely **exist**, so text written
+  afterwards flows below them instead of over them.
+- **The mechanism is the parser the console already owns**, not a second one.
+  `TermSession::feed_local` advances `vte::ansi::Processor` against bytes the console
+  generated itself — the same call the PTY pump makes — so a fed `\r\n` takes exactly the
+  path the shell's own newline takes. A reserved row is an ordinary scrollback row: it ages,
+  scrolls, evicts at the cap and reflows on a resize, because it *is* one. Three tempting
+  alternatives are wrong and are named in the code: writing newlines to the pty master
+  presses Enter at the child, `insert_blank_lines` discards rows off the bottom instead of
+  filing them in history, and a bare `grid_mut().scroll_up()` skips damage tracking and
+  never moves the cursor.
+- **The feed is bracketed like a real pump, and cannot be called any other way.**
+  `TermSession::feed_local` is `pub(crate)`, so it is unreachable from the console except
+  through `term_view::PaneAnchor::feed_local`, and `PaneAnchor::bracketed` is now the single
+  function every parser advance routes through. An unbracketed feed against a full buffer
+  can evict lines the scroll anchor never learns about, which would make every absolute line
+  index recorded before it permanently wrong, silently.
+- **The command reports where the hole went**: `[block] opened 12 rows @ line 1187 (pane 0)`
+  on stderr, in `[epochs]`' register, because an arithmetic error in that index is invisible
+  until something is painted into the wrong rows.
+- **The first console argument that is a number**, which the lane had not carried before. The
+  row count is bounded twice on purpose: clap's range is where a person gets a good error
+  before a byte is written, and the dispatch checks it again because `ArgKind::Int` has no
+  bounds to state and a hand-written sidecar line never met clap. A count that does not parse
+  is skipped like an unknown verb rather than clamped — a clamp opens a block nobody asked
+  for.
+- **Six limits are written down rather than fixed**, all accepted: a width change reflows and
+  can drop the block's topmost row outright, eviction erodes a block from the top invisibly
+  at the live edge, `\x1b[3J` wipes the scrollback silently, a resize under the alternate
+  screen moves the primary grid, feeding under the alternate screen writes into a grid with
+  no scrollback, and the once-per-frame sidecar drain is out of band with the PTY byte
+  stream — so the index is right only while the child is idle. The in-band fix, a private OSC
+  scanned in the pump, is a later increment.
+
 ### Console Spike — the parameter ranges are true, and pinned
 
 - **Nine of the 45 scriptable parameters advertised a range the engine does not have.**

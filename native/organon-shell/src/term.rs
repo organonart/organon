@@ -313,6 +313,42 @@ impl TermSession {
         }
     }
 
+    /// Advance the VT state machine against bytes the **console itself** generated
+    /// (Console Spike Tier 5). Nothing is written to the PTY.
+    ///
+    /// **This is not a parallel path, and that is the whole point.** It calls the same
+    /// `vte::ansi::Processor::advance` against the same `Term` that [`TermSession::pump`]
+    /// calls — nothing about that call is specific to bytes from the child — so a `\r\n`
+    /// fed here is handled by exactly the code that handles a `\r\n` the shell wrote:
+    /// `Handler::linefeed` → `Term::scroll_up` → `Grid::scroll_up`. There is no second
+    /// representation of a row and no second set of invariants. A row opened this way
+    /// ages, scrolls into history, evicts at the cap and reflows on a width change like
+    /// every other row in the buffer, because it **is** every other row in the buffer.
+    ///
+    /// ⚠️ **It is emphatically not [`TermSession::input`].** That writes to the pty
+    /// *master*, which is input **to the child**: N newlines there is pressing Enter N
+    /// times, and what comes back is N shell prompts, not N blank rows.
+    ///
+    /// 🚨 **Never call this directly — it is `pub(crate)` so that outside this crate you
+    /// cannot.** Advancing the parser moves `history_size()` and can move
+    /// `display_offset()`, and those two deltas are the entire evidence
+    /// [`crate::scroll_anchor::advance_dropped`] has for an eviction. An unbracketed
+    /// advance evicts lines that `dropped` never learns about, which raises the true
+    /// `screen_top` without raising the derived one — and **every absolute line index
+    /// recorded before it is then permanently wrong**, silently. The one legitimate
+    /// caller is [`crate::term_view::PaneAnchor::feed_local`], which is the bracket;
+    /// `PaneAnchor`'s type doc owns that contract, and the rule is the same one that
+    /// makes a bare `session.pump()` a bug.
+    ///
+    /// VT replies are not flushed here (these bytes ask no device questions); the next
+    /// [`TermSession::pump`] drains the reply channel unconditionally either way.
+    pub(crate) fn feed_local(&mut self, bytes: &[u8]) {
+        if pty_debug() {
+            eprintln!("[pty] feed-local {} to parser: {}", bytes.len(), peek(bytes, 96));
+        }
+        self.parser.advance(&mut self.term, bytes);
+    }
+
     /// Resize both ends — the PTY (so the child gets `SIGWINCH` and the right
     /// `TIOCGWINSZ` answer) and the VT grid. No-op when nothing changed.
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -342,6 +378,38 @@ impl Drop for TermSession {
         // territory, and portable-pty's kill is the portable spelling of it.
         let _ = self.child.kill();
     }
+}
+
+/// The bytes that open a run of `rows` reserved rows at the cursor (Console Spike Tier 5).
+///
+/// Pure, so the sequence is a test rather than a claim. Feed it through
+/// [`crate::term_view::PaneAnchor::feed_local`] — never [`TermSession::input`], which would
+/// send it to the child.
+///
+/// Three deliberate choices, each of which is wrong in an obvious-looking alternative:
+///
+/// * **`\r` before every `\n`.** `Handler::linefeed` moves the cursor down and does *not*
+///   reset the column, so a bare `\n` run would leave the block starting wherever the prompt
+///   left the cursor and every reserved row would begin at that column.
+/// * **`\x1b[2K` (EL 2, erase the whole line) on each row.** A linefeed only *blanks* the row
+///   it enters when the cursor was at the bottom of the scroll region and the grid actually
+///   scrolled; below the live cursor it merely walks over whatever was there. "Reserve" means
+///   claim, not pass over, so each row is cleared as it is entered. The cursor is already at
+///   column 0 by then, and EL does not move it.
+/// * **`rows + 1` linefeeds, not `rows`.** The last one puts the cursor on the row *below* the
+///   block — where the next prompt lands. With exactly `rows`, the cursor would come to rest
+///   **on** the block's last row and the child's next line of output would overwrite it, so
+///   the visible hole would be one row short of what was asked for.
+///
+/// `rows == 0` still emits one `\r\n\x1b[2K`: an empty block is a request for no rows, and the
+/// cursor moving to a clean line is the least surprising nothing. Callers reject 0 upstream
+/// (`cli::MAX_BLOCK_ROWS`'s range), so this is a total function, not a policy.
+pub fn block_bytes(rows: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity((usize::from(rows) + 1) * 6);
+    for _ in 0..=rows {
+        out.extend_from_slice(b"\r\n\x1b[2K");
+    }
+    out
 }
 
 /// Encode one key press the way an xterm-family terminal would put it on the wire.
@@ -498,6 +566,30 @@ mod tests {
         assert_eq!(s.size(), (100, 30));
         s.resize(0, 30); // degenerate sizes are refused, not applied
         assert_eq!(s.size(), (100, 30));
+    }
+
+    /// **A block of N rows costs N+1 linefeeds**, and the off-by-one is the feature: the
+    /// last one carries the cursor past the block so the next prompt lands below it rather
+    /// than on its final row. The rest of the shape — the carriage return, the erase —
+    /// is pinned here because `block_bytes`' doc argues for each of them and an argument
+    /// nothing checks is a comment.
+    #[test]
+    fn block_bytes_reserve_one_more_line_than_they_claim() {
+        for rows in [0u16, 1, 2, 7, 200] {
+            let b = block_bytes(rows);
+            assert_eq!(
+                b.iter().filter(|c| **c == b'\n').count(),
+                usize::from(rows) + 1,
+                "{rows} rows must feed {} linefeeds",
+                rows + 1
+            );
+            assert_eq!(
+                b.iter().filter(|c| **c == b'\r').count(),
+                usize::from(rows) + 1,
+                "every linefeed carries its carriage return"
+            );
+            assert_eq!(b, b"\r\n\x1b[2K".repeat(usize::from(rows) + 1));
+        }
     }
 
     fn grid_text(s: &TermSession) -> String {

@@ -155,11 +155,17 @@ fn indexed_256(i: u8) -> egui::Color32 {
 /// `scroll_anchor`'s module doc says to bracket `session.pump()` — but a console pumps
 /// every tab every frame *and* pumps the active tab again while drawing it
 /// (`shell_main.rs`'s redraw loop, then [`draw`] below), so "one site" cannot mean "one
-/// call". It means one **function**: [`PaneAnchor::pump`] is the only place `advance_dropped`
-/// is ever called, both call sites go through it, and a bare `session.pump()` anywhere in the
-/// console would be the bug. The bracket contains the pump and nothing else — in particular
-/// not `scroll_display`, which moves `display_offset` for a reason the counter would read as
-/// emitted output (checklist item 3).
+/// call". It means one **function**: `PaneAnchor::bracketed` is the only place
+/// `advance_dropped` is ever called, every call site goes through it, and a bare
+/// `session.pump()` anywhere in the console would be the bug. The bracket contains the
+/// parser advance and nothing else — in particular not `scroll_display`, which moves
+/// `display_offset` for a reason the counter would read as emitted output (checklist item 3).
+///
+/// **Console Spike Tier 5 gives it a second kind of advance.** [`PaneAnchor::feed_local`]
+/// pushes bytes the console generated itself through the same `Processor::advance` — that is
+/// how a run of rows is reserved in the transcript — and it needs the identical bracket for
+/// the identical reason. `TermSession::feed_local` is `pub(crate)`, so it is unreachable from
+/// the console except through this type.
 ///
 /// One per session, because scrollback is per session. Cheap: one `u64` and the last
 /// primary-screen [`ViewState`] beside its cursor row.
@@ -189,11 +195,90 @@ impl PaneAnchor {
     /// **Advance the parser and the counter together.** The one update site; see the type's
     /// doc for why that phrasing is load-bearing.
     pub fn pump(&mut self, session: &mut TermSession) {
+        self.bracketed(session, |s| {
+            s.pump();
+        });
+    }
+
+    /// Open a run of rows in the transcript by advancing the parser against bytes the
+    /// **console itself** produced (Console Spike Tier 5), and return the **absolute line
+    /// index of the first row the feed opens**.
+    ///
+    /// Build the bytes with [`crate::term::block_bytes`]; this function is deliberately
+    /// generic over them, because what it owns is the *bracket*, not the sequence.
+    ///
+    /// # Why this exists rather than a bare `session.feed_local`
+    ///
+    /// The same reason [`PaneAnchor::pump`] exists. Locally fed bytes go through
+    /// `Processor::advance` exactly as the child's do, so they can push lines into history
+    /// and — at the 10 000-line cap, with the user scrolled back — evict lines off the top.
+    /// An unbracketed feed raises the true `screen_top` without raising the derived one:
+    /// `advance_dropped` never sees it, and **every absolute index recorded before the feed
+    /// is permanently wrong**, silently, for the life of the session. `TermSession::feed_local`
+    /// is `pub(crate)` so that no caller outside this crate can make that mistake, and this
+    /// is the only call to it.
+    ///
+    /// # The returned index, and where it comes from
+    ///
+    /// From the **pre-feed** [`ViewState`], by [`PaneAnchor::boundary_now`] — the line just
+    /// below the cursor, in the same absolute coordinate a look-epoch boundary uses, on the
+    /// same alt-screen-aware path. Absolute indices do not move when lines are emitted, so
+    /// taking it before the feed and reading it after are the same number; taking it before
+    /// is what makes it derivable at all.
+    ///
+    /// The identity the caller may rely on, given [`crate::term::block_bytes`]'s `rows + 1`
+    /// linefeeds: the block occupies absolute lines `at ..= at + rows - 1`, and the cursor
+    /// comes to rest on `at + rows`, one row below it.
+    ///
+    /// # What a reserved block cannot survive
+    ///
+    /// Stated the way [`crate::scroll_anchor`] states its own limits: these are design
+    /// inputs, accepted, not defects awaiting a fix here.
+    ///
+    /// * **A width change reflows, and the anchor drifts.** Row and height resizes are exact
+    ///   (`grid/resize.rs`, `grow_lines`/`shrink_lines` — `screen_top` and the cursor move
+    ///   together). A *width* change re-wraps every wrapped line above the block, so the
+    ///   block's absolute index slides by the net wrap delta; worse, `grow_columns` can drop
+    ///   the block's topmost row outright when the line above it ended `WRAPLINE`, because a
+    ///   `row.is_clear()` row is skipped rather than pushed (`grid/resize.rs:184-196`) — and a
+    ///   reserved row is clear by construction. **The policy is that a width change
+    ///   invalidates a block**: the console drops or re-derives it rather than painting a
+    ///   stale rect. That policy is not implemented yet; this increment records it.
+    /// * **Eviction erodes a block from the top, one row at a time**, and at the live edge
+    ///   (`display_offset == 0`) evictions are not observable at all
+    ///   (`scroll_anchor.rs`, "What this cannot do"), so the console can believe an eroded
+    ///   block is still whole.
+    /// * **`\x1b[3J` wipes the scrollback silently** — `Term` routes it to
+    ///   `grid.clear_history()`, and `clear` / `reset` emit it. Nothing observes the loss.
+    /// * **A resize while the alternate screen is up resizes the primary grid invisibly**
+    ///   (`term/mod.rs:678`), so a block opened before `htop` can move while `htop` is on
+    ///   screen.
+    /// * **Feeding while the alt screen is up writes into the alt grid**, which has no
+    ///   scrollback: the rows are opened in a live application's canvas and the returned
+    ///   index — which comes from the last *primary* geometry — describes a row the feed did
+    ///   not touch. A block asked for during a full-screen application is meaningless. The
+    ///   caller is free to refuse one; this function does not, because refusing is policy.
+    pub fn feed_local(&mut self, session: &mut TermSession, bytes: &[u8]) -> u64 {
+        // Before the feed: the cursor has not moved yet, and this is the coordinate the
+        // block is named by.
+        let at = self.boundary_now(session);
+        self.bracketed(session, |s| s.feed_local(bytes));
+        at
+    }
+
+    /// The bracket itself: whatever `advance` does to the parser, `dropped` is updated across
+    /// it and the primary-screen geometry is re-recorded after it.
+    ///
+    /// One function so that "exactly one update site" survives a second kind of advance.
+    /// [`PaneAnchor::pump`] and [`PaneAnchor::feed_local`] differ only in which bytes reach
+    /// `Processor::advance`; if they each carried their own copy of these six lines, the two
+    /// copies would be one refactor away from disagreeing about what counts as an eviction.
+    fn bracketed(&mut self, session: &mut TermSession, advance: impl FnOnce(&mut TermSession)) {
         let before = Snapshot {
             history: session.term.history_size(),
             display_offset: session.term.grid().display_offset(),
         };
-        session.pump();
+        advance(session);
         let after = Snapshot {
             history: session.term.history_size(),
             display_offset: session.term.grid().display_offset(),
@@ -830,6 +915,102 @@ mod tests {
             state.screen_top(),
             state.live_edge()
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Reserved rows (Console Spike Tier 5)
+    // -------------------------------------------------------------------------
+
+    /// A child that produces nothing and stays alive, so the grid is ours alone while the
+    /// block is fed. Platform-split for `term.rs`'s reason: the *shells* differ.
+    #[cfg(not(windows))]
+    fn silent_linger() -> Vec<String> {
+        vec!["/bin/sh".into(), "-c".into(), "sleep 1".into()]
+    }
+    #[cfg(windows)]
+    fn silent_linger() -> Vec<String> {
+        vec!["cmd.exe".into(), "/C".into(), "ping -n 3 127.0.0.1 >nul".into()]
+    }
+
+    /// The row's glyphs, straight off the grid.
+    fn row_text(session: &TermSession, line: i32) -> String {
+        let cols = session.size().0;
+        (0..cols)
+            .map(|c| {
+                let p = alacritty_terminal::index::Point::new(
+                    alacritty_terminal::index::Line(line),
+                    alacritty_terminal::index::Column(c as usize),
+                );
+                session.term.grid()[p].c
+            })
+            .collect()
+    }
+
+    /// **The rows genuinely exist, and the cursor lands below them.**
+    ///
+    /// This is the increment, as an assertion: after a block of `n`, the reserved rows are
+    /// blank and the cursor sits one row further down, so the child's next line of output
+    /// flows *below* the hole instead of over it. The absolute identity is checked with it —
+    /// `cursor_abs == at + rows` is the arithmetic half of "one row below the block", and it
+    /// is what a painter will later use to place a rect.
+    ///
+    /// Deliberately **no pump** anywhere in here: `feed_local` advances the parser against
+    /// our bytes only, so the child's own output stays in the channel and the whole test is
+    /// deterministic — which is also the claim being made about the mechanism.
+    #[test]
+    fn a_block_opens_blank_rows_and_leaves_the_cursor_below_them() {
+        let mut session =
+            TermSession::spawn(40, 10, Some(silent_linger()), None).expect("spawn a pty");
+        let mut anchor = PaneAnchor::new();
+
+        let before = anchor.view(&session);
+        let cursor_before = session.term.grid().cursor.point.line.0;
+        let at = anchor.feed_local(&mut session, &term::block_bytes(5));
+        assert_eq!(
+            at,
+            before.screen_top() + (cursor_before as u64) + 1,
+            "the block opens on the line just below the cursor"
+        );
+
+        let after = anchor.view(&session);
+        let cursor_after = session.term.grid().cursor.point.line.0;
+        let cursor_abs = after.screen_top() + cursor_after as u64;
+        assert_eq!(cursor_abs, at + 5, "the cursor rests one row below a five-row block");
+        assert_eq!(anchor.dropped(), 0, "six lines cannot overflow a 10 000-line buffer");
+
+        // Every reserved row, blank — including the one the cursor is on.
+        for row in at..=cursor_abs {
+            let line = (row - after.screen_top()) as i32;
+            assert_eq!(
+                row_text(&session, line).trim(),
+                "",
+                "absolute line {row} (grid line {line}) is not blank"
+            );
+        }
+    }
+
+    /// The same identity when the block is **taller than the screen**, so the feed scrolls
+    /// and `screen_top` moves under it. This is the case an accumulated coordinate would get
+    /// wrong: 16 linefeeds against a 10-row grid push 7 lines into history, and the block's
+    /// absolute index must not move with them.
+    #[test]
+    fn a_block_taller_than_the_screen_keeps_its_absolute_index() {
+        let mut session =
+            TermSession::spawn(40, 10, Some(silent_linger()), None).expect("spawn a pty");
+        let mut anchor = PaneAnchor::new();
+
+        let before = anchor.view(&session);
+        assert_eq!(before.history, 0, "a fresh grid has no scrollback");
+        let at = anchor.feed_local(&mut session, &term::block_bytes(15));
+
+        let after = anchor.view(&session);
+        assert!(after.history > 0, "a block that tall must have scrolled");
+        assert_eq!(
+            after.screen_top() + session.term.grid().cursor.point.line.0 as u64,
+            at + 15,
+            "scrolling moved the window, not the block"
+        );
+        assert_eq!(anchor.dropped(), 0);
     }
 
     /// The 256-color cube math, pinned at its corners.

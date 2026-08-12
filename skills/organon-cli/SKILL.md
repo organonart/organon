@@ -68,19 +68,26 @@ organon do '{"moves":[{"op":"set_param","id":"glow","value":1.0}]}'   # a batch 
 organon recipe nebula                                # a whole described look at once
 ```
 
-`organon console …` is a **separate namespace, and it dresses the console itself** —
-the lit surface behind the terminal text, not the world in front of it:
+`organon console …` is a **separate namespace, and it drives the console itself** —
+the lit surface behind the terminal text and the shape of the transcript, not the
+world in front of it:
 
 ```
 organon console background <name>    # the surface behind the glyphs
 organon console rig <name>           # how that surface is lit
+organon console block <rows>         # reserve blank rows in the transcript
 ```
 
 Reach for it when the ask is about *the workspace* ("make the background darker",
-"warmer light"); reach for the world verbs above when the ask is about *what Organon
-is rendering*. It only means anything while an Organon Console is running, and it
-changes nothing a `snap` would show. `--help` lists the accepted names — ask it
-rather than guessing, exactly as with parameters.
+"warmer light", "leave me room for a panel"); reach for the world verbs above when the
+ask is about *what Organon is rendering*. It only means anything while an Organon
+Console is running, and it changes nothing a `snap` would show. `--help` lists the
+accepted names and the row bound — ask it rather than guessing, exactly as with
+parameters.
+
+`block` opens its rows in the **active tab**, just below the cursor, and the next
+prompt lands underneath them. They are ordinary scrollback rows, so they scroll away
+with the rest of the transcript. Nothing is painted into them yet.
 
 Your changes ride an **override lane**. Two rules follow from that:
 

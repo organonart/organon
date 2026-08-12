@@ -213,8 +213,9 @@ enum Cmd {
         #[command(subcommand)]
         action: RecordAction,
     },
-    /// Dress the console itself — the surface behind the glyphs, not the world in front of
-    /// it. e.g. `organon console background slate`, `organon console rig daylight`
+    /// Drive the console itself — the surface behind the glyphs and the shape of the
+    /// transcript, not the world in front of it. e.g. `organon console background slate`,
+    /// `organon console rig daylight`, `organon console block 12`
     Console {
         #[command(subcommand)]
         action: ConsoleAction,
@@ -283,6 +284,16 @@ enum ConsoleAction {
         /// The rig (see the value list above)
         #[arg(value_parser = rig_names())]
         name: String,
+    },
+    /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
+    #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
+                            the next prompt lands underneath them. They are ordinary \
+                            scrollback rows: they age, scroll and evict like any other. \
+                            Nothing is painted into them yet — this reserves the space.")]
+    Block {
+        /// How many rows to open
+        #[arg(value_parser = clap::value_parser!(u16).range(1..=cli::MAX_BLOCK_ROWS as i64))]
+        rows: u16,
     },
 }
 
@@ -487,6 +498,7 @@ fn run_console(action: ConsoleAction) -> ! {
     let op = match action {
         ConsoleAction::Background { name } => cli::ConsoleOp::Background(name),
         ConsoleAction::Rig { name } => cli::ConsoleOp::Rig(name),
+        ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
     };
     if let Err(e) = cli::append_console_ops(std::slice::from_ref(&op)) {
         eprintln!(
@@ -833,6 +845,29 @@ mod tests {
         assert!(parse(&["console", "background"]).is_err());
         assert!(parse(&["console"]).is_err());
         assert!(parse(&["console", "frobnicate", "x"]).is_err());
+    }
+
+    /// **`console block` is bounded at the clap boundary, which is the only place a row count
+    /// can produce a good error.** The sidecar skips a malformed line in silence by design, so
+    /// a count that slipped past here would become a command that vanishes — or, without the
+    /// upper bound, a single word that pushes a fifth of the scrollback out of the buffer.
+    #[test]
+    fn console_block_takes_a_bounded_row_count() {
+        for rows in [1u16, 12, cli::MAX_BLOCK_ROWS] {
+            let c = parse(&["console", "block", &rows.to_string()]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Block { rows: got } } => {
+                    assert_eq!(got, rows)
+                }
+                _ => panic!("`console block {rows}` parsed as something else"),
+            }
+        }
+        assert!(parse(&["console", "block", "0"]).is_err(), "a block of nothing is a typo");
+        assert!(parse(&["console", "block", &(cli::MAX_BLOCK_ROWS + 1).to_string()]).is_err());
+        assert!(parse(&["console", "block", "-3"]).is_err());
+        assert!(parse(&["console", "block", "12.5"]).is_err());
+        assert!(parse(&["console", "block", "lots"]).is_err());
+        assert!(parse(&["console", "block"]).is_err(), "the count is not optional");
     }
 
     /// **The drift guard the block comment at the top of this file asks for** (#4 Tier 2,

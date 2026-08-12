@@ -11,10 +11,10 @@
 //!   `surface` / `material` append [`CliOp`] lines to `ipc::cli_cmd_path()`;
 //!   the visual drains them each frame into the Performer's override lane
 //!   (last-touched-wins, slider mirroring, mind-log — all shared with #317).
-//! - **the console lane (#4 Tier 2)**: `console background` / `console rig`
-//!   append [`ConsoleOp`] lines to [`console_cmd_path`], drained by the
-//!   **console**, not by the World. A separate destination needs a separate
-//!   channel — see that section's comment.
+//! - **the console lane (#4 Tier 2, extended by Tier 5)**: `console background` /
+//!   `console rig` / `console block` append [`ConsoleOp`] lines to
+//!   [`console_cmd_path`], drained by the **console**, not by the World. A
+//!   separate destination needs a separate channel — see that section's comment.
 
 use crate::agent::{self, CliOp, SlotKind};
 use crate::ipc::{self, Shared};
@@ -271,7 +271,20 @@ pub enum ConsoleOp {
     Background(String),
     /// The substrate's lighting rig.
     Rig(String),
+    /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
+    /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
+    /// painted into later. The payload is the row count, validated against
+    /// [`MAX_BLOCK_ROWS`] at the clap boundary before a line is ever written.
+    Block(u16),
 }
+
+/// The tallest block `organon console block` will open.
+///
+/// A ceiling rather than an adjective: the pane is a few tens of rows on any real display,
+/// so a block is a hole in a screenful — not a way to push the whole scrollback out of the
+/// buffer one command at a time. 200 leaves room for a wall-sized pane and still costs less
+/// than 2 % of the 10 000-line scrollback.
+pub const MAX_BLOCK_ROWS: u16 = 200;
 
 /// `$TMPDIR/<namespace>-console.txt` — the console command channel.
 ///
@@ -293,6 +306,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
     match op {
         ConsoleOp::Background(name) => format!("background {name}"),
         ConsoleOp::Rig(name) => format!("rig {name}"),
+        ConsoleOp::Block(rows) => format!("block {rows}"),
     }
 }
 
@@ -308,6 +322,12 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
     match it.next()? {
         "background" => Some(ConsoleOp::Background(it.next()?.to_string())),
         "rig" => Some(ConsoleOp::Rig(it.next()?.to_string())),
+        // A row count that does not parse — or does not fit — is a malformed line, and a
+        // malformed line is skipped exactly like an unknown verb. The two `Background`/`Rig`
+        // arms take their payload unvalidated because a *name* is only meaningful to the
+        // console's own tables; a count is meaningful right here, and `u16` is the type the
+        // whole lane carries.
+        "block" => it.next()?.parse::<u16>().ok().map(ConsoleOp::Block),
         _ => None,
     }
 }
@@ -1454,6 +1474,11 @@ mod tests {
             ConsoleOp::Background("substrate".into()),
             ConsoleOp::Rig("studio".into()),
             ConsoleOp::Rig("daylight".into()),
+            // Tier 5: the payload is a count, not a name — the first op on this lane whose
+            // argument is not a word.
+            ConsoleOp::Block(1),
+            ConsoleOp::Block(12),
+            ConsoleOp::Block(MAX_BLOCK_ROWS),
         ] {
             let line = console_op_to_line(&op);
             assert!(!line.contains('\n'), "a line must be one line: {line:?}");
@@ -1471,6 +1496,7 @@ mod tests {
             "background slate"
         );
         assert_eq!(console_op_to_line(&ConsoleOp::Rig("studio".into())), "rig studio");
+        assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
     }
 
     /// An unknown verb parses to `None` so the drain SKIPS it. That is the whole
@@ -1490,6 +1516,24 @@ mod tests {
         // mis-wired drain) must be skipped rather than half-understood.
         assert_eq!(parse_console_op("set metallic 0.9"), None);
         assert_eq!(parse_console_op("gen 3"), None);
+    }
+
+    /// **`block` is the first console verb whose argument is a number**, so the malformed
+    /// cases are a different set from a name's: a count that is not a count, or one this lane
+    /// cannot carry. All of them are skipped rather than clamped — a clamp would open a block
+    /// of a size nobody asked for, which is worse than opening none.
+    #[test]
+    fn a_block_row_count_that_is_not_a_count_is_skipped() {
+        assert_eq!(parse_console_op("block 8"), Some(ConsoleOp::Block(8)));
+        assert_eq!(parse_console_op("block 0"), Some(ConsoleOp::Block(0)));
+        assert_eq!(parse_console_op("block"), None, "no argument at all");
+        assert_eq!(parse_console_op("block rows"), None);
+        assert_eq!(parse_console_op("block -1"), None, "negative is not a u16");
+        assert_eq!(parse_console_op("block 8.5"), None, "fractional rows do not exist");
+        assert_eq!(parse_console_op("block 70000"), None, "past u16 entirely");
+        // Trailing junk after the count is ignored, exactly as a name's is — the wire form
+        // is `<verb> <word>` and the drain reads whole lines.
+        assert_eq!(parse_console_op("block 8 rows"), Some(ConsoleOp::Block(8)));
     }
 
     /// The console sidecar is namespace-derived like every other IPC file. This is the
