@@ -131,14 +131,21 @@ not after it stops.
 
 ---
 
-### 6 — "…and that's the instrument, inline." · Tier 5 (stretch) · **not yet**
+### 6 — "…and that's the instrument, inline." · Tier 5 · **not yet**
 
-A live ray-traced world animating in the scrollback between two prompts.
+The agent writes a paragraph with a rectangular gap in it, and something of ours is rendered
+into the gap while the text flows around it.
 
-*The point:* the closer.
+*The point:* the closer — and note what it is *not*. The agent did not ask the console for a
+window. It wrote its own page and left a space, the way a newspaper leaves a space, and the
+console filled it.
 *Check:* survives a scroll past and back without stalling the grid.
-*If cut:* beat 5 is the ending, and it is a good one. Do not attempt this live unless it has
-survived three rehearsals.
+*Order to perform, cheapest first:* a panel of working controls in the gap needs only the rect
+and one paint call. A live Organon scene in the gap additionally needs a second render whose
+frame cost is unmeasured and whose clocks are shared with the backdrop — real risk, named in
+the execution plan. Rehearse the controls version first; it is the one that cannot stall.
+*No longer a stretch goal* (2026-08-11, James): this is the beat the spike is now aimed at, and
+Tier 3's integration parked behind it.
 
 ---
 
