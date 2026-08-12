@@ -358,6 +358,9 @@ const CMD_BACKGROUND: &str = "console.background";
 const CMD_RIG: &str = "console.rig";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
+/// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
+/// writer already left in its own output. The console records; it never writes.
+const CMD_PATCH: &str = "console.patch";
 /// The single argument the two **dressing** verbs take. One name, because the sidecar's wire
 /// form is `<verb> <word>` and inventing two spellings for one slot is how a schema drifts
 /// from its transport.
@@ -366,6 +369,8 @@ const CMD_ARG: &str = "name";
 /// because it is a different kind: `name` is a `Choice` over a table and `rows` is an `Int`,
 /// and a palette showing "name: 12" would be describing the wrong thing.
 const CMD_ROWS: &str = "rows";
+/// [`CMD_PATCH`]'s other argument: how many lines above the current line the rectangle starts.
+const CMD_UP: &str = "up";
 
 /// The console's vocabulary, as [`CommandService`] catalog data.
 ///
@@ -420,6 +425,15 @@ fn console_specs() -> Vec<CommandSpec> {
             target: TargetKind::Viewport,
             args: vec![ArgSpec { name: CMD_ROWS.into(), kind: ArgKind::Int, required: true }],
         },
+        CommandSpec {
+            name: CMD_PATCH.into(),
+            doc: "Claim a rectangle already left in the writer's own output".into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec { name: CMD_UP.into(), kind: ArgKind::Int, required: true },
+                ArgSpec { name: CMD_ROWS.into(), kind: ArgKind::Int, required: true },
+            ],
+        },
     ]
 }
 
@@ -429,6 +443,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Background(_) => CMD_BACKGROUND,
         cli::ConsoleOp::Rig(_) => CMD_RIG,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
+        cli::ConsoleOp::Patch { .. } => CMD_PATCH,
     }
 }
 
@@ -464,6 +479,27 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
                 )),
             }
         }
+        CMD_PATCH => {
+            let int = |slot: &str| -> Result<i64, String> {
+                args.get(slot)
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| format!("{name}: `{slot}` is missing or is not an integer"))
+            };
+            let up = int(CMD_UP)?;
+            let rows = int(CMD_ROWS)?;
+            match (u16::try_from(up), u16::try_from(rows)) {
+                (Ok(up), Ok(rows))
+                    if (1..=cli::MAX_BLOCK_ROWS).contains(&rows) && up <= cli::MAX_BLOCK_ROWS =>
+                {
+                    Ok(cli::ConsoleOp::Patch { up, rows })
+                }
+                _ => Err(format!(
+                    "{name}: `{CMD_UP}` must be 0..={} and `{CMD_ROWS}` 1..={}, got {up} and {rows}",
+                    cli::MAX_BLOCK_ROWS,
+                    cli::MAX_BLOCK_ROWS
+                )),
+            }
+        }
         _ => Err(format!("no console op for {name:?}")),
     }
 }
@@ -477,6 +513,7 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
     match op {
         cli::ConsoleOp::Background(n) | cli::ConsoleOp::Rig(n) => json!({ CMD_ARG: n }),
         cli::ConsoleOp::Block(rows) => json!({ CMD_ROWS: rows }),
+        cli::ConsoleOp::Patch { up, rows } => json!({ CMD_UP: up, CMD_ROWS: rows }),
     }
 }
 
@@ -563,7 +600,7 @@ fn console_step(
         // into and never reaches here: [`Shell::apply_console`] routes it first. `None` is
         // the honest answer for a resolver whose whole domain is looks — and it is also the
         // safe one, since `None` here means "changed nothing".
-        cli::ConsoleOp::Block(_) => return None,
+        cli::ConsoleOp::Block(_) | cli::ConsoleOp::Patch { .. } => return None,
     }
     Some((source, look))
 }
@@ -1126,6 +1163,10 @@ impl Shell {
             self.open_block(*rows);
             return;
         }
+        if let cli::ConsoleOp::Patch { up, rows } = op {
+            self.claim_patch(*up, *rows);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -1185,6 +1226,50 @@ impl Shell {
         // painter will place a rect from, and an arithmetic error in it is invisible on screen
         // until something is painted into the wrong rows. `[block]` is the tag to grep for.
         eprintln!("[block] opened {rows} rows @ line {at} (pane {pane})");
+    }
+
+    /// Record a rectangle the writer already left in its own output — **the console writes
+    /// nothing** (Console Spike Tier 5, the corrected mechanism).
+    ///
+    /// 🚨 **Why this exists and [`Shell::open_block`] is not enough.** `open_block` feeds
+    /// blank rows at the cursor. But the cursor *is* the live input point — the row a shell's
+    /// prompt sits on and a keystroke lands in — so feeding there opens the hole **between the
+    /// prompt and the typing**. Measured 2026-08-11: prompt stranded above an eight-row hole
+    /// with the cursor below it, and against a real Claude Code tab the harness's whole frame
+    /// shifted and it repainted over everything. That is not a failure mode to work around; it
+    /// is the mechanism being wrong. No terminal puts a hole between a prompt and its input.
+    ///
+    /// The writer, by contrast, knows what it is about to print. It emits the gap as ordinary
+    /// blank lines through the ordinary PTY — rows the shell, ConPTY and the console all agree
+    /// exist, because they arrived the normal way — and then says where they are. This
+    /// function only records.
+    ///
+    /// `up` counts back from the line the cursor is on **now**, which is the line the claiming
+    /// command is being run from. Zero means the rectangle starts on that line.
+    ///
+    /// ⚠️ Still true, and unchanged by this: the sidecar is drained once per frame and is out
+    /// of band with the PTY byte stream, so "the line the cursor is on now" is resolved at
+    /// drain time. A writer that prints its gap and claims it in the same breath is fine; one
+    /// that keeps printing in between is not. The in-band fix is the OSC 8 claim in
+    /// `doc/console_patch_protocol.md`, which resolves the anchor from the *cells* rather than
+    /// from a clock.
+    fn claim_patch(&mut self, up: u16, rows: u16) {
+        let pane = self.strip.active;
+        let (Some(session), Some(looks)) =
+            (self.sessions.get_mut(pane), self.pane_looks.get_mut(pane))
+        else {
+            return;
+        };
+        if rows == 0 {
+            return;
+        }
+        // `boundary_now` is the absolute line just *below* the cursor — the same coordinate a
+        // look change opens an epoch at. One back from it is the cursor's own line, and `up`
+        // counts from there.
+        let cursor_abs = looks.anchor.boundary_now(session).saturating_sub(1);
+        let first_abs = cursor_abs.saturating_sub(u64::from(up));
+        looks.blocks.push(Block { first_abs, rows });
+        eprintln!("[patch] claimed {rows} rows @ line {first_abs} (up {up}, pane {pane})");
     }
 
     /// Close the live look-epoch in every pane and open the next one — the Tier 4 half of

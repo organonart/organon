@@ -295,6 +295,22 @@ enum ConsoleAction {
         #[arg(value_parser = clap::value_parser!(u16).range(1..=cli::MAX_BLOCK_ROWS as i64))]
         rows: u16,
     },
+    /// Claim a rectangle you already left in your own output — the console only records it
+    #[command(after_help = "Print your text with a gap in it — ordinary blank lines, ordinary \
+                            stdout — then say where the gap is. `--up` counts back from the \
+                            line you are on now. The console writes NOTHING: it records the \
+                            rectangle and paints it. This is the correct verb; `block` has \
+                            the console open the rows itself, which lands them between a \
+                            prompt and the typing and is wrong wherever anything is waiting \
+                            for input.")]
+    Patch {
+        /// How many lines above the current line the rectangle's first row sits
+        #[arg(long, value_parser = clap::value_parser!(u16).range(0..=cli::MAX_BLOCK_ROWS as i64))]
+        up: u16,
+        /// How many rows tall
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=cli::MAX_BLOCK_ROWS as i64))]
+        rows: u16,
+    },
 }
 
 /// Map the clap surface onto the library's command model (validation included).
@@ -499,6 +515,7 @@ fn run_console(action: ConsoleAction) -> ! {
         ConsoleAction::Background { name } => cli::ConsoleOp::Background(name),
         ConsoleAction::Rig { name } => cli::ConsoleOp::Rig(name),
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
+        ConsoleAction::Patch { up, rows } => cli::ConsoleOp::Patch { up, rows },
     };
     if let Err(e) = cli::append_console_ops(std::slice::from_ref(&op)) {
         eprintln!(

@@ -276,6 +276,21 @@ pub enum ConsoleOp {
     /// painted into later. The payload is the row count, validated against
     /// [`MAX_BLOCK_ROWS`] at the clap boundary before a line is ever written.
     Block(u16),
+    /// **Claim** a rectangle the writer already left in its own output (Console Spike
+    /// Tier 5) — `up` lines above the cursor, `rows` tall.
+    ///
+    /// 🚨 **This, not [`ConsoleOp::Block`], is the correct shape, and the difference is not
+    /// a refinement — it is the whole mechanism.** `Block` has the console *write* rows into
+    /// the transcript at the cursor. But the cursor is, by definition, the live input point:
+    /// the place a shell's prompt is waiting and a keystroke will land. Injecting there puts
+    /// the hole **between the prompt and the typing**, which no terminal does, and which is
+    /// worst precisely when the shell is idle — measured on 2026-08-11, prompt stranded above
+    /// an eight-row hole with the cursor below it.
+    ///
+    /// So the console never writes. The program leaves the gap as part of its own output —
+    /// ordinary blank lines through the ordinary PTY, which the shell, ConPTY and the console
+    /// all agree exist — and then says where it is. The console only *records*.
+    Patch { up: u16, rows: u16 },
 }
 
 /// The tallest block `organon console block` will open.
@@ -307,6 +322,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Background(name) => format!("background {name}"),
         ConsoleOp::Rig(name) => format!("rig {name}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
+        ConsoleOp::Patch { up, rows } => format!("patch {up} {rows}"),
     }
 }
 
@@ -328,6 +344,14 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
         // console's own tables; a count is meaningful right here, and `u16` is the type the
         // whole lane carries.
         "block" => it.next()?.parse::<u16>().ok().map(ConsoleOp::Block),
+        // Two counts, both required: a claim with a missing half is malformed, not a claim
+        // with a default. Defaulting `up` would silently anchor the rectangle at the cursor —
+        // exactly the placement this verb exists to avoid.
+        "patch" => {
+            let up = it.next()?.parse::<u16>().ok()?;
+            let rows = it.next()?.parse::<u16>().ok()?;
+            Some(ConsoleOp::Patch { up, rows })
+        }
         _ => None,
     }
 }
