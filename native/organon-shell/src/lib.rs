@@ -31,6 +31,7 @@
 //! contract is the checklist in its module doc.
 
 pub mod app;
+pub mod block_anchor;
 pub mod command;
 pub mod harness;
 pub mod mock_agent;
