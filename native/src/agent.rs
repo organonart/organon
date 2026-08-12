@@ -529,14 +529,20 @@ pub fn is_actuatable(id: &str) -> bool {
 }
 
 /// The `(min, max)` range for an actuatable id, or `None` if it has no Tier-1 route.
-/// Ranges mirror `params.rs` / `clip.rs::RANGES`.
+///
+/// Every bound here is the one `params.rs` declares, and `taper_round_trips_against_the_engine_range`
+/// (in `cli.rs`) **pins it there** — it reads each range off the real param object and fails the
+/// build on any disagreement. That test exists because this table is a hand-written mirror and,
+/// unpinned, it drifted: nine ids were wrong, `trans_amp_*` by a factor of ten. So when a range
+/// in `params.rs` changes, change it here too and let the test confirm it, rather than trusting
+/// either copy on its own.
 pub fn id_range(id: &str) -> Option<(f32, f32)> {
     let r = match id {
         "loop_count_x" | "loop_count_y" | "loop_count_z" => (1.0, 128.0),
         "loop_count_q" => (0.0, 256.0),
         "rot_amp_x" | "rot_amp_y" | "rot_amp_z" => (0.0, 2160.0),
         "rot_mod_x" | "rot_mod_y" | "rot_mod_z" => (-2.0, 2.0),
-        "trans_amp_x" | "trans_amp_y" | "trans_amp_z" => (0.0, 200.0),
+        "trans_amp_x" | "trans_amp_y" | "trans_amp_z" => (0.0, 20.0),
         "trans_mod_x" | "trans_mod_y" | "trans_mod_z" => (-200.0, 200.0),
         "scale_amp" => (0.0, 0.5),
         "ambient" => (0.0, 3.0),
@@ -547,25 +553,27 @@ pub fn id_range(id: &str) -> Option<(f32, f32)> {
         "glow" => (0.0, 2.0),
         "opacity" => (0.0, 1.0),
         "metallic" | "roughness" => (0.0, 1.0),
-        "exposure" => (-8.0, 8.0),
+        "exposure" => (-8.0, 4.0),
         "env_intensity" => (0.0, 4.0),
         "env_rotation" => (0.0, 360.0),
-        "bloom_intensity" => (0.0, 2.0),
+        "bloom_intensity" => (0.0, 1.0),
         "bloom_threshold" => (0.0, 4.0),
         "ior" => (1.0, 2.5),
         "subsurface" | "iridescence" => (0.0, 1.0),
         "sss_distortion" => (0.0, 1.0),
-        "sss_power" => (0.0, 8.0),
-        "irid_scale" => (0.0, 8.0),
+        "sss_power" => (1.0, 16.0),
+        "irid_scale" => (0.1, 6.0),
         "irid_shift" => (0.0, 1.0),
         "cam_speed" => (0.0, 1.0),
         "cam_kick" => (0.0, 1.0),
-        "cam_damping" => (0.0, 1.0),
+        "cam_damping" => (0.01, 0.99),
         // Camera auto-orbit PATH (#317 levers): the generator-agnostic "spin / rotate /
         // slowly turning" control — a CamPath index (0 Off, 1 H-circle, 2 V-circle,
         // 3 Figure-8, 4 Spiral, …). Pair with cam_speed. This is how NON-Original generators
         // (DNA, Harmonic, …) get visible rotation; their own params don't spin them.
-        "cam_path" => (0.0, 11.0),
+        // The top is `CamPath::variants().len() - 1` — an INDEX, not a count. It read 11 and
+        // so advertised a twelfth path that has never existed.
+        "cam_path" => (0.0, 10.0),
         // Material hue tint (#317 levers): a colour lever ("make it blue / red / green").
         "mat_hue" => (0.0, 1.0),
         // Harmonic soft-body BELL (#317 levers): turns the Spherical-harmonics generator into

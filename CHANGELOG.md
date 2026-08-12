@@ -11,6 +11,37 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the parameter ranges are true, and pinned
+
+- **Nine of the 45 scriptable parameters advertised a range the engine does not have.**
+  `agent.rs::id_range` and `clip.rs::RANGES` are hand-written mirrors of `params.rs` that
+  nothing checked, and they had drifted. `trans_amp_x/y/z` claimed a maximum of 200 against
+  the engine's 20 — a factor of ten, and published that way in
+  `doc/reference/parameters.md`. `exposure`, `bloom_intensity`, `sss_power`, `irid_scale`
+  and `cam_damping` were wrong at one end or both, and `cam_path` offered a twelfth camera
+  path that does not exist. All nine now read what `params.rs` says.
+- **Nothing errored when they were wrong, which is why they stayed wrong.** An agent told a
+  param runs to 200 when it stops at 20 gets no complaint — it gets a silent clamp and a
+  look it did not ask for. `recipe.rs` was validating every built-in recipe against the same
+  bad bounds, so the guard meant to catch an out-of-range recipe was holding the wrong ruler.
+  It reads `id_range`, so it is corrected by the same change; every shipped recipe was
+  already inside the true bounds.
+- **A test now pins both tables to the parameters themselves.**
+  `taper_round_trips_against_the_engine_range` reads every bound off
+  `OrganicMathParams::default()` instead of restating it — a third copy of a number is just
+  a third thing to drift — so the next disagreement fails the build. Only the id-to-field
+  join is hand-written, and the compiler checks that.
+- **It also pins the taper, over all 1372 host parameters.** Treating a range as two numbers
+  is only honest while the mapping between them is linear, which is an accident of `flin()`
+  today rather than a guarantee. The day someone reaches for a skewed range, two numbers
+  stop describing the parameter — and this fails then, rather than after the tables have
+  quietly gone wrong again.
+- Two CC slots are exempt, each for a stated reason: slot 16 carries
+  `inc_scale × 10^speed_exp`, an expression rather than a parameter, whose narrower CC span
+  is a deliberate playable range; slot 26 has been reserved since the Pulse Depth knob was
+  removed. Both are argued at the table and named in the test, so a slot that gains a
+  parameter has to be joined rather than left alone.
+- `doc/reference/parameters.md` regenerated.
 ### Console Spike — Tier 4: it scrolls, and it remembers
 
 - **A look applies forward; history keeps its own.** `organon console background <name>`

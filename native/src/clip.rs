@@ -11,16 +11,32 @@ use crate::ipc::Shared;
 pub const CC_BASE: u8 = 16;
 pub const N: usize = 32;
 
-/// (min, max) for each parameter slot, in the canonical order below. Ranges
-/// mirror `params.rs`. `rot_mod` is now per-axis rotation SPEED; `inc_scale` is
-/// the global speed (`loop_step` and per-axis `angle_inc` were removed).
-const RANGES: [(f32, f32); N] = [
+/// (min, max) for each parameter slot, in the canonical order below. Ranges are
+/// the ones `params.rs` declares, and `taper_round_trips_against_the_engine_range`
+/// (in `cli.rs`) pins them there — it reads each bound off the real param object
+/// and fails the build on a disagreement, which is what this table went without
+/// while `trans_amp` sat at ten times its true maximum. `rot_mod` is per-axis
+/// rotation SPEED; slot 16 is the global speed (`loop_step` and per-axis
+/// `angle_inc` were removed).
+///
+/// Two slots are **exempt from that pin, on purpose**, and the test names both:
+///
+/// - **16, effective global speed.** No parameter backs it. It carries
+///   `rot_mod[3]`, which `param_table.rs` packs as the *expression*
+///   `inc_scale × 10^speed_exp`. The product spans 0..1, but its default is
+///   0.01 and anything past ~0.1 is a blur, so a full-span CC would spend most
+///   of its 127 steps past usable — `(0, 0.1)` is a deliberate playable range
+///   for this lane, not a copy of `inc_scale`'s 0..1 dial. The cost is that a
+///   snapshot above 0.1 exports pinned at CC 127 and re-imports at 0.1.
+/// - **26, reserved.** The Pulse Depth knob was removed; `to_shared` hard-codes
+///   `pulse_depth: 0.0` and there is no param left to check against.
+pub(crate) const RANGES: [(f32, f32); N] = [
     (1.0, 128.0), (1.0, 128.0), (1.0, 128.0), (0.0, 256.0), // loop_count x,y,z,q
     (0.0, 2160.0), (0.0, 2160.0), (0.0, 2160.0),            // rot_amp
     (-2.0, 2.0), (-2.0, 2.0), (-2.0, 2.0),                  // rot_mod (rotation speed)
-    (0.0, 200.0), (0.0, 200.0), (0.0, 200.0),               // trans_amp
+    (0.0, 20.0), (0.0, 20.0), (0.0, 20.0),                  // trans_amp
     (-200.0, 200.0), (-200.0, 200.0), (-200.0, 200.0),      // trans_mod
-    (0.0, 0.1),                                             // inc_scale (global speed)
+    (0.0, 0.1),                                             // effective global speed (playable range — see above)
     (0.0, 0.5),                                             // scale_amp
     (0.0, 3.0), (0.0, 6.0), (0.0, 3.0),                     // ambient, key, fill
     (-90.0, 90.0), (-180.0, 180.0),                         // elevation, azimuth
