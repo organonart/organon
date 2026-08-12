@@ -72,110 +72,128 @@ obligation is the program's, not the console's.**
 
 ---
 
-## §0 — The gate: does the marker survive ConPTY?
+## §0 — MEASURED, 2026-08-11, on ORGANON-ONE
 
-🚨 **Measure this before implementing anything below it. It decides §1 and §2, and a negative
-result is entirely plausible.**
+The gate was: does a private marker survive ConPTY? `portable-pty` 0.9 defines
+`PSEUDOCONSOLE_PASSTHROUGH_MODE` and **does not enable it** (`win/psuedocon.rs:31`, `:80-94` —
+the flags passed are `INHERIT_CURSOR | RESIZE_QUIRK | WIN32_INPUT_MODE`), so ConPTY parses the
+child's output into its own screen buffer and re-synthesises VT for the console to read.
 
-`portable-pty` 0.9 defines `PSEUDOCONSOLE_PASSTHROUGH_MODE` and **does not enable it**
-(`win/psuedocon.rs:31`, `:80-94` — the flags passed are `INHERIT_CURSOR | RESIZE_QUIRK |
-WIN32_INPUT_MODE`). So on Windows, ConPTY parses the child's output into its own screen buffer
-and re-synthesises VT for the console to read. A sequence ConPTY does not implement is very
-likely **not forwarded at all** — this is the known reason Sixel and the Kitty graphics
-protocol historically did not work through ConPTY. If that holds, an APC marker never reaches
-the console on the primary development platform and the recommendation in §1 inverts.
+**Measured** with `ORGANON_SHELL_PTY_DEBUG=1` and a file containing an APC sequence, a
+private-numbered OSC (1338), an OSC 8 hyperlink and a plain sentinel, `type`d in a Windows tab
+and `cat`ed in a WSL tab. **Both legs behave identically** — a WSL tab is `wsl.exe`, itself a
+Windows process under ConPTY, so it is *not* a real PTY and there is no ConPTY-free path on
+this platform.
 
-**The measurement**, which takes minutes: run a console tab with `ORGANON_SHELL_PTY_DEBUG=1`
-(the raw-read trace at `term.rs:137-146`, `:236-239`), `printf` each of an APC sequence, a
-private-numbered OSC, and an OSC 8 hyperlink, and read which arrive. Run it in **both** a
-Windows shell tab (ConPTY) and a WSL tab (a real PTY), because only the first is at risk.
-
-| Outcome | §1 becomes |
+| Sequence | Result through ConPTY |
 |---|---|
-| APC arrives intact through ConPTY | **APC**, as specified below |
-| APC is swallowed but OSC 8 arrives | **OSC 8**, and §2 changes to a `Handler` decorator — a materially larger change (`Handler` has 71 methods, and an unforwarded one is a silent no-op), which is exactly why this is measured first rather than discovered late |
-| Nothing private survives ConPTY | The Windows path falls back to console-side row injection (`feed_local`, already built) and P1 holds only on real PTYs. Record it as a platform split rather than a defeat. |
+| **APC** `ESC _ … ESC \` | 🔴 **Stripped entirely.** The surrounding sentinels arrived, the sequence between them did not. |
+| **Private OSC 1338** | 🟡 **Survives byte-intact — but hoisted out of stream order.** It arrived in its own read *before* all of the text, though its source position is in the middle of line 2. |
+| **OSC 8 hyperlink** | 🟢 **Survives in position, inline, at exactly the right point in the text** — and is **rewritten**: sent with empty params, it arrived as `ESC ] 8 ; id=47476-1 ; https://organon.test/p1 ESC \`. The **URI is preserved exactly**; the params are replaced. |
+| plain text | 🟢 intact, but redelivered inside a full repaint (`ESC [ H`, `ESC [ K` per line) |
+
+**The finding that decides the protocol is not which sequences survive — it is which one keeps
+its place.**
+
+ConPTY forwards an *unknown* sequence out of band, immediately, because it has nowhere to put
+it. It forwards a *known* sequence in position because it can attribute it to cells. So on
+Windows, **an unknown marker cannot carry a position**, and "the cursor is here at the marker
+byte" — the mechanism §2 was built around — is not available. OSC 8 keeps its place precisely
+*because* ConPTY understands it and stores it on the cells.
+
+That is the same property recon found from the other direction: `Cell::hyperlink` is the one
+per-cell slot that survives reflow. **The marker should be state in the grid, not an event in
+the stream.**
 
 ---
 
-## §1 — The sequence
-
-**Recommended, pending §0: APC, 7-bit introducer, ST-terminated.**
+## §1 — The sequence: OSC 8, with the payload in the URI
 
 ```
-ESC _ organon ; <verb> ; <k=v> ; <k=v> … ESC \
+ESC ] 8 ; ; organon-patch:<nonce>/<id>/<field>=<value>&… ESC \
+   …the glyphs the patch is anchored to…
+ESC ] 8 ; ; ESC \
 ```
 
-Why this class:
+- **The payload lives in the URI, never in the params.** Measured: ConPTY replaces the params
+  with its own `id=…` and passes the URI through byte-for-byte. A protocol that put fields in
+  the params would work in every terminal except the one we ship on.
+- **A private URI scheme**, so nothing dereferences it and no other tool claims it.
+- **The nonce is in the URI too** — the console injects it into the child environment, as it
+  already does with `ORGANON_IPC_NS` (`term.rs:190-195`). It is the only defence against
+  `cat`-ing a file that happens to contain a marker, and it makes the claim session-scoped.
 
-- **It is provably inert in our own parser.** `vte` 0.15 routes `ESC _` to `SosPmApcString`
-  (`src/lib.rs:377`), whose handler discards every byte except CAN/SUB/ESC
-  (`src/lib.rs:438-450`). It cannot print, cannot move the cursor, cannot desync the parser.
-  The `Perform` trait has no APC hook at all (`src/lib.rs:761-823`).
-- **There is no number to collide on.** Private OSC numbers are an unmanaged namespace — `7`,
-  `9`, `99`, `133`, `777`, `1337` are all informally taken, with no registry. APC carries only
-  a leading token, and `organon` cannot be confused with Kitty's `G`.
-- **ST, never BEL.** BEL does *not* terminate APC — inside `SosPmApcString` `0x07` is simply
-  discarded — so a BEL-terminated marker would swallow the rest of the stream in any
-  conforming terminal. This is a live footgun, not a theoretical one.
-- **7-bit `ESC _`, not the 8-bit `0x9F`**, so nothing 8-bit-unclean or UTF-8-normalising
-  mangles it.
+**Rejected, with the measurement as the reason:** APC — the recon's recommendation on
+degradation grounds, and provably inert in our own parser (`vte` routes `ESC _` to
+`SosPmApcString`, which discards every byte but CAN/SUB/ESC, `src/lib.rs:377`, `:438-450`) — is
+**stripped by ConPTY and never arrives.** Perfect invisibility is worthless if the message does
+not survive. A private OSC number survives but arrives detached from its position, which
+defeats the only thing a marker is for.
 
-**Emission is gated.** The CLI emits a marker only when a console is listening, and the marker
-carries a **per-session nonce** the console injects into the child environment — the precedent
-is `ORGANON_IPC_NS`, already injected at `term.rs:190-195`. The nonce is the only defence
-against `cat`-ing a file that happens to contain the marker bytes.
+⚠️ **The cost of OSC 8 is real and must be stated, not discovered:** in any other terminal the
+anchored glyphs become an underlined, clickable link with an `organon-patch:` URI. We are
+hijacking a standard, and the standard's own rendering is the price. Mitigations: anchor to as
+few glyphs as possible, and gate emission on the console's presence (§1's nonce already
+requires an environment variable the console injects, so a claim is silent everywhere else).
 
 ---
 
-## §2 — How the console reads it
+## §2 — How the console reads it: off the cells, not out of the stream
 
-**Pre-scan the byte stream in `TermSession::pump`, and feed every byte to the parser anyway.**
+**The console does not scan the byte stream at all.** OSC 8 reaches `Handler::set_hyperlink`,
+which writes into `grid.cursor.template`, and `write_at_cursor` clones the template's `extra`
+into every cell written (`term/mod.rs:1874-1876`, `:984-990`). The claim therefore ends up
+stored on the cells themselves, readable with `Cell::hyperlink()` (`term/cell.rs:219-221`) —
+and `renderable_content`'s `display_iter` yields `&Cell`, so it is reachable at paint time in
+the loop `term_view.rs:520-557` already walks.
 
-`pump` drains 64 KiB reads (`term.rs:219`, `:240`) and calls `parser.advance(&mut term,
-&bytes)` (`term.rs:280`). The scanner observes; it never filters. Because APC is provably
-swallowed, passing the marker through costs nothing and means **a false positive in the scanner
-can never corrupt the terminal** — the worst case is a patch that should not exist.
+This is strictly better than the stream scanner §2 previously specified, and it deletes four
+hazards outright:
 
-Three properties the scanner must have:
+- no incremental scanner and no state on `TermSession`;
+- no split-read hazard — a marker crossing a 64 KiB boundary is vte's problem, already solved;
+- no split-feed and no synchronized-update staleness — position is not inferred from the stream,
+  it *is* which cells carry the attribute;
+- no `Handler` decorator, and therefore none of the 71-method forwarding surface where an
+  unforwarded default is a silent no-op.
 
-1. **Incremental and byte-oriented, with state on `TermSession`.** A marker *will* land across
-   two reads — this is certain at 64 KiB boundaries, not merely possible — so a
-   `windows().position()` scan is wrong on the first long transcript. It needs a bounded
-   accumulator and a stated drop policy for a marker that never terminates.
-2. **Split-feed for the cursor.** A claim's whole value is *"the cursor is here."* `advance` is
-   stateful and safely re-entrant across calls (`vte/src/ansi.rs:298-311`), so the console feeds
-   `bytes[..marker_end]`, reads `term.grid().cursor.point` (the accessor `term_view::cursor_row`
-   already uses, `term_view.rs:253-255`), then feeds the rest. That resolves "here" to an exact
-   absolute line at the exact byte.
-3. **It must know about synchronized updates.** While a DEC 2026 update is pending, `advance`
-   buffers into `advance_sync` (`vte/src/ansi.rs:302-303`) and applies later — so a marker seen
-   inside a BSU…ESU block would read a stale cursor. Bounded in practice (sync updates are
-   full-screen-app frames, and the alternate screen is out of patch scope), but named here so
-   it is not rediscovered.
+**Cost:** re-finding is a grid scan. Bound it to the viewport (~80×50 = 4 000 cells is free per
+frame); scanning full scrollback (10 000 lines) is not, and must not be done per frame.
 
-⚠️ **A `Handler` decorator cannot do this job.** The escape hatch named in `scroll_anchor.rs:138`
-is real but narrower than it sounds: an unrecognised OSC reaches only `unhandled()`, which
-`debug!`s (`vte/src/ansi.rs:1339-1343`, `:1519`), and DCS `hook`/`put`/`unhook` are `debug!`-only
-(`:1311-1326`). **No `Handler` method is invoked for any private sequence.** The single hook that
-can carry an arbitrary payload is `set_hyperlink` (OSC 8), which is why §0's middle outcome is a
-bigger change than it looks.
+🚨 **The claim must ride on real glyphs, never on the gap's own spaces.** `Cell::is_empty`
+(`term/cell.rs:226-239`) does **not** test `hyperlink`, so a space carrying a claim is still
+"empty" — droppable by reflow's clear-row path and truncatable by `Row::shrink`. Anchor to the
+text around the hole, not to the hole.
+
+📌 **One consequence worth taking:** because the claim lives on cells and cells survive
+rewrapping, the console can *re-find* a patch's anchor after a width change. That does not
+rescue P3 — reflow still destroys the rectangle, and re-finding recovers where a patch belongs,
+never a hole to put it in — but it turns "the anchor went stale" into "the anchor is right and
+the geometry is gone," which is the difference between a patch painted over live text and a
+patch that knows it must be redrawn.
 
 ---
 
 ## §3 — The claim
 
-The coordinate frame is **relative and in cells**. The program cannot know absolute screen
-coordinates and must not try; the console resolves "here" from the cursor at the marker byte.
+The coordinate frame is **relative to the anchored cells, and in cells**. The program cannot
+know absolute screen coordinates and must not try; the console resolves the anchor from *which
+cells carry the claim* (§2), which is why the anchor survives ConPTY and reflow when a stream
+position would not.
 
 | Field | Req | Meaning |
 |---|---|---|
 | `verb` | ● | `patch` to claim, `drop` to release. Reserve the names; build both. |
 | `id` | ● | **Console-assigned** (see below), echoed by the CLI. |
-| `up` | ● | How many lines *above the marker* the rectangle's first row sits. |
+| `up` | ● | How many lines *above the anchor row* the rectangle's first row sits. |
 | `rows` | ● | Height in cells. |
 | `col`, `cols` | ● | The column range, zero-based, left-inclusive. |
 | `kind` | ● | What to paint. A name the console resolves — never a command, never a path. |
+
+⚠️ **Anchor above the hole, not below it, and never inside it.** The claim rides on real glyphs
+(§2), the gap has none, and text below the gap is the text most likely to be re-wrapped away
+from it. Anchoring to the line that introduces the figure is both the most stable choice and
+the one a program naturally has to hand.
 
 **`id` is console-assigned and echoed, never invented by the program.** A program has no way to
 know what is already live, and a collision is silent. The CLI asks, the console answers, the CLI
@@ -257,12 +275,15 @@ schema's guardrail, unchanged.
 
 Pure, headless, no GPU, no egui context — the house shape.
 
-- `a_marker_split_across_reads_is_still_recognised` — the certain case, not the edge case.
-- `an_unterminated_marker_is_dropped_at_the_bound`
-- `a_marker_without_the_session_nonce_is_ignored`
-- `the_parser_is_unaffected_by_a_marker` — feed a marker, assert the grid is byte-identical to
-  the same stream without it. This is what makes pre-scanning safe.
-- `a_claim_resolves_to_the_cursor_at_the_marker_byte` — the split-feed law.
+- `a_claim_uri_round_trips` — parse/emit, with every optional field absent.
+- `a_claim_without_the_session_nonce_is_ignored` — the `cat`-a-file case.
+- `a_foreign_hyperlink_is_not_a_claim` — an ordinary OSC 8 link must be inert here.
+- `conpty_rewritten_params_do_not_change_the_claim` — **measured behaviour, pinned**: params
+  arriving as `id=47476-1` instead of empty must not alter parsing, because the payload is in
+  the URI.
+- `a_claim_resolves_to_the_cells_that_carry_it` — the §2 law.
+- `a_claim_on_a_blank_cell_is_rejected` — `Cell::is_empty` ignores `hyperlink`, so a claim
+  anchored to spaces is droppable by reflow; refuse it at the source rather than lose it later.
 - `duplicate_ids_are_rejected`
 - `a_width_change_invalidates_every_patch` — P3, asserted rather than hoped.
 - `nothing_in_a_claim_reaches_a_process_spawn` — the I1-shaped guard.
@@ -273,8 +294,17 @@ Pure, headless, no GPU, no egui context — the house shape.
 
 Patches in the alternate screen. Patches a program can update in place (a claim is create-or-
 drop; re-emitting is the update path). Z-order between overlapping patches beyond paint order.
-Any claim field describing *how* a patch looks — that is layout. Reflow-surviving anchors: the
-only per-cell slot that survives rewrapping is `Cell::hyperlink` (`term/cell.rs:219-221`), it
-cannot ride on the gap's own spaces (`is_empty` ignores it), and it makes the text a clickable
-link in every other terminal. It recovers *where a patch belongs*, never *a hole to put it in* —
-which is why P3 drops instead.
+Any claim field describing *how* a patch looks — that is layout.
+
+**No longer deferred, because the measurement moved it:** reflow-surviving anchors were listed
+here as a rejected option when the marker was going to be an APC event in the stream. `Cell::
+hyperlink` is now the mechanism itself (§2), not an alternative to it. What stays true is its
+limit — it recovers *where a patch belongs*, never *a hole to put it in*, which is why P3 still
+drops on a width change.
+
+**Also worth revisiting later, not now:** `PSEUDOCONSOLE_PASSTHROUGH_MODE`. `portable-pty`
+defines it and leaves it disabled (`win/psuedocon.rs:31`). Enabled, ConPTY would forward the
+child's bytes unparsed and APC — the cleanest sequence on every other ground — would work.
+That is a dependency change (a fork or an upstream PR) plus a Windows version floor, and it
+would also mean giving up ConPTY's input translation. Named here so it is a known door rather
+than a rediscovery.
