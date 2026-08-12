@@ -455,6 +455,66 @@ region and drawing into it is the entire remaining product.** What the pivot del
 rendered natively, containing one inline artifact a terminal could not have shown.* Not a
 client. Proof.
 
+### 5.9.1 Which event stream — decided 2026-08-12, on measurement
+
+Two recon passes, plus live probes of the installed CLI on this machine. **The answer is
+Claude Code first, Pi second** — and the premise the question was framed on turned out to be
+wrong, which is the most important finding.
+
+🚨 **"Pi is where we control both ends" is no longer true.** Pi migrated from the retired
+private fork to **stock upstream npm** on 2026-08-11 (`@earendil-works/pi-coding-agent` 0.84.1,
+MIT, upstream's own `types.d.ts` and 2988-line extension doc ship inside the package). We
+control an *extension*; upstream controls the events it receives — on a `0.x` line averaging a
+minor release per week, whose `message_update` payload changed shape **one release before the
+installed build**. That was the main argument for Pi and it has evaporated.
+
+**Measured live on this machine** (`claude.exe` **2.1.228**, auth good, `--output-format
+stream-json`), because the recon had no shell and everything it said was doc-derived:
+
+- The full event sequence for a tool-using turn: `system/init` → `assistant`(text) →
+  `assistant`(`tool_use`) → `user`(`tool_result`) → `assistant`(text) → `result`.
+- `tool_use` carries the **complete structured input** (`{"name":"Read","input":{"file_path":…}}`),
+  and `tool_result` correlates by `tool_use_id`. Start and end are distinct messages.
+- 🚨 **`permission_denials: []` — a read tool executed with no callback and was not denied.**
+  The recon's "no callback means deny" warning does not bite for read-only tools, so **a plain
+  stdio consumer can render a real conversation today** without an SDK, an MCP server, or the
+  undocumented control protocol. Write tools are a milestone-2 problem.
+- Undocumented events observed that the docs do not list and a view would want:
+  `rate_limit_event`, and `system/post_turn_summary` carrying `status_category`,
+  `status_detail`, `needs_action`.
+
+**Why Claude Code first, in order of weight:**
+
+1. **Rust talks to it directly.** NDJSON over a child process's stdio — the console already owns
+   child processes. Pi is TypeScript in WSL, so a Pi view needs a **Node boundary and the WSL
+   seam** (loopback HTTP, as `voice-channel.ts` already does). That is an entire extra transport
+   for a proof.
+2. **It is what James uses every day**, so the proof lands in the real workflow instead of beside it.
+3. **`AskUserQuestion` carries structured options with optional HTML `preview` fragments** — an
+   inline rendered artifact delivered as data, which *is* the milestone's requirement, handed to us.
+4. `Edit` carries `old_string`/`new_string`, and `TaskCreate`/`TaskUpdate` are ordinary tools —
+   native diffs and a live task panel with no parsing.
+
+⚠️ **The cost, stated plainly because it is a product decision wearing a protocol costume:
+there is no attach.** Every programmatic surface is a child process you spawn. A conversation
+view cannot mirror the Claude Code session James is already running in a terminal — it must
+**be** the session. The view replaces his invocation rather than observing it.
+
+⚠️ **And the gap that will show:** token-level deltas from **subagents are never forwarded**.
+On a coordinator session that fans out to a dozen agents, a large fraction of visible activity
+arrives as complete-message bursts, not as live text.
+
+**Why Pi second, and genuinely second rather than dismissed.** `pi --mode rpc` is documented in
+its first sentence as being for "embedding the agent in other applications, IDEs, or custom
+UIs" — it is purpose-built for this, and it carries **strictly more lifecycle events** than
+Claude Code exposes (`queue_update`, `auto_retry_*`, compaction progress). Its `Edit` result
+carries a **real unified patch**, and its truncation is explicit and recoverable
+(`truncatedBy`, `totalLines`, `fullOutputPath`). Pi has **no permission system at all** — so
+approvals are something we *build* rather than surface, but `tool_call` blocking plus the
+documented `extension_ui_request`/`extension_ui_response` pair composes into a genuine
+front-end approval loop in about thirty lines. Rule 5′ permits exactly one named integration at
+a time; this is the next one.
+
 ---
 
 ## 6. Rules for parallel work
