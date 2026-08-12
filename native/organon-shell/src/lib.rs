@@ -1,7 +1,7 @@
 //! Organon Shell — the agent-operating workstation (Shell #3).
 //!
-//! A native, GPU-composited workspace for collaborating with AI agents to build and
-//! operate living software systems. Product definition: `doc/organon_shell_prd.md`
+//! A native, GPU-composited workspace for working with AI agents.
+//! Product definition: `doc/organon_shell_prd.md`
 //! (private annex); living code state: `SHELL_ARCHITECTURE.md` at the repo root, which
 //! travels with this crate wherever it goes.
 //!
