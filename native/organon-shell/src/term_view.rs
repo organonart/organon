@@ -532,6 +532,7 @@ pub fn draw(
     anchor: &mut PaneAnchor,
     backdrop: Option<BandedBackdrop<'_>>,
     blocks: &[Block],
+    patch_image: Option<egui::TextureId>,
 ) {
     let font_id = egui::FontId::monospace(FONT_PT);
     let (cell_w, cell_h) = cell_metrics(ui);
@@ -608,10 +609,6 @@ pub fn draw(
     // viewport's bands and its glyphs come from the same `display_offset` in the same frame.
     let state = anchor.view(session);
     let painter = ui.painter_at(rect);
-    // The live look's picture, read before the match consumes the backdrop. Tier 5's first
-    // light paints blocks from it: the console already renders and registers this texture
-    // every frame, so a patch costs one more quad and no second scene.
-    let live_image = backdrop.as_ref().and_then(|b| b.textures.last().copied().flatten());
     match backdrop {
         Some(bands) => {
             for quad in band_quads(bands.boundaries, bands.textures, state, rect, cell_h) {
@@ -651,7 +648,12 @@ pub fn draw(
     // **Before the glyphs**, because the cursor and any text that does land on those rows
     // (a stray write, a resize that reflowed something into them) must still win. A patch
     // never hides characters.
-    if let Some(image) = live_image {
+    // `patch_image` is supplied independently of `backdrop`, and that independence is the
+    // point: a scene can be rendered *only* so a patch has something to show, while the
+    // window behind it stays the flat black of an ordinary terminal. A terminal background is
+    // a thirty-year-old idea; a rendered object living in the page is not, and leading with
+    // the former undercuts the latter.
+    if let Some(image) = patch_image {
         for quad in block_quads(blocks, state, rect, cell_h) {
             painter.image(image, quad.rect, quad.uv, egui::Color32::WHITE);
         }

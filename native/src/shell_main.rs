@@ -1446,11 +1446,42 @@ impl Shell {
 
     /// The engine's frame, sized to the pane it is painted into, behind the glyphs (tree E
     /// Tier 1; Console Spike Tier 1 fixed its aspect and gave it a second source).
+    /// Does the active pane hold a patch that needs a picture?
+    ///
+    /// The active pane only: a patch is painted where it is looked at, and rendering for a
+    /// tab nobody is watching would be a scene per background tab.
+    fn patches_want_image(&self) -> bool {
+        self.pane_looks.get(self.strip.active).is_some_and(|p| !p.blocks.is_empty())
+    }
+
+    /// What the engine should draw this frame, which is **not** the same question as what the
+    /// backdrop should paint.
+    ///
+    /// James's rule, 2026-08-11: *the console must open looking exactly like an ordinary
+    /// terminal.* Painting the whole window is the one move that says "this is a picture with
+    /// text on it" — the opposite of the claim — and terminal backgrounds have been a solved,
+    /// unremarkable thing for thirty years, so leading with one invites the wrong comparison
+    /// entirely. A patch is the interesting object: a rendered thing living **in** the page.
+    ///
+    /// So the two decisions are separated. `backdrop_source` still decides whether the
+    /// full-window quad is painted; this decides whether a scene is *rendered at all*. With
+    /// the backdrop off and a patch open, the substrate is drawn into the pane target and
+    /// **only the patch quads sample it** — one render, no second `World`, no `Shared`
+    /// override, and the terminal behind it stays flat black.
+    fn render_source(&self) -> BackdropSource {
+        if self.backdrop_source == BackdropSource::Off && self.patches_want_image() {
+            BackdropSource::Substrate
+        } else {
+            self.backdrop_source
+        }
+    }
+
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
         // Nothing is re-sized on a frame that renders nothing; the flag is read by
         // [`Shell::apply_epoch_plans`] whether or not this function reached its own body.
         self.pane_resized = false;
-        if self.backdrop_source == BackdropSource::Off {
+        let source = self.render_source();
+        if source == BackdropSource::Off {
             // ⚠️ **`off` clears the rig too, and it has to be said here** because this is the
             // one arm that returns before the source→rig block below. Tier 1 could leave it
             // out: the source was read once at startup, so nothing ever *became* `off`. With
@@ -1496,7 +1527,7 @@ impl Shell {
         // being drawn. Under `=1` this writes `None` over `None` every frame. Tier 2 closed
         // the one gap this could not reach from here — see the `Off` arm at the top, which
         // returns before this block and so has to clear the rig itself.
-        if self.backdrop_source == BackdropSource::Substrate {
+        if source == BackdropSource::Substrate {
             // Re-framed every frame, which is how resize is handled without a staleness flag
             // to get wrong: the rig is computed for ONE aspect and the engine reads its own
             // from the render target, so a stale rig is a plane that no longer covers the
@@ -1597,8 +1628,16 @@ impl Shell {
         // mutates the world's working copy, not this base, per #317's rule, while
         // the console lane rewrites the base itself because a backdrop is not a
         // param override.
+        // When a patch is being rendered against an `off` backdrop, the snapshot has to
+        // describe the substrate the patch will show — the World draws what this says, and it
+        // has no other way to learn that anything wants a picture this frame.
+        let published = if self.render_source() == self.backdrop_source {
+            *self.shared
+        } else {
+            *look_shared(self.render_source(), &self.console_look)
+        };
         if let Some(w) = self.shared_writer.as_mut() {
-            w.write(*self.shared);
+            w.write(published);
         }
 
         // The engine first, the terminal over it — the backdrop texture this frame
@@ -1635,11 +1674,22 @@ impl Shell {
         // The active pane's look history, resolved to textures before the closure borrows
         // `pane_looks` mutably for its anchor. `None` when there is no backdrop at all, which
         // is the pre-Tier-4 path exactly.
-        let bands = backdrop.and_then(|live| {
-            self.pane_looks.get(active).map(|pane| {
-                Self::band_table(&pane.ledger, Some(live), |id| pane.cache.get(&id).map(|c| c.id))
+        //
+        // ⚠️ Gated on the **backdrop** source, not the render source: a scene rendered purely
+        // so a patch has something to show must not also paint itself across the window. That
+        // separation is the whole of James's "it must open like an ordinary terminal" rule —
+        // see [`Shell::render_source`].
+        let bands = (self.backdrop_source != BackdropSource::Off).then_some(()).and_then(|()| {
+            backdrop.and_then(|live| {
+                self.pane_looks.get(active).map(|pane| {
+                    Self::band_table(&pane.ledger, Some(live), |id| {
+                        pane.cache.get(&id).map(|c| c.id)
+                    })
+                })
             })
         });
+        // The picture a patch samples, available whether or not the backdrop paints.
+        let patch_image = backdrop;
         let strip = &self.strip;
         let registry = &self.registry;
         let installed = &self.installed;
@@ -1698,6 +1748,7 @@ impl Shell {
                                 textures,
                             }),
                             &pane.blocks,
+                            patch_image,
                         );
                     } else {
                         ui.centered_and_justified(|ui| {

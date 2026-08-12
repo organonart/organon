@@ -30,7 +30,38 @@ unmodified agent harnesses beside it.
 
 ---
 
-### 2 — "…except the background is a lit surface, not a colour." · Tier 1 · **landed**
+### 🚨 Amendment, 2026-08-11 (James): the backdrop is **not** the opening move
+
+*"Setting the background of a terminal is nothing. People have been doing that for years. It
+doesn't communicate what we are really doing — in fact it breaks the whole concept that we're
+creating an illusion that we are in a terminal. When you set the whole background like that, it
+is going against our entire paradigm."*
+
+Two things follow, and they are not stylistic.
+
+1. **The console opens indistinguishable from an ordinary terminal.** Flat black, no shading,
+   nothing to notice. Verified by capture 2026-08-11; the shading everyone had been seeing came
+   from `organon-console.cmd` forcing `ORGANON_SHELL_BACKDROP=1`, now removed. The console's own
+   default was always off.
+2. **The reveal is the patch, not the surface.** A rendered object living *in* the page is the
+   claim nobody has seen before. A themed background is a solved, thirty-year-old idea, and
+   leading with it invites exactly the wrong comparison — worse, painting the whole window is
+   the one move that says *this is a picture with text on it*, which is the opposite of what the
+   console is asserting. The illusion of being a real terminal is load-bearing, and the backdrop
+   spends it.
+
+**The material is not abandoned — it is demoted to a later move**, where the page takes on a
+surface for a while and the scrollback carries it. That reads as the transcript acquiring a
+material. Opening with it reads as wallpaper.
+
+⚠️ Consequence taken in the same change: a patch no longer borrows the backdrop's texture.
+`Shell::render_source` separates *what the engine draws* from *what the backdrop paints*, so a
+scene can be rendered purely to fill a patch while the window behind it stays flat black. One
+render, no second `World`.
+
+---
+
+### 2 — "…except the background is a lit surface, not a colour." · Tier 1 · **landed, but HELD — see the amendment above**
 
 Reveal the substrate behind the glyphs: `ORGANON_SHELL_BACKDROP=substrate`.
 
