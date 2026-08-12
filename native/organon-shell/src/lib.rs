@@ -55,6 +55,7 @@ pub mod command;
 pub mod conversation;
 pub mod conversation_view;
 pub mod harness;
+pub mod mcp;
 pub mod mock_agent;
 pub mod platform;
 pub mod scroll_anchor;
