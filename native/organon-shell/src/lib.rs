@@ -29,12 +29,23 @@
 //! scrollback, so the backdrop's look-epochs can be painted as viewport bands that
 //! age with the text instead of with the window. Pure arithmetic — its caller
 //! contract is the checklist in its module doc.
+//!
+//! Console Spike §5.9 forks the console into **two front-ends over one renderer**, and
+//! five modules make the second one. The terminal host ([`term`] + [`term_view`]) is
+//! untouched and remains the universal fallback. Beside it now: [`agent_event`] decodes
+//! Claude Code's NDJSON, [`conversation`] folds those into a renderable transcript,
+//! [`agent_map`] is the seam between the two, [`agent_session`] owns the live child
+//! process, and [`conversation_view`] draws the result. `SHELL_ARCHITECTURE.md` §
+//! "Two front-ends" owns the shape.
 
 pub mod agent_event;
+pub mod agent_map;
+pub mod agent_session;
 pub mod app;
 pub mod block_anchor;
 pub mod command;
 pub mod conversation;
+pub mod conversation_view;
 pub mod harness;
 pub mod mock_agent;
 pub mod platform;

@@ -68,6 +68,27 @@ pub struct HarnessSpec {
     /// Only meaningful with `wsl: true`.
     #[serde(default)]
     pub wsl_distro: Option<String>,
+
+    /// Open this harness in the **conversation view** rather than a terminal tab
+    /// (Console Spike §5.9).
+    ///
+    /// The console has two front-ends over one renderer, and this flag is which one a
+    /// tab gets. A conversation tab spawns no PTY at all: it drives
+    /// [`crate::agent_session`] over pipes and renders the structured event stream
+    /// natively. So `command`, `wsl` and the whole [`launch_argv`] decision are
+    /// **inert** here — the flags are the CLI's own (`agent_session::ARGS`), because
+    /// they are what make the process a persistent session rather than a one-shot, and
+    /// a user-supplied argv could silently break that.
+    ///
+    /// `cwd` is still honoured: it is the directory the agent works in. `detect` is
+    /// still honoured: it is the same PATH probe, so the + menu cannot offer a
+    /// conversation with a CLI that is not installed.
+    ///
+    /// Rule 5′ (§6): the terminal host is harness-agnostic, the conversation view is
+    /// harness-specific and says which harness — and **degrading to a terminal tab is
+    /// always available**, which is exactly what the neighbouring `claude` row is.
+    #[serde(default)]
+    pub conversation: bool,
 }
 
 /// The built-in registry, in the order the + menu shows them. Pi leads after the
@@ -98,6 +119,7 @@ pub fn builtin_for(platform: Platform) -> Vec<HarnessSpec> {
             cwd: None,
             wsl: false,
             wsl_distro: None,
+            conversation: false,
         }
     };
     let wsl = |id: &str, name: &str, glyph: &str, cmd: &[&str], url: Option<&str>| HarnessSpec {
@@ -113,6 +135,7 @@ pub fn builtin_for(platform: Platform) -> Vec<HarnessSpec> {
         cwd: None,
         wsl: true,
         wsl_distro: None,
+        conversation: false,
     };
 
     let mut reg = vec![
@@ -136,6 +159,20 @@ pub fn builtin_for(platform: Platform) -> Vec<HarnessSpec> {
             &["cursor-agent"],
             Some("https://cursor.com"),
         ),
+        // The conversation view (§5.9). It sits beside the terminal row for the same
+        // CLI, not instead of it: the same agent, two front-ends, and the terminal one
+        // is what Rule 5′ calls "supported the old way".
+        HarnessSpec {
+            conversation: true,
+            ..h(
+                "claude-chat",
+                "Claude Code (conversation)",
+                "◈",
+                &[],
+                &["claude"],
+                Some("https://claude.com/claude-code"),
+            )
+        },
     ];
     if platform == Platform::Windows {
         reg.push(wsl("pi-wsl", "Pi (WSL)", "π", &["pi"], Some("https://github.com/badlogic/pi-mono")));
@@ -459,6 +496,40 @@ mod tests {
         assert_eq!(one.cwd, None);
         assert!(!one.wsl);
         assert_eq!(one.wsl_distro, None);
+        assert!(!one.conversation, "a terminal tab is what a spec means unless it says otherwise");
+    }
+
+    /// §5.9's second front-end is one registry row, on every platform, beside the
+    /// terminal row for the same CLI — never replacing it (Rule 5′: degrading to a
+    /// terminal tab is always available).
+    #[test]
+    fn the_conversation_row_sits_beside_the_terminal_one() {
+        for platform in [Platform::Windows, Platform::Unix] {
+            let reg = builtin_for(platform);
+            let chat = reg.iter().find(|h| h.id == "claude-chat").expect("the conversation row");
+            assert!(chat.conversation);
+            assert!(chat.command.is_empty(), "the CLI's own flags decide the argv, not this");
+            assert_eq!(chat.detect, vec!["claude"], "the same PATH probe as the terminal row");
+            assert!(
+                reg.iter().any(|h| h.id == "claude" && !h.conversation),
+                "the terminal row must survive the split"
+            );
+            assert_eq!(
+                reg.iter().filter(|h| h.conversation).count(),
+                1,
+                "Rule 5′ permits exactly one named integration at a time"
+            );
+        }
+    }
+
+    /// Detection is shared, so the + menu cannot offer a conversation with a CLI that
+    /// is not installed — nor grey out one that is.
+    #[test]
+    fn the_conversation_row_detects_on_the_same_binary() {
+        let reg = builtin_for(Platform::Windows);
+        assert!(!detect_installed(&reg, |_| false).contains("claude-chat"));
+        let with_claude = detect_installed(&reg, |b| b == "claude");
+        assert!(with_claude.contains("claude-chat") && with_claude.contains("claude"));
     }
 
     /// A user file is how a personal project directory gets in — the shape quoted
