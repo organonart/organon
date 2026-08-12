@@ -215,6 +215,33 @@ most valuable thing the recon found.
 File ownership is declared here. If a tier's work does not fit the declaration, **re-split
 it — do not power through a conflict.**
 
+### 🚨 Amendment, 2026-08-11 (James): the backdrop is not the claim, and every tier below is coloured by that
+
+Read this before any tier description here. In his words:
+
+> *"Setting the background of a terminal is nothing. People have been doing that for years. It
+> doesn't communicate what we are really doing — in fact it breaks the whole concept that we're
+> creating an illusion that we are in a terminal."*
+
+It is not a matter of taste. **Painting the whole window is the one move that says *this is a
+picture with text on it*, which is the opposite of what the console asserts.** The illusion of
+being a real terminal is load-bearing, and a backdrop spends it. A rendered object living *in*
+the page is the claim nobody has seen; a themed background is a thirty-year-old idea that
+invites exactly the wrong comparison.
+
+**What this does and does not mean.** Tiers 1, 2 and 4 are not wasted — the lit substrate, the
+material library, the camera rig, the compositing seam and its measured gamma pair, and the
+absolute-line band arithmetic are all the machinery a patch is made of, and every one of them
+is used by Tier 5. What changes is **where the pixels land**: in a claimed rectangle, not
+across the window. `Shell::render_source` now separates *what the engine draws* from *what the
+backdrop paints*, so a patch renders with the backdrop off and nothing paints across the
+window.
+
+⚠️ **The tier tables below still read as though the backdrop is the deliverable.** They are
+kept as the record of how the work was divided, not as a statement of what to build next. **A
+new lane that proposes to paint more of the window is out of scope by this amendment**, whatever
+the table beneath it says.
+
 ### Tier 1 — the lit substrate
 
 | Lane | Owns | Output |
