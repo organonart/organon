@@ -29,10 +29,18 @@
 //! scrollback, so the backdrop's look-epochs can be painted as viewport bands that
 //! age with the text instead of with the window. Pure arithmetic — its caller
 //! contract is the checklist in its module doc.
+//!
+//! Console Spike Tier 5 adds the two halves of a **patch** — a rectangle a writer left in its
+//! own output and then claimed. [`block_anchor`] is *where*: the same arithmetic applied to a
+//! reserved run of lines, two integers in and viewport rows out. [`block_panel`] is *what*:
+//! the kinds a claim can name, one of which is a live egui control panel rather than a
+//! picture of one. The split is the tier's whole shape — claim, anchor and ledger are common
+//! to every kind, and the kind selects the paint and nothing before it.
 
 pub mod agent_event;
 pub mod app;
 pub mod block_anchor;
+pub mod block_panel;
 pub mod command;
 pub mod conversation;
 pub mod harness;

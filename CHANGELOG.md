@@ -11,6 +11,18 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — a claimed rectangle has a kind, and one of them is a working panel
+
+- **`organon console patch --up N --rows M --kind <scene|panel>`.** The writer prints its own
+  gap through the ordinary PTY and then says where it is; the console records the rectangle
+  and paints it, and never writes into the terminal. `scene` samples the rendered substrate
+  through those rows — today's behaviour, unchanged. `panel` puts a **live egui control panel**
+  there instead: sliders that move when dragged and buttons wired to the console's real
+  look-change path, so clicking `metal` inside the scrollback and typing
+  `organon console background metal` are the same call from `apply_console` onwards. The kind
+  selects the paint and nothing before it — the claim, the anchor arithmetic and the per-pane
+  ledger are common to both, which is where an error would be invisible on screen.
+
 ### Console Spike — the console can open a hole in its own transcript
 
 - **`organon console block <rows>` reserves a contiguous run of blank rows** in the active

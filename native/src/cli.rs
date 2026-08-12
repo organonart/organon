@@ -290,7 +290,60 @@ pub enum ConsoleOp {
     /// So the console never writes. The program leaves the gap as part of its own output —
     /// ordinary blank lines through the ordinary PTY, which the shell, ConPTY and the console
     /// all agree exist — and then says where it is. The console only *records*.
-    Patch { up: u16, rows: u16 },
+    ///
+    /// `kind` is what the console should draw in it — see [`PatchKind`].
+    Patch { up: u16, rows: u16, kind: PatchKind },
+}
+
+/// What a claimed rectangle **shows**: the `kind` field
+/// `doc/console_patch_protocol.md` §3 declares as required on every claim.
+///
+/// 🚨 **A name the console resolves — never a command, never a path.** The writer says what
+/// *sort* of thing belongs in the gap it left; which scene, which panel, and how either is
+/// drawn are the console's business entirely. That asymmetry is why this is a closed set of
+/// words rather than a payload: a claim that could carry a command would be a claim that
+/// could carry anything, and the whole point of a claim is that a program which can print can
+/// ask for a rectangle without being able to drive the machine.
+///
+/// It is also why the two arms are so unequal in what they *cost* and so equal in what they
+/// *say*. Everything up to the paint — the claim, the anchor arithmetic, the per-pane ledger —
+/// is shared; the kind selects the last step and nothing before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatchKind {
+    /// The rendered scene, sampled through the claimed rows. **The default**, because it is
+    /// what a claim meant before there was anything to choose between.
+    #[default]
+    Scene,
+    /// A live control panel: real widgets living in the transcript, not a picture of them.
+    Panel,
+}
+
+/// The kind words, in the order `--help` should list them.
+///
+/// One table, read by `bin/ctl.rs`'s possible-values parser, by the console's command schema
+/// and by [`PatchKind::from_word`] — the arrangement `console background`'s materials use, for
+/// the reason recorded there: a second hand-maintained copy is how a CLI comes to accept a
+/// word nothing can draw.
+pub const PATCH_KIND_WORDS: &[&str] = &["scene", "panel"];
+
+impl PatchKind {
+    /// The word this kind travels as, on the wire and in `--help`.
+    pub fn as_word(self) -> &'static str {
+        match self {
+            PatchKind::Scene => "scene",
+            PatchKind::Panel => "panel",
+        }
+    }
+
+    /// The kind a word names, or `None` — which the sidecar reader treats as a line to skip,
+    /// exactly as it treats an unknown verb.
+    pub fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "scene" => Some(PatchKind::Scene),
+            "panel" => Some(PatchKind::Panel),
+            _ => None,
+        }
+    }
 }
 
 /// The tallest block `organon console block` will open.
@@ -322,7 +375,9 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Background(name) => format!("background {name}"),
         ConsoleOp::Rig(name) => format!("rig {name}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
-        ConsoleOp::Patch { up, rows } => format!("patch {up} {rows}"),
+        ConsoleOp::Patch { up, rows, kind } => {
+            format!("patch {up} {rows} {}", kind.as_word())
+        }
     }
 }
 
@@ -350,7 +405,18 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
         "patch" => {
             let up = it.next()?.parse::<u16>().ok()?;
             let rows = it.next()?.parse::<u16>().ok()?;
-            Some(ConsoleOp::Patch { up, rows })
+            // The kind is the one field on this lane with a default, and only because it
+            // arrived after the verb did: a line with no third word was written when a claim
+            // had nothing to choose between, and [`PatchKind::Scene`] is what it meant. An
+            // *unknown* third word is a different thing entirely — a newer CLI naming a kind
+            // this build cannot draw — and the lane's standing rule for that is to skip the
+            // line rather than guess, since guessing would paint the wrong object in a
+            // rectangle someone else's output is holding open.
+            let kind = match it.next() {
+                None => PatchKind::Scene,
+                Some(word) => PatchKind::from_word(word)?,
+            };
+            Some(ConsoleOp::Patch { up, rows, kind })
         }
         _ => None,
     }
@@ -1503,6 +1569,17 @@ mod tests {
             ConsoleOp::Block(1),
             ConsoleOp::Block(12),
             ConsoleOp::Block(MAX_BLOCK_ROWS),
+            // …and the claim, whose payload is two counts and a kind. Every kind rides the
+            // round trip, because the kind is the field that decides what gets *painted* and
+            // a spelling that survived one direction only would paint the wrong object.
+            ConsoleOp::Patch { up: 0, rows: 1, kind: PatchKind::Scene },
+            ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Scene },
+            ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Panel },
+            ConsoleOp::Patch {
+                up: MAX_BLOCK_ROWS,
+                rows: MAX_BLOCK_ROWS,
+                kind: PatchKind::Panel,
+            },
         ] {
             let line = console_op_to_line(&op);
             assert!(!line.contains('\n'), "a line must be one line: {line:?}");
@@ -1521,6 +1598,53 @@ mod tests {
         );
         assert_eq!(console_op_to_line(&ConsoleOp::Rig("studio".into())), "rig studio");
         assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
+        assert_eq!(
+            console_op_to_line(&ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Panel }),
+            "patch 12 12 panel"
+        );
+    }
+
+    /// **The kind's two directions must agree, and the word list is what `--help` and the
+    /// console's schema are both built from** — so a kind added to the enum and forgotten in
+    /// the table would be a value the CLI cannot express and the palette cannot show.
+    ///
+    /// The default is pinned separately and deliberately: it is what a claim written before
+    /// there was a choice resolves to, so changing it silently repaints every such claim.
+    #[test]
+    fn every_patch_kind_word_resolves_and_round_trips() {
+        for word in PATCH_KIND_WORDS {
+            let kind = PatchKind::from_word(word).unwrap_or_else(|| panic!("{word} resolves"));
+            assert_eq!(kind.as_word(), *word, "the word and the enum must agree");
+        }
+        for kind in [PatchKind::Scene, PatchKind::Panel] {
+            assert!(
+                PATCH_KIND_WORDS.contains(&kind.as_word()),
+                "{kind:?} is not in the table `--help` is built from"
+            );
+        }
+        assert_eq!(PatchKind::from_word("nonsense"), None);
+        assert_eq!(PatchKind::from_word("Panel"), None, "the wire form is lowercase");
+        assert_eq!(PatchKind::default(), PatchKind::Scene, "a claim with no kind is a scene");
+    }
+
+    /// A claim's kind: absent means `scene` (the shape the verb shipped with), unknown means
+    /// **skip the line**. The two are deliberately not the same answer — see `parse_console_op`.
+    #[test]
+    fn a_claim_with_no_kind_is_a_scene_and_an_unknown_kind_is_skipped() {
+        assert_eq!(
+            parse_console_op("patch 12 12"),
+            Some(ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Scene }),
+            "a line from before the kind existed still claims a rectangle"
+        );
+        assert_eq!(
+            parse_console_op("patch 0 8 panel"),
+            Some(ConsoleOp::Patch { up: 0, rows: 8, kind: PatchKind::Panel })
+        );
+        assert_eq!(parse_console_op("patch 12 12 hologram"), None, "a kind we cannot draw");
+        assert_eq!(parse_console_op("patch 12"), None, "a claim with a missing half");
+        assert_eq!(parse_console_op("patch"), None);
+        assert_eq!(parse_console_op("patch up rows"), None);
+        assert_eq!(parse_console_op("patch -1 12"), None, "negative is not a u16");
     }
 
     /// An unknown verb parses to `None` so the drain SKIPS it. That is the whole

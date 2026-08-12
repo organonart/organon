@@ -32,6 +32,15 @@
 //! the terminal's own parser ([`Shell::open_block`]). They are ordinary scrollback rows, so
 //! text written afterwards flows **below** them. Nothing is painted into them yet — the hole
 //! is the increment.
+//!
+//! **`organon console patch --up N --rows M --kind <scene|panel>` is the corrected verb and
+//! the one that carries something.** The writer prints the gap itself, through the ordinary
+//! PTY, and then says where it is; the console records it ([`Shell::claim_patch`]) and paints
+//! it. The kind selects the paint and **nothing before it** — the claim, the anchor
+//! arithmetic and the per-pane ledger are shared — so `scene` samples the rendered substrate
+//! through the rows and `panel` puts a live egui control panel in the same rect, whose
+//! buttons re-enter this file at [`Shell::apply_console`], the same call a typed
+//! `organon console background <name>` reaches.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -49,6 +58,7 @@ use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
 use organon_shell::block_anchor::Block;
+use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
@@ -371,6 +381,11 @@ const CMD_ARG: &str = "name";
 const CMD_ROWS: &str = "rows";
 /// [`CMD_PATCH`]'s other argument: how many lines above the current line the rectangle starts.
 const CMD_UP: &str = "up";
+/// [`CMD_PATCH`]'s third argument: what the console should draw in the rectangle. A `Choice`
+/// rather than an `Int` or a free word, over `cli::PATCH_KIND_WORDS` — the same
+/// table-not-a-restatement arrangement `background`'s materials use, so the palette, the
+/// CLI's `--help` and this schema cannot come to know different kinds.
+const CMD_KIND: &str = "kind";
 
 /// The console's vocabulary, as [`CommandService`] catalog data.
 ///
@@ -432,6 +447,13 @@ fn console_specs() -> Vec<CommandSpec> {
             args: vec![
                 ArgSpec { name: CMD_UP.into(), kind: ArgKind::Int, required: true },
                 ArgSpec { name: CMD_ROWS.into(), kind: ArgKind::Int, required: true },
+                ArgSpec {
+                    name: CMD_KIND.into(),
+                    kind: ArgKind::Choice(
+                        cli::PATCH_KIND_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
             ],
         },
     ]
@@ -487,11 +509,23 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             };
             let up = int(CMD_UP)?;
             let rows = int(CMD_ROWS)?;
+            // The kind is checked here as well as by the schema, and unlike the row range it
+            // is a belt rather than a brace: `ArgKind::Choice` *can* state this vocabulary, so
+            // membership was already settled by `validate_args`. What this adds is the
+            // conversion — a word the schema accepts must still resolve to something this
+            // build can paint, and the two lists are the same list.
+            let kind = args
+                .get(CMD_KIND)
+                .and_then(Value::as_str)
+                .and_then(cli::PatchKind::from_word)
+                .ok_or_else(|| {
+                    format!("{name}: `{CMD_KIND}` must be one of {:?}", cli::PATCH_KIND_WORDS)
+                })?;
             match (u16::try_from(up), u16::try_from(rows)) {
                 (Ok(up), Ok(rows))
                     if (1..=cli::MAX_BLOCK_ROWS).contains(&rows) && up <= cli::MAX_BLOCK_ROWS =>
                 {
-                    Ok(cli::ConsoleOp::Patch { up, rows })
+                    Ok(cli::ConsoleOp::Patch { up, rows, kind })
                 }
                 _ => Err(format!(
                     "{name}: `{CMD_UP}` must be 0..={} and `{CMD_ROWS}` 1..={}, got {up} and {rows}",
@@ -513,7 +547,9 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
     match op {
         cli::ConsoleOp::Background(n) | cli::ConsoleOp::Rig(n) => json!({ CMD_ARG: n }),
         cli::ConsoleOp::Block(rows) => json!({ CMD_ROWS: rows }),
-        cli::ConsoleOp::Patch { up, rows } => json!({ CMD_UP: up, CMD_ROWS: rows }),
+        cli::ConsoleOp::Patch { up, rows, kind } => {
+            json!({ CMD_UP: up, CMD_ROWS: rows, CMD_KIND: kind.as_word() })
+        }
     }
 }
 
@@ -650,15 +686,25 @@ struct PaneLooks {
     anchor: PaneAnchor,
     ledger: EpochLedger,
     cache: HashMap<EpochId, Rc<CachedEpoch>>,
-    /// Tier 5: the patches this transcript is carrying, in the order they were opened.
+    /// Tier 5: the patches this transcript is carrying, in the order they were claimed.
     ///
-    /// **Per pane for the same reason the anchor is** — a block names a line in *this*
+    /// **Per pane for the same reason the anchor is** — a patch names a line in *this*
     /// tab's absolute-line coordinate, and that coordinate means nothing in another tab.
-    /// No cap and no eviction yet: first light paints from the live backdrop texture, which
-    /// the console allocates anyway, so a block owns no GPU resource of its own to leak.
-    /// The moment one does, this wants `substrate_epochs`' bounded-and-logged discipline
-    /// rather than a second invention.
-    blocks: Vec<Block>,
+    ///
+    /// **One list across every kind, not a list per kind**, and that is the shape the tier
+    /// turns on: a patch's index here is what `block_anchor`'s bands, `block_quads`' quads and
+    /// `block_panel`'s placements all mean by "which one", so the two paints share a z-order
+    /// and a scene claimed after a panel sits over it exactly as drawing them in sequence
+    /// implies. Two lists would be two index spaces and the ordering between them would be
+    /// nobody's.
+    ///
+    /// No cap and no eviction yet: a scene patch paints from the live backdrop texture, which
+    /// the console allocates anyway, and a panel is a title and three floats — so a patch owns
+    /// no GPU resource of its own to leak. The moment one does, this wants `substrate_epochs`'
+    /// bounded-and-logged discipline rather than a second invention. What is genuinely missing
+    /// is reaping (`Block::retained_rows(dropped) == 0` is the signal, and it exists) and the
+    /// width-change invalidation `PaneAnchor::feed_local`'s doc states as policy.
+    blocks: Vec<Patch>,
 }
 
 struct Shell {
@@ -1163,8 +1209,8 @@ impl Shell {
             self.open_block(*rows);
             return;
         }
-        if let cli::ConsoleOp::Patch { up, rows } = op {
-            self.claim_patch(*up, *rows);
+        if let cli::ConsoleOp::Patch { up, rows, kind } = op {
+            self.claim_patch(*up, *rows, *kind);
             return;
         }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
@@ -1221,7 +1267,9 @@ impl Shell {
             return;
         }
         let at = looks.anchor.feed_local(session, &term::block_bytes(rows));
-        looks.blocks.push(Block { first_abs: at, rows });
+        // A scene, always: this verb predates kinds and nothing on it can name one. It is kept
+        // only for a shell that is provably idle — `claim_patch` is the mechanism that works.
+        looks.blocks.push(Patch::scene(Block { first_abs: at, rows }));
         // Unconditional, and in `[epochs]`' register: the absolute index is the one number a
         // painter will place a rect from, and an arithmetic error in it is invisible on screen
         // until something is painted into the wrong rows. `[block]` is the tag to grep for.
@@ -1253,7 +1301,21 @@ impl Shell {
     /// that keeps printing in between is not. The in-band fix is the OSC 8 claim in
     /// `doc/console_patch_protocol.md`, which resolves the anchor from the *cells* rather than
     /// from a clock.
-    fn claim_patch(&mut self, up: u16, rows: u16) {
+    ///
+    /// # The kind selects the paint, and nothing before it
+    ///
+    /// Everything above this line is identical for every kind, and that is a design constraint
+    /// rather than a happy accident: the claim, the anchor arithmetic and the ledger entry are
+    /// where an error is **invisible on screen** — a rectangle at the wrong line looks like a
+    /// rectangle — so they get one implementation and one set of tests. The kind is read for
+    /// the first time when the rows are painted, where a mistake is a thing you can see.
+    ///
+    /// [`cli::PatchKind::Panel`] is the one arm that carries state, and it is built here
+    /// because the button labels are handed **down**: `organon-shell` cannot see
+    /// `substrate_materials` and must not learn to. It draws the labels and reports which one
+    /// was pressed; this file is the only place that knows a `metal` button and
+    /// `organon console background metal` are the same act.
+    fn claim_patch(&mut self, up: u16, rows: u16, kind: cli::PatchKind) {
         let pane = self.strip.active;
         let (Some(session), Some(looks)) =
             (self.sessions.get_mut(pane), self.pane_looks.get_mut(pane))
@@ -1268,8 +1330,24 @@ impl Shell {
         // counts from there.
         let cursor_abs = looks.anchor.boundary_now(session).saturating_sub(1);
         let first_abs = cursor_abs.saturating_sub(u64::from(up));
-        looks.blocks.push(Block { first_abs, rows });
-        eprintln!("[patch] claimed {rows} rows @ line {first_abs} (up {up}, pane {pane})");
+        let block = Block { first_abs, rows };
+        looks.blocks.push(match kind {
+            cli::PatchKind::Scene => Patch::scene(block),
+            cli::PatchKind::Panel => Patch::panel(
+                block,
+                BlockPanel::new(
+                    format!("◈ organon · patch @ line {first_abs} · {rows} rows"),
+                    substrate_materials::MATERIAL_NAMES
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect(),
+                ),
+            ),
+        });
+        eprintln!(
+            "[patch] claimed {rows} rows @ line {first_abs} ({}, up {up}, pane {pane})",
+            kind.as_word()
+        );
     }
 
     /// Close the live look-epoch in every pane and open the next one — the Tier 4 half of
@@ -1535,8 +1613,16 @@ impl Shell {
     ///
     /// The active pane only: a patch is painted where it is looked at, and rendering for a
     /// tab nobody is watching would be a scene per background tab.
+    ///
+    /// **Scene patches only, since Tier 5's kinds.** A panel is egui widgets in the same pass
+    /// that draws the glyphs — it has nothing to sample — so a pane holding only panels must
+    /// not summon the engine. Asking "are there any patches" instead would render a substrate
+    /// for a console that never shows one, which is invisible and costs a frame's worth of GPU
+    /// forever.
     fn patches_want_image(&self) -> bool {
-        self.pane_looks.get(self.strip.active).is_some_and(|p| !p.blocks.is_empty())
+        self.pane_looks
+            .get(self.strip.active)
+            .is_some_and(|p| p.blocks.iter().any(Patch::is_scene))
     }
 
     /// What the engine should draw this frame, which is **not** the same question as what the
@@ -1783,6 +1869,10 @@ impl Shell {
         let sessions = &mut self.sessions;
         let pane_looks = &mut self.pane_looks;
         let mut action: Option<TabAction> = None;
+        // Buttons pressed inside a patch's panel this frame, collected out of the closure the
+        // same way `action` is and for the same reason: applying one needs `&mut self`, and
+        // `self` is split into disjoint borrows for the duration of `egui_ctx.run`.
+        let mut block_actions: Vec<BlockAction> = Vec::new();
         // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
         // (see `render_backdrop`). Taken from the same `ui` and by the same call
         // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
@@ -1824,7 +1914,13 @@ impl Shell {
                     if let (Some(session), Some(pane)) =
                         (sessions.get_mut(active), pane_looks.get_mut(active))
                     {
-                        term_view::draw(
+                        // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of the
+                        // same pane, which is exactly why the patch ledger lives on
+                        // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
+                        // `Shell` that would have to be indexed in step with it. The ledger is
+                        // `&mut` because a panel's sliders are real: a value dragged this frame
+                        // has to still be there on the next one.
+                        block_actions = term_view::draw(
                             ui,
                             session,
                             &mut pane.anchor,
@@ -1832,7 +1928,7 @@ impl Shell {
                                 boundaries,
                                 textures,
                             }),
-                            &pane.blocks,
+                            &mut pane.blocks,
                             patch_image,
                         );
                     } else {
@@ -1850,6 +1946,16 @@ impl Shell {
         self.window_points = window_rect.map(|r| (r.width(), r.height()));
         if let Some(action) = action {
             self.apply(action);
+        }
+        // A button pressed inside the scrollback and the same word typed at a prompt are the
+        // **same call** from here on — `apply_console` is exactly where `organon console
+        // background <name>` lands after `drain_console` has validated it, Tier 4's look-epoch
+        // record included. That is the whole claim of the panel kind in one line: it is not
+        // simulating the console, it is driving it. (A label this console does not know falls
+        // into `apply_console`'s own "names nothing" arm and says so on stderr; nothing here
+        // has to re-check it.)
+        for act in block_actions {
+            self.apply_console(&cli::ConsoleOp::Background(act.button));
         }
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),
@@ -2461,6 +2567,56 @@ mod cli_tests {
                 "a block must not touch the source or the look"
             );
         }
+        // The same for a claim, of **every** kind — a kind selects a paint, and a paint is not
+        // a dressing. The panel kind is the one that could plausibly drift here, since its
+        // buttons change the look: they do it by re-entering `apply_console` as a `Background`
+        // op, never by the claim itself meaning something.
+        for kind in [cli::PatchKind::Scene, cli::PatchKind::Panel] {
+            assert_eq!(
+                console_step(
+                    BackdropSource::Substrate,
+                    &cold,
+                    &cli::ConsoleOp::Patch { up: 12, rows: 12, kind }
+                ),
+                None,
+                "a {kind:?} claim must not touch the source or the look"
+            );
+        }
+    }
+
+    /// **The claim's kind is a `Choice` the schema can state**, unlike its row count — so
+    /// unlike the row range, `op_from` is a belt here rather than the only gate. What this
+    /// pins is that the schema, the CLI's `--help` and the paint all know the same kinds:
+    /// the failure it exists to catch is a kind the catalog offers and the console cannot
+    /// resolve, which would dispatch, record a success, and paint nothing.
+    #[test]
+    fn the_patch_verb_offers_exactly_the_kinds_it_can_resolve() {
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_PATCH)
+            .expect("console.patch is registered");
+        let arg = spec.args.iter().find(|a| a.name == CMD_KIND).expect("one `kind` argument");
+        assert!(arg.required, "a claim states what it is for");
+        let ArgKind::Choice(offered) = &arg.kind else {
+            panic!("the kind is a closed vocabulary, not a free word: {:?}", arg.kind)
+        };
+        assert_eq!(
+            offered.as_slice(),
+            cli::PATCH_KIND_WORDS,
+            "the catalog and the CLI are built from one table"
+        );
+        for word in offered {
+            let kind = cli::PatchKind::from_word(word)
+                .unwrap_or_else(|| panic!("the catalog offers `{word}` and nothing resolves it"));
+            assert_eq!(
+                op_from(CMD_PATCH, &json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: word })),
+                Ok(cli::ConsoleOp::Patch { up: 12, rows: 12, kind })
+            );
+        }
+        for bad in [json!({ CMD_UP: 12, CMD_ROWS: 12 }), json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: "hologram" })] {
+            let e = op_from(CMD_PATCH, &bad).expect_err("no kind this console can paint");
+            assert!(e.contains(CMD_KIND), "the message must name the slot: {e}");
+        }
     }
 
     /// The three source words, and the reason they do NOT go through
@@ -2495,9 +2651,15 @@ mod cli_tests {
     /// validated, so a mismatch here applies a command nobody issued.
     #[test]
     fn every_op_round_trips_through_its_catalog_name() {
-        for op in
-            [bg("slate"), bg("world"), bg("off"), rig_op("daylight"), cli::ConsoleOp::Block(7)]
-        {
+        for op in [
+            bg("slate"),
+            bg("world"),
+            bg("off"),
+            rig_op("daylight"),
+            cli::ConsoleOp::Block(7),
+            cli::ConsoleOp::Patch { up: 0, rows: 7, kind: cli::PatchKind::Scene },
+            cli::ConsoleOp::Patch { up: 12, rows: 12, kind: cli::PatchKind::Panel },
+        ] {
             assert_eq!(op_from(spec_name(&op), &op_args(&op)), Ok(op.clone()), "{op:?}");
         }
         // A catalog name this console does not implement produces no op — the belt under
