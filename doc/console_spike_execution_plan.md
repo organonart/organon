@@ -585,6 +585,22 @@ and unlike a refused `env` read, that failure reads as *our feature is broken* r
 policy working correctly. This is an argument for doing approvals **before** the rendered-patch
 work, not after.
 
+🚨 **Corrected 2026-08-12 by measurement — `doc/console_approval_protocol.md`.** The case for
+MCP was argued above as *"an MCP tool has its own permission identity, so it can be allowed
+narrowly instead of granting broad Bash."* **That is false on its own.** A trivial
+side-effect-free MCP tool was refused exactly like Bash, and the gate is entirely client-side —
+the server never receives `tools/call` at all.
+
+What is true, and better: **`--permission-prompt-tool` gates MCP and Bash alike through one
+handler**, with a request shape (`tool_name`, `input`, `tool_use_id`) that is precisely what an
+approval card needs. So the console can answer for **everything the agent does**, not only its
+own verbs.
+
+**MCP's real value therefore is legibility, not permission** — an approval card can name a
+*capability* ("show a control panel") instead of showing a shell command the human must parse.
+That is a real reason to serve our verbs over MCP, and it is a different reason than the one
+written above.
+
 ### 5.9.3 The mapping contract — decoder → transcript, and the six measured facts that shape it
 
 The decoder (`agent_event.rs`) and the transcript model (`conversation.rs`) were written by
