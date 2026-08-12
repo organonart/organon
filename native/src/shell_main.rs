@@ -48,6 +48,8 @@ use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
+use organon_shell::block_anchor::Block;
+use organon_shell::block_panel::BlockPanel;
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
@@ -612,6 +614,22 @@ struct PaneLooks {
     anchor: PaneAnchor,
     ledger: EpochLedger,
     cache: HashMap<EpochId, Rc<CachedEpoch>>,
+    /// The runs of rows this pane has reserved and the panel living in each (Console Spike
+    /// Tier 5), in the order they were opened — which is
+    /// [`organon_shell::block_panel::placements`]' z-order, and is also ascending by line,
+    /// because a block is always opened at the cursor.
+    ///
+    /// **Deliberately a bare `Vec` with no cap, no eviction and no reconciliation.** A block
+    /// is two integers plus a handful of slider values; a thousand of them is a rounding
+    /// error next to one pane's scrollback, and every one of them is *already* handled
+    /// correctly by [`organon_shell::block_anchor::visible_blocks`] — an eroded or
+    /// scrolled-away block emits no band, so a stale entry costs an integer comparison per
+    /// frame and draws nothing. What is missing is therefore reaping
+    /// (`Block::retained_rows(dropped) == 0` is the signal, and it exists) and the
+    /// width-change invalidation `PaneAnchor::feed_local`'s doc states as policy. Neither is
+    /// needed to put a working panel in a hole, and inventing them now would be a cap on a
+    /// list nothing has filled.
+    blocks: Vec<BlockPanel>,
 }
 
 struct Shell {
@@ -954,6 +972,7 @@ impl Shell {
                         0,
                     ),
                     cache: HashMap::new(),
+                    blocks: Vec::new(),
                 });
                 self.strip.add(Tab { title, harness_id: hid });
             }
@@ -1166,8 +1185,21 @@ impl Shell {
             return;
         };
         let at = looks.anchor.feed_local(session, &term::block_bytes(rows));
+        // The ledger entry, and it is the whole of the bookkeeping: `first_abs` never moves
+        // again, so nothing here has to be updated when the transcript scrolls, when output
+        // arrives, or when the window resizes. `block_anchor`'s module doc owns that argument.
+        //
+        // The button labels are handed **down** rather than looked up: `organon-shell` cannot
+        // see `substrate_materials` and must not learn to. It draws the labels and reports
+        // which one was pressed; this file is the only place that knows a `metal` button and
+        // `organon console background metal` are the same act.
+        looks.blocks.push(BlockPanel::new(
+            Block { first_abs: at, rows },
+            format!("◈ organon · block @ line {at} · {rows} rows"),
+            substrate_materials::MATERIAL_NAMES.iter().map(|s| (*s).to_string()).collect(),
+        ));
         // Unconditional, and in `[epochs]`' register: the absolute index is the one number a
-        // painter will place a rect from, and an arithmetic error in it is invisible on screen
+        // painter places a rect from, and an arithmetic error in it is invisible on screen
         // until something is painted into the wrong rows. `[block]` is the tag to grep for.
         eprintln!("[block] opened {rows} rows @ line {at} (pane {pane})");
     }
@@ -1633,6 +1665,10 @@ impl Shell {
         let sessions = &mut self.sessions;
         let pane_looks = &mut self.pane_looks;
         let mut action: Option<TabAction> = None;
+        // Buttons pressed inside a block's panel this frame, collected out of the closure the
+        // same way `action` is and for the same reason: applying one needs `&mut self`, and
+        // `self` is split into disjoint borrows for the duration of `egui_ctx.run`.
+        let mut block_actions: Vec<organon_shell::block_panel::BlockAction> = Vec::new();
         // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
         // (see `render_backdrop`). Taken from the same `ui` and by the same call
         // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
@@ -1674,7 +1710,13 @@ impl Shell {
                     if let (Some(session), Some(pane)) =
                         (sessions.get_mut(active), pane_looks.get_mut(active))
                     {
-                        term_view::draw(
+                        // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of the
+                        // same pane, which is exactly why the block ledger lives on
+                        // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
+                        // `Shell` that would have to be indexed in step with it. The panels
+                        // are `&mut` because their sliders are real: a value dragged this
+                        // frame has to still be there on the next one.
+                        block_actions = term_view::draw(
                             ui,
                             session,
                             &mut pane.anchor,
@@ -1682,6 +1724,7 @@ impl Shell {
                                 boundaries,
                                 textures,
                             }),
+                            &mut pane.blocks,
                         );
                     } else {
                         ui.centered_and_justified(|ui| {
@@ -1698,6 +1741,15 @@ impl Shell {
         self.window_points = window_rect.map(|r| (r.width(), r.height()));
         if let Some(action) = action {
             self.apply(action);
+        }
+        // A button pressed inside the scrollback and the same word typed at a prompt are the
+        // **same call** from here on — `apply_console` is exactly where `organon console
+        // background <name>` lands after `drain_console` has validated it. That is the whole
+        // claim of this tier in one line: the panel is not simulating the console, it is
+        // driving it. (A label this console does not know falls into `apply_console`'s own
+        // "names nothing" arm and says so on stderr; nothing here has to re-check it.)
+        for act in block_actions {
+            self.apply_console(&cli::ConsoleOp::Background(act.button));
         }
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),

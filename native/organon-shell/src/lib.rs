@@ -29,9 +29,17 @@
 //! scrollback, so the backdrop's look-epochs can be painted as viewport bands that
 //! age with the text instead of with the window. Pure arithmetic — its caller
 //! contract is the checklist in its module doc.
+//!
+//! Console Spike Tier 5 adds the two halves of a **block**: [`block_anchor`], the same
+//! arithmetic applied to a reserved run of lines (two integers in, viewport rows out), and
+//! [`block_panel`], a live egui control panel drawn into those rows. The second is the point
+//! of the first — the console's transcript can hold an application, not a picture of one —
+//! and it is deliberately *not* a texture: the whole frame is already one egui pass, so a
+//! block is a child `Ui` at a rect and nothing more.
 
 pub mod app;
 pub mod block_anchor;
+pub mod block_panel;
 pub mod command;
 pub mod harness;
 pub mod mock_agent;

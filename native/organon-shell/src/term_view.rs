@@ -18,12 +18,21 @@
 //! *looks* themselves — which epoch wears what, and which of them still own a texture —
 //! belong to the caller (`shell_main.rs`, over `substrate_epochs`); this module never
 //! learns what a material is.
+//!
+//! **Console Spike Tier 5 puts a live control panel in the rows a block reserved.**
+//! [`crate::block_panel`] owns what that panel is; this module owns *when* it is drawn —
+//! between the scrim and the glyph loop, so a panel is the one place the engine is not dimmed
+//! and yet can never cover a character — and *whether the wheel belongs to it*, which is the
+//! one place the terminal has to give something up. It is not a texture and there is no
+//! second render pass: the console's whole frame is already one egui pass, so a block is a
+//! child `Ui` at a rect.
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 
+use crate::block_panel::{self, BlockAction, BlockPanel};
 use crate::scroll_anchor::{self, Snapshot, ViewState};
 use crate::term::{self, TermSession};
 
@@ -442,6 +451,35 @@ pub fn band_quads(
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Cell metrics (Console Spike Tier 5)
+// ---------------------------------------------------------------------------
+
+/// The pane's font. One definition, because two constants named `14.0` in two files is how a
+/// grid and the thing measuring it come to disagree by a row.
+pub fn pane_font() -> egui::FontId {
+    egui::FontId::monospace(14.0)
+}
+
+/// One cell's `(width, height)` in points, for a given font.
+///
+/// **A free function rather than something [`draw`] returns**, and the distinction is not
+/// stylistic. Both numbers are a pure function of the [`egui::FontId`] and the context's font
+/// definitions — they do not depend on the rect, the grid, or anything that happened this
+/// frame — so a caller that needed `draw` to hand them back would be reading *last* frame's
+/// measurement to make *this* frame's decision, and would be silently one frame stale across
+/// exactly the events that matter (a font change, a DPI change, the first frame of all, when
+/// there is no previous answer at all). Asking the fonts directly is always current.
+///
+/// [`draw`] calls this too, so exactly one definition of "how big is a cell" exists.
+///
+/// `glyph_width(&font, 'M')` is the monospace advance and `row_height` the line box: the same
+/// pair the glyph loop steps by, which is what makes a rect derived from these land on cell
+/// boundaries rather than near them.
+pub fn cell_metrics(ctx: &egui::Context, font_id: &egui::FontId) -> (f32, f32) {
+    ctx.fonts_mut(|f| (f.glyph_width(font_id, 'M'), f.row_height(font_id)))
+}
+
 /// One frame of the terminal: pump the session, size the grid to the rect, feed
 /// input, paint. The caller gives us the whole window (PRD v3 §7.5: no chrome).
 ///
@@ -454,15 +492,24 @@ pub fn band_quads(
 /// Console Spike Tier 4 makes that backdrop a [`BandedBackdrop`] — the live look at the
 /// bottom, older looks above it, each band sampling its own epoch's texture. The scrim is
 /// unchanged and still covers the whole rect, once, after every band.
+///
+/// `panels` is Tier 5: the runs of rows this pane reserved, each carrying a live egui control
+/// panel drawn **over** the scrim (see the paint pass below for why that ordering is the whole
+/// visual claim). Taken by `&mut` because a slider that cannot be moved is a picture of a
+/// slider. An empty slice is the tier before this one, byte for byte.
+///
+/// The return value is the buttons a person pressed inside those panels this frame. This
+/// module does not know what they mean — see [`crate::block_panel`] — so it hands them back to
+/// the caller that supplied the labels.
 pub fn draw(
     ui: &mut egui::Ui,
     session: &mut TermSession,
     anchor: &mut PaneAnchor,
     backdrop: Option<BandedBackdrop<'_>>,
-) {
-    let font_id = egui::FontId::monospace(14.0);
-    let (cell_w, cell_h) =
-        ui.fonts_mut(|f| (f.glyph_width(&font_id, 'M'), f.row_height(&font_id)));
+    panels: &mut [BlockPanel],
+) -> Vec<BlockAction> {
+    let font_id = pane_font();
+    let (cell_w, cell_h) = cell_metrics(ui.ctx(), &font_id);
 
     let rect = ui.available_rect_before_wrap();
     let cols = (rect.width() / cell_w).floor().max(2.0) as u16;
@@ -526,8 +573,23 @@ pub fn draw(
             _ => {}
         }
     }
+    // ── The wheel, and the one thing a block takes from the terminal ───────
+    // The console scrolls its transcript from **anywhere** in the window — there is no
+    // scrollbar to be over — so a panel sitting inside the grid rect has to claim the pointer
+    // explicitly or a slider drag would also scroll the block out from under the cursor.
+    //
+    // The placement is computed from the geometry as it stands *before* the wheel is applied,
+    // and that is the right frame of reference rather than a convenient one: the pointer is
+    // over what is on the screen right now, which is what this state describes. Applying the
+    // wheel first and then asking would test the pointer against rows that have not been
+    // drawn yet. `view` is five field reads, so computing it twice costs nothing.
+    let pre_wheel = anchor.view(session);
+    let blocks: Vec<crate::block_anchor::Block> = panels.iter().map(|p| p.block).collect();
+    let placed = block_panel::placements(&blocks, pre_wheel, rect, cell_h);
+    let pointer_on_panel =
+        block_panel::pointer_inside(&placed, ui.input(|i| i.pointer.hover_pos()));
     let scroll = ui.input(|i| i.raw_scroll_delta.y);
-    if scroll.abs() >= 1.0 {
+    if scroll.abs() >= 1.0 && !pointer_on_panel {
         session.scroll_display((scroll / cell_h * 1.5) as i32);
     }
 
@@ -561,6 +623,19 @@ pub fn draw(
             painter.rect_filled(rect, 0.0, DEFAULT_BG);
         }
     }
+
+    // ── Blocks (Console Spike Tier 5) ──────────────────────────────────────
+    // **Here, and the position is the claim.** After the backdrop and after the scrim, so a
+    // panel is the one place the engine is not dimmed — a window cut through the transcript
+    // rather than another layer under it. Before the glyph loop and the cursor, so nothing a
+    // panel draws can ever cover a character: text stays on top by construction, not by the
+    // block's rows happening to be blank. They *are* blank (a reserved row is erased when it
+    // is opened — `term::block_bytes`), so in practice nothing is overdrawn either way; the
+    // ordering is what makes that a property instead of a coincidence.
+    //
+    // It is `state`, not `pre_wheel`, deliberately: the wheel has been applied by now, so the
+    // panel is drawn where the glyphs of this same frame are, not where they were.
+    let actions = block_panel::draw(ui, panels, state, rect, cell_h);
 
     let content = session.term.renderable_content();
     let display_offset = content.display_offset as i32;
@@ -673,6 +748,8 @@ pub fn draw(
             egui::Color32::from_rgb(0x80, 0x8a, 0x80),
         );
     }
+
+    actions
 }
 
 #[cfg(test)]

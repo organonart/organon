@@ -11,13 +11,20 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
-### Console Spike — the console can open a hole in its own transcript
+### Console Spike — a working control panel inside the terminal scrollback
 
-- **`organon console block <rows>` reserves a contiguous run of blank rows** in the active
-  tab, just below the cursor, and the next prompt lands underneath them. Nothing is painted
-  into them yet — a GPU-rendered scene or panel pinned into exactly those rows is the next
-  increment. What this one buys is that the rows genuinely **exist**, so text written
-  afterwards flows below them instead of over them.
+- **`organon console block <rows>` reserves a contiguous run of rows in the active tab and
+  draws a live control panel into them.** The rows open just below the cursor, the next prompt
+  lands underneath them, and what fills them is a real egui panel — a title, three sliders that
+  move when you drag them, and a row of buttons for the substrate materials. It scrolls with
+  its own lines, clips at the top and bottom of the viewport, and is gone when they scroll
+  away. Text written afterwards flows below it, because the rows genuinely exist rather than
+  being a rectangle drawn over the transcript.
+- **Clicking `metal` in the panel is the same act as typing `organon console background
+  metal`.** The button does not imitate the command lane, it enters it: `shell_main.rs` hands
+  the labels down (the compositor crate cannot see `substrate_materials` and must not learn to)
+  and feeds the press back into `apply_console`, which is exactly where a validated console op
+  lands — Tier 4 look-epoch record included.
 - **The mechanism is the parser the console already owns**, not a second one.
   `TermSession::feed_local` advances `vte::ansi::Processor` against bytes the console
   generated itself — the same call the PTY pump makes — so a fed `\r\n` takes exactly the
@@ -36,6 +43,38 @@ From here on, this file gets an entry per meaningful change, newest first.
 - **The command reports where the hole went**: `[block] opened 12 rows @ line 1187 (pane 0)`
   on stderr, in `[epochs]`' register, because an arithmetic error in that index is invisible
   until something is painted into the wrong rows.
+- **A block is two integers and the viewport moves** — the same argument the scroll anchor
+  makes, applied again. `block_anchor::Block { first_abs, rows }` is set once and never
+  touched; `visible_blocks` answers every frame where those lines currently are. Nothing is
+  updated when the transcript scrolls, when output arrives, or when the window resizes. The
+  module is headless — 16 tests over an exhaustive geometry sweep, no GPU, no terminal.
+- **The draw sits between the scrim and the glyph loop, and the position is the whole
+  visual claim.** Above the backdrop and above the scrim, so a block is the one place the
+  engine is not dimmed; below every glyph and the cursor, so nothing a block draws can cover
+  a character *by construction* rather than because reserved rows happen to be blank. It is all
+  one egui layer, so call order is the entire enforcement mechanism.
+- **A panel is a child `Ui` at a rect, not a texture — the cheaper direction, not the harder
+  one.** The console's frame is already one egui pass in one wgpu draw, so there is no
+  `TextureId`, no UV sampling, no second `World` and no readback; the controls are alive rather
+  than a photograph of controls. Content is laid out into the block's *full* rect and clipped to
+  the *visible* one, so a half-scrolled panel slides under the viewport edge instead of
+  compressing — which is what `BlockBand::block_row` exists for, and this is its first caller.
+  egui clips interaction to the same rect, so a slider scrolled off the top stops responding at
+  exactly the row it stops being visible at.
+- **A block claims the pointer, and only the pointer.** The console scrolls its transcript from
+  anywhere in the window, so without an explicit claim a slider drag would also scroll the block
+  out from under the cursor; the hover test runs against the geometry as it stands *before* the
+  wheel, because the pointer is over what is on screen now. Keyboard focus is deliberately not
+  taken — the terminal keeps the keyboard.
+- **`term_view::cell_metrics` is now a free function of the font**, not something `draw`
+  returns. Cell width and row height depend only on the `FontId`, so a caller reading them off
+  a return value would be using last frame's numbers — stale across exactly the events that
+  matter, and undefined on the first frame. `draw` calls it too, so one definition exists.
+- **Three things the panel does not do yet**, all named rather than hidden: the sliders are
+  labelled and their values persist across frames but drive nothing; nothing reaps a block whose
+  lines have been evicted (`Block::retained_rows(dropped) == 0` is the signal, and it exists);
+  and every block gets the same panel, because choosing what a block contains belongs to the
+  OSC 8 claim path this console-side verb is the deliberate fallback for.
 - **The first console argument that is a number**, which the lane had not carried before. The
   row count is bounded twice on purpose: clap's range is where a person gets a good error
   before a byte is written, and the dispatch checks it again because `ArgKind::Int` has no

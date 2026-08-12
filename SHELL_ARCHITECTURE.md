@@ -255,11 +255,13 @@ position.
     `render_backdrop` returns before rendering while it is off, so the texture still holds
     the look from *before* it, and copying that would file a picture under rows it was
     never behind. Those rows keep the plain background, which is what they were written on.
-- **Reserved rows — a hole in the transcript that text flows around (#4 T5, first
-  increment)** — `organon console block <rows>` opens a contiguous run of blank rows in the
-  **active** tab, just below the cursor, and the next prompt lands underneath it. Nothing is
-  painted into them yet; making the rows genuinely exist is the increment, and a GPU texture
-  pinned into them is the next one.
+- **Reserved rows — a working control panel sitting inside the scrollback (#4 T5)** —
+  `organon console block <rows>` opens a contiguous run of blank rows in the **active** tab,
+  just below the cursor, and the next prompt lands underneath it. A **live egui panel** is then
+  drawn into those rows: a title, three sliders that move when dragged, and a row of buttons
+  that change the console's backdrop. It scrolls with its own lines, clips at the viewport
+  edges, and disappears when they do — an application pinned to a run of transcript, not a
+  floating window that happens to overlap one.
 
   **The mechanism is the parser the console already owns.** `TermSession::feed_local` advances
   `vte::ansi::Processor` against bytes the console generated itself — the same call `pump`
@@ -302,9 +304,75 @@ position.
   opposite. A look is the window's and every tab must paint its own rows under it; a block is a
   hole in *one* transcript, asked for by someone looking at one tab.
 
-  Known limits, all accepted rather than pending (they are written out in
+  **Placing it: a block is two integers, and the viewport moves.** `block_anchor::Block` is
+  `{ first_abs, rows }` — set once, never touched again — and `block_anchor::visible_blocks`
+  answers, every frame, where those lines currently are: a `BlockBand` of viewport rows plus
+  `block_row`, the offset into the block of the row drawn at its top. It is `scroll_anchor`'s
+  argument applied a second time (the text stays put and the window moves), takes that module's
+  `ViewState` verbatim rather than inventing a second description of the viewport, and is
+  headless — 16 tests, an exhaustive geometry sweep, no GPU. `block_panel::placements` turns its
+  answer into two rects per block and does nothing else: `band`, the visible slice, and `full`,
+  where the whole block *would* be if none of it were scrolled off. The ledger is
+  `PaneLooks::blocks`, a `Vec<BlockPanel>` beside the anchor, appended by `Shell::open_block`
+  from the index `feed_local` returned. No cap, no eviction, no reconciliation: a stale entry
+  costs one integer comparison per frame and draws nothing, because a block whose lines are gone
+  emits no band.
+
+  **The draw sits between the scrim and the glyph loop, and the position is the claim.**
+  After the backdrop and after the scrim, so a block is the one place the engine is *not*
+  dimmed. Before the glyphs and the cursor, so nothing a block draws can cover a character —
+  text is on top by construction rather than because a reserved row happens to be blank (it is
+  blank, which is why nothing is overdrawn in practice; the ordering is what makes that a
+  property instead of a coincidence). All of it is one egui layer, so **call order is the whole
+  enforcement mechanism**: there is no z-index and nothing to keep in sync.
+
+  **What goes in the rows is a child `Ui`, not a texture, and that is the cheap direction.**
+  The obvious shape for "an app in the scrollback" is an offscreen render sampled through the
+  block's rows. That is strictly *more* work and buys nothing: the console's whole frame is
+  already one egui pass in one wgpu draw, so a block is a rect inside it and `Ui::new_child` at
+  that rect is the entire mechanism. No `TextureId`, no UV policy, no second `World`, no
+  readback — and the controls are alive rather than a photograph of controls, which is the claim
+  the spike is actually making. Content is laid out into `full` and **clipped to `band`**, so a
+  half-scrolled panel slides under the viewport edge instead of compressing into the surviving
+  rows; that is the caller `BlockBand::block_row` exists for. egui intersects a widget's rect
+  with the `Ui`'s clip rect to decide what the pointer can reach, so the same rect is both the
+  paint boundary and the interaction boundary — a slider scrolled off the top stops responding
+  at exactly the row it stops being visible at.
+
+  **The one thing a block takes from the terminal is the wheel.** The console scrolls its
+  transcript from *anywhere* in the window — there is no scrollbar to be over — so without an
+  explicit claim a slider drag would also scroll the block out from under the cursor.
+  `block_panel::pointer_inside` is the test, and it is run against the geometry as it stands
+  *before* the wheel is applied, because the pointer is over what is on the screen right now.
+  Keyboard focus is deliberately **not** taken: the terminal owns the keyboard, mouse only.
+
+  **The buttons drive the real command path, they do not imitate it.** `organon-shell` cannot
+  see `substrate_materials` and must not learn to, so a `BlockPanel` carries button *labels*
+  handed down by `shell_main.rs` and reports a `BlockAction` naming the one that was pressed.
+  `redraw` feeds that to `Shell::apply_console(&ConsoleOp::Background(name))` — exactly where a
+  typed `organon console background metal` lands once `drain_console` has validated it. From
+  that call onwards, clicking `metal` inside the scrollback and typing the command are the same
+  code, including the Tier 4 look-epoch record.
+
+  `term_view::cell_metrics(ctx, &font)` is a free function rather than something `draw` returns,
+  and that is not a style choice: both numbers are a pure function of the `FontId`, so a caller
+  reading them off `draw`'s return value would be using *last* frame's measurement — stale
+  across precisely the events that matter (a font change, a DPI change, the first frame, when
+  there is no previous answer at all). `draw` calls it too, so one definition exists.
+
+  Known limits, all accepted rather than pending (the transcript-side ones are written out in
   `PaneAnchor::feed_local`'s doc, in `scroll_anchor.rs`'s register):
 
+  - **Nothing is reaped.** `Block::retained_rows(dropped) == 0` is the reap signal and it
+    exists; nothing calls it. A panel owns no GPU resource, so a stale entry is a few dozen
+    bytes — but this is the first thing to wire the moment one does.
+  - **The sliders drive nothing.** They are labelled `depth`/`bloom`/`drift` and their values
+    are kept across frames, which is the whole demonstration: a drag inside the scrollback is a
+    real drag. Wiring them to parameters is a later increment, and naming them here is the
+    alternative to letting a reader assume they already are.
+  - **Every panel is the same panel.** What a block contains is not yet chosen by whoever asked
+    for it; the OSC 8 claim path (`doc/console_patch_protocol.md`) is where that goes, and this
+    console-side verb is its deliberate fallback.
   - **A width change reflows and the anchor drifts.** Row/height resize is exact; a width
     change re-wraps every wrapped line above the block, so its index slides by the net wrap
     delta — and `grow_columns` can drop the block's topmost row outright, because a
