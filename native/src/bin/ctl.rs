@@ -73,6 +73,16 @@ fn rig_names() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(CONSOLE_RIGS.iter().copied())
 }
 
+/// Possible-values parser for `console patch --kind <KIND>`.
+///
+/// Unlike the two lists above this one is **built from the library's own table**
+/// (`cli::PATCH_KIND_WORDS`) rather than restated here, so it cannot drift: the kinds are
+/// `cli::PatchKind`'s value space, and `cli.rs` is where both ends of the sidecar already
+/// speak one vocabulary from one place.
+fn patch_kinds() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(cli::PATCH_KIND_WORDS.iter().copied())
+}
+
 #[derive(Parser)]
 #[command(
     name = "organon",
@@ -302,7 +312,10 @@ enum ConsoleAction {
                             rectangle and paints it. This is the correct verb; `block` has \
                             the console open the rows itself, which lands them between a \
                             prompt and the typing and is wrong wherever anything is waiting \
-                            for input.")]
+                            for input.\n\n`--kind` says what sort of thing belongs in the \
+                            rectangle — a name the console resolves, never a command and \
+                            never a path. It defaults to the kind the verb shipped with, so \
+                            a claim written without one is unchanged.")]
     Patch {
         /// How many lines above the current line the rectangle's first row sits
         #[arg(long, value_parser = clap::value_parser!(u16).range(0..=cli::MAX_BLOCK_ROWS as i64))]
@@ -310,6 +323,9 @@ enum ConsoleAction {
         /// How many rows tall
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..=cli::MAX_BLOCK_ROWS as i64))]
         rows: u16,
+        /// What the console draws in it (see the value list above)
+        #[arg(long, default_value = "scene", value_parser = patch_kinds())]
+        kind: String,
     },
 }
 
@@ -515,7 +531,15 @@ fn run_console(action: ConsoleAction) -> ! {
         ConsoleAction::Background { name } => cli::ConsoleOp::Background(name),
         ConsoleAction::Rig { name } => cli::ConsoleOp::Rig(name),
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
-        ConsoleAction::Patch { up, rows } => cli::ConsoleOp::Patch { up, rows },
+        // clap has already restricted `kind` to `cli::PATCH_KIND_WORDS`, so `from_word`
+        // cannot miss here; `unwrap_or_default` rather than an `expect` because the fallback
+        // is not a guess — it is the same default a kindless sidecar line resolves to, so
+        // both spellings of "no kind stated" land on one answer.
+        ConsoleAction::Patch { up, rows, kind } => cli::ConsoleOp::Patch {
+            up,
+            rows,
+            kind: cli::PatchKind::from_word(&kind).unwrap_or_default(),
+        },
     };
     if let Err(e) = cli::append_console_ops(std::slice::from_ref(&op)) {
         eprintln!(
@@ -885,6 +909,51 @@ mod tests {
         assert!(parse(&["console", "block", "12.5"]).is_err());
         assert!(parse(&["console", "block", "lots"]).is_err());
         assert!(parse(&["console", "block"]).is_err(), "the count is not optional");
+    }
+
+    /// **`console patch` names a kind, and the kind is optional in exactly one direction.**
+    /// Omitting it must keep meaning what the verb meant before kinds existed — the arm that
+    /// is already verified on screen — while a word the console cannot resolve has to fail
+    /// *here*, at the clap boundary, since the sidecar's own answer to an unknown kind is to
+    /// skip the line in silence.
+    #[test]
+    fn console_patch_names_a_kind_and_defaults_to_the_one_it_shipped_with() {
+        let c = parse(&["console", "patch", "--up", "12", "--rows", "12"]).unwrap();
+        match c.cmd {
+            Cmd::Console { action: ConsoleAction::Patch { up, rows, kind } } => {
+                assert_eq!((up, rows), (12, 12));
+                assert_eq!(cli::PatchKind::from_word(&kind), Some(cli::PatchKind::default()));
+            }
+            _ => panic!("`console patch` parsed as something else"),
+        }
+        for word in cli::PATCH_KIND_WORDS {
+            let c =
+                parse(&["console", "patch", "--up", "0", "--rows", "8", "--kind", word]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Patch { kind, .. } } => {
+                    assert_eq!(kind, *word)
+                }
+                _ => panic!("`console patch --kind {word}` parsed as something else"),
+            }
+        }
+        assert!(
+            parse(&["console", "patch", "--up", "0", "--rows", "8", "--kind", "hologram"])
+                .is_err(),
+            "a kind nothing can draw must fail where the error can be good"
+        );
+        // The two counts stay required and stay bounded — a kind does not soften them.
+        assert!(parse(&["console", "patch", "--rows", "8"]).is_err());
+        assert!(parse(&["console", "patch", "--up", "0"]).is_err());
+        assert!(parse(&["console", "patch", "--up", "0", "--rows", "0"]).is_err());
+        assert!(parse(&[
+            "console",
+            "patch",
+            "--up",
+            "0",
+            "--rows",
+            &(cli::MAX_BLOCK_ROWS + 1).to_string()
+        ])
+        .is_err());
     }
 
     /// **The drift guard the block comment at the top of this file asks for** (#4 Tier 2,

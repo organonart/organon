@@ -333,6 +333,96 @@ position.
   where a human gets a good error before a byte is written, and `op_from`, where a
   hand-written sidecar line meets it, because `ArgKind::Int` carries no bounds and the schema
   cannot state the range the way a `Choice` states a table.
+- **Patches — a claimed rectangle, and the kind that says what fills it (#4 T5)** —
+  `organon console patch --up N --rows M --kind <scene|panel>`. This, and not `block` above,
+  is the mechanism: **the writer prints its own gap** as ordinary blank lines through the
+  ordinary PTY — rows the shell, ConPTY and the console all agree exist, because they arrived
+  the normal way — and then says where it is. The console writes **nothing** into the
+  terminal, ever. `up` counts back from the line the claiming command is being run from, so a
+  program that prints twelve blank lines and immediately claims `--up 12 --rows 12` names
+  exactly the rows it just made.
+
+  🚨 **`block` is not a fallback for it, and the difference is the whole mechanism rather than
+  a refinement.** `block` has the console *feed* rows at the cursor — but the cursor is by
+  definition the live input point, the row a prompt is waiting on and a keystroke lands in, so
+  feeding there opens the hole **between the prompt and the typing**, which no terminal does.
+  Measured 2026-08-11: prompt stranded above an eight-row hole with the cursor below it, worst
+  precisely when the shell is idle, and against a real Claude Code tab the harness's whole
+  frame shifted and it repainted over everything. `block` is kept only for a shell that is
+  provably idle; there is no console-side injection that can be correct.
+
+  **A patch has a kind, and the kind selects the paint and nothing before it.** The claim, the
+  anchor arithmetic (`block_anchor`) and the per-pane ledger are common to every kind; the
+  first read of the kind is at paint time. That split is where the correctness lives: an error
+  in the shared half puts a rectangle at the wrong line and *looks like a rectangle*, so it
+  gets one implementation and the exhaustive sweep in `block_anchor`'s tests, while an error
+  in the paint is something a person can see.
+
+  - **`scene`** — the rendered substrate, sampled through the rows by `term_view::block_quads`
+    on `band_quads`' UV policy: a patch is a *window*, not a thumbnail, so it shows the slice
+    of the picture that sits where it sits and the surface stays put as the transcript moves
+    over it. It needs no second `World` and no `Shared` override — with the backdrop `off`,
+    `Shell::render_source` renders the substrate into the pane target and only the patch quads
+    sample it, so the window behind the text stays the flat black of an ordinary terminal.
+  - **`panel`** — a live egui control panel: `block_panel::draw` builds a child `Ui` at the
+    patch's rect, with sliders that move and a row of buttons wired to the console's real
+    look-change path. **Not a texture**, deliberately: the console's whole frame is already
+    one egui pass, so a patch is a rect inside it and a child `Ui` is the entire mechanism —
+    no `TextureId`, no readback, and the controls are alive rather than a photograph of
+    controls. Content is laid out into the block's **full** rect and clipped to the **visible**
+    one, so a half-scrolled panel is *cut* rather than squashed; egui intersects a widget's
+    rect with the clip rect to decide what the pointer can reach, so the same rect is the paint
+    boundary and the interaction boundary.
+
+  **Where the paint sits is measured, not chosen for tidiness**: both kinds draw between the
+  scrim and the glyph loop. *After* the scrim, because a patch is a hole cut **through** the
+  legibility layer rather than a surface behind it — its rows carry no glyphs, so dimming them
+  buys no legibility and costs the whole effect, and the visible consequence is the point (a
+  patch reads brighter than the transcript around it). *Before* the glyphs and the cursor, so
+  nothing a patch draws can cover a character **by construction** rather than because claimed
+  rows happen to be blank. One egui layer, so call order is the entire enforcement mechanism.
+
+  **The pointer is the one thing the terminal gives up, and only to a panel.** The console
+  scrolls its transcript from anywhere in the window — there is no scrollbar to be over — so a
+  panel inside the grid rect claims the pointer explicitly (`block_panel::pointer_inside` over
+  `panel_placements`) or a slider drag would also scroll the block out from under the cursor.
+  A **scene** patch claims nothing: it is something to look at, and the wheel over one keeps
+  scrolling the page exactly as the wheel over a paragraph does. The hover test runs against
+  the geometry as it stands **before** the wheel is applied, because the pointer is over what
+  is on screen *now*; the draw runs after it, so a panel lands where this frame's glyphs are.
+  Keyboard focus is deliberately not taken — the terminal keeps the keyboard.
+
+  **A panel's buttons enter the command lane rather than imitating it.** `organon-shell` cannot
+  see `substrate_materials` and must not learn to, so a `BlockPanel` carries labels handed down
+  by `shell_main.rs` and reports which one was pressed; `redraw` feeds that to
+  `apply_console(&ConsoleOp::Background(name))` — exactly where a typed
+  `organon console background metal` lands once `drain_console` has validated it, T4 look-epoch
+  record included. Clicking and typing are the same code from that call onwards.
+
+  One ledger across both kinds (`PaneLooks::blocks: Vec<Patch>`), not a list per kind: a
+  patch's index there is what the bands, the quads and the placements all mean by "which one",
+  so the two paints share a z-order. `block_quads` and `placements` stay kind-blind and are
+  handed the whole ledger; the filter happens after the arithmetic, which is what keeps one
+  index space. Named rather than hidden: the sliders drive nothing (their values persisting
+  across frames *is* the demonstration), nothing reaps an evicted patch, every panel gets the
+  same controls, and `patches_want_image` is scene-only so a pane holding only panels never
+  summons the engine.
+
+  On the CLI side the verb is `ConsoleOp::Patch { up, rows, kind }`, wire form
+  `patch <up> <rows> <kind>`, both counts bounded by `cli::MAX_BLOCK_ROWS`. The kind is
+  `cli::PatchKind` over `cli::PATCH_KIND_WORDS` — one table, read by clap's possible-values
+  parser, by the console's `ArgKind::Choice` schema and by `PatchKind::from_word`, so `--help`
+  cannot offer a kind the console has no way to paint. Two asymmetries on the wire, both
+  deliberate: a line with **no** kind is `scene` (what a claim meant before there was a choice,
+  which keeps the verified arm working byte for byte), while an **unknown** kind skips the line
+  — a newer CLI naming a kind this build cannot draw must not have a guess painted into a
+  rectangle someone else's output is holding open.
+
+  ⚠️ Unchanged by any of this: the sidecar is drained **once per frame** and is out of band
+  with the PTY byte stream, so "the line you are on now" resolves at drain time. A writer that
+  prints its gap and claims it in one breath is fine; one that keeps printing in between is
+  not. The in-band fix is the OSC 8 claim in `doc/console_patch_protocol.md`, which resolves
+  the anchor from the *cells* rather than from a clock — specified, not built.
 - **The landed v2 foundations** (session/event log with torn-tail recovery, the
   typed command service, mock-agent event cards) remain in the crate, feeding
   trees C/D. **`command::CommandService` is no longer only its own tests**: #4 T2 stands

@@ -18,6 +18,14 @@
 //! *looks* themselves — which epoch wears what, and which of them still own a texture —
 //! belong to the caller (`shell_main.rs`, over `substrate_epochs`); this module never
 //! learns what a material is.
+//!
+//! **Console Spike Tier 5 paints patches through the rows a writer claimed**, and this module
+//! owns the two questions that are the terminal's rather than the patch's: *when* they are
+//! drawn — between the scrim and the glyph loop, so a patch is the one place the engine is not
+//! dimmed and yet can never cover a character — and *whether the wheel belongs to one*, which
+//! is the single thing the terminal gives up. What each kind actually is belongs to
+//! [`crate::block_panel`]; a scene is a texture sampled through [`block_quads`], a panel is a
+//! child `Ui` at the same rect, and neither is a second render pass.
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
@@ -25,6 +33,7 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 
 use crate::block_anchor::{self, Block};
+use crate::block_panel::{self, BlockAction, Patch};
 use crate::scroll_anchor::{self, Snapshot, ViewState};
 use crate::term::{self, TermSession};
 
@@ -465,6 +474,10 @@ pub fn band_quads(
 
 /// One visible block's rect and the slice of the source image it shows.
 pub struct BlockQuad {
+    /// Index into the slice handed to [`block_quads`]. Invisible blocks emit no quad, so
+    /// position in the output says nothing — this is the only way back to the block, and the
+    /// caller needs it to skip the ones whose kind is not a picture.
+    pub block: usize,
     pub rect: egui::Rect,
     /// The **UV slice**, on the same policy as [`band_quads`] — see [`block_quads`].
     pub uv: egui::Rect,
@@ -487,6 +500,11 @@ pub struct BlockQuad {
 /// block of the row at `first_vrow` — is not needed for this policy and is deliberately
 /// unused here; it becomes load-bearing the moment a block owns its own texture rather than
 /// sampling a pane-sized one.
+///
+/// **Kind-blind, like every step before the paint.** It is handed the pane's whole ledger so
+/// that `BlockQuad::block` indexes it directly, and the caller skips the quads whose patch is
+/// not a picture. Filtering the ledger first would give the two kinds separate index spaces
+/// and cost the z-order between them, for nothing.
 pub fn block_quads(
     blocks: &[Block],
     state: ViewState,
@@ -501,6 +519,7 @@ pub fn block_quads(
             let bottom = (rect.top() + f32::from(b.last_vrow + 1) * cell_h).min(rect.bottom());
             let bottom = bottom.max(top);
             BlockQuad {
+                block: b.block,
                 rect: egui::Rect::from_min_max(
                     egui::pos2(rect.left(), top),
                     egui::pos2(rect.right(), bottom),
@@ -526,14 +545,24 @@ pub fn block_quads(
 /// Console Spike Tier 4 makes that backdrop a [`BandedBackdrop`] — the live look at the
 /// bottom, older looks above it, each band sampling its own epoch's texture. The scrim is
 /// unchanged and still covers the whole rect, once, after every band.
+///
+/// `patches` is Tier 5: the rectangles this pane's writers have claimed, in ledger order.
+/// Taken by `&mut` because a panel's sliders are real — a value dragged this frame has to
+/// still be there on the next one — and an empty slice is the tier before this one, byte for
+/// byte. `patch_image` is what a *scene* patch samples, and it is supplied independently of
+/// `backdrop` on purpose (see the paint pass).
+///
+/// The return value is the buttons a person pressed inside those patches this frame. This
+/// module does not know what they mean — see [`crate::block_panel`] — so it hands them back
+/// to the caller that supplied the labels.
 pub fn draw(
     ui: &mut egui::Ui,
     session: &mut TermSession,
     anchor: &mut PaneAnchor,
     backdrop: Option<BandedBackdrop<'_>>,
-    blocks: &[Block],
+    patches: &mut [Patch],
     patch_image: Option<egui::TextureId>,
-) {
+) -> Vec<BlockAction> {
     let font_id = egui::FontId::monospace(FONT_PT);
     let (cell_w, cell_h) = cell_metrics(ui);
 
@@ -599,8 +628,25 @@ pub fn draw(
             _ => {}
         }
     }
+    // ── The wheel, and the one thing a panel takes from the terminal ───────
+    // The console scrolls its transcript from **anywhere** in the window — there is no
+    // scrollbar to be over — so a panel sitting inside the grid rect has to claim the pointer
+    // explicitly, or a slider drag would also scroll the block out from under the cursor.
+    //
+    // Two things about *which* geometry this is asked of, both deliberate. It is the state
+    // **before** the wheel is applied, because the pointer is over what is on the screen right
+    // now; applying the wheel first and then asking would test the pointer against rows that
+    // have not been drawn yet. And it is `panel_placements`, not every patch: a scene patch is
+    // something to look at, so the wheel over one keeps scrolling the page exactly as the
+    // wheel over a paragraph does. `view` is five field reads, so computing it twice costs
+    // nothing.
+    let pre_wheel = anchor.view(session);
+    let pointer_on_panel = block_panel::pointer_inside(
+        &block_panel::panel_placements(patches, pre_wheel, rect, cell_h),
+        ui.input(|i| i.pointer.hover_pos()),
+    );
     let scroll = ui.input(|i| i.raw_scroll_delta.y);
-    if scroll.abs() >= 1.0 {
+    if scroll.abs() >= 1.0 && !pointer_on_panel {
         session.scroll_display((scroll / cell_h * 1.5) as i32);
     }
 
@@ -653,11 +699,24 @@ pub fn draw(
     // window behind it stays the flat black of an ordinary terminal. A terminal background is
     // a thirty-year-old idea; a rendered object living in the page is not, and leading with
     // the former undercuts the latter.
+    //
+    // Two paints, one ordering. The scene quads first — they are pictures, and a panel drawn
+    // over one would be a lid on it — then the panels, whose widgets must be the last thing
+    // in this region to claim the pointer. Both are still strictly before the glyph loop.
     if let Some(image) = patch_image {
-        for quad in block_quads(blocks, state, rect, cell_h) {
-            painter.image(image, quad.rect, quad.uv, egui::Color32::WHITE);
+        let blocks = block_panel::blocks(patches);
+        for quad in block_quads(&blocks, state, rect, cell_h) {
+            // A patch of another kind is skipped rather than drawn empty: `block_quads` is
+            // kind-blind so that its index means the ledger's index, and this is where the
+            // kind is read for the first time.
+            if patches.get(quad.block).is_some_and(Patch::is_scene) {
+                painter.image(image, quad.rect, quad.uv, egui::Color32::WHITE);
+            }
         }
     }
+    // `state`, not `pre_wheel`: the wheel has been applied by now, so a panel is drawn where
+    // this same frame's glyphs are, not where they were before the scroll.
+    let actions = block_panel::draw(ui, patches, state, rect, cell_h);
 
     let content = session.term.renderable_content();
     let display_offset = content.display_offset as i32;
@@ -770,6 +829,8 @@ pub fn draw(
             egui::Color32::from_rgb(0x80, 0x8a, 0x80),
         );
     }
+
+    actions
 }
 
 #[cfg(test)]

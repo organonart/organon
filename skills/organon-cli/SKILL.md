@@ -76,6 +76,7 @@ world in front of it:
 organon console background <name>    # the surface behind the glyphs
 organon console rig <name>           # how that surface is lit
 organon console block <rows>         # reserve blank rows in the transcript
+organon console patch --up N --rows M --kind <kind>   # claim a gap you already printed
 ```
 
 Reach for it when the ask is about *the workspace* ("make the background darker",
@@ -88,6 +89,18 @@ parameters.
 `block` opens its rows in the **active tab**, just below the cursor, and the next
 prompt lands underneath them. They are ordinary scrollback rows, so they scroll away
 with the rest of the transcript. Nothing is painted into them yet.
+
+`patch` is the one to reach for, and it inverts who makes the hole. **You** print the
+gap — ordinary blank lines on ordinary stdout, as part of your own output — and then
+say where it is: `--up` counts back from the line you are on now, `--rows` is how tall.
+The console writes nothing into the terminal; it records the rectangle and paints it.
+Print the gap and claim it in one breath, because "the line you are on" is resolved when
+the console next drains, and anything you print in between moves it.
+
+`--kind` says *what* the console should draw there — a name it resolves, never a command
+and never a path. Ask `--help` for the kinds this build knows; it defaults to the one the
+verb shipped with, so a claim without it is unchanged. A rectangle scrolls, ages and
+evicts with the rows it is pinned to, and a terminal **width** change invalidates it.
 
 Your changes ride an **override lane**. Two rules follow from that:
 
