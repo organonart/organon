@@ -505,8 +505,8 @@ epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
   `Unknown` with the body preserved. Tested against three committed captures in
   `organon-shell/fixtures/`, two of them real.
 - **`conversation.rs` — the transcript model.** `Transcript::apply(AgentEvent) -> Change`,
-  folding into ordered `Element`s (`Human | Assistant | Tool | RunEnd`) with stable
-  `ElementId`s. Its `AgentEvent` is **its own input enum, deliberately not the decoder's**
+  folding into ordered `Element`s (`Human | Assistant | Tool | RunEnd | Artifact`) with
+  stable `ElementId`s. Its `AgentEvent` is **its own input enum, deliberately not the decoder's**
   — two modules cannot own one type, and a transcript fluent in the wire format would
   change shape every time the wire did. No egui, no clock, no I/O.
 - **`agent_map.rs` — the seam, and the only file in the tree that knows both types.** A
@@ -555,6 +555,32 @@ those arrive as *fields* rather than as a patch someone has to parse back out of
 "A tool is running" has no event anywhere in the stream; it is derived from an unresolved
 id, and it stops being true when the result arrives.
 
+**A live control panel, inline — the artifact the other front-end needed a protocol for.**
+`Body::Artifact` is an element the console puts in the flow itself, and
+`conversation_view::artifact_element` draws it as a real egui panel: sliders that move,
+buttons that act, `block_panel`'s own colours and spacing imported rather than re-chosen.
+Set that against what the terminal host needs for the same rectangle — the writer printing
+its own gap, a claim, absolute-line anchoring, reflow invalidation, and surviving ConPTY —
+and the size of the difference is the argument for the second front-end. **There is no
+character grid, so an artifact is an element in a list that draws itself.** No anchoring
+exists to get wrong.
+
+Three rules hold it up, and each names a failure it prevents:
+
+| Rule | Where | The failure it prevents |
+|---|---|---|
+| The element is a **description** — a title, slider *names*, button *names*, and no value, colour, rect or closure | `conversation.rs` | the model acquiring layout, and stopping being a state machine you can test in milliseconds |
+| **Live widget values live in the view**, in a `HashMap<ElementId, PanelState>` beside the transcript, pruned each frame against `Transcript::get` | `conversation_view.rs` | a slider that snaps back mid-drag, because the transcript is folded from a stream and its elements mutate as events arrive. This is what stable ids are *for* |
+| Button labels are **handed down** and come back by label | `shell_main.rs` | `organon-shell` learning about `substrate_materials`; a pressed button re-enters `apply_console`, the same call `organon console background <name>` reaches |
+
+**Summoning is deliberately a separate seam.** `/panel` typed in the composer is recognised
+by `conversation_view::local_command`, acted on locally and **never written to stdin**;
+`Transcript::insert_artifact` is a method rather than a ninth `AgentEvent`, because no
+harness said this and putting it in the event enum would oblige every mapping to carry an
+event none of them can produce. That is what makes the next step small: the agent summons
+a panel with a tool call, the integrator answers it with the same `insert_artifact`, and
+the local command is deleted without touching anything that draws.
+
 **How a tab opens one.** `HarnessSpec::conversation` — the registry is data, so the
 front-end is a field. `claude-chat` is the one built-in row that sets it, on every
 platform, **beside** the terminal `claude` row rather than instead of it. `command`,
@@ -580,7 +606,7 @@ integrated is not unsupported, it is supported the old way.
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
-| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab). Next, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); approvals over the control protocol; then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
+| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab) plus the inline artifact (`Body::Artifact`, summoned locally by `/panel`). Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact` — the tool card is the anchor, and `/panel` is deleted in the same change. Then, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); approvals over the control protocol; then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -623,6 +649,24 @@ path silently breaks the three-products-simultaneously guarantee that
   lines as removals and `new_string`'s as additions — there is no alignment, so an edit
   that changes one character in the middle of a ten-line block shows ten removals and ten
   additions. That is honest about what arrived; it is not `diff`.
+- **An inline panel's sliders drive nothing, and its buttons drive the console.** The
+  sliders are stated as a demonstration that a drag inside a transcript is a real drag
+  tracked across frames — the same claim, and the same honesty, as `block_panel`'s. The
+  material buttons are wired all the way through to `Shell::apply_console`, so clicking one
+  in a chat tab and typing `organon console background metal` are one call. ⚠️ **But the
+  backdrop is not drawn behind a conversation**, so the *effect* of that click is seen on a
+  terminal tab, not under the transcript that asked for it. The wire is real; the feedback
+  loop is not closed in the tab you are looking at.
+- **`/panel` is a temporary summoning seam and is not the feature.** The feature is the
+  element; the local command is scaffolding that exists because agent-summoned artifacts
+  are the next step. It is exact-match only (`/panels` and `/panel now` go to the agent),
+  because over-recognising swallows a real message while the composer clears either way.
+- **The panel has never been drawn on screen by the session that wrote it.** The model
+  change, the local command and the widget state's start-and-survive behaviour are pinned
+  headless; nothing headless can answer whether a slider inside a `ScrollArea` reads well at
+  real width, whether the panel's fill sits correctly against the transcript's background
+  rather than the terminal's, or whether it is obvious that the thing is live. A person on
+  the machine is the first to know — the same entry as the view itself, for the same reason.
 - **A conversation pane carries an inert look-epoch ledger.** The three per-tab vectors
   stay index-aligned so every `zip` and `get(active)` in `shell_main.rs` remains safe, so
   a conversation gets a `PaneLooks` it never uses and opens epochs at line 0. The backdrop

@@ -27,14 +27,16 @@
 //! a *presentation* choice and says so on screen ("+N more lines"), and the full text is
 //! still in the model.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use egui::{Color32, CornerRadius, Frame, Margin, RichText};
 
 use crate::agent_map::EventMapper;
 use crate::agent_session::{AgentSession, StreamItem};
+use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
 use crate::conversation::{
-    Arguments, Body, Change, Element, RunOutcome, ToolCard, ToolState, Transcript,
+    Arguments, ArtifactBlock, ArtifactContent, Body, Change, Element, ElementId, PanelSpec,
+    RunOutcome, ToolCard, ToolState, Transcript,
 };
 use crate::timeline::pinned_after_scroll;
 
@@ -51,6 +53,85 @@ const OUTPUT_LINES: usize = 10;
 const DIFF_LINES: usize = 12;
 /// Diagnostic lines kept (non-JSON stdout, stderr). Bounded and logged, never silent.
 const LOG_LINES: usize = 200;
+
+/// A button was pressed inside an inline artifact: which element, and which label.
+///
+/// The sibling of [`crate::block_panel::BlockAction`], and the same contract: this crate
+/// draws labels it was handed and reports the one that was pressed, because what a label
+/// *means* lives in `shell_main.rs` beside the material table. An [`ElementId`] rather than
+/// an index because that is the identity the transcript guarantees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactAction {
+    pub element: ElementId,
+    pub button: String,
+}
+
+/// A composer line the view acts on itself and **never sends to the agent**.
+///
+/// ⚠️ **A temporary seam, and shaped to be removed.** Summoning is about to become the
+/// agent's job — a tool call the integrator answers with
+/// [`Transcript::insert_artifact`](crate::conversation::Transcript::insert_artifact), where
+/// the tool card is the anchor — so the summoning path is kept entirely separate from the
+/// element: this enum decides *that* a panel is wanted, [`ConversationPane::summon_panel`]
+/// builds one, and neither knows about the other's existence beyond that call. Deleting
+/// this enum and its branch in [`ConversationPane::submit`] removes the local command and
+/// touches nothing that draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalCommand {
+    /// `/panel` — put a control panel in the flow, here.
+    Panel,
+}
+
+/// Recognise a local command, or `None` for an ordinary message.
+///
+/// Exact-match only: a message that merely *starts* with a slash is a message (a human
+/// asking about `/panel` must reach the agent), and swallowing it would be a silent send
+/// failure — the worst kind, because the composer clears either way.
+pub fn local_command(line: &str) -> Option<LocalCommand> {
+    match line.trim() {
+        "/panel" => Some(LocalCommand::Panel),
+        _ => None,
+    }
+}
+
+/// One artifact's **live** widget state — the values a hand moves.
+///
+/// 🚨 **This is why it is here and not in the transcript.** The transcript is folded from an
+/// event stream and its elements mutate as events arrive; a slider value living there would
+/// be rewritten by the fold, and the symptom is a knob that snaps back mid-drag while the
+/// agent is talking. The model names the controls, this holds their values, and
+/// [`ElementId`] is the join — which is the reason that id is documented as assigned once
+/// and never reused.
+#[derive(Clone, Debug, Default)]
+struct PanelState {
+    /// Parallel to [`PanelSpec::sliders`], by index. Re-synced on a length change, which
+    /// cannot happen today (a description is written once) and is cheap insurance for the
+    /// day an artifact is allowed to be revised.
+    sliders: Vec<f32>,
+}
+
+impl PanelState {
+    /// Where the knobs start. The terminal host's panel is the reference look, so a slider
+    /// it also has starts where that one does and the two panels are the same instrument;
+    /// anything else starts mid-range.
+    fn for_spec(spec: &PanelSpec) -> Self {
+        PanelState { sliders: spec.sliders.iter().map(|l| initial_value(l)).collect() }
+    }
+
+    fn sync(&mut self, spec: &PanelSpec) {
+        if self.sliders.len() != spec.sliders.len() {
+            *self = PanelState::for_spec(spec);
+        }
+    }
+}
+
+fn initial_value(label: &str) -> f32 {
+    DEFAULT_SLIDERS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, v)| *v)
+        .unwrap_or(0.5)
+}
 
 /// One conversation tab: a live agent, the transcript it is writing, and the composer.
 pub struct ConversationPane {
@@ -70,12 +151,24 @@ pub struct ConversationPane {
     pinned: bool,
     /// Focus the composer on the first frame this pane is drawn.
     want_focus: bool,
+    /// Live widget state for the artifacts on screen, keyed by [`ElementId`]. Never in the
+    /// transcript — see [`PanelState`]. Pruned against the transcript every frame, so an
+    /// element the cap evicted takes its state with it.
+    artifacts: HashMap<ElementId, PanelState>,
+    /// The button labels a summoned panel offers, **handed down** by whoever opened the
+    /// tab. This crate cannot see the console's material table and must not learn to; it
+    /// draws these and reports which was pressed ([`ArtifactAction`]).
+    buttons: Vec<String>,
 }
 
 impl ConversationPane {
     /// Start a conversation in `cwd`. A spawn failure is **kept, not returned** — the tab
     /// opens and says what went wrong, which is the only way a user finds out.
-    pub fn new(cwd: Option<&str>) -> Self {
+    ///
+    /// `buttons` are the labels an inline panel offers. A constructor argument rather than a
+    /// settable field because an empty list is a panel with no buttons, which looks like a
+    /// panel that is broken rather than like a caller that forgot.
+    pub fn new(cwd: Option<&str>, buttons: Vec<String>) -> Self {
         let (session, failure) = match AgentSession::spawn(cwd) {
             Ok(session) => (Some(session), None),
             Err(error) => (None, Some(error.to_string())),
@@ -89,6 +182,8 @@ impl ConversationPane {
             log: VecDeque::new(),
             pinned: true,
             want_focus: true,
+            artifacts: HashMap::new(),
+            buttons,
         }
     }
 
@@ -144,10 +239,38 @@ impl ConversationPane {
         changed
     }
 
+    /// Put a control panel in the flow, at the end of what has been said so far.
+    ///
+    /// The **only** thing that builds one, so the summoning path above it — today a local
+    /// command, next a tool call — is a caller rather than a participant.
+    pub fn summon_panel(&mut self) {
+        let spec = PanelSpec {
+            sliders: DEFAULT_SLIDERS.iter().map(|(l, _)| (*l).to_string()).collect(),
+            buttons: self.buttons.clone(),
+        };
+        self.transcript.insert_artifact(ArtifactBlock {
+            title: "◈ organon · console".to_string(),
+            content: ArtifactContent::Panel(spec),
+        });
+        // Appended content pulls the view down, exactly as an appended element off the
+        // stream does — the panel is at the bottom and being able to see it is the point.
+        self.pinned = true;
+    }
+
     /// Send the composer's contents and clear it. Renders nothing locally (rule 2).
     fn submit(&mut self) {
         let text = self.composer.trim().to_string();
         if text.is_empty() {
+            return;
+        }
+        // A local command is handled here and **never written to stdin** — checked before
+        // the session lookup so it works in a pane whose agent is gone. See [`LocalCommand`]
+        // for why this seam is temporary.
+        if let Some(command) = local_command(&text) {
+            match command {
+                LocalCommand::Panel => self.summon_panel(),
+            }
+            self.composer.clear();
             return;
         }
         let Some(session) = self.session.as_mut() else { return };
@@ -168,42 +291,69 @@ impl ConversationPane {
     }
 }
 
-/// Draw the pane: scrollback, then composer.
+/// Draw the pane: scrollback, then composer. Returns the artifact buttons pressed this
+/// frame, for the caller to act on — see [`ArtifactAction`].
 ///
 /// Bottom-up, because the composer's height is known and the scrollback's is whatever is
 /// left — the layout every chat client resolves in that order.
-pub fn draw(ui: &mut egui::Ui, pane: &mut ConversationPane) {
+pub fn draw(ui: &mut egui::Ui, pane: &mut ConversationPane) -> Vec<ArtifactAction> {
+    let mut actions = Vec::new();
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         composer(ui, pane);
         ui.add_space(4.0);
         status_line(ui, pane);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            scrollback(ui, pane);
+            actions = scrollback(ui, pane);
         });
     });
+    actions
 }
 
-fn scrollback(ui: &mut egui::Ui, pane: &mut ConversationPane) {
+fn scrollback(ui: &mut egui::Ui, pane: &mut ConversationPane) -> Vec<ArtifactAction> {
+    let mut actions = Vec::new();
+    // Destructured so the transcript can be read while the widget state is written: they
+    // are disjoint fields, and keeping them disjoint is the whole point of the side map.
+    let ConversationPane { transcript, artifacts, pinned, .. } = pane;
     let out = egui::ScrollArea::vertical()
         .auto_shrink(false)
-        .stick_to_bottom(pane.pinned)
+        .stick_to_bottom(*pinned)
         .show(ui, |ui| {
             ui.add_space(6.0);
-            if pane.transcript.is_empty() {
+            if transcript.is_empty() {
                 ui.label(
-                    RichText::new("no messages yet — type below and press Enter")
-                        .color(DIM)
-                        .italics(),
+                    RichText::new(
+                        "no messages yet — type below and press Enter, or `/panel` for a \
+                         control panel",
+                    )
+                    .color(DIM)
+                    .italics(),
                 );
             }
-            for element in pane.transcript.elements() {
-                draw_element(ui, element);
+            for element in transcript.elements() {
+                match &element.body {
+                    // The one body drawn here rather than in `draw_element`: it is the only
+                    // one that needs state to survive between frames, and `draw_element`
+                    // has nowhere to keep it.
+                    Body::Artifact(artifact) => {
+                        // Empty on the first frame; `artifact_element` syncs it to the
+                        // description, which is where the starting values come from.
+                        let state = artifacts.entry(element.id).or_default();
+                        if let Some(button) = artifact_element(ui, element.id, artifact, state) {
+                            actions.push(ArtifactAction { element: element.id, button });
+                        }
+                    }
+                    _ => draw_element(ui, element),
+                }
                 ui.add_space(8.0);
             }
         });
-    pane.pinned =
-        pinned_after_scroll(out.state.offset.y, out.content_size.y, out.inner_rect.height());
+    *pinned = pinned_after_scroll(out.state.offset.y, out.content_size.y, out.inner_rect.height());
+    // State outlives its element for exactly as long as it takes to notice. The transcript
+    // evicts from the front and `get` answers `None` for an evicted id, so this is a
+    // one-line answer to "does the side map leak on a long session" — it does not.
+    artifacts.retain(|id, _| transcript.get(*id).is_some());
+    actions
 }
 
 fn draw_element(ui: &mut egui::Ui, element: &Element) {
@@ -225,6 +375,10 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
             ui.label(RichText::new(text).color(PROSE));
         }
         Body::Tool(card) => tool_card(ui, card),
+        // Drawn by `scrollback`, which holds the widget state a panel needs between
+        // frames. Nothing to do here, and nothing missing: an element is drawn exactly
+        // once, by whichever of the two has what it needs.
+        Body::Artifact(_) => {}
         Body::RunEnd(end) => {
             let (label, color) = match end.outcome {
                 RunOutcome::Ok => ("turn complete", DIM),
@@ -289,6 +443,62 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
                 }
             }
         });
+}
+
+/// **The artifact that is not a picture of anything: a live control panel, inline.**
+///
+/// The terminal host next door needed a protocol to put one of these in the page — the
+/// writer printing its own gap, a claim, absolute-line anchoring, reflow invalidation, and
+/// surviving ConPTY's rewriting of the byte stream. Here there is no character grid, so an
+/// artifact is *an element in a list that draws itself*, and this function is the whole
+/// mechanism. Same widgets, same look ([`crate::block_panel`]'s own constants, imported
+/// rather than re-chosen); no anchoring at all, because a flow does not have any.
+///
+/// Returns the label pressed this frame, if one was.
+fn artifact_element(
+    ui: &mut egui::Ui,
+    id: ElementId,
+    artifact: &ArtifactBlock,
+    state: &mut PanelState,
+) -> Option<String> {
+    // Scoped by the element's own id: two panels in one transcript are two sets of widgets,
+    // and egui's positional auto-ids would otherwise hand a slider its neighbour's drag
+    // state the moment anything above them changes height.
+    ui.push_id(id.0, |ui| {
+        Frame::new()
+            .fill(PANEL_FILL)
+            .stroke(egui::Stroke::new(1.0f32, PANEL_EDGE))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::same(PAD as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().slider_width = SLIDER_WIDTH;
+                ui.label(RichText::new(&artifact.title).monospace().strong().color(PANEL_TITLE));
+                match &artifact.content {
+                    ArtifactContent::Panel(spec) => panel_body(ui, spec, state),
+                }
+            })
+            .inner
+    })
+    .inner
+}
+
+fn panel_body(ui: &mut egui::Ui, spec: &PanelSpec, state: &mut PanelState) -> Option<String> {
+    // The description is authoritative about *which* controls exist; the state is
+    // authoritative about where they are. This is the only line where the two meet.
+    state.sync(spec);
+    let mut pressed = None;
+    ui.horizontal_wrapped(|ui| {
+        for label in &spec.buttons {
+            if ui.button(RichText::new(label).monospace()).clicked() {
+                pressed = Some(label.clone());
+            }
+        }
+    });
+    for (label, value) in spec.sliders.iter().zip(state.sliders.iter_mut()) {
+        ui.add(egui::Slider::new(value, 0.0..=1.0).text(label.as_str()));
+    }
+    pressed
 }
 
 fn arguments_body(ui: &mut egui::Ui, args: &Arguments) {
@@ -520,6 +730,41 @@ mod tests {
         assert!(edit_diff(Some("Edit"), &args).is_none(), "no old/new means no diff");
         let streaming = Arguments { text: r#"{"old_string":"a","new_"#.into(), complete: false };
         assert!(edit_diff(Some("Edit"), &streaming).is_none(), "never parse a fragment");
+    }
+
+    /// A local command is recognised **exactly**, because the cost of the two mistakes is
+    /// wildly asymmetric: failing to recognise one sends a slash-word to the agent, which is
+    /// merely odd, while over-recognising one swallows a real message — and the composer
+    /// clears either way, so the human watches their sentence vanish into nothing.
+    #[test]
+    fn only_an_exact_slash_panel_is_a_local_command() {
+        assert_eq!(local_command("/panel"), Some(LocalCommand::Panel));
+        assert_eq!(local_command("  /panel \n"), Some(LocalCommand::Panel), "trimmed like a send");
+        for message in ["/panels", "/panel now", "what does /panel do?", "panel", "/", ""] {
+            assert_eq!(local_command(message), None, "{message:?} belongs to the agent");
+        }
+    }
+
+    /// The knobs start where the terminal host's panel starts, so the two front-ends draw
+    /// one instrument rather than two that resemble each other.
+    #[test]
+    fn a_panels_widget_state_comes_from_its_description() {
+        let spec = PanelSpec {
+            sliders: vec!["bloom".into(), "unheard-of".into()],
+            buttons: vec!["metal".into()],
+        };
+        let mut state = PanelState::default();
+        state.sync(&spec);
+        assert_eq!(state.sliders.len(), 2);
+        assert_eq!(state.sliders[0], initial_value("bloom"), "shared with block_panel");
+        assert!(DEFAULT_SLIDERS.iter().any(|(l, v)| *l == "bloom" && *v == state.sliders[0]));
+        assert_eq!(state.sliders[1], 0.5, "an unknown control still gets a sane start");
+
+        // A dragged value survives a re-sync — the description did not change, so nothing
+        // may reach in and reset it. This is the "snaps back mid-drag" failure, headless.
+        state.sliders[0] = 0.9;
+        state.sync(&spec);
+        assert_eq!(state.sliders[0], 0.9);
     }
 
     /// Clipping is the VIEW's, and it reports what it hid — the model keeps the whole

@@ -11,6 +11,19 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — a live control panel as an element in a conversation
+
+- **`/panel` in a conversation tab puts a working egui panel in the transcript** — sliders
+  that move and material buttons wired to the console's real look-change path, the same
+  `apply_console` a typed `organon console background <name>` reaches. The terminal host
+  needs a whole protocol to put a rectangle in its page (a printed gap, a claim,
+  absolute-line anchoring, surviving ConPTY); here an artifact is an element in a list that
+  draws itself, and that difference is the argument for the second front-end. The transcript
+  stays pure: `Body::Artifact` carries a *description* — a title and control **names** —
+  while every value a hand can move lives in the view, keyed by `ElementId`, which is what
+  those stable ids were for. `/panel` is a temporary seam; the agent summoning a panel with
+  a tool call replaces it.
+
 ### Console Spike — a claimed rectangle has a kind, and one of them is a working panel
 
 - **`organon console patch --up N --rows M --kind <scene|panel>`.** The writer prints its own
