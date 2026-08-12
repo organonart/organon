@@ -30,6 +30,7 @@
 //! age with the text instead of with the window. Pure arithmetic — its caller
 //! contract is the checklist in its module doc.
 
+pub mod agent_event;
 pub mod app;
 pub mod block_anchor;
 pub mod command;
