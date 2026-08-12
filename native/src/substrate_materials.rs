@@ -464,7 +464,12 @@ pub struct SubstrateMaterial {
 // and the shader said which one it really was. That is the part worth being able to re-read:
 //
 //   * graphite read as light-grey wallpaper, and the albedo bake was innocent — a dielectric's
-//     specular does not scale with albedo, so a glossy near-black plane is a dark mirror.
+//     specular does not scale with albedo, so a glossy near-black plane is a mirror. But
+//     mirror of *what* is a question about the camera, and the value pass later measured the
+//     answer this section first guessed wrong: top-down, the mirror direction is the Nishita
+//     zenith — the DARK part of the sky — and roughness blurs toward the bright hemispheric
+//     mean, so on this rig gloss is dark and rough is bright (metal 29.6 vs slate 96.3).
+//     Graphite's own doc carries the measured four-point curve.
 //   * paper read as black-and-white camouflage, and the albedo span was 0.11 — far too narrow
 //     to reach either end. The patches were derived AO multiplying the ambient term.
 //
@@ -521,13 +526,32 @@ pub const SLATE: SubstrateMaterial = SubstrateMaterial {
 /// `gamma` 1.0 leaves it there, so `mix(grad_lo, grad_hi, v)` spanned exactly the near-black
 /// \[0.030, 0.115\] it was asked for. Nothing compressed toward mid.
 ///
-/// 🚨 **What lifted it was the specular, and the physics says it had to.** A dielectric's
-/// specular does not scale with albedo — `F0` is 0.04 no matter how black the pigment — so a
-/// *glossy* near-black plane under a full-sky IBL is a dark mirror, and a dark mirror of a
-/// bright sky is bright. The first pass's roughness band was \[0.197, 0.513\]: at that gloss
-/// the sheen carried the entire read and the albedo was irrelevant, which is precisely why it
-/// looked like wallpaper rather than like graphite. The fix is therefore **roughness first,
-/// albedo second** — darkening the stops alone would have changed almost nothing.
+/// 🚨 **What lifts it is the specular — and on this scene ROUGHER IS BRIGHTER.** A
+/// dielectric's specular does not scale with albedo (`F0` is 0.04 however black the pigment),
+/// so the sheen carries the whole read and the albedo barely touches the *level*. That much
+/// the first pass had right. What it got backwards was the direction: it argued that a glossy
+/// near-black plane is "a dark mirror of a bright sky, and therefore bright", and moved
+/// `gamma` 1.55 → 0.83 to make the sheet matter. **That made it brighter**, and a later pass
+/// to the gamma floor (0.20) brighter still.
+///
+/// The counter-example is in this file. [`METAL`] is the glossiest material here — roughness
+/// band \[0.116, 0.356\] — and it measures **29.6** where slate measures 96.3 on the same
+/// pane: nearly black. The sky is bright only *in aggregate*. The substrate camera is
+/// top-down on a horizontal sheet, so the mirror direction is the **zenith**, and the baked
+/// Nishita zenith is the dark part of the sky. Roughness raises the prefiltered LOD
+/// (`cube.wgsl:1071-1074`, `lod = roughness · (mip_count − 1)`), blurring the sample off that
+/// dark zenith toward the bright hemispherical mean, and `fss_ess + fms·ems`
+/// (`cube.wgsl:1967-1975`) hands back the multiple-scattering energy at high roughness on top
+/// of it. Measured on the pane, in mean sRGB over a glyph-free region:
+///
+/// ```text
+///     roughness band centre  0.189   0.250   0.563   0.871    (gamma 2.40 2.00 0.83 0.20)
+///     graphite level          99.7   114.9   159.2   176.2    (slate 96.3, paper 155.2)
+/// ```
+///
+/// So the order stands — **roughness first, albedo second** — but the sign is inverted from
+/// what the first pass wrote down, and "second" is a distant second: at a 0.033 mean there is
+/// almost nothing left in the albedo to take away.
 ///
 /// Three cues, each on its own mechanism:
 ///
@@ -536,10 +560,13 @@ pub const SLATE: SubstrateMaterial = SubstrateMaterial {
 ///   what makes it read as laminated rather than as noise.
 /// * **Roughness** — a `Stripes` overlay running **along world +Z** (the field is
 ///   `sin(p.x·π)`, `material_bake.wgsl:236-238`, and world-planar XZ puts noise-x on world x,
-///   so the lines run along z). `contrast` 0.30 → \[0.35, 0.65\], `gamma` **0.83** →
-///   **\[0.418, 0.699\], mean ≈ 0.56**: matte-to-satin rather than gloss-to-mirror. The
-///   lamination still reads — a 0.28 gloss delta is plenty — but the sheen stops being the
-///   light source.
+///   so the lines run along z). `contrast` 0.30 → \[0.35, 0.65\], `gamma` **2.40** →
+///   **\[0.081, 0.356\], centre ≈ 0.19**: a satin lamination, and — on this scene, for the
+///   reason below — the band that makes the sheet read dark. Its 0.275 gloss delta is wider
+///   than any earlier pass carried, so the lines read as lamination rather than as a tint.
+///   ("Centre" is `0.5^gamma`, the shaped midpoint, which is what [`SLATE`]'s "mean ≈ 0.406"
+///   and [`METAL`]'s "≈ 0.21" are too — one definition across the four, and the one the
+///   `roughness` scalar below tracks.)
 /// * **Scale** — the one material that leaves [`MATERIAL_UV_SCALE`]. At `s = 0.02` the
 ///   coarsest possible stripe is `mp_scale = 64` → 24.6 px, and metal proves 24.6 px reads as
 ///   a *brush*; graphite wants lamination, several times finer. `s = 0.055` with `p = 64`
@@ -563,7 +590,11 @@ pub const SLATE: SubstrateMaterial = SubstrateMaterial {
 /// and the material disappears.
 ///
 /// *Dial:* `overlay.gamma` — the roughness band's centre, and so the whole material's level.
-/// Down brightens (glossier), up darkens (matter). The gradient stops are the second dial.
+/// **Up darkens, down brightens**, and state it in *gamma*, never in gloss: `pow(v, gamma)`
+/// over a \[0.35, 0.65\] band means a higher gamma is a *lower* roughness, and here lower
+/// roughness is darker. That is the reverse of the matte/gloss intuition, and saying "up
+/// darkens (matter)" is what sent two passes the wrong way. The gradient stops are nominally
+/// the second dial, but see above — they have almost nothing left to give.
 pub const GRAPHITE: SubstrateMaterial = SubstrateMaterial {
     name: "graphite",
     uv_scale: 0.055, // see "Scale" above; range 0.02..16 (params.rs:8425)
@@ -586,7 +617,7 @@ pub const GRAPHITE: SubstrateMaterial = SubstrateMaterial {
         octaves: 1.0, // single-scale kind: unread, stated rather than left at 5
         warp: 0.10,   // 5% of a stripe — enough to unprint it, too little to alias
         contrast: 0.30,
-        gamma: 0.83,
+        gamma: 2.40,
         seed: 5.0,
         ..Layer::DEFAULT
     }),
@@ -594,7 +625,7 @@ pub const GRAPHITE: SubstrateMaterial = SubstrateMaterial {
     derive: DERIVE_NONE, // albedo-sourced normals need a luminance range; see above
     mat_type: 0.0,       // Standard + the anisotropy overlay
     metallic: 0.0,
-    roughness: 0.56, // ≈ the roughness map's new mean, for the map-absent case
+    roughness: 0.19, // ≈ the roughness map's centre (0.5^gamma), for the map-absent case
     aniso: [0.45, 0.0, 1.0, 0.65],
     matcol: [0.0, 0.0, 0.35, 1.0], // a whisper of the gradient's cool cast survives
 };
@@ -1116,25 +1147,41 @@ mod tests {
         assert_eq!(s.material_grad, [0.012, 0.012, 0.015, 0.0, 0.055, 0.055, 0.062, 0.0]);
         assert_eq!(
             s.material_layer2,
-            [12.0, 1.0, 64.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.5, 0.10, 0.30, 0.83, 0.0, 1.0, 0.0, 5.0, 1.0, 0.0]
+            [12.0, 1.0, 64.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.5, 0.10, 0.30, 2.40, 0.0, 1.0, 0.0, 5.0, 1.0, 0.0]
         );
         // No derived maps: an albedo-sourced normal is inert on a material this dark (the
         // Sobel scales with the albedo's luminance range — see the doc comment).
         assert_eq!(s.material_derive, DERIVE_NONE);
         assert_eq!(s.lighting[7], 0.0, "Standard — the anisotropy is an OVERLAY");
         assert_eq!(s.pbr[0], 0.0, "metallic 0: a near-black metal has no specular colour");
-        assert_eq!(s.pbr[1], 0.56);
+        assert_eq!(s.pbr[1], 0.19, "= the roughness map's centre; see the band test below");
         assert_eq!(s.aniso, [0.45, 0.0, 1.0, 0.65]);
         assert_eq!(s.matcol[2], 0.35, "saturation");
     }
 
-    /// The beat-check regression, stated as the physics rather than as a number: graphite is a
-    /// **dielectric**, so its specular does not scale with its albedo (`F0` = 0.04 however
-    /// black the pigment). The first pass shipped a \[0.197, 0.513\] roughness band, and at
-    /// that gloss a near-black plane under a full-sky IBL read as mid-grey wallpaper — the
-    /// sheen, not the albedo, was the light. Pin the band well clear of mirror territory.
+    /// The beat-check regression, and it guards the **opposite** of what its predecessor did.
+    ///
+    /// That test floored graphite's roughness — `assert!(lo > 0.40, "still a mirror")` — on the
+    /// reasoning that a dielectric's specular is albedo-independent, so a *glossy* near-black
+    /// plane is a dark mirror of a bright sky and therefore bright. The first half is true and
+    /// the conclusion is not, and believing it drove `gamma` 1.55 → 0.83 → 0.20, each step
+    /// making the sheet **paler**. Measured on the pane (2000 px, scrim 96, studio):
+    ///
+    /// ```text
+    ///     band centre   0.189   0.250   0.563   0.871
+    ///     graphite       99.7   114.9   159.2   176.2     slate 96.3, paper 155.2
+    /// ```
+    ///
+    /// Rougher is brighter here. The substrate camera is top-down, so the mirror direction is
+    /// the **zenith** — the dark part of the baked Nishita sky — and roughness raises the
+    /// prefiltered LOD (`cube.wgsl:1071-1074`) until the sample is the bright hemispherical
+    /// mean instead. [`METAL`] is the standing proof: glossiest material in the file, and it
+    /// measures 29.6 where slate measures 96.3.
+    ///
+    /// So the guard is a **ceiling** on the band, never a floor. Let graphite drift matte and
+    /// it goes pale again — which is the bug this file has now had twice.
     #[test]
-    fn graphite_is_matte_enough_that_its_albedo_carries_the_read() {
+    fn graphite_band_stays_glossy_enough_to_read_dark() {
         // The bake's own arithmetic (material_bake.wgsl:315-322), restated.
         let band = |contrast: f32, gamma: f32, raw: f32| {
             ((raw - 0.5) * contrast + 0.5).clamp(0.0, 1.0).powf(gamma.max(1e-3))
@@ -1142,14 +1189,26 @@ mod tests {
         let l = GRAPHITE.overlay.expect("graphite bakes a roughness overlay");
         assert_eq!(l.channel, 1.0, "…to the Roughness channel");
         let (lo, hi) = (band(l.contrast, l.gamma, 0.0), band(l.contrast, l.gamma, 1.0));
-        assert!(lo > 0.40, "graphite's glossiest stripe is {lo}, still a mirror");
-        assert!(hi < 0.75, "graphite's mattest stripe is {hi} — the lamination would vanish");
-        // And the scalar fallback must agree with the map's mean, or a dropped roughness bit
-        // silently restores the failure.
-        let mean = band(l.contrast, l.gamma, 0.5);
+
+        // The band the doc comment quotes, recomputed from the constants rather than copied
+        // beside them — so the prose cannot drift away from the numbers it describes.
+        assert!((lo - 0.081).abs() < 1e-3, "glossiest stripe {lo}, doc quotes 0.081");
+        assert!((hi - 0.356).abs() < 1e-3, "mattest stripe {hi}, doc quotes 0.356");
+
+        // The regression itself: at a centre of 0.563 graphite measured 159.2, *brighter than
+        // paper*. Nothing may drift back toward that.
+        assert!(hi < 0.40, "mattest stripe {hi} is into the pale regime (0.563 read 159.2)");
+        // The lamination is the band's own width, so it may not be bought back by flattening.
+        // Iteration 1's gamma 0.20 collapsed this to 0.107 and the stripes vanished.
+        assert!(hi - lo > 0.20, "band span {} is too narrow to read as lamination", hi - lo);
+
+        // The map-absent scalar tracks the map's centre — `0.5^gamma`, the same definition
+        // slate (1.30 → 0.406, declares 0.42) and metal (2.20 → 0.218, declares 0.22) use — or
+        // a dropped roughness bit silently restores the failure above.
+        let centre = band(l.contrast, l.gamma, 0.5);
         assert!(
-            (GRAPHITE.roughness - mean).abs() < 0.02,
-            "scalar roughness {} disagrees with the map's mean {mean}",
+            (GRAPHITE.roughness - centre).abs() < 0.02,
+            "scalar roughness {} disagrees with the map's centre {centre}",
             GRAPHITE.roughness
         );
     }
