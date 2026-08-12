@@ -11,7 +11,7 @@ Two instruments are built on its engine:
 | | What it is | |
 |---|---|---|
 | **Organon Mind** | A standalone instrument for **watching a language model think**. Load a `.gguf` and it draws the model's true wiring, read from the file, then lights it up while it runs. | [organonmind.org](https://organonmind.org) |
-| **Organon Shell** | An agent-operating workstation: a GPU-composited terminal for working with AI agents on living software. | |
+| **Organon Shell** | An agent-operating workstation: a GPU-composited terminal for working with AI agents. | |
 
 The direction is one-way: Mind and Shell are spin-outs of capabilities that live primarily
 in Organon, drawing on its engine, algorithm, shaders and preset store.

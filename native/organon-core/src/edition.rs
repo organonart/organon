@@ -126,11 +126,16 @@ impl Edition {
     }
 
     /// One-line description of the product, for the Mind-edition header strip.
+    ///
+    /// **Shell's is deliberately empty** — the console says nothing about itself
+    /// (James, 2026-08-11: the previous line here was agent-invented copy, and no
+    /// call site may reintroduce one). The empty string is the contract, not a
+    /// placeholder: a caller that would render it must skip it instead.
     pub const fn tagline(self) -> &'static str {
         match self {
             Edition::Full => "parametric 3D generative visualizer",
             Edition::Mind => "an instrument for watching a language model think",
-            Edition::Shell => "build living systems with agents in the loop",
+            Edition::Shell => "",
         }
     }
 

@@ -227,6 +227,56 @@ pub fn pane_pixels(size_points: (f32, f32), scale: f32) -> (u32, u32) {
     (px(size_points.0), px(size_points.1))
 }
 
+/// The pane's size in **physical pixels**, taken as its *fraction of the window* rather than
+/// by multiplying its points by a reported scale.
+///
+/// # Why a scale cannot be trusted here, and a ratio can
+///
+/// [`pane_pixels`] believes the scale it is handed, which is right for a caller holding a
+/// scale it just measured. A caller that has to *remember* one is in a different position:
+/// egui reports `pixels_per_point` as a frame **output**, so the first frame's texture must be
+/// sized before any scale exists, and whatever stands in for "not measured yet" gets
+/// multiplied by a real pane. Spelled `1.0` — the reading that looks harmless — it is
+/// indistinguishable from a genuine 100 % display, so the pane is sized in **points**: on
+/// ORGANON-ONE's 225 % display, 1100×690 where 2475×1553 was meant, 2.25× too small in each
+/// axis.
+///
+/// A live render target survives that: it is rebuilt the moment the real scale lands. What
+/// does not survive is anything **copied** from it in the meantime. Console Spike Tier 4's
+/// epoch cache copies the live backdrop when a look closes and never re-renders it
+/// (`shell_main.rs`'s `snapshot_live_backdrop`), so a snapshot taken inside that window keeps
+/// the small picture for the rest of the session and every band painted from it is magnified
+/// back up — measured at exactly 2.25×, the older epochs blurred while the live band stayed
+/// crisp.
+///
+/// The swapchain has no equivalent hazard: it is configured from `Window::inner_size`, which
+/// is physical *by definition* and correct before any scale is known. So this takes the ratio
+/// instead — pane points over window points, both read from the same egui frame — and applies
+/// it to the swapchain. Any error in `pixels_per_point` scales numerator and denominator
+/// alike and **cancels exactly**, which makes a point-resolution answer unrepresentable rather
+/// than merely unlikely.
+///
+/// A ratio that cannot be computed (a window egui reports as zero, negative or NaN while a
+/// layout settles) falls back to the whole swapchain — the same "one frame of the window
+/// instead of the pane" the first frame already had, and never a point-sized texture. The
+/// clamps are [`pane_pixels`]'s, for [`pane_pixels`]'s reasons.
+pub fn pane_pixels_in(
+    swapchain: (u32, u32),
+    pane_points: (f32, f32),
+    window_points: (f32, f32),
+) -> (u32, u32) {
+    let px = |pane: f32, window: f32, chain: u32| {
+        let usable = pane.is_finite() && pane > 0.0 && window.is_finite() && window > 0.0;
+        let frac = if usable { (pane / window).min(1.0) } else { 1.0 };
+        let v = chain as f32 * frac;
+        if v.is_finite() { (v.round().max(1.0) as u32).clamp(16, 8192) } else { 16 }
+    };
+    (
+        px(pane_points.0, window_points.0, swapchain.0),
+        px(pane_points.1, window_points.1, swapchain.1),
+    )
+}
+
 /// Does a press egui just handed the scene region really belong to the scene?
 ///
 /// **The two modes need different answers, and this is where that lives.**
@@ -388,6 +438,67 @@ mod tests {
     fn the_pane_is_sized_in_physical_pixels() {
         assert_eq!(pane_pixels((640.0, 360.0), 2.0), (1280, 720));
         assert_eq!(pane_pixels((640.0, 360.0), 1.0), (640, 360));
+    }
+
+    /// **The pane is never sized in points, whatever scale the frame was measured in.**
+    ///
+    /// The regression this pins is Console Spike Tier 4's band blur, reproduced on ORGANON-ONE
+    /// (225 % display, `pixels_per_point` 2.25, a 1100×720-point window over a 30-point tab
+    /// strip). Sizing the backdrop as `points × remembered_scale` sizes it as
+    /// `points × 1.0` for as long as the scale is still the value that stood in for "not
+    /// measured yet" — `1100×690` instead of `2475×1553`, 2.25× too small in each axis. The
+    /// live target rebuilds itself the moment the real scale lands; the epoch snapshot copied
+    /// from it does not, so the scrollback's older bands are magnified 2.25× forever.
+    ///
+    /// [`pane_pixels_in`] takes the pane's *fraction* of the window instead, so the scale
+    /// cancels — which is what the sweep asserts: the identical window described in 1× points,
+    /// in 2.25× points, or in any other unit yields the same physical texture.
+    #[test]
+    fn the_pane_is_sized_from_the_window_never_in_points() {
+        // ORGANON-ONE's main display, measured: swapchain 2475×1620, pane 1100×690 points.
+        let swapchain = (2475u32, 1620u32);
+        let (pane, window) = ((1100.0, 690.0), (1100.0, 720.0));
+        assert_eq!(pane_pixels_in(swapchain, pane, window), (2475, 1553));
+
+        // The defect, spelled out: multiplying points by an unmeasured scale. Both of these
+        // are what the console actually built, and the second is the bug.
+        assert_eq!(pane_pixels(pane, 2.25), (2475, 1553), "the measured scale agrees");
+        assert_eq!(pane_pixels(pane, 1.0), (1100, 690), "…and the unmeasured one does not");
+        assert_ne!(
+            pane_pixels_in(swapchain, pane, window),
+            pane_pixels(pane, 1.0),
+            "a point-sized backdrop must be unreachable from a window that is 2475px wide"
+        );
+
+        // The property that makes it unreachable: points are only ever compared with points,
+        // so re-describing the same window in any unit changes nothing.
+        for k in [0.25f32, 0.5, 1.0, 1.25, 2.0, 2.25, 3.0, 4.0] {
+            assert_eq!(
+                pane_pixels_in(
+                    swapchain,
+                    (pane.0 * k, pane.1 * k),
+                    (window.0 * k, window.1 * k)
+                ),
+                (2475, 1553),
+                "a frame whose points are {k}× must still size the pane in pixels"
+            );
+        }
+    }
+
+    /// A window egui reports as degenerate yields the whole swapchain — one frame of the
+    /// window instead of the pane, which is what the first frame already showed — and never a
+    /// texture sized in points.
+    #[test]
+    fn an_unusable_window_falls_back_to_the_swapchain_not_to_points() {
+        let swapchain = (2475u32, 1620u32);
+        for bad in [(0.0, 0.0), (-1100.0, 720.0), (f32::NAN, 720.0), (f32::INFINITY, 720.0)] {
+            let got = pane_pixels_in(swapchain, (1100.0, 690.0), bad);
+            assert_eq!(got.0, 2475, "window {bad:?} → {got:?}");
+            assert!(got.1 == 1620 || got.1 == 1553, "window {bad:?} → {got:?}");
+        }
+        // …and a pane egui has not laid out yet is the same story, never a 16-pixel texture
+        // stretched across the screen.
+        assert_eq!(pane_pixels_in(swapchain, (0.0, 0.0), (1100.0, 720.0)), swapchain);
     }
 
     /// egui hands back a degenerate rect for a frame while a layout settles. A zero-sized texture
