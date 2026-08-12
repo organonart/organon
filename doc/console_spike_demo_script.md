@@ -6,6 +6,23 @@ matter of memory, and the honest answer to "can we demo this yet" is this table.
 
 Statuses: `landed` · `partial` (say what is missing) · `not yet`.
 
+### 🚨 Amendment, 2026-08-12 (James): the beats below demo the terminal host, and that is now half the product
+
+The console split into two front-ends (`console_spike_execution_plan.md` §5.9): the **terminal
+host** these beats perform, and a **conversation view** that renders an agent's structured event
+stream natively. **Every beat below stays true and stays performable** — they are the terminal
+host, it is kept, and it is the universal fallback.
+
+What changes is what the *closer* is. The strongest thing we can show stops being "a rectangle
+negotiated into a character grid" and becomes **an inline artifact in a conversation that never
+had a grid to negotiate with.** The new milestone — deliberately smaller than it wants to be —
+is *one real agent conversation rendered natively, containing one inline artifact a terminal
+could not have shown.* Not a client. Proof.
+
+⚠️ **Do not rewrite beats 1–6 for the new front-end.** They are the record of what was built and
+checked on this machine, and a demo of the terminal host is still a demo of a real thing. The
+conversation view earns its own beat when it has one.
+
 ---
 
 ## Setup

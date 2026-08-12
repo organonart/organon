@@ -394,6 +394,69 @@ protocol says what happens instead of pretending.
 
 ---
 
+## 5.9 🚨 Amendment, 2026-08-12 (James): the console forks into two front-ends
+
+Everything above §5.9 was written under one assumption — that a character grid is the canvas.
+Three measurements retired it.
+
+1. **ConPTY rewrites the stream** (probed with `ORGANON_SHELL_PTY_DEBUG=1`): APC stripped
+   entirely; a private OSC survives byte-intact but is **hoisted out of stream order**; OSC 8
+   survives in position but has its params rewritten. A WSL tab is `wsl.exe` under ConPTY, so
+   **there is no ConPTY-free path on this machine.**
+2. **A real Claude Code tab, `organon console block 10`:** the harness's entire frame shifted
+   up, its banner scrolled off, its input box and status line were displaced, and no patch
+   rendered. A harness owns the grid and repaints by absolute positioning.
+3. **The cursor test:** against an *idle* shell the prompt is stranded above the hole with the
+   cursor below it. The cursor **is** the live input point, so console-side injection always
+   puts the hole between the prompt and the typing. "Works when idle" was exactly backwards.
+
+### The decision, stated precisely — the sweeping version is misleading
+
+**We already own every pixel.** The console runs the PTY, parses it, and paints the glyph grid
+itself; that is *why* a patch could be painted at all. What we do **not** own is **the
+conversation**. The character grid is a lossy encoding of something that had structure before
+it was flattened, and every wound above came from trying to recover that structure afterwards.
+
+So the console becomes **two front-ends over one renderer**:
+
+| | What it is | Status |
+|---|---|---|
+| **Terminal host** | runs any program, paints its grid, patches only by cooperation | **exists — keep it.** It is how `htop` runs and it is the universal fallback |
+| **Conversation view** | consumes an agent's structured event stream (turns, deltas, tool calls, results, approvals) and renders it natively | **new.** A patch here is just an element in the flow: no claim protocol, no anchoring, no ConPTY |
+
+James's framing: Telegram, WhatsApp, Claude Desktop, Claude Code, Pi are all the same shape —
+scrollback above, composer below. **A TUI is not a design; it is what you build when a
+character grid is the only canvas allowed.** "It looks exactly like a terminal" stops being a
+constraint and becomes **a skin we chose**, which is a stronger claim, not a weaker one.
+
+### What this is not: a rewrite
+
+Nearly all the expensive work carries — `block_anchor`'s arithmetic, the epoch texture cache
+with its bounded logged eviction, `render_source`, `pane_pixels_in`'s DPI-cancelling sizing,
+the scrim's structural contrast floor, the UV window-not-thumbnail policy. **Addressing a
+region and drawing into it is the entire remaining product.** What the pivot deletes is the
+*negotiation*, not the primitive.
+
+### What each tier becomes
+
+- **Tiers 1, 2, 4 — unchanged and reused.** The substrate, materials, camera rig, compositing
+  seam and band arithmetic are what a patch is made of, in either front-end.
+- **Tier 3 (the strip) — reshaped by the split.** It was designed as chrome reserved out of a
+  character grid, with `htop` as its canary and reserved-row arithmetic as its risk. In the
+  conversation view there is no grid to reserve from and no canary: the strip is an ordinary
+  element. **`strip_layout` and the data-driven widget still stand; the reserved-row problem
+  disappears.** Its Leaf B (the generated catalog bridge, `console/t3-bridge`) becomes *more*
+  central, not less — descriptors are what make a control panel renderable at all.
+- **Tier 5 — splits in two.** In the terminal host it stays as built: `organon console patch`,
+  cooperation-only, the protocol's rules in force. In the conversation view an inline artifact
+  needs none of that machinery.
+
+**First milestone, deliberately smaller than it wants to be:** *one real agent conversation
+rendered natively, containing one inline artifact a terminal could not have shown.* Not a
+client. Proof.
+
+---
+
 ## 6. Rules for parallel work
 
 1. **One writer per file, declared before dispatch.** No exceptions, no "I'll just add one
@@ -407,8 +470,33 @@ protocol says what happens instead of pretending.
    leaf that cannot be tested headless is integration in disguise — reclassify it.
 4. **If two agents must touch overlapping ground, give them isolated worktrees** rather than
    hoping. It is cheaper than the merge.
-5. **Harness-agnostic or it does not ship.** Nothing may require Pi, ACP, or cooperation from
-   any harness. If a tier needs the harness to know about us, it is out of scope for this spike.
+5. ~~**Harness-agnostic or it does not ship.** Nothing may require Pi, ACP, or cooperation from
+   any harness. If a tier needs the harness to know about us, it is out of scope for this
+   spike.~~ 🚨 **REPEALED 2026-08-12 (James), and repealed in writing so nobody enforces it
+   against the pivot three weeks from now.**
+
+   **Why it was right.** For a *terminal host* it is exactly right, and it stays right there.
+   A host that only works with cooperating programs is not a terminal — it is a plugin
+   system with extra steps. `htop` must run, `vim` must run, an unmodified Claude Code tab
+   must run, and none of them will ever know we exist. **Rule 5 still governs the terminal
+   host, in full.**
+
+   **Why it is wrong now.** §5.9 split the console in two. The *conversation view* consumes an
+   agent's structured event stream **by definition** — that is not a compromise of the design,
+   it is the design. Applying rule 5 there forbids the front-end from talking to the only thing
+   it exists to render, which is how a rule outlives the problem it was written for.
+
+   **The replacement, scoped rather than deleted:**
+
+   > **Rule 5′ — the terminal host is harness-agnostic; the conversation view is
+   > harness-specific and says which harness.** Nothing in the terminal host may require
+   > cooperation from any program. The conversation view may require exactly one named
+   > integration at a time, declared in the plan, and **degrading to a terminal tab is always
+   > available** — a harness we have not integrated is not unsupported, it is supported the
+   > old way.
+
+   That last clause is what preserves the original rule's real value: no user is ever locked
+   out by our not having integrated their tool.
 6. **No tier starts before the previous tier's beat check passes on this machine.**
 7. **Findings go in the as-built brief, not in chat.** The brief is the shared memory.
 

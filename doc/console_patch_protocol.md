@@ -1,5 +1,22 @@
 # The Patch protocol
 
+> ### 🚨 Scope, narrowed 2026-08-12 — read this first
+>
+> **This is how patches work when we do NOT own the conversation.**
+>
+> The console has split into two front-ends (`console_spike_execution_plan.md` §5.9). In the
+> **conversation view**, which consumes an agent's structured event stream, an inline artifact
+> is simply an element in the flow: **no claim, no anchoring, no marker, no ConPTY** — none of
+> this document applies there, and reaching for it would be a mistake.
+>
+> This document governs the **terminal host**: any program, cooperating only by printing and
+> calling a CLI. That is not a legacy path. It is how `htop` runs, how an unmodified agent CLI
+> runs, and it is the universal fallback for every harness we have not integrated.
+>
+> 📌 **Its ConPTY findings (§0) are permanent facts about this machine** and outlive any
+> product decision — they are true of anything that reads a Windows PTY, including the
+> conversation view if it ever shells out.
+
 **What this is.** The contract by which a program running inside the Organon Console claims a
 rectangle of its own output and asks the console to paint something there — a rendered scene, a
 panel of controls — with its text flowing around the hole the way text flows around a figure on
