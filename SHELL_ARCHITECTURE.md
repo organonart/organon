@@ -624,13 +624,24 @@ transcript, so two conversation tabs both start at 0. Closing a tab renumbers th
 `Shell::apply`'s `Close` arm therefore frees **every** surface texture — one wasted re-render
 against a class of bug where one conversation paints into another's rectangle.
 
-**Summoning is deliberately a separate seam.** `/panel` typed in the composer is recognised
+**Summoning is deliberately a separate seam.** `/surface` typed in the composer is recognised
 by `conversation_view::local_command`, acted on locally and **never written to stdin**;
 `Transcript::insert_artifact` is a method rather than a ninth `AgentEvent`, because no
 harness said this and putting it in the event enum would oblige every mapping to carry an
 event none of them can produce. That is what makes the next step small: the agent summons
-a panel with a tool call, the integrator answers it with the same `insert_artifact`, and
+a surface with a tool call, the integrator answers it with the same `insert_artifact`, and
 the local command is deleted without touching anything that draws.
+
+🚨 **`/panel` is gone, and its machinery with it.** It summoned a panel wired to the
+console's *backdrop* — which a conversation has no scrollback to band across, so the effect
+landed on a terminal tab and the panel you had just clicked appeared to do nothing. Driving
+one, James's reading was "the controls don't do anything… it's redundant", and it was.
+`PanelSpec::drives` is therefore an `ElementId` rather than an `Option<ElementId>`: **a panel
+cannot be built that does not name a target in its own transcript**, so the failure is not a
+policy the view has to keep enforcing. `ConversationOutput::actions` and `ArtifactAction`
+went with it — the only producer was the console-driving arm — and so did `shell_main`'s
+loop that turned such a press into `ConsoleOp::Background`. `/panel` is now an ordinary
+message and reaches the agent like any other sentence.
 
 #### The approval card — the console answers "may I?"
 
@@ -650,17 +661,60 @@ permission hook is a direct call into the state the UI is already drawing.
 | Piece | What it is | Where |
 |---|---|---|
 | The protocol | `McpServer` — messages in, messages out. No connection, no thread, no process | `mcp.rs` |
-| The transport | An accept thread, a connection thread each, one `Mutex` around the endpoint. `POST /mcp` only; the optional `GET`/SSE push stream is **`405`**, measured fine | `mcp_http.rs` |
-| The hook | `ApprovalGate` — posts the question to the UI over a channel and **blocks** on the reply | `approval.rs` |
-| The element | `Body::Approval(ApprovalBlock)` — tool, arguments as text, `tool_use_id`, pending/answered | `conversation.rs` |
+| The transport | An accept thread, a connection thread each, one `Mutex` around the endpoint. `POST /mcp`; a **permission call is answered as `text/event-stream`** so it can be written to while it waits; the optional `GET` push stream is still **`405`**, measured fine | `mcp_http.rs` |
+| The hook | `ApprovalGate` — posts the question to the UI over a channel and waits on the reply in `HEARTBEAT` steps | `approval.rs` |
+| The element | `Body::Approval(ApprovalBlock)` — tool, arguments as text, `tool_use_id`, pending / answered / **abandoned** | `conversation.rs` |
 | The card | allow · allow & remember · deny, with the arguments shown as fields | `conversation_view.rs` |
 | The memory | `DecisionMemory`, keyed on tool **plus canonicalised arguments** | `approval.rs` |
 
 🚨 **The serve loop must not be the UI thread, and that is the whole shape.** The hook is
-synchronous and blocks for as long as a human takes — the client is simply waiting on a
-JSON-RPC response meanwhile, which is what makes a card with **no timeout** possible. The
-pending question therefore holds the endpoint mutex, so a second concurrent MCP request
-waits behind the card; the agent asking it could not proceed either way.
+synchronous and blocks for as long as a human takes. The pending question therefore holds
+the endpoint mutex, so a second concurrent MCP request waits behind the card; the agent
+asking it could not proceed either way.
+
+##### 🚨 There is a deadline, and holding it open is the design
+
+**This section used to say "a card with no timeout". That was false, and a human found it.**
+An approval card sat waiting while Claude Code returned
+`<tool_use_error>Error calling tool (Write): The operation timed out.</tool_use_error>` — the
+write failed, and the card was left still asking a question whose answer could no longer
+matter.
+
+Measured 2026-08-12 against `claude.exe` 2.1.228, with a standalone probe server that
+deliberately never answered:
+
+| What | Measured |
+|---|---|
+| The client's patience on a `--permission-prompt-tool` call | **60.010 s** and **60.005 s** from the `tools/call` arriving to the socket being aborted (`WSAECONNRESET`), twice in one run |
+| With `notifications/progress` against the request's own `progressToken`, every 5 s | answered at **90 s**, no abort |
+| …every 10 s | answered at **300.1 s** after 29 beats, the write went through, the model reported success |
+
+So **progress notifications reset the clock**, and the fix is to send them. `mcp.rs` states
+the two numbers: `CLIENT_DEADLINE_SECS = 60` and `HEARTBEAT = 10 s`, a sixth of it. The
+margin is the point — a beat is written from the thread that is already blocked on the
+human, so it competes with nothing, but five consecutive beats would have to be lost before
+the client gave up.
+
+**Why the transport changed shape.** `notifications/progress` is a *server-initiated*
+message, and over this transport a server-initiated message related to a request rides that
+request's own response stream. The console `405`s the optional `GET` push stream, so there
+is no other channel: a permission `tools/call` is answered with `Content-Type:
+text/event-stream`, beats go out as events while the hook blocks, and the JSON-RPC answer is
+the last event before the terminating zero-length chunk. Everything else stays plain
+request/response, exactly as measured. `McpServer::handle_with` carries a `Heartbeat` down
+to `PermissionResponder::decide`; `McpServer::handle` and every test keep the old signature
+via `NoHeartbeat`.
+
+🚨 **A question the agent stopped waiting for stops asking.** The other half, and the one
+that was visible on screen: the beat doubles as a liveness check, so a closed socket ends the
+wait. `ApprovalGate` then marks the `PendingApproval` **abandoned** and returns
+`deny(ABANDONED)` — fail closed, always; the console never allows on a timeout. The pane
+sweeps that flag every frame into `Transcript::abandon_approval`, and the card becomes a
+third state: dimmed, no buttons, *"the agent stopped waiting — this call failed before it was
+answered."* The same sweep runs when the agent process ends, which is the other way a
+question dies. ⚠️ A permission call carrying **no** `progressToken` is still streamed: the
+deadline cannot be held open without one, but noticing the client leave needs only an open
+connection.
 
 **Remembering is ours.** There is no upstream persistence — three identical calls produced
 three separate requests, and no response field caches anything. So the console keeps its
@@ -720,7 +774,7 @@ integrated is not unsupported, it is supported the old way.
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
-| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`, summoned locally by `/panel`) and the rendered surface it drives (`/surface`). Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact` — the tool card is the anchor, and `/panel` is deleted in the same change. Then, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
+| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. Then, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: the console's own verbs served as capability tools (needs a `CommandService` reachable from the serve thread — `NoDispatch` is the named seam), so a card can say *"organon · background"* instead of a shell command; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
@@ -755,15 +809,19 @@ path silently breaks the three-products-simultaneously guarantee that
   tool's output. So the card draws ten lines and then says "+N more lines"; the full text
   is still in the transcript. Same for an argument value: flattened to one line with a
   character count, never quietly cut.
-- **Permissions are answered; the card has not been clicked by a human yet.** The path is
-  verified end to end against the real CLI — a `Write` to an absolute path outside the
-  session's scratchpad reached the console's in-process HTTP server as a `tools/call`
-  carrying `tool_name`, `input` and `tool_use_id`, was answered
-  `{"behavior":"allow","updatedInput":{…}}`, and the file appeared — but that run answered
-  from a **test responder, not from a button**. What no headless check can answer: whether
-  the card reads clearly at real width, whether three buttons in a scrollback are the right
-  affordance, and whether the auto-scroll actually puts a question in front of someone who
-  is reading back. A person on the machine is the first to know.
+- **Permissions are answered, and a human has now driven the card — which is how the
+  deadline was found.** The path was verified end to end against the real CLI before
+  anyone clicked, and every wire shape held; what a test responder could not show was that
+  the client stops waiting after 60 s. It does, and the card outlived the call. That is
+  fixed above. What is still only reasoned about: whether three buttons in a scrollback are
+  the right affordance, and whether the auto-scroll puts a question in front of someone who
+  is reading back.
+- ⚠️ **The keep-alive is verified against a probe, and the abandoned card against a socket —
+  not against a slow human at the real console.** `mcp_http`'s two live-socket tests drive
+  the whole path headlessly (progress out, answer back, hangup closes the question), and the
+  60 s / 300 s numbers come from `claude.exe` 2.1.228 answering a standalone probe server.
+  What nobody has yet done is leave a real card unanswered for five minutes and then click
+  it. The mechanism is measured; the sitting-there is not.
 - ⚠️ **The decision memory is session-scoped and unaudited.** It lives in the pane, dies
   with the tab, and is written nowhere — so a decision cannot be reviewed after the fact,
   and closing a tab silently forgets everything it was told. That is the honest trade for
@@ -778,20 +836,12 @@ path silently breaks the three-products-simultaneously guarantee that
   lines as removals and `new_string`'s as additions — there is no alignment, so an edit
   that changes one character in the middle of a ten-line block shows ten removals and ten
   additions. That is honest about what arrived; it is not `diff`.
-- **`/panel`'s buttons still drive the console, and its effect is still somewhere else.**
-  They are wired all the way through to `Shell::apply_console`, so clicking one in a chat
-  tab and typing `organon console background metal` are one call — and the backdrop is not
-  drawn behind a conversation, so the *effect* is seen on a terminal tab. That is now a
-  choice rather than the only option: `/surface` is the instrument, `/panel` is the wire it
-  proved. Its sliders drive nothing at all, exactly as `block_panel`'s do and for the same
-  stated reason — they demonstrate that a drag inside a transcript is a real drag tracked
-  across frames. **A `/surface` panel's sliders do drive something**, which is the
-  difference between the two.
-- **`/panel` and `/surface` are temporary summoning seams and are not the feature.** The
-  feature is the element; the local commands are scaffolding that exists because
-  agent-summoned artifacts are the next step. Exact-match only (`/panels` and `/surface
-  slate` go to the agent), because over-recognising swallows a real message while the
-  composer clears either way.
+- **`/surface` is a temporary summoning seam and is not the feature.** The feature is the
+  element; the local command is scaffolding that exists because agent-summoned artifacts
+  are the next step. Exact-match only (`/surfaces` and `/surface slate` go to the agent),
+  because over-recognising swallows a real message while the composer clears either way.
+  `/panel`, which was the other one, is **removed** — see the summoning seam above for why
+  and for what came out with it.
 - 🚨 **The rendered surface has never been drawn on screen by the session that wrote it.**
   The model link, the visibility test, the panel→surface join, the cap's eviction order and
   every knob's lane are pinned headless. Nothing headless can answer the questions that

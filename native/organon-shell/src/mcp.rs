@@ -72,6 +72,7 @@
 //! at the call site. The server stays plain data plus a hook.
 
 use std::io::{self, Read, Write};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -236,19 +237,83 @@ impl PermissionDecision {
     }
 }
 
+// -- the deadline, and what holds it off ------------------------------------
+
+/// 🚨 **How long Claude Code waits for a `--permission-prompt-tool` answer before it gives
+/// up.** Measured 2026-08-12 on `claude.exe` 2.1.228, twice in one run against a probe
+/// server that deliberately never answered: **60.010 s** and **60.005 s** from the
+/// `tools/call` arriving to the client aborting the socket (`WSAECONNRESET`). The model
+/// then sees `Error calling tool (Write): The operation timed out.`
+///
+/// ⚠️ **The design this replaced assumed there was no deadline** — "the hook blocks, the
+/// client just waits". It does not, and a human reading an approval card for a minute is
+/// not unusual, so the assumption failed the first time a real person used the feature.
+pub const CLIENT_DEADLINE_SECS: u64 = 60;
+
+/// How often a pending approval emits `notifications/progress` to hold the deadline open.
+///
+/// **Measured: progress against the request's own `progressToken` resets the clock.** The
+/// same probe, answering after **300 s** while beating every 10 s, was answered and the
+/// write went through — five times the deadline, with no abort.
+///
+/// 10 s is a sixth of [`CLIENT_DEADLINE_SECS`]. The margin is the point: a beat is written
+/// from the thread that is *blocked on the human*, so it competes with nothing, but the
+/// socket write can still stall, and five consecutive beats would have to be lost before
+/// the client gave up. A cadence near the deadline would make one slow write fatal; a much
+/// faster one would be traffic for its own sake.
+pub const HEARTBEAT: Duration = Duration::from_secs(10);
+
+/// What a blocking [`PermissionResponder`] calls while it waits, so the client does not
+/// give up on it.
+///
+/// **It answers one question and performs one action**: emit a keep-alive, and say whether
+/// the client is still on the other end. A responder that blocks must stop the moment this
+/// returns `false` — the request it is answering no longer exists, and a card still asking
+/// about it is a question whose answer cannot matter.
+///
+/// The transport implements it ([`crate::mcp_http`]) because holding a connection open is a
+/// transport concern; this module only states the contract, and [`NoHeartbeat`] is the
+/// honest answer for a caller with no connection to keep alive.
+pub trait Heartbeat {
+    /// Emit one keep-alive. `false` means the client has gone — stop waiting.
+    fn beat(&mut self) -> bool;
+}
+
+/// The heartbeat for a call nobody is streaming: nothing to emit, nobody to lose.
+///
+/// ⚠️ Used by [`McpServer::handle`] and by every test. It reports the client is still there
+/// **forever**, which is correct for a caller that is not on a real socket and would be a
+/// silent wedge for one that is — which is why the HTTP transport never uses it for a
+/// permission call.
+pub struct NoHeartbeat;
+
+impl Heartbeat for NoHeartbeat {
+    fn beat(&mut self) -> bool {
+        true
+    }
+}
+
 /// The caller's judgement. The console implements this over its approval cards and its
 /// own decision memory; a test implements it as a closure.
 ///
-/// See the module doc: this is called synchronously on the serve thread and may block.
+/// See the module doc: this is called synchronously on the serve thread and may block. It
+/// is handed a [`Heartbeat`] precisely *because* it may block — see [`HEARTBEAT`].
 pub trait PermissionResponder {
-    fn decide(&mut self, request: &PermissionRequest) -> PermissionDecision;
+    fn decide(&mut self, request: &PermissionRequest, beat: &mut dyn Heartbeat)
+        -> PermissionDecision;
 }
 
 impl<F> PermissionResponder for F
 where
     F: FnMut(&PermissionRequest) -> PermissionDecision,
 {
-    fn decide(&mut self, request: &PermissionRequest) -> PermissionDecision {
+    /// A closure answers at once, so it never needs the heartbeat. Keeping the blanket
+    /// impl is what lets every existing test stay a one-line closure.
+    fn decide(
+        &mut self,
+        request: &PermissionRequest,
+        _beat: &mut dyn Heartbeat,
+    ) -> PermissionDecision {
         self(request)
     }
 }
@@ -526,6 +591,48 @@ impl McpServer {
         self.negotiated.as_deref()
     }
 
+    /// Is this message the one call that can block for as long as a human takes?
+    ///
+    /// The transport asks before it answers, because a permission call needs a response it
+    /// can *write to while it waits* — both to hold the deadline open and, more basically,
+    /// to notice that the client has gone. A capability tool returns at once and needs
+    /// neither.
+    pub fn is_permission_call(&self, message: &Value) -> bool {
+        message.get("method").and_then(Value::as_str) == Some("tools/call")
+            && message
+                .get("params")
+                .and_then(|p| p.get("name"))
+                .and_then(Value::as_str)
+                == Some(self.permission_tool.as_str())
+    }
+
+    /// The `progressToken` of a permission `tools/call`, if this message is one.
+    ///
+    /// 🚨 **This is the question a transport must ask before it answers.** A permission
+    /// call is the only message here that can block for minutes, and the token is the only
+    /// handle the client gives us for saying "still working" — measured in the `_meta`
+    /// block the client attaches to every one of them (doc §3):
+    ///
+    /// ```text
+    /// "_meta":{"claudecode/toolUseId":"toolu_…","progressToken":2}
+    /// ```
+    ///
+    /// Deliberately narrow. A `tools/call` for a *capability* tool returns at once and has
+    /// nothing to report, and a token on any other method is not ours to answer against —
+    /// so this says yes to exactly the one call that needs the deadline held open.
+    ///
+    /// ⚠️ `None` for a permission call with **no** token is the honest answer, not a
+    /// fallback: without one there is nothing to address a notification to, and inventing
+    /// a token would be a keep-alive the client discards while its clock runs out. The
+    /// transport still streams such a call — see [`Self::is_permission_call`] — because
+    /// noticing the client leave does not need a token, only an open connection.
+    pub fn permission_progress_token(&self, message: &Value) -> Option<Value> {
+        if !self.is_permission_call(message) {
+            return None;
+        }
+        message.get("params")?.get("_meta")?.get("progressToken").cloned()
+    }
+
     // -- message level -----------------------------------------------------
 
     /// Handle one decoded message. `None` means "no response is owed" — a notification,
@@ -535,6 +642,20 @@ impl McpServer {
     /// which is what lets the measured `server/discover` probe be answered `-32601` and
     /// the very next `tools/list` still work.
     pub fn handle(&mut self, message: &Value, dispatch: &mut dyn ToolDispatch) -> Option<Value> {
+        self.handle_with(message, dispatch, &mut NoHeartbeat)
+    }
+
+    /// [`Self::handle`], plus the keep-alive a blocking permission answer needs.
+    ///
+    /// Split rather than folded into `handle` because only one caller has a connection to
+    /// hold open — [`crate::mcp_http`] — and every other caller, tests included, would
+    /// have to pass a [`NoHeartbeat`] it has no use for.
+    pub fn handle_with(
+        &mut self,
+        message: &Value,
+        dispatch: &mut dyn ToolDispatch,
+        beat: &mut dyn Heartbeat,
+    ) -> Option<Value> {
         let object = match message {
             Value::Object(map) => map,
             _ => {
@@ -560,7 +681,7 @@ impl McpServer {
             "initialize" => Ok(self.initialize(&params)),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": self.tool_definitions() })),
-            "tools/call" => self.call_tool(&params, dispatch),
+            "tools/call" => self.call_tool(&params, dispatch, beat),
             // Notifications we recognise and have nothing to do about. They carry no
             // id, so the value never leaves.
             m if m.starts_with("notifications/") => Ok(json!({})),
@@ -612,6 +733,7 @@ impl McpServer {
         &mut self,
         params: &Value,
         dispatch: &mut dyn ToolDispatch,
+        beat: &mut dyn Heartbeat,
     ) -> Result<Value, RpcError> {
         let Some(name) = params.get("name").and_then(Value::as_str) else {
             return Err(RpcError::new(INVALID_PARAMS, "tools/call requires a string 'name'"));
@@ -619,7 +741,7 @@ impl McpServer {
         let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
         if name == self.permission_tool {
-            return self.answer_permission(&arguments);
+            return self.answer_permission(&arguments, beat);
         }
 
         // An unknown *tool* is a protocol fault (the client called something we never
@@ -642,7 +764,11 @@ impl McpServer {
         })
     }
 
-    fn answer_permission(&mut self, arguments: &Value) -> Result<Value, RpcError> {
+    fn answer_permission(
+        &mut self,
+        arguments: &Value,
+        beat: &mut dyn Heartbeat,
+    ) -> Result<Value, RpcError> {
         let Some(tool_name) = arguments.get("tool_name").and_then(Value::as_str) else {
             return Err(RpcError::new(
                 INVALID_PARAMS,
@@ -659,7 +785,7 @@ impl McpServer {
                 .unwrap_or_default()
                 .to_string(),
         };
-        let decision = self.responder.decide(&request);
+        let decision = self.responder.decide(&request, beat);
         // A deny is a *successful* answer to the question, so `isError` stays false.
         Ok(text_result(&decision.to_wire(), false))
     }

@@ -11,18 +11,33 @@
 //! 3. **[`resolve_choice`]** — what a click *means*: the wire decision that goes back to
 //!    the client, and the [`Answer`] the transcript records.
 //!
-//! # The blocking is the design
+//! # The blocking is the design — but the waiting is not free
 //!
-//! 🚨 [`PermissionResponder::decide`] is synchronous, and the client is simply waiting on a
-//! JSON-RPC response while it runs. That is what makes a card with **no timeout** possible.
-//! [`ApprovalGate`] therefore posts a [`PendingApproval`] and blocks on a reply channel; it
-//! runs on [`crate::mcp_http`]'s serve thread, never on the UI thread.
+//! 🚨 [`PermissionResponder::decide`] is synchronous, and the client is waiting on a
+//! JSON-RPC response while it runs. [`ApprovalGate`] therefore posts a [`PendingApproval`]
+//! and blocks on a reply channel; it runs on [`crate::mcp_http`]'s serve thread, never on
+//! the UI thread.
+//!
+//! 🚨 **This module used to say "no timeout, on purpose". That was wrong, and a human
+//! reading a card found it.** Claude Code gives up on a permission call after
+//! [`crate::mcp::CLIENT_DEADLINE_SECS`] — measured, twice, to a hundredth of a second — and the tool
+//! then fails with *"The operation timed out"* while the card sits there still asking. So
+//! the gate does not simply block: it waits in [`HEARTBEAT`] steps and lets the transport
+//! emit a keep-alive at each one, which is measured to reset that clock (a 300 s wait was
+//! answered and honoured). A human now has as long as they need.
 //!
 //! ⚠️ **Dropping a [`PendingApproval`] denies it, by construction.** The reply `Sender` goes
 //! with it, the gate's `recv` fails, and the gate answers `deny`. That is not a leak being
 //! tolerated — it is the only safe reading of "the console lost track of this question", and
 //! it is what makes an approval evicted by the transcript's cap fail closed instead of
 //! hanging the agent forever.
+//!
+//! ⚠️ **And the reverse direction now exists too.** A keep-alive that cannot be written, or
+//! a socket the client has closed, means the question is dead — the turn was cancelled, the
+//! agent was killed, or the client gave up anyway. The gate then marks the
+//! [`PendingApproval`] **abandoned** and stops waiting. That flag is what the UI reads to
+//! turn a live card into a closed one: a card still offering *allow* for a call that has
+//! already failed is worse than no card at all.
 //!
 //! # What "remember" remembers
 //!
@@ -40,12 +55,16 @@
 //! tab. Nothing is written to disk, deliberately — a remembered decision that outlives the
 //! window it was made in is one the human cannot find again.
 
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
 
 use serde_json::Value;
 
 use crate::conversation::{Answer, Verdict};
-use crate::mcp::{PermissionDecision, PermissionRequest, PermissionResponder};
+use crate::mcp::{
+    Heartbeat, PermissionDecision, PermissionRequest, PermissionResponder, HEARTBEAT,
+};
 
 /// What a deny tells the model. It surfaces as `"non_execution_kind":"permission-rule"`
 /// (§4), so the text is the only thing that says *who* refused.
@@ -56,6 +75,15 @@ pub const DENIED: &str = "denied by the human at the Organon Console";
 /// one — and a log that cannot tell them apart hides a broken pane.
 pub const UNREACHABLE: &str =
     "the Organon Console could not put this approval in front of a human, so it was refused";
+
+/// What the gate answers when the client stopped listening mid-question.
+///
+/// Nothing reads it — the socket it would travel on is the one that closed — but it is the
+/// value the blocked call returns, and naming it is what keeps the three ways a question
+/// can end distinguishable in a log. **Fail closed** here as everywhere else: a request the
+/// console can no longer answer is never an allow.
+pub const ABANDONED: &str =
+    "the agent stopped waiting for this approval before a human answered it";
 
 /// Which button was pressed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,11 +105,24 @@ pub enum Choice {
 pub struct PendingApproval {
     request: PermissionRequest,
     reply: Sender<PermissionDecision>,
+    abandoned: Arc<AtomicBool>,
 }
 
 impl PendingApproval {
     pub fn request(&self) -> &PermissionRequest {
         &self.request
+    }
+
+    /// **Has the agent stopped waiting?**
+    ///
+    /// Set by the gate on the serve thread the moment its keep-alive finds the client
+    /// gone. The UI polls it rather than being pushed, because it is already draining an
+    /// inbox every frame and a second channel would be a second thing to forget to read.
+    ///
+    /// ⚠️ Once true it never goes back. A question cannot be un-abandoned, and a card that
+    /// flickered between asking and closed would be worse than either.
+    pub fn is_abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::Relaxed)
     }
 
     /// Answer it. A closed channel means the agent gave up first — nothing to do, and
@@ -100,26 +141,69 @@ impl std::fmt::Debug for PendingApproval {
 /// The [`PermissionResponder`] the MCP server is built with: post, then wait.
 pub struct ApprovalGate {
     to_ui: Sender<PendingApproval>,
+    /// How long to wait between keep-alives. [`HEARTBEAT`] in the console; shorter in a
+    /// test, which is the only reason it is a field and not a constant read inline — a
+    /// property about waiting that took ten seconds a step to demonstrate would be a
+    /// property nobody runs.
+    beat_every: std::time::Duration,
+}
+
+impl ApprovalGate {
+    /// Beat at this cadence instead of [`HEARTBEAT`].
+    ///
+    /// ⚠️ The cadence is only safe **below** [`crate::mcp::CLIENT_DEADLINE_SECS`], and with
+    /// room for a slow write; see [`HEARTBEAT`] for the margin the default is chosen for.
+    /// Nothing here validates that, because the deadline belongs to the client and a value
+    /// this type refused would be one it had no way to check.
+    pub fn beating_every(mut self, interval: std::time::Duration) -> Self {
+        self.beat_every = interval;
+        self
+    }
 }
 
 impl PermissionResponder for ApprovalGate {
-    fn decide(&mut self, request: &PermissionRequest) -> PermissionDecision {
+    /// Post the question, then wait — in [`HEARTBEAT`] steps, so the client is told at
+    /// every step that we are still here.
+    ///
+    /// 🚨 **The loop is the fix.** A plain `recv()` is what shipped, and it is correct only
+    /// if the client waits forever; it waits [`crate::mcp::CLIENT_DEADLINE_SECS`]. Each timeout tick
+    /// asks the transport to emit one keep-alive, which the measurement says resets that
+    /// clock, and to report whether the client is still on the other end.
+    fn decide(&mut self, request: &PermissionRequest, beat: &mut dyn Heartbeat) -> PermissionDecision {
         let (reply, answer) = mpsc::channel();
-        let pending = PendingApproval { request: request.clone(), reply };
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let pending =
+            PendingApproval { request: request.clone(), reply, abandoned: abandoned.clone() };
         if self.to_ui.send(pending).is_err() {
             // The pane is gone. Fail closed: an agent that proceeds because nobody was
             // watching is the exact failure this whole path exists to prevent.
             return PermissionDecision::deny(UNREACHABLE);
         }
-        // The blocking call. No timeout, on purpose.
-        answer.recv().unwrap_or_else(|_| PermissionDecision::deny(UNREACHABLE))
+        loop {
+            match answer.recv_timeout(self.beat_every) {
+                Ok(decision) => return decision,
+                // The pane dropped the question — evicted, or the tab closed.
+                Err(RecvTimeoutError::Disconnected) => {
+                    return PermissionDecision::deny(UNREACHABLE)
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if !beat.beat() {
+                        // ⚠️ Marked **before** returning, because the return value goes
+                        // nowhere: the socket it would be written to is the one that just
+                        // closed. This flag is the only thing that reaches the card.
+                        abandoned.store(true, Ordering::Relaxed);
+                        return PermissionDecision::deny(ABANDONED);
+                    }
+                }
+            }
+        }
     }
 }
 
 /// The two ends: the gate for the MCP server, the receiver for the UI to drain.
 pub fn approval_channel() -> (ApprovalGate, Receiver<PendingApproval>) {
     let (to_ui, from_agent) = mpsc::channel();
-    (ApprovalGate { to_ui }, from_agent)
+    (ApprovalGate { to_ui, beat_every: HEARTBEAT }, from_agent)
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +432,7 @@ pub fn decision_for(verdict: Verdict, request: &PermissionRequest) -> Permission
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::NoHeartbeat;
     use serde_json::json;
 
     fn request(tool: &str, input: Value) -> PermissionRequest {
@@ -368,7 +453,7 @@ mod tests {
     #[test]
     fn the_hook_blocks_until_the_ui_answers_it() {
         let (mut gate, inbox) = approval_channel();
-        let asked = std::thread::spawn(move || gate.decide(&bash("cargo test")));
+        let asked = std::thread::spawn(move || gate.decide(&bash("cargo test"), &mut NoHeartbeat));
 
         let pending = inbox.recv_timeout(std::time::Duration::from_secs(5)).expect("a question");
         assert_eq!(pending.request().tool_name, "Bash");
@@ -389,11 +474,84 @@ mod tests {
     #[test]
     fn a_dropped_question_is_denied_not_hung() {
         let (mut gate, inbox) = approval_channel();
-        let asked = std::thread::spawn(move || gate.decide(&bash("rm -rf /")));
+        let asked = std::thread::spawn(move || gate.decide(&bash("rm -rf /"), &mut NoHeartbeat));
         let pending = inbox.recv_timeout(std::time::Duration::from_secs(5)).expect("a question");
         drop(pending);
         let decision = asked.join().unwrap();
         assert_eq!(decision, PermissionDecision::deny(UNREACHABLE));
+    }
+
+    /// A heartbeat that counts, and can be told the client has gone.
+    struct Fake {
+        beats: Arc<std::sync::atomic::AtomicUsize>,
+        /// The beat on which the client disappears. `usize::MAX` for one that never does.
+        dies_at: usize,
+    }
+
+    impl Heartbeat for Fake {
+        fn beat(&mut self) -> bool {
+            self.beats.fetch_add(1, Ordering::Relaxed) + 1 < self.dies_at
+        }
+    }
+
+    fn fast(gate: ApprovalGate) -> ApprovalGate {
+        gate.beating_every(std::time::Duration::from_millis(10))
+    }
+
+    /// 🚨 **The bug, headless.** Claude Code gives up on a permission call after
+    /// [`crate::mcp::CLIENT_DEADLINE_SECS`], so a question that outlives its keep-alives is a
+    /// question nobody will read the answer to. The gate must then resolve **once**, in the
+    /// **deny** direction, and — the part a human sees — mark the pending so the card can
+    /// stop asking.
+    #[test]
+    fn a_question_the_client_gave_up_on_resolves_once_and_fails_closed() {
+        let (gate, inbox) = approval_channel();
+        let beats = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut fake = Fake { beats: beats.clone(), dies_at: 3 };
+        let mut gate = fast(gate);
+        let asked = std::thread::spawn(move || gate.decide(&bash("rm -rf /"), &mut fake));
+
+        let pending = inbox.recv_timeout(std::time::Duration::from_secs(5)).expect("a question");
+        let decision = asked.join().expect("the serve thread returned");
+
+        assert_eq!(decision, PermissionDecision::deny(ABANDONED));
+        assert!(
+            !matches!(decision, PermissionDecision::Allow { .. }),
+            "a request the console can no longer answer is never an allow"
+        );
+        assert_eq!(beats.load(Ordering::Relaxed), 3, "it beat until the client stopped answering");
+        assert!(pending.is_abandoned(), "the card must be able to stop asking");
+
+        // …and it resolved **once**. A late click cannot produce a second decision: the
+        // gate has already returned, so this is a no-op rather than a second verdict on a
+        // wire nobody is reading.
+        pending.answer(PermissionDecision::deny(DENIED));
+    }
+
+    /// The other half of the same fix: while the client is still there, a slow human is
+    /// simply waited for — past the deadline, for as long as they take.
+    #[test]
+    fn a_slow_human_is_waited_for_and_their_answer_is_the_one_that_counts() {
+        let (gate, inbox) = approval_channel();
+        let beats = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut fake = Fake { beats: beats.clone(), dies_at: usize::MAX };
+        let mut gate = fast(gate);
+        let asked = std::thread::spawn(move || gate.decide(&bash("cargo build"), &mut fake));
+
+        let pending = inbox.recv_timeout(std::time::Duration::from_secs(5)).expect("a question");
+        // Take longer than several heartbeats — the shape of a human reading a card.
+        while beats.load(Ordering::Relaxed) < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!pending.is_abandoned(), "nothing has gone wrong; the human is just slow");
+        pending.answer(PermissionDecision::allow_unchanged(&bash("cargo build")));
+
+        let decision = asked.join().expect("the serve thread returned");
+        assert_eq!(
+            decision.to_wire(),
+            r#"{"behavior":"allow","updatedInput":{"command":"cargo build"}}"#,
+            "the answer a human gave late is still the answer"
+        );
     }
 
     /// And so is a question nobody is listening for at all — a pane closed while its agent
@@ -402,7 +560,7 @@ mod tests {
     fn a_gate_with_no_listener_denies_immediately() {
         let (mut gate, inbox) = approval_channel();
         drop(inbox);
-        assert_eq!(gate.decide(&bash("ls")), PermissionDecision::deny(UNREACHABLE));
+        assert_eq!(gate.decide(&bash("ls"), &mut NoHeartbeat), PermissionDecision::deny(UNREACHABLE));
     }
 
     /// The measured repetition (§5): three identical calls, one decision. And the bound on

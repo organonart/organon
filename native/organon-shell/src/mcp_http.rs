@@ -61,7 +61,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::mcp::{McpServer, ToolDispatch, PARSE_ERROR};
+use crate::mcp::{Heartbeat, McpServer, ToolDispatch, PARSE_ERROR};
 
 /// The path the config points the client at, and the only path this server answers on.
 pub const ENDPOINT: &str = "/mcp";
@@ -162,6 +162,40 @@ impl Endpoint {
 
     pub fn server(&self) -> &McpServer {
         &self.server
+    }
+
+    /// Is this body the call that has to be answered on a stream, and what token may its
+    /// keep-alives be addressed to?
+    ///
+    /// `Some(None)` — a permission call carrying no `progressToken` — is a real case and a
+    /// deliberate one. The deadline cannot be held open without a token, but the *other*
+    /// job of the stream still applies: an open connection is how the console finds out the
+    /// client has gone, and a card that never finds out is the orphan this whole change
+    /// exists to prevent. Measured clients always send a token; this is what happens if one
+    /// stops.
+    pub fn long_call(&self, body: &[u8]) -> Option<Option<Value>> {
+        let message: Value = serde_json::from_slice(body).ok()?;
+        self.server
+            .is_permission_call(&message)
+            .then(|| self.server.permission_progress_token(&message))
+    }
+
+    /// Answer one request while `beat` holds the connection open.
+    ///
+    /// Returns the JSON-RPC response *value* rather than framed bytes, because the caller
+    /// has already committed to a `text/event-stream` body by the time this is called and
+    /// owes the answer as one more event, not as a second set of headers.
+    pub fn answer_streamed(&mut self, body: &[u8], beat: &mut dyn Heartbeat) -> Option<Value> {
+        match serde_json::from_slice::<Value>(body) {
+            Ok(message) => self.server.handle_with(&message, &mut *self.dispatch, beat),
+            // Unreachable in practice — the caller parsed this body to find the token —
+            // but a parse error is still a JSON-RPC answer, never silence.
+            Err(error) => Some(json!({
+                "jsonrpc": "2.0",
+                "id": Value::Null,
+                "error": { "code": PARSE_ERROR, "message": error.to_string() },
+            })),
+        }
     }
 
     /// Answer one request. Returns the complete response bytes, headers and all.
@@ -281,8 +315,36 @@ fn serve_connection(mut stream: TcpStream, endpoint: Arc<Mutex<Endpoint>>, alive
         let body = buf[head_end..head_end + head.content_length].to_vec();
         buf.drain(..head_end + head.content_length);
 
-        // The lock is held across `answer`, which is where a permission hook blocks for
-        // as long as a human takes. See the module doc: that is the design.
+        // 🚨 A permission call is the one request that can outlive the client's patience,
+        // and it is answered on a stream so the wait can be reported. Everything else is
+        // request/response, as measured.
+        let long = match endpoint.lock() {
+            Ok(endpoint) if head.method == "POST" && head.path == ENDPOINT => {
+                endpoint.long_call(&body)
+            }
+            _ => None,
+        };
+        if let Some(token) = long {
+            let mut call = SseCall::new(&mut stream, &mut buf, token);
+            if call.open().is_err() {
+                return;
+            }
+            // The lock is held across the answer, which is where the permission hook
+            // blocks for as long as a human takes. See the module doc: that is the design.
+            let value = match endpoint.lock() {
+                Ok(mut endpoint) => endpoint.answer_streamed(&body, &mut call),
+                Err(_) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": Value::Null,
+                    "error": { "code": PARSE_ERROR, "message": "the server lost its protocol state" },
+                })),
+            };
+            if call.finish(value.as_ref()).is_err() {
+                return;
+            }
+            continue;
+        }
+
         let response = match endpoint.lock() {
             Ok(mut endpoint) => endpoint.answer(&head, &body),
             // A poisoned mutex means an earlier request panicked mid-protocol. Saying so
@@ -292,6 +354,123 @@ fn serve_connection(mut stream: TcpStream, endpoint: Arc<Mutex<Endpoint>>, alive
         if stream.write_all(&response).is_err() || stream.flush().is_err() {
             return;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The long call
+// ---------------------------------------------------------------------------
+
+/// One permission call, answered as a `text/event-stream` body.
+///
+/// 🚨 **This exists because there is a deadline, and it was not in the design.**
+/// [`crate::mcp::CLIENT_DEADLINE_SECS`] records what was measured: the client aborts the socket 60 s
+/// after asking, the model is told *"The operation timed out"*, and the tool fails while
+/// the card is still on screen asking a question whose answer can no longer matter.
+///
+/// Answering a POST with SSE instead of JSON is what makes a keep-alive expressible at
+/// all: `notifications/progress` is a **server-initiated** message, and over this
+/// transport a server-initiated message related to a request rides that request's own
+/// response stream. There is no other channel — the console `405`s the optional `GET`
+/// push stream (§8 step 4), so nothing is held open outside a call.
+///
+/// ⚠️ **The stream must be terminated even when the answer is an error**, or the client
+/// waits on a body that never ends — the chunked-encoding restatement of §9.1's rule that
+/// an empty response still owes a `Content-Length`.
+struct SseCall<'a> {
+    stream: &'a mut TcpStream,
+    /// Anything the client sends *during* the call. Read only to notice a hangup, kept
+    /// because throwing away a pipelined request would corrupt the connection.
+    spill: &'a mut Vec<u8>,
+    /// `None` for a permission call that carried no `progressToken`: the stream is then a
+    /// hangup detector and nothing more. See [`Endpoint::long_call`].
+    token: Option<Value>,
+    sent: u64,
+}
+
+impl<'a> SseCall<'a> {
+    fn new(stream: &'a mut TcpStream, spill: &'a mut Vec<u8>, token: Option<Value>) -> Self {
+        Self { stream, spill, token, sent: 0 }
+    }
+
+    /// The response head. Sent before the hook is called, because the client starts its
+    /// clock when it asks and a stream that opens late has already lost time.
+    fn open(&mut self) -> io::Result<()> {
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                    Cache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n\r\n";
+        self.stream.write_all(head.as_bytes())?;
+        self.stream.flush()
+    }
+
+    /// The answer, then the end of the chunked body — which returns the connection to
+    /// ordinary request/response for whatever the client asks next.
+    fn finish(&mut self, value: Option<&Value>) -> io::Result<()> {
+        if let Some(value) = value {
+            self.event(&value.to_string())?;
+        }
+        self.stream.write_all(b"0\r\n\r\n")?;
+        self.stream.flush()
+    }
+
+    fn event(&mut self, json: &str) -> io::Result<()> {
+        let frame = format!("event: message\ndata: {json}\n\n");
+        self.stream.write_all(format!("{:x}\r\n{frame}\r\n", frame.len()).as_bytes())?;
+        self.stream.flush()
+    }
+
+    /// Has the client gone? Read once, without waiting: end-of-stream or a socket error
+    /// is a hangup, a would-block is a client that is simply still listening, and
+    /// anything else is a request that arrived early and is kept for the loop above.
+    fn client_present(&mut self) -> bool {
+        let restore = self.stream.read_timeout().ok().flatten();
+        if self.stream.set_read_timeout(Some(Duration::from_millis(1))).is_err() {
+            return true;
+        }
+        let mut chunk = [0u8; 4096];
+        let present = match self.stream.read(&mut chunk) {
+            Ok(0) => false,
+            Ok(n) => {
+                self.spill.extend_from_slice(&chunk[..n]);
+                true
+            }
+            Err(e) => matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+            ),
+        };
+        let _ = self.stream.set_read_timeout(restore);
+        present
+    }
+}
+
+impl Heartbeat for SseCall<'_> {
+    /// One `notifications/progress` against the request's own token, then: is the client
+    /// still there?
+    ///
+    /// The `message` is the honest one: nothing is *progressing*, a human is deciding. It
+    /// is carried anyway because a client that surfaces progress text should say why the
+    /// call is slow rather than imply work is happening.
+    ///
+    /// ⚠️ **The liveness check runs even when there is no token to beat against.** Holding
+    /// the deadline open and noticing the client leave are two jobs, and only the first
+    /// needs a token.
+    fn beat(&mut self) -> bool {
+        if let Some(token) = self.token.clone() {
+            self.sent += 1;
+            let note = json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {
+                    "progressToken": token,
+                    "progress": self.sent,
+                    "message": "waiting for a human at the Organon Console",
+                },
+            });
+            if self.event(&note.to_string()).is_err() {
+                return false;
+            }
+        }
+        self.client_present()
     }
 }
 
@@ -544,6 +723,163 @@ mod tests {
         };
         assert!(!path.exists(), "the config must not outlive the session it describes");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- the long call, on a real socket ------------------------------------
+
+    /// A permission `tools/call`, framed exactly as the client sends one (doc §3) — the
+    /// `_meta` block included, because the `progressToken` in it is what decides that this
+    /// request is answered on a stream.
+    fn permission_call(command: &str) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": DEFAULT_PERMISSION_TOOL,
+                "arguments": {
+                    "tool_name": "Bash",
+                    "input": { "command": command },
+                    "tool_use_id": "toolu_slow",
+                },
+                "_meta": { "claudecode/toolUseId": "toolu_slow", "progressToken": 2 },
+            },
+        })
+        .to_string()
+    }
+
+    fn post_bytes(port: u16, body: &str) -> TcpStream {
+        let mut stream =
+            TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).unwrap();
+        let request = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+             Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        stream
+    }
+
+    /// Which requests get a stream, and which do not. Pure, and the discriminator the
+    /// connection loop asks first.
+    #[test]
+    fn only_a_permission_call_is_answered_on_a_stream() {
+        let endpoint = endpoint(allow_all());
+        assert_eq!(
+            endpoint.long_call(permission_call("ls").as_bytes()),
+            Some(Some(json!(2))),
+            "the token the keep-alives are addressed to"
+        );
+
+        // ⚠️ A permission call with no `_meta` is **still** streamed. The deadline cannot be
+        // held open without a token, but the stream's other job — noticing the client has
+        // gone — needs only an open connection, and a card that never notices is the orphan
+        // this whole path exists to prevent.
+        let bare = json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": DEFAULT_PERMISSION_TOOL, "arguments": { "tool_name": "Bash", "input": {} } },
+        })
+        .to_string();
+        assert_eq!(endpoint.long_call(bare.as_bytes()), Some(None));
+
+        // Everything else returns at once and has nothing to report — a token on one of
+        // them is not an invitation to hold a connection open.
+        for other in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"progressToken":9}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"progressToken":9}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"viewport_set","_meta":{"progressToken":9}}}"#,
+            "not json",
+        ] {
+            assert_eq!(endpoint.long_call(other.as_bytes()), None, "{other}");
+        }
+    }
+
+    /// 🚨 **The fix, end to end on a real socket.** A human takes longer than the client's
+    /// deadline; the call is held open by `notifications/progress` against the request's own
+    /// token; the answer arrives when they click, and it is the answer they gave.
+    ///
+    /// Measured 2026-08-12 against `claude.exe` 2.1.228: a stalled permission call is
+    /// aborted at **60.0 s** without progress, and answered at **300.1 s** with it.
+    #[test]
+    fn a_pending_call_is_held_open_by_progress_and_answered_when_the_human_clicks() {
+        let (gate, inbox) = crate::approval::approval_channel();
+        let gate = gate.beating_every(Duration::from_millis(20));
+        let http = McpHttp::start(McpServer::new(&[], Box::new(gate)), Box::new(NoDispatch))
+            .expect("bound a loopback port");
+
+        let mut stream = post_bytes(http.port(), &permission_call("cargo build"));
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+
+        // The question reaches the UI end, and the response is a stream rather than a body.
+        let pending = inbox.recv_timeout(Duration::from_secs(5)).expect("a question");
+        assert_eq!(pending.request().tool_name, "Bash");
+
+        // Read until several keep-alives have arrived — the client's clock is being reset
+        // meanwhile, which is the whole point.
+        let mut seen = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while count(&seen, "notifications/progress") < 3 {
+            let n = stream.read(&mut chunk).expect("the stream stays open");
+            assert!(n > 0, "the server closed instead of waiting");
+            seen.extend_from_slice(&chunk[..n]);
+        }
+        let text = String::from_utf8_lossy(&seen).to_string();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(text.contains("Content-Type: text/event-stream\r\n"), "{text}");
+        assert!(text.contains(r#""progressToken":2"#), "addressed to the request's own token");
+        assert!(!pending.is_abandoned(), "the client is still there; the human is just slow");
+
+        // …and then a human clicks.
+        let allow = PermissionDecision::allow_unchanged(pending.request());
+        pending.answer(allow);
+        while !seen.ends_with(b"0\r\n\r\n") {
+            let n = stream.read(&mut chunk).expect("the answer arrives");
+            assert!(n > 0, "the server closed without answering");
+            seen.extend_from_slice(&chunk[..n]);
+        }
+        let text = String::from_utf8_lossy(&seen).to_string();
+        assert!(
+            text.contains(r#"{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"cargo build\"}}"#),
+            "the answer is the one the human gave, on the same stream: {text}"
+        );
+        // ⚠️ The terminating zero-length chunk, which is the streaming restatement of §9.1's
+        // "an empty response still owes a `Content-Length`": without it the client waits on
+        // a body that never ends, and the answer it already has never resolves the call.
+        assert!(text.ends_with("0\r\n\r\n"), "the chunked body is terminated: {text:?}");
+    }
+
+    /// ⚠️ **And when the client hangs up first, the card stops asking.** This is the state a
+    /// human actually saw: the tool had already failed, and the question was still on screen
+    /// offering to allow it.
+    #[test]
+    fn a_client_that_hangs_up_abandons_the_question_instead_of_leaving_it_open() {
+        let (gate, inbox) = crate::approval::approval_channel();
+        let gate = gate.beating_every(Duration::from_millis(20));
+        let http = McpHttp::start(McpServer::new(&[], Box::new(gate)), Box::new(NoDispatch))
+            .expect("bound a loopback port");
+
+        let mut stream = post_bytes(http.port(), &permission_call("rm -rf /"));
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let pending = inbox.recv_timeout(Duration::from_secs(5)).expect("a question");
+
+        // Wait for the stream to be genuinely open before killing it, so the test is about
+        // a hangup rather than a race with the response head.
+        let mut chunk = [0u8; 4096];
+        assert!(stream.read(&mut chunk).unwrap() > 0);
+        drop(stream);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !pending.is_abandoned() {
+            assert!(std::time::Instant::now() < deadline, "the gate never noticed the hangup");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The card can now say what happened; nothing about it still invites a click.
+        assert!(pending.is_abandoned());
+    }
+
+    fn count(haystack: &[u8], needle: &str) -> usize {
+        String::from_utf8_lossy(haystack).matches(needle).count()
     }
 
     /// The one thing pure functions cannot show: that it binds, accepts, and answers. A

@@ -344,24 +344,31 @@ pub struct SurfaceSpec {
 /// [`crate::block_panel::BlockAction`] gives: this crate cannot see what a button *means*
 /// (the console's material table is in the binary, not here), so it draws a label and
 /// reports the label that was pressed, and a shared index would be two lists free to drift.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// ⚠️ **No `Default`.** It would have to invent a target, and a panel pointed at an element
+/// that does not exist is precisely the shape `/panel`'s removal was meant to make
+/// unbuildable.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PanelSpec {
     pub sliders: Vec<String>,
     pub buttons: Vec<String>,
-    /// The element this panel's controls act on, or `None` for a panel that drives the
-    /// console itself.
+    /// The element this panel's controls act on.
     ///
     /// **This is the fix for the flaw beat 7 exposed.** A panel wired to the global backdrop
     /// changes something you cannot see from where you clicked — the effect lands on another
     /// tab, because a conversation has no scrollback for a backdrop to band across. Naming a
     /// target here makes the consequence an element a few rows up, in the same view.
     ///
+    /// 🚨 **It is no longer an `Option`.** `None` meant "drive the console", which is what
+    /// `/panel` summoned, and a human driving one found exactly the flaw above: the knobs
+    /// appeared to do nothing, because their effect was on another tab. The command is gone
+    /// and so is the arm — a panel that cannot name a target cannot be built.
+    ///
     /// An [`ElementId`] rather than an index, for the reason ids exist: the transcript's
     /// indices shift as the cap evicts from the front, and a panel that silently started
     /// driving its neighbour would be the worst possible failure of an instrument. A target
     /// the cap has evicted simply stops resolving ([`Transcript::get`] answers `None`) and
     /// the panel drives nothing — which the view says on screen rather than papering over.
-    pub drives: Option<ElementId>,
+    pub drives: ElementId,
 }
 
 /// Which way a permission request was answered.
@@ -391,6 +398,16 @@ pub struct Answer {
 pub enum ApprovalState {
     Pending,
     Answered(Answer),
+    /// 🚨 **Nobody is waiting for this any more.** The agent's request died before a human
+    /// answered it — its turn was cancelled, the process ended, or the client gave up on
+    /// the call.
+    ///
+    /// A third state rather than an `Answered(Deny)`, because the two are different events
+    /// and a card that conflated them would claim a human refused something nobody was
+    /// asked about. The wire *is* denied, and fails closed
+    /// ([`crate::approval::ABANDONED`]) — but that is the console cleaning up, not a
+    /// decision, and the card says so.
+    Abandoned,
 }
 
 impl ApprovalState {
@@ -400,8 +417,8 @@ impl ApprovalState {
 
     pub fn answer(&self) -> Option<Answer> {
         match self {
-            ApprovalState::Pending => None,
             ApprovalState::Answered(a) => Some(*a),
+            ApprovalState::Pending | ApprovalState::Abandoned => None,
         }
     }
 }
@@ -956,6 +973,31 @@ impl Transcript {
         Change::Updated(id)
     }
 
+    /// **Close a question nobody is waiting for any more**, without claiming it was
+    /// decided.
+    ///
+    /// The sibling of [`Self::answer_approval`] and the reason [`ApprovalState`] has three
+    /// arms: this leaves the card in the flow, in its place, saying what became of it —
+    /// and takes it out of [`Self::pending_approvals`] so nothing offers to answer it.
+    /// Ignored for anything that is not currently pending, which makes it safe to sweep
+    /// every frame.
+    pub fn abandon_approval(&mut self, id: ElementId) -> Change {
+        let Some(index) = self.index_of(id) else {
+            return Change::Ignored(Ignored::ApprovalAlreadyAnswered);
+        };
+        let open = matches!(&self.elements[index].body, Body::Approval(a) if a.state.is_pending());
+        if !open {
+            return Change::Ignored(Ignored::ApprovalAlreadyAnswered);
+        }
+        let turn = self.elements[index].turn;
+        if let Body::Approval(a) = &mut self.elements[index].body {
+            a.state = ApprovalState::Abandoned;
+        }
+        self.pending.retain(|x| *x != id);
+        self.touch_turn(turn);
+        Change::Updated(id)
+    }
+
     /// Clear the `remembered` mark on an answered approval — the revocation the memory's
     /// visibility exists for.
     ///
@@ -1443,12 +1485,16 @@ mod tests {
     }
 
     fn panel(title: &str) -> ArtifactBlock {
+        panel_driving(title, ElementId(0))
+    }
+
+    fn panel_driving(title: &str, drives: ElementId) -> ArtifactBlock {
         ArtifactBlock {
             title: title.to_string(),
             content: ArtifactContent::Panel(PanelSpec {
                 sliders: vec!["depth".into(), "bloom".into()],
                 buttons: vec!["metal".into(), "glass".into()],
-                drives: None,
+                drives,
             }),
         }
     }
@@ -1553,7 +1599,7 @@ mod tests {
             content: ArtifactContent::Panel(PanelSpec {
                 sliders: vec!["light".into()],
                 buttons: vec!["metal".into()],
-                drives: Some(target),
+                drives: target,
             }),
         }
     }
@@ -1593,7 +1639,7 @@ mod tests {
                 _ => None,
             })
             .expect("the panel is still there");
-        assert_eq!(panel.drives, Some(surface_id));
+        assert_eq!(panel.drives, surface_id);
         let target = t.get(surface_id).expect("the target still resolves");
         match &target.artifact().unwrap().content {
             ArtifactContent::Surface(s) => assert_eq!(s.look, "slate"),
@@ -1719,6 +1765,55 @@ mod tests {
         assert_eq!(fresh.revoke_approval(ElementId(999)), Change::Ignored(Ignored::ApprovalAlreadyAnswered));
     }
 
+    /// 🚨 **A question whose asker has gone stops asking, and says what happened.**
+    ///
+    /// The failure this closes was on screen: the client gave up on a permission call after
+    /// a minute, the tool failed with *"The operation timed out"*, and the card kept
+    /// offering allow / allow-and-remember / deny for a call that no longer existed.
+    #[test]
+    fn an_abandoned_approval_stops_asking_and_is_not_a_verdict() {
+        let mut t = Transcript::new();
+        let Change::Appended(id) = t.insert_approval(pending_approval("Write")) else {
+            panic!("an approval must append");
+        };
+        assert_eq!(t.pending_approvals(), &[id][..]);
+
+        assert_eq!(t.abandon_approval(id), Change::Updated(id));
+        let state = t.get(id).unwrap().approval().unwrap().state;
+        assert_eq!(state, ApprovalState::Abandoned);
+        assert!(!state.is_pending(), "nothing is waiting on it");
+        assert_eq!(state.answer(), None, "and nobody decided it — it is not a deny");
+        assert!(t.pending_approvals().is_empty());
+
+        // It is spent in both directions: a late click cannot answer it, and sweeping it
+        // twice is a no-op rather than a second event.
+        assert_eq!(
+            t.answer_approval(id, allowed()),
+            Change::Ignored(Ignored::ApprovalAlreadyAnswered)
+        );
+        assert_eq!(t.get(id).unwrap().approval().unwrap().state, ApprovalState::Abandoned);
+        assert_eq!(
+            t.abandon_approval(id),
+            Change::Ignored(Ignored::ApprovalAlreadyAnswered)
+        );
+
+        // An **answered** question is never re-opened by a sweep, and neither is an element
+        // that is not an approval at all.
+        let Change::Appended(other) = t.insert_approval(pending_approval("Bash")) else {
+            panic!("an approval must append");
+        };
+        t.answer_approval(other, allowed());
+        assert_eq!(
+            t.abandon_approval(other),
+            Change::Ignored(Ignored::ApprovalAlreadyAnswered)
+        );
+        assert_eq!(t.get(other).unwrap().approval().unwrap().state.answer(), Some(allowed()));
+        assert_eq!(
+            t.abandon_approval(ElementId(999)),
+            Change::Ignored(Ignored::ApprovalAlreadyAnswered)
+        );
+    }
+
     /// ⚠️ The eviction with a consequence outside this module. The cap takes a question a
     /// human never answered; the count is how the pane knows to fail it closed instead of
     /// leaving an agent blocked for the rest of the session.
@@ -1827,7 +1922,11 @@ mod tests {
                 if step % 37 == 0 {
                     t.insert_artifact(ArtifactBlock {
                         title: format!("panel {step}"),
-                        content: ArtifactContent::Panel(PanelSpec::default()),
+                        content: ArtifactContent::Panel(PanelSpec {
+                            sliders: vec![],
+                            buttons: vec![],
+                            drives: ElementId(0),
+                        }),
                     });
                 }
                 // …and an approval, on a different stride, answered a few steps later —

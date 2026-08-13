@@ -71,9 +71,7 @@ use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
 use organon_shell::conversation::ElementId;
-use organon_shell::conversation_view::{
-    self, ArtifactAction, ConversationPane, SurfaceImages, SurfaceRequest,
-};
+use organon_shell::conversation_view::{self, ConversationPane, SurfaceImages, SurfaceRequest};
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::session::{Issuer, SessionLog};
@@ -2417,13 +2415,14 @@ impl Shell {
         // same way `action` is and for the same reason: applying one needs `&mut self`, and
         // `self` is split into disjoint borrows for the duration of `egui_ctx.run`.
         let mut block_actions: Vec<BlockAction> = Vec::new();
-        // The same thing from the other front-end: a button pressed inside an *inline
-        // artifact* in a conversation. A second vector rather than a shared one because the
-        // two name their panel differently — a patch by its ledger index, an artifact by the
-        // transcript's `ElementId` — and collapsing them would need one of the two to lie.
-        // They converge one screen down, at the `apply_console` both of them call.
-        let mut artifact_actions: Vec<ArtifactAction> = Vec::new();
-        // …and where its rendered surfaces ended up, which is the NEXT frame's render list.
+        // ⚠️ **There was a second vector here, for buttons pressed inside an inline artifact
+        // in a conversation, and it is gone.** Only a panel wired to the *console* could
+        // fill it, which is what `/panel` summoned; a conversation has no scrollback for a
+        // backdrop to band across, so the effect landed on a terminal tab and the panel read
+        // as a set of dead knobs. A panel now always drives an element in its own transcript
+        // and the press never leaves that crate.
+        //
+        // …what does come back is where its rendered surfaces ended up, which is the NEXT frame's render list.
         // Collected out of the closure for the same reason: acting on it needs `&mut self`.
         let mut surface_requests: Vec<SurfaceRequest> = Vec::new();
         // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
@@ -2494,9 +2493,8 @@ impl Shell {
                             // stays the empty `Vec` it was initialised to and the loop below
                             // does nothing. An inline artifact needs none of that machinery —
                             // it is an element in a flow that draws itself — so what comes
-                            // back is the buttons, and where its surfaces ended up.
+                            // back is where its surfaces ended up, and nothing else.
                             let out = conversation_view::draw(ui, chat, &surface_images);
-                            artifact_actions = out.actions;
                             surface_requests = out.surfaces;
                         }
                         _ => {
@@ -2531,18 +2529,12 @@ impl Shell {
         for act in block_actions {
             self.apply_console(&cli::ConsoleOp::Background(act.button));
         }
-        // …and the conversation view's inline panel arrives at the same call, which is the
-        // point of routing it rather than giving the second front-end its own effects.
-        //
-        // ⚠️ **`/panel`'s buttons still land on a backdrop you cannot see from here**, and
-        // that is now a choice rather than the only option: the backdrop is not drawn behind
-        // a conversation (banding is scrollback arithmetic and there is no scrollback), so a
-        // material clicked in a `/panel` is seen on a terminal tab. `/surface` is the answer
-        // to that — its panel drives an element in this same transcript and its buttons never
-        // reach this loop at all, having been consumed by the surface they aim at.
-        for act in artifact_actions {
-            self.apply_console(&cli::ConsoleOp::Background(act.button));
-        }
+        // ⚠️ **A second loop stood here, for the conversation view's inline panels.** It was
+        // reachable only from `/panel`, and what it did was exactly the complaint: a material
+        // clicked in a conversation repainted the backdrop of a *terminal* tab, so the panel
+        // you were looking at appeared to do nothing. `/surface` supersedes it — its panel
+        // drives an element in the same transcript, and the press is consumed by the surface
+        // it aims at rather than travelling out here.
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),
             self.gpu.as_mut(),

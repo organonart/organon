@@ -41,8 +41,8 @@ use crate::approval::{
 use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
 use crate::conversation::{
     Answer, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent, Body, Change,
-    Element, ElementId, PanelSpec, RunOutcome, SurfaceSpec, ToolCard, ToolState, Transcript,
-    Verdict,
+    Element, ElementId, Ignored, PanelSpec, RunOutcome, SurfaceSpec, ToolCard, ToolState,
+    Transcript, Verdict,
 };
 use crate::mcp::{McpServer, NoDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
@@ -118,15 +118,15 @@ pub struct SurfaceRequest {
 
 /// Everything one frame of [`draw`] hands back.
 ///
-/// A struct rather than a tuple because the two halves answer different questions and are
-/// consumed a screen apart in `shell_main.rs` — actions before the frame ends, surface
-/// requests as the *next* frame's render list.
+/// Still a struct rather than a bare `Vec`, because what it carries is a *render list for
+/// the next frame* and the name is what says so at the call site in `shell_main.rs`.
+///
+/// ⚠️ **One field, and it used to be two.** The other was `actions` — buttons pressed in a
+/// panel that drove the console's backdrop, which only `/panel` could produce. With that
+/// command retired every panel drives a surface in this same transcript, so a press is
+/// consumed by the thing it aims at and never leaves this crate.
 #[derive(Clone, Debug, Default)]
 pub struct ConversationOutput {
-    /// Buttons pressed in panels that drive the **console**. A button in a panel that drives
-    /// a surface never appears here — it was consumed by the surface it aims at, which is the
-    /// entire difference between beat 7's instrument and this one.
-    pub actions: Vec<ArtifactAction>,
     /// The **visible** surfaces this frame, in transcript order.
     pub surfaces: Vec<SurfaceRequest>,
 }
@@ -155,34 +155,26 @@ pub fn surface_visible(rect: egui::Rect, viewport: egui::Rect) -> bool {
         && rect.top() < viewport.bottom()
 }
 
-/// A button was pressed inside an inline artifact: which element, and which label.
-///
-/// The sibling of [`crate::block_panel::BlockAction`], and the same contract: this crate
-/// draws labels it was handed and reports the one that was pressed, because what a label
-/// *means* lives in `shell_main.rs` beside the material table. An [`ElementId`] rather than
-/// an index because that is the identity the transcript guarantees.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ArtifactAction {
-    pub element: ElementId,
-    pub button: String,
-}
-
 /// A composer line the view acts on itself and **never sends to the agent**.
 ///
 /// ⚠️ **A temporary seam, and shaped to be removed.** Summoning is about to become the
 /// agent's job — a tool call the integrator answers with
 /// [`Transcript::insert_artifact`](crate::conversation::Transcript::insert_artifact), where
 /// the tool card is the anchor — so the summoning path is kept entirely separate from the
-/// element: this enum decides *that* a panel is wanted, [`ConversationPane::summon_panel`]
+/// element: this enum decides *that* a surface is wanted, [`ConversationPane::summon_surface`]
 /// builds one, and neither knows about the other's existence beyond that call. Deleting
 /// this enum and its branch in [`ConversationPane::submit`] removes the local command and
 /// touches nothing that draws.
+///
+/// 🚨 **There was a second command here, `/panel`, and it is gone.** It summoned a panel
+/// wired to the *console* — the backdrop behind whatever terminal tab was next door — so
+/// its controls changed something you could not see from the tab you clicked in. Driven by
+/// a human, that reads as a panel whose knobs do nothing. `/surface` is not an alternative
+/// to it; it is the same panel pointed at something in the same view, which is what makes
+/// the instrument legible. Removing `/panel` took the console-driving arm of
+/// [`PanelSpec::drives`] with it, so a panel now always names a target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocalCommand {
-    /// `/panel` — put a control panel in the flow, here. It drives the **console**: the
-    /// backdrop behind whatever terminal tab is next door, which is the instrument beat 7
-    /// found wanting.
-    Panel,
     /// `/surface` — put a rendered surface in the flow, and a panel under it that drives
     /// **that surface**. Control and consequence in one glance.
     Surface,
@@ -191,11 +183,10 @@ pub enum LocalCommand {
 /// Recognise a local command, or `None` for an ordinary message.
 ///
 /// Exact-match only: a message that merely *starts* with a slash is a message (a human
-/// asking about `/panel` must reach the agent), and swallowing it would be a silent send
+/// asking about `/surface` must reach the agent), and swallowing it would be a silent send
 /// failure — the worst kind, because the composer clears either way.
 pub fn local_command(line: &str) -> Option<LocalCommand> {
     match line.trim() {
-        "/panel" => Some(LocalCommand::Panel),
         "/surface" => Some(LocalCommand::Surface),
         _ => None,
     }
@@ -445,6 +436,9 @@ impl ConversationPane {
                          start another conversation"
                             .to_string(),
                     );
+                    // Nothing will read an answer now. Say so on the cards rather than
+                    // leaving them asking.
+                    self.abandon_all_approvals();
                     changed = true;
                 }
             }
@@ -462,6 +456,47 @@ impl ConversationPane {
         while let Ok(pending) = self.inbox.try_recv() {
             self.receive_approval(pending);
             changed = true;
+        }
+        changed | self.sweep_abandoned()
+    }
+
+    /// 🚨 **Close every question the agent has stopped waiting for.**
+    ///
+    /// The serve thread notices the client is gone and marks its [`PendingApproval`]
+    /// abandoned ([`crate::approval`]); this is the other end of that flag. Without it the
+    /// card keeps offering *allow* for a call that already failed with *"The operation
+    /// timed out"* — the exact thing a human saw on screen, and worse than showing no card,
+    /// because it invites a click that cannot do anything.
+    ///
+    /// A sweep rather than a message: the flag is cheap to read, the map is a handful of
+    /// entries, and there is no ordering to get wrong.
+    fn sweep_abandoned(&mut self) -> bool {
+        let dead: Vec<ElementId> = self
+            .waiting
+            .iter()
+            .filter(|(_, pending)| pending.is_abandoned())
+            .map(|(id, _)| *id)
+            .collect();
+        let mut changed = false;
+        for id in dead {
+            self.waiting.remove(&id);
+            changed |= self.transcript.abandon_approval(id) != Change::Ignored(Ignored::ApprovalAlreadyAnswered);
+        }
+        changed
+    }
+
+    /// Close every open question at once — the agent that would have answered them is gone.
+    ///
+    /// ⚠️ **Removing an entry from `waiting` is what denies it**, so this both unblocks any
+    /// serve thread still holding one and leaves the card saying what happened. Called when
+    /// the process ends, which is the other way a question dies without anyone clicking:
+    /// the client never gets to time out because there is no client.
+    fn abandon_all_approvals(&mut self) -> bool {
+        let open: Vec<ElementId> = self.waiting.keys().copied().collect();
+        let mut changed = false;
+        for id in open {
+            self.waiting.remove(&id);
+            changed |= self.transcript.abandon_approval(id) != Change::Ignored(Ignored::ApprovalAlreadyAnswered);
         }
         changed
     }
@@ -511,26 +546,24 @@ impl ConversationPane {
         self.pinned = true;
     }
 
-    /// Put a control panel in the flow, at the end of what has been said so far.
+    /// Put a control panel in the flow, at the end of what has been said so far, driving
+    /// the element `drives` names.
     ///
     /// The **only** thing that builds one, so the summoning path above it — today a local
     /// command, next a tool call — is a caller rather than a participant.
     ///
-    /// `drives` names the element this panel acts on, or `None` for the console itself. That
-    /// argument is the difference between the two summonings and nothing else about the panel
-    /// changes, which is what makes the surface a *use* of the panel rather than a fork of it.
-    pub fn summon_panel(&mut self, drives: Option<ElementId>) {
+    /// ⚠️ `drives` was an `Option` while `/panel` existed, and `None` meant "drive the
+    /// console's backdrop". That is the arm that was removed: a panel must now name
+    /// something in this transcript, so it cannot be summoned into a state where its
+    /// controls change something outside the view they are drawn in.
+    pub fn summon_panel(&mut self, drives: ElementId) {
         let spec = PanelSpec {
             sliders: self.sliders.iter().map(|(l, _)| l.clone()).collect(),
             buttons: self.buttons.clone(),
             drives,
         };
-        let title = match drives {
-            Some(_) => "◈ organon · surface controls",
-            None => "◈ organon · console",
-        };
         self.transcript.insert_artifact(ArtifactBlock {
-            title: title.to_string(),
+            title: "◈ organon · surface controls".to_string(),
             content: ArtifactContent::Panel(spec),
         });
         // Appended content pulls the view down, exactly as an appended element off the
@@ -557,11 +590,12 @@ impl ConversationPane {
         });
         let Change::Appended(id) = inserted else {
             // `insert_artifact` appends unconditionally; anything else is a contract change
-            // in the transcript, and summoning a panel with no target is the honest fallback.
-            self.summon_panel(None);
+            // in the transcript. There is no target to drive, and a panel that drives
+            // nothing is what this whole change removed — so the surface stands alone.
+            self.note("the surface could not be given controls".to_string());
             return;
         };
-        self.summon_panel(Some(id));
+        self.summon_panel(id);
     }
 
     /// The look a surface opens at: the console's first button label, since that list *is*
@@ -583,7 +617,6 @@ impl ConversationPane {
         // for why this seam is temporary.
         if let Some(command) = local_command(&text) {
             match command {
-                LocalCommand::Panel => self.summon_panel(None),
                 LocalCommand::Surface => self.summon_surface(),
             }
             self.composer.clear();
@@ -657,7 +690,6 @@ fn scrollback(
     pane: &mut ConversationPane,
     images: &SurfaceImages,
 ) -> ConversationOutput {
-    let mut actions = Vec::new();
     // Collected during the walk and joined after it. A panel is *below* its surface in the
     // ordinary case, but nothing in the model requires that — the link is an id, not an
     // adjacency — so the join happens once the whole list has been seen rather than by
@@ -686,9 +718,8 @@ fn scrollback(
             if transcript.is_empty() {
                 ui.label(
                     RichText::new(
-                        "no messages yet — type below and press Enter, `/surface` for a \
-                         rendered surface with its own controls, or `/panel` for a panel \
-                         that drives the console",
+                        "no messages yet — type below and press Enter, or `/surface` for a \
+                         rendered surface with its own controls",
                     )
                     .color(DIM)
                     .italics(),
@@ -704,30 +735,21 @@ fn scrollback(
                             // Empty on the first frame; `panel_body` syncs it to the
                             // description, which is where the starting values come from.
                             let state = artifacts.entry(element.id).or_default();
-                            let pressed = panel_element(ui, element.id, artifact, spec, state, defaults);
-                            match spec.drives {
-                                // Consumed here: a driving panel's button changes the
-                                // surface it names and nothing else. Returning it as an
-                                // action too would ALSO repaint the console's backdrop —
-                                // the exact "the effect is on another tab" the surface
-                                // exists to stop.
-                                Some(target) => drives.push(PanelDrive {
-                                    target,
-                                    material: state.material.clone(),
-                                    sliders: spec
-                                        .sliders
-                                        .iter()
-                                        .cloned()
-                                        .zip(state.sliders.iter().copied())
-                                        .collect(),
-                                }),
-                                None => {
-                                    if let Some(button) = pressed {
-                                        actions
-                                            .push(ArtifactAction { element: element.id, button });
-                                    }
-                                }
-                            }
+                            panel_element(ui, element.id, artifact, spec, state, defaults);
+                            // A press is consumed here: it changes the surface this panel
+                            // names, and nothing else. That is the whole of what a panel
+                            // can do now — the arm that also repainted the console's
+                            // backdrop went with `/panel`.
+                            drives.push(PanelDrive {
+                                target: spec.drives,
+                                material: state.material.clone(),
+                                sliders: spec
+                                    .sliders
+                                    .iter()
+                                    .cloned()
+                                    .zip(state.sliders.iter().copied())
+                                    .collect(),
+                            });
                         }
                         ArtifactContent::Surface(spec) => {
                             let rect = surface_element(
@@ -790,7 +812,7 @@ fn scrollback(
     // answered by a human, so dropping it here **denies** it (`crate::approval`) instead of
     // leaving the agent blocked for the rest of the session.
     waiting.retain(|id, _| transcript.get(*id).is_some());
-    ConversationOutput { actions, surfaces: join_drives(laid_out, drives) }
+    ConversationOutput { surfaces: join_drives(laid_out, drives) }
 }
 
 /// Fold each driving panel's state into the surface it names.
@@ -946,6 +968,8 @@ fn approval_card(
         ApprovalState::Pending => ASKING,
         ApprovalState::Answered(a) if a.verdict == Verdict::Allow => OK,
         ApprovalState::Answered(_) => BAD,
+        // Not `BAD`: nothing was refused. The card is spent, and reads that way.
+        ApprovalState::Abandoned => DIM,
     };
     ui.push_id(id.0, |ui| {
         Frame::new()
@@ -975,6 +999,19 @@ fn approval_card(
                 match block.state {
                     ApprovalState::Pending => approval_buttons(ui, live),
                     ApprovalState::Answered(answer) => approval_verdict(ui, answer),
+                    // No buttons and no verdict — the outcome, and nothing that looks
+                    // like it could still change it.
+                    ApprovalState::Abandoned => {
+                        ui.label(
+                            RichText::new(
+                                "the agent stopped waiting — this call failed before it was \
+                                 answered",
+                            )
+                            .color(DIM)
+                            .small(),
+                        );
+                        None
+                    }
                 }
             })
             .inner
@@ -1048,7 +1085,7 @@ fn panel_element(
     spec: &PanelSpec,
     state: &mut PanelState,
     defaults: &[(String, f32)],
-) -> Option<String> {
+) {
     // Scoped by the element's own id: two panels in one transcript are two sets of widgets,
     // and egui's positional auto-ids would otherwise hand a slider its neighbour's drag
     // state the moment anything above them changes height.
@@ -1062,42 +1099,40 @@ fn panel_element(
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().slider_width = SLIDER_WIDTH;
                 ui.label(RichText::new(&artifact.title).monospace().strong().color(PANEL_TITLE));
-                panel_body(ui, spec, state, defaults)
-            })
-            .inner
-    })
-    .inner
+                panel_body(ui, spec, state, defaults);
+            });
+    });
 }
 
+/// ⚠️ **Returns nothing, and used to return the button that was pressed.** That value was
+/// read by exactly one caller — the arm that turned a press into an [`ArtifactAction`] for
+/// the console's backdrop — and it went with `/panel`. A press now lands in
+/// [`PanelState::material`], which is what the surface reads.
 fn panel_body(
     ui: &mut egui::Ui,
     spec: &PanelSpec,
     state: &mut PanelState,
     defaults: &[(String, f32)],
-) -> Option<String> {
+) {
     // The description is authoritative about *which* controls exist; the state is
     // authoritative about where they are. This is the only line where the two meet.
     state.sync(spec, defaults);
-    let mut pressed = None;
     ui.horizontal_wrapped(|ui| {
         for label in &spec.buttons {
-            // A driving panel shows which material its surface is wearing; a console panel
-            // cannot, because the console's own state is not this element's to mirror.
-            let chosen = spec.drives.is_some() && state.material.as_deref() == Some(label.as_str());
+            // The panel shows which material its surface is wearing — it can, because that
+            // material is this element's to mirror. A panel wired to the console never
+            // could, which is one more way that arm read as broken.
+            let chosen = state.material.as_deref() == Some(label.as_str());
             let text = RichText::new(label).monospace();
             let text = if chosen { text.color(PANEL_TITLE).strong() } else { text };
             if ui.button(text).clicked() {
-                pressed = Some(label.clone());
-                if spec.drives.is_some() {
-                    state.material = Some(label.clone());
-                }
+                state.material = Some(label.clone());
             }
         }
     });
     for (label, value) in spec.sliders.iter().zip(state.sliders.iter_mut()) {
         ui.add(egui::Slider::new(value, 0.0..=1.0).text(label.as_str()));
     }
-    pressed
 }
 
 /// **The artifact that *is* a picture: the engine, rendered into a rectangle of the page.**
@@ -1437,20 +1472,21 @@ mod tests {
     /// merely odd, while over-recognising one swallows a real message — and the composer
     /// clears either way, so the human watches their sentence vanish into nothing.
     #[test]
-    fn only_an_exact_slash_panel_is_a_local_command() {
-        assert_eq!(local_command("/panel"), Some(LocalCommand::Panel));
-        assert_eq!(local_command("  /panel \n"), Some(LocalCommand::Panel), "trimmed like a send");
+    fn only_an_exact_slash_surface_is_a_local_command() {
         assert_eq!(local_command("/surface"), Some(LocalCommand::Surface));
-        assert_eq!(local_command(" /surface  "), Some(LocalCommand::Surface));
+        assert_eq!(local_command(" /surface \n"), Some(LocalCommand::Surface), "trimmed like a send");
         for message in [
-            "/panels",
-            "/panel now",
-            "what does /panel do?",
-            "panel",
             "/surfaces",
             "/surface slate",
+            "surface",
             "/",
             "",
+            // 🚨 The retired command. `/panel` drove the console's backdrop, which a
+            // conversation has no scrollback to show, so its controls appeared to do
+            // nothing. It is not swallowed and it is not aliased to `/surface` — it is an
+            // ordinary message now, and reaches the agent like any other sentence.
+            "/panel",
+            "  /panel  ",
         ] {
             assert_eq!(local_command(message), None, "{message:?} belongs to the agent");
         }
@@ -1464,7 +1500,7 @@ mod tests {
         let spec = PanelSpec {
             sliders: vec!["bloom".into(), "unheard-of".into()],
             buttons: vec!["metal".into()],
-            drives: None,
+            drives: ElementId(1),
         };
         let mut state = PanelState::default();
         state.sync(&spec, &defaults);
@@ -1490,7 +1526,7 @@ mod tests {
         let wider = PanelSpec {
             sliders: vec!["bloom".into(), "drift".into()],
             buttons: Vec::new(),
-            drives: Some(ElementId(7)),
+            drives: ElementId(7),
         };
         state.sync(&wider, &defaults);
         assert_eq!(state.sliders.len(), 2, "the description won");

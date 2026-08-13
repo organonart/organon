@@ -11,6 +11,30 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — an approval card waits for you, and closes itself when it can't
+
+- **The approval hook was designed on the belief that the client waits indefinitely; it
+  does not, and a human found out the hard way** — a card sat asking while Claude Code
+  returned *"Error calling tool (Write): The operation timed out"*, so the write failed and
+  the question stayed on screen offering to allow something that had already failed.
+  Measured against `claude.exe` 2.1.228 with a probe server that never answered: the client
+  gives up **60.0 s** after asking (60.010 s and 60.005 s, twice in one run). Also measured,
+  and the reason this is a fix rather than a smaller deadline: `notifications/progress`
+  against the request's own `progressToken` **resets that clock** — the same probe was
+  answered at **300.1 s** after 29 beats, and the write went through. So a pending permission
+  call is now answered as a `text/event-stream` and beats every 10 s while a card is open,
+  and a human has as long as they need. The other half is the one that was visible: the beat
+  doubles as a liveness check, so a client that hangs up ends the wait, the console **denies**
+  (never allows) and the card becomes a third state — dimmed, no buttons, *"the agent stopped
+  waiting."* Every open question closes the same way when the agent process ends.
+- **`/panel` is removed.** It summoned a control panel wired to the console's *backdrop*,
+  which a conversation has no scrollback to show — so its buttons repainted a terminal tab
+  and the panel you clicked appeared to do nothing. `/surface` supersedes it completely by
+  driving a rendered surface in the same view. `PanelSpec::drives` is now an `ElementId`
+  rather than an `Option`, so a panel that names no target cannot be built; `ArtifactAction`,
+  `ConversationOutput::actions` and the console-side loop that consumed them are gone with
+  it. `/panel` typed in the composer is now an ordinary message and reaches the agent.
+
 ### Console Spike — an agent's permission request arrives as a card you can answer
 
 - **The console now answers "may I?" for everything the agent does.** Three tools bounced on
@@ -20,8 +44,9 @@ From here on, this file gets an entry per meaningful change, newest first.
   The console serves that tool **itself, over loopback HTTP, inside its own process** — the
   fork that matters, because a stdio server is a separate process with no access to the UI
   and every approval would have to cross a boundary and come back. The hook blocks for as
-  long as a human takes, on a serve thread that is never the UI's, which is what makes a
-  card with no timeout possible. Remembering is ours — there is no upstream persistence — so
+  long as a human takes, on a serve thread that is never the UI's. (This entry originally
+  claimed that made a card with *no* timeout possible; the entry above corrects it — the
+  client's own deadline is 60 s, and holding it open takes work.) Remembering is ours — there is no upstream persistence — so
   the console keys a decision on the **whole call** rather than the tool, still draws a card
   for one it answered from memory, and puts `forget` on that card; an authority granted once
   and thereafter invisible is worse than being asked every time. Scope is the session, and
