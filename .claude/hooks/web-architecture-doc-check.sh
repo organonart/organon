@@ -48,16 +48,15 @@ cd "$root" 2>/dev/null || exit 0
 triggers="web/src/contracts/sharedState.ts web/src/contracts/generatorOutput.ts web/src/contracts/renderer.ts web/src/contracts/stateSource.ts web/src/render/pbrRenderer.ts web/src/render/webgpuRenderer.ts web/src/state/store.ts native/organon-wasm/src/lib.rs native/organon-manifest/src/lib.rs"
 doc="web/ARCHITECTURE.md"
 
-# This session's changed files: committed-vs-main + staged + unstaged + untracked.
-base="$(git merge-base origin/main HEAD 2>/dev/null)"
-changed="$(
-  {
-    [ -n "$base" ] && git diff --name-only "$base"...HEAD
-    git diff --name-only
-    git diff --name-only --cached
-    git ls-files --others --exclude-standard
-  } 2>/dev/null | sort -u
-)"
+# Files THIS SESSION changed — same definition as architecture-doc-check.sh, and
+# now literally the same code: commits made inside this session that aren't yet
+# on origin/main, plus staged + unstaged + untracked. This file carried a
+# byte-identical copy of the branch-vs-main version and therefore the identical
+# false positive; it was merely latent here, because the park means these
+# triggers approximately never fire. session-changes.sh owns the reasoning.
+# shellcheck source=session-changes.sh
+. "$root/.claude/hooks/session-changes.sh" 2>/dev/null || exit 0
+changed="$(session_changed_files "$input")"
 
 hit=""
 for f in $triggers; do
