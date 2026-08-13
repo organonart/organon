@@ -36,7 +36,7 @@ use crate::agent_session::{AgentSession, StreamItem};
 use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
 use crate::conversation::{
     Arguments, ArtifactBlock, ArtifactContent, Body, Change, Element, ElementId, PanelSpec,
-    RunOutcome, ToolCard, ToolState, Transcript,
+    RunOutcome, SurfaceSpec, ToolCard, ToolState, Transcript,
 };
 use crate::timeline::pinned_after_scroll;
 
@@ -53,6 +53,91 @@ const OUTPUT_LINES: usize = 10;
 const DIFF_LINES: usize = 12;
 /// Diagnostic lines kept (non-JSON stdout, stderr). Bounded and logged, never silent.
 const LOG_LINES: usize = 200;
+
+/// How tall a rendered surface is, in **points**.
+///
+/// A fixed height rather than an aspect ratio, because the width is whatever the transcript
+/// column is and an aspect would make a surface's size a function of the window — which is
+/// the thing that makes a texture cache thrash on every drag of a window edge. The width does
+/// still change with the window, so the target is resized then; that is one resize per drag,
+/// not one per aspect.
+///
+/// 260 pt is chosen against the panel below it: tall enough that a shading gradient reads as
+/// a *surface* rather than a stripe, short enough that the surface and its panel are on
+/// screen together at the default 1100×720 window. Both halves in one glance is the whole
+/// point of the element.
+const SURFACE_HEIGHT: f32 = 260.0;
+
+/// The plate a surface with no picture yet shows — the one frame before the console has
+/// rendered into it, and every frame where the cap has taken its texture away.
+const SURFACE_EMPTY: Color32 = Color32::from_rgb(0x0a, 0x0e, 0x0a);
+
+/// What the view needs the console to draw, for one surface element, this frame.
+///
+/// **The seam between the two crates.** `organon-shell` knows a surface has a rect, an id and
+/// a look *by name*; it cannot see `substrate_materials`, a `World`, or a `wgpu::Device`, and
+/// must not learn to — the same contract [`ArtifactAction`] and
+/// [`crate::block_panel::BlockAction`] are already held to. So the view says what it laid out
+/// and what a hand has put the controls at; the console answers with a [`egui::TextureId`] on
+/// the next frame.
+///
+/// ⚠️ **The size is in POINTS, and it must stay that way.** The console turns it into pixels
+/// with `scene_input::pane_pixels_in`, which takes the rect's *fraction of the window* and
+/// applies it to the swapchain, so `pixels_per_point` cancels instead of being remembered.
+/// Handing pixels across this seam would mean this crate multiplying by a scale — the exact
+/// mistake that shipped a point-sized backdrop and froze it into every epoch snapshot for a
+/// session (that function's doc owns the measurement).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceRequest {
+    pub element: ElementId,
+    /// The look to draw, by name: the material a driving panel last chose, or the one the
+    /// surface was summoned with.
+    pub look: String,
+    /// `(label, value)` in `0.0..=1.0` from the panel driving this surface, in the order the
+    /// panel declared them. Empty when nothing drives it.
+    pub sliders: Vec<(String, f32)>,
+    /// The rect the console should fill, in **points**. See the type doc.
+    pub size_points: (f32, f32),
+}
+
+/// Everything one frame of [`draw`] hands back.
+///
+/// A struct rather than a tuple because the two halves answer different questions and are
+/// consumed a screen apart in `shell_main.rs` — actions before the frame ends, surface
+/// requests as the *next* frame's render list.
+#[derive(Clone, Debug, Default)]
+pub struct ConversationOutput {
+    /// Buttons pressed in panels that drive the **console**. A button in a panel that drives
+    /// a surface never appears here — it was consumed by the surface it aims at, which is the
+    /// entire difference between beat 7's instrument and this one.
+    pub actions: Vec<ArtifactAction>,
+    /// The **visible** surfaces this frame, in transcript order.
+    pub surfaces: Vec<SurfaceRequest>,
+}
+
+/// The pictures the console has ready, by element. Absent is normal, not an error: a surface
+/// summoned this frame has no texture until the next one, and a surface the cap evicted has
+/// none until it is rendered again.
+pub type SurfaceImages = HashMap<ElementId, egui::TextureId>;
+
+/// Is a surface worth rendering this frame?
+///
+/// **Vertical overlap with the viewport, and nothing else.** A surface always spans the
+/// transcript's full width, so the horizontal axis can never be the discriminator; and the
+/// scrollback is a tall column where all but a couple of elements are off screen at any
+/// moment, which is precisely why this test exists — rendering every surface a long
+/// conversation ever summoned is the melt the cap and this function together prevent.
+///
+/// The bounds are **exclusive**, so a surface resting exactly on the viewport edge with zero
+/// visible height is not visible. A zero- or negative-height rect (egui hands one back for a
+/// frame while a layout settles) is likewise not visible, which keeps a degenerate rect from
+/// ever reaching the sizing arithmetic.
+pub fn surface_visible(rect: egui::Rect, viewport: egui::Rect) -> bool {
+    rect.width() > 0.0
+        && rect.height() > 0.0
+        && rect.bottom() > viewport.top()
+        && rect.top() < viewport.bottom()
+}
 
 /// A button was pressed inside an inline artifact: which element, and which label.
 ///
@@ -78,8 +163,13 @@ pub struct ArtifactAction {
 /// touches nothing that draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocalCommand {
-    /// `/panel` — put a control panel in the flow, here.
+    /// `/panel` — put a control panel in the flow, here. It drives the **console**: the
+    /// backdrop behind whatever terminal tab is next door, which is the instrument beat 7
+    /// found wanting.
     Panel,
+    /// `/surface` — put a rendered surface in the flow, and a panel under it that drives
+    /// **that surface**. Control and consequence in one glance.
+    Surface,
 }
 
 /// Recognise a local command, or `None` for an ordinary message.
@@ -90,6 +180,7 @@ pub enum LocalCommand {
 pub fn local_command(line: &str) -> Option<LocalCommand> {
     match line.trim() {
         "/panel" => Some(LocalCommand::Panel),
+        "/surface" => Some(LocalCommand::Surface),
         _ => None,
     }
 }
@@ -108,29 +199,44 @@ struct PanelState {
     /// cannot happen today (a description is written once) and is cheap insurance for the
     /// day an artifact is allowed to be revised.
     sliders: Vec<f32>,
+    /// The button last pressed, for a panel that [`PanelSpec::drives`] a surface. `None`
+    /// until one is, which is why a surface has a summoning look of its own to fall back to.
+    ///
+    /// **Only a driving panel keeps this.** A panel wired to the console has no state to
+    /// keep — the console *is* the state, and remembering a shadow copy of it here would be
+    /// a second owner of one value, the mistake the whole side-map arrangement exists to
+    /// avoid.
+    material: Option<String>,
 }
 
 impl PanelState {
-    /// Where the knobs start. The terminal host's panel is the reference look, so a slider
-    /// it also has starts where that one does and the two panels are the same instrument;
-    /// anything else starts mid-range.
-    fn for_spec(spec: &PanelSpec) -> Self {
-        PanelState { sliders: spec.sliders.iter().map(|l| initial_value(l)).collect() }
+    /// Where the knobs start. `defaults` is the console's own `(label, value)` table, handed
+    /// down for [`ConversationPane::new`]'s reason; a label absent from it starts mid-range,
+    /// which is a sane knob rather than a silent zero.
+    fn for_spec(spec: &PanelSpec, defaults: &[(String, f32)]) -> Self {
+        PanelState {
+            sliders: spec.sliders.iter().map(|l| initial_value(l, defaults)).collect(),
+            material: None,
+        }
     }
 
-    fn sync(&mut self, spec: &PanelSpec) {
+    fn sync(&mut self, spec: &PanelSpec, defaults: &[(String, f32)]) {
         if self.sliders.len() != spec.sliders.len() {
-            *self = PanelState::for_spec(spec);
+            let material = self.material.take();
+            *self = PanelState::for_spec(spec, defaults);
+            self.material = material;
         }
     }
 }
 
-fn initial_value(label: &str) -> f32 {
-    DEFAULT_SLIDERS
-        .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, v)| *v)
-        .unwrap_or(0.5)
+fn initial_value(label: &str, defaults: &[(String, f32)]) -> f32 {
+    defaults.iter().find(|(l, _)| l == label).map(|(_, v)| *v).unwrap_or(0.5)
+}
+
+/// The starting knobs a console that hands none down gets: the terminal host's panel, so the
+/// two front-ends draw one instrument rather than two that resemble each other.
+pub fn default_slider_table() -> Vec<(String, f32)> {
+    DEFAULT_SLIDERS.iter().map(|(l, v)| ((*l).to_string(), *v)).collect()
 }
 
 /// One conversation tab: a live agent, the transcript it is writing, and the composer.
@@ -159,16 +265,23 @@ pub struct ConversationPane {
     /// tab. This crate cannot see the console's material table and must not learn to; it
     /// draws these and reports which was pressed ([`ArtifactAction`]).
     buttons: Vec<String>,
+    /// The slider labels and their starting values, handed down for the same reason the
+    /// buttons are: a label like `exposure` means something to the console's `Shared`
+    /// snapshot and nothing at all here, and a label this crate invented would be a knob
+    /// that moves and changes no pixel — a worse instrument than no knob.
+    sliders: Vec<(String, f32)>,
 }
 
 impl ConversationPane {
     /// Start a conversation in `cwd`. A spawn failure is **kept, not returned** — the tab
     /// opens and says what went wrong, which is the only way a user finds out.
     ///
-    /// `buttons` are the labels an inline panel offers. A constructor argument rather than a
-    /// settable field because an empty list is a panel with no buttons, which looks like a
-    /// panel that is broken rather than like a caller that forgot.
-    pub fn new(cwd: Option<&str>, buttons: Vec<String>) -> Self {
+    /// `buttons` are the labels an inline panel offers, and `sliders` its `(label, start)`
+    /// table. Constructor arguments rather than settable fields because an empty list is a
+    /// panel with no controls, which looks like a panel that is broken rather than like a
+    /// caller that forgot. [`default_slider_table`] is the table for a caller with no
+    /// opinion.
+    pub fn new(cwd: Option<&str>, buttons: Vec<String>, sliders: Vec<(String, f32)>) -> Self {
         let (session, failure) = match AgentSession::spawn(cwd) {
             Ok(session) => (Some(session), None),
             Err(error) => (None, Some(error.to_string())),
@@ -184,6 +297,7 @@ impl ConversationPane {
             want_focus: true,
             artifacts: HashMap::new(),
             buttons,
+            sliders,
         }
     }
 
@@ -243,18 +357,61 @@ impl ConversationPane {
     ///
     /// The **only** thing that builds one, so the summoning path above it — today a local
     /// command, next a tool call — is a caller rather than a participant.
-    pub fn summon_panel(&mut self) {
+    ///
+    /// `drives` names the element this panel acts on, or `None` for the console itself. That
+    /// argument is the difference between the two summonings and nothing else about the panel
+    /// changes, which is what makes the surface a *use* of the panel rather than a fork of it.
+    pub fn summon_panel(&mut self, drives: Option<ElementId>) {
         let spec = PanelSpec {
-            sliders: DEFAULT_SLIDERS.iter().map(|(l, _)| (*l).to_string()).collect(),
+            sliders: self.sliders.iter().map(|(l, _)| l.clone()).collect(),
             buttons: self.buttons.clone(),
+            drives,
+        };
+        let title = match drives {
+            Some(_) => "◈ organon · surface controls",
+            None => "◈ organon · console",
         };
         self.transcript.insert_artifact(ArtifactBlock {
-            title: "◈ organon · console".to_string(),
+            title: title.to_string(),
             content: ArtifactContent::Panel(spec),
         });
         // Appended content pulls the view down, exactly as an appended element off the
         // stream does — the panel is at the bottom and being able to see it is the point.
         self.pinned = true;
+    }
+
+    /// Put a rendered surface in the flow, with the panel that drives it directly beneath.
+    ///
+    /// **Two elements, in this order, and the order is the deliverable.** The surface is
+    /// above so that the hand is on the controls and the eye is on the consequence, both
+    /// inside one screen — which is what beat 7 could not do, because a panel wired to the
+    /// console changes a backdrop that only exists on another tab.
+    ///
+    /// The link is [`PanelSpec::drives`], filled from the id the *first* insertion returned:
+    /// an id the transcript has already issued and will never reuse. Building the panel first
+    /// and patching it afterwards would need the transcript to be mutable through an element,
+    /// which it deliberately is not.
+    pub fn summon_surface(&mut self) {
+        let spec = SurfaceSpec { look: self.default_look() };
+        let inserted = self.transcript.insert_artifact(ArtifactBlock {
+            title: "◈ organon · surface".to_string(),
+            content: ArtifactContent::Surface(spec),
+        });
+        let Change::Appended(id) = inserted else {
+            // `insert_artifact` appends unconditionally; anything else is a contract change
+            // in the transcript, and summoning a panel with no target is the honest fallback.
+            self.summon_panel(None);
+            return;
+        };
+        self.summon_panel(Some(id));
+    }
+
+    /// The look a surface opens at: the console's first button label, since that list *is*
+    /// the material table and its head is the console's own default dressing. An empty list
+    /// (a caller that handed down nothing) yields an empty name, which the console reads as
+    /// "no material named" — Tier 1's undressed substrate, not a failure.
+    fn default_look(&self) -> String {
+        self.buttons.first().cloned().unwrap_or_default()
     }
 
     /// Send the composer's contents and clear it. Renders nothing locally (rule 2).
@@ -268,7 +425,8 @@ impl ConversationPane {
         // for why this seam is temporary.
         if let Some(command) = local_command(&text) {
             match command {
-                LocalCommand::Panel => self.summon_panel(),
+                LocalCommand::Panel => self.summon_panel(None),
+                LocalCommand::Surface => self.summon_surface(),
             }
             self.composer.clear();
             return;
@@ -291,40 +449,81 @@ impl ConversationPane {
     }
 }
 
-/// Draw the pane: scrollback, then composer. Returns the artifact buttons pressed this
-/// frame, for the caller to act on — see [`ArtifactAction`].
+/// Draw the pane: scrollback, then composer. Returns what the frame produced — see
+/// [`ConversationOutput`].
+///
+/// `images` is what the console has ready to paint into the surfaces it was asked for last
+/// frame. **One frame of latency is structural, not a shortcut**: a surface's rect is an
+/// output of egui layout, so nothing can know its size until the frame that lays it out has
+/// run, and the texture is therefore made for the *next* one. `shell_main.rs` already sizes
+/// the whole backdrop this way for the same reason, and the visible consequence is one blank
+/// frame when a surface is summoned.
 ///
 /// Bottom-up, because the composer's height is known and the scrollback's is whatever is
 /// left — the layout every chat client resolves in that order.
-pub fn draw(ui: &mut egui::Ui, pane: &mut ConversationPane) -> Vec<ArtifactAction> {
-    let mut actions = Vec::new();
+pub fn draw(
+    ui: &mut egui::Ui,
+    pane: &mut ConversationPane,
+    images: &SurfaceImages,
+) -> ConversationOutput {
+    let mut out = ConversationOutput::default();
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         composer(ui, pane);
         ui.add_space(4.0);
         status_line(ui, pane);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            actions = scrollback(ui, pane);
+            out = scrollback(ui, pane, images);
         });
     });
-    actions
+    out
 }
 
-fn scrollback(ui: &mut egui::Ui, pane: &mut ConversationPane) -> Vec<ArtifactAction> {
+/// One surface as this frame laid it out: enough to build a [`SurfaceRequest`] once the panel
+/// that drives it has also been drawn.
+struct LaidOutSurface {
+    element: ElementId,
+    look: String,
+    size_points: (f32, f32),
+}
+
+/// One driving panel as this frame read it.
+struct PanelDrive {
+    target: ElementId,
+    material: Option<String>,
+    sliders: Vec<(String, f32)>,
+}
+
+fn scrollback(
+    ui: &mut egui::Ui,
+    pane: &mut ConversationPane,
+    images: &SurfaceImages,
+) -> ConversationOutput {
     let mut actions = Vec::new();
+    // Collected during the walk and joined after it. A panel is *below* its surface in the
+    // ordinary case, but nothing in the model requires that — the link is an id, not an
+    // adjacency — so the join happens once the whole list has been seen rather than by
+    // reaching backwards mid-loop.
+    let mut laid_out: Vec<LaidOutSurface> = Vec::new();
+    let mut drives: Vec<PanelDrive> = Vec::new();
     // Destructured so the transcript can be read while the widget state is written: they
     // are disjoint fields, and keeping them disjoint is the whole point of the side map.
-    let ConversationPane { transcript, artifacts, pinned, .. } = pane;
+    let ConversationPane { transcript, artifacts, pinned, sliders: defaults, .. } = pane;
     let out = egui::ScrollArea::vertical()
         .auto_shrink(false)
         .stick_to_bottom(*pinned)
         .show(ui, |ui| {
+            // The visible slice of the scrollback, read once for the whole walk. Every
+            // surface's visibility is decided against this one rect, so two surfaces cannot
+            // come to disagree about where the viewport is.
+            let viewport = ui.clip_rect();
             ui.add_space(6.0);
             if transcript.is_empty() {
                 ui.label(
                     RichText::new(
-                        "no messages yet — type below and press Enter, or `/panel` for a \
-                         control panel",
+                        "no messages yet — type below and press Enter, `/surface` for a \
+                         rendered surface with its own controls, or `/panel` for a panel \
+                         that drives the console",
                     )
                     .color(DIM)
                     .italics(),
@@ -335,14 +534,52 @@ fn scrollback(ui: &mut egui::Ui, pane: &mut ConversationPane) -> Vec<ArtifactAct
                     // The one body drawn here rather than in `draw_element`: it is the only
                     // one that needs state to survive between frames, and `draw_element`
                     // has nowhere to keep it.
-                    Body::Artifact(artifact) => {
-                        // Empty on the first frame; `artifact_element` syncs it to the
-                        // description, which is where the starting values come from.
-                        let state = artifacts.entry(element.id).or_default();
-                        if let Some(button) = artifact_element(ui, element.id, artifact, state) {
-                            actions.push(ArtifactAction { element: element.id, button });
+                    Body::Artifact(artifact) => match &artifact.content {
+                        ArtifactContent::Panel(spec) => {
+                            // Empty on the first frame; `panel_body` syncs it to the
+                            // description, which is where the starting values come from.
+                            let state = artifacts.entry(element.id).or_default();
+                            let pressed = panel_element(ui, element.id, artifact, spec, state, defaults);
+                            match spec.drives {
+                                // Consumed here: a driving panel's button changes the
+                                // surface it names and nothing else. Returning it as an
+                                // action too would ALSO repaint the console's backdrop —
+                                // the exact "the effect is on another tab" the surface
+                                // exists to stop.
+                                Some(target) => drives.push(PanelDrive {
+                                    target,
+                                    material: state.material.clone(),
+                                    sliders: spec
+                                        .sliders
+                                        .iter()
+                                        .cloned()
+                                        .zip(state.sliders.iter().copied())
+                                        .collect(),
+                                }),
+                                None => {
+                                    if let Some(button) = pressed {
+                                        actions
+                                            .push(ArtifactAction { element: element.id, button });
+                                    }
+                                }
+                            }
                         }
-                    }
+                        ArtifactContent::Surface(spec) => {
+                            let rect = surface_element(
+                                ui,
+                                element.id,
+                                artifact,
+                                images.get(&element.id).copied(),
+                            );
+                            if surface_visible(rect, viewport) {
+                                laid_out.push(LaidOutSurface {
+                                    element: element.id,
+                                    look: spec.look.clone(),
+                                    size_points: (rect.width(), rect.height()),
+                                });
+                            }
+                        }
+                    },
                     _ => draw_element(ui, element),
                 }
                 ui.add_space(8.0);
@@ -353,7 +590,39 @@ fn scrollback(ui: &mut egui::Ui, pane: &mut ConversationPane) -> Vec<ArtifactAct
     // evicts from the front and `get` answers `None` for an evicted id, so this is a
     // one-line answer to "does the side map leak on a long session" — it does not.
     artifacts.retain(|id, _| transcript.get(*id).is_some());
-    actions
+    ConversationOutput { actions, surfaces: join_drives(laid_out, drives) }
+}
+
+/// Fold each driving panel's state into the surface it names.
+///
+/// Pure, and separated from the walk for exactly that reason: this is the arithmetic that
+/// decides *what look gets rendered*, and it has three cases worth pinning — a surface with
+/// no driver keeps its summoning look, a driver whose target is not on screen contributes
+/// nothing, and a driver that has not yet had a button pressed changes the sliders without
+/// changing the material.
+///
+/// Last driver wins if two name one surface. Nothing summons that today; stating the rule is
+/// cheaper than discovering it.
+fn join_drives(laid_out: Vec<LaidOutSurface>, drives: Vec<PanelDrive>) -> Vec<SurfaceRequest> {
+    let mut surfaces: Vec<SurfaceRequest> = laid_out
+        .into_iter()
+        .map(|s| SurfaceRequest {
+            element: s.element,
+            look: s.look,
+            sliders: Vec::new(),
+            size_points: s.size_points,
+        })
+        .collect();
+    for drive in drives {
+        let Some(target) = surfaces.iter_mut().find(|s| s.element == drive.target) else {
+            continue; // off screen, or evicted — nothing to render, so nothing to fold into.
+        };
+        if let Some(material) = drive.material {
+            target.look = material;
+        }
+        target.sliders = drive.sliders;
+    }
+    surfaces
 }
 
 fn draw_element(ui: &mut egui::Ui, element: &Element) {
@@ -455,11 +724,13 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
 /// rather than re-chosen); no anchoring at all, because a flow does not have any.
 ///
 /// Returns the label pressed this frame, if one was.
-fn artifact_element(
+fn panel_element(
     ui: &mut egui::Ui,
     id: ElementId,
     artifact: &ArtifactBlock,
+    spec: &PanelSpec,
     state: &mut PanelState,
+    defaults: &[(String, f32)],
 ) -> Option<String> {
     // Scoped by the element's own id: two panels in one transcript are two sets of widgets,
     // and egui's positional auto-ids would otherwise hand a slider its neighbour's drag
@@ -474,24 +745,35 @@ fn artifact_element(
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().slider_width = SLIDER_WIDTH;
                 ui.label(RichText::new(&artifact.title).monospace().strong().color(PANEL_TITLE));
-                match &artifact.content {
-                    ArtifactContent::Panel(spec) => panel_body(ui, spec, state),
-                }
+                panel_body(ui, spec, state, defaults)
             })
             .inner
     })
     .inner
 }
 
-fn panel_body(ui: &mut egui::Ui, spec: &PanelSpec, state: &mut PanelState) -> Option<String> {
+fn panel_body(
+    ui: &mut egui::Ui,
+    spec: &PanelSpec,
+    state: &mut PanelState,
+    defaults: &[(String, f32)],
+) -> Option<String> {
     // The description is authoritative about *which* controls exist; the state is
     // authoritative about where they are. This is the only line where the two meet.
-    state.sync(spec);
+    state.sync(spec, defaults);
     let mut pressed = None;
     ui.horizontal_wrapped(|ui| {
         for label in &spec.buttons {
-            if ui.button(RichText::new(label).monospace()).clicked() {
+            // A driving panel shows which material its surface is wearing; a console panel
+            // cannot, because the console's own state is not this element's to mirror.
+            let chosen = spec.drives.is_some() && state.material.as_deref() == Some(label.as_str());
+            let text = RichText::new(label).monospace();
+            let text = if chosen { text.color(PANEL_TITLE).strong() } else { text };
+            if ui.button(text).clicked() {
                 pressed = Some(label.clone());
+                if spec.drives.is_some() {
+                    state.material = Some(label.clone());
+                }
             }
         }
     });
@@ -499,6 +781,70 @@ fn panel_body(ui: &mut egui::Ui, spec: &PanelSpec, state: &mut PanelState) -> Op
         ui.add(egui::Slider::new(value, 0.0..=1.0).text(label.as_str()));
     }
     pressed
+}
+
+/// **The artifact that *is* a picture: the engine, rendered into a rectangle of the page.**
+///
+/// Returns the rect it laid out, in points, which is the whole of what the console needs to
+/// size a render target for it. Two things about that rect are worth stating:
+///
+/// * **It comes from egui layout, not from arithmetic.** The terminal host had to derive a
+///   patch's rectangle from absolute line numbers, a scroll anchor, a cell height and a
+///   reflow-invalidation rule, because a character grid has no other way to say "here".
+///   `allocate_exact_size` is the same statement in one call, and it is the simplification
+///   the conversation view was built to buy.
+/// * **It is in points, and stays that way** — see [`SurfaceRequest`].
+///
+/// Painting is one `image` call at UV 0..1: the console renders the target at exactly this
+/// rect's pixel size, so there is no fit policy to get wrong and no letterboxing. A surface
+/// with no picture yet draws its plate and says so, rather than leaving a hole that reads as
+/// a layout bug.
+fn surface_element(
+    ui: &mut egui::Ui,
+    id: ElementId,
+    artifact: &ArtifactBlock,
+    image: Option<egui::TextureId>,
+) -> egui::Rect {
+    ui.push_id(id.0, |ui| {
+        Frame::new()
+            .fill(PANEL_FILL)
+            .stroke(egui::Stroke::new(1.0f32, PANEL_EDGE))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::same(PAD as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(&artifact.title).monospace().strong().color(PANEL_TITLE));
+                ui.add_space(4.0);
+                let width = ui.available_width();
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(width, SURFACE_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                match image {
+                    Some(texture) => {
+                        ui.painter().image(
+                            texture,
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
+                    None => {
+                        ui.painter().rect_filled(rect, CornerRadius::same(4), SURFACE_EMPTY);
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "rendering…",
+                            egui::FontId::monospace(12.0),
+                            DIM,
+                        );
+                    }
+                }
+                rect
+            })
+            .inner
+    })
+    .inner
 }
 
 fn arguments_body(ui: &mut egui::Ui, args: &Arguments) {
@@ -740,31 +1086,142 @@ mod tests {
     fn only_an_exact_slash_panel_is_a_local_command() {
         assert_eq!(local_command("/panel"), Some(LocalCommand::Panel));
         assert_eq!(local_command("  /panel \n"), Some(LocalCommand::Panel), "trimmed like a send");
-        for message in ["/panels", "/panel now", "what does /panel do?", "panel", "/", ""] {
+        assert_eq!(local_command("/surface"), Some(LocalCommand::Surface));
+        assert_eq!(local_command(" /surface  "), Some(LocalCommand::Surface));
+        for message in [
+            "/panels",
+            "/panel now",
+            "what does /panel do?",
+            "panel",
+            "/surfaces",
+            "/surface slate",
+            "/",
+            "",
+        ] {
             assert_eq!(local_command(message), None, "{message:?} belongs to the agent");
         }
     }
 
-    /// The knobs start where the terminal host's panel starts, so the two front-ends draw
-    /// one instrument rather than two that resemble each other.
+    /// The knobs start where the console said they start, so the two front-ends draw one
+    /// instrument rather than two that resemble each other.
     #[test]
     fn a_panels_widget_state_comes_from_its_description() {
+        let defaults = default_slider_table();
         let spec = PanelSpec {
             sliders: vec!["bloom".into(), "unheard-of".into()],
             buttons: vec!["metal".into()],
+            drives: None,
         };
         let mut state = PanelState::default();
-        state.sync(&spec);
+        state.sync(&spec, &defaults);
         assert_eq!(state.sliders.len(), 2);
-        assert_eq!(state.sliders[0], initial_value("bloom"), "shared with block_panel");
+        assert_eq!(state.sliders[0], initial_value("bloom", &defaults), "from the table");
         assert!(DEFAULT_SLIDERS.iter().any(|(l, v)| *l == "bloom" && *v == state.sliders[0]));
         assert_eq!(state.sliders[1], 0.5, "an unknown control still gets a sane start");
 
         // A dragged value survives a re-sync — the description did not change, so nothing
         // may reach in and reset it. This is the "snaps back mid-drag" failure, headless.
         state.sliders[0] = 0.9;
-        state.sync(&spec);
+        state.sync(&spec, &defaults);
         assert_eq!(state.sliders[0], 0.9);
+    }
+
+    /// A re-sync forced by a *changed* description rebuilds the knobs — and must not throw
+    /// away the material the surface is currently wearing, which would repaint the picture
+    /// for a reason nobody asked for.
+    #[test]
+    fn a_resync_rebuilds_the_knobs_and_keeps_the_material() {
+        let defaults = default_slider_table();
+        let mut state = PanelState { sliders: vec![0.9], material: Some("metal".into()) };
+        let wider = PanelSpec {
+            sliders: vec!["bloom".into(), "drift".into()],
+            buttons: Vec::new(),
+            drives: Some(ElementId(7)),
+        };
+        state.sync(&wider, &defaults);
+        assert_eq!(state.sliders.len(), 2, "the description won");
+        assert_eq!(state.material.as_deref(), Some("metal"), "the surface's look survived");
+    }
+
+    fn rect(top: f32, bottom: f32) -> egui::Rect {
+        egui::Rect::from_min_max(egui::pos2(0.0, top), egui::pos2(400.0, bottom))
+    }
+
+    /// The cheap half of the cap: a conversation is a tall column and almost every surface
+    /// it ever summoned is off screen, so this is what stops the render list growing with the
+    /// transcript.
+    #[test]
+    fn only_surfaces_overlapping_the_viewport_are_rendered() {
+        let viewport = rect(100.0, 500.0);
+        assert!(surface_visible(rect(200.0, 400.0), viewport), "wholly inside");
+        assert!(surface_visible(rect(50.0, 150.0), viewport), "clipped at the top");
+        assert!(surface_visible(rect(450.0, 700.0), viewport), "clipped at the bottom");
+        assert!(surface_visible(rect(0.0, 900.0), viewport), "taller than the viewport");
+
+        assert!(!surface_visible(rect(0.0, 100.0), viewport), "resting on the top edge");
+        assert!(!surface_visible(rect(500.0, 600.0), viewport), "resting on the bottom edge");
+        assert!(!surface_visible(rect(600.0, 800.0), viewport), "far below");
+        assert!(!surface_visible(rect(-900.0, -10.0), viewport), "far above");
+        assert!(!surface_visible(rect(200.0, 200.0), viewport), "a collapsed rect is nothing");
+    }
+
+    fn laid_out(id: u64, look: &str) -> LaidOutSurface {
+        LaidOutSurface {
+            element: ElementId(id),
+            look: look.to_string(),
+            size_points: (400.0, SURFACE_HEIGHT),
+        }
+    }
+
+    /// **The wiring, headless.** A panel's controls reach the surface it names, and only
+    /// that one; an unnamed surface keeps the look it was summoned with.
+    #[test]
+    fn a_driving_panel_reaches_its_own_surface_and_no_other() {
+        let surfaces = join_drives(
+            vec![laid_out(1, "graphite"), laid_out(2, "graphite")],
+            vec![PanelDrive {
+                target: ElementId(2),
+                material: Some("metal".into()),
+                sliders: vec![("light".into(), 0.8)],
+            }],
+        );
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(surfaces[0].look, "graphite", "the undriven surface kept its summoning look");
+        assert!(surfaces[0].sliders.is_empty());
+        assert_eq!(surfaces[1].look, "metal");
+        assert_eq!(surfaces[1].sliders, vec![("light".to_string(), 0.8)]);
+    }
+
+    /// A panel whose target is off screen — or whose target the cap evicted — contributes
+    /// nothing, and specifically does not conjure a request for a surface that was never
+    /// laid out. That request would be a render with no rect to size it.
+    #[test]
+    fn a_driver_with_no_visible_target_renders_nothing() {
+        let surfaces = join_drives(
+            Vec::new(),
+            vec![PanelDrive {
+                target: ElementId(9),
+                material: Some("paper".into()),
+                sliders: vec![("light".into(), 0.1)],
+            }],
+        );
+        assert!(surfaces.is_empty());
+    }
+
+    /// A panel nobody has pressed a button in still drives the sliders. Material and knobs
+    /// are independent, so a first drag must not have to be preceded by a click.
+    #[test]
+    fn sliders_drive_before_any_button_is_pressed() {
+        let surfaces = join_drives(
+            vec![laid_out(3, "slate")],
+            vec![PanelDrive {
+                target: ElementId(3),
+                material: None,
+                sliders: vec![("exposure".into(), 0.75)],
+            }],
+        );
+        assert_eq!(surfaces[0].look, "slate", "no button pressed, no material change");
+        assert_eq!(surfaces[0].sliders, vec![("exposure".to_string(), 0.75)]);
     }
 
     /// Clipping is the VIEW's, and it reports what it hid — the model keeps the whole

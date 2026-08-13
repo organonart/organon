@@ -11,6 +11,29 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the panel drives a rendered surface in its own view
+
+- **`/surface` puts the engine's picture in the transcript, with the controls that drive it
+  directly beneath.** The previous change wired a panel in a conversation to real engine
+  state and the check on screen produced the finding: the effect appeared on a *different
+  tab from the one it was clicked in*, because a conversation has no scrollback for a
+  backdrop to band across. A control whose consequence you cannot see from where you are
+  sitting is a bad instrument. So the panel now names an `ElementId` it drives, the material
+  buttons and three light/exposure knobs change **that element's** look, and a driving
+  panel's press is consumed by its surface rather than also repainting the console. One
+  `World`, rendered into a target the conversation owns — `Shell::render_source`'s seam,
+  so the window behind stays flat and the console still opens looking like an ordinary
+  terminal. The rect comes from egui layout rather than from row arithmetic, which is the
+  simplification the second front-end was built to buy, and it crosses the crate seam in
+  **points** so `pixels_per_point` cancels in `pane_pixels_in` instead of being remembered.
+  Bounded from the first line: only surfaces overlapping the viewport are rendered at all,
+  four live textures across every tab (≈23 MB at the size this console draws one), evicted
+  least-recently-requested with a `[surface]` line naming what went, and one engine render
+  per frame — so an idle conversation costs nothing and a dragged slider repaints at full
+  rate. The two-renders-in-one-frame hazard is documented rather than hidden: the world's
+  clocks are wall-clock and advance by microseconds, but `frame_index` and the TAA/temporal
+  history are shared, which is one reason the surface look is a still plane.
+
 ### Console Spike — a live control panel as an element in a conversation
 
 - **`/panel` in a conversation tab puts a working egui panel in the transcript** — sliders

@@ -513,7 +513,10 @@ epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
   second harness (Pi, §5.9.1) is written here or the model is wrong.
 - **`agent_session.rs` — one live child.** The same shape as `term.rs`: a reader thread
   that only moves bytes, a channel, a pull drained once per frame. Pipes, not a PTY.
-- **`conversation_view.rs` — the drawing.** Scrollback above, composer below.
+- **`conversation_view.rs` — the drawing.** Scrollback above, composer below. Returns a
+  `ConversationOutput`: the buttons pressed, and the **rects its rendered surfaces landed
+  in** — in points, never pixels, which is the whole of what the console needs to size a
+  render target for one.
 
 **The mapping's five load-bearing rules**, each from a measurement, each producing a view
 that looks *nearly* right if got wrong:
@@ -557,7 +560,7 @@ id, and it stops being true when the result arrives.
 
 **A live control panel, inline — the artifact the other front-end needed a protocol for.**
 `Body::Artifact` is an element the console puts in the flow itself, and
-`conversation_view::artifact_element` draws it as a real egui panel: sliders that move,
+`conversation_view::panel_element` draws it as a real egui panel: sliders that move,
 buttons that act, `block_panel`'s own colours and spacing imported rather than re-chosen.
 Set that against what the terminal host needs for the same rectangle — the writer printing
 its own gap, a claim, absolute-line anchoring, reflow invalidation, and surviving ConPTY —
@@ -572,6 +575,54 @@ Three rules hold it up, and each names a failure it prevents:
 | The element is a **description** — a title, slider *names*, button *names*, and no value, colour, rect or closure | `conversation.rs` | the model acquiring layout, and stopping being a state machine you can test in milliseconds |
 | **Live widget values live in the view**, in a `HashMap<ElementId, PanelState>` beside the transcript, pruned each frame against `Transcript::get` | `conversation_view.rs` | a slider that snaps back mid-drag, because the transcript is folded from a stream and its elements mutate as events arrive. This is what stable ids are *for* |
 | Button labels are **handed down** and come back by label | `shell_main.rs` | `organon-shell` learning about `substrate_materials`; a pressed button re-enters `apply_console`, the same call `organon console background <name>` reaches |
+
+#### The rendered surface — a control and its consequence in one glance
+
+Beat 7 checked the panel on screen and the check produced the finding: **its effect appeared
+on a different tab from the one it was clicked in.** A conversation has no scrollback for a
+backdrop to band across, so `/panel`'s buttons changed the console's backdrop and the only
+place that shows is the terminal next door. A control whose consequence you cannot see from
+where you are sitting is a bad instrument, and no amount of wiring fixes it.
+
+`ArtifactContent::Surface` is the answer. **`/surface` summons two elements**: a rendered
+surface, and directly beneath it a panel whose `PanelSpec::drives` names that surface's
+`ElementId`. The buttons and knobs then change the picture a few rows up, in the same view,
+while the hand is on them — and a driving panel's button is **consumed by its surface** and
+never reaches `apply_console`, so it cannot also repaint a backdrop somewhere else.
+
+| Question | Answer | Where |
+|---|---|---|
+| Where does the rect come from? | **egui layout** — `allocate_exact_size`, full column width by `SURFACE_HEIGHT` (260 pt). The terminal host derives a patch's rectangle from absolute lines, a scroll anchor, a cell height and a reflow rule; the conversation view has one call. That is the simplification the second front-end buys | `conversation_view::surface_element` |
+| How is it rendered? | The **one** `World`, into a target the conversation owns — `render_to_texture` at `BACKDROP_FORMAT`, the substrate rig re-framed for that rect's aspect. `Shell::render_source`'s seam exactly: what the engine draws is not what the backdrop paints, so the window behind stays flat and James's "opens like an ordinary terminal" rule is untouched | `Shell::render_surfaces` |
+| How is it sized? | `scene_input::pane_pixels_in(swapchain, rect_points, window_points)` — the rect's **fraction of the window** applied to the swapchain, so `pixels_per_point` cancels. The view hands points across the crate seam and never a scale, which is the arrangement that function's doc exists to protect | `shell_main.rs` |
+| How does a look reach the engine? | `surface_shared` = `look_shared(Substrate, look)` with the knobs applied last, published through the same `Shared` channel the backdrop uses, then the console's own snapshot is put back so `organon status` never reports a surface's lane | `shell_main.rs` |
+| Which knobs? | `light` (key azimuth, swept 360° centred on the console's own), `elevation` (`lighting[3]`, 0–90°), `exposure` (`pbr[2]`, ±3 EV). Chosen to be **orthogonal to the material buttons** — `apply_material` owns `pbr[0..2]` and `lighting[7]`, so a knob on those would appear dead the moment a button was pressed | `apply_surface_slider` |
+
+**The cap, stated in numbers because a silently dropped texture reads as "the picture is
+still there".** `MAX_SURFACE_TEXTURES = 4` live textures across every tab, evicted
+least-recently-**requested** first, each eviction printing one `[surface]` line naming the
+element, the pane, the size and why. Only surfaces that **overlap the viewport** are
+requested at all (`conversation_view::surface_visible`), so a transcript's render list is
+bounded by the screen rather than by its length. `SURFACE_RENDERS_PER_FRAME = 1` bounds the
+engine work: a surface whose look has not changed is not redrawn, so an idle conversation
+costs zero engine frames and a dragged slider repaints at full rate. Eviction happens
+*before* allocation, `substrate_epochs`' rule, so the peak is the cap. Worst case at the
+size this console actually draws one (2475×585 px) is ≈23 MB — `surface_budget_bytes`, and
+a test quotes the figure so the prose cannot drift from it.
+
+⚠️ **Rendering the World twice in one frame is a real hazard, and it is bounded rather than
+hidden.** The beat clock, the camera and every sim in `frame_body` advance on a **wall-clock
+`dt`**, so a second render microseconds after the first advances them by microseconds —
+invisible. What double-steps is what counts *frames*: `frame_index`, which drives the TAA
+jitter phase, and the temporal history beside it, both shared between the two targets. On the
+still lit plane a surface draws, that is not visible. On a moving World it would be, and
+intermittently — which is why the surface look is the substrate, why the budget is one, and
+why this paragraph exists instead of a silence.
+
+⚠️ **A `SurfaceKey` is `(pane index, ElementId)`.** An `ElementId` is unique only within one
+transcript, so two conversation tabs both start at 0. Closing a tab renumbers the panes, and
+`Shell::apply`'s `Close` arm therefore frees **every** surface texture — one wasted re-render
+against a class of bug where one conversation paints into another's rectangle.
 
 **Summoning is deliberately a separate seam.** `/panel` typed in the composer is recognised
 by `conversation_view::local_command`, acted on locally and **never written to stdin**;
@@ -606,7 +657,7 @@ integrated is not unsupported, it is supported the old way.
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
-| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab) plus the inline artifact (`Body::Artifact`, summoned locally by `/panel`). Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact` — the tool card is the anchor, and `/panel` is deleted in the same change. Then, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); approvals over the control protocol; then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
+| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`, summoned locally by `/panel`) and the rendered surface it drives (`/surface`). Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact` — the tool card is the anchor, and `/panel` is deleted in the same change. Then, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); approvals over the control protocol; then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -649,30 +700,41 @@ path silently breaks the three-products-simultaneously guarantee that
   lines as removals and `new_string`'s as additions — there is no alignment, so an edit
   that changes one character in the middle of a ten-line block shows ten removals and ten
   additions. That is honest about what arrived; it is not `diff`.
-- **An inline panel's sliders drive nothing, and its buttons drive the console.** The
-  sliders are stated as a demonstration that a drag inside a transcript is a real drag
-  tracked across frames — the same claim, and the same honesty, as `block_panel`'s. The
-  material buttons are wired all the way through to `Shell::apply_console`, so clicking one
-  in a chat tab and typing `organon console background metal` are one call. ⚠️ **But the
-  backdrop is not drawn behind a conversation**, so the *effect* of that click is seen on a
-  terminal tab, not under the transcript that asked for it. The wire is real; the feedback
-  loop is not closed in the tab you are looking at.
-- **`/panel` is a temporary summoning seam and is not the feature.** The feature is the
-  element; the local command is scaffolding that exists because agent-summoned artifacts
-  are the next step. It is exact-match only (`/panels` and `/panel now` go to the agent),
-  because over-recognising swallows a real message while the composer clears either way.
-- **The panel has never been drawn on screen by the session that wrote it.** The model
-  change, the local command and the widget state's start-and-survive behaviour are pinned
-  headless; nothing headless can answer whether a slider inside a `ScrollArea` reads well at
-  real width, whether the panel's fill sits correctly against the transcript's background
-  rather than the terminal's, or whether it is obvious that the thing is live. A person on
-  the machine is the first to know — the same entry as the view itself, for the same reason.
+- **`/panel`'s buttons still drive the console, and its effect is still somewhere else.**
+  They are wired all the way through to `Shell::apply_console`, so clicking one in a chat
+  tab and typing `organon console background metal` are one call — and the backdrop is not
+  drawn behind a conversation, so the *effect* is seen on a terminal tab. That is now a
+  choice rather than the only option: `/surface` is the instrument, `/panel` is the wire it
+  proved. Its sliders drive nothing at all, exactly as `block_panel`'s do and for the same
+  stated reason — they demonstrate that a drag inside a transcript is a real drag tracked
+  across frames. **A `/surface` panel's sliders do drive something**, which is the
+  difference between the two.
+- **`/panel` and `/surface` are temporary summoning seams and are not the feature.** The
+  feature is the element; the local commands are scaffolding that exists because
+  agent-summoned artifacts are the next step. Exact-match only (`/panels` and `/surface
+  slate` go to the agent), because over-recognising swallows a real message while the
+  composer clears either way.
+- 🚨 **The rendered surface has never been drawn on screen by the session that wrote it.**
+  The model link, the visibility test, the panel→surface join, the cap's eviction order and
+  every knob's lane are pinned headless. Nothing headless can answer the questions that
+  decide whether it is a good instrument: whether the picture reads as a *surface* at 260 pt
+  rather than as a stripe, whether one frame of latency is perceptible on a drag, whether
+  the surface and its panel are comfortably on screen together at real width, and whether
+  the substrate at this framing is interesting enough to be worth looking at. And the
+  coordinator's synthetic mouse input is measured **not to reach this app** (demo script
+  beat 7), so only a person at the keyboard can answer any of them.
+- **A surface's rig is not the console's rig.** `organon console rig daylight` changes the
+  backdrop and leaves every surface alone, deliberately: a surface is meant to be answerable
+  to the controls beside it, and inheriting a value typed into another tab is the coupling
+  the element exists to remove. The consequence is that the two can look different, and
+  nothing on screen says why.
 - **A conversation pane carries an inert look-epoch ledger.** The three per-tab vectors
   stay index-aligned so every `zip` and `get(active)` in `shell_main.rs` remains safe, so
   a conversation gets a `PaneLooks` it never uses and opens epochs at line 0. The backdrop
-  is not drawn behind a conversation at all yet — the banding is scrollback arithmetic and
-  there is no scrollback. Painting the substrate behind a transcript is available and
-  unclaimed, not attempted.
+  is not drawn behind a conversation at all — the banding is scrollback arithmetic and
+  there is no scrollback. That is now a decision rather than a gap: a rendered **surface**
+  is the picture a conversation gets, in a rect of its own that a control beside it drives,
+  and a full-bleed backdrop behind a transcript remains available and unclaimed.
 - **The backdrop is the DEFAULT LOOK of the engine**, not a live external system:
   Shell writes the default `Shared` itself and the CLI's override lane mutates the
   world's working copy. Provenance for showing any *external* system's state in the
