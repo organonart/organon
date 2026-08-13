@@ -46,6 +46,44 @@ about a terminal.
 
 ⚠️ **Nobody has seen any of them.** 508 tests green, `cargo check --features shell-edition`
 clean — that is the whole claim. A palette that passes its hex test can still look wrong.
+### Posture — terminal ⟷ desktop as a second axis, orthogonal to the palette
+
+Organon Shell gains `posture.rs`: a scalar `t ∈ [0,1]` and the fourteen form tokens
+resolved at it. The theme is what the console is *made of*; posture is *how it holds
+itself* — flush and tight and square like a terminal, or inset and open and ruled like a
+desktop document. The two are independent on purpose, so `organon` at desktop posture and a
+light palette at terminal posture are both real consoles.
+
+It is implementable rather than merely appealing because **every form token is a scalar,
+and scalars lerp**: the desktop state is not a second renderer, it is the same draw code
+reading different numbers. `Form::at(t)` interpolates the gutter, the corner radii, the
+paddings, the line height, the card gap, the label tracking and three alphas; `Shell` holds
+the `Posture` beside its `Theme` and `redraw` resolves one `&Form` per frame.
+
+- 🚨 **Nothing on screen changes.** The console ships at `Posture::TERMINAL`, and every
+  terminal-end value was read out of the code before it moved — pinned by
+  `form_at_terminal_is_the_form_that_shipped`, with the source of each in its assertion.
+  The two `Option` returns (`gutter_margin`, `body_line_height`) make that structural: at
+  `t = 0` the scrollback wraps in nothing and the text is laid out by the font, exactly as
+  before, rather than by a number that ought to agree.
+- 🚨 **Posture owns the scalars; the palette owns whether a card has a visible edge.** The
+  four-sided border fades out and a left rule fades in over one shared lerp, with no
+  per-theme branch at any draw site — a palette that separates surfaces by fill alone gives
+  the new `Theme::card_left_rule` zero alpha. The rejected alternative, a
+  `Box | LeftRule | None` enum per theme, puts a branch in every card draw and makes the
+  tween discontinuous where the enum flips.
+- ⚠️ **One token's terminal end disagrees with the spec, and is recorded rather than
+  reconciled.** The design gives square corners at terminal posture; the console has drawn
+  `CornerRadius::same(6)` since its cards were written, so squaring them would be a visible
+  change at the posture that is supposed to *be* today's console — and this tier had no
+  window to check it in. The shipped terminal end is `6`; flipping it is one number and a
+  matching one in the test.
+- ⚠️ **Font family and label case are left out rather than faked.** There is no half-mono
+  face and no half-capital letter, so neither is a field: an interpolation that claimed
+  otherwise would be a lie that compiles.
+- No animation (that is a later tier — `t` is set once and held), no new palette, no
+  ordinals in the gutter, and the terminal host is untouched: a character grid's form is
+  the font's, with no padding or corner for a scalar to move.
 
 ### A CRLF checkout silently un-installs the `organon-cli` skill
 
