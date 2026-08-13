@@ -29,11 +29,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 use egui::{Color32, CornerRadius, Frame, Margin, RichText};
 
+use crate::agent_event::{EventKind, ModelChoice};
 use crate::agent_map::{EventMapper, SessionFacts};
-use crate::agent_session::{AgentSession, McpWiring, StreamItem};
+use crate::agent_session::{AgentSession, Control, McpWiring, StreamItem};
 use crate::approval::{
     approval_channel, decision_for, decision_key, resolve_choice, Choice, DecisionMemory,
     PendingApproval,
@@ -339,6 +341,50 @@ pub struct ConversationPane {
     /// "Allow and remember", which is entirely the console's — there is no upstream
     /// persistence (§5). Session-scoped: it lives here and dies with the tab.
     memory: DecisionMemory,
+    /// The selectable models this account was offered, from the one `initialize` the
+    /// session asks at spawn ([`crate::agent_session::Control::Initialize`]).
+    ///
+    /// 🚨 **Empty until it arrives, and never filled in from anywhere else.** The list is
+    /// per-account and carries display names written for humans; a hardcoded table here
+    /// would be a menu that is wrong for somebody, silently, on a model the CLI added
+    /// after this build shipped.
+    models: Vec<ModelChoice>,
+    /// A model change that has been asked for and not yet confirmed. See
+    /// [`PendingModel`] — this is what stops the plate asserting a model that is not yet
+    /// true.
+    pending_model: Option<PendingModel>,
+}
+
+/// A `set_model` in flight, from the click to the moment the strip's own model fact moves.
+///
+/// 🚨 **This type is the answer to "the plate must not lie during the switch".** The ack
+/// for `set_model` carries **no body at all** (§2), so it says the request was accepted and
+/// nothing about what the session is now running; the new model is stated only by the
+/// *repeat* `system/init` that follows. Between the click and that init the console knows
+/// what it asked for and not what it got — so the plate keeps showing the **confirmed**
+/// model and carries this alongside as a marked, obviously-unsettled annotation. Nothing
+/// here is ever promoted into [`SessionFacts::model`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingModel {
+    /// What the picker called the row that was clicked — the human-written `displayName`
+    /// when the CLI sent one. Shown, so the annotation names the destination.
+    label: String,
+    /// The model the strip was reporting when the request went out.
+    ///
+    /// ⚠️ The confirmation test is "has this moved", **not** "does it equal what we asked
+    /// for": `set_model` takes an alias and the session reports a resolved id, and the
+    /// resolution table is the CLI's, not ours. Matching on a predicted string would leave
+    /// the marker stuck for every alias this build has not met.
+    was: Option<String>,
+}
+
+/// Has an unconfirmed model change landed?
+///
+/// The whole of it: the strip's own model fact is no longer what it was when the request
+/// went out. Named rather than inlined because it is the one line that decides whether the
+/// plate is telling the truth.
+pub fn model_change_landed(was: Option<&str>, now: Option<&str>) -> bool {
+    was != now
 }
 
 impl ConversationPane {
@@ -391,6 +437,8 @@ impl ConversationPane {
             inbox,
             waiting: HashMap::new(),
             memory: DecisionMemory::new(),
+            models: Vec::new(),
+            pending_model: None,
         }
     }
 
@@ -419,14 +467,22 @@ impl ConversationPane {
         // asked it, and a pane whose agent has gone must still be able to draw — and
         // therefore fail closed — the request that was in flight.
         let mut changed = self.pump_approvals();
+        changed |= self.retire_unanswered_controls();
         let Some(session) = self.session.as_mut() else { return changed };
         let items = session.pump();
         if items.is_empty() {
             return changed;
         }
+        // Acks are set aside and answered after the fold rather than inside it: resolving
+        // one needs the session, and the fold needs `note`, which is `&mut self`. Same
+        // frame either way — the strip is drawn once, after all of this.
+        let mut acks = Vec::new();
         for item in items {
             match item {
                 StreamItem::Event(event) => {
+                    if let EventKind::ControlResponse(response) = &event.kind {
+                        acks.push(response.clone());
+                    }
                     for mapped in self.mapper.map(&event) {
                         match self.transcript.apply(mapped) {
                             Change::Appended(_) => {
@@ -454,7 +510,148 @@ impl ConversationPane {
                 }
             }
         }
+        for response in acks {
+            changed |= self.receive_control(&response);
+        }
+        // The model plate's confirmation, and the only one there is: a repeat
+        // `system/init` has restated the model and the mapper has taken it (rule 3's
+        // amendment). Checked after the fold, so a click and its confirming init landing
+        // in one pump settle in that pump.
+        if let Some(pending) = &self.pending_model {
+            if model_change_landed(pending.was.as_deref(), self.mapper.facts().model.as_deref()) {
+                self.pending_model = None;
+                changed = true;
+            }
+        }
         changed
+    }
+
+    /// Ask the session to change something about itself, and say so in the log if the pipe
+    /// will not take it.
+    ///
+    /// Returns whether the request went out. **Nothing is gated on the answer** — see
+    /// [`crate::agent_session::CONTROL_DEADLINE`].
+    fn send_control(&mut self, control: Control) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            self.note("the agent is not running — nothing to ask".to_string());
+            return false;
+        };
+        let described = control.describe();
+        match session.send_control(control) {
+            Ok(_) => true,
+            Err(e) => {
+                self.note(format!("could not send {described}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// 🚨 **The no-reply path.** A control request nobody answers is retired at the
+    /// deadline: the log says which one, and a plate marked as switching stops being
+    /// marked. Nothing was waiting on it, so there is nothing to unblock — the whole point
+    /// of this being a sweep rather than a wait.
+    fn retire_unanswered_controls(&mut self) -> bool {
+        let now = Instant::now();
+        let abandoned = match self.session.as_mut() {
+            Some(session) => session.give_up_on_controls(now),
+            None => Vec::new(),
+        };
+        let mut changed = false;
+        for control in abandoned {
+            self.note(format!(
+                "no answer to {} — the console has stopped waiting for one",
+                control.describe()
+            ));
+            if matches!(control, Control::SetModel(_)) && self.pending_model.is_some() {
+                // The plate goes back to reporting only what was confirmed, which is what
+                // it was doing all along — the annotation is what is dropped, not a value.
+                self.pending_model = None;
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// One control response, matched back to the verb this console asked for.
+    ///
+    /// 📌 The mapper deliberately records **no fact** from an ack — it never issued the
+    /// request and cannot tell which verb a `request_id` answers. This is the other end of
+    /// that: the only place that correlation exists, and therefore the only place an ack
+    /// can mean anything.
+    fn receive_control(&mut self, response: &crate::agent_event::ControlResponse) -> bool {
+        let Some(control) = self.session.as_mut().and_then(|s| s.resolve_control(response)) else {
+            // Not ours: no id, or one the deadline already retired. Expected, not a fault.
+            return false;
+        };
+        if let Some(error) = response.error() {
+            // The CLI's own sentence, verbatim — it says *why* in language written for a
+            // human, and paraphrasing it would lose the only useful part.
+            let described = control.describe();
+            self.note(format!("{described} was refused: {error}"));
+            if matches!(control, Control::SetModel(_)) {
+                self.pending_model = None;
+            }
+            return true;
+        }
+        match control {
+            Control::Initialize => {
+                let models = response.models();
+                let found = models.len();
+                self.models = models;
+                self.note(format!("the session offers {found} models"));
+            }
+            // ⚠️ Nothing is confirmed here. The ack has no body (§2), so it says the
+            // request was accepted and not what the session is now running; the repeat
+            // `system/init` is what settles the plate, and `pump` watches for it.
+            Control::SetModel(_) => {}
+            Control::SetPermissionMode(asked) => {
+                // Unlike `set_model` this verb *does* state its result, so the console can
+                // confirm rather than assume — and say so when the two disagree, which
+                // would mean the session ended up somewhere nobody chose.
+                match response.mode() {
+                    Some(got) if got == asked => {}
+                    Some(got) => self.note(format!(
+                        "asked for permission mode {asked}, the session reports {got}"
+                    )),
+                    None => self.note(format!(
+                        "permission mode {asked} was accepted without confirming itself"
+                    )),
+                }
+            }
+        }
+        true
+    }
+
+    /// The models this session offered, for the plate's picker.
+    pub fn models(&self) -> &[ModelChoice] {
+        &self.models
+    }
+
+    /// Ask for a different model, and mark the plate as unsettled until the session says
+    /// otherwise.
+    ///
+    /// ⚠️ **A row that is already current is a no-op**, deliberately: `set_model` to the
+    /// model already running produces an ack and no repeat init, so the marker would have
+    /// nothing to clear it and would sit there until the deadline. Nothing changes, and
+    /// nothing claims to have.
+    fn choose_model(&mut self, row: &ModelRow) {
+        if row.current {
+            return;
+        }
+        let was = self.mapper.facts().model.clone();
+        if self.send_control(Control::SetModel(row.value.clone())) {
+            self.pending_model = Some(PendingModel { label: row.label.clone(), was });
+        }
+    }
+
+    /// Ask for a different permission mode.
+    ///
+    /// No pending marker: this verb's ack states its own result **and** the CLI emits a
+    /// dedicated `system/status` line carrying the new mode, which the mapper already
+    /// reads. The mode plate is therefore never asserting anything unconfirmed, and does
+    /// not need the machinery [`PendingModel`] exists for.
+    fn choose_permission_mode(&mut self, mode: &str) {
+        self.send_control(Control::SetPermissionMode(mode.to_string()));
     }
 
     /// Take every permission request the serve thread has posted since the last frame, and
@@ -882,7 +1079,14 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
         }
         Body::Assistant(a) => {
             // No frame: the agent's prose is the page, not a card on it.
-            let text = if a.complete { a.text.clone() } else { format!("{}▍", a.text) };
+            //
+            // ⚠️ **The caret is `|`, and it must stay a character the PROPORTIONAL font
+            // has.** It was `▍` (U+258D, Left Five Eighths Block), which egui's
+            // proportional face does not carry — so every streaming reply ended in a
+            // tofu box. The mono fix used elsewhere in this file is not available here:
+            // the caret is concatenated into the prose, and the prose is proportional on
+            // purpose. So the glyph changes instead of the face.
+            let text = if a.complete { a.text.clone() } else { format!("{}|", a.text) };
             ui.label(RichText::new(text).color(PROSE));
         }
         Body::Tool(card) => tool_card(ui, card),
@@ -899,7 +1103,14 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
             };
             let detail = end.detail.as_deref().unwrap_or("");
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("── {label}")).color(color).small());
+                // ⚠️ **`—` (U+2014), not `──` (two U+2500 box-drawing dashes).** This is
+                // the site James saw drawn as two tofu boxes: egui's proportional face
+                // carries no box drawing. The rest of this file answers that by switching
+                // to the mono face, but a rule leading into small dim proportional text
+                // does not want to be monospace — so this one takes a glyph the
+                // proportional font actually has. An em dash is the same mark a
+                // typesetter would have reached for anyway.
+                ui.label(RichText::new(format!("— {label}")).color(color).small());
                 if !detail.is_empty() {
                     ui.label(RichText::new(detail).color(DIM).small());
                 }
@@ -1294,6 +1505,16 @@ const MODEL_TEXT: Color32 = Color32::from_rgb(0xc6, 0xdf, 0xc6);
 /// name.
 const MODEL_BADGE: Color32 = Color32::from_rgb(0x8a, 0xb0, 0x8a);
 
+/// The permission plate's two voices.
+///
+/// ⚠️ **Neither is [`BAD`], and that is the decision.** The non-default marker is on the
+/// band for *hours*, not for a moment, and this is a band a working hand looks at
+/// constantly — a red klaxon that never goes away is a red klaxon the eye learns to skip,
+/// which would leave the console back where it started. Amber is legible against the dim
+/// half without competing with an actual failure.
+const MODE_ALERT: Color32 = Color32::from_rgb(0xd8, 0x9a, 0x5c);
+const MODE_NOTE: Color32 = Color32::from_rgb(0x8a, 0xa6, 0xc2);
+
 const STRIP_PAD_X: i8 = 10;
 const STRIP_PAD_Y: i8 = 5;
 const STRIP_STROKE: f32 = 1.0;
@@ -1359,6 +1580,198 @@ pub struct ModelLabel {
     pub variant: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// The permission-mode control
+// ---------------------------------------------------------------------------
+//
+// 🚨 **This is the control that can quietly remove the console's authority, and the
+// design is built around that rather than around the enum.**
+// `doc/console_session_control_protocol.md` §10 measured it: put a session in `dontAsk`
+// and every tool that would have raised an approval card comes back **refused**
+// (`decision_reason_type: "mode"`) without the console's handler ever being consulted —
+// while the console still passes `--permission-prompt-tool`, still holds the handler, and
+// still *looks* like the authority. The failure a user experiences is "the agent suddenly
+// cannot do anything and nobody asked me why."
+//
+// Three consequences, each a decision rather than an implementation detail:
+//
+// * **Each row is labelled by what happens, not by the mode's name.** "dontAsk" tells a
+//   reader nothing; "no approval cards — anything needing permission is refused" tells
+//   them everything.
+// * **The warning is PERSISTENT, not a confirmation.** A dialog clicked through at the
+//   moment of choosing is exactly the warning people stop reading, and the hazard is not
+//   that moment — it is the hours afterwards when the band still looks like the authority.
+//   So whenever the mode is not `default`, [`ModeSlot::marker`] is on the band for as long
+//   as that stays true. Legible, not shrill: this band is looked at constantly and a
+//   permanent klaxon trains the eye to skip it.
+// * **Three modes are offered and no others.** `bypassPermissions` is refused outright by
+//   a session the console did not launch with `--dangerously-skip-permissions` (§9), so
+//   the row would be a dead button. `plan` and `auto` were never measured against the
+//   console's handler — and the control that governs authority is the wrong place to
+//   guess. ⚠️ A mode arriving from *outside* this picker (a session spawned with
+//   `--permission-mode`) is still reported and still marked; the picker's shortlist
+//   governs what can be *chosen*, never what can be *shown*.
+
+/// How loudly the band carries a non-default permission mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeSeverity {
+    /// Worth stating and standing out from the dim half. `acceptEdits`, and any mode this
+    /// build has not met.
+    Note,
+    /// The console is no longer being asked. `dontAsk`, and nothing else today.
+    Alert,
+}
+
+/// The persistent marker a non-default permission mode puts on the band.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModeMarker {
+    /// **What is happening**, in the words a reader needs — the mode's *name* is on the
+    /// plate beside it, so this never spends the band's one line repeating it.
+    pub text: String,
+    pub severity: ModeSeverity,
+}
+
+/// The permission half of the band: what the session reports, and the marker that goes
+/// with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModeSlot {
+    /// The mode exactly as the session spelled it, or `None` before the first init.
+    pub mode: Option<String>,
+    /// **Present exactly when the mode is not `default`.** See this section's note: the
+    /// warning is the standing state of the band, not an event.
+    pub marker: Option<ModeMarker>,
+}
+
+/// The wire spelling of the mode in which the console is the approval authority.
+///
+/// ⚠️ Not `manual`. `--help` spells the flag-side choice `manual` and the wire enum has
+/// `default` with no `manual` at all (§7); this is the one the strip reads and the one
+/// `set_permission_mode` takes.
+pub const MODE_DEFAULT: &str = "default";
+
+/// The marker for a reported mode — `None` only for `default`.
+///
+/// 🚨 A mode this build has not met still gets a marker. The rule the band is keeping is
+/// *"the console says so whenever it may not be the one being asked"*, and an unrecognised
+/// mode is precisely the case where that cannot be ruled out.
+pub fn mode_marker(mode: &str) -> Option<ModeMarker> {
+    match mode.trim() {
+        "" | MODE_DEFAULT => None,
+        "acceptEdits" => Some(ModeMarker {
+            text: "edits are auto-accepted".to_string(),
+            severity: ModeSeverity::Note,
+        }),
+        "dontAsk" => Some(ModeMarker {
+            text: "you are not being asked — anything needing permission is refused".to_string(),
+            severity: ModeSeverity::Alert,
+        }),
+        _ => Some(ModeMarker {
+            text: "not the console's default — approvals may not reach you".to_string(),
+            severity: ModeSeverity::Note,
+        }),
+    }
+}
+
+/// The full consequence sentence for a mode the picker offers, for the plate's hover.
+/// `None` for a mode that arrived from outside the picker.
+pub fn mode_consequence(mode: &str) -> Option<&'static str> {
+    MODE_ROWS.iter().find(|row| row.value == mode).map(|row| row.consequence)
+}
+
+/// One row of the permission-mode picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeRow {
+    /// What `set_permission_mode` takes.
+    pub value: &'static str,
+    /// **What happens**, which is the label. The mode's name is the second half of it.
+    pub consequence: &'static str,
+    pub severity: ModeSeverity,
+}
+
+/// The three modes the console offers, and the whole of what it offers.
+///
+/// See this section's note for why the list is three and why each omission is deliberate.
+pub const MODE_ROWS: &[ModeRow] = &[
+    ModeRow {
+        value: MODE_DEFAULT,
+        consequence: "the console asks you — every gated tool raises an approval card",
+        severity: ModeSeverity::Note,
+    },
+    ModeRow {
+        value: "acceptEdits",
+        // Honest about the size of the measurement: §11 tested exactly one gate reason
+        // (`workingDir`) and found the handler still consulted. It does **not** establish
+        // that this mode never short-circuits, and the label does not claim it does.
+        consequence: "file edits are auto-accepted where the CLI's own gate allows it — \
+                      measured against one gate only; other requests still raise a card",
+        severity: ModeSeverity::Note,
+    },
+    ModeRow {
+        value: "dontAsk",
+        consequence: "no approval cards at all — anything needing permission is refused, \
+                      and the console is never asked",
+        severity: ModeSeverity::Alert,
+    },
+];
+
+// ---------------------------------------------------------------------------
+// The model picker
+// ---------------------------------------------------------------------------
+
+/// One row of the model picker, built from what the CLI itself offered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelRow {
+    /// What `set_model` takes — an alias, a full id, or `default`.
+    pub value: String,
+    /// The human-written `displayName`, falling back to `value` when the CLI sent none.
+    pub label: String,
+    /// The CLI's own sentence of guidance, when it sent one.
+    pub detail: Option<String>,
+    /// Whether this row is what the session is running right now.
+    pub current: bool,
+}
+
+/// The picker's rows.
+///
+/// 🚨 **Built from the CLI's `models` array and from nothing else.** The list is
+/// per-account and can gain a model after this build ships, so there is no table here to
+/// go stale — an empty list is an empty picker that says the list has not arrived, which
+/// is the honest rendering of "this session did not answer `initialize`".
+///
+/// ⚠️ **Two rows can both be current**, and that is not a bug: `default` and `opus[1m]`
+/// both resolve to `claude-opus-5[1m]` in the measured capture, so both genuinely name the
+/// model in use. Matching on `resolvedModel` *and* `value` is what `resolvedModel` exists
+/// for — the schema states it is there so a host can match a persisted explicit id back to
+/// the alias row that covers it.
+pub fn model_rows(models: &[ModelChoice], current: Option<&str>) -> Vec<ModelRow> {
+    models
+        .iter()
+        .map(|choice| ModelRow {
+            value: choice.value.clone(),
+            label: choice
+                .display_name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| choice.value.clone()),
+            detail: choice.description.clone().filter(|d| !d.trim().is_empty()),
+            current: current.is_some_and(|current| {
+                choice.resolved_model.as_deref() == Some(current) || choice.value == current
+            }),
+        })
+        .collect()
+}
+
+/// What the picker says about the price of switching, once, at the bottom.
+///
+/// 📌 **Measured, and not a warning dialog.** A model change invalidates the prompt cache:
+/// the turn after one carries `cache_miss_reason: model_changed` and re-created 69 228
+/// tokens where the previous turn had read 25 282 from cache — $0.30 then $0.42 for the
+/// same three-token reply (§2a). There is nothing to fix and nothing to confirm; a plate
+/// this easy to click should simply not imply the click is free.
+pub const MODEL_SWITCH_COST: &str =
+    "switching re-reads the conversation — the next turn pays a cache miss (~49k tokens \
+     measured)";
+
 /// What the status half says this frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusReading {
@@ -1375,6 +1788,12 @@ pub struct StatusReading {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StripContent {
     pub model: ModelSlot,
+    /// The permission mode, and the persistent marker that goes with a non-default one.
+    pub mode: ModeSlot,
+    /// A model change that has been asked for and not confirmed — the row's label, not a
+    /// model id. Drawn *beside* [`model`](Self::model), never in place of it: see
+    /// [`PendingModel`].
+    pub pending_model: Option<String>,
     /// `(label, value)` rows for the model plate's hover — the identity that does not fit,
     /// and must not be allowed to try.
     pub identity: Vec<(String, String)>,
@@ -1383,6 +1802,18 @@ pub struct StripContent {
     pub chips: Vec<String>,
     /// The most recent diagnostic line off the child, if any. Drawn truncated.
     pub log: Option<String>,
+}
+
+impl StripContent {
+    /// Mark the plate as carrying a model change that has not been confirmed yet.
+    ///
+    /// A builder rather than a parameter of [`strip_content`] because it is the one input
+    /// the band takes that is **view state** rather than a reported fact: it exists from
+    /// the click until the repeat `system/init`, and nothing on the wire ever states it.
+    pub fn switching_to(mut self, label: Option<&str>) -> Self {
+        self.pending_model = label.map(str::to_string);
+        self
+    }
 }
 
 /// The **live** inputs the strip reads — the things that are true right now and will not be
@@ -1609,8 +2040,16 @@ pub fn strip_content(
     if let Some(ms) = facts.last_turn_duration_ms {
         chips.push(format!("last turn {}", duration_label(ms)));
     }
+    // The marker is derived, never remembered: it is true exactly while the reported mode
+    // is non-default, which is the property the persistent-warning decision asked for.
+    let mode = ModeSlot {
+        mode: facts.permission_mode.clone(),
+        marker: facts.permission_mode.as_deref().and_then(mode_marker),
+    };
     StripContent {
         model,
+        mode,
+        pending_model: None,
         identity: identity_rows(facts, session),
         reading: status_reading(failure, live, facts),
         chips,
@@ -1631,7 +2070,20 @@ fn standing_color(standing: Standing) -> Color32 {
     }
 }
 
-fn status_strip(ui: &mut egui::Ui, pane: &ConversationPane) {
+/// What the band asked for this frame.
+///
+/// Returned rather than acted on in place, for the reason [`approval_card`] returns a
+/// [`CardAct`]: the drawing walks a `&StripContent`, and the pane it would have to mutate
+/// is what that content was read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StripAct {
+    /// A model row was clicked.
+    ChooseModel(ModelRow),
+    /// A permission mode was clicked. `&'static str` because the shortlist is this file's.
+    ChooseMode(&'static str),
+}
+
+fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane) {
     let content = strip_content(
         pane.failure.as_deref(),
         LiveCounts {
@@ -1647,8 +2099,14 @@ fn status_strip(ui: &mut egui::Ui, pane: &ConversationPane) {
         pane.mapper.facts(),
         pane.transcript.session_id(),
         pane.log.back().map(String::as_str),
-    );
-    strip_box(ui, &content);
+    )
+    .switching_to(pane.pending_model.as_ref().map(|p| p.label.as_str()));
+    let rows = model_rows(&pane.models, pane.mapper.facts().model.as_deref());
+    match strip_box(ui, &content, &rows) {
+        Some(StripAct::ChooseModel(row)) => pane.choose_model(&row),
+        Some(StripAct::ChooseMode(mode)) => pane.choose_permission_mode(mode),
+        None => {}
+    }
 }
 
 /// Draw the band.
@@ -1659,7 +2117,11 @@ fn status_strip(ui: &mut egui::Ui, pane: &ConversationPane) {
 /// top of the remaining space and the cursor at its bottom. Reserving one row plus
 /// [`STRIP_CHROME`] is also what holds the strip to a single line no matter what arrives —
 /// every label that could be long is [`egui::Label::truncate`]d rather than wrapped.
-fn strip_box(ui: &mut egui::Ui, content: &StripContent) {
+fn strip_box(
+    ui: &mut egui::Ui,
+    content: &StripContent,
+    models: &[ModelRow],
+) -> Option<StripAct> {
     let row = ui.text_style_height(&egui::TextStyle::Body);
     let band = row + STRIP_CHROME;
     ui.allocate_ui_with_layout(
@@ -1674,14 +2136,25 @@ fn strip_box(ui: &mut egui::Ui, content: &StripContent) {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        model_plate(ui, content);
+                        let mut act = model_plate(ui, content, models);
+                        act = act.or(mode_plate(ui, content));
                         let reading = &content.reading;
                         if !reading.text.is_empty() {
                             ui.add(
                                 egui::Label::new(
+                                    // ⚠️ **`.monospace()` is the tofu fix, not a style
+                                    // choice.** `status_reading` builds these strings with
+                                    // `◈` (U+25C8) and `●` (U+25CF); egui's PROPORTIONAL
+                                    // face has neither, so `● generating` drew as a box.
+                                    // The mono face carries them — it renders `htop`'s box
+                                    // drawing in the terminal tab next door — and this is
+                                    // the same fix the approval card's own `◈ may I`
+                                    // already carries. Leave it on, or the band's symbols
+                                    // come back as boxes.
                                     RichText::new(&reading.text)
                                         .color(standing_color(reading.standing))
-                                        .small(),
+                                        .small()
+                                        .monospace(),
                                 )
                                 .truncate(),
                             );
@@ -1707,19 +2180,34 @@ fn strip_box(ui: &mut egui::Ui, content: &StripContent) {
                                 }
                             },
                         );
-                    });
-                });
+                        act
+                    })
+                    .inner
+                })
+                .inner
         },
-    );
+    )
+    .inner
 }
 
-/// **The headline affordance**: which model is behind this tab, on its own plate.
+/// **The headline affordance**: which model is behind this tab, on its own plate — and now
+/// the control that changes it.
 ///
 /// A plate rather than a label because that is the difference between an identity and a debug
 /// field — it is the one thing on the band that answers "who", and it is the first thing a
 /// hand goes looking for. The rest of what the session said about itself is on its hover,
 /// where it costs no vertical space and cannot push the band to two lines.
-fn model_plate(ui: &mut egui::Ui, content: &StripContent) {
+///
+/// 🚨 **The plate never asserts a model it has not been told about.** Clicking a row issues
+/// `set_model`, whose ack carries no body; the new model is stated only by the *repeat*
+/// `system/init` that follows. So the name on the plate stays the **confirmed** one and the
+/// destination is drawn beside it, dim and arrowed, until the session says otherwise —
+/// [`PendingModel`] carries the full argument.
+fn model_plate(
+    ui: &mut egui::Ui,
+    content: &StripContent,
+    models: &[ModelRow],
+) -> Option<StripAct> {
     let plate = Frame::new()
         .fill(MODEL_FILL)
         .stroke(egui::Stroke::new(MODEL_STROKE, MODEL_EDGE))
@@ -1749,9 +2237,20 @@ fn model_plate(ui: &mut egui::Ui, content: &StripContent) {
                     ui.label(RichText::new("no model").color(DIM).small().italics());
                 }
             }
+            if let Some(pending) = &content.pending_model {
+                // Dim, italic and arrowed: it reads as a destination rather than as the
+                // identity beside it, which is exactly the distinction being kept.
+                ui.label(
+                    RichText::new(format!("→ {pending}")).color(DIM).small().italics(),
+                );
+            }
         });
+    let response = plate
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
     if !content.identity.is_empty() {
-        plate.response.on_hover_ui(|ui| {
+        response.clone().on_hover_ui(|ui| {
             for (label, value) in &content.identity {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{label}:")).color(DIM).small().monospace());
@@ -1760,6 +2259,129 @@ fn model_plate(ui: &mut egui::Ui, content: &StripContent) {
             }
         });
     }
+    egui::Popup::menu(&response)
+        .show(|ui| model_picker(ui, models))
+        .and_then(|inner| inner.inner)
+}
+
+/// The model menu, built from the CLI's own `models` array.
+///
+/// An empty list is the honest case, not a failure: `initialize` is asked once at spawn and
+/// its answer may not have arrived, or the session may not have answered it at all. The
+/// picker says so rather than offering a table this build invented — see [`model_rows`].
+fn model_picker(ui: &mut egui::Ui, models: &[ModelRow]) -> Option<StripAct> {
+    ui.set_min_width(240.0);
+    if models.is_empty() {
+        ui.label(
+            RichText::new("the model list has not arrived — this session has not answered its \
+                           `initialize` yet")
+                .color(DIM)
+                .small()
+                .italics(),
+        );
+        return None;
+    }
+    let mut act = None;
+    for row in models {
+        let mut text = RichText::new(&row.label).monospace();
+        if row.current {
+            text = text.color(MODEL_TEXT).strong();
+        }
+        let mut button = ui.add(egui::Button::new(text).frame(false));
+        if let Some(detail) = &row.detail {
+            button = button.on_hover_text(detail);
+        }
+        if button.clicked() && !row.current {
+            act = Some(StripAct::ChooseModel(row.clone()));
+            ui.close();
+        }
+        if row.current {
+            ui.label(RichText::new("in use").color(DIM).small());
+        }
+    }
+    ui.separator();
+    // 📌 One dim line, not a dialog. See [`MODEL_SWITCH_COST`].
+    ui.label(RichText::new(MODEL_SWITCH_COST).color(DIM).small());
+    act
+}
+
+/// **The control that can quietly take the console's authority away** — and the band's
+/// standing statement about whether it still has it.
+///
+/// 🚨 The plate is present in every state, so a hand always has somewhere to look; the
+/// *marker* beside it appears exactly when the mode is not `default` and stays for as long
+/// as that is true. That persistence is the design, not an oversight — the section note
+/// above [`ModeSeverity`] carries the argument, and it is the reason there is no
+/// confirmation dialog anywhere in this path.
+fn mode_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
+    let Some(mode) = content.mode.mode.as_deref() else {
+        // Before the first init the console does not know the mode, and a control that
+        // offers to change something unknown is a control that can silently change it to
+        // what it already was.
+        return None;
+    };
+    let severity = content.mode.marker.as_ref().map(|m| m.severity);
+    let accent = match severity {
+        Some(ModeSeverity::Alert) => MODE_ALERT,
+        Some(ModeSeverity::Note) => MODE_NOTE,
+        None => DIM,
+    };
+    let plate = Frame::new()
+        .fill(MODEL_FILL)
+        .stroke(egui::Stroke::new(MODEL_STROKE, accent))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(MODEL_PAD_X, MODEL_PAD_Y))
+        .show(ui, |ui| {
+            ui.label(RichText::new(mode).color(accent).small().monospace());
+        });
+    let response = plate
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = match mode_consequence(mode) {
+        Some(consequence) => response.on_hover_text(consequence),
+        None => response,
+    };
+    // The persistent marker. Truncated like everything else on the band, because one line
+    // is one line — the whole sentence is on the plate's hover.
+    if let Some(marker) = &content.mode.marker {
+        ui.add(
+            egui::Label::new(RichText::new(&marker.text).color(accent).small()).truncate(),
+        );
+    }
+    egui::Popup::menu(&response)
+        .show(|ui| mode_picker(ui, mode))
+        .and_then(|inner| inner.inner)
+}
+
+/// The three modes, each labelled by what happens.
+fn mode_picker(ui: &mut egui::Ui, current: &str) -> Option<StripAct> {
+    ui.set_min_width(320.0);
+    let mut act = None;
+    for row in MODE_ROWS {
+        let accent = match row.severity {
+            ModeSeverity::Alert => MODE_ALERT,
+            ModeSeverity::Note => PROSE,
+        };
+        let chosen = row.value == current;
+        let mut name = RichText::new(row.value).monospace().color(accent);
+        if chosen {
+            name = name.strong();
+        }
+        let clicked = ui.add(egui::Button::new(name).frame(false)).clicked();
+        // The consequence is not a tooltip: it is the label. A hover would put the one
+        // sentence that matters behind a gesture nobody makes while deciding.
+        ui.label(RichText::new(row.consequence).color(if chosen { PROSE } else { DIM }).small());
+        if chosen {
+            ui.label(RichText::new("in use").color(DIM).small());
+        }
+        ui.add_space(4.0);
+        if clicked && !chosen {
+            act = Some(StripAct::ChooseMode(row.value));
+            ui.close();
+        }
+    }
+    act
 }
 
 /// What the composer does with one key press.
@@ -2849,6 +3471,222 @@ mod tests {
         assert_eq!(model_label("").name, "");
     }
 
+    // -----------------------------------------------------------------------
+    // The two controls: the model picker and the permission mode
+    // -----------------------------------------------------------------------
+
+    /// The five rows the measured account was offered (§3), verbatim in shape — including
+    /// the `haiku` row, which carries **no** `supportsEffort` and no display-name surprises.
+    fn offered() -> Vec<ModelChoice> {
+        let row = |value: &str, resolved: &str, display: &str, description: &str| ModelChoice {
+            value: value.into(),
+            resolved_model: Some(resolved.into()),
+            display_name: Some(display.into()),
+            description: Some(description.into()),
+            supports_effort: true,
+            effort_levels: vec!["low".into(), "high".into()],
+        };
+        vec![
+            row(
+                "default",
+                "claude-opus-5[1m]",
+                "Default (recommended)",
+                "Opus 5 with 1M context · Best for everyday, complex tasks",
+            ),
+            row("opus[1m]", "claude-opus-5[1m]", "Opus (1M context)", "The big one"),
+            row("sonnet", "claude-sonnet-5", "Sonnet", "Faster"),
+            ModelChoice { value: "haiku".into(), ..Default::default() },
+        ]
+    }
+
+    /// 📌 CONTRACT: the picker's rows come from the CLI's own `models` array — display
+    /// names and all — and **nothing here invents a model**. The list is per-account and
+    /// can gain a row after this build ships, which is the whole reason there is no table.
+    #[test]
+    fn the_picker_is_built_from_the_list_the_cli_offered() {
+        let rows = model_rows(&offered(), Some("claude-sonnet-5"));
+        assert_eq!(rows.len(), 4, "one row per offered model, no more and no fewer");
+        assert_eq!(rows[0].label, "Default (recommended)", "the human-written name is the label");
+        assert_eq!(rows[0].value, "default", "…and `set_model` still takes the wire value");
+        assert_eq!(
+            rows[2].detail.as_deref(),
+            Some("Faster"),
+            "the CLI's own sentence of guidance is carried, not paraphrased"
+        );
+        // A row the CLI sent bare falls back to its value rather than to an empty button.
+        assert_eq!(rows[3].label, "haiku");
+        assert_eq!(rows[3].detail, None);
+
+        let current: Vec<&str> =
+            rows.iter().filter(|r| r.current).map(|r| r.value.as_str()).collect();
+        assert_eq!(current, vec!["sonnet"], "exactly the row in use is marked");
+    }
+
+    /// ⚠️ CONTRACT: two rows may both be current, and that is honest rather than a bug —
+    /// `default` and `opus[1m]` resolve to the same model in the measured capture, so both
+    /// genuinely name what is running. Matching on `resolvedModel` is what that field is
+    /// documented to exist for.
+    #[test]
+    fn an_alias_and_the_row_it_resolves_to_are_both_in_use() {
+        let rows = model_rows(&offered(), Some("claude-opus-5[1m]"));
+        let current: Vec<&str> =
+            rows.iter().filter(|r| r.current).map(|r| r.value.as_str()).collect();
+        assert_eq!(current, vec!["default", "opus[1m]"]);
+    }
+
+    /// 📌 CONTRACT: no list is the normal state of a session that has not answered its
+    /// `initialize` yet, and it degrades to an empty picker rather than to a guess.
+    #[test]
+    fn an_empty_model_list_degrades_to_nothing_rather_than_to_a_guess() {
+        assert!(model_rows(&[], Some("claude-opus-5")).is_empty());
+        assert!(model_rows(&[], None).is_empty(), "and no model reported is not a match either");
+        // Nothing is current when nothing is known — a row that claimed to be in use
+        // before the first init would be the plate lying in its quietest form.
+        let rows = model_rows(&offered(), None);
+        assert!(rows.iter().all(|r| !r.current));
+    }
+
+    /// 🚨 CONTRACT: **the plate never asserts a model that has not been confirmed.**
+    /// `set_model`'s ack carries no body, so between the click and the repeat `system/init`
+    /// the console knows what it asked for and not what it got. The confirmed name stays on
+    /// the plate; the destination is carried beside it, marked.
+    #[test]
+    fn the_plate_keeps_the_confirmed_model_while_a_switch_is_in_flight() {
+        let facts = started("claude-opus-5[1m]");
+        let switching =
+            strip_content(None, live(0, 0), &facts, Some("abc"), None).switching_to(Some("Sonnet"));
+        let ModelSlot::Named(label) = &switching.model else { panic!("{:?}", switching.model) };
+        assert_eq!(
+            label.name, "claude-opus-5",
+            "the plate still says what the session last reported, not what was asked for"
+        );
+        assert_eq!(switching.pending_model.as_deref(), Some("Sonnet"));
+
+        // …and once the repeat init lands, the marker has nothing left to say.
+        let settled = strip_content(None, live(0, 0), &started("claude-sonnet-5"), Some("abc"), None);
+        assert_eq!(settled.pending_model, None);
+        let ModelSlot::Named(label) = &settled.model else { panic!("{:?}", settled.model) };
+        assert_eq!(label.name, "claude-sonnet-5");
+    }
+
+    /// 📌 CONTRACT: the confirmation test is **"has the reported model moved"**, not "does
+    /// it equal what we asked for". `set_model` takes an alias and the session answers with
+    /// a resolved id, and that resolution table is the CLI's — predicting it here would
+    /// leave the marker stuck for every alias this build has not met.
+    #[test]
+    fn a_switch_lands_when_the_reported_model_moves_at_all() {
+        assert!(!model_change_landed(Some("claude-opus-5[1m]"), Some("claude-opus-5[1m]")));
+        assert!(model_change_landed(Some("claude-opus-5[1m]"), Some("claude-sonnet-5")));
+        // A model this build has never heard of still settles the plate.
+        assert!(model_change_landed(Some("claude-opus-5[1m]"), Some("some-model-from-2027")));
+        // And the cold-start case: nothing reported, then something.
+        assert!(model_change_landed(None, Some("claude-sonnet-5")));
+    }
+
+    /// 🚨 CONTRACT: **whenever the mode is not `default`, the band carries a marker — and
+    /// when it is, it carries none.** The hazard `dontAsk` creates is not the moment of
+    /// choosing, it is the hours afterwards during which the console still looks like the
+    /// approval authority; so the warning is the standing state of the band rather than a
+    /// dialog somebody clicked through once.
+    #[test]
+    fn a_non_default_permission_mode_is_marked_for_as_long_as_it_lasts() {
+        let mode_of = |mode: &str| {
+            let mut facts = started("claude-opus-5");
+            facts.permission_mode = Some(mode.to_string());
+            strip_content(None, live(0, 0), &facts, Some("abc"), None).mode
+        };
+
+        let ordinary = mode_of("default");
+        assert_eq!(ordinary.mode.as_deref(), Some("default"));
+        assert!(ordinary.marker.is_none(), "the console being the authority is not news");
+
+        let edits = mode_of("acceptEdits");
+        let marker = edits.marker.expect("acceptEdits is not the default and must say so");
+        assert_eq!(marker.severity, ModeSeverity::Note);
+
+        let silent = mode_of("dontAsk");
+        let marker = silent.marker.expect("the mode that disarms the console must say so");
+        assert_eq!(marker.severity, ModeSeverity::Alert, "this one is not a footnote");
+        assert!(
+            marker.text.contains("refused"),
+            "the marker has to say what actually happens: {}",
+            marker.text
+        );
+        // ⚠️ A mode that arrived from outside the picker — a session spawned with
+        // `--permission-mode plan` — is still marked. The shortlist governs what can be
+        // chosen, never what can be shown.
+        let unmeasured = mode_of("plan");
+        assert!(unmeasured.marker.is_some(), "an unrecognised mode is precisely the unclear case");
+
+        // Before the first init there is no mode and nothing to mark.
+        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        assert_eq!(cold.mode, ModeSlot::default());
+    }
+
+    /// 🚨 CONTRACT: **exactly three modes are offered, each labelled by what happens.**
+    /// `bypassPermissions` is refused by a session the console did not launch with
+    /// `--dangerously-skip-permissions`, so the row would be a dead button; `plan` and
+    /// `auto` were never measured against the console's handler, and the control that
+    /// governs authority is the wrong place to guess.
+    #[test]
+    fn the_mode_picker_offers_three_modes_and_names_the_consequence_of_each() {
+        let offered: Vec<&str> = MODE_ROWS.iter().map(|r| r.value).collect();
+        assert_eq!(offered, vec!["default", "acceptEdits", "dontAsk"]);
+        for withheld in ["bypassPermissions", "auto", "plan", "manual"] {
+            assert!(!offered.contains(&withheld), "{withheld} must not be offerable");
+        }
+        for row in MODE_ROWS {
+            assert!(
+                row.consequence.len() > row.value.len(),
+                "a row is labelled by what happens, not by its name: {}",
+                row.value
+            );
+            assert!(!row.consequence.contains(row.value), "{}", row.value);
+        }
+        // The one that removes the console's cards says so in those words.
+        let silent = MODE_ROWS.iter().find(|r| r.value == "dontAsk").expect("the row");
+        assert_eq!(silent.severity, ModeSeverity::Alert);
+        assert!(silent.consequence.contains("refused"));
+        assert!(silent.consequence.contains("no approval cards"));
+        // …and `acceptEdits` does not overclaim: §11 measured one gate reason, not all.
+        let edits = MODE_ROWS.iter().find(|r| r.value == "acceptEdits").expect("the row");
+        assert!(edits.consequence.contains("measured against one gate only"));
+    }
+
+    /// 📌 The picker does not imply the switch is free. Measured: the turn after a model
+    /// change re-created ~49k tokens the cache would have covered. One line, not a dialog.
+    #[test]
+    fn the_picker_says_what_a_switch_costs() {
+        assert!(MODEL_SWITCH_COST.contains("cache"));
+        assert!(MODEL_SWITCH_COST.contains("49k"));
+        assert!(!MODEL_SWITCH_COST.contains('?'), "a statement, not a confirmation");
+    }
+
+    /// ⚠️ CONTRACT: the band's status symbols are `◈` and `●`, and the site that draws them
+    /// **must** ask for the mono face — egui's proportional font carries neither, which is
+    /// what put a tofu box on screen where `● generating` belonged. This test pins the
+    /// strings; the `.monospace()` in [`strip_box`] is the other half, and the comment there
+    /// says so.
+    #[test]
+    fn the_bands_symbols_are_the_ones_the_mono_face_has_to_draw() {
+        let facts = started("claude-opus-5");
+        let asking = strip_content(None, live(1, 0), &facts, Some("abc"), None);
+        assert!(asking.reading.text.starts_with('◈'), "{}", asking.reading.text);
+        let working = strip_content(None, live(0, 2), &facts, Some("abc"), None);
+        assert!(working.reading.text.starts_with('●'), "{}", working.reading.text);
+        let writing = strip_content(None, live_generating(0, 0), &facts, Some("abc"), None);
+        assert_eq!(writing.reading.text, "● generating");
+        // Box drawing is the one class the proportional face definitely lacks, and it is
+        // what the turn marker used to reach for. Nothing on the band may use it.
+        for reading in [&asking.reading, &working.reading, &writing.reading] {
+            assert!(
+                !reading.text.chars().any(|c| ('\u{2500}'..='\u{259f}').contains(&c)),
+                "no box-drawing or block element on the band: {}",
+                reading.text
+            );
+        }
+    }
+
     /// One frame of the strip, headless — the same shape [`composer_frame`] uses, measuring
     /// the room the band took *away from what follows it*.
     fn strip_frame(ctx: &egui::Context, content: &StripContent, pane: &mut FakePane) -> (f32, f32) {
@@ -2866,7 +3704,9 @@ mod tests {
                 // The real arrangement: strip lowest, composer above it, scrollback the rest.
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     let before = ui.available_height();
-                    strip_box(ui, content);
+                    // No rows: the menu is only built while the popup is open, and a
+                    // headless single frame never opens one.
+                    let _ = strip_box(ui, content, &[]);
                     band = before - ui.available_height();
                     ui.add_space(4.0);
                     let _ = composer_box(
@@ -2899,6 +3739,10 @@ mod tests {
         let mut facts = started("claude-opus-5[1m]");
         facts.cost_usd = Some(1.2345);
         facts.last_turn_duration_ms = Some(7_389);
+        // The busiest band there is now includes the permission marker *and* an
+        // unconfirmed model change — the two things this tier added to a row that was
+        // already full, and either of which wrapping would make the strip two lines.
+        facts.permission_mode = Some("dontAsk".into());
         let busy = strip_content(
             None,
             LiveCounts {
@@ -2911,7 +3755,8 @@ mod tests {
             &facts,
             Some("11111111-2222-3333-4444-555555555555"),
             Some(&"a diagnostic line off the child that is far too long for the band ".repeat(8)),
-        );
+        )
+        .switching_to(Some("Default (recommended)"));
         let empty = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
 
         let mut busy_band = 0.0;

@@ -7,7 +7,17 @@ respawning the process.
 **Status:** wire shapes **measured** 2026-08-12 on `claude.exe` **2.1.228**
 (`C:\Users\james\.local\bin\claude.exe`), eight invocations — six headless sessions driven with
 the argv `agent_session.rs::ARGS` builds, plus `--version` and `--help`. Every request and
-response below is quoted from a live capture. Nothing here is implemented.
+response below is quoted from a live capture.
+
+✏️ **Implemented 2026-08-12**, and this document has been corrected by the build rather than
+left as it was written. `agent_session.rs` sends `set_model`, `set_permission_mode` and
+`initialize`; `agent_event.rs` decodes the responses; `conversation_view.rs` draws the two
+pickers. Building against a measurement is the only thing that finds the places where the
+measurement was read one way and meant another — **four such places were found, and each is
+corrected in place below rather than appended as an erratum** (§2b's discriminator, §3's
+nesting warning, §4b's status, and the two `pending_*_requests` lists). Where a correction
+changes what a consumer should do, the old reading is stated too, because a reader who
+remembers the first version needs to know it moved.
 
 ⏱ **A note on dates before anything else.** The capture files were written on **2026-08-12**
 local time; the `timestamp` fields *inside* them read `2026-08-13T05:…Z` because they are UTC.
@@ -39,10 +49,14 @@ the transcript will render as a human turn (§2b); and one selectable mode — `
 the console's approval cards entirely while the strip still says the console is in charge**
 (§10).
 
-📌 **This document measures; it does not settle.** Two of the responses these findings invite are
-recorded below as **PROPOSED, NOT DECIDED** (§4b and §10a). Both change something already agreed
-— one amends a settled spec, one constrains what a control may offer — and both are James's call,
-not this document's.
+📌 **This document measures; it does not settle.** Two of the responses these findings invite were
+recorded below as **PROPOSED, NOT DECIDED** (§4b and §10a). Both change something already agreed —
+one amends a settled spec, one constrains what a control may offer — and both were James's call,
+not this document's. ✏️ **Both have since been answered**, and the two were answered differently:
+**§4b was ruled on and the ruling is written into the spec it amends**
+(`doc/console_spike_execution_plan.md` §5.9.3 rule 3); **§10a was settled by a design decision in
+the implementation**, which is a weaker thing and is labelled as such where it sits. Each section
+says which it got.
 
 ---
 
@@ -72,6 +86,17 @@ session (`p4`) the very first line written to stdin was a `set_permission_mode` 
 answered `success` at +1324 ms and the session's **first `system/init` did not appear until after
 that** (`p4.out.jsonl` line 1 is the `control_response`, line 4 is the init). So a control lands
 before the session has announced itself at all.
+
+⚠️ **The build leans slightly past this measurement, and says so rather than rounding it up.**
+`agent_session.rs` sends `Control::Initialize` **at spawn**, before the first turn — which is what
+§3 recommends and what §6's "the init only arrives once input is pending" makes valuable (a tab
+nobody has typed into never announced itself, and this line *is* input, so the strip now learns
+its model at spawn instead of at the first human turn). But the control measured landing before an
+init was `set_permission_mode`, **not `initialize`**, and one verb answering early does not
+establish that the heaviest one does. What makes the gap cheap rather than dangerous is the
+deadline: an `initialize` that is never answered is retired after 20 s and the failure is **an
+empty picker that says the list has not arrived** — never a wedged tab, because nothing anywhere
+waits on the answer. Worth one probe when somebody is next capturing this pipe.
 
 **INFERRED** (binary strings, not exercised). The full subtype set the CLI accepts *from* a
 client:
@@ -177,8 +202,39 @@ Three things about it, each of which matters to the conversation view:
    `<local-command-stdout>…</local-command-stdout>` markup.
 3. It carries `isReplay: true`, the same flag §5.9.3 rule 2 attaches to the human's own echoed
    turn — so **`isReplay` alone cannot distinguish "the human said this" from "the CLI is
-   narrating a control action"**. The discriminator available is the string `content` shape plus
-   the `<local-command-stdout>` wrapper.
+   narrating a control action"**.
+
+🚨 **Correction, found by implementing it: the wrapper is the ONLY discriminator, and the
+`content` shape is not part of it.** This section originally said the discriminator was *"the
+string `content` shape plus the `<local-command-stdout>` wrapper"*. The string half does not
+survive contact:
+
+- **The console's own `user_message_line` sends the array form**, so "string means the CLI, array
+  means the human" is not a rule the console's own traffic obeys — and both forms collapse to the
+  same `Vec<ContentBlock>` before anything can look at which arrived.
+- Nothing measured says the CLI will not narrate through the array form later. One observation of
+  a string is an observation, not a guarantee, and a predicate resting on it fails **open** — the
+  fake turn comes back with no way to tell it apart.
+
+**What is implemented** (`agent_event.rs::UserTurn::local_command_output`, whose doc argues its
+own narrowness): *the line's entire text, trimmed, is one `<local-command-stdout>…` element and
+nothing else.* Three parts, each closing a way of being wrong:
+
+- **Exactly one text element.** Both wire shapes decode to one, so this is shape-agnostic; a line
+  carrying prose *and* a wrapper is two and is not matched.
+- **`strip_prefix` and `strip_suffix`, never `contains`.** A human asking *"what does
+  `<local-command-stdout>` mean?"* fails the prefix test, so the tag stays safe to quote, discuss
+  or paste inside a larger message.
+- **`isReplay` is deliberately not tested at all.** It is `true` here *and* on every genuine human
+  turn — the replay is how a human turn reaches the transcript in the first place — so requiring
+  it would exclude nothing real while letting a future unflagged narration straight through.
+
+⚠️ The residual false positive is a human whose **entire** message is a verbatim
+`<local-command-stdout>…</local-command-stdout>` pair. That is the price of there being no flag,
+and it is the cheaper failure by a wide margin: a stray line is visible and reportable, a
+swallowed sentence is not. It is also *watchable* — `MapStats::local_commands_suppressed` counts
+every suppression separately from `unmapped`, precisely so that a number climbing while somebody
+is typing is how a predicate that started eating real turns would be caught.
 
 ⚠️ **This is a rendering bug that ships with the feature unless it is caught first, and rule 2 is
 exactly why it slips through.** §5.9.3 rule 2 is *"the composer writes to stdin and renders
@@ -212,6 +268,24 @@ subtype, request_id, response, pending_permission_requests, pending_user_dialog_
 ```
 
 and the **inner** `response` is the payload:
+
+🚨 **Correction: the double nesting is the CONTROL PROTOCOL's, not `initialize`'s.** This warning
+was written inside the `initialize` section and read as a quirk of that one heavy verb. It is not.
+`set_permission_mode` has exactly the same envelope — §8's quoted ack is
+`{"response":{"subtype":"success","request_id":…,"response":{"mode":"acceptEdits"}}}`, and its
+`mode` lives at `response.response.mode` for the same reason `models` lives at
+`response.response.models`. The rule is per *verb*, and it is about presence rather than depth:
+
+| Verb | Outer envelope | Inner payload |
+|---|---|---|
+| `set_model` | `subtype`, `request_id` | 🚨 **none at all** — a bare ack. This is what forces the console to keep showing the *confirmed* model and mark the destination separately (§2) |
+| `set_permission_mode` | same | `{"mode":"acceptEdits"}` — the verb states its own result |
+| `initialize` | same, **plus** `pending_permission_requests` / `pending_user_dialog_requests` | the 23 KB object holding `models` |
+
+So a consumer needs the two nestings **named apart**, not special-cased for one verb.
+`agent_event.rs::ControlResponse` does it with `body` (the envelope, kept whole so an unread field
+is not lost) and `payload()` (the inner object, `None` for a bare ack and for every error), with
+`mode()` and `models()` reading through the latter.
 
 ```
 commands, agents, output_style, available_output_styles, models, account, pid,
@@ -264,6 +338,25 @@ empty."
 
 Read plainly: `models` is already selectable-only, and a third-party host is *expected* to see
 nothing else. Design the plate against `models` alone and treat `unavailable_models` as absent.
+
+### 3a. ⚠️ `pending_permission_requests` and `pending_user_dialog_requests` have NO measured element shape
+
+**Both keys are on the envelope in the capture and both were EMPTY.** Nothing here records what one
+of their elements looks like, because no session in this pass had an approval or a dialog
+outstanding when `initialize` was asked — the request was sent last, after every turn had finished.
+So what is established is exactly two things: the keys exist, and they are arrays.
+
+🚨 **A consumer needs a fresh measurement, not a guess.** The obvious guess — that an element is
+shaped like the `can_use_tool` control_request of §11 — is plausible and completely unverified, and
+these are the two lists through which a **held approval** would reach a console that reconnects to
+a session already asking for one. Guessing wrong there means either dropping a question the agent
+is blocked on or drawing a card for something that was never asked.
+
+**What is implemented, and it deliberately decides nothing:**
+`ControlResponse::pending_permission_requests()` / `::pending_user_dialog_requests()` return
+`&[serde_json::Value]` — the raw elements, unparsed and un-modelled. Nothing in the console reads
+them today. The probe that would settle it is small and needs staging rather than cleverness: raise
+a permission prompt, leave it unanswered, and send `initialize` while it is outstanding.
 
 ⚠️ **Two more caveats before treating `initialize` as free.** It is a **heavy** response — it also
 returns every slash command with its full description, and every agent; the captured line was
@@ -336,12 +429,39 @@ unambiguous subscription. For the model it has none: the model appears only in a
 `<local-command-stdout>` narration of §2b. They are not symmetric and should not be implemented as
 though they were.
 
-### 4b. PROPOSED, NOT DECIDED — splitting the init handling
+### 4b. ✅ RESOLVED — splitting the init handling
 
-⏸ **The following is a proposal. It has not been agreed, and it is recorded here so that the
-decision is made deliberately rather than inside an implementation PR.**
+✅ **James ruled, the ruling is written into the spec this section proposed amending
+(`doc/console_spike_execution_plan.md` §5.9.3 rule 3), and it is implemented.** The proposal below
+is kept verbatim because it is the argument the ruling was made on — but it is no longer open, and
+this heading used to say it was.
 
-**§5.9.3 rule 3 is not wrong — it is under-specified.** It reads, verbatim:
+🚨 **A document asserting that a settled question is open is worse than one that never raised it.**
+A reader who trusts it either re-opens a decision that was made or, worse, implements the
+unamended rule and produces the exact failure §4 describes. That is why this is corrected in place
+rather than annotated at the bottom.
+
+**What was decided**, in one line: `model` and `permission_mode` are **latest-init-wins**; `cwd`,
+`cli_version`, `tools` and `mcp_servers` stay **first-init-wins**. That answers both of the two
+questions this section listed as genuinely open —
+
+- **`tools` and `mcp_servers` stay first-init-wins.** The deferred-loading growth *is* the
+  different case: 33 → 128 and 0 → 4 across two inits of one session with nothing asked to change,
+  and 102 → 131 in another with no model change at all. Adopting the later figure would make the
+  count *look* live while actually reporting load progress.
+- **The tests were re-scoped, not deleted.** `a_second_init_does_not_overwrite_the_first` is now
+  `a_second_init_does_not_overwrite_the_sessions_identity` and asserts the same thing about the
+  fields that did not move; `repeat_session_starts` still counts rather than discards, exactly as
+  this section predicted would survive either answer.
+
+Implemented as `SessionFacts::record_init` (identity, first only) and
+`SessionFacts::record_repeat_init` (two fields, and an empty string is absence rather than a
+change, so a later init reporting no model leaves the plate alone).
+
+---
+
+**The proposal, as it was written.** **§5.9.3 rule 3 is not wrong — it is under-specified.** It
+reads, verbatim:
 
 > 🚨 **`system/init` recurs mid-stream** — a second one arrived before turn two of the live
 > session, same `session_id`, different field count. Only the first establishes identity; a later
@@ -355,7 +475,7 @@ where the conversation began" anchor), and make `model` and `permissionMode` **l
 
 🚨 **This amends a settled spec** (`doc/console_spike_execution_plan.md` §5.9.3 rule 3), which is
 James's call and not this document's. Two things about it are genuinely open, beyond the
-amendment itself:
+amendment itself — ✏️ *both answered above*:
 
 - whether `tools` and `mcp_servers` should also be latest-wins, or whether the deferred-loading
   growth above makes them a different case;
@@ -600,11 +720,50 @@ naming the situation in plain language — `"status_category":"blocked"`,
 right there on the stream. It is also held for milestone 2 by §5.9.3's own "held" list, so it is
 noted, not proposed.
 
-### 10a. PROPOSED, NOT DECIDED — the mode-safety policy
+### 10a. ANSWERED IN THE BUILD, and not by the axis this proposed — the mode-safety policy
 
-⏸ **The following is a proposal. James has not ruled on it.**
+✏️ **The control is implemented, so the questions below are answered in the sense that something
+had to be built.** ⚠️ **That is weaker than §4b's status and is labelled differently on purpose:**
+§4b was ruled on and the ruling is written into the spec it amends; this was settled by a design
+decision inside an implementation, against James's brief *"we need to make what it does
+unmistakable for the don't ask policy."* Nothing here is a written ruling, and a later one may
+overturn it.
 
-**The proposal:** the mode strip offers only modes that preserve the console's authority — i.e.
+**What the build does, against the three open questions in order:**
+
+- **`dontAsk` is offered, with its consequence as its label rather than as a warning.** The picker
+  has exactly three rows and each is titled by *what happens*, not by the mode's name — `dontAsk`
+  reads *"no approval cards at all — anything needing permission is refused, and the console is
+  never asked."* The sentence is the label, not a tooltip: a hover puts the one thing that matters
+  behind a gesture nobody makes while deciding.
+- **An unmeasured mode is withheld from the picker and still shown when it arrives.** `plan` and
+  `auto` are not offered — the control that governs authority is the wrong place to guess — and
+  `bypassPermissions` is not offered because §9's refusal would make it a dead button. But a mode
+  arriving from *outside* the picker (a session spawned with `--permission-mode`) is reported on
+  the plate and marked like any other. **The shortlist governs what can be chosen, never what can
+  be shown**, and an unrecognised mode gets a marker precisely because it is the case where "the
+  console may not be the one being asked" cannot be ruled out.
+- 🚨 **The third question — whether "preserves the console's authority" is even the right axis —
+  is answered NO, and that is the substantive change.** This section proposed *removing* modes
+  that take the console's authority away. The build instead **keeps the choice and makes the
+  consequence impossible to miss**: whenever the reported mode is not `default`, a marker sits on
+  the band for as long as that stays true. Not a confirmation dialog — a dialog clicked through at
+  the moment of choosing is exactly the warning people stop reading, and the hazard is not that
+  moment, it is the hours afterwards when the band still looks like the authority. ⚠️ It is amber
+  and not red for the same reason: this band is looked at constantly, and a permanent klaxon is
+  one the eye learns to skip, which would leave the console back where it started.
+
+📌 The marker is *derived* (`conversation_view::strip_content` builds it from the reported mode
+every frame) rather than raised as an event, so it cannot get stuck on, cannot get stuck off, and
+cannot be dismissed. And §10's rendering consequence — `system/permission_denied` with
+`decision_reason_type: "mode"` drawn as its own thing rather than as a red tool error — is **not
+built**, and remains the honest gap in this: the band says the mode is silencing approvals, and
+the individual refusal it causes still arrives looking like an ordinary tool failure.
+
+---
+
+**The proposal, as it was written.** The mode strip offers only modes that preserve the console's
+authority — i.e.
 modes under which a gated tool still reaches the console's handler and still produces a card.
 `dontAsk` does not qualify on the measurement above; `default` and `acceptEdits` did qualify for
 the one gate reason tested (§11); `bypassPermissions` cannot be selected at all (§9); `plan` and
@@ -739,7 +898,9 @@ These follow from the captures and are not proposals:
 5. **`dontAsk` removes the console's approval cards while leaving it looking like the authority**
    (§10).
 6. **A `<local-command-stdout>` user message lands on the stream on every model switch** and will
-   render as a fake human turn unless it is filtered or specially rendered (§2b).
+   render as a fake human turn unless it is filtered or specially rendered (§2b). ✏️ It is now
+   filtered, on the wrapper alone — **not** on the `content` shape, which §2b's correction explains
+   is not usable — and every suppression is counted so the predicate is watchable.
 
 ## Open, and worth one run each when it matters
 
@@ -752,12 +913,26 @@ These follow from the captures and are not proposals:
   pre-blessed-scratchpad trap that makes it awkward).
 - **Whether `initialize` is safe to send at an arbitrary point**, or only pre-first-turn. It was
   measured safe when sent **last**; nothing establishes the general case.
+- ⚠️ **Whether `initialize` in particular is answered before a session's first `system/init`** —
+  which is what the build now does at spawn (§1). The verb measured landing that early was
+  `set_permission_mode`; `initialize` is the heaviest of the twelve and was never sent first. The
+  20 s deadline is what makes a wrong guess here degrade to an **empty model picker** rather than
+  to a stuck tab, so this is a measurement worth taking and not a risk worth holding the feature
+  for.
+- ⚠️ **The element shape of `pending_permission_requests` / `pending_user_dialog_requests`** (§3a).
+  Both were empty in every capture; both are the path a *held* approval would arrive by. Staging,
+  not cleverness: leave a permission prompt outstanding and send `initialize` while it is.
+- **Rendering `system/permission_denied` with `decision_reason_type: "mode"` as its own thing**
+  (§10's closing note). The band now says the mode is silencing approvals; the individual refusal
+  it causes still looks like an ordinary red tool error.
 - **`interrupt`** — in the accepted subtype set and advertised in `init.capabilities`, never
   exercised, and the console has no other way to stop a running turn.
 - **`--fork-session`**, for the case where a tab should branch rather than continue.
 - **`--permission-prompt-tool stdio` versus the in-process MCP server** as the console's permanent
   approval transport (§12) — the comparison, not the switch.
-- **The two proposals above** (§4b, §10a), which are decisions rather than measurements.
+✏️ **Removed from this list**: the two proposals (§4b, §10a), which were decisions rather than
+measurements and have both been taken — §4b by a ruling written into the spec, §10a by a design
+decision in the build. Each section carries which, and how strong a claim that is.
 
 ---
 

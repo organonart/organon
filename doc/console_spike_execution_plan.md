@@ -704,8 +704,38 @@ in a real capture, and getting any of them wrong produces a view that looks near
    blocks. **The composer writes to stdin and renders nothing**; the transcript renders only
    what returns. That is what makes ordering free rather than a splice-and-hope.
 3. 🚨 **`system/init` recurs mid-stream** — a second one arrived before turn two of the live
-   session, same `session_id`, different field count. Only the first establishes identity; a
-   later one must not reset or re-initialise the transcript.
+   session, same `session_id`, different field count. Only the first establishes **transcript
+   identity**; a later one must not reset or re-initialise the transcript. **Exactly two fields
+   are latest-wins: `model` and `permissionMode`.** Everything else in a repeat init —
+   `tools`, `mcp_servers`, `cwd`, `cli_version` — stays first-init-wins.
+
+   ⚡ **Amendment, 2026-08-12 (James).** Measured in `doc/console_session_control_protocol.md`
+   §4/§4a (commit 31fe6a3), which proposed the split; this is the ruling on it. The rule
+   originally ended ~~"Only the first establishes identity; a later one must not reset or
+   re-initialise the transcript"~~ with no field carved out, and it was **correct for what it
+   was written against**: the capture behind it had a second init that carried nothing worth
+   adopting, and what it protects is real — a repeat init is a *complete* 22-key restatement,
+   so a decoder that took it wholesale would re-anchor the transcript on a session that never
+   restarted. That half stands unchanged. It was under-specified, not wrong: nothing in the
+   measurement said identity *fields* may not be refreshed, and the two halves separate cleanly.
+
+   **What forced the split.** A model change arrives *only* as a repeat init — `line 1
+   model=claude-opus-5[1m]` → `line 19 model=claude-sonnet-5`, same `session_id`. Under the
+   unamended rule the model genuinely changes and the status strip's plate keeps saying
+   `claude-opus-5[1m]` until the tab closes: a working feature that looks broken, with nothing
+   visibly wrong to point at.
+
+   🚨 **And this is why "just take the later init" is the wrong repair.** Between those same two
+   inits `tools` went **33 → 128** and `mcp` **0 → 4**, in a session where nothing was asked to
+   change about tools — deferred MCP tools had simply finished loading. A third init in another
+   session grew **102 → 131 with no model change at all**. **An init is not a change
+   notification**; it recurs for reasons that have nothing to do with the strip, and adopting it
+   whole would make the tool count flicker as a side effect of load timing.
+
+   📌 The two exceptions are not symmetric either. `set_permission_mode` emits a dedicated
+   `{"type":"system","subtype":"status","permissionMode":…}` (§4a), so **the mode has a clean
+   event source and the model does not** — the mode plate has two sources and the model plate
+   has only the repeat init.
 4. **`total_cost_usd` is session-cumulative while the sibling `usage` is per-turn.** Turn two's
    cache-read figure was exactly turn one's plus its own. **Never sum costs across results** —
    take the latest.

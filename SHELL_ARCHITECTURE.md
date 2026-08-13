@@ -546,15 +546,33 @@ that looks *nearly* right if got wrong:
    which cwd, what the turn cost, what the standing is. None of that is an `Element`, so
    it accumulates in `SessionFacts` and the status strip reads it from `facts()`.
 
-**`SessionFacts` — three retention rules, and one list of refusals.** Each field has
+**`SessionFacts` — ✏️ four retention rules now, and one list of refusals.** Each field has
 exactly one rule, and the rule *is* the correctness:
 
 | Source | Rule | Carried |
 |---|---|---|
-| `system/init` | **first init wins** (rule 3) | `model` (verbatim, `[1m]` suffix intact — trimming it editorialises a measurement), `cwd`, `permission_mode`, `cli_version`, `tools` count, `mcp_servers` as `(name, status)` |
+| `system/init` | **first init wins** (rule 3) | `cwd`, `cli_version`, `tools` count, `mcp_servers` as `(name, status)` |
+| `system/init` (a *repeat* one) | ✏️ **latest init wins** (rule 3's amendment) | `model` (verbatim, `[1m]` suffix intact — trimming it editorialises a measurement), `permission_mode` |
 | `result` | **latest wins, never summed** | `cost_usd`, `last_turn_usage`, `last_turn_duration_ms` |
 | `system/post_turn_summary` | **latest wins**, all three replaced as a unit | `last_status_detail`, `needs_action`, `status_category` |
 | `rate_limit_event` | **latest wins** | `rate_limit_status`, `rate_limit_type`, `rate_limit_resets_at` |
+
+🚨 **The two `system/init` rows are the seam, and they are two rows rather than one because
+the rule genuinely differs by field.** `model` and `permission_mode` are the two things a
+live control can change, and a changed model is restated *nowhere but a repeat init* — so
+first-init-wins there would pin the plate to a model the session had stopped using.
+Everything else in a repeat init stays standing, because `tools` and `mcp_servers` grow as
+deferred MCP tools finish loading rather than because anything changed. **An empty string
+in a later init is absence, not a change**, so an init reporting no model leaves the
+standing one alone rather than blanking the plate. Split across
+`SessionFacts::record_init` and `::record_repeat_init`; the argument is under "The two
+plates became controls" below.
+
+📌 **`permission_mode` has a second source and `model` has none**, which is the asymmetry
+that section is built around: `set_permission_mode` also emits a dedicated
+`{"type":"system","subtype":"status","permissionMode":…}` line, taken latest-wins as well,
+so the mode plate is right whichever of the two arrives first. Either alone would cover
+the measured order; taking both costs nothing and removes an ordering assumption.
 
 🚨 **`total_cost_usd` is already cumulative across the session while its sibling `usage`
 is per turn.** Adding two results counts the whole session so far twice — on the live
@@ -749,7 +767,11 @@ snapshot date, a gateway's fully-qualified id), which is a strip lying about whi
 you are talking to. Everything else the session said about itself — the verbatim model
 string, permission mode, CLI version, cwd, tool count, MCP roster, rate limit, session id —
 is on that plate's **hover**, because it is identity rather than status and a strip that
-grows a second row has stopped being a strip. Then, dim and right-aligned, at most three
+grows a second row has stopped being a strip. ✏️ **The permission mode has since been
+promoted out of the hover onto a plate of its own** — it stayed on the hover as well,
+because it is still identity, but a setting that can silence the console's approvals is
+not something a hand should have to discover by hovering. Both plates are now **controls**;
+the next subsection is what that cost. Then, dim and right-aligned, at most three
 chips (session cost, remembered decisions, last turn's wall time) and the most recent
 diagnostic line off the child, truncated rather than wrapped.
 
@@ -764,6 +786,163 @@ were. And the
 cost chip is labelled **`session`** while per-turn tokens are not shown at all: `cost_usd`
 accumulates on the wire and `last_turn_usage` does not, so one band carrying both would
 invite a reader to add them up.
+
+##### The two plates became controls — and what a control had to prove first
+
+✏️ The model plate and a new permission-mode plate beside it are now **clickable**. The
+band stopped only reporting the two facts it exists for and started changing them, on the
+live session, with no respawn. `doc/console_session_control_protocol.md` is the
+measurement — every wire shape in it captured against `claude.exe` 2.1.228 — and this
+section is what building against it cost, which is a different list from what it promised.
+
+**The wire is the pipe the console already owns.** A `control_request` line goes down the
+same stdin turns go down; a `control_response` comes back on the same stdout events come
+back on. `set_model` acked in **272 ms**, `set_permission_mode` in **17 ms**, and no
+handshake was needed first. `agent_session.rs::control_request_line` builds the line
+through `serde_json` rather than by formatting a string, and its bytes are pinned
+**byte-equivalent against the sentences the protocol doc quotes from the capture** — a
+typo in a subtype comes back as `Unsupported control request subtype: …`, which a user
+experiences as "the picker does nothing".
+
+🚨 **Correlation is the entire hazard, and it is why `ControlDesk` is a separate type.** A
+response carries a `request_id` the console invented **and nothing else** saying which
+verb it answers — `set_model`'s ack has no body at all. So exactly one place in the
+console knows that an id means "the model change", and it is testable without a process:
+an id issued, an ack matched, an ack belonging to nobody, a request never answered.
+📌 The other end of that seam is `agent_map.rs` recording **no fact** from an ack, on
+purpose: the mapper never issued the request and cannot know what a `request_id` answers,
+and two writers for one field where one of them is guessing is worse than one clean
+source.
+
+⚠️ **Nothing is ever gated on an ack. `CONTROL_DEADLINE` is 20 s and it releases a marker
+rather than unblocking a wait.** The composer, the transcript and the strip never wait on
+a control; the deadline exists so an unanswered request cannot leave a plate marked
+"switching" forever. It is a **sweep on the pane's existing per-frame pump** — no timer,
+no thread, no queue — and a request is recorded in flight *before* the write, because a
+write that failed half way and one that reached the CLI are indistinguishable from this
+side and the safe reading is that it might have. **Twenty seconds is set by the slowest
+request, not the fastest:** the two acks above are sub-second, but `initialize` goes out
+at spawn, where §6 measured a **1.3–3.3 s** band to a session's first announcement while
+MCP servers and skills warm up. Twenty is ~6× the top of that.
+
+**The model list is asked for once, at spawn, and is the only source there is.**
+`Control::Initialize`'s answer carries a per-account `models` array with display names
+written for humans, so no model table exists anywhere in this crate to go stale — an empty
+list draws a picker that says the list has not arrived, which is the honest rendering of
+"this session did not answer". 📌 Asking at spawn has a side effect worth recording on its
+own: `system/init` was measured to arrive **only once input is pending**, so a tab nobody
+had typed into never announced itself and the strip sat on "no model yet". The
+`initialize` line *is* input — so the plate now learns its model at spawn rather than at
+the first human turn.
+
+⚠️ **Two rows of that list can both be current, and that is not a bug**: `default` and
+`opus[1m]` both resolve to `claude-opus-5[1m]` in the capture, so current-ness is matched
+on `resolvedModel` **and** `value` — which is what the CLI's own schema says
+`resolvedModel` is for.
+
+🚨 **The pending plate, and the reasoning is the interesting part.** `set_model`'s ack
+carries **no body**, and the new model is stated only by the *repeat* `system/init` that
+follows. So between the click and that init the console knows what it **asked for** and
+not what it **got**. Asserting the new name would be the plate lying about the one fact it
+exists to report; asserting nothing would make the click look dead. So the plate keeps the
+**confirmed** model and draws the destination beside it as a dim italic `→ Sonnet`. ⚠️ It
+clears when **the reported model moves at all** — deliberately *not* when it equals a
+predicted string: `set_model` takes an alias, the session reports a resolved id, and the
+resolution table is the CLI's, so predicting it would strand the marker on every alias
+this build has not met. And selecting the row already in use is a **no-op**, because
+`set_model` to the current model produces an ack and no repeat init — the marker would
+have nothing to clear it and would sit there until the deadline.
+
+**That plate only works because rule 3 was amended, and the amendment is James's.** A
+repeat `system/init` is the *only* place a changed model is ever restated, and rule 3 as
+written kept the first init forever — so the model would have genuinely changed while the
+plate said `claude-opus-5[1m]` until the tab closed. **`model` and `permission_mode` are
+now latest-init-wins; `cwd`, `cli_version`, `tools` and `mcp_servers` stay
+first-init-wins.** ⚠️ Taking the whole later init would be the wrong repair and that is
+measured too: between the same two inits `tools` went 33 → 128 and `mcp` 0 → 4 with
+nothing asked to change, because deferred MCP tools had finished loading. **An init is a
+restatement, not a change notification.** The ruling is written into
+`doc/console_spike_execution_plan.md` §5.9.3 rule 3; the test that pinned the old
+behaviour was **re-scoped and renamed**
+(`a_second_init_does_not_overwrite_the_sessions_identity`) rather than deleted, because
+what it was protecting is still true of every field the amendment did not name.
+
+🚨 **A model switch also emits a user-role message that would have rendered as a turn the
+human never typed.** The CLI narrates itself as
+`<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>`,
+and it arrives *before* the ack, so waiting cannot suppress it. It is now withheld — and
+the predicate is narrow on purpose, because **swallowing a real sentence is far worse than
+showing a spurious one**: exactly one text element, `strip_prefix` **and** `strip_suffix`
+rather than `contains` (so a human may quote the tag inside a larger message), and
+⚠️ deliberately **not** keyed on `isReplay`, which is `true` on genuine human turns too —
+replay is how a human turn reaches the transcript at all — so requiring it would exclude
+nothing real while letting a future unflagged narration through. The one residual false
+positive is a human whose *entire* message is a verbatim wrapper pair, and
+`MapStats::local_commands_suppressed` counts every suppression **separately from
+`unmapped`** precisely so that number climbing while somebody is typing is how that would
+be caught. `control_responses` is counted apart from `unmapped` for the same reason: "the
+CLI answered us" and "we drew nothing for a stream event" are different facts.
+
+**The permission-mode control is designed around the mode that can silence the console.**
+Put a session in `dontAsk` and 🚨 **it is not a bypass that lets things through** —
+prompts never reach the console's handler and gated tools come back **refused**
+(`decision_reason_type: "mode"`), while the console still passes
+`--permission-prompt-tool`, still holds the handler and still *looks* like the authority.
+The user's experience is "the agent suddenly cannot do anything and nobody asked me why."
+Three consequences, on James's brief that *"we need to make what it does unmistakable for
+the don't ask policy"*:
+
+- **Exactly three rows, each labelled by what happens rather than by the mode's name.**
+  "dontAsk" tells a reader nothing; *"no approval cards at all — anything needing
+  permission is refused, and the console is never asked"* tells them everything. The
+  consequence is the **label, not a tooltip** — a hover puts the one sentence that matters
+  behind a gesture nobody makes while deciding.
+- **Three omissions, each for its own reason.** `bypassPermissions` is refused outright by
+  a session the console did not launch with `--dangerously-skip-permissions`, so the row
+  would be a dead button; `plan` and `auto` were never measured against the console's
+  handler, and the control governing authority is the wrong place to guess.
+- ⚠️ **The marker is persistent, not a confirmation.** Whenever the reported mode is not
+  `default`, it sits on the band for as long as that stays true. A dialog clicked through
+  at the moment of choosing is exactly the warning people stop reading, and the hazard is
+  not that moment — it is the hours afterwards. It is **derived in `strip_content`** from
+  the reported mode every frame, so it cannot get stuck on, cannot get stuck off, and
+  cannot be dismissed. 📌 Amber, deliberately **not** `BAD`'s red: this band is looked at
+  for hours, and a permanent klaxon is one the eye learns to skip — which would leave the
+  console exactly where it started.
+
+⚠️ **A mode arriving from outside the picker is still reported and still marked.** A
+session spawned with `--permission-mode`, or one an unrecognised future mode reaches, gets
+a marker too — the rule the band keeps is *"say so whenever the console may not be the one
+being asked"*, and an unknown mode is precisely the case that cannot be ruled out. **The
+shortlist governs what can be chosen, never what can be shown.**
+
+📌 The mode plate needed none of the pending machinery, and the asymmetry is the wire's
+rather than a design choice: `set_permission_mode`'s ack states its own result **and** the
+CLI emits a dedicated `system/status` line carrying the new mode. The mode has two clean
+sources; the model has only the repeat init. Implementing the two as though they were
+symmetric is the trap the protocol doc names.
+
+##### The tofu fix — three glyphs the proportional font does not have
+
+James saw two empty boxes on screen where a rule should have been, and the same class of
+defect turned out to be at three sites: **egui's proportional face carries no box-drawing
+or block-element glyphs**, and a missing glyph draws as tofu rather than failing. The
+three fixes are deliberately **not** the same fix, because the right answer depends on
+what the glyph sits in:
+
+| Site | Was | Now | Why not the other fix |
+|---|---|---|---|
+| the run-end rule | `──` (U+2500 ×2) | `—` (U+2014) | a rule leading into small dim **proportional** text does not want to become monospace, and an em dash is the mark a typesetter would have reached for anyway |
+| the streaming caret | `▍` (U+258D) | `\|` | it is concatenated into the agent's prose, which is proportional on purpose — so the glyph changes rather than the face |
+| the strip's `◈` / `●` | unchanged | `.monospace()` at the **draw** site | the strings stay exactly as they were, so every existing test still pins them |
+
+📌 The precedent already existed — the approval card's `◈ may I` was monospace — and had
+simply not been generalised. `the_bands_symbols_are_the_ones_the_mono_face_has_to_draw`
+now asserts that no character in `U+2500..=U+259F` may appear in a band reading, which
+pins the strings; the `.monospace()` in `strip_box` is the other half, and only a person
+can confirm that half.
+
+#### The scrollback's own elements — a tool call as a card, and a control panel in the flow
 
 **The inline artifact, and why it is the milestone.** A terminal receives a tool call as
 whatever text the harness chose to print. The event stream carries it structured — name,
@@ -992,7 +1171,7 @@ integrated is not unsupported, it is supported the old way.
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. Then, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
-| Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: the console's own verbs served as capability tools (needs a `CommandService` reachable from the serve thread — `NoDispatch` is the named seam), so a card can say *"organon · background"* instead of a shell command; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` |
+| Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; then the console's own verbs served as capability tools (needs a `CommandService` reachable from the serve thread — `NoDispatch` is the named seam), so a card can say *"organon · background"* instead of a shell command; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -1070,21 +1249,47 @@ path silently breaks the three-products-simultaneously guarantee that
   while Shift+Enter inserts a newline, confirmed by keypress** — the one thing a green
   build could not have told anyone, because egui's shift-permissive matching fails
   silently. His words were *"it's all working beautifully."*
-- 🚨 **The status strip has never been seen on screen by anyone.** It landed *after* the
-  binary James checked was linked, so what sat under the composer in that session was still
-  the old one-line session id. Every decision in it is pinned headless — the priority
-  ordering, the model split, the chip labels, the band's height with everything in it and
-  with nothing in it — and 313 green tests in the compositor lib are not a substitute for
-  having looked at it once. What nobody can answer yet: whether the model plate reads as an
-  identity rather than as a debug field, whether the hover is discoverable at all when
-  nothing on screen suggests hovering, and whether a truncated diagnostic line beside three
-  chips is legible at real width. **`Standing::Generating` joins that list and adds a
-  question only a person can settle**: whether the documented fall-through to "ready"
-  between two messages of one turn reads as an honest gap or as a flicker, since a
-  frame-or-two blink is precisely the kind of thing a fixture cannot have an opinion about.
-  ⚠️ And the coordinator cannot find out — its synthetic
-  clicks do not reach this app and its synthetic keystrokes leak into another window (demo
-  script beat 7), so this needs a person at the keyboard exactly as the surface does.
+- ✏️ **The status strip HAS now been seen on screen — and only the strip that was there
+  when he looked.** This entry used to read *"the status strip has never been seen on
+  screen by anyone"*, and that is no longer true: James drove a live conversation tab on
+  organon-one on 2026-08-12 with the strip and the composer under it, and his words were
+  *"It's a great start. It's working very well."* So the two questions this entry existed
+  to ask are answered for the band as it stood — the model plate reads as an identity, and
+  the band is legible at real width.
+
+  🚨 **Everything added to the strip since is unseen, and the list is longer than the seen
+  part.** None of these has been drawn in front of a human: **`Standing::Generating`**
+  (and with it the question only a person can settle — whether the documented fall-through
+  to "ready" between two messages of one turn reads as an honest gap or as a flicker,
+  since a frame-or-two blink is exactly what a fixture cannot have an opinion about); the
+  **model picker** and its `→ Sonnet` pending annotation; the **permission-mode plate**,
+  its picker, and the persistent amber marker whose whole design claim is that it stays
+  legible across hours without becoming wallpaper; and the **tofu fix**, of which only the
+  first of the three sites was ever confirmed broken on screen and none of the three has
+  been confirmed *fixed* on screen. **353 green tests in the compositor lib are not a
+  substitute for having looked once** — and the strings being pinned is explicitly only
+  half of the tofu fix, since the `.monospace()` that makes them draw is at the draw site
+  where no test can reach it.
+
+  ⚠️ Two questions from the original entry also remain open, because nothing since has
+  addressed them: whether the model plate's **hover is discoverable at all** when nothing
+  on screen suggests hovering — a question that now costs more, since the mode plate's
+  hover is where the full consequence sentence for the mode in use lives — and whether a truncated
+  diagnostic line beside three chips is legible when the band is also carrying two plates
+  and a marker. ⚠️ And the coordinator cannot find out — its synthetic clicks do not reach
+  this app and its synthetic keystrokes leak into another window (demo script beat 7), so
+  this needs a person at the keyboard exactly as the surface does.
+- 🚨 **No control has been clicked by a human, and the two failure modes that would show
+  up first are the two nothing headless can reach.** `set_model` and `set_permission_mode`
+  are pinned byte-for-byte against the protocol doc's captured lines, the correlation is
+  tested with an ack matched, an ack belonging to nobody and a request never answered, and
+  the deadline sweep is tested against a clock — but **no request has gone down a real
+  pipe from a real click**. What that leaves genuinely open: whether the pending `→ Sonnet`
+  annotation clears in a time a person reads as *responsive* (the repeat `system/init` is
+  the only thing that clears it, and nothing measured says how long after the ack it
+  arrives), and whether `initialize` at spawn is answered at all before the session's first
+  init — a case the protocol doc measured for `set_permission_mode` and **not** for
+  `initialize`, whose failure is a silently empty model picker.
 - 🚨 **The rendered surface has never been drawn on screen by the session that wrote it.**
   The model link, the visibility test, the panel→surface join, the cap's eviction order and
   every knob's lane are pinned headless. Nothing headless can answer the questions that

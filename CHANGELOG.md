@@ -11,6 +11,112 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the two plates the strip only reported became the two controls that change them
+
+- **The model plate and a new permission-mode plate beside it are clickable.** `set_model` and
+  `set_permission_mode` go down the same stdin turns go down and are acked on the same stdout
+  events come back on — no respawn, no session-continuity problem, no resume. Measured 272 ms and
+  17 ms against `claude.exe` 2.1.228; `doc/console_session_control_protocol.md` is the capture and
+  `agent_session.rs::control_request_line` is pinned **byte-equivalent against the sentences that
+  document quotes**, because a typo in a subtype comes back `Unsupported control request subtype:
+  …` and a user experiences that as "the picker does nothing". 353 tests in the compositor lib,
+  from 313.
+- 🚨 **Correlation is the whole hazard, so it is a type of its own.** A `control_response` carries
+  the `request_id` the console invented **and nothing else** saying which verb it answers —
+  `set_model`'s ack has no body at all. `ControlDesk` is the one place that knows an id means "the
+  model change", split out so it is testable without a process: an id issued, an ack matched, an
+  ack belonging to nobody, a request never answered. 📌 The other end of the same seam is
+  `agent_map` recording **no fact** from an ack, deliberately — it never issued the request and
+  cannot know, and two writers for one field where one is guessing is worse than one clean source.
+- ⚠️ **Nothing is ever gated on an ack.** `CONTROL_DEADLINE` is 20 s and it *releases a marker*
+  rather than unblocking a wait; the composer, transcript and strip never wait on a control. It is
+  a **sweep on the pane's existing per-frame pump** — no timer, no thread, no queue — and a request
+  is recorded in flight *before* the write, since a half-failed write and a delivered one are
+  indistinguishable from this side. **Twenty is set by the slowest request, not the fastest:** both
+  acks above are sub-second, but `initialize` goes out at spawn, where a **1.3–3.3 s** band to a
+  session's first announcement was measured while MCP servers and skills warm up.
+- **The model picker is built from the CLI's own `models` array and from nothing else** — asked
+  once, at spawn, so no table in this crate can go stale and an empty list draws a picker that says
+  the list has not arrived. 📌 Side effect worth having: `system/init` was measured to arrive only
+  once input is pending, so a tab nobody typed into never announced itself — the `initialize` line
+  *is* input, so the strip now learns its model at spawn instead of at the first human turn.
+  ⚠️ Two rows can both be current (`default` and `opus[1m]` resolve identically in the capture), so
+  current-ness matches on `resolvedModel` **and** `value`.
+- 🚨 **The pending plate: `set_model`'s ack carries no body, so between the click and the repeat
+  `system/init` the console knows what it ASKED FOR and not what it GOT.** Asserting the new name
+  would be the plate lying about the one fact it exists to report; asserting nothing would make the
+  click look dead. So the plate keeps the **confirmed** model and shows the destination beside it
+  as a dim italic `→ Sonnet`. ⚠️ It clears when **the reported model moves at all** — not when it
+  equals a predicted string, because `set_model` takes an alias, the session reports a resolved id,
+  and the alias→id table is the CLI's; predicting it would strand the marker on every alias this
+  build has not met. Selecting the row already in use is a **no-op**: `set_model` to the current
+  model produces an ack and no repeat init, so the marker would have nothing to clear it.
+- 🚨 **Rule 3 was amended to make that possible, and the ruling is James's.** A changed model is
+  restated *only* in a repeat `system/init`, which first-init-wins dropped — so the model would
+  have genuinely changed while the plate said `claude-opus-5[1m]` until the tab closed. **`model`
+  and `permission_mode` are now latest-init-wins; `cwd`, `cli_version`, `tools` and `mcp_servers`
+  stay first-init-wins.** ⚠️ Taking the whole later init would be the wrong repair and that is
+  measured too: between the same two inits `tools` went 33 → 128 and `mcp` 0 → 4 with nothing asked
+  to change, because deferred MCP tools had finished loading — **an init is a restatement, not a
+  change notification**. Written into `doc/console_spike_execution_plan.md` §5.9.3 rule 3; the test
+  that pinned the old behaviour was **re-scoped and renamed**
+  (`a_second_init_does_not_overwrite_the_sessions_identity`) rather than deleted.
+- 🚨 **The fake human turn is suppressed.** A model switch emits a user-role message wrapping
+  `<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>`, *before* the
+  ack, which would have rendered as a turn the human never typed. The predicate is narrow on
+  purpose — **swallowing a real sentence is far worse than showing a spurious one**: exactly one
+  text element, `strip_prefix` **and** `strip_suffix` rather than `contains` (so the tag stays safe
+  to quote inside a larger message), and ⚠️ deliberately **not** keyed on `isReplay`, which is
+  `true` on genuine human turns too — replay is how a human turn reaches the transcript at all — so
+  requiring it would exclude nothing real while letting a future unflagged narration through. The
+  one residual false positive is a human whose *entire* message is a verbatim wrapper pair, and
+  `MapStats::local_commands_suppressed` counts every suppression **apart from `unmapped`** so that
+  number climbing while somebody is typing is how it would be caught. `control_responses` is
+  counted apart for the same reason: "the CLI answered us" and "we drew nothing" are different
+  facts.
+- 🚨 **The permission-mode control is designed around the mode that can silence the console.**
+  `dontAsk` is **not** a bypass that lets things through — prompts never reach the console's
+  handler and gated tools come back **refused** (`decision_reason_type: "mode"`), while the console
+  still passes `--permission-prompt-tool` and still *looks* like the authority. On James's brief
+  (*"we need to make what it does unmistakable for the don't ask policy"*): exactly three rows,
+  **each labelled by what happens rather than by the mode's name**, with the consequence as the
+  label and not a tooltip — a hover puts the one sentence that matters behind a gesture nobody
+  makes while deciding. `bypassPermissions` is not offered (the CLI refuses it without a launch
+  flag we do not pass, so the row would be a dead button); `auto` and `plan` are not offered (never
+  measured, and the control governing authority is the wrong place to guess).
+- ⚠️ **The marker is persistent, not a one-time confirmation**, and it is *derived* in
+  `strip_content` from the reported mode every frame — so it is on the band exactly while the mode
+  is non-default, and cannot get stuck on, stuck off, or dismissed. A dialog clicked through at the
+  moment of choosing is the warning people stop reading; the hazard is the hours afterwards. 📌
+  Amber, deliberately **not** red: this band is looked at constantly and a permanent klaxon trains
+  the eye to skip it. ⚠️ A mode arriving from **outside** the picker is still reported and still
+  marked — **the shortlist governs what can be chosen, never what can be shown**.
+- **Three tofu sites fixed, with three different fixes because the right one depends on the
+  setting.** egui's proportional face carries no box-drawing or block-element glyphs and a missing
+  glyph draws as an empty box; James confirmed the first on screen. The run-end rule's `──`
+  (U+2500 ×2) becomes `—` (U+2014), because a rule leading into small dim **proportional** text
+  should not become monospace. The streaming caret's `▍` (U+258D) becomes `|`, because it is
+  concatenated into prose that is proportional on purpose — so the glyph changes rather than the
+  face. The strip's `◈`/`●` take `.monospace()` at the **draw site**, leaving the strings untouched
+  so every existing test still pins them. 📌 The precedent already existed (the approval card's
+  `◈ may I`) and had simply not been generalised; a new assertion forbids `U+2500..=U+259F` in any
+  band reading.
+- **`doc/console_session_control_protocol.md` corrected by the build, in place rather than as an
+  erratum.** Four things it got wrong or left dangling: **§4b was still headed "PROPOSED, NOT
+  DECIDED"** after James had ruled and the ruling had been written into the spec it amends — ⚠️ a
+  doc asserting a closed question is open is worse than one that never raised it, because a reader
+  either re-opens a settled decision or implements the unamended rule; **§3's double-nesting
+  warning read as `initialize`-specific and is not** (`set_permission_mode` has the same
+  `response.response.mode` envelope, which §8's own quoted line shows); **§2b's discriminator was
+  half wrong** — the string-vs-array `content` shape is unusable, since the console's own
+  `user_message_line` sends the array form and nothing guarantees the CLI will not, so **only the
+  wrapper carries the decision**; and **`pending_permission_requests` /
+  `pending_user_dialog_requests` had no recorded element shape** because both were empty in every
+  capture — now stated as unparsed, with the staging for the probe that would settle them. One new
+  open item, reported rather than glossed: **`initialize` at spawn runs slightly ahead of the
+  measurement** — §1's early-answered control was `set_permission_mode`, not `initialize` — and the
+  20 s deadline is what makes a wrong guess degrade to an empty picker rather than a stuck tab.
+
 ### Console Spike — the band can say the agent is thinking, and says nothing more than that
 
 - **`Standing::Generating` — `● generating`, fourth in the status strip's priority order.**

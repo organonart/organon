@@ -46,6 +46,22 @@
 //! - **Non-JSON lines share the pipe.** The first line of one capture is a plain-text
 //!   warning about stdin. It is reported as a [`DecodeError::NotJson`] carrying the
 //!   text — never swallowed, never fatal.
+//! - **The CLI speaks a control protocol on the same two pipes.** A `control_request`
+//!   line written to stdin comes back as a `control_response` on stdout, correlated by
+//!   a `request_id` *the caller invents*. Success and failure are distinct `subtype`s
+//!   of one envelope, so a caller can always tell whether its request took. See
+//!   [`ControlResponse`], and `doc/console_session_control_protocol.md` for the
+//!   captures.
+//! - **🚨 The `initialize` reply nests twice.** The **outer** `response` carries
+//!   `subtype`, `request_id`, `pending_permission_requests`,
+//!   `pending_user_dialog_requests` — and a second `response`, which is the actual
+//!   payload holding `models`, `account`, `current_permission_mode`. A consumer that
+//!   reaches for `response.models` finds nothing at all.
+//! - **🚨 A model switch narrates itself as a `user`-role line.** `set_model` emits
+//!   `"content":"<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>"`
+//!   with `isReplay: true`, *before* the ack — indistinguishable from a human turn by
+//!   its role, its flag or its position. [`UserTurn::local_command_output`] is the
+//!   discriminator; it is also the only place the CLI states the *resolved* model.
 //!
 //! # Degrading, by construction
 //!
@@ -132,6 +148,9 @@ pub enum EventKind {
     Finished(TurnResult),
     /// `rate_limit_event` — quota state, undocumented but present in every capture.
     RateLimit(RateLimit),
+    /// `control_response` — the answer to a `control_request` this console wrote to
+    /// stdin, correlated by the `request_id` the console chose.
+    ControlResponse(ControlResponse),
     /// A `type` this build does not know. Preserved whole so a newer CLI cannot
     /// silently lose information.
     Unknown { event_type: String, body: Value },
@@ -206,6 +225,16 @@ impl Notice {
     /// `system`/`status`: `requesting`, and friends.
     pub fn status(&self) -> Option<&str> {
         self.field("status")
+    }
+
+    /// `system`/`status`: the mode the session is now in.
+    ///
+    /// 📌 Present only on the instance that *reports a change* — `set_permission_mode`
+    /// emits `{"subtype":"status","status":null,"permissionMode":"acceptEdits"}` beside
+    /// its ack, whereas the ordinary `{"status":"requesting"}` line carries no such key.
+    /// So this is the mode's clean event source, and the model has no counterpart.
+    pub fn permission_mode(&self) -> Option<&str> {
+        self.field("permissionMode")
     }
 
     /// `system`/`task_summary`: a one-line gloss of what the agent is doing. Null on
@@ -353,7 +382,59 @@ impl UserTurn {
     pub fn human_text(&self) -> String {
         self.text.join("")
     }
+
+    /// 🚨 **The CLI narrating one of its own local commands, not a human speaking.**
+    ///
+    /// A `set_model` control emits a `user`-role line whose whole content is
+    /// `<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>`,
+    /// carrying `isReplay: true` and arriving *before* the ack. Nothing about its role,
+    /// its flag or its position tells it apart from the human's own replayed turn — the
+    /// wrapper is the only discriminator there is. Returns the text *inside* the
+    /// wrapper, which is where the resolved model id is stated.
+    ///
+    /// # Why this exact predicate
+    ///
+    /// ⚠️ Eating a genuine human turn is far worse than letting a spurious one through:
+    /// a user watching their own sentence vanish has no way to tell what happened,
+    /// whereas a stray line is visible and reportable. So the test is deliberately the
+    /// narrowest one that still recognises every observed shape — **the line's entire
+    /// text, trimmed, is one `<local-command-stdout>` element and nothing else**:
+    ///
+    /// * **Exactly one text element.** The measured shape is `content` as a bare string,
+    ///   which decodes to one; the console's own `user_message_line` sends an array of
+    ///   one text block, which also decodes to one. A line carrying prose *and* a
+    ///   wrapper is two elements and is not matched.
+    /// * **Prefix and suffix, not `contains`.** A human asking *"what does
+    ///   `<local-command-stdout>` mean?"* fails the prefix test, so the tag is safe to
+    ///   quote, discuss, or paste inside a larger message.
+    /// * **`isReplay` is deliberately NOT part of the test.** It is `true` on this line
+    ///   *and* on every genuine human turn (the replay is how a human turn reaches the
+    ///   transcript at all), so requiring it would exclude nothing real while letting a
+    ///   future un-flagged narration through.
+    ///
+    /// The one remaining false positive is a human whose *complete* message is a
+    /// verbatim `<local-command-stdout>…</local-command-stdout>` pair — an act of typing
+    /// a CLI-internal marker and nothing else, and the price of not having a flag.
+    pub fn local_command_output(&self) -> Option<&str> {
+        let [only] = self.text.as_slice() else {
+            return None;
+        };
+        only.trim()
+            .strip_prefix(LOCAL_COMMAND_OPEN)?
+            .strip_suffix(LOCAL_COMMAND_CLOSE)
+    }
+
+    /// Whether [`local_command_output`](Self::local_command_output) matched — the CLI
+    /// talking about itself rather than the human talking.
+    pub fn is_local_command_output(&self) -> bool {
+        self.local_command_output().is_some()
+    }
 }
+
+/// The wrapper the CLI narrates a local command's output with. Measured on `set_model`;
+/// `/model` over stdin produces the same shape (protocol doc §2b, §5).
+const LOCAL_COMMAND_OPEN: &str = "<local-command-stdout>";
+const LOCAL_COMMAND_CLOSE: &str = "</local-command-stdout>";
 
 /// The discrimination trap 3 exists to close: which kind of `user` line this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,6 +479,183 @@ impl ToolOutcome {
             _ => String::new(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// control_response
+// ---------------------------------------------------------------------------
+
+/// The CLI's answer to a `control_request`.
+///
+/// The console writes `{"type":"control_request","request_id":…,"request":{"subtype":…}}`
+/// to the same stdin it sends turns down, and the answer comes back on the same stdout
+/// it reads events from. **The `request_id` is the caller's to invent** — the CLI echoes
+/// it back verbatim, and it is the only correlation there is, because responses carry no
+/// hint of which verb they answer.
+///
+/// # The two nestings, which are not the same nesting
+///
+/// The line is `{"type":"control_response","response":{…}}`. That inner object — the
+/// *envelope* — is what [`body`](Self::body) holds: `subtype`, `request_id`, and (§3)
+/// `pending_permission_requests` / `pending_user_dialog_requests`.
+///
+/// 🚨 A **successful** envelope may then carry a *second* `response`, which is the
+/// verb's actual payload and is what [`payload`](Self::payload) returns. `set_model`
+/// sends none at all; `set_permission_mode` sends `{"mode":"acceptEdits"}`; `initialize`
+/// sends the 23 KB object holding [`models`](Self::models). A consumer that reads
+/// `response.models` off the envelope finds nothing, which is why this type separates
+/// the two by name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlResponse {
+    /// The id this console chose when it wrote the request, echoed back. Absent only if
+    /// a future CLI stops echoing it.
+    pub request_id: Option<String>,
+    /// `success`, `error`, or whatever a newer CLI answers with. Verbatim.
+    pub subtype: String,
+    /// What the answer says.
+    pub outcome: ControlOutcome,
+    /// The whole envelope object, so a field this build does not read is not lost.
+    pub body: Value,
+}
+
+/// Success, failure, or a subtype this build has not met.
+///
+/// Failure is a distinct subtype rather than a silent drop — measured against
+/// `bypassPermissions`, which the CLI refuses in its own words — so a caller can always
+/// tell whether its request took.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControlOutcome {
+    /// `subtype: "success"`. `payload` is the *inner* `response` — absent for verbs that
+    /// answer with a bare ack, such as `set_model`.
+    Success { payload: Option<Value> },
+    /// `subtype: "error"`, carrying the CLI's own sentence. Worth surfacing verbatim: it
+    /// says *why* a control was refused in language written for a human.
+    Error { message: String },
+    /// A subtype this build does not know. Counted by the consumer, never fatal — the
+    /// envelope survives whole on [`ControlResponse::body`].
+    Unrecognised,
+}
+
+impl ControlResponse {
+    /// Whether the request took.
+    pub fn is_success(&self) -> bool {
+        matches!(self.outcome, ControlOutcome::Success { .. })
+    }
+
+    /// The CLI's refusal text, for an error response.
+    pub fn error(&self) -> Option<&str> {
+        match &self.outcome {
+            ControlOutcome::Error { message } => Some(message.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The **inner** `response` — the verb's payload. `None` for a bare ack and for
+    /// every non-success outcome.
+    pub fn payload(&self) -> Option<&Value> {
+        match &self.outcome {
+            ControlOutcome::Success { payload } => payload.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// A string field of the payload.
+    pub fn payload_field(&self, key: &str) -> Option<&str> {
+        self.payload()
+            .and_then(|payload| payload.get(key))
+            .and_then(Value::as_str)
+    }
+
+    /// `set_permission_mode`'s confirming body: the mode the session ended up in. Unlike
+    /// `set_model`, this verb states its result, so a strip can confirm rather than
+    /// assume.
+    pub fn mode(&self) -> Option<&str> {
+        self.payload_field("mode")
+    }
+
+    /// `initialize`'s reading of the same thing, under its own key.
+    pub fn current_permission_mode(&self) -> Option<&str> {
+        self.payload_field("current_permission_mode")
+    }
+
+    /// `initialize`'s `models` — the selectable menu, per account, with display names
+    /// written for humans. **This is why no model table is hardcoded anywhere.**
+    ///
+    /// A row that does not deserialise is skipped rather than guessed at; the array
+    /// survives whole on [`body`](Self::body) either way.
+    pub fn models(&self) -> Vec<ModelChoice> {
+        self.model_rows("models")
+    }
+
+    /// ⚠️ **INFERRED, and expected to be empty forever.** The key appears in the CLI's
+    /// schema and in **zero** captures: it is documented as populated only for
+    /// allowlisted first-party hosts, and omitted when empty. Tolerated because reading
+    /// a key that never arrives costs nothing; never required, and never the source of
+    /// a menu — [`models`](Self::models) is already selectable-only.
+    pub fn unavailable_models(&self) -> Vec<ModelChoice> {
+        self.model_rows("unavailable_models")
+    }
+
+    /// Approvals the CLI is already holding, from the `initialize` envelope. Shape
+    /// unmeasured — none were outstanding in the capture — so kept verbatim.
+    pub fn pending_permission_requests(&self) -> &[Value] {
+        self.envelope_list("pending_permission_requests")
+    }
+
+    /// The dialog-request counterpart, same provenance and same caution.
+    pub fn pending_user_dialog_requests(&self) -> &[Value] {
+        self.envelope_list("pending_user_dialog_requests")
+    }
+
+    fn model_rows(&self, key: &str) -> Vec<ModelChoice> {
+        self.payload()
+            .and_then(|payload| payload.get(key))
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| serde_json::from_value::<ModelChoice>(row.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn envelope_list(&self, key: &str) -> &[Value] {
+        self.body
+            .get(key)
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
+/// One selectable model, as `initialize` reports it.
+///
+/// ⚠️ **Effort support is per row, not universal.** Four of the five rows this account
+/// was offered carry `supportsEffort` with `supportedEffortLevels`; the `haiku` row
+/// carries neither key. Both therefore default rather than being required, and a picker
+/// must treat an empty [`effort_levels`](Self::effort_levels) as "this model does not
+/// take one" rather than as a decode failure.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct ModelChoice {
+    /// What `set_model` takes — an alias (`sonnet`), a full id, or `default`.
+    #[serde(default)]
+    pub value: String,
+    /// The canonical wire id this row resolves to, e.g. `sonnet` →
+    /// `claude-sonnet-5`. Exists so a host can match a *persisted* explicit id back to
+    /// the alias row that covers it.
+    #[serde(default, rename = "resolvedModel")]
+    pub resolved_model: Option<String>,
+    /// Written for a human: `Default (recommended)`, `Opus (1M context)`, …
+    #[serde(default, rename = "displayName")]
+    pub display_name: Option<String>,
+    /// A sentence of guidance, also written for a human.
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, rename = "supportsEffort")]
+    pub supports_effort: bool,
+    /// `low`, `medium`, `high`, `xhigh`, `max` — empty when the row carries none.
+    #[serde(default, rename = "supportedEffortLevels")]
+    pub effort_levels: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +977,7 @@ pub fn decode_value(value: Value) -> Result<AgentEvent, DecodeError> {
         "stream_event" => decode_stream(&map),
         "result" => decode_result(&map),
         "rate_limit_event" => decode_rate_limit(&map),
+        "control_response" => decode_control_response(&map),
         _ => EventKind::Unknown {
             event_type,
             body: Value::Object(map),
@@ -894,6 +1153,40 @@ fn decode_rate_limit(map: &Map<String, Value>) -> EventKind {
     })
 }
 
+/// `{"type":"control_response","response":{…}}` — the envelope is the inner object, and
+/// a *successful* envelope may nest the verb's payload one level deeper still.
+///
+/// A line with no `response` object at all still becomes a `ControlResponse` with an
+/// empty envelope rather than an error: there is nothing to read, but a caller waiting
+/// on a `request_id` learns more from a malformed answer than from silence.
+fn decode_control_response(map: &Map<String, Value>) -> EventKind {
+    let envelope = match map.get("response") {
+        Some(Value::Object(envelope)) => envelope.clone(),
+        _ => Map::new(),
+    };
+    let subtype = string_at(&envelope, "subtype").unwrap_or_default();
+    let outcome = match subtype.as_str() {
+        "success" => ControlOutcome::Success {
+            // The verb's own payload. `set_model` answers with none; `null` is the same
+            // absence as a missing key.
+            payload: envelope
+                .get("response")
+                .filter(|value| !value.is_null())
+                .cloned(),
+        },
+        "error" => ControlOutcome::Error {
+            message: string_at(&envelope, "error").unwrap_or_default(),
+        },
+        _ => ControlOutcome::Unrecognised,
+    };
+    EventKind::ControlResponse(ControlResponse {
+        request_id: string_at(&envelope, "request_id"),
+        subtype,
+        outcome,
+        body: Value::Object(envelope),
+    })
+}
+
 fn content_blocks(content: Option<&Value>) -> Vec<ContentBlock> {
     match content {
         Some(Value::Array(items)) => items.iter().map(content_block).collect(),
@@ -985,6 +1278,32 @@ mod tests {
     /// might send, which no capture on this machine happens to contain.
     const EDGES: &str = include_str!("../fixtures/claude_stream_edges.jsonl");
 
+    /// The `initialize` control_response, transcribed from the measurement in
+    /// `doc/console_session_control_protocol.md` §3 — the envelope's five keys and the
+    /// five model rows that account was offered, with the first row's fields verbatim.
+    /// Trimmed only where the capture is bulk the console never reads: the real line was
+    /// 23 824 bytes because it also lists every slash command and agent in full.
+    const INITIALIZE: &str = concat!(
+        r#"{"type":"control_response","response":{"subtype":"success","request_id":"req-init-1","#,
+        r#""response":{"commands":[{"name":"model"}],"agents":[],"output_style":"default","#,
+        r#""available_output_styles":["default","Explanatory"],"models":["#,
+        r#"{"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default (recommended)","#,
+        r#""description":"Opus 5 with 1M context · Best for everyday, complex tasks","supportsEffort":true,"#,
+        r#""supportedEffortLevels":["low","medium","high","xhigh","max"],"supportsAdaptiveThinking":true,"#,
+        r#""supportsFastMode":true,"supportsAutoMode":true},"#,
+        r#"{"value":"opus[1m]","resolvedModel":"claude-opus-5[1m]","displayName":"Opus (1M context)","#,
+        r#""description":"Opus 5 with 1M context","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},"#,
+        r#"{"value":"claude-fable-5[1m]","resolvedModel":"claude-fable-5","displayName":"Fable","#,
+        r#""description":"Fable 5","supportsEffort":true,"supportedEffortLevels":["low","medium","high"]},"#,
+        r#"{"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet","#,
+        r#""description":"Sonnet 5 · Balanced","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},"#,
+        r#"{"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku","#,
+        r#""description":"Haiku 4.5 · Fastest"}],"#,
+        r#""account":{"email":"someone@example.com"},"pid":4321,"current_permission_mode":"default","#,
+        r#""remote_control_auto_enable":false,"fast_mode_state":"off","fast_mode_disabled_reason":null},"#,
+        r#""pending_permission_requests":[],"pending_user_dialog_requests":[]}}"#,
+    );
+
     fn events(text: &str) -> Vec<AgentEvent> {
         decode_all(text)
             .into_iter()
@@ -994,6 +1313,13 @@ mod tests {
 
     fn kinds(text: &str) -> Vec<EventKind> {
         events(text).into_iter().map(|event| event.kind).collect()
+    }
+
+    fn user_turn(line: &str) -> UserTurn {
+        match decode_line(line).expect("a user line decodes").kind {
+            EventKind::User(turn) => turn,
+            other => panic!("expected User, got {other:?}"),
+        }
     }
 
     // -- the capture decodes, whole -----------------------------------------
@@ -1706,6 +2032,268 @@ mod tests {
         assert!(stream
             .iter()
             .any(|event| matches!(event, StreamEvent::BlockDelta { delta: Delta::Signature(_), .. })));
+    }
+
+    // -- the control protocol -----------------------------------------------
+
+    fn control(line: &str) -> ControlResponse {
+        match decode_line(line).expect("a control response decodes").kind {
+            EventKind::ControlResponse(response) => response,
+            other => panic!("expected ControlResponse, got {other:?}"),
+        }
+    }
+
+    /// CONTRACT: a `set_model` ack is a success carrying the caller's own `request_id`
+    /// and **no payload at all**. Quoted from the capture in the protocol doc §1 — a
+    /// `request_id` that is not a UUID is echoed back verbatim, because the console
+    /// invented it.
+    #[test]
+    fn a_bare_ack_is_a_success_with_no_payload() {
+        let response = control(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"req-model-1"}}"#,
+        );
+        assert!(response.is_success());
+        assert_eq!(response.request_id.as_deref(), Some("req-model-1"));
+        assert_eq!(response.subtype, "success");
+        assert!(response.payload().is_none(), "set_model answers with a bare ack");
+        assert!(response.error().is_none());
+        assert!(response.mode().is_none(), "and states no resulting model either");
+    }
+
+    /// CONTRACT: `set_permission_mode`'s ack **does** carry a body naming the resulting
+    /// mode, so a caller can confirm rather than assume. The asymmetry with `set_model`
+    /// is measured, not a decoding artefact.
+    #[test]
+    fn a_permission_mode_ack_states_the_resulting_mode() {
+        let response = control(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"req-perm-1","response":{"mode":"acceptEdits"}}}"#,
+        );
+        assert!(response.is_success());
+        assert_eq!(response.mode(), Some("acceptEdits"));
+        assert_eq!(response.request_id.as_deref(), Some("req-perm-1"));
+    }
+
+    /// CONTRACT: failure is a distinct subtype carrying the CLI's own sentence — never a
+    /// silent drop. The quoted refusal is what lets a picker say *why* a mode is
+    /// unavailable in the CLI's words rather than ours.
+    #[test]
+    fn an_error_response_keeps_the_clis_own_refusal() {
+        let response = control(
+            r#"{"type":"control_response","response":{"subtype":"error","request_id":"m-bypass","error":"Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions"}}"#,
+        );
+        assert!(!response.is_success());
+        assert_eq!(response.request_id.as_deref(), Some("m-bypass"));
+        assert!(
+            response.error().unwrap().starts_with("Cannot set permission mode to bypassPermissions"),
+            "{:?}",
+            response.error()
+        );
+        assert!(response.payload().is_none(), "an error has no verb payload");
+    }
+
+    /// 🚨 CONTRACT: **the `initialize` reply nests twice.** The envelope carries the
+    /// subtype and the pending-request lists; the payload — a second `response` inside
+    /// it — carries the models. Reading `models` off the envelope finds nothing, which
+    /// is the whole reason this is a test and not a comment.
+    #[test]
+    fn the_initialize_payload_is_the_inner_response_not_the_envelope() {
+        let response = control(INITIALIZE);
+        assert!(response.is_success());
+        assert_eq!(response.request_id.as_deref(), Some("req-init-1"));
+        // The envelope's own fields, which are NOT the payload.
+        assert!(response.pending_permission_requests().is_empty());
+        assert!(response.pending_user_dialog_requests().is_empty());
+        assert!(
+            response.body.get("models").is_none(),
+            "the envelope must not be mistaken for the payload"
+        );
+        // …and the payload, one level deeper.
+        assert_eq!(response.current_permission_mode(), Some("default"));
+        assert_eq!(response.payload_field("output_style"), Some("default"));
+        assert_eq!(response.models().len(), 5);
+    }
+
+    /// CONTRACT: the models list is the menu a plate needs — value, resolved id, display
+    /// name, description — and ⚠️ **effort support is per row**. The `haiku` row carries
+    /// neither `supportsEffort` nor `supportedEffortLevels`, and must decode as a normal
+    /// row with no effort rather than as a failure.
+    #[test]
+    fn the_models_list_carries_display_names_and_per_row_effort() {
+        let models = control(INITIALIZE).models();
+        let values: Vec<&str> = models.iter().map(|m| m.value.as_str()).collect();
+        assert_eq!(values, vec!["default", "opus[1m]", "claude-fable-5[1m]", "sonnet", "haiku"]);
+
+        let sonnet = models.iter().find(|m| m.value == "sonnet").expect("the sonnet row");
+        assert_eq!(sonnet.resolved_model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(sonnet.display_name.as_deref(), Some("Sonnet"));
+        assert!(sonnet.supports_effort);
+        assert_eq!(sonnet.effort_levels, ["low", "medium", "high", "xhigh", "max"]);
+
+        let first = &models[0];
+        assert_eq!(first.resolved_model.as_deref(), Some("claude-opus-5[1m]"));
+        assert!(first.description.as_deref().unwrap().contains("1M context"));
+
+        let haiku = models.iter().find(|m| m.value == "haiku").expect("the haiku row");
+        assert!(!haiku.supports_effort, "the row carries the key not at all");
+        assert!(haiku.effort_levels.is_empty(), "absent is not a decode failure");
+        assert_eq!(haiku.resolved_model.as_deref(), Some("claude-haiku-4-5-20251001"));
+    }
+
+    /// ⚠️ CONTRACT: `unavailable_models` is **INFERRED and appears in zero captures** —
+    /// its own schema says it is populated only for allowlisted first-party hosts and
+    /// omitted when empty. So it is tolerated if it ever shows up and is empty when it
+    /// does not. Never required, and never the source of a menu.
+    #[test]
+    fn unavailable_models_is_tolerated_when_absent_and_read_when_present() {
+        assert!(
+            control(INITIALIZE).unavailable_models().is_empty(),
+            "the measured payload does not carry the key at all"
+        );
+        let with = control(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"models":[],"unavailable_models":[{"value":"opus-zdr","displayName":"Opus (excluded by ZDR)","disabled":true}]}}}"#,
+        );
+        assert!(with.models().is_empty());
+        let rows = with.unavailable_models();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, "opus-zdr");
+        assert!(!rows[0].supports_effort);
+    }
+
+    /// CONTRACT: an unrecognised control subtype is decoded, not fatal, and the envelope
+    /// survives whole — the same degrading discipline the rest of this module keeps. A
+    /// consumer counts it; nothing throws it away.
+    #[test]
+    fn an_unrecognised_control_subtype_survives_whole() {
+        let response = control(
+            r#"{"type":"control_response","response":{"subtype":"partial","request_id":"req-9","progress":0.5}}"#,
+        );
+        assert_eq!(response.subtype, "partial");
+        assert_eq!(response.outcome, ControlOutcome::Unrecognised);
+        assert_eq!(response.request_id.as_deref(), Some("req-9"));
+        assert!(!response.is_success(), "unknown is not success");
+        assert!(response.error().is_none(), "and it is not an error either");
+        assert_eq!(response.body["progress"], 0.5, "nothing was dropped");
+    }
+
+    /// CONTRACT: a `control_response` with no envelope at all is still an event. A
+    /// caller blocked on a `request_id` learns more from a malformed answer arriving
+    /// than from a line that vanished.
+    #[test]
+    fn a_control_response_without_an_envelope_is_still_an_event() {
+        let response = control(r#"{"type":"control_response"}"#);
+        assert_eq!(response.subtype, "");
+        assert_eq!(response.outcome, ControlOutcome::Unrecognised);
+        assert!(response.request_id.is_none());
+        assert!(response.pending_permission_requests().is_empty());
+    }
+
+    /// The envelope's pending lists are read from the envelope, not the payload, and
+    /// their shape is kept verbatim because no capture ever carried one.
+    #[test]
+    fn pending_requests_are_read_off_the_envelope_verbatim() {
+        let response = control(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{},"pending_permission_requests":[{"tool_name":"Write"}],"pending_user_dialog_requests":[]}}"#,
+        );
+        assert_eq!(response.pending_permission_requests().len(), 1);
+        assert_eq!(response.pending_permission_requests()[0]["tool_name"], "Write");
+        assert!(response.pending_user_dialog_requests().is_empty());
+    }
+
+    // -- the fake human turn -------------------------------------------------
+
+    /// 🚨 CONTRACT: the `user`-role line a model switch emits is recognisable as the
+    /// CLI narrating itself, and its inner text — the only statement of the *resolved*
+    /// model anywhere on the wire — is recovered. Quoted from the capture, `isReplay`
+    /// and all.
+    #[test]
+    fn the_model_switch_narration_is_recognised_as_a_local_command() {
+        let turn = user_turn(
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>"},"session_id":"s-1","isReplay":true}"#,
+        );
+        assert_eq!(turn.voice(), UserVoice::Human, "by role and shape it IS a user line");
+        assert!(turn.replay, "and it carries the same flag a real human turn does");
+        assert!(turn.is_local_command_output());
+        assert_eq!(
+            turn.local_command_output(),
+            Some("Set model to sonnet (claude-sonnet-5)"),
+            "the resolved model is stated nowhere else"
+        );
+    }
+
+    /// 🚨 CONTRACT — **the direction that matters more.** A human turn is not eaten
+    /// because it mentions, quotes, or contains the wrapper. Each of these is a sentence
+    /// somebody could plausibly type while discussing this very bug, and every one of
+    /// them must survive.
+    #[test]
+    fn a_human_turn_that_merely_mentions_the_wrapper_is_not_swallowed() {
+        for text in [
+            "Set model to sonnet (claude-sonnet-5)",
+            "what does <local-command-stdout> mean?",
+            "the CLI emits <local-command-stdout>Set model to sonnet</local-command-stdout> before the ack",
+            "<local-command-stdout>Set model to sonnet</local-command-stdout> — why does that render?",
+            "please suppress <local-command-stdout>",
+            "</local-command-stdout>",
+        ] {
+            let line = serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+                "isReplay": true,
+            })
+            .to_string();
+            let turn = user_turn(&line);
+            assert!(
+                !turn.is_local_command_output(),
+                "a genuine human turn was mistaken for CLI narration: {text:?}"
+            );
+        }
+    }
+
+    /// The block-array form of the wrapper — the console's own `user_message_line` sends
+    /// an array of one text block, so the CLI could echo the narration that way too —
+    /// and surrounding whitespace, which trimming must not defeat the match.
+    #[test]
+    fn the_wrapper_is_recognised_in_the_block_form_and_around_whitespace() {
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [
+                { "type": "text", "text": "\n  <local-command-stdout>Set model to haiku</local-command-stdout>  \n" }
+            ]},
+        })
+        .to_string();
+        assert_eq!(user_turn(&line).local_command_output(), Some("Set model to haiku"));
+    }
+
+    /// A line carrying prose *beside* a wrapper is two text elements, and is a human
+    /// turn. ⚠️ Narrowness is the point: the predicate claims the whole line or nothing.
+    #[test]
+    fn a_wrapper_beside_human_prose_is_still_a_human_turn() {
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [
+                { "type": "text", "text": "<local-command-stdout>Set model to sonnet</local-command-stdout>" },
+                { "type": "text", "text": "and here is what I actually wanted" }
+            ]},
+        })
+        .to_string();
+        let turn = user_turn(&line);
+        assert!(!turn.is_local_command_output());
+        assert!(turn.human_text().contains("what I actually wanted"));
+    }
+
+    /// A tool result is not a local command, and asking must not panic on the empty
+    /// text of one.
+    #[test]
+    fn a_tool_result_line_is_not_a_local_command() {
+        let turn = kinds(TWO_TOOLS)
+            .into_iter()
+            .find_map(|kind| match kind {
+                EventKind::User(turn) => Some(turn),
+                _ => None,
+            })
+            .expect("captured");
+        assert_eq!(turn.voice(), UserVoice::ToolResponse);
+        assert!(!turn.is_local_command_output());
+        assert_eq!(turn.local_command_output(), None);
     }
 
     // -- error rendering ----------------------------------------------------

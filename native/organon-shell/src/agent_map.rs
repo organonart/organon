@@ -39,15 +39,44 @@
 //! flagged `isReplay`. The composer writes to stdin and renders nothing; the transcript
 //! renders only what returns. That is what makes ordering free instead of a
 //! splice-and-hope — and it is why this module maps replayed and genuine user text
-//! identically. There is nothing to tell apart.
+//! identically.
 //!
-//! # 3. `system/init` recurs; only the first establishes identity
+//! 🚨 **With exactly one exception, and rule 2 is why it exists.** Because the transcript
+//! trusts the stream completely, a `user`-role line the console never sent becomes a
+//! human turn with no further check — and the CLI emits one on every `set_model`,
+//! narrating itself as
+//! `<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>`
+//! with the same `isReplay: true` the human's own echo carries. It arrives *before* the
+//! ack, so waiting cannot suppress it. No
+//! [`HumanInput`](crate::conversation::AgentEvent::HumanInput) is emitted for a line
+//! [`UserTurn::local_command_output`](crate::agent_event::UserTurn::local_command_output)
+//! recognises; that method owns the predicate and argues its own narrowness, because
+//! swallowing a real turn is far worse than showing a spurious one. Tool results on such
+//! a line are unaffected — only the human-text half is withheld.
+//!
+//! # 3. `system/init` recurs; the first establishes IDENTITY, a later one refreshes TWO fields
 //!
 //! A second `init` arrived mid-stream in the live-session capture — same `session_id`,
-//! different field count — immediately before turn two. Only the first is mapped;
-//! later ones produce nothing, because
+//! different field count — immediately before turn two. It still maps to nothing:
 //! [`Transcript::apply`](crate::conversation::Transcript::apply) would open a fresh turn
-//! for them and the human input that follows opens one anyway.
+//! for it and the human input that follows opens one anyway.
+//!
+//! 🚨 **But the fields split, and this amends the rule as originally written**
+//! (`console_spike_execution_plan.md` §5.9.3 rule 3; James's ruling, recorded as a
+//! proposal in `doc/console_session_control_protocol.md` §4b). A live `set_model`
+//! genuinely changes the model, and **the only place the new value appears is a repeat
+//! `system/init`** — measured `line 1 model=claude-opus-5[1m]` → `line 19
+//! model=claude-sonnet-5`, same session id. First-init-wins for everything would leave
+//! the status strip lying about the one fact it exists to report. So `model` and
+//! `permissionMode` are **latest-wins**; identity is unchanged.
+//!
+//! ⚠️ **Adopting the whole later init would be wrong, and that is measured too.** Between
+//! the same two inits `tools` went 33 → 128 and `mcp_servers` 0 → 4 with nothing asked
+//! to change about either — MCP tools arrive *deferred*, so an init recurs simply because
+//! more of them finished loading. A third session grew 102 → 131 with **no model change
+//! at all**. An init is a restatement, not a change notification, so `tools`,
+//! `mcp_servers`, `cwd` and `cli_version` stay first-init-wins. See
+//! `SessionFacts::record_repeat_init`.
 //!
 //! # 4. `result` ends a TURN, not the stream
 //!
@@ -74,8 +103,18 @@
 //!
 //! Each field has one retention rule, and the rule is the whole of the correctness:
 //! **first-init-wins** for identity (rule 3 — a later init must not overwrite),
-//! **latest-wins** for everything that describes the most recent turn. Nothing is
-//! summed. See [`SessionFacts`] for what is deliberately *not* carried.
+//! **latest-wins** for everything that describes the most recent turn, and — the one
+//! seam between them — **latest-init-wins** for the two fields a live control can
+//! change. Nothing is summed. See [`SessionFacts`] for what is deliberately *not*
+//! carried.
+//!
+//! 📌 The two changeable fields are **not symmetric**, and implementing them as though
+//! they were is the trap. `set_permission_mode` emits a dedicated
+//! `{"type":"system","subtype":"status","permissionMode":…}` alongside its ack — a
+//! cheap, unambiguous subscription. `set_model` emits **no such event**: the new model
+//! surfaces only in the repeat init above, in the next assistant message, and in the
+//! `<local-command-stdout>` narration rule 2 suppresses. So the mode is read from both
+//! its own event and a later init; the model has only the one source.
 //!
 //! # 7. A live turn state is not a fact, and only one of the two signals can carry it
 //!
@@ -145,6 +184,19 @@ pub struct MapStats {
     /// An `input_json_delta` whose block index named no open tool call. Never observed;
     /// counted so a stream shape change cannot hide.
     pub orphan_argument_fragments: u64,
+    /// A `user` line that was the CLI narrating a local command rather than the human
+    /// speaking (rule 2's exception), withheld from the transcript.
+    ///
+    /// ⚠️ Counted separately from [`unmapped`](Self::unmapped) on purpose: this is the
+    /// one place the mapper *suppresses* something it fully understood, and the whole
+    /// risk of doing so is that the predicate might one day match a real turn. A number
+    /// that climbs while the user is typing is how that would be caught.
+    pub local_commands_suppressed: u64,
+    /// A `control_response` — an answer to something the console asked, which belongs to
+    /// whatever holds the `request_id`, not to the transcript. Counted rather than
+    /// folded into [`unmapped`](Self::unmapped): "the CLI answered us" and "we drew
+    /// nothing for a stream event" are different facts.
+    pub control_responses: u64,
 }
 
 /// What the session says about itself, as the stream says it (rule 6).
@@ -174,20 +226,37 @@ pub struct MapStats {
 /// `Transcript::turns()` instead, which it measured itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionFacts {
-    // -- from `system/init`, FIRST INIT WINS (rule 3) ------------------------
+    // -- from `system/init`, LATEST INIT WINS (rule 3's amendment) -----------
     /// e.g. `claude-opus-5[1m]`. **Verbatim, suffix included** — that suffix is part of
     /// what the CLI reported, and trimming it would be editorialising a measurement.
+    ///
+    /// 🚨 **Latest-init-wins, unlike its neighbours.** A live `set_model` announces the
+    /// new value nowhere but a repeat `system/init`, so first-init-wins here would pin
+    /// the plate to a model the session stopped using.
     pub model: Option<String>,
+    /// `default`, `acceptEdits`, `bypassPermissions`, … as given.
+    ///
+    /// Latest-wins from **two** sources: a later `system/init`, and the dedicated
+    /// `system/status` line carrying `permissionMode` that `set_permission_mode` emits
+    /// beside its ack. Either alone would be enough for the measured order; taking both
+    /// means the strip is right whichever arrives.
+    pub permission_mode: Option<String>,
+
+    // -- from `system/init`, FIRST INIT WINS (rule 3) ------------------------
     /// The directory the agent operates in.
     pub cwd: Option<String>,
-    /// `default`, `acceptEdits`, `bypassPermissions`, … as given.
-    pub permission_mode: Option<String>,
     /// The CLI's own version. Reported, never compared against.
     pub cli_version: Option<String>,
     /// How many tools the agent was given. The names are on the event if ever needed;
     /// the count is what a strip can show.
+    ///
+    /// ⚠️ **First-init-wins on purpose, even though a later init reports more.** The
+    /// count grew 33 → 128 across two inits of one session purely because deferred MCP
+    /// tools finished loading. Adopting the later figure would make the count *look*
+    /// live while actually reporting loading progress.
     pub tools: usize,
-    /// `(name, status)` per MCP server, in the order the init listed them.
+    /// `(name, status)` per MCP server, in the order the init listed them. First-init
+    /// -wins, for the same deferred-loading reason as [`tools`](Self::tools).
     pub mcp_servers: Vec<(String, String)>,
 
     // -- from `result`, LATEST WINS ------------------------------------------
@@ -219,8 +288,9 @@ pub struct SessionFacts {
 }
 
 impl SessionFacts {
-    /// Rule 3's other half. The caller guarantees this is the **first** init; a later one
-    /// returns before reaching here, so identity cannot be overwritten mid-stream.
+    /// Rule 3's other half. The caller guarantees this is the **first** init: it is the
+    /// only one that establishes identity, and a later one reaches
+    /// [`record_repeat_init`](Self::record_repeat_init) instead.
     fn record_init(&mut self, start: &SessionStart) {
         self.model = non_empty(&start.model);
         self.cwd = non_empty(&start.cwd);
@@ -232,6 +302,25 @@ impl SessionFacts {
             .iter()
             .map(|server| (server.name.clone(), server.status.clone()))
             .collect();
+    }
+
+    /// 🚨 Rule 3's amendment: **exactly two fields follow a later init, and no others.**
+    ///
+    /// `model` and `permissionMode` are the two things a live control can change, and a
+    /// repeat init is the only place `model` is ever restated. Everything else the init
+    /// carries is deliberately left standing — `tools` and `mcp_servers` because their
+    /// growth is deferred loading rather than change, `cwd` and `cli_version` because
+    /// they are the transcript's identity and rule 3 still governs them in full.
+    ///
+    /// An empty string is absence, not a change: a later init that reports no model
+    /// leaves the standing one alone rather than blanking the plate.
+    fn record_repeat_init(&mut self, start: &SessionStart) {
+        if let Some(model) = non_empty(&start.model) {
+            self.model = Some(model);
+        }
+        if let Some(mode) = non_empty(&start.permission_mode) {
+            self.permission_mode = Some(mode);
+        }
     }
 
     /// Latest wins. Never sums — see the type docs on `cost_usd`.
@@ -253,6 +342,16 @@ impl SessionFacts {
     /// rather than the subtype string, so a notice carrying none of them (`status`,
     /// `task_summary`) changes nothing.
     fn record_notice(&mut self, notice: &Notice) {
+        // 📌 The mode's own event source, and the reason the two changeable fields are
+        // not implemented symmetrically. `set_permission_mode` emits
+        // `{"type":"system","subtype":"status","status":null,"permissionMode":…}` beside
+        // its ack — the same `system/status` shape whose other observed value is
+        // `{"status":"requesting"}`, with `permissionMode` present only on the instance
+        // that reports a change. Keyed on the *field*, not the subtype, so any line that
+        // states the mode is heard and one that does not changes nothing.
+        if let Some(mode) = notice.permission_mode().and_then(non_empty) {
+            self.permission_mode = Some(mode);
+        }
         let detail = notice.status_detail();
         let category = notice.status_category();
         // `needs_action` is empty on turns that need nothing; the accessor already
@@ -369,6 +468,10 @@ impl EventMapper {
                 self.generating = false;
                 if self.session_started {
                     self.stats.repeat_session_starts += 1;
+                    // Rule 3's amendment, and the only thing that happens on this path
+                    // besides the count: two fields follow the later init, the flow
+                    // still gets nothing, and the counter still says one was dropped.
+                    self.facts.record_repeat_init(start);
                     return Vec::new();
                 }
                 self.session_started = true;
@@ -388,7 +491,16 @@ impl EventMapper {
                         is_error: result.is_error,
                     });
                 }
-                // Rule 2: replayed and genuine human text are the same thing here.
+                // Rule 2's one exception: the CLI narrating one of its own local
+                // commands is a `user` line the human never said. Counted as its own
+                // thing rather than as `unmapped` — this is a line we recognised and
+                // deliberately withheld, not one we had nothing to draw for. Only the
+                // human-text half is withheld; tool results went out above.
+                if turn.is_local_command_output() {
+                    self.stats.local_commands_suppressed += 1;
+                    return out;
+                }
+                // Rule 2 proper: replayed and genuine human text are the same thing.
                 let text = turn.human_text();
                 if !text.is_empty() {
                     out.push(cv::AgentEvent::HumanInput { text });
@@ -428,6 +540,17 @@ impl EventMapper {
             EventKind::RateLimit(limit) => {
                 self.facts.record_rate_limit(limit);
                 self.stats.unmapped += 1;
+                Vec::new()
+            }
+            // An answer to a request the console itself wrote to stdin, correlated by a
+            // `request_id` this module never issued and therefore cannot interpret. It
+            // renders nothing into the flow and — deliberately — leaves **no fact**
+            // behind either: the mode a `set_permission_mode` ack confirms arrives
+            // independently as a `system/status` line, and reading both would be two
+            // writers for one field where one of them cannot tell which verb it is
+            // answering. Counted so a control the console sends is never simply gone.
+            EventKind::ControlResponse(_) => {
+                self.stats.control_responses += 1;
                 Vec::new()
             }
             EventKind::Unknown { .. } => {
@@ -872,13 +995,20 @@ mod tests {
         assert!(facts.mcp_servers.is_empty(), "the capture ran with none");
     }
 
-    /// Rule 3 on the facts. The capture really does carry a second `system/init`
-    /// (fixture line 7) and the mapper really does drop it — but the two agree field for
-    /// field, so the capture alone cannot tell "did not overwrite" from "overwrote with
-    /// identical values". So the captured line is replayed into the same mapper with its
-    /// identity fields changed: an overwrite would now be visible.
+    /// Rule 3 on the facts, **as amended**. The capture really does carry a second
+    /// `system/init` (fixture line 7) and the two agree field for field, so the capture
+    /// alone cannot tell "did not overwrite" from "overwrote with identical values". So
+    /// the captured line is replayed into the same mapper with every field changed, and
+    /// the split is then visible in one place: the transcript's identity — `cwd` and the
+    /// CLI version — is held at what the first init said, while `model` and
+    /// `permissionMode` follow the later one because a live control can change them and
+    /// nothing else on the wire reports it.
+    ///
+    /// ⚠️ The line must still render nothing and must still be counted: the amendment is
+    /// about which *facts* a repeat init refreshes, not about letting one back into the
+    /// flow.
     #[test]
-    fn a_second_init_does_not_overwrite_the_first() {
+    fn a_second_init_does_not_overwrite_the_sessions_identity() {
         let (_, mut m) = fold(LIVE_SESSION);
         assert_eq!(m.stats().repeat_session_starts, 1, "the capture's own second init");
         let line = LIVE_SESSION
@@ -888,16 +1018,274 @@ mod tests {
             .expect("the capture carries two inits")
             .replace("claude-opus-5[1m]", "a-different-model")
             .replace(r"C:\\work\\demo", r"C:\\elsewhere")
-            .replace(r#""permissionMode":"default""#, r#""permissionMode":"bypassPermissions""#)
+            .replace(r#""permissionMode":"default""#, r#""permissionMode":"acceptEdits""#)
             .replace(r#""claude_code_version":"2.1.228""#, r#""claude_code_version":"9.9.9""#);
         let event = decode_line(&line).expect("the doctored init still decodes");
         assert!(m.map(&event).is_empty(), "a repeat init renders nothing");
         let facts = m.facts();
-        assert_eq!(facts.model.as_deref(), Some("claude-opus-5[1m]"));
-        assert_eq!(facts.cwd.as_deref(), Some(r"C:\work\demo"));
-        assert_eq!(facts.permission_mode.as_deref(), Some("default"));
+        assert_eq!(
+            facts.cwd.as_deref(),
+            Some(r"C:\work\demo"),
+            "identity is still the first init's, and a later one must not move it"
+        );
         assert_eq!(facts.cli_version.as_deref(), Some("2.1.228"));
+        assert_eq!(
+            facts.model.as_deref(),
+            Some("a-different-model"),
+            "the amendment: a repeat init is the ONLY place a live model change appears"
+        );
+        assert_eq!(facts.permission_mode.as_deref(), Some("acceptEdits"));
         assert_eq!(m.stats().repeat_session_starts, 2, "and it was counted, not silent");
+    }
+
+    /// One `system/init`, doctored per field. Enough of the shape to exercise the split
+    /// and nothing more.
+    fn init_line(model: &str, mode: &str, cwd: &str, version: &str, tools: &[&str], mcp: &[&str]) -> String {
+        serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s-1",
+            "cwd": cwd,
+            "model": model,
+            "permissionMode": mode,
+            "claude_code_version": version,
+            "tools": tools,
+            "mcp_servers": mcp.iter().map(|name| serde_json::json!({"name": name, "status": "connected"})).collect::<Vec<_>>(),
+        })
+        .to_string()
+    }
+
+    fn map_lines(lines: &[String]) -> EventMapper {
+        let mut m = EventMapper::new();
+        for line in lines {
+            m.map(&decode_line(line).expect("valid json"));
+        }
+        m
+    }
+
+    /// 🚨 CONTRACT — rule 3's amendment, forward direction. The measured sequence: line 1
+    /// says `claude-opus-5[1m]`/`default`, a `set_model` and a `set_permission_mode` land
+    /// mid-session, and line 19 of the same session id says `claude-sonnet-5`/
+    /// `acceptEdits`. Without this the plate keeps the old model until the tab is closed
+    /// — the strip lying about the one fact it exists to report.
+    #[test]
+    fn a_later_init_updates_the_model_and_the_permission_mode() {
+        let m = map_lines(&[
+            init_line("claude-opus-5[1m]", "default", r"C:\work", "2.1.228", &["Read"], &[]),
+            init_line("claude-sonnet-5", "acceptEdits", r"C:\work", "2.1.228", &["Read"], &[]),
+        ]);
+        assert_eq!(m.facts().model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(m.facts().permission_mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(m.stats().repeat_session_starts, 1, "still dropped from the flow, still counted");
+    }
+
+    /// 🚨 CONTRACT — the other direction, and the reason the whole later init must NOT be
+    /// adopted. ⚠️ Between the same two inits of the measured session `tools` went 33 →
+    /// 128 and `mcp_servers` 0 → 4 **with nothing asked to change about either**: MCP
+    /// tools arrive deferred, so an init recurs simply because more of them finished
+    /// loading. A third session grew 102 → 131 with no model change at all. So the split
+    /// is field-wise, not line-wise — proved here by changing the model on the very same
+    /// line that grows the roster.
+    #[test]
+    fn a_later_init_does_not_adopt_deferred_tools_the_mcp_roster_or_identity() {
+        let m = map_lines(&[
+            init_line("claude-opus-5[1m]", "default", r"C:\work", "2.1.228", &["Read", "Bash"], &[]),
+            init_line(
+                "claude-sonnet-5",
+                "default",
+                r"C:\somewhere-else",
+                "9.9.9",
+                &["Read", "Bash", "mcp__a__x", "mcp__a__y", "mcp__b__z"],
+                &["a", "b"],
+            ),
+        ]);
+        let facts = m.facts();
+        assert_eq!(facts.model.as_deref(), Some("claude-sonnet-5"), "the one field that follows");
+        assert_eq!(facts.tools, 2, "33 -> 128 was deferred loading, not a change to report");
+        assert!(facts.mcp_servers.is_empty(), "the roster is the first init's");
+        assert_eq!(facts.cwd.as_deref(), Some(r"C:\work"), "identity is rule 3's, unamended");
+        assert_eq!(facts.cli_version.as_deref(), Some("2.1.228"));
+    }
+
+    /// An empty field on a later init is absence, not a change. A repeat init that omits
+    /// the model must leave the standing one alone rather than blank the plate — the same
+    /// rule the first init already follows.
+    #[test]
+    fn a_later_init_with_an_empty_field_does_not_blank_a_standing_fact() {
+        let m = map_lines(&[
+            init_line("claude-opus-5[1m]", "default", r"C:\work", "2.1.228", &["Read"], &[]),
+            init_line("", "", r"C:\work", "2.1.228", &["Read"], &[]),
+        ]);
+        assert_eq!(m.facts().model.as_deref(), Some("claude-opus-5[1m]"));
+        assert_eq!(m.facts().permission_mode.as_deref(), Some("default"));
+    }
+
+    /// ⚠️ The ordering the amendment must not disturb: `generating` is cleared **before**
+    /// the repeat guard, because an init arriving mid-stream means the open message will
+    /// never reach its `message_stop`. Recording facts on that path happens after, and
+    /// changes nothing about it.
+    #[test]
+    fn a_later_init_still_clears_generating_before_it_records_anything() {
+        let mut m = EventMapper::new();
+        m.map(&decode_line(&init_line("claude-opus-5[1m]", "default", r"C:\w", "2.1.228", &[], &[])).unwrap());
+        m.map(
+            &decode_line(
+                r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_x"}}}"#,
+            )
+            .unwrap(),
+        );
+        assert!(m.is_generating(), "a message is open");
+        let repeat = init_line("claude-sonnet-5", "acceptEdits", r"C:\w", "2.1.228", &[], &[]);
+        assert!(m.map(&decode_line(&repeat).unwrap()).is_empty());
+        assert!(!m.is_generating(), "the interrupted message will never close");
+        assert_eq!(m.facts().model.as_deref(), Some("claude-sonnet-5"), "and the fact still landed");
+    }
+
+    // -- the permission mode's own event source ------------------------------
+
+    /// 📌 CONTRACT: `set_permission_mode` emits a dedicated
+    /// `{"type":"system","subtype":"status","permissionMode":…}` **in addition to** its
+    /// ack, and the strip reads it. This is the asymmetry the protocol names: the mode
+    /// has a clean event source and the model has none, so the mode is right the moment
+    /// it changes rather than at the next init.
+    #[test]
+    fn a_status_line_carrying_a_permission_mode_updates_the_strip() {
+        let m = map_lines(&[
+            init_line("claude-opus-5[1m]", "default", r"C:\w", "2.1.228", &["Read"], &[]),
+            r#"{"type":"system","subtype":"status","status":null,"permissionMode":"acceptEdits","session_id":"s-1"}"#.to_string(),
+        ]);
+        assert_eq!(m.facts().permission_mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(m.facts().model.as_deref(), Some("claude-opus-5[1m]"), "it says nothing about the model");
+        assert_eq!(m.facts().cwd.as_deref(), Some(r"C:\w"), "nor about identity");
+        assert_eq!(m.stats().unmapped, 1, "it still renders nothing, and is still counted");
+    }
+
+    /// ⚠️ The ordinary `{"status":"requesting"}` line carries no `permissionMode` and must
+    /// therefore leave the mode exactly as it stands. Keyed on the field, not the
+    /// subtype, so a status line that says nothing about the mode changes nothing.
+    #[test]
+    fn a_requesting_status_does_not_disturb_the_permission_mode() {
+        let m = map_lines(&[
+            init_line("claude-opus-5[1m]", "acceptEdits", r"C:\w", "2.1.228", &[], &[]),
+            r#"{"type":"system","subtype":"status","status":"requesting"}"#.to_string(),
+        ]);
+        assert_eq!(m.facts().permission_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    // -- rule 2's exception: the fake human turn -----------------------------
+
+    /// 🚨 CONTRACT: the `user`-role line `set_model` emits **must not become a human
+    /// turn**. It arrives before the ack, carries `isReplay: true` exactly as a real
+    /// human turn does, and decodes perfectly — so nothing but the wrapper stops the
+    /// transcript acquiring a sentence the human never said.
+    #[test]
+    fn the_model_switch_narration_never_becomes_a_human_turn() {
+        let lines = concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"switch to sonnet please"}]},"isReplay":true}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>"},"isReplay":true}"#,
+            "\n",
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"req-model-1"}}"#,
+            "\n",
+        );
+        let (t, m) = fold(lines);
+        let humans: Vec<String> =
+            t.elements().iter().filter_map(|e| e.human()).map(|h| h.text.clone()).collect();
+        assert_eq!(
+            humans,
+            vec!["switch to sonnet please"],
+            "the CLI's narration was rendered as something the human typed: {humans:?}"
+        );
+        assert_eq!(m.stats().local_commands_suppressed, 1, "withheld, and counted");
+        assert_eq!(m.stats().control_responses, 1, "the ack is the console's, not the transcript's");
+    }
+
+    /// 🚨 CONTRACT — **the direction that matters more.** A human turn that quotes or
+    /// discusses the wrapper is still a human turn. Swallowing a real message is far
+    /// worse than showing a spurious one: the user watches their own sentence vanish with
+    /// no way to tell what happened.
+    #[test]
+    fn a_human_turn_that_talks_about_the_wrapper_still_appears() {
+        let mut lines = String::new();
+        let said = [
+            "Set model to sonnet (claude-sonnet-5)",
+            "why does <local-command-stdout> render as me?",
+            "it emits <local-command-stdout>Set model to sonnet</local-command-stdout> before the ack",
+        ];
+        for text in said {
+            lines.push_str(
+                &serde_json::json!({
+                    "type": "user",
+                    "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+                    "isReplay": true,
+                })
+                .to_string(),
+            );
+            lines.push('\n');
+        }
+        let (t, m) = fold(&lines);
+        let humans: Vec<String> =
+            t.elements().iter().filter_map(|e| e.human()).map(|h| h.text.clone()).collect();
+        assert_eq!(humans, said.to_vec(), "a real human turn was eaten: {humans:?}");
+        assert_eq!(m.stats().local_commands_suppressed, 0, "nothing should have matched");
+    }
+
+    /// A narration line that also carried a tool result would still deliver the result —
+    /// only the human-text half is withheld. Never observed; pinned so a future shape
+    /// cannot lose a tool's output to the suppression.
+    #[test]
+    fn suppressing_a_narration_does_not_drop_a_tool_result_beside_it() {
+        // The decoder puts the wrapper in `text` and the result in `tool_results`; built
+        // literally rather than hoping a capture ever produces one.
+        let mixed = concat!(
+            r#"{"type":"user","message":{"role":"user","content":["#,
+            r#"{"type":"tool_result","tool_use_id":"toolu_1","content":"it worked"},"#,
+            r#"{"type":"text","text":"<local-command-stdout>Set model to haiku</local-command-stdout>"}"#,
+            r#"]},"isReplay":true}"#,
+            "\n",
+        );
+        let (t, m) = fold(mixed);
+        assert!(t.elements().iter().all(|e| e.human().is_none()), "no human turn");
+        assert_eq!(
+            t.elements().iter().filter_map(|e| e.tool()).count(),
+            1,
+            "the tool result must survive the suppression"
+        );
+        assert_eq!(m.stats().local_commands_suppressed, 1);
+    }
+
+    // -- the control protocol, at the seam -----------------------------------
+
+    /// CONTRACT: a `control_response` renders nothing and leaves no fact. It is an answer
+    /// to a request this module never issued, correlated by a `request_id` only the
+    /// caller can interpret — and the mode it confirms arrives independently as a
+    /// `system/status` line, so reading both would be two writers for one field.
+    #[test]
+    fn a_control_response_renders_nothing_and_records_no_fact() {
+        let lines = concat!(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"req-perm-1","response":{"mode":"acceptEdits"}}}"#,
+            "\n",
+            r#"{"type":"control_response","response":{"subtype":"error","request_id":"m-bypass","error":"Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions"}}"#,
+            "\n",
+        );
+        let (t, m) = fold(lines);
+        assert!(t.elements().is_empty(), "{:?}", t.elements());
+        assert_eq!(m.facts(), &SessionFacts::default(), "no fact, not even the confirmed mode");
+        assert_eq!(m.stats().control_responses, 2);
+        assert_eq!(m.stats().unmapped, 0, "counted as answers, not as things we could not draw");
+    }
+
+    /// CONTRACT: an unrecognised control subtype is **counted, never fatal** — the same
+    /// degrading discipline every other unknown on this stream gets. §5.9.3 rule 6 in
+    /// spirit: the first line of a real run is not even JSON.
+    #[test]
+    fn an_unrecognised_control_subtype_is_counted_not_fatal() {
+        let (t, m) = fold(
+            "{\"type\":\"control_response\",\"response\":{\"subtype\":\"partial\",\"request_id\":\"r\",\"progress\":0.5}}\n",
+        );
+        assert!(t.elements().is_empty());
+        assert_eq!(m.stats().control_responses, 1);
+        assert_eq!(m.stats().events, 1, "it decoded, so it was seen");
     }
 
     /// 🚨 `total_cost_usd` is cumulative on the wire — turn two's figure is turn one's

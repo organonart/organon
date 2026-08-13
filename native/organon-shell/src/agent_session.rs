@@ -35,9 +35,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
-use crate::agent_event::{AgentEvent, EventStream};
+use crate::agent_event::{AgentEvent, ControlResponse, EventStream};
 use crate::platform::{self, Platform};
 
 /// The binary a conversation tab drives, unless `$ORGANON_CLAUDE_BIN` overrides it.
@@ -103,6 +105,196 @@ pub fn mcp_args(wiring: &McpWiring) -> Vec<String> {
     ]
 }
 
+// ---------------------------------------------------------------------------
+// The control protocol — the console asking the session to change
+// ---------------------------------------------------------------------------
+//
+// `doc/console_session_control_protocol.md` §1 is the measurement this section is built
+// to: the console writes `{"type":"control_request","request_id":…,"request":{…}}` on the
+// **same stdin it sends turns down**, and the answer comes back on the same stdout it
+// reads events from, as an `EventKind::ControlResponse` correlated only by the
+// `request_id` the console invented. `set_model` acked in 272 ms, `set_permission_mode`
+// in 17 ms, and **no `initialize` handshake was required first** — in one probe a control
+// request was answered before that session's own first `system/init`.
+//
+// 📌 **Correlation is the console's whole problem here.** A response carries a
+// `request_id` and *nothing else* saying which verb it answers — `set_model`'s ack has no
+// body at all. That is why [`ControlDesk`] exists: it is the only place that knows an id
+// means "the model change", and it is the reason `agent_map.rs` deliberately records no
+// fact from an ack (it never issued the request and cannot tell).
+
+/// A control verb the console sends. Three, because three are what the strip can act on;
+/// the CLI accepts twelve (§1) and the other nine are somebody else's tier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Control {
+    /// `set_model` — takes an alias (`sonnet`), a full id, or `default` to reset.
+    SetModel(String),
+    /// `set_permission_mode` — the one verb whose ack states its own result.
+    SetPermissionMode(String),
+    /// `initialize` — asked **once at spawn**, purely for its `models` array.
+    ///
+    /// ⚠️ Once, and at spawn, on purpose. §3 measured it safe when sent **last** in a
+    /// session and explicitly did *not* establish the general mid-session case; it is
+    /// also a heavy answer (23 824 bytes on one line in the capture). Asking before the
+    /// first turn is the honest reading of what was measured.
+    Initialize,
+}
+
+impl Control {
+    /// The `subtype` this verb goes out under. Also the middle of its request id, which is
+    /// what makes a raw capture of the pipe readable.
+    pub fn subtype(&self) -> &'static str {
+        match self {
+            Control::SetModel(_) => "set_model",
+            Control::SetPermissionMode(_) => "set_permission_mode",
+            Control::Initialize => "initialize",
+        }
+    }
+
+    /// How a log line names this request — used when one is never answered, where the
+    /// whole value of the sentence is that it says *which* control went unanswered.
+    pub fn describe(&self) -> String {
+        match self {
+            Control::SetModel(model) => format!("the model change to {model}"),
+            Control::SetPermissionMode(mode) => format!("the permission-mode change to {mode}"),
+            Control::Initialize => "the model-list request".to_string(),
+        }
+    }
+
+    /// The `request` object, exactly as §1 and §8 quote it.
+    fn request(&self) -> serde_json::Value {
+        match self {
+            Control::SetModel(model) => {
+                serde_json::json!({ "subtype": "set_model", "model": model })
+            }
+            Control::SetPermissionMode(mode) => {
+                serde_json::json!({ "subtype": "set_permission_mode", "mode": mode })
+            }
+            Control::Initialize => serde_json::json!({ "subtype": "initialize" }),
+        }
+    }
+}
+
+/// The exact bytes one control request goes down the pipe as.
+///
+/// Pure, for the same reason [`user_message_line`] is: the wire shape is then a test
+/// against the sentence the protocol doc quotes from a live capture, rather than a claim.
+/// A typo in a subtype produces a `Unsupported control request subtype: …` error the user
+/// would see as "the picker does nothing", which is exactly the failure a pinned shape
+/// prevents.
+pub fn control_request_line(request_id: &str, control: &Control) -> String {
+    let value = serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": control.request(),
+    });
+    format!("{value}\n")
+}
+
+/// Request ids, unique for the life of the process.
+///
+/// The CLI echoes whatever it is given and a `"req-model-1"` that was not a UUID was
+/// accepted (§1), so the only requirement is that two live requests never collide — an
+/// id that repeated would let one verb's ack resolve another's. Process-wide rather than
+/// per-session so that two conversation tabs' captures cannot be confused either.
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+
+fn next_request_id(subtype: &str) -> String {
+    let n = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+    format!("organon-{subtype}-{n}")
+}
+
+/// How long the console waits for an ack before it stops expecting one.
+///
+/// 🚨 **This deadline exists so that nothing is ever gated on an ack.** The console has
+/// been bitten by the opposite arrangement before — `doc/console_approval_protocol.md`
+/// §4b records a 60 s client-side deadline nobody knew about, discovered because a card
+/// kept offering *allow* for a call that had already failed. Here the rule is simpler: a
+/// control request is **fire-and-observe**. The composer, the transcript and the strip
+/// never wait on one; the only thing an ack does is *release* a pending marker, and this
+/// deadline releases it anyway.
+///
+/// Twenty seconds, and the number is set by the **slowest** request rather than the
+/// fastest: `set_model` acked in 272 ms and `set_permission_mode` in 17 ms, but
+/// [`Control::Initialize`] goes out at spawn, where §6 measured a **1.3–3.3 s** band to a
+/// session's first announcement while MCP servers and skills warm up. Twenty is ~6× the
+/// top of that band — long enough that a cold spawn is never accused of having dropped
+/// the request, short enough that a plate does not sit marked "switching" into the next
+/// conversation.
+pub const CONTROL_DEADLINE: Duration = Duration::from_secs(20);
+
+/// One control request the console has written and not yet seen answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InFlight {
+    id: String,
+    control: Control,
+    sent_at: Instant,
+}
+
+/// The in-flight control requests, and the only thing that knows what an ack answers.
+///
+/// Split from [`AgentSession`] so the correlation — which is the whole hazard — is
+/// testable without spawning a process: an id issued, an ack matched, an ack that belongs
+/// to nobody, and a request that is never answered at all.
+#[derive(Debug, Default)]
+pub struct ControlDesk {
+    inflight: Vec<InFlight>,
+}
+
+impl ControlDesk {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take an id for `control` and hand back the line to write.
+    ///
+    /// Recorded as in flight *before* the write, so a write that fails half way still
+    /// leaves an entry the deadline will clear — a request that reached the CLI and one
+    /// that did not are indistinguishable from this side, and the safe reading is that it
+    /// might have.
+    pub fn issue(&mut self, control: Control, now: Instant) -> (String, String) {
+        let id = next_request_id(control.subtype());
+        let line = control_request_line(&id, &control);
+        self.inflight.push(InFlight { id: id.clone(), control, sent_at: now });
+        (id, line)
+    }
+
+    /// Which verb this response answers, or `None` if it answers nothing this console
+    /// asked for.
+    ///
+    /// ⚠️ `None` is **expected traffic, not a fault**: a response with no `request_id`, or
+    /// one carrying an id from a request the deadline already retired, both land here. The
+    /// caller logs and moves on rather than treating it as an error.
+    pub fn resolve(&mut self, response: &ControlResponse) -> Option<Control> {
+        let id = response.request_id.as_deref()?;
+        let at = self.inflight.iter().position(|p| p.id == id)?;
+        Some(self.inflight.remove(at).control)
+    }
+
+    /// Everything still unanswered past `deadline`, removed and handed back.
+    ///
+    /// The no-reply path, and it is a *sweep* rather than a timer: the pane already pumps
+    /// every frame, there is no thread to park, and nothing anywhere is blocked waiting
+    /// for what this returns.
+    pub fn give_up(&mut self, now: Instant, deadline: Duration) -> Vec<Control> {
+        let mut abandoned = Vec::new();
+        self.inflight.retain(|p| {
+            if now.duration_since(p.sent_at) >= deadline {
+                abandoned.push(p.control.clone());
+                false
+            } else {
+                true
+            }
+        });
+        abandoned
+    }
+
+    /// How many requests are outstanding. For tests and diagnostics.
+    pub fn outstanding(&self) -> usize {
+        self.inflight.len()
+    }
+}
+
 /// One line off the child, already classified.
 #[derive(Debug, Clone)]
 pub enum StreamItem {
@@ -164,6 +356,8 @@ pub struct AgentSession {
     pub exited: bool,
     /// What was actually launched, for the status line and for diagnostics.
     pub command: String,
+    /// The control requests this console has written and not yet seen answered.
+    desk: ControlDesk,
 }
 
 impl AgentSession {
@@ -265,7 +459,7 @@ impl AgentSession {
                 source,
             })?;
 
-        Ok(Self {
+        let mut session = Self {
             child,
             stdin: Some(stdin),
             rx,
@@ -273,7 +467,19 @@ impl AgentSession {
             command: format!("{} {} {}", resolved.display(), ARGS.join(" "), extra.join(" "))
                 .trim_end()
                 .to_string(),
-        })
+            desk: ControlDesk::new(),
+        };
+        // **Ask for the model list once, here, and never again** — see
+        // [`Control::Initialize`] for why "once at spawn" is what the measurement
+        // supports. Ignored on failure: a session whose list never arrives still runs, and
+        // the picker says the list has not arrived rather than inventing one.
+        //
+        // 📌 A side effect worth knowing rather than discovering: §6 measured that
+        // `system/init` is emitted only once input is pending, so a tab nobody has typed
+        // into never announced itself at all. This line is input, so the strip now learns
+        // its model at spawn instead of at the first human turn.
+        let _ = session.send_control(Control::Initialize);
+        Ok(session)
     }
 
     /// Everything the child has said since the last call. Never blocks.
@@ -314,6 +520,43 @@ impl AgentSession {
         stdin.flush()
     }
 
+    /// Ask the session to change something about itself. Returns the `request_id` the
+    /// request went out under.
+    ///
+    /// ⚠️ **Nothing waits on the answer.** The ack arrives later as an ordinary
+    /// [`crate::agent_event::EventKind::ControlResponse`] on the stream everything else
+    /// arrives on, and is matched back to this verb by [`resolve_control`](Self::resolve_control).
+    /// If it never arrives, [`give_up_on_controls`](Self::give_up_on_controls) retires the
+    /// request at [`CONTROL_DEADLINE`] and the caller un-marks whatever it marked. There
+    /// is no blocking path here to get wrong.
+    pub fn send_control(&mut self, control: Control) -> std::io::Result<String> {
+        let (id, line) = self.desk.issue(control, Instant::now());
+        let Some(stdin) = self.stdin.as_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "agent stdin is closed",
+            ));
+        };
+        stdin.write_all(line.as_bytes())?;
+        stdin.flush()?;
+        Ok(id)
+    }
+
+    /// Which verb `response` answers — `None` when it answers nothing this session asked
+    /// for.
+    pub fn resolve_control(&mut self, response: &ControlResponse) -> Option<Control> {
+        self.desk.resolve(response)
+    }
+
+    /// Control requests that have gone unanswered long enough to stop expecting an answer.
+    pub fn give_up_on_controls(&mut self, now: Instant) -> Vec<Control> {
+        self.desk.give_up(now, CONTROL_DEADLINE)
+    }
+
+    /// How many control requests are outstanding. Diagnostics only — nothing gates on it.
+    pub fn controls_outstanding(&self) -> usize {
+        self.desk.outstanding()
+    }
 }
 
 impl Drop for AgentSession {
@@ -475,5 +718,164 @@ mod tests {
         assert!(ARGS.contains(&"-p"), "--permission-prompt-tool only works with --print");
         // The namespaced spelling is the client's, not ours to invent.
         assert!(args.last().unwrap().starts_with("mcp__"));
+    }
+
+    // -----------------------------------------------------------------------
+    // The control protocol
+    // -----------------------------------------------------------------------
+
+    /// Decode a control response the way the stream does, so a test can hand
+    /// [`ControlDesk`] the same value a live ack produces.
+    fn ack(line: &str) -> ControlResponse {
+        let event = crate::agent_event::decode_line(line).expect("a decodable line");
+        match event.kind {
+            crate::agent_event::EventKind::ControlResponse(response) => response,
+            other => panic!("expected a control response, got {other:?}"),
+        }
+    }
+
+    /// 📌 CONTRACT: the bytes are **exactly** the line
+    /// `doc/console_session_control_protocol.md` §1 quotes from a live capture. A typo in
+    /// a subtype is answered `Unsupported control request subtype: …` and reads to a user
+    /// as a picker that does nothing, which is why this is pinned against the quote rather
+    /// than against itself.
+    #[test]
+    fn a_control_request_is_the_line_the_protocol_doc_quotes() {
+        let line = control_request_line("req-model-1", &Control::SetModel("sonnet".into()));
+        assert!(line.ends_with('\n'), "one line, terminated");
+        assert_eq!(line.matches('\n').count(), 1);
+        let sent: serde_json::Value = serde_json::from_str(line.trim_end()).expect("valid json");
+        // §1, verbatim.
+        let quoted: serde_json::Value = serde_json::from_str(
+            r#"{"type":"control_request","request_id":"req-model-1","request":{"subtype":"set_model","model":"sonnet"}}"#,
+        )
+        .expect("the doc's own line");
+        assert_eq!(sent, quoted, "the request must be byte-equivalent to the measured one");
+
+        // §8's, the same way — and note the key is `mode`, not `permission_mode`.
+        let mode = control_request_line("req-perm-1", &Control::SetPermissionMode("acceptEdits".into()));
+        let sent: serde_json::Value = serde_json::from_str(mode.trim_end()).expect("valid json");
+        let quoted: serde_json::Value = serde_json::from_str(
+            r#"{"type":"control_request","request_id":"req-perm-1","request":{"subtype":"set_permission_mode","mode":"acceptEdits"}}"#,
+        )
+        .expect("the doc's own line");
+        assert_eq!(sent, quoted);
+
+        // §3's takes no arguments at all.
+        let init = control_request_line("req-init-1", &Control::Initialize);
+        let sent: serde_json::Value = serde_json::from_str(init.trim_end()).expect("valid json");
+        let quoted: serde_json::Value = serde_json::from_str(
+            r#"{"type":"control_request","request_id":"req-init-1","request":{"subtype":"initialize"}}"#,
+        )
+        .expect("the doc's own line");
+        assert_eq!(sent, quoted);
+    }
+
+    /// 📌 CONTRACT: two requests never share an id. An id that repeated would let one
+    /// verb's ack resolve another's — and since `set_model`'s ack carries no body at all,
+    /// nothing downstream could notice.
+    #[test]
+    fn every_request_gets_its_own_id() {
+        let mut desk = ControlDesk::new();
+        let now = Instant::now();
+        let (a, _) = desk.issue(Control::SetModel("sonnet".into()), now);
+        let (b, _) = desk.issue(Control::SetModel("sonnet".into()), now);
+        let (c, _) = desk.issue(Control::SetPermissionMode("default".into()), now);
+        assert_ne!(a, b, "the same verb twice must still be two ids");
+        assert_ne!(b, c);
+        assert!(a.contains("set_model"), "an id says which verb it is: {a}");
+        assert!(c.contains("set_permission_mode"), "{c}");
+    }
+
+    /// 📌 CONTRACT: an ack resolves the request that carries its id, and only that one.
+    #[test]
+    fn an_ack_resolves_the_request_it_names() {
+        let mut desk = ControlDesk::new();
+        let now = Instant::now();
+        let (model_id, _) = desk.issue(Control::SetModel("sonnet".into()), now);
+        let (mode_id, _) = desk.issue(Control::SetPermissionMode("acceptEdits".into()), now);
+        assert_eq!(desk.outstanding(), 2);
+
+        let resolved = desk.resolve(&ack(&format!(
+            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{mode_id}","response":{{"mode":"acceptEdits"}}}}}}"#
+        )));
+        assert_eq!(resolved, Some(Control::SetPermissionMode("acceptEdits".into())));
+        assert_eq!(desk.outstanding(), 1, "the other request is still in flight");
+
+        let resolved = desk.resolve(&ack(&format!(
+            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{model_id}"}}}}"#
+        )));
+        assert_eq!(
+            resolved,
+            Some(Control::SetModel("sonnet".into())),
+            "set_model acks with no body at all — the id is the only correlation there is"
+        );
+        assert_eq!(desk.outstanding(), 0);
+    }
+
+    /// 📌 CONTRACT: an ack for something this console never asked for is ignored, not
+    /// mistaken for the oldest outstanding request. Expected traffic, not a fault.
+    #[test]
+    fn an_ack_this_console_did_not_ask_for_resolves_nothing() {
+        let mut desk = ControlDesk::new();
+        desk.issue(Control::SetModel("sonnet".into()), Instant::now());
+        let stranger = ack(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"somebody-else-1"}}"#,
+        );
+        assert_eq!(desk.resolve(&stranger), None);
+        let anonymous =
+            ack(r#"{"type":"control_response","response":{"subtype":"success"}}"#);
+        assert_eq!(desk.resolve(&anonymous), None, "no id means no correlation");
+        assert_eq!(desk.outstanding(), 1, "and neither one consumed the real request");
+    }
+
+    /// 🚨 CONTRACT: **a request nobody answers wedges nothing.** It is retired at the
+    /// deadline, named so the caller can say which control went unanswered, and the desk
+    /// is left clean — there is no queue to drain and nothing was ever blocked on it.
+    #[test]
+    fn an_unanswered_request_is_given_up_on_and_wedges_nothing() {
+        let mut desk = ControlDesk::new();
+        let sent = Instant::now();
+        desk.issue(Control::SetModel("sonnet".into()), sent);
+        desk.issue(Control::SetPermissionMode("dontAsk".into()), sent + CONTROL_DEADLINE);
+
+        // Just short of the deadline nothing is retired: a busy session is not accused of
+        // having dropped a request.
+        assert!(desk.give_up(sent + CONTROL_DEADLINE / 2, CONTROL_DEADLINE).is_empty());
+        assert_eq!(desk.outstanding(), 2);
+
+        let abandoned = desk.give_up(sent + CONTROL_DEADLINE, CONTROL_DEADLINE);
+        assert_eq!(abandoned, vec![Control::SetModel("sonnet".into())]);
+        assert_eq!(desk.outstanding(), 1, "the younger request is still waiting, not swept");
+        assert!(
+            abandoned[0].describe().contains("sonnet"),
+            "the sentence must name what went unanswered: {}",
+            abandoned[0].describe()
+        );
+
+        // An ack that arrives *after* the console gave up resolves nothing and is not an
+        // error — it is simply late.
+        let late = ack(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"organon-set_model-1"}}"#,
+        );
+        assert_eq!(desk.resolve(&late), None);
+    }
+
+    /// The CLI's own refusal survives to the caller. Measured against `bypassPermissions`,
+    /// which is why the picker never offers it — but a mode can be refused for reasons
+    /// this build has not met, and the sentence is written for a human.
+    #[test]
+    fn a_refusal_comes_back_as_the_cli_wrote_it() {
+        let mut desk = ControlDesk::new();
+        let (id, _) = desk.issue(Control::SetPermissionMode("bypassPermissions".into()), Instant::now());
+        let refused = ack(&format!(
+            r#"{{"type":"control_response","response":{{"subtype":"error","request_id":"{id}","error":"Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions"}}}}"#
+        ));
+        assert_eq!(
+            desk.resolve(&refused),
+            Some(Control::SetPermissionMode("bypassPermissions".into()))
+        );
+        assert!(!refused.is_success());
+        assert!(refused.error().unwrap().contains("was not launched with"));
     }
 }
