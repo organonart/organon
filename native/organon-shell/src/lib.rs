@@ -63,6 +63,7 @@ pub mod app;
 pub mod approval;
 pub mod block_anchor;
 pub mod block_panel;
+pub mod camera;
 pub mod command;
 pub mod conversation;
 pub mod conversation_view;

@@ -86,8 +86,8 @@ pub const SCENE_VIEWPORT_ID: &str = "organon-scene-viewport";
 
 /// One camera gesture, in the units `World::on_window_event`'s winit arms have always used.
 ///
-/// This is the whole backend-neutral entry point — deliberately two variants and not a widened
-/// event enum. See the module docs on Option A.
+/// This is the whole backend-neutral entry point — deliberately narrow and not a widened event
+/// enum. See the module docs on Option A.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum CameraInput {
     /// Pointer motion while the scene owns the drag, in **physical pixels**.
@@ -98,7 +98,67 @@ pub enum CameraInput {
     /// Wheel motion, in the unit the visual's `MouseScrollDelta` arm produces. Positive = toward
     /// the subject.
     Zoom { dy: f32 },
+    /// **Absolute** framing: put the viewpoint *here*. `None` leaves an axis where it is, so
+    /// one message can move any subset of the three.
+    ///
+    /// # Why an absolute variant lives on the *relative* seam
+    ///
+    /// The two above are deltas because a hand produces deltas — a drag is motion, a wheel notch
+    /// is motion. An **agent** cannot produce a useful delta: the console's command lane is
+    /// fire-and-forget with no return path (`cli::console_cmd_path`'s doc), so a caller on it can
+    /// never learn where the camera *is* and therefore can never compute how far to move it.
+    /// Absolute is the only shape that lane can carry.
+    ///
+    /// It rides here rather than becoming a second `World` method so that both kinds of viewpoint
+    /// change arrive through one door, in one order, with one set of clamps. `World::set_substrate_rig`
+    /// is the other absolute API and is deliberately **not** this: that one overrides the whole
+    /// six-tuple *including* the auto-orbit and the truck, for as long as it is installed. This
+    /// writes the same three fields a drag writes and then gets out of the way — `cam_path` still
+    /// orbits around it, exactly as it orbits around a hand-dragged viewpoint.
+    ///
+    /// ⚠️ Every axis is **clamped** by `World::apply_camera_input` to the same band the hand is
+    /// clamped to ([`PITCH_LIMIT`], [`DISTANCE_MIN`], [`DISTANCE_MAX`]) — an agent and a hand must
+    /// not disagree about where the instrument ends. Non-finite values are dropped rather than
+    /// clamped, since there is no sensible place on the band for a NaN.
+    Frame { yaw: Option<f32>, pitch: Option<f32>, distance: Option<f32> },
 }
+
+/// How far the viewpoint may tip, in radians — straight down to straight up with a little held
+/// back, so the orbit basis never degenerates against `Vec3::Y`.
+///
+/// 🚨 **One number, four readers.** `World::apply_camera_input` clamps to it, the camera
+/// finalization clamps the auto-orbit's *sum* to it, `cli`'s `console camera` validates against
+/// it, and `shell_main`'s `console.camera` schema declares it as its `ArgKind::Float` range. A
+/// second copy is how an agent comes to be refused a value the hand can reach, or granted one it
+/// cannot — and either reads as the camera being broken rather than as two constants disagreeing.
+pub const PITCH_LIMIT: f32 = 1.5;
+
+/// The closest the viewpoint may sit to the pivot. Near zero rather than at it, so you can zoom
+/// all the way *through* the centre and come out the other side with geometry still visible.
+pub const DISTANCE_MIN: f32 = 0.1;
+
+/// The furthest the viewpoint may sit from the pivot. See [`PITCH_LIMIT`] on the one-number rule.
+pub const DISTANCE_MAX: f32 = 4000.0;
+
+/// How far yaw may be *asked* for, in radians — one full turn either way.
+///
+/// ⚠️ **Unlike the two above, this is not a clamp anywhere.** Yaw is an angle: the trigonometry
+/// wraps, so every value is meaningful and `World` stores whatever it is given. This is the bound
+/// the **command lane** declares, and it exists so the schema can state a range at all. ±2π covers
+/// every distinct viewpoint twice over; a request outside it is a unit mistake (degrees for
+/// radians is the likely one) and is better refused with a record than silently wrapped.
+pub const YAW_LIMIT: f32 = std::f32::consts::TAU;
+
+/// Where the viewpoint starts, and what `organon console camera --reset` returns it to.
+///
+/// 📌 These are `World::new`'s own initial values, named rather than repeated — which is what
+/// makes "reset" provably *the framing the window opened with* instead of three numbers that were
+/// true on the day someone copied them.
+pub const DEFAULT_YAW: f32 = 0.7;
+/// See [`DEFAULT_YAW`].
+pub const DEFAULT_PITCH: f32 = 0.45;
+/// See [`DEFAULT_YAW`].
+pub const DEFAULT_DISTANCE: f32 = 520.0;
 
 /// What one editor frame's pointer interaction asked the camera for.
 ///

@@ -416,6 +416,22 @@ fn builtin_specs() -> Vec<CommandSpec> {
 
 /// Check `args` against the declared schema: shape, required presence, per-kind
 /// type + constraint. Undeclared args are tolerated (see [`ArgSpec`]).
+///
+/// 🚨 **A declared argument present as `null` is absent**, at both levels: a whole
+/// `args` of `null` is "no arguments", and a *slot* of `null` is "this argument was
+/// not given". The two readings are the same reading, and the second one was missing
+/// until an optional argument existed to need it — every schema before
+/// `console.camera` was required-only, so `null` in a slot could only ever have been a
+/// mistake and reporting it as a type error cost nothing. It stops being free the
+/// moment a verb has independent optional axes: the natural serialization of a partial
+/// call is the whole slot list with `null` in the slots nobody set, and read as a type
+/// error that is every partial call refused.
+///
+/// ⚠️ **Absence is not a bypass.** `null` only *means* anything where the schema says
+/// the argument is optional — a required argument spelled `null` is still refused, and
+/// now says "missing" rather than naming a type, which is the truer complaint. Nothing
+/// else moves: a null in a slot the caller did declare a value for still cannot skip
+/// the band, because there is no value to be out of band.
 fn validate_args(spec: &CommandSpec, args: &Value) -> Result<(), CommandError> {
     let object = match args {
         // Null is "no arguments" — a caller with nothing to say shouldn't have to
@@ -427,7 +443,9 @@ fn validate_args(spec: &CommandSpec, args: &Value) -> Result<(), CommandError> {
         }
     };
     for arg in &spec.args {
-        match object.and_then(|m| m.get(&arg.name)) {
+        // `filter` rather than a `Some(Value::Null)` match arm, so the null case and the
+        // key-absent case reach the *same* two arms below and cannot come to disagree.
+        match object.and_then(|m| m.get(&arg.name)).filter(|v| !v.is_null()) {
             None if arg.required => {
                 return Err(invalid(spec, &arg.name, "missing required argument".into()))
             }
@@ -688,6 +706,93 @@ mod tests {
         assert_eq!(runs.len(), n);
         assert!(runs.iter().all(|r| r.status == RunStatus::Failed), "Failed, not Denied");
         assert!(runs.iter().all(|r| r.approval == ApprovalState::Automatic));
+    }
+
+    /// 🚨 **An optional argument spelled `null` is absent, and this is the test that was
+    /// missing when the first optional-`Float` verb shipped.**
+    ///
+    /// Every schema before `console.camera` had required arguments only, so the question
+    /// "what does a *present* `null` mean for an argument nobody has to give?" had never been
+    /// asked of this function — and the answer it gave, by accident rather than by decision,
+    /// was "a type error". A caller that serializes its whole slot list with `null` in the
+    /// slots it did not set (which is the natural shape for a verb whose arguments are
+    /// independent axes) was therefore refused every partial call it made.
+    ///
+    /// The two arms of the pair are both pinned here, because the interesting property is the
+    /// asymmetry: `null` is absence, and absence is only *allowed* where the schema says the
+    /// argument is optional. A required argument spelled `null` is still a rejection — it just
+    /// reports the honest reason ("missing") instead of a type mismatch.
+    #[test]
+    fn an_optional_arg_present_as_null_is_absent_and_a_required_one_is_missing() {
+        let root = temp_root("null-optional");
+        let mut log = SessionLog::open(&root, "s1").unwrap();
+        let mut service = CommandService::new(&mut log);
+        // The `console.camera` shape: one flag and three independent optional bands.
+        service.register_spec(CommandSpec {
+            name: "test.framing".into(),
+            doc: "test-only".into(),
+            target: TargetKind::Runtime,
+            args: vec![
+                ArgSpec { name: "reset".into(), kind: ArgKind::Bool, required: false },
+                ArgSpec {
+                    name: "yaw".into(),
+                    kind: ArgKind::Float { min: -180.0, max: 180.0 },
+                    required: false,
+                },
+                ArgSpec {
+                    name: "pitch".into(),
+                    kind: ArgKind::Float { min: -89.0, max: 89.0 },
+                    required: false,
+                },
+                ArgSpec {
+                    name: "distance".into(),
+                    kind: ArgKind::Float { min: 5.0, max: 4000.0 },
+                    required: false,
+                },
+            ],
+        });
+        let mock = MockTarget::new();
+        service.register_target(TargetKind::Runtime, Box::new(mock.handle()));
+
+        // The flagship partial framing: one axis named, the other two present and null.
+        let partial = json!({ "reset": false, "yaw": null, "pitch": null, "distance": 40.0 });
+        service
+            .dispatch(Issuer::User, "test.framing", partial.clone())
+            .expect("a partial framing is a valid call");
+        // Absent means absent for the *target* too: the null slots arrive untouched, so the
+        // executor's own "which axes were named" reading is the one that decides.
+        assert_eq!(mock.calls(), vec![("test.framing".to_string(), partial)]);
+
+        // Every axis null is still valid *here* — "at least one axis" is a rule no
+        // per-argument schema can state, so it belongs to the executor, not to validation.
+        service
+            .dispatch(Issuer::User, "test.framing", json!({ "yaw": null, "pitch": null }))
+            .expect("all-null passes the schema; emptiness is the target's rule");
+
+        // A null in an optional slot is absence, not a licence to ignore the band.
+        let err = service
+            .dispatch(Issuer::User, "test.framing", json!({ "yaw": null, "distance": 9000.0 }))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            CommandError::InvalidArgs {
+                command: "test.framing".into(),
+                arg: "distance".into(),
+                reason: "out of range: 9000 not in 5..4000".into(),
+            }
+        );
+
+        // The other arm: a *required* argument spelled null is missing, and says so.
+        service.register_spec(test_spec());
+        let err = service.dispatch(Issuer::User, "test.set", json!({ "gain": null })).unwrap_err();
+        assert_eq!(
+            err,
+            CommandError::InvalidArgs {
+                command: "test.set".into(),
+                arg: "gain".into(),
+                reason: "missing required argument".into(),
+            }
+        );
     }
 
     #[test]

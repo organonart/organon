@@ -304,6 +304,129 @@ pub enum ConsoleOp {
     /// against the window instead, so the hardest-won caveat of the patch verbs simply does not
     /// arise here.
     Portal(PortalCmd),
+    /// Move **the viewer's viewpoint** — the yaw, pitch and distance a drag and a wheel over
+    /// the portal already write.
+    ///
+    /// ⚠️ **There are two cameras and this is only one of them.** `cam_path` / `cam_speed` /
+    /// `cam_kick` / `cam_damping` (the `organon set` lane, on the *world*) are the auto-orbit:
+    /// part of the composition, travelling in `Shared`, saved in a preset. This is where the
+    /// *viewer stands* to watch that composition — host state that dies with the window and is
+    /// in no preset. They compose rather than compete: the finalization adds the auto-orbit's
+    /// offset to this base, so a shot framed here still spins if `cam_path` says to.
+    ///
+    /// 📌 **Absolute, never relative, and that is forced.** This lane is fire-and-forget with
+    /// no return path (see [`console_cmd_path`]), so a caller can never read back where the
+    /// camera is and therefore can never compute a delta. Absolute is the only shape that
+    /// survives the transport.
+    Camera(CameraFraming),
+}
+
+/// Where the viewer stands, as a partial update — `None` on an axis means "leave it".
+///
+/// A struct of options rather than one axis per command because framing a shot is **one
+/// intent**: an agent that wants to be closer *and* a little above says so once and the
+/// viewpoint moves once. Three commands would move the camera through two intermediate
+/// framings nobody asked to see, and on a live portal those are frames a person watches.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CameraFraming {
+    /// Return to the framing the window opened with, **before** the three below are applied —
+    /// so `--reset --distance 40` means "back to the default view, then pull in", which is the
+    /// recovery an agent that has lost the camera actually wants.
+    pub reset: bool,
+    pub yaw: Option<f32>,
+    pub pitch: Option<f32>,
+    pub distance: Option<f32>,
+}
+
+/// The camera words, in the order `--help` should list them.
+///
+/// One table, read by `bin/ctl.rs`, by the console's command schema and by
+/// [`CameraFraming::from_words`] — [`PORTAL_WORDS`]' arrangement, for its reason.
+pub const CAMERA_WORDS: &[&str] = &["reset", "yaw", "pitch", "distance"];
+
+impl CameraFraming {
+    /// Does this ask for anything at all? A framing that names no axis and does not reset is
+    /// not a command with defaults — it is a line that says nothing, and the lane's standing
+    /// rule for that is to skip it.
+    pub fn is_empty(self) -> bool {
+        !self.reset && self.yaw.is_none() && self.pitch.is_none() && self.distance.is_none()
+    }
+
+    /// Is every stated axis finite and inside the band the command lane declares?
+    ///
+    /// ⚠️ **Refused, not clamped, and the asymmetry with `World` is deliberate.**
+    /// `World::apply_camera_input` clamps, because a hand physically cannot ask for more than
+    /// the band — a wheel that reaches the ceiling simply stops. A *typed* `--distance 9000`
+    /// is not a gesture that overshot, it is a number that means something else (degrees for
+    /// radians, metres for world units), and silently answering 4000 would let the mistake
+    /// look like it worked. The clamp stays as the belt; this is the brace.
+    pub fn in_range(self) -> bool {
+        let ok = |v: Option<f32>, lo: f32, hi: f32| {
+            v.is_none_or(|x| x.is_finite() && (lo..=hi).contains(&x))
+        };
+        ok(self.yaw, -crate::scene_input::YAW_LIMIT, crate::scene_input::YAW_LIMIT)
+            && ok(self.pitch, -crate::scene_input::PITCH_LIMIT, crate::scene_input::PITCH_LIMIT)
+            && ok(
+                self.distance,
+                crate::scene_input::DISTANCE_MIN,
+                crate::scene_input::DISTANCE_MAX,
+            )
+    }
+
+    /// The words this framing travels as, in [`CAMERA_WORDS`] order.
+    ///
+    /// Keyword-tagged rather than positional — unlike `patch`'s three counts — because the
+    /// axes are **optional and independent**. A positional form would need a placeholder for
+    /// "not this one", and a placeholder in a value slot is a value waiting to be misread.
+    pub fn to_words(self) -> String {
+        let mut out = String::new();
+        if self.reset {
+            out.push_str(" reset");
+        }
+        for (word, value) in [("yaw", self.yaw), ("pitch", self.pitch), ("distance", self.distance)]
+        {
+            if let Some(v) = value {
+                out.push_str(&format!(" {word} {v}"));
+            }
+        }
+        out
+    }
+
+    /// Parse the words after `camera`. `None` for an unknown word, a missing or unparseable
+    /// number, a repeated axis, or a framing that asks for nothing — every one of which the
+    /// drain treats exactly as it treats an unknown verb, by skipping the line.
+    ///
+    /// 📌 A **repeated** axis is malformed rather than last-wins. `camera distance 40 distance
+    /// 4` is either a caller building a line badly or two intents concatenated; guessing which
+    /// would move a camera somebody is looking at.
+    pub fn from_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<Self> {
+        let mut out = Self::default();
+        let mut it = words;
+        while let Some(word) = it.next() {
+            match word {
+                "reset" => {
+                    if out.reset {
+                        return None;
+                    }
+                    out.reset = true;
+                }
+                "yaw" | "pitch" | "distance" => {
+                    let v: f32 = it.next()?.parse().ok()?;
+                    let slot = match word {
+                        "yaw" => &mut out.yaw,
+                        "pitch" => &mut out.pitch,
+                        _ => &mut out.distance,
+                    };
+                    if slot.is_some() {
+                        return None;
+                    }
+                    *slot = Some(v);
+                }
+                _ => return None,
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
 }
 
 /// What `organon console portal` does. See [`ConsoleOp::Portal`].
@@ -429,6 +552,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
             format!("patch {up} {rows} {}", kind.as_word())
         }
         ConsoleOp::Portal(cmd) => format!("portal {}", cmd.as_word()),
+        ConsoleOp::Camera(f) => format!("camera{}", f.to_words()),
     }
 }
 
@@ -476,6 +600,11 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
         // standing rule for malformed is to skip rather than guess. Guessing would toggle a
         // window on and off from a typo.
         "portal" => PortalCmd::from_word(it.next()?).map(ConsoleOp::Portal),
+        // Keyword-tagged and variable-length, unlike every other verb on this lane — see
+        // [`CameraFraming::to_words`] on why the axes cannot be positional. A bare `camera`
+        // yields `None` for the same reason a bare `portal` does: it is not an older spelling
+        // of anything, so guessing would move a camera somebody is looking at.
+        "camera" => CameraFraming::from_words(it).map(ConsoleOp::Camera),
         _ => None,
     }
 }
@@ -1740,6 +1869,106 @@ mod tests {
         // Trailing junk after the count is ignored, exactly as a name's is — the wire form
         // is `<verb> <word>` and the drain reads whole lines.
         assert_eq!(parse_console_op("block 8 rows"), Some(ConsoleOp::Block(8)));
+    }
+
+    /// **The camera lane's whole wire form, both directions.** It is the first verb here whose
+    /// arguments are keyword-tagged and variable-length, so the round trip is the only thing
+    /// that keeps the writer and the reader agreeing about a shape neither can see the other
+    /// half of.
+    #[test]
+    fn a_camera_framing_survives_the_sidecar_round_trip_in_every_combination() {
+        let cases = [
+            CameraFraming { reset: true, ..Default::default() },
+            CameraFraming { yaw: Some(0.8), ..Default::default() },
+            CameraFraming { pitch: Some(-0.25), ..Default::default() },
+            CameraFraming { distance: Some(40.0), ..Default::default() },
+            CameraFraming { reset: true, distance: Some(40.0), ..Default::default() },
+            CameraFraming { reset: false, yaw: Some(-1.5), pitch: Some(0.5), distance: Some(12.5) },
+            CameraFraming { reset: true, yaw: Some(0.0), pitch: Some(0.0), distance: Some(0.1) },
+        ];
+        for f in cases {
+            let op = ConsoleOp::Camera(f);
+            let line = console_op_to_line(&op);
+            assert!(line.starts_with("camera "), "the verb leads the line: {line:?}");
+            assert_eq!(parse_console_op(&line), Some(op), "round trip of {line:?}");
+        }
+    }
+
+    /// The malformed set, which for this verb is larger than for any other on the lane — and
+    /// every member of it is **skipped**, never guessed at. A camera command that half-parsed
+    /// would move a viewpoint somebody is looking at to a place nobody asked for.
+    #[test]
+    fn a_camera_line_that_says_nothing_definite_is_skipped() {
+        assert_eq!(parse_console_op("camera"), None, "no axis at all — not a default framing");
+        assert_eq!(parse_console_op("camera reset"), Some(ConsoleOp::Camera(
+            CameraFraming { reset: true, ..Default::default() }
+        )));
+        assert_eq!(parse_console_op("camera yaw"), None, "an axis with no number");
+        assert_eq!(parse_console_op("camera yaw nine"), None, "a number that is not one");
+        assert_eq!(parse_console_op("camera roll 0.2"), None, "an axis this build has not got");
+        assert_eq!(parse_console_op("camera yaw 0.1 yaw 0.2"), None, "a repeated axis");
+        assert_eq!(parse_console_op("camera reset reset"), None, "a repeated flag");
+        assert_eq!(parse_console_op("camera yaw 0.1 junk"), None, "trailing junk is not ignored");
+        // ⚠️ Unlike `block 8 rows`, trailing words are NOT tolerated here: on a keyword-tagged
+        // line a stray word is indistinguishable from an axis the writer meant and this build
+        // does not have, and quietly applying the half it understood is the wrong half.
+        assert_eq!(
+            parse_console_op("camera distance 40"),
+            Some(ConsoleOp::Camera(CameraFraming { distance: Some(40.0), ..Default::default() }))
+        );
+    }
+
+    /// The band is the one the **hand** is held to, read from `scene_input` rather than
+    /// restated — so a limit that moves for a drag moves for a typed command in the same
+    /// commit. Out of range is refused, not clamped; see [`CameraFraming::in_range`].
+    #[test]
+    fn a_framing_is_in_range_exactly_when_every_stated_axis_is_inside_the_hands_own_band() {
+        use crate::scene_input as si;
+        assert!(CameraFraming { reset: true, ..Default::default() }.in_range(), "reset alone");
+        assert!(CameraFraming {
+            yaw: Some(si::YAW_LIMIT),
+            pitch: Some(-si::PITCH_LIMIT),
+            distance: Some(si::DISTANCE_MAX),
+            reset: false,
+        }
+        .in_range(), "the edges are inside");
+        assert!(!CameraFraming { yaw: Some(si::YAW_LIMIT + 0.1), ..Default::default() }.in_range());
+        assert!(!CameraFraming { pitch: Some(2.0), ..Default::default() }.in_range());
+        assert!(!CameraFraming { distance: Some(0.0), ..Default::default() }.in_range(),
+            "zero distance is inside no band — the viewpoint would be at the pivot");
+        assert!(!CameraFraming { distance: Some(9000.0), ..Default::default() }.in_range());
+        assert!(!CameraFraming { yaw: Some(f32::NAN), ..Default::default() }.in_range(),
+            "a NaN passes every comparison and poisons the view matrix");
+        assert!(!CameraFraming { distance: Some(f32::INFINITY), ..Default::default() }.in_range());
+        // The defaults `--reset` restores must themselves be reachable, or reset would be the
+        // one framing the command lane refuses.
+        assert!(CameraFraming {
+            reset: true,
+            yaw: Some(si::DEFAULT_YAW),
+            pitch: Some(si::DEFAULT_PITCH),
+            distance: Some(si::DEFAULT_DISTANCE),
+        }
+        .in_range());
+    }
+
+    /// The word table `--help`, the console's schema and the parser are all built from must
+    /// name every axis the parser accepts, and nothing it does not — the drift guard
+    /// [`PATCH_KIND_WORDS`] and [`PORTAL_WORDS`] carry, for a verb whose words are not an enum
+    /// and so cannot be checked by exhaustiveness.
+    #[test]
+    fn every_camera_word_is_one_the_parser_takes_and_the_table_has_no_others() {
+        for word in CAMERA_WORDS {
+            let line = if *word == "reset" {
+                format!("camera {word}")
+            } else {
+                format!("camera {word} 0.5")
+            };
+            assert!(
+                parse_console_op(&line).is_some(),
+                "`{word}` is in the table `--help` is built from but the parser refuses it"
+            );
+        }
+        assert_eq!(CAMERA_WORDS.len(), 4, "reset plus the three axes — no more, no fewer");
     }
 
     /// The console sidecar is namespace-derived like every other IPC file. This is the

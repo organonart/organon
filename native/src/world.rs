@@ -182,6 +182,7 @@ use organic_math_native::mind_shell::PointerTarget;
 // of those compilations — it would be permanently dead in the visual's, which is how a
 // blanket `allow(dead_code)` gets added and then stops reporting a reader that really did go
 // away. The editor loops over `SceneGesture::inputs()` at its own call site instead.
+use organic_math_native::scene_input;
 use organic_math_native::scene_input::CameraInput;
 use organic_math_native::overlay_meta;
 use organic_math_native::params::{BoidsForm, FuncName, GeneratorMode, OscDivision, ParamValues};
@@ -1749,9 +1750,12 @@ impl World {
             beat_host_pos_prev: 0.0,
             last_frame: Instant::now(),
             cam_center: Vec3::ZERO,
-            yaw: 0.7,
-            pitch: 0.45,
-            distance: 520.0,
+            // Named rather than spelled, so `organon console camera --reset` returns the
+            // viewpoint to *the framing the window opened with* by construction instead of by
+            // three numbers someone copied — see `scene_input::DEFAULT_YAW`.
+            yaw: scene_input::DEFAULT_YAW,
+            pitch: scene_input::DEFAULT_PITCH,
+            distance: scene_input::DEFAULT_DISTANCE,
             substrate_rig: None,
             rails_active: false,
             rails_ride: false,
@@ -6493,7 +6497,8 @@ impl World {
             )
         };
         let yaw = self.yaw + off.dyaw;
-        let pitch = (self.pitch + off.dpitch).clamp(-1.5, 1.5);
+        let pitch = (self.pitch + off.dpitch)
+            .clamp(-scene_input::PITCH_LIMIT, scene_input::PITCH_LIMIT);
         let auto_dist = off.dist * dolly; // the auto in/out factor (for dolly-zoom)
         let distance = self.distance * auto_dist;
         // Camera roll / dutch (#307 Tier 2): the global param + the move's own roll.
@@ -10240,13 +10245,43 @@ impl World {
                     self.rail_off.1 = (self.rail_off.1 - dy * k).clamp(-max, max);
                 } else {
                     self.yaw -= dx * 0.01;
-                    self.pitch = (self.pitch + dy * 0.01).clamp(-1.5, 1.5);
+                    self.pitch = (self.pitch + dy * 0.01)
+                        .clamp(-scene_input::PITCH_LIMIT, scene_input::PITCH_LIMIT);
                 }
             }
             CameraInput::Zoom { dy } => {
                 // Floor near 0 so you can zoom all the way through the centre (the near plane
                 // is small enough that geometry stays visible as you arrive); ceiling unchanged.
-                self.distance = (self.distance * (1.0 - dy * 0.001)).clamp(0.1, 4000.0);
+                self.distance = (self.distance * (1.0 - dy * 0.001))
+                    .clamp(scene_input::DISTANCE_MIN, scene_input::DISTANCE_MAX);
+            }
+            // Absolute framing (Console Spike, the portal's camera): the agent's shape of the
+            // same gesture. `None` leaves an axis alone, so one message can move any subset.
+            //
+            // ⚠️ **The clamps are the SAME constants the two arms above use**, deliberately: an
+            // agent and a hand must not disagree about where the instrument ends. Yaw has no
+            // clamp because it has none for a drag either — it is an angle and the trigonometry
+            // wraps; the command lane bounds it (`scene_input::YAW_LIMIT`) so that a schema can
+            // state a range, not because the world cannot hold the value.
+            //
+            // ⚠️ Non-finite is dropped rather than clamped. `f32::clamp` **panics** on a NaN
+            // bound and quietly returns NaN for a NaN input, and a NaN yaw poisons the whole
+            // view matrix — a black window with no error, which is the worst of both.
+            //
+            // 📌 Written even while `rails_ride` is on, where the finalization ignores all three.
+            // The alternative is a refusal that would have to travel back up a lane with no
+            // return path; writing means the framing is simply there when the ride ends.
+            CameraInput::Frame { yaw, pitch, distance } => {
+                if let Some(y) = yaw.filter(|v| v.is_finite()) {
+                    self.yaw = y;
+                }
+                if let Some(p) = pitch.filter(|v| v.is_finite()) {
+                    self.pitch = p.clamp(-scene_input::PITCH_LIMIT, scene_input::PITCH_LIMIT);
+                }
+                if let Some(d) = distance.filter(|v| v.is_finite()) {
+                    self.distance =
+                        d.clamp(scene_input::DISTANCE_MIN, scene_input::DISTANCE_MAX);
+                }
             }
         }
     }

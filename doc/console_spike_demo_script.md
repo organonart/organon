@@ -319,18 +319,40 @@ same window.
 namespace into every tab it spawns. It has been true since Tier 2; the portal is the first
 thing that makes it visible.
 
-🚨 **Status, plainly: nobody has run this.** It was built in a session with no GPU. The state
-machine, the rect, the wheel arbitration, the CLI round trip and the one-render-per-frame
-invariant are pinned by 399 headless tests and the shell-edition build is green — **and none of
-that is evidence that anything appears.** Do not put this beat in a demo until James has driven
-it. The first check is the cheap one: does a window appear at all, and does the transcript
-scroll underneath rather than taking it along?
+✏️ **And now the camera can be *typed*, which is what makes an agent able to SHOW you
+something** — `organon console camera --distance 40` walks the viewpoint in, `--yaw` / `--pitch`
+turn it, `--reset` puts it back where the window opened. That closes the gap James named while
+watching an agent work: *"it's having trouble because the camera is far away and I don't think
+the CLI has commands to move it, but it's fundamentally working."* Note which camera it is —
+`organon set cam_path 1` spins the composition, this walks around it, and the two compose.
 
-⚠️ **Two known gaps, so neither reads as a surprise on the day.** In a **conversation** tab the
+*The point, if this half is performed:* a hand can drag it and a sentence can frame it, and
+**the hand outranks the sentence.** Drag the portal and, without letting more than a second
+pass, have the agent issue a camera command: nothing moves, and the console says why on its own
+stderr. That is the same rule the workshop's lighting already runs — a person always wins —
+made structural in the one place where a hand and an agent write the same three numbers.
+
+🚨 **Status, plainly: nobody has run any of this.** Both halves were built in sessions with no
+GPU. The state machine, the rect, the wheel arbitration, the CLI round trip, the
+one-render-per-frame invariant, the hand-hold's boundary behaviour and the camera's wire form
+are pinned by 438 headless tests and the shell-edition build is green — **and none of that is
+evidence that anything appears or that anything moved.** Do not put this beat in a demo until
+James has driven it. The first check is the cheap one: does a window appear at all, and does the
+transcript scroll underneath rather than taking it along? The second is `organon console camera
+--distance 40` — does the world get closer?
+
+⚠️ **Three known gaps, so none reads as a surprise on the day.** In a **conversation** tab the
 wheel over the portal zooms *and* scrolls the transcript — the claim is enforced in the terminal
-front-end only, so **perform this beat in a shell tab**. And while the portal is open the
-backdrop does not paint and a scene patch has no picture, by construction (one engine frame per
-frame); so **do not perform beat 6 with a portal open** — close it first.
+front-end only, so **perform this beat in a shell tab**. While the portal is open the backdrop
+does not paint and a scene patch has no picture, by construction (one engine frame per frame);
+so **do not perform beat 6 with a portal open** — close it first. And a camera command issued
+with **no portal open and no `background world`** moves the viewpoint where nothing is drawing
+it: it succeeds, changes no pixel, and prints an advisory nobody in the room will see. Open the
+portal *first*.
+
+📌 **Immersive and full screen are NOT built** — clicking the portal does nothing, and there is
+no animated grow. Do not gesture at the frame as though it will open. The rectangle you get is
+the rectangle there is.
 
 ---
 

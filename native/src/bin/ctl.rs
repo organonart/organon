@@ -18,7 +18,7 @@
 //!   0 = ok · 2 = bad usage (clap) · 3 = read command with no live Organon.
 
 use clap::{CommandFactory, Parser, Subcommand};
-use organic_math_native::{agent, cli, ipc};
+use organic_math_native::{agent, cli, ipc, scene_input};
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -347,6 +347,35 @@ enum ConsoleAction {
         #[arg(value_parser = portal_words())]
         state: String,
     },
+    /// Move the viewer's viewpoint on the portal — yaw, pitch and distance
+    #[command(after_help = "This is where you STAND, not what the world does. `organon set \
+                            cam_path 1` spins the composition; this walks around it. The two \
+                            compose — a shot framed here still spins if `cam_path` says to.\n\n\
+                            All three are absolute, in the units the drag and the wheel \
+                            already write: yaw and pitch in RADIANS (yaw ±6.283 = one turn \
+                            either way, pitch ±1.5 ≈ straight down to straight up), distance \
+                            in world units (0.1–4000; the default view sits at 520). A value \
+                            outside its band is refused rather than clamped — it is far more \
+                            often a unit mistake than an overshoot.\n\n`--reset` returns to \
+                            the framing the window opened with, and is applied BEFORE the \
+                            others, so `--reset --distance 40` means \"default view, then \
+                            pull in\".\n\n🚨 The hand always wins: while you are dragging or \
+                            wheeling the portal — and for two seconds after — a camera \
+                            command is dropped, and the console says so on its own stderr.")]
+    Camera {
+        /// Back to the framing the window opened with (applied first)
+        #[arg(long)]
+        reset: bool,
+        /// Absolute yaw, in radians (±6.283)
+        #[arg(long, allow_negative_numbers = true)]
+        yaw: Option<f32>,
+        /// Absolute pitch, in radians (±1.5)
+        #[arg(long, allow_negative_numbers = true)]
+        pitch: Option<f32>,
+        /// Absolute distance from the pivot, in world units (0.1–4000)
+        #[arg(long)]
+        distance: Option<f32>,
+    },
 }
 
 /// Map the clap surface onto the library's command model (validation included).
@@ -575,6 +604,37 @@ fn run_console(action: ConsoleAction) -> ! {
                 std::process::exit(2);
             }
         },
+        // 🚨 **Both checks are here, at the clap boundary, and neither could be there.** clap
+        // can require *an* argument but not "at least one of four", and `value_parser!(f32)`
+        // carries no range (`.range()` is the integer parser's). So this is where a human gets
+        // the good error, before a byte is written — the console's own schema is the second
+        // gate, for a line hand-written straight onto the sidecar, and it reports through a
+        // dispatch record instead of a terminal.
+        ConsoleAction::Camera { reset, yaw, pitch, distance } => {
+            let framing = cli::CameraFraming { reset, yaw, pitch, distance };
+            if framing.is_empty() {
+                eprintln!(
+                    "organon: `console camera` needs at least one of {:?} — it moves the \
+                     viewpoint, so a command that names no axis would be a no-op",
+                    cli::CAMERA_WORDS
+                );
+                std::process::exit(2);
+            }
+            if !framing.in_range() {
+                eprintln!(
+                    "organon: a camera axis is out of range — yaw ±{:.3} rad, pitch ±{:.1} \
+                     rad, distance {}–{} world units. Refused rather than clamped: a value \
+                     this far out is usually a unit mistake, and a silent clamp would let it \
+                     look like it worked.",
+                    scene_input::YAW_LIMIT,
+                    scene_input::PITCH_LIMIT,
+                    scene_input::DISTANCE_MIN,
+                    scene_input::DISTANCE_MAX,
+                );
+                std::process::exit(2);
+            }
+            cli::ConsoleOp::Camera(framing)
+        }
     };
     if let Err(e) = cli::append_console_ops(std::slice::from_ref(&op)) {
         eprintln!(
@@ -1022,6 +1082,87 @@ mod tests {
         assert!(parse(&["console", "portal"]).is_err(), "there is no default state");
         assert!(parse(&["console", "portal", "ajar"]).is_err(), "an unknown state");
         assert!(parse(&["console", "portal", "open", "close"]).is_err(), "one state, not two");
+    }
+
+    /// **`console camera` takes any subset of four flags and round-trips through the sidecar.**
+    /// Negative angles are the case worth pinning at the clap boundary: without
+    /// `allow_negative_numbers` clap reads `-0.4` as an unknown short flag, and the failure is
+    /// a usage error for a value that is not only legal but *half of the range*.
+    #[test]
+    fn console_camera_takes_any_subset_and_survives_the_round_trip() {
+        let cases: &[(&[&str], cli::CameraFraming)] = &[
+            (&["--reset"], cli::CameraFraming { reset: true, ..Default::default() }),
+            (&["--yaw", "0.8"], cli::CameraFraming { yaw: Some(0.8), ..Default::default() }),
+            (
+                &["--pitch", "-0.4"],
+                cli::CameraFraming { pitch: Some(-0.4), ..Default::default() },
+            ),
+            (
+                &["--distance", "40"],
+                cli::CameraFraming { distance: Some(40.0), ..Default::default() },
+            ),
+            (
+                &["--reset", "--distance", "40"],
+                cli::CameraFraming { reset: true, distance: Some(40.0), ..Default::default() },
+            ),
+            (
+                &["--yaw", "-1.2", "--pitch", "0.3", "--distance", "12.5"],
+                cli::CameraFraming {
+                    reset: false,
+                    yaw: Some(-1.2),
+                    pitch: Some(0.3),
+                    distance: Some(12.5),
+                },
+            ),
+        ];
+        for (argv, want) in cases {
+            let mut full = vec!["console", "camera"];
+            full.extend_from_slice(argv);
+            let c = parse(&full).unwrap_or_else(|e| panic!("`{argv:?}` should parse: {e}"));
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Camera { reset, yaw, pitch, distance } } => {
+                    let got = cli::CameraFraming { reset, yaw, pitch, distance };
+                    assert_eq!(got, *want, "{argv:?}");
+                    assert!(got.in_range(), "{argv:?} is inside the hand's own band");
+                    let op = cli::ConsoleOp::Camera(got);
+                    assert_eq!(
+                        cli::parse_console_op(&cli::console_op_to_line(&op)),
+                        Some(op),
+                        "{argv:?} must survive the sidecar round trip"
+                    );
+                }
+                _ => panic!("`console camera {argv:?}` parsed as something else"),
+            }
+        }
+    }
+
+    /// ⚠️ **The two checks clap cannot make, pinned as the library predicates `run_console`
+    /// calls.** clap can require *an* argument but not "at least one of four", and
+    /// `value_parser!(f32)` carries no range — `.range()` belongs to the integer parser. So
+    /// `console camera` with no flags PARSES, and it must not then queue a line that moves
+    /// nothing; and an out-of-band value parses too, and must be refused rather than clamped.
+    /// Both are `run_console`'s exit-2 arms, and both are these predicates.
+    #[test]
+    fn a_camera_command_with_no_axis_or_an_out_of_band_one_is_caught_after_clap() {
+        let bare = parse(&["console", "camera"]).expect("clap itself accepts it");
+        match bare.cmd {
+            Cmd::Console { action: ConsoleAction::Camera { reset, yaw, pitch, distance } } => {
+                assert!(
+                    cli::CameraFraming { reset, yaw, pitch, distance }.is_empty(),
+                    "…and `is_empty` is what catches it, before a byte is written"
+                );
+            }
+            _ => panic!("`console camera` parsed as something else"),
+        }
+        let far = parse(&["console", "camera", "--distance", "9000"]).expect("clap accepts it");
+        match far.cmd {
+            Cmd::Console { action: ConsoleAction::Camera { reset, yaw, pitch, distance } } => {
+                let f = cli::CameraFraming { reset, yaw, pitch, distance };
+                assert!(!f.is_empty(), "it does name an axis");
+                assert!(!f.in_range(), "…and `in_range` is what refuses it");
+            }
+            _ => panic!("`console camera --distance 9000` parsed as something else"),
+        }
     }
 
     /// **The drift guard the block comment at the top of this file asks for** (#4 Tier 2,
