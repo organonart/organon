@@ -71,6 +71,7 @@ pub mod mcp;
 pub mod mcp_http;
 pub mod mock_agent;
 pub mod platform;
+pub mod portal;
 pub mod scroll_anchor;
 pub mod session;
 pub mod tabs;

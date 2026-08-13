@@ -66,7 +66,7 @@ use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
 use organon_shell::block_anchor::Block;
-use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
+use organon_shell::block_panel::{self, BlockAction, BlockPanel, Patch};
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
@@ -74,6 +74,7 @@ use organon_shell::conversation::ElementId;
 use organon_shell::conversation_view::{self, ConversationPane, SurfaceImages, SurfaceRequest};
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
+use organon_shell::portal::{self, PortalState};
 use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::{self, TermSession};
@@ -381,6 +382,8 @@ const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
 /// writer already left in its own output. The console records; it never writes.
 const CMD_PATCH: &str = "console.patch";
+/// See [`CMD_BACKGROUND`]. The portal: a screen-anchored, live window onto the world.
+const CMD_PORTAL: &str = "console.portal";
 /// The single argument the two **dressing** verbs take. One name, because the sidecar's wire
 /// form is `<verb> <word>` and inventing two spellings for one slot is how a schema drifts
 /// from its transport.
@@ -396,6 +399,12 @@ const CMD_UP: &str = "up";
 /// table-not-a-restatement arrangement `background`'s materials use, so the palette, the
 /// CLI's `--help` and this schema cannot come to know different kinds.
 const CMD_KIND: &str = "kind";
+/// [`CMD_PORTAL`]'s only argument: `open` / `close` / `toggle`. A **fourth** slot name rather
+/// than a reuse of [`CMD_ARG`], on [`CMD_ROWS`]' rule — `name` is a choice over the materials
+/// and rigs, and a palette offering `open` under the heading "name" would be describing the
+/// wrong thing. The `Choice` is built from `cli::PORTAL_WORDS`, so the schema, the CLI's
+/// `--help` and the parser are three renderings of one table.
+const CMD_STATE: &str = "state";
 
 /// The console's vocabulary, as [`CommandService`] catalog data.
 ///
@@ -466,6 +475,18 @@ fn console_specs() -> Vec<CommandSpec> {
                 },
             ],
         },
+        CommandSpec {
+            name: CMD_PORTAL.into(),
+            doc: "Open or close the portal — a live window onto the world, floating over the \
+                  transcript"
+                .into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: CMD_STATE.into(),
+                kind: ArgKind::Choice(cli::PORTAL_WORDS.iter().map(|s| (*s).to_string()).collect()),
+                required: true,
+            }],
+        },
     ]
 }
 
@@ -476,6 +497,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Rig(_) => CMD_RIG,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
+        cli::ConsoleOp::Portal(_) => CMD_PORTAL,
     }
 }
 
@@ -544,6 +566,17 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
                 )),
             }
         }
+        // Membership was settled by `validate_args` against the `Choice` — this is the
+        // conversion, and it is a belt exactly as `patch`'s kind is: a word the schema accepts
+        // must still resolve to something this build can act on, from the same one table.
+        CMD_PORTAL => args
+            .get(CMD_STATE)
+            .and_then(Value::as_str)
+            .and_then(cli::PortalCmd::from_word)
+            .map(cli::ConsoleOp::Portal)
+            .ok_or_else(|| {
+                format!("{name}: `{CMD_STATE}` must be one of {:?}", cli::PORTAL_WORDS)
+            }),
         _ => Err(format!("no console op for {name:?}")),
     }
 }
@@ -560,6 +593,7 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         cli::ConsoleOp::Patch { up, rows, kind } => {
             json!({ CMD_UP: up, CMD_ROWS: rows, CMD_KIND: kind.as_word() })
         }
+        cli::ConsoleOp::Portal(cmd) => json!({ CMD_STATE: cmd.as_word() }),
     }
 }
 
@@ -646,7 +680,15 @@ fn console_step(
         // into and never reaches here: [`Shell::apply_console`] routes it first. `None` is
         // the honest answer for a resolver whose whole domain is looks — and it is also the
         // safe one, since `None` here means "changed nothing".
-        cli::ConsoleOp::Block(_) | cli::ConsoleOp::Patch { .. } => return None,
+        //
+        // **A portal is not a look either, and its case is stronger.** It does change what the
+        // engine draws for the *backdrop* — an open portal takes the frame, see [`engine_plan`]
+        // — but it does that by being consulted at render time, not by writing
+        // `backdrop_source`. Folding it in here would make closing a portal restore whatever
+        // source it had overwritten, which is one remembered value more than the feature needs.
+        cli::ConsoleOp::Block(_)
+        | cli::ConsoleOp::Patch { .. }
+        | cli::ConsoleOp::Portal(_) => return None,
     }
     Some((source, look))
 }
@@ -1045,6 +1087,147 @@ struct Shell {
     surface_pane: usize,
     /// Monotonic frame counter, used only as the cap's recency stamp.
     surface_clock: u64,
+    /// Whether the portal is on screen. Moved only by [`Shell::apply_console`], through
+    /// [`portal::step`].
+    portal_state: PortalState,
+    /// The portal's render target.
+    ///
+    /// ⚠️ **A field beside [`Shell::backdrop`], NOT a [`SurfaceKey`] variant**, and the reason
+    /// is about meaning rather than effort. [`surfaces_to_evict`] is a policy for *many things
+    /// competing for few slots*; a portal is *one thing that is open or closed*. It is
+    /// requested every frame it exists, so its stamp is always `now` and the cap could never
+    /// choose it — a key variant would exist solely to be excluded from the one function the
+    /// type serves, and would then have to be remembered out of [`Shell::free_all_surfaces`]
+    /// and taught to the eviction log so it did not print a fabricated element id.
+    ///
+    /// The deciding argument is smaller and harder: **the portal must work in a terminal tab**,
+    /// where there are no elements and [`ElementId`] means nothing at all. So `SurfaceKey`, its
+    /// tests, `SurfaceImages` and the whole `conversation_view` seam are untouched by this
+    /// feature — only [`SurfaceTexture`] and [`Shell::make_surface_texture`] are reused, which
+    /// is the part that was worth reusing.
+    portal: Option<SurfaceTexture>,
+    /// The camera gesture the portal accumulated this frame, drained into the World after the
+    /// UI and before the next render — `wgpu_editor`'s arrangement exactly.
+    portal_input: scene_input::SceneInput,
+    /// Where the portal was drawn **last** frame, in points.
+    ///
+    /// ⚠️ One frame behind, exactly as [`Shell::pane_points`] is and for the same reason: the
+    /// rect is derived from the pane, the pane is an egui layout output, and the texture has to
+    /// exist before the frame that paints it. The visible consequence is one "the portal is
+    /// there but empty" frame when it opens, and nothing else — the rect *inside* a frame is
+    /// recomputed from that frame's own pane, so the rectangle a person sees is never stale
+    /// even though the pixels in it are one frame old.
+    portal_points: Option<(f32, f32)>,
+}
+
+/// Register the portal's interaction region and paint it.
+///
+/// # Order inside, and why it is not the obvious one
+///
+/// The region is registered **before** the image is painted, and that is not stylistic:
+/// [`scene_input::scene_viewport`] *consumes* the wheel from inside — it zeroes both
+/// `smooth_scroll_delta` and `raw_scroll_delta` on the frames it owns — and a `ScrollArea`
+/// reads the smoothed value in its `end()`. Registering first is what makes a zoom over the
+/// portal a zoom and not also a scroll.
+///
+/// ⚠️ **That consumption does NOT cover the terminal front-end**, which reads
+/// `raw_scroll_delta` in its own body, *before* this function runs. `term_view::draw`'s
+/// explicit rect test is what covers that, and the two are not alternatives — the terminal
+/// needs the rect test because it reads raw input, and everything else needs the consumption
+/// because it reads egui's.
+///
+/// # `SceneMode::Workstation`, and `Sense::drag()`
+///
+/// Workstation is the honest mode: the portal is *a bounded pane inside an interface*, which is
+/// precisely what that variant means, and it answers "the press is the scene's" without walking
+/// egui's hit test — the immersive walk exists for a scene that is the whole window with the
+/// interface floating over it, which is a state this tier does not build.
+///
+/// `scene_viewport` hardcodes `Sense::drag()`. That is right here and would stop being right in
+/// an immersive portal: a drag-only widget is what egui treats as "a big background thing", so
+/// a click landing on it is handed to whatever control wanted it. The portal has no click
+/// gesture yet, so nothing is lost. When the click-to-grow transition is built, widen
+/// `scene_viewport` with a `Sense` parameter — the editor's two call sites passing
+/// `Sense::drag()` verbatim so their behaviour is provably unchanged — rather than adding a
+/// second `ui.interact` on the same rect: two widgets on one rectangle fight in the hit test,
+/// and which one loses is decided by registration order.
+fn paint_portal(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    image: Option<egui::TextureId>,
+    input: &mut scene_input::SceneInput,
+) {
+    let _resp = scene_input::scene_viewport(ui, rect, scene_input::SceneMode::Workstation, input);
+    let painter = ui.painter();
+    match image {
+        // UV 0..1 with no fit policy to get wrong: the console renders the target at exactly
+        // this rect's pixel size, so there is nothing to letterbox — `conversation_view`'s
+        // surface quad carries the same comment for the same reason.
+        Some(id) => {
+            painter.image(
+                id,
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        // The one frame between "the portal is open" and "its rect has been measured, its
+        // texture made and a world drawn into it". Filled rather than left transparent so the
+        // object exists on screen from the frame it was asked for — an empty outline over live
+        // scrollback reads as a rendering failure, which is the very confusion the surface
+        // path's own "rendering…" placeholder was added to prevent.
+        None => {
+            painter.rect_filled(rect, 0.0, block_panel::PANEL_FILL);
+        }
+    }
+    // The console's own edge, not a second visual language arrived at by copy-paste — the same
+    // phosphor hairline a patch panel wears, which is what says "this is a thing, deliberately
+    // placed" rather than "the render leaked".
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0_f32, block_panel::PANEL_EDGE),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// What the engine is asked to draw this frame: the backdrop's source, and whether the portal
+/// renders — **pure**, so the invariant below is a test rather than a promise.
+///
+/// 📌 **At most ONE `World` render per frame, in every state, by construction.** That is what
+/// this function exists to guarantee, and `the_engine_is_asked_for_at_most_one_frame` proves it
+/// over the whole input space. The reason it matters is in [`SURFACE_RENDERS_PER_FRAME`]'s doc:
+/// what double-steps when one console frame takes two engine frames is not the wall-clock sims
+/// — those advance by microseconds and nobody sees it — but `frame_index`, the TAA jitter phase
+/// riding on it, and the temporal history beside it. Those are shared between the two targets.
+/// That doc rules the case out on the grounds that a surface shows a *still lit plane*; a live
+/// World portal beside a live World backdrop would promote it from a documented non-issue to
+/// the default.
+///
+/// So an open portal **takes the frame**: the backdrop does not render and does not paint while
+/// it is up. `backdrop_source` is not written, so closing the portal restores whatever the
+/// backdrop was with no remembered value to get wrong.
+///
+/// ⚠️ **The cost, stated rather than discovered: a scene patch shows nothing while the portal
+/// is open.** A patch samples the backdrop's texture, and the promotion that renders a
+/// substrate for it (`Off` + `patches_want_image`) is exactly what the portal displaces. It
+/// comes back the moment the portal closes. Two live rectangles showing two different scenes
+/// would need the second `World` that `render_surfaces`' doc prices at ~50 shaders and ~62
+/// pipelines, and would still trade jitter phases; one at a time is the honest version.
+fn engine_plan(
+    portal_open: bool,
+    backdrop: BackdropSource,
+    patches_want_image: bool,
+) -> (BackdropSource, bool) {
+    if portal_open {
+        return (BackdropSource::Off, true);
+    }
+    let source = if backdrop == BackdropSource::Off && patches_want_image {
+        BackdropSource::Substrate
+    } else {
+        backdrop
+    };
+    (source, false)
 }
 
 impl Shell {
@@ -1115,6 +1298,15 @@ impl Shell {
             surface_requests: Vec::new(),
             surface_pane: 0,
             surface_clock: 0,
+            // Closed, and not seeded from the environment. `ORGANON_SHELL_BACKDROP` exists and
+            // is James's to change (2026-08-11); the portal deliberately gains no twin of it,
+            // because the whole claim of this object is that it is **summoned** — a console
+            // that opened with a window already floating in it would be back in the state that
+            // ruling forbids, by a new route.
+            portal_state: PortalState::Closed,
+            portal: None,
+            portal_input: scene_input::SceneInput::default(),
+            portal_points: None,
         }
     }
 
@@ -1527,6 +1719,30 @@ impl Shell {
         }
         if let cli::ConsoleOp::Patch { up, rows, kind } = op {
             self.claim_patch(*up, *rows, *kind);
+            return;
+        }
+        // The portal: routed here beside `Block` and `Patch`, for their reason — it changes
+        // what the window *holds*, not what the backdrop is dressed in.
+        if let cli::ConsoleOp::Portal(cmd) = op {
+            let event = match cmd {
+                cli::PortalCmd::Open => portal::PortalEvent::Open,
+                cli::PortalCmd::Close => portal::PortalEvent::Close,
+                cli::PortalCmd::Toggle => portal::PortalEvent::Toggle,
+            };
+            let next = portal::step(self.portal_state, event);
+            if next == self.portal_state {
+                return;
+            }
+            self.portal_state = next;
+            // Closing frees the texture immediately rather than leaving it held against a
+            // re-open. A portal is one thing that is open or closed, not a cache — and 2.5 MB
+            // held for a window nobody asked for is the kind of cost that is invisible until
+            // somebody profiles. The log line is [`Shell::free_portal`]'s, unconditional on
+            // [`Shell::free_surface`]'s rule.
+            if !next.is_open() {
+                self.free_portal("it was closed");
+                self.portal_input = scene_input::SceneInput::default();
+            }
             return;
         }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
@@ -1968,12 +2184,13 @@ impl Shell {
     /// the backdrop off and a patch open, the substrate is drawn into the pane target and
     /// **only the patch quads sample it** — one render, no second `World`, no `Shared`
     /// override, and the terminal behind it stays flat black.
+    ///
+    /// Console Spike, the portal: this is now one half of [`engine_plan`]'s answer rather than
+    /// the whole decision. The other half is whether the *portal* renders, and the two are
+    /// computed together precisely so that "at most one World render per frame" is a property
+    /// of one function instead of an agreement between two.
     fn render_source(&self) -> BackdropSource {
-        if self.backdrop_source == BackdropSource::Off && self.patches_want_image() {
-            BackdropSource::Substrate
-        } else {
-            self.backdrop_source
-        }
+        engine_plan(self.portal_state.is_open(), self.backdrop_source, self.patches_want_image()).0
     }
 
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
@@ -2285,8 +2502,88 @@ impl Shell {
         }
     }
 
+    /// The portal's frame: render the **World** into the portal's own target and hand back what
+    /// to paint it with. `None` while it is closed, or for the one frame before its rect is
+    /// known.
+    ///
+    /// # 🚨 Why this is the World and not the substrate
+    ///
+    /// A substrate portal cannot be orbited, and it fails *silently*. `World`'s camera
+    /// finalization reads `substrate_rig` first and returns its whole six-tuple before
+    /// `yaw`/`pitch`/`distance` are consulted — and those three are exactly what
+    /// [`World::apply_camera_input`] writes. So the drag would be read, converted, applied, and
+    /// then discarded, with a green build and no log line. [`portal`]'s module docs carry the
+    /// argument in full; this is the site that depends on it.
+    ///
+    /// ⚠️ **`set_substrate_rig(None)` here is load-bearing, not defensive tidiness.**
+    /// [`Shell::render_surfaces`] installs a rig per surface and never clears it, and it runs
+    /// *before* this. A conversation tab that drew one surface would otherwise leave the
+    /// portal's World framing a plane nobody is drawing — the same stale-rig hazard
+    /// [`Shell::render_backdrop`]'s `Off` arm was given its own clear for.
+    ///
+    /// # What it does NOT have to do
+    ///
+    /// No `Shared` publish-and-restore. A surface has to overwrite the snapshot with its own
+    /// look and put the console's back, or `organon status` would report a picture that is not
+    /// the window. The portal shows the console's **own** snapshot — already published before
+    /// any of this runs — so there is nothing to override and nothing to restore. And because
+    /// `render_to_texture` runs `frame_body`, the CLI's parameter lane drains inside this call:
+    /// `organon set` / `generator` / `recipe` typed at a prompt in this console reach this
+    /// world, with no wiring at all.
+    fn render_portal(&mut self) -> Option<egui::TextureId> {
+        if !self.portal_state.is_open() {
+            return None;
+        }
+        let device = self.world.device().cloned()?;
+        let gpu = self.gpu.as_ref()?;
+        let swapchain = (gpu.config.width.max(1), gpu.config.height.max(1));
+        let window_points = self.window_points?;
+        // The portal's rect from the previous frame, as a fraction of the window applied to the
+        // swapchain — `pane_pixels_in`'s ratio, never points times a remembered scale. That
+        // argument is `render_backdrop`'s and the measurement is `pane_pixels_in`'s.
+        let size = scene_input::pane_pixels_in(swapchain, self.portal_points?, window_points);
+        if self.portal.as_ref().is_none_or(|t| t.size != size) {
+            self.free_portal("the portal changed size");
+            self.portal = self.make_surface_texture(&device, size, self.surface_clock);
+        }
+        let held = self.portal.as_ref()?;
+        let (id, texture_size) = (held.id, held.size);
+        // The World, not a rig — see this function's doc, and the module docs it points at.
+        self.world.set_substrate_rig(None);
+        let texture = &self.portal.as_ref()?.texture;
+        self.world.render_to_texture(texture, texture_size, BACKDROP_FORMAT);
+        Some(id)
+    }
+
+    /// Drop the portal's texture and its egui registration, saying why —
+    /// [`Shell::free_surface`]'s body and its unconditional log, with the one clause that
+    /// identifies it changed.
+    ///
+    /// ⚠️ It prints `the portal` rather than an element and a pane, which is the concrete half
+    /// of why this is not a `SurfaceKey` variant: there is no element and, in a terminal tab,
+    /// no element *space* — a key here would have had to fabricate both to satisfy the log.
+    fn free_portal(&mut self, why: &str) {
+        let Some(gone) = self.portal.take() else { return };
+        eprintln!(
+            "[surface] released the {}×{} texture for the portal — {why}; \
+             {} of {MAX_SURFACE_TEXTURES} conversation surfaces live, portal {} bytes",
+            gone.size.0,
+            gone.size.1,
+            self.surfaces.len(),
+            u64::from(gone.size.0) * u64::from(gone.size.1) * 4,
+        );
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.free_texture(&gone.id);
+        }
+    }
+
     /// Free every surface texture. Used where a `SurfaceKey`'s pane index stops meaning what
     /// it meant — see the `Close` arm of [`Shell::apply`].
+    ///
+    /// ⚠️ **The portal is deliberately not among them.** This fires when a tab closes and every
+    /// `SurfaceKey`'s pane index stops meaning what it meant — a renumbering the portal has no
+    /// stake in, since it is keyed by nothing. Blanking it on every tab close would be a
+    /// visible flicker in the one thing on screen that is meant to hold still.
     fn free_all_surfaces(&mut self, why: &str) {
         for key in self.surfaces.keys().copied().collect::<Vec<_>>() {
             self.free_surface(key, why);
@@ -2349,6 +2646,11 @@ impl Shell {
         // by the next frame's `render_backdrop` rather than the other way round, and so that
         // a console with the backdrop on still gets the picture it published.
         let surface_images = self.render_surfaces(&published);
+        // …and the portal last, after everything that installs a substrate rig, because it is
+        // the one target that must have none. [`Shell::render_portal`] clears it explicitly
+        // rather than relying on this order — the order is what makes the clear cheap, not what
+        // makes it correct.
+        let portal_image = self.render_portal();
 
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),
@@ -2434,6 +2736,12 @@ impl Shell {
         // `pane_rect` for exactly that reason: a ratio only cancels the scale if both halves
         // were measured under it.
         let mut window_rect: Option<egui::Rect> = None;
+        // The portal, split out of `self` for the closure exactly as everything else here is.
+        // The state is `Copy`, the gesture accumulator is borrowed, and the rect comes back out
+        // to be remembered for the next frame's `render_portal`.
+        let portal_open = self.portal_state.is_open();
+        let portal_input = &mut self.portal_input;
+        let mut portal_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
@@ -2463,6 +2771,12 @@ impl Shell {
                     // Before anything is allocated in it — `term_view::draw`'s own first act
                     // is this same call.
                     pane_rect = Some(ui.available_rect_before_wrap());
+                    // **This frame's pane, not last frame's** — which is what makes the portal
+                    // screen-anchored in the sense that matters: the rectangle is a function of
+                    // where the window is *now*. Only the pixels inside it are a frame old.
+                    portal_rect = pane_rect
+                        .filter(|_| portal_open)
+                        .and_then(organon_shell::portal::portal_rect);
                     // §5.9's fork, at the one place it shows: the same panel, the same
                     // window, two renderings. The terminal branch is what it was — Tier 5's
                     // patch ledger and the actions its panels return included; a conversation
@@ -2486,6 +2800,14 @@ impl Shell {
                                 }),
                                 &mut pane.blocks,
                                 patch_image,
+                                // 🚨 The wheel arbitration, and the only thing this crate does
+                                // with the rect. The terminal reads the wheel from **raw
+                                // input**, so registering the portal after it — or as an
+                                // `Area`, or as a modal — would not keep a scroll over the
+                                // portal out of the scrollback. Nothing but an explicit rect
+                                // test can, which is why `block_panel::pointer_inside` exists
+                                // and why this copies it.
+                                portal_rect,
                             );
                         }
                         (Some(Pane::Conversation(chat)), _) => {
@@ -2503,8 +2825,23 @@ impl Shell {
                             });
                         }
                     }
+                    // The portal, over whichever front-end just drew. **After the content and
+                    // inside the same layer**, which buys both halves at once: within one layer
+                    // painter order is draw order, so it lands over the glyphs with no z-order
+                    // machinery, and registering the interaction region after the content is
+                    // what wins the tie for a drag — `scene_input`'s own tested arrangement,
+                    // "in workstation mode the pane registers after the scroll area, and egui
+                    // breaks a tie by taking the topmost".
+                    if let Some(rect) = portal_rect {
+                        paint_portal(ui, rect, portal_image, portal_input);
+                    }
                 });
         });
+        // Taken out of the accumulator here, on the first line after the closure, so the
+        // field borrow ends before anything below needs `&mut self` (`Shell::apply`,
+        // `Shell::apply_console`). Applying it is a few lines further down, once those have
+        // run — see there for why the camera reaches the world in the frame it was moved in.
+        let camera = portal_input.gesture.take();
         state.handle_platform_output(window, out.platform_output);
         // What the next frame's backdrop is sized to. Two point sizes, never pixels and never
         // a scale: the conversion belongs with the clamps in `pane_pixels_in`, and it is the
@@ -2516,6 +2853,18 @@ impl Shell {
         // the same reason — a rect is an output of the layout that produced it.
         self.surface_requests = surface_requests;
         self.surface_pane = active;
+        // What the next frame's `render_portal` sizes its texture to — points, never pixels,
+        // for `pane_points`' reason: it is the *ratio* to the window that survives a scale
+        // nobody has measured yet.
+        self.portal_points = portal_rect.map(|r| (r.width(), r.height()));
+        // The camera gesture into the world, once per frame, after the UI and before the next
+        // render — `wgpu_editor`'s precedent exactly, so a drag reaches the camera in the frame
+        // it was made. This is the line the whole "shows the World, not the substrate" argument
+        // exists to make effective: with a substrate rig installed, every one of these writes
+        // would be discarded downstream, with no error and no log line.
+        for input in camera.inputs() {
+            self.world.apply_camera_input(input);
+        }
         if let Some(action) = action {
             self.apply(action);
         }
@@ -3236,6 +3585,123 @@ mod cli_tests {
         );
     }
 
+    /// 🚨 **The engine is asked for at most one frame per console frame, in every state.**
+    /// The whole input space, exhaustively — and it is exhaustive on purpose, because the
+    /// failure this guards is not a crash. [`SURFACE_RENDERS_PER_FRAME`]'s doc names it: two
+    /// renders in one frame double-step `frame_index` and the TAA jitter phase riding on it, so
+    /// the two targets trade phases. On a still lit plane that is invisible, which is why the
+    /// existing surface path can afford to allow it; on a **moving World** it is visible and
+    /// intermittent, the worst kind, and a live portal beside a live backdrop is exactly that.
+    ///
+    /// The property is bought by the state machine rather than by a check somewhere, which is
+    /// what makes it survive: an open portal takes the frame, and the future immersive state
+    /// *is* the backdrop rather than a second thing beside it.
+    #[test]
+    fn the_engine_is_asked_for_at_most_one_frame() {
+        for portal_open in [false, true] {
+            for backdrop in
+                [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate]
+            {
+                for patches in [false, true] {
+                    let (source, portal_renders) = engine_plan(portal_open, backdrop, patches);
+                    let renders =
+                        usize::from(source != BackdropSource::Off) + usize::from(portal_renders);
+                    assert!(
+                        renders <= 1,
+                        "portal_open={portal_open} backdrop={backdrop:?} patches={patches} \
+                         asks the engine for {renders} frames"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **The portal takes the frame, and gives it back untouched.** Two halves, and the second
+    /// is the one that would rot quietly: `backdrop_source` is never written, so closing the
+    /// portal restores whatever the backdrop was with no remembered value to get wrong — a
+    /// property that would be lost the day someone "simplified" this by setting the field.
+    ///
+    /// ⚠️ It also pins the documented cost: while the portal is open a scene patch has no
+    /// picture to sample, because the `Off` + `patches_want_image` promotion is precisely what
+    /// the portal displaces.
+    #[test]
+    fn an_open_portal_takes_the_frame_and_closing_it_gives_the_backdrop_back() {
+        for backdrop in [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate] {
+            for patches in [false, true] {
+                assert_eq!(
+                    engine_plan(true, backdrop, patches),
+                    (BackdropSource::Off, true),
+                    "an open portal renders and the backdrop does not, from {backdrop:?}"
+                );
+                // The same inputs with the portal closed are the pre-portal answer exactly.
+                let want = if backdrop == BackdropSource::Off && patches {
+                    BackdropSource::Substrate
+                } else {
+                    backdrop
+                };
+                assert_eq!(
+                    engine_plan(false, backdrop, patches),
+                    (want, false),
+                    "closing it restores {backdrop:?} (patches={patches})"
+                );
+            }
+        }
+    }
+
+    /// **The portal's vocabulary is one table with three renderings, and this is the
+    /// console-side drift guard.** The catalog's `Choice`, `PortalCmd`'s resolver and the
+    /// sidecar's line form are independent code paths over `cli::PORTAL_WORDS`; a word the
+    /// catalog offered but the resolver refused would validate `Ok` and change nothing, which
+    /// is the failure §5.9.25 names ("a hand-written copy is how a CLI comes to accept a word
+    /// nothing can act on"). The CLI-side half is in `bin/ctl.rs`'s tests.
+    #[test]
+    fn the_catalog_and_the_resolver_agree_about_the_portal() {
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_PORTAL)
+            .expect("console.portal is registered");
+        assert_eq!(spec.target, TargetKind::Viewport, "a window onto the world is the viewport");
+        let arg = spec.args.iter().find(|a| a.name == CMD_STATE).expect("one `state` argument");
+        assert!(arg.required, "there is no state a portal command silently means");
+        let ArgKind::Choice(offered) = &arg.kind else {
+            panic!("{:?} is not a Choice — an unknown state would reach the apply", arg.kind);
+        };
+        assert_eq!(offered.len(), cli::PORTAL_WORDS.len(), "the catalog is the whole table");
+        for word in cli::PORTAL_WORDS {
+            assert!(offered.iter().any(|o| o == word), "`{word}` is not in the catalog");
+            let cmd = cli::PortalCmd::from_word(word)
+                .unwrap_or_else(|| panic!("the catalog offers `{word}` and nothing resolves it"));
+            assert_eq!(cmd.as_word(), *word, "the word must survive the round trip");
+            assert_eq!(
+                op_from(CMD_PORTAL, &json!({ CMD_STATE: word })),
+                Ok(cli::ConsoleOp::Portal(cmd))
+            );
+        }
+        let e = op_from(CMD_PORTAL, &json!({ CMD_STATE: "ajar" })).expect_err("no such state");
+        assert!(e.contains(CMD_STATE), "the message names the slot: {e}");
+        assert!(op_from(CMD_PORTAL, &json!({})).is_err(), "a missing state is not a default");
+    }
+
+    /// **A portal command is not a look**, so it must fall through `console_step` unchanged —
+    /// exactly as a block and a patch do, and for a sharper reason: it *does* change what the
+    /// engine draws for the backdrop, but by being consulted at render time rather than by
+    /// writing `backdrop_source`. If it ever folded in, closing the portal would restore a
+    /// source it had overwritten, which is one remembered value more than the feature needs.
+    #[test]
+    fn a_portal_command_leaves_the_backdrop_and_its_dressing_exactly_as_it_found_them() {
+        let dressed = look(Some("graphite"), Some("daylight"));
+        for cmd in [cli::PortalCmd::Open, cli::PortalCmd::Close, cli::PortalCmd::Toggle] {
+            for src in [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate] {
+                assert_eq!(
+                    console_step(src, &dressed, &cli::ConsoleOp::Portal(cmd)),
+                    None,
+                    "`portal {}` at {src:?} must fold into no look at all",
+                    cmd.as_word()
+                );
+            }
+        }
+    }
+
     /// Catalog name ↔ sidecar op, both directions. The service hands back the op it
     /// validated, so a mismatch here applies a command nobody issued.
     #[test]
@@ -3248,6 +3714,9 @@ mod cli_tests {
             cli::ConsoleOp::Block(7),
             cli::ConsoleOp::Patch { up: 0, rows: 7, kind: cli::PatchKind::Scene },
             cli::ConsoleOp::Patch { up: 12, rows: 12, kind: cli::PatchKind::Panel },
+            cli::ConsoleOp::Portal(cli::PortalCmd::Open),
+            cli::ConsoleOp::Portal(cli::PortalCmd::Close),
+            cli::ConsoleOp::Portal(cli::PortalCmd::Toggle),
         ] {
             assert_eq!(op_from(spec_name(&op), &op_args(&op)), Ok(op.clone()), "{op:?}");
         }

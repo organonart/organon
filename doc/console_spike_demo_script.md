@@ -300,6 +300,40 @@ app (clicks) nor stays in it (keystrokes leaked into another window), so this on
 
 ---
 
+### 9 — "…and a portal into a 3D world, in the terminal." · the portal · **built, NOT ONE PIXEL SEEN**
+
+In a shell tab, type `organon console portal open`. A framed window appears at the top right,
+rendering the world live. Scroll the transcript — it flows past **underneath**; the window does
+not move. Drag inside the window to orbit it. Then, at the same prompt, `organon set glow 1.0`
+or `organon generator dna` — and what changes is what is inside the window.
+`organon console portal close` gives the rows back.
+
+*The point:* two claims in one gesture, and the second is the stronger. It is a **rendered
+object anchored to the screen rather than to the text** — which no terminal does, and which is
+the complement of the patch (a patch is pinned to your output and scrolls away with it). And
+the console's own command line **drives the world inside it**, from the same prompt, in the
+same window.
+
+📌 *That second half needed no new code.* The CLI's parameter lane drains inside
+`World::frame_body`, which is what the portal's render runs, and the console injects its IPC
+namespace into every tab it spawns. It has been true since Tier 2; the portal is the first
+thing that makes it visible.
+
+🚨 **Status, plainly: nobody has run this.** It was built in a session with no GPU. The state
+machine, the rect, the wheel arbitration, the CLI round trip and the one-render-per-frame
+invariant are pinned by 399 headless tests and the shell-edition build is green — **and none of
+that is evidence that anything appears.** Do not put this beat in a demo until James has driven
+it. The first check is the cheap one: does a window appear at all, and does the transcript
+scroll underneath rather than taking it along?
+
+⚠️ **Two known gaps, so neither reads as a surprise on the day.** In a **conversation** tab the
+wheel over the portal zooms *and* scrolls the transcript — the claim is enforced in the terminal
+front-end only, so **perform this beat in a shell tab**. And while the portal is open the
+backdrop does not paint and a scene patch has no picture, by construction (one engine frame per
+frame); so **do not perform beat 6 with a portal open** — close it first.
+
+---
+
 ## Rehearsal log
 
 *One line per full run-through: date, platform, which beat broke, what was done about it.*

@@ -293,6 +293,56 @@ pub enum ConsoleOp {
     ///
     /// `kind` is what the console should draw in it — see [`PatchKind`].
     Patch { up: u16, rows: u16, kind: PatchKind },
+    /// Open or close **the portal** — a screen-anchored, live, orbitable window onto the
+    /// Organon world, floating over the transcript while the transcript scrolls past under it.
+    ///
+    /// 📌 **It carries no position, and that absence is the point.** Every other verb on this
+    /// lane that puts something in the page has to say *where* in a character grid — and
+    /// [`ConsoleOp::Patch`]'s doc records what that costs: the anchor is resolved at drain
+    /// time, out of band with the PTY byte stream, so it is only correct while the child is
+    /// idle and anything printed in between moves it. A **screen**-anchored rectangle resolves
+    /// against the window instead, so the hardest-won caveat of the patch verbs simply does not
+    /// arise here.
+    Portal(PortalCmd),
+}
+
+/// What `organon console portal` does. See [`ConsoleOp::Portal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortalCmd {
+    Open,
+    Close,
+    /// One word for both directions — what a key binding or an alias wants.
+    Toggle,
+}
+
+/// The portal words, in the order `--help` should list them.
+///
+/// One table, read by `bin/ctl.rs`'s possible-values parser, by the console's command schema
+/// and by [`PortalCmd::from_word`] — [`PATCH_KIND_WORDS`]' arrangement exactly, for the reason
+/// recorded there: a second hand-maintained copy is how a CLI comes to accept a word nothing
+/// can act on.
+pub const PORTAL_WORDS: &[&str] = &["open", "close", "toggle"];
+
+impl PortalCmd {
+    /// The word this command travels as, on the wire and in `--help`.
+    pub fn as_word(self) -> &'static str {
+        match self {
+            PortalCmd::Open => "open",
+            PortalCmd::Close => "close",
+            PortalCmd::Toggle => "toggle",
+        }
+    }
+
+    /// The command a word names, or `None` — which the sidecar reader treats as a line to
+    /// skip, exactly as it treats an unknown verb.
+    pub fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "open" => Some(PortalCmd::Open),
+            "close" => Some(PortalCmd::Close),
+            "toggle" => Some(PortalCmd::Toggle),
+            _ => None,
+        }
+    }
 }
 
 /// What a claimed rectangle **shows**: the `kind` field
@@ -378,6 +428,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
         }
+        ConsoleOp::Portal(cmd) => format!("portal {}", cmd.as_word()),
     }
 }
 
@@ -418,6 +469,13 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
             };
             Some(ConsoleOp::Patch { up, rows, kind })
         }
+        // ⚠️ **No default, deliberately — unlike `patch`'s `kind`.** That field defaults
+        // because a line written before the field existed *meant* something specific, and
+        // `Scene` is what it meant. There has never been a `portal` line without a word, so a
+        // bare `portal` is not an older spelling of anything: it is malformed, and the lane's
+        // standing rule for malformed is to skip rather than guess. Guessing would toggle a
+        // window on and off from a typo.
+        "portal" => PortalCmd::from_word(it.next()?).map(ConsoleOp::Portal),
         _ => None,
     }
 }

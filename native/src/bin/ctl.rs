@@ -83,6 +83,12 @@ fn patch_kinds() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(cli::PATCH_KIND_WORDS.iter().copied())
 }
 
+/// Possible-values parser for `console portal <STATE>`. Built from `cli::PORTAL_WORDS`, on
+/// [`patch_kinds`]' rule and for its reason.
+fn portal_words() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(cli::PORTAL_WORDS.iter().copied())
+}
+
 #[derive(Parser)]
 #[command(
     name = "organon",
@@ -327,6 +333,20 @@ enum ConsoleAction {
         #[arg(long, default_value = "scene", value_parser = patch_kinds())]
         kind: String,
     },
+    /// Open or close the portal — a live window onto the world, floating over the transcript
+    #[command(after_help = "The portal holds its place on SCREEN: the transcript scrolls past \
+                            underneath it and it does not scroll away. It shows the world, so \
+                            `organon set` / `generator` / `recipe` typed in this same console \
+                            drive what is inside it. Drag it to orbit, wheel over it to zoom — \
+                            neither moves the text behind it.\n\nIt occludes the rows it \
+                            floats over, which is what floating means; `close` gives them \
+                            back. While it is open the backdrop does not paint, so the engine \
+                            is asked for one frame per frame and no more.")]
+    Portal {
+        /// open, close, or toggle
+        #[arg(value_parser = portal_words())]
+        state: String,
+    },
 }
 
 /// Map the clap surface onto the library's command model (validation included).
@@ -539,6 +559,21 @@ fn run_console(action: ConsoleAction) -> ! {
             up,
             rows,
             kind: cli::PatchKind::from_word(&kind).unwrap_or_default(),
+        },
+        // 🚨 No `unwrap_or_default` twin of the line above, and the asymmetry is the point:
+        // `PatchKind` has a default because a kindless line is an older spelling of `scene`,
+        // whereas there is no state a portal command silently means. clap has already
+        // restricted the word to `cli::PORTAL_WORDS`, so this cannot miss — and if it somehow
+        // did, refusing beats toggling a window off because of a typo.
+        ConsoleAction::Portal { state } => match cli::PortalCmd::from_word(&state) {
+            Some(cmd) => cli::ConsoleOp::Portal(cmd),
+            None => {
+                eprintln!(
+                    "organon: `{state}` is not a portal state — expected one of {:?}",
+                    cli::PORTAL_WORDS
+                );
+                std::process::exit(2);
+            }
         },
     };
     if let Err(e) = cli::append_console_ops(std::slice::from_ref(&op)) {
@@ -954,6 +989,39 @@ mod tests {
             &(cli::MAX_BLOCK_ROWS + 1).to_string()
         ])
         .is_err());
+    }
+
+    /// **`console portal` takes a state, and that state is not optional.** Every word in
+    /// `cli::PORTAL_WORDS` reaches an op and round-trips through the sidecar's own line form;
+    /// anything else fails here, at the clap boundary, because the sidecar's answer to a word
+    /// it cannot resolve is to skip the line in silence — and a portal command that vanishes
+    /// looks exactly like a portal that failed to render.
+    ///
+    /// ⚠️ The bare `console portal` case is the one worth pinning: unlike `patch --kind` there
+    /// is no state it silently means, so it must be an error rather than a default.
+    #[test]
+    fn console_portal_takes_a_state_and_has_no_default_one() {
+        for word in cli::PORTAL_WORDS {
+            let c = parse(&["console", "portal", word]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Portal { state } } => {
+                    assert_eq!(&state, word);
+                    let cmd = cli::PortalCmd::from_word(&state)
+                        .unwrap_or_else(|| panic!("`{word}` is in the table but resolves to nothing"));
+                    assert_eq!(
+                        cli::parse_console_op(&cli::console_op_to_line(&cli::ConsoleOp::Portal(
+                            cmd
+                        ))),
+                        Some(cli::ConsoleOp::Portal(cmd)),
+                        "`portal {word}` must survive the sidecar round trip"
+                    );
+                }
+                _ => panic!("`console portal {word}` parsed as something else"),
+            }
+        }
+        assert!(parse(&["console", "portal"]).is_err(), "there is no default state");
+        assert!(parse(&["console", "portal", "ajar"]).is_err(), "an unknown state");
+        assert!(parse(&["console", "portal", "open", "close"]).is_err(), "one state, not two");
     }
 
     /// **The drift guard the block comment at the top of this file asks for** (#4 Tier 2,

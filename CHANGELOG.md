@@ -251,6 +251,65 @@ From here on, this file gets an entry per meaningful change, newest first.
 - organon-shell lib: **393 passing, from 390** — two tests built on the reconstruction rewritten
   into five built on the capture. No expected value was adjusted to make a test pass.
 
+### Console Spike — a portal into a 3D world, floating in the terminal
+
+- **`organon console portal open` floats a live, orbitable window onto the world over the
+  transcript.** The transcript scrolls past underneath it; the portal holds its place on
+  **screen**. That is the new thing — every anchor the console had before this was a *scroll*
+  anchor (`block_anchor` pins a rectangle to a run of lines and the picture rides them off the
+  top), and this is the complement. Drag it to orbit, wheel over it to zoom, `portal close` to
+  give the rows back. Pure state machine, rect arithmetic and pointer test in
+  `organon-shell/src/portal.rs`; 399 tests in the compositor lib, from 390.
+- ✅ **"Control Organon from the shell" turned out to be already built.** The CLI's parameter
+  lane drains inside `World::frame_body`, which is what `render_to_texture` runs, and the
+  console injects `ORGANON_IPC_NS` into every tab it spawns — so `organon set`, `organon
+  generator` and `organon recipe`, typed at a prompt *in a console tab*, drive the world *in the
+  portal*, with **no new code at all**. The only thing standing between that and being visible
+  was a rectangle to look through.
+- 🚨 **The portal shows the World and not the substrate, and that is correctness rather than
+  preference.** `world.rs:6526` reads an installed substrate rig first and returns its whole
+  six-tuple *before* `yaw`/`pitch`/`distance` — which are exactly what `World::apply_camera_input`
+  writes. A substrate portal would take a drag, convert it, apply it and draw an identical
+  frame: green build, no log line, and an investigation starting in `scene_input.rs`, which is
+  correct code. Verified against the source before it was relied on.
+- 🚨 **The portal claims the wheel, which reverses a decision this tree argued the other way.**
+  A scene patch deliberately does not — *"a scene patch is something to look at, so the wheel
+  over one keeps scrolling the page exactly as the wheel over a paragraph does."* The portal is
+  the other thing, and the reversal is deliberate and scoped to it: **a scene patch is a
+  picture, a portal is an instrument.** ⚠️ It has to be an *explicit rect test*, because
+  `term_view` reads the wheel and every key from **raw input** — egui layer order, an `Area` and
+  a modal are all equally invisible to it. `block_panel::pointer_inside` is the precedent and
+  this copies it.
+- 📌 **At most one `World` render per console frame, in every state, by construction** —
+  `engine_plan`, proved over its whole input space. `SURFACE_RENDERS_PER_FRAME` rules the
+  two-render case out (`frame_index` and the TAA jitter phase are shared between the targets,
+  invisible on a still plane and visible-and-intermittent on a moving World), and a live portal
+  beside a live backdrop is precisely it. So an open portal **takes the frame**. ⚠️ The cost,
+  stated rather than discovered: while it is open the backdrop does not paint and a scene patch
+  has no picture to sample. `backdrop_source` is never written, so closing restores everything.
+- **A field beside `backdrop`, not a `SurfaceKey` variant.** Eviction is a policy for many things
+  competing for few slots; a portal is one thing that is open or closed, requested every frame,
+  so the variant would exist only to be excluded from the function the type serves. The deciding
+  argument is smaller: the portal must work in a **terminal** tab, where `ElementId` means
+  nothing at all. `SurfaceKey`, its tests, `SurfaceImages` and the `conversation_view` seam are
+  untouched.
+- 🚨 **Nobody has seen it.** Built without a GPU: every decision is a headless test and
+  `cargo check --features shell-edition` is green, and neither is evidence that a pixel appears.
+  Whether it reads as *floating*, whether the default world is legible at that size, whether the
+  drag rate suits a hand — all of it needs James at the machine. ⚠️ Two known gaps recorded
+  rather than hidden: in a **conversation** tab the wheel over the portal zooms *and* scrolls
+  (that front-end's `ScrollArea` has already read the delta by the time the region registers),
+  and a **window-resize drag** reallocates the portal's texture every frame with a log line each,
+  exactly as an open conversation surface already does. `SHELL_ARCHITECTURE.md`'s honesty ledger
+  carries both.
+- **Deliberately not built:** immersive, full screen, the animated grow, and the click and
+  double-click transitions. One visible beat. The seam is `portal::step` being total over
+  `(state, event)`, and the render-budget invariant already survives the states that come next.
+  ⚠️ Escape is not consumed either, and that is a decision: in a terminal tab the keyboard is
+  the child's and `vim` needs it, so taking it must be conditional on a state — and the states
+  that need an Escape are the ones where a prompt may not be reachable, which this tier does not
+  build.
+
 ### Console Spike — the twelve agents a coordinator dispatched stopped being eight minutes of silence
 
 - **A subagent's work now renders inside the tool card that spawned it.** A coordinator session
