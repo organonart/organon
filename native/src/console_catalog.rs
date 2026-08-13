@@ -269,8 +269,11 @@ pub(crate) fn slot_facts(p: &OrganicMathParams) -> Vec<SlotFacts> {
 /// field is renamed or retyped. Nothing is restated here that `params.rs` also says.
 ///
 /// **Delete the corresponding line the moment either id lands in a `param_block!`** —
-/// `every_catalogued_id_has_facts` would then see it twice, which is the failure that
-/// tells you to.
+/// [`slot_facts`] would then push it twice, and `the_walk_yields_each_id_once` is the
+/// failure that tells you to. (It has to be checked on the *walk*: [`control_facts_for`]
+/// funnels the slots through a `HashMap` keyed by id and then iterates
+/// `cli::catalog_entries()`, so by the time the facts exist a duplicate has already been
+/// silently collapsed and no assertion downstream of it can see one.)
 fn orphan_facts(p: &OrganicMathParams, out: &mut Vec<SlotFacts>) {
     out.push(float_facts("scale_amp", &p.scale_amp));
     out.push(float_facts("tempo", &p.tempo));
@@ -444,10 +447,40 @@ mod tests {
         );
         assert!(extra.is_empty(), "facts for ids the catalog does not speak: {extra:?}");
 
-        // Each id appears exactly once: an orphan whose block later migrates would
-        // otherwise show up twice and read as harmless.
-        assert_eq!(facts.len(), got.len(), "duplicate ids in the generated walk");
+        // One fact per catalogued id. This is a property of the *emit* (one pass over
+        // `catalog_entries()`, which is itself unique), NOT a duplicate check on the walk
+        // — see `the_walk_yields_each_id_once` for that.
+        assert_eq!(facts.len(), got.len(), "the emit produced two facts for one id");
         assert!(facts.len() >= 45, "the actuatable set alone is 45; got {}", facts.len());
+    }
+
+    /// The walk visits each id exactly once.
+    ///
+    /// This is the check `orphan_facts` points at, and it has to live here rather than on
+    /// the finished facts: [`control_facts_for`] keys the slots by id in a `HashMap` and
+    /// then emits one entry per `cli::catalog_entries()` row, so a slot pushed twice is
+    /// collapsed before any downstream assertion could notice. The failure it exists to
+    /// catch is a real and expected future event — `scale_amp` or `tempo` landing in a
+    /// `param_block!` while its hand-joined line in `orphan_facts` is still there, which
+    /// would leave the block's copy and the orphan's copy racing for the same id in map
+    /// insertion order.
+    #[test]
+    fn the_walk_yields_each_id_once() {
+        let p = OrganicMathParams::default();
+        let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+        let mut dupes: Vec<&'static str> = Vec::new();
+        for s in slot_facts(&p) {
+            if !seen.insert(s.id) {
+                dupes.push(s.id);
+            }
+        }
+        assert_eq!(
+            dupes,
+            Vec::<&str>::new(),
+            "ids walked twice — if one of these is `scale_amp` or `tempo`, its block has \
+             migrated and its line in `orphan_facts` must go; otherwise two blocks in \
+             `slot_facts` overlap"
+        );
     }
 
     /// Every bound equals what the parameter object itself says, read back through the
