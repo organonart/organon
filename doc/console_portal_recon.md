@@ -5,6 +5,50 @@ changed.** Everything below is a claim about the tree as it stands at `main` @ `
 the site that supports it named. Where something is a judgement call it is marked as one and a
 single recommendation is given.
 
+---
+
+### 🚨 Amendment, 2026-08-13 (landing): the portal has since been built, and one claim below is wrong
+
+This document was written *before* the portal existed and is merged *after* it. Both halves of
+that sentence matter. Read on the original terms — a survey of what a portal would cost — but
+read knowing that PR #32 (`console/portal`) landed the portal itself and PR #33
+(`console/portal-camera`) landed its camera, and that **`SHELL_ARCHITECTURE.md` §1.2 and §1.3 are
+now the authority on what the console actually does.** This is the investigation those two tiers
+were built from; it is not a description of the tree.
+
+⚠️ **One claim did not survive contact, and it is the first row of the headline table:
+"immersive is landed" is FALSE, and false in a way that would make anyone scoping immersive
+budget it at zero.** The correction is §1.1's amendment and is restated here because the table
+is what gets read: the backdrop's *rendering* is indeed already there, but the portal's
+*painting* is a different path. `paint_portal` paints the portal **over** the front-end — that is
+what floating means — while immersive needs the portal's texture **under** the glyphs with the
+scrim over it, and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the
+epoch ledger. Immersive is therefore a **new integration** (a single-band `BandedBackdrop`
+carrying the portal's texture, deliberately not opening a look epoch), not a variant added to
+`portal::step`. Everything else below stands.
+
+📌 **What became of the recommendations.** §2 (a `portal` field, not a `SurfaceKey` variant), §3
+(the state machine is also the render budget), §5 (a rect in the `CentralPanel`, not an
+`egui::Area`; an explicit rect test for the wheel), §6's risk 1 (the portal shows the `World`, not
+the substrate), §8 (`CommandSpec` first, clap second) and §9 (one `World`, no publish/restore
+dance) were all adopted as recommended. **Still unbuilt, and still the open work:** immersive,
+full screen, the animated grow, the click/double-click transitions, `scene_viewport`'s `Sense`
+parameter (§6 — it is still hardcoded `Sense::drag()`), state-conditional Escape (§7), and §10's
+recommendation that `ORGANON_SHELL_BACKDROP` stop being a way to *start* in the backdrop.
+
+⚠️ **Two shapes shipped narrower than §7 proposed, deliberately.** `PortalState` is
+`{Closed, Open}` and `PortalEvent` is `{Open, Close, Toggle}` — not the four states and five
+events sketched there — on the rule that *an event nothing can raise is an untested arm
+pretending to be a design*. The four-state machine is still the destination; §7 is its argument,
+not its shipped signature.
+
+⚠️ **Every line number below is as of `02fff1a` and most have moved** — `shell_main.rs` alone
+gained ~1100 lines in the tiers this document produced. `world.rs:6525`, the substrate-rig trap
+that is the single most valuable finding here, is now `world.rs:6530`. Follow the **function
+names**, which are stable; treat the numbers as provenance for what was read, not as an index.
+
+---
+
 **The ask, in James's words:**
 
 > "I would love to get a full Organon window in there… rendering… and then we could use the
@@ -35,9 +79,9 @@ look first.**
 
 | Verdict | |
 |---|---|
-| ✅ **Immersive is landed** | The backdrop path already renders a pane-sized `World` every frame, paints it at UV 0..1 under the glyphs, and lays a legibility scrim over it with an inviolable floor. That *is* "the frame becomes the background + a semi-translucent overlay". It is reachable at **runtime** by a call that already ships. |
-| ⚠️ **Full screen is NOT free from `render_source`** | That seam separates *what the engine draws* from *what the backdrop paints*. It says nothing about whether the **overlay** paints, and no path today suppresses the scrim, the glyph grid or the tab strip. Small, but genuinely new. |
-| ⚠️ **Portal is new, but less new than it looks** | The conversation front-end's `/surface` is already a rendered, engine-drawn, egui-laid-out rect with its own texture, its own render list and its own cap. It is *scroll*-anchored. Re-anchoring it to the screen and making it live is the work. |
+| ❌ **~~Immersive is landed~~ — WRONG, see the amendment above** | *As written:* the backdrop path already renders a pane-sized `World` every frame, paints it at UV 0..1 under the glyphs, and lays a legibility scrim over it with an inviolable floor. That *is* "the frame becomes the background + a semi-translucent overlay". It is reachable at **runtime** by a call that already ships. — **The rendering is landed; the painting is not.** The portal paints *over* the front-end and immersive needs it *under* the glyphs, through a seam the portal does not use. Corrected in §1.1. |
+| ⚠️ **Full screen is NOT free from `render_source`** | That seam separates *what the engine draws* from *what the backdrop paints*. It says nothing about whether the **overlay** paints, and no path today suppresses the scrim, the glyph grid or the tab strip. Small, but genuinely new. **Still true**, and `render_source` is now one half of `engine_plan` — see §1.2. |
+| ⚠️ **Portal is new, but less new than it looks** | The conversation front-end's `/surface` is already a rendered, engine-drawn, egui-laid-out rect with its own texture, its own render list and its own cap. It is *scroll*-anchored. Re-anchoring it to the screen and making it live is the work. **Borne out** — that is exactly what PR #32 did, reusing `SurfaceTexture` and `make_surface_texture` verbatim. |
 | 🚨 **A substrate portal cannot be orbited, silently** | An installed substrate rig overrides the camera tuple wholesale, so `World::apply_camera_input` writes values nothing reads. The drag will look unwired. |
 | 🚨 **The animation is a texture-realloc storm by construction** | A size change frees and reallocates the surface texture and logs unconditionally. An animated grow does that every frame, by design. |
 | ✅ **"Control Organon from the shell" is already true** | The param lane (`organon set` / `generator` / `recipe`) drains inside `World::frame_body`, and every console tab is launched with `ORGANON_IPC_NS` injected. The moment a portal renders the World, it is CLI-drivable with **zero** new work. |
@@ -46,7 +90,28 @@ look first.**
 
 ## 1. Testing the central claim, state by state
 
-### 1.1 Immersive ≈ the existing backdrop — **confirmed**
+### 1.1 Immersive ≈ the existing backdrop — ~~**confirmed**~~ **REFUTED once the portal existed**
+
+> 🚨 **Amendment, 2026-08-13 (landing).** Everything measured in this section is still true of the
+> **backdrop**. The inference drawn from it — that immersive is therefore nearly free — is not,
+> and the reason is a path this section never had cause to look at because it did not yet exist.
+>
+> The portal, as built, is painted by `paint_portal` **over** the front-end: it is drawn into the
+> `CentralPanel` after `term_view::draw`, which is what makes it float and occlude. Immersive
+> needs the same texture **under** the glyph layer with the scrim over it — and that is not a
+> place a painter can be moved to, because the under-the-glyphs path is not a painter at all. It
+> is `term_view::draw`'s `backdrop: Option<BandedBackdrop>` parameter, fed from the epoch ledger,
+> with the scrim applied once inside the `Some(bands)` arm after every band. So immersive means
+> **handing the portal's texture into that seam as a single band** — a new integration between two
+> subsystems that today do not meet, not a fourth arm on `portal::step`.
+>
+> The two qualifications below are the ones that carry into it, and they get sharper rather than
+> weaker: the single band must deliberately **not** open a look epoch, or the first screenful is
+> striped; and because the conversation front-end is handed no `bands` at all, immersive is a
+> **terminal-tab-only route** as things stand.
+>
+> The measurement was right; the conclusion drawn from it was one path short. Recorded rather than
+> deleted because the backdrop half is what immersive will be built out of.
 
 `Shell::render_backdrop` (`native/src/shell_main.rs:1979`) allocates a texture sized to the
 **pane's fraction of the swapchain** (`scene_input::pane_pixels_in`, `:2019-2022`), renders the
@@ -83,6 +148,12 @@ if self.backdrop_source == BackdropSource::Off && self.patches_want_image() {
     self.backdrop_source
 }
 ```
+
+📌 **Superseded, 2026-08-13 (landing): that body is now one line.** `render_source` delegates to
+`engine_plan(portal_open, backdrop, patches_want_image) -> (BackdropSource, bool)` and returns its
+first element — the third input §6 predicted this seam would need, added exactly where §6 said it
+belonged. The quoted logic survives verbatim as `engine_plan`'s non-portal arm, so the argument
+below is unchanged; only the address moved.
 
 That is *engine draws* vs *backdrop paints*. It has no third axis for *overlay paints*, and there
 is no such axis anywhere: the tab strip is declared unconditionally
@@ -182,6 +253,12 @@ that impossible for free. `surface_budget_bytes` should gain a portal term so th
 quoted budget stays true, on the same "a test quotes the figure so the prose cannot drift" rule
 that function already carries.
 
+> 📌 **Solved differently, 2026-08-13 (landing).** `surface_budget_bytes` was left alone and
+> `free_portal` reports the two separately instead — *"N of 4 conversation surfaces live, portal
+> B bytes"*. Same requirement, better answer: the cap really is four conversation surfaces, and
+> folding a fifth non-evictable texture into a constant named for the cap would have made the
+> number describe neither quantity.
+
 ⚠️ If you take the enum route anyway: a portal requested every frame **permanently costs the
 conversation one of its four slots**, so a transcript with four visible surfaces plus a portal
 starts thrashing — the truncation branch at `native/src/shell_main.rs:2132-2144` fires, prints its
@@ -264,6 +341,15 @@ indistinguishable from a renderer that failed to draw one".
 
 So a size change is: free the texture, free the egui registration, create a new texture, register
 it, and `holds` resets to `None` so the next frame re-renders. Plus one `[surface]` line.
+
+> ⚠️ **Confirmed live, 2026-08-13 (landing), and it is the one finding here that is now a real
+> defect rather than a prediction.** `render_portal` carries the identical body — a size change
+> calls `free_portal("the portal changed size")` and reallocates — so the portal frees,
+> reallocates, re-registers and logs one `[surface]` line on **every frame of a window-resize
+> drag**. The animation half is still hypothetical because the animation is unbuilt; the
+> resize half is shipped, and `SHELL_ARCHITECTURE.md`'s "what nobody has looked at" list names
+> it. The recommendation below — allocate at the destination, scale the quad, settle once — is
+> unchanged and closes both.
 
 **Confirmed: an animated grow does this every frame, by design.** A 250 ms transition at 60 Hz is
 ~15 reallocations and ~15 log lines per portal, per transition, in each direction — and every one
@@ -467,6 +553,17 @@ Portal state the backdrop is Off and the portal wants `World`; `render_source` c
 Off → `Substrate` only, and only when `patches_want_image()`. It needs a third input — "a portal is
 open and wants source X". That is a one-function extension of the exact seam the 2026-08-11
 amendment created, which is the right place for it.
+
+> ✅ **Adopted, 2026-08-13 (landing).** This is `engine_plan`, and it went further than the
+> paragraph asked: it returns *both* decisions — the backdrop's source and whether the portal
+> renders — from one pure function, so "at most one `World` render per frame" (§3) is a property
+> of a single body rather than an agreement between two, and
+> `the_engine_is_asked_for_at_most_one_frame` proves it over the whole input space.
+>
+> ⚠️ **The risk-1 recommendation was taken and it is why the camera works.** The portal shows the
+> `World` and `render_portal` calls `set_substrate_rig(None)` immediately before rendering. The
+> trap itself is untouched and still live for anything else that installs a rig — it has only
+> moved, to `world.rs:6530`.
 
 ### Sense: `drag()` vs `click_and_drag()`
 
