@@ -58,6 +58,35 @@ working copy. Each fix uncovered the next failure.
   and three, deliberately — *an event nothing can raise is an untested arm pretending to be a
   design*.
 - **No source file changed, and no cargo run was needed.** The branch is documentation only.
+### Console — the first thing it remembers about you
+
+- 🚨 **The console persisted nothing a user chose.** Measured by reading the crate: the only
+  writer was the append-only session event log, which is evidence of what happened rather than
+  a statement of what is wanted; the only user-*configuration* path was a **read with no
+  matching write** (`harnesses.json`); everything else was an `ORGANON_SHELL_*` variable
+  sampled once at startup. A colour-theme picker on top of that could offer a choice and lose
+  it at exit, which makes the picker pointless.
+- **`prefs.rs` — `preferences.json`, at the store root beside `harnesses.json`.** A struct with
+  serde defaults, so adding a preference is one field and never a migration: an older file
+  missing a newer key still loads, and a newer file with an unknown key does not break an older
+  binary. It ships holding the theme **by name**, a plain `String`, so storage and the `Theme`
+  type being built separately stay independent.
+- **The store root is `SessionLog::store_root()`, called rather than re-derived.** Resolving it
+  again through `dirs` would satisfy the letter of the one-resolver rule and still be wrong —
+  two resolvers that can disagree eventually do, and the failure is preferences written beside
+  a `harnesses.json` the console reads from somewhere else.
+- ⚠️ **A write cannot destroy what is already stored**: temp file in the same directory, renamed
+  over the target. Same directory because a rename is only atomic within one volume. The reason
+  it is in version one rather than later is the read posture — a half-written file fails to
+  parse, and "malformed ⇒ no stored preferences" would then silently reset everything the user
+  had.
+- ⚠️ **Never written with a BOM**, because `serde_json` refuses one outright and the total read
+  posture turns that refusal into silence: a file that is present, looks right in an editor, and
+  does nothing. Both halves are pinned by test.
+- 📌 **No environment variable overrides the file, deliberately.** An override would defeat the
+  point: a pick stores correctly, then a variable baked into a launch shim wins silently next
+  launch — indistinguishable from the evaporation this exists to end.
+- Nothing reads it yet. This is the storage half; the picker is a separate change.
 
 ### The doc-coherence hook stops crying wolf, and starts watching the console's doc
 
