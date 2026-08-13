@@ -58,6 +58,12 @@
 //! waiting on a JSON-RPC response meanwhile. That is the intended shape — a card with
 //! no timeout — but it means the serve loop must not be the UI thread.
 //!
+//! That last sentence is why the responder is `Box<dyn PermissionResponder + Send>` and
+//! why the whole server is `Send`: [`crate::mcp_http`] moves one onto a serve thread and
+//! the console's hook posts to the UI over a channel. The bound is on the *box*, not on
+//! the trait, so a test can still implement the trait with anything it likes as long as
+//! what it hands over may cross a thread.
+//!
 //! # Why dispatch is a parameter, not a field
 //!
 //! [`CommandService`] borrows the session log mutably for its whole life, so a server
@@ -112,6 +118,25 @@ pub const INVALID_PARAMS: i64 = -32602;
 /// never a protocol failure — the server has already established that the tool exists.
 pub trait ToolDispatch {
     fn call(&mut self, command: &str, args: Value) -> Result<Value, String>;
+}
+
+/// A dispatch for a server that serves **no capability tools**, only the permission
+/// handler — which is what the console runs today ([`crate::conversation_view`]).
+///
+/// It is not a stub standing in for something missing: with an empty spec table
+/// [`McpServer::call_tool`] refuses an unknown tool as `INVALID_PARAMS` before dispatch
+/// is consulted, so nothing can reach this. It exists so the type is inhabited and the
+/// omission is named rather than implied. Routing the console's verbs over MCP needs a
+/// [`CommandService`], which borrows the session log on the UI thread and cannot be moved
+/// onto a serve thread — a wiring, not a line of code, and deliberately not this tier's.
+pub struct NoDispatch;
+
+impl ToolDispatch for NoDispatch {
+    fn call(&mut self, command: &str, _args: Value) -> Result<Value, String> {
+        Err(format!(
+            "'{command}' is not routed over MCP: this server serves the permission handler only"
+        ))
+    }
 }
 
 /// The production adapter: a [`CommandService`] plus the [`Issuer`] every dispatch is
@@ -404,7 +429,7 @@ pub struct McpServer {
     specs: Vec<CommandSpec>,
     tools: Vec<ToolEntry>,
     collisions: Vec<String>,
-    responder: Box<dyn PermissionResponder>,
+    responder: Box<dyn PermissionResponder + Send>,
     negotiated: Option<String>,
     buf: Vec<u8>,
 }
@@ -415,7 +440,7 @@ impl McpServer {
     /// The caller must seed its [`CommandService`] from the *same* slice, or a tool will
     /// be advertised that dispatch does not know — which surfaces as an `isError`
     /// result rather than anything worse, but is still a bug in the wiring.
-    pub fn new(specs: &[CommandSpec], responder: Box<dyn PermissionResponder>) -> Self {
+    pub fn new(specs: &[CommandSpec], responder: Box<dyn PermissionResponder + Send>) -> Self {
         let mut server = Self {
             server_name: DEFAULT_SERVER_NAME.to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -730,6 +755,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     // -- fixtures ---------------------------------------------------------
 
@@ -804,7 +830,7 @@ mod tests {
         }
     }
 
-    fn deny_all() -> Box<dyn PermissionResponder> {
+    fn deny_all() -> Box<dyn PermissionResponder + Send> {
         Box::new(|_: &PermissionRequest| PermissionDecision::deny("no"))
     }
 
@@ -1217,12 +1243,14 @@ mod tests {
     /// since it is what attaches a card to the tool element already in the transcript.
     #[test]
     fn the_hook_sees_the_whole_request_including_the_tool_use_id() {
-        let seen: Rc<RefCell<Vec<PermissionRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        // `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>` because the responder box is
+        // `Send` — see the module doc: the console's hook lives on a serve thread.
+        let seen: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let mut server = McpServer::new(
             &fixture_specs(),
             Box::new(move |req: &PermissionRequest| {
-                sink.borrow_mut().push(req.clone());
+                sink.lock().unwrap().push(req.clone());
                 PermissionDecision::allow_unchanged(req)
             }),
         );
@@ -1246,7 +1274,7 @@ mod tests {
             )
             .unwrap();
 
-        let calls = seen.borrow();
+        let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].tool_name, "Bash", "the handler answers for Bash too");
         assert_eq!(calls[0].input, json!({ "command": "env | head -2" }));
@@ -1334,12 +1362,12 @@ mod tests {
     /// This pins that the server itself never caches a verdict.
     #[test]
     fn every_call_asks_the_hook_again() {
-        let count = Rc::new(RefCell::new(0usize));
+        let count = Arc::new(Mutex::new(0usize));
         let tally = count.clone();
         let mut server = McpServer::new(
             &fixture_specs(),
             Box::new(move |req: &PermissionRequest| {
-                *tally.borrow_mut() += 1;
+                *tally.lock().unwrap() += 1;
                 PermissionDecision::allow_unchanged(req)
             }),
         );
@@ -1355,7 +1383,7 @@ mod tests {
         for _ in 0..3 {
             assert!(server.handle(&message, &mut dispatch).is_some());
         }
-        assert_eq!(*count.borrow(), 3);
+        assert_eq!(*count.lock().unwrap(), 3);
     }
 
     // -- framing -----------------------------------------------------------

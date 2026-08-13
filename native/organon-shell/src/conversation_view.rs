@@ -28,22 +28,38 @@
 //! still in the model.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::mpsc::Receiver;
 
 use egui::{Color32, CornerRadius, Frame, Margin, RichText};
 
 use crate::agent_map::EventMapper;
-use crate::agent_session::{AgentSession, StreamItem};
+use crate::agent_session::{AgentSession, McpWiring, StreamItem};
+use crate::approval::{
+    approval_channel, decision_for, decision_key, resolve_choice, Choice, DecisionMemory,
+    PendingApproval,
+};
 use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
 use crate::conversation::{
-    Arguments, ArtifactBlock, ArtifactContent, Body, Change, Element, ElementId, PanelSpec,
-    RunOutcome, SurfaceSpec, ToolCard, ToolState, Transcript,
+    Answer, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent, Body, Change,
+    Element, ElementId, PanelSpec, RunOutcome, SurfaceSpec, ToolCard, ToolState, Transcript,
+    Verdict,
 };
+use crate::mcp::{McpServer, NoDispatch};
+use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
 use crate::timeline::pinned_after_scroll;
+
+/// The console's MCP `serverInfo.name`, and therefore the middle of every namespaced tool
+/// name Claude Code spells: `mcp__organon__…`.
+pub const SERVER_NAME: &str = "organon";
 
 const HUMAN: Color32 = Color32::from_rgb(0xc8, 0xe6, 0xc8);
 const PROSE: Color32 = Color32::from_rgb(0xd2, 0xd8, 0xd2);
 const DIM: Color32 = Color32::from_rgb(0x70, 0x7c, 0x70);
 const RUNNING: Color32 = Color32::from_rgb(0xe6, 0xc0, 0x4c);
+/// A question waiting on a human. Deliberately not [`RUNNING`]'s amber: "the agent is busy"
+/// and "the agent is blocked on you" must not read as the same state at a glance, which is
+/// the whole complaint against a tool that bounces silently.
+const ASKING: Color32 = Color32::from_rgb(0x7f, 0xb8, 0xe6);
 const OK: Color32 = Color32::from_rgb(0x6f, 0xc2, 0x76);
 const BAD: Color32 = Color32::from_rgb(0xe0, 0x6c, 0x5f);
 
@@ -239,6 +255,43 @@ pub fn default_slider_table() -> Vec<(String, f32)> {
     DEFAULT_SLIDERS.iter().map(|(l, v)| ((*l).to_string(), *v)).collect()
 }
 
+/// What one pane keeps alive so its agent can ask it for permission.
+///
+/// Both fields are held for the pane's lifetime and read by nobody: dropping the server
+/// stops it, and dropping the config deletes the file the agent was started with. That is
+/// the entire contract, which is why they are underscored — a tab closing must take its
+/// loopback port and its temp file with it.
+struct ApprovalWiring {
+    _server: McpHttp,
+    _config: ConfigFile,
+}
+
+/// Start the console's MCP server and write the config the agent will be spawned with.
+///
+/// Returns what to hold, what to pass to the agent, and where the questions will arrive.
+/// Fails as a string rather than an error type because there is exactly one caller and one
+/// thing it does with a failure: say so, and run the agent unwired.
+fn start_approvals(
+) -> Result<(ApprovalWiring, McpWiring, Receiver<PendingApproval>), String> {
+    let (gate, inbox) = approval_channel();
+    // 🚨 **An empty spec table on purpose.** With no capability tools this server offers
+    // exactly one tool, the permission handler — and Claude Code withholds *that* from the
+    // model because `--permission-prompt-tool` names it (§7). So the model sees a connected
+    // server with nothing it can call, which is the safe shape for an approvals tier.
+    // Serving the console's verbs needs a `CommandService`, which borrows the session log
+    // on the UI thread; that is a wiring, and it is not this one.
+    let server = McpServer::new(&[], Box::new(gate)).with_server_name(SERVER_NAME);
+    let permission_tool = server.permission_tool_flag_value();
+    let http = McpHttp::start(server, Box::new(NoDispatch))
+        .map_err(|e| format!("could not bind a loopback port: {e}"))?;
+    let json = mcp_config_json(SERVER_NAME, &http.url());
+    let config =
+        ConfigFile::write(&std::env::temp_dir(), &ConfigFile::stem_for(http.port()), &json)
+            .map_err(|e| format!("could not write the MCP config: {e}"))?;
+    let wiring = McpWiring { config: config.path().to_path_buf(), permission_tool };
+    Ok((ApprovalWiring { _server: http, _config: config }, wiring, inbox))
+}
+
 /// One conversation tab: a live agent, the transcript it is writing, and the composer.
 pub struct ConversationPane {
     session: Option<AgentSession>,
@@ -270,6 +323,21 @@ pub struct ConversationPane {
     /// snapshot and nothing at all here, and a label this crate invented would be a knob
     /// that moves and changes no pixel — a worse instrument than no knob.
     sliders: Vec<(String, f32)>,
+    /// The MCP server this pane's agent asks for permission, and the config it was started
+    /// with. Held, never read — see [`ApprovalWiring`]. `None` means the server could not
+    /// start; the agent then runs unwired and the log says so.
+    _approvals: Option<ApprovalWiring>,
+    /// Where permission requests arrive from the serve thread.
+    inbox: Receiver<PendingApproval>,
+    /// The questions a human has not answered yet, by the element that draws them.
+    ///
+    /// ⚠️ **Removing an entry without answering it denies that call**, because the reply
+    /// channel goes with it ([`crate::approval`]). That is what makes an approval the
+    /// transcript's cap evicted fail closed instead of blocking the agent forever.
+    waiting: HashMap<ElementId, PendingApproval>,
+    /// "Allow and remember", which is entirely the console's — there is no upstream
+    /// persistence (§5). Session-scoped: it lives here and dies with the tab.
+    memory: DecisionMemory,
 }
 
 impl ConversationPane {
@@ -281,8 +349,27 @@ impl ConversationPane {
     /// panel with no controls, which looks like a panel that is broken rather than like a
     /// caller that forgot. [`default_slider_table`] is the table for a caller with no
     /// opinion.
+    /// The MCP server starts **before** the agent, necessarily: the agent is spawned with a
+    /// config file naming a port that has to exist first. A server that will not start is
+    /// not fatal — the tab opens, the agent runs, and the log says that a tool needing
+    /// permission will fail rather than ask.
     pub fn new(cwd: Option<&str>, buttons: Vec<String>, sliders: Vec<(String, f32)>) -> Self {
-        let (session, failure) = match AgentSession::spawn(cwd) {
+        let mut log = VecDeque::new();
+        let (approvals, wiring, inbox) = match start_approvals() {
+            Ok((held, wiring, inbox)) => (Some(held), Some(wiring), inbox),
+            Err(error) => {
+                log.push_back(format!(
+                    "approvals are not wired ({error}) — a tool that needs permission will \
+                     fail instead of asking"
+                ));
+                // A dead channel rather than an `Option<Receiver>`: the drain already
+                // treats a disconnected inbox as "nothing to read", so the unwired case
+                // needs no second code path.
+                let (_gate, inbox) = approval_channel();
+                (None, None, inbox)
+            }
+        };
+        let (session, failure) = match AgentSession::spawn(cwd, wiring.as_ref()) {
             Ok(session) => (Some(session), None),
             Err(error) => (None, Some(error.to_string())),
         };
@@ -292,13 +379,22 @@ impl ConversationPane {
             mapper: EventMapper::new(),
             failure,
             composer: String::new(),
-            log: VecDeque::new(),
+            log,
             pinned: true,
             want_focus: true,
             artifacts: HashMap::new(),
             buttons,
             sliders,
+            _approvals: approvals,
+            inbox,
+            waiting: HashMap::new(),
+            memory: DecisionMemory::new(),
         }
+    }
+
+    /// What the console has been asked to remember, for whoever wants to show or audit it.
+    pub fn memory(&self) -> &DecisionMemory {
+        &self.memory
     }
 
     pub fn transcript(&self) -> &Transcript {
@@ -317,12 +413,15 @@ impl ConversationPane {
     /// between "new content pulls the view down" and "a token lands and yanks the reader
     /// mid-sentence".
     pub fn pump(&mut self) -> bool {
-        let Some(session) = self.session.as_mut() else { return false };
+        // Approvals first, and unconditionally: a question can outlive the process that
+        // asked it, and a pane whose agent has gone must still be able to draw — and
+        // therefore fail closed — the request that was in flight.
+        let mut changed = self.pump_approvals();
+        let Some(session) = self.session.as_mut() else { return changed };
         let items = session.pump();
         if items.is_empty() {
-            return false;
+            return changed;
         }
-        let mut changed = false;
         for item in items {
             match item {
                 StreamItem::Event(event) => {
@@ -351,6 +450,65 @@ impl ConversationPane {
             }
         }
         changed
+    }
+
+    /// Take every permission request the serve thread has posted since the last frame, and
+    /// put each one in the flow.
+    ///
+    /// Never blocks: the *hook* blocks, on its own thread, and this end only ever picks up
+    /// what is already there. A disconnected inbox is the unwired case and reads as empty.
+    fn pump_approvals(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(pending) = self.inbox.try_recv() {
+            self.receive_approval(pending);
+            changed = true;
+        }
+        changed
+    }
+
+    /// One question: answered from memory if it has been decided before, otherwise a card.
+    ///
+    /// **A remembered decision still renders.** It would be cheaper to answer it silently
+    /// and say nothing, and that is exactly the failure the memory has to avoid: an
+    /// authority the human granted once and can no longer see is worse than being asked
+    /// every time.
+    fn receive_approval(&mut self, pending: PendingApproval) {
+        let tool_name = pending.request().tool_name.clone();
+        let tool_use_id = pending.request().tool_use_id.clone();
+        let input = pending.request().input.to_string();
+
+        if let Some(verdict) = self.memory.lookup(&tool_name, &input) {
+            let decision = decision_for(verdict, pending.request());
+            self.transcript.insert_approval(ApprovalBlock {
+                tool_name,
+                input,
+                tool_use_id,
+                state: ApprovalState::Answered(Answer {
+                    verdict,
+                    from_memory: true,
+                    remembered: true,
+                }),
+            });
+            pending.answer(decision);
+        } else {
+            let change = self.transcript.insert_approval(ApprovalBlock {
+                tool_name,
+                input,
+                tool_use_id,
+                state: ApprovalState::Pending,
+            });
+            match change {
+                Change::Appended(id) => {
+                    self.waiting.insert(id, pending);
+                }
+                // `insert_approval` appends unconditionally, so this is unreachable today.
+                // Dropping `pending` here denies the call, which is the correct answer to
+                // "the console cannot show this question".
+                _ => {}
+            }
+        }
+        // A question is the one thing that must never scroll past unseen.
+        self.pinned = true;
     }
 
     /// Put a control panel in the flow, at the end of what has been said so far.
@@ -506,9 +664,16 @@ fn scrollback(
     // reaching backwards mid-loop.
     let mut laid_out: Vec<LaidOutSurface> = Vec::new();
     let mut drives: Vec<PanelDrive> = Vec::new();
+    // The transcript is walked immutably, so a decision taken mid-walk is applied after it.
+    // The *agent* is not made to wait for that: the verdict goes back on the wire inside the
+    // loop, the moment the button is read.
+    let mut answered: Vec<(ElementId, Answer)> = Vec::new();
+    let mut revoked: Vec<ElementId> = Vec::new();
     // Destructured so the transcript can be read while the widget state is written: they
     // are disjoint fields, and keeping them disjoint is the whole point of the side map.
-    let ConversationPane { transcript, artifacts, pinned, sliders: defaults, .. } = pane;
+    let ConversationPane {
+        transcript, artifacts, pinned, sliders: defaults, waiting, memory, ..
+    } = pane;
     let out = egui::ScrollArea::vertical()
         .auto_shrink(false)
         .stick_to_bottom(*pinned)
@@ -580,16 +745,51 @@ fn scrollback(
                             }
                         }
                     },
+                    // The second body drawn here rather than in `draw_element`, and for a
+                    // sharper version of the same reason: answering one needs the question
+                    // the pane is holding, which `draw_element` has no access to.
+                    Body::Approval(block) => {
+                        let live = waiting.contains_key(&element.id);
+                        match approval_card(ui, element.id, block, live) {
+                            Some(CardAct::Choose(choice)) => {
+                                // Removing it is what answers it — see `waiting`.
+                                if let Some(pending) = waiting.remove(&element.id) {
+                                    let (decision, answer) =
+                                        resolve_choice(choice, pending.request(), memory);
+                                    answered.push((element.id, answer));
+                                    pending.answer(decision);
+                                }
+                            }
+                            Some(CardAct::Forget) => revoked.push(element.id),
+                            None => {}
+                        }
+                    }
                     _ => draw_element(ui, element),
                 }
                 ui.add_space(8.0);
             }
         });
     *pinned = pinned_after_scroll(out.state.offset.y, out.content_size.y, out.inner_rect.height());
+    for (id, answer) in answered {
+        transcript.answer_approval(id, answer);
+    }
+    for id in revoked {
+        // The key is re-derived from the card, which is what makes revocation possible from
+        // the card a human is actually looking at rather than from a list somewhere else.
+        if let Some(block) = transcript.get(id).and_then(|e| e.approval()) {
+            let key = decision_key(&block.tool_name, &block.input);
+            memory.forget(&key);
+        }
+        transcript.revoke_approval(id);
+    }
     // State outlives its element for exactly as long as it takes to notice. The transcript
     // evicts from the front and `get` answers `None` for an evicted id, so this is a
     // one-line answer to "does the side map leak on a long session" — it does not.
     artifacts.retain(|id, _| transcript.get(*id).is_some());
+    // ⚠️ The same line, with teeth: a question whose element the cap evicted can never be
+    // answered by a human, so dropping it here **denies** it (`crate::approval`) instead of
+    // leaving the agent blocked for the rest of the session.
+    waiting.retain(|id, _| transcript.get(*id).is_some());
     ConversationOutput { actions, surfaces: join_drives(laid_out, drives) }
 }
 
@@ -645,9 +845,10 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
         }
         Body::Tool(card) => tool_card(ui, card),
         // Drawn by `scrollback`, which holds the widget state a panel needs between
-        // frames. Nothing to do here, and nothing missing: an element is drawn exactly
-        // once, by whichever of the two has what it needs.
-        Body::Artifact(_) => {}
+        // frames — and, for an approval, the question itself. Nothing to do here, and
+        // nothing missing: an element is drawn exactly once, by whichever of the two has
+        // what it needs.
+        Body::Artifact(_) | Body::Approval(_) => {}
         Body::RunEnd(end) => {
             let (label, color) = match end.outcome {
                 RunOutcome::Ok => ("turn complete", DIM),
@@ -712,6 +913,122 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
                 }
             }
         });
+}
+
+/// What an approval card reported this frame.
+enum CardAct {
+    Choose(Choice),
+    /// Revoke a decision the console remembered.
+    Forget,
+}
+
+/// **The card that turns "the agent bounced" into "the agent asked".**
+///
+/// Before this existed, a tool that needed permission failed and rendered red — three of
+/// them in James's first real session — and the console had no way to say yes. The
+/// difference is not cosmetic: `--permission-prompt-tool` gates **`Bash` as well as MCP
+/// tools** (§2), so one card answers for everything the agent does.
+///
+/// The arguments are shown, always, because that is the entire point: a human authorising a
+/// `Bash` call is authorising *that command*, and a card that named only the tool would be
+/// a consent dialog with the consent removed. They are rendered through the same
+/// [`argument_fields`] a tool card uses, with `complete: true` — a permission request
+/// carries the model's final input, never a fragment.
+///
+/// Returns what was pressed, or `None`.
+fn approval_card(
+    ui: &mut egui::Ui,
+    id: ElementId,
+    block: &ApprovalBlock,
+    live: bool,
+) -> Option<CardAct> {
+    let accent = match block.state {
+        ApprovalState::Pending => ASKING,
+        ApprovalState::Answered(a) if a.verdict == Verdict::Allow => OK,
+        ApprovalState::Answered(_) => BAD,
+    };
+    ui.push_id(id.0, |ui| {
+        Frame::new()
+            .fill(PANEL_FILL)
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::same(8))
+            .stroke(egui::Stroke::new(1.0f32, accent))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("◈ may I").color(accent).strong().monospace());
+                    ui.label(
+                        RichText::new(capability_label(&block.tool_name))
+                            .color(PROSE)
+                            .strong()
+                            .monospace(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(&block.tool_use_id).color(DIM).small().monospace());
+                    });
+                });
+                arguments_body(
+                    ui,
+                    &Arguments { text: block.input.clone(), complete: true },
+                );
+                ui.add_space(4.0);
+                match block.state {
+                    ApprovalState::Pending => approval_buttons(ui, live),
+                    ApprovalState::Answered(answer) => approval_verdict(ui, answer),
+                }
+            })
+            .inner
+    })
+    .inner
+}
+
+fn approval_buttons(ui: &mut egui::Ui, live: bool) -> Option<CardAct> {
+    let mut act = None;
+    ui.horizontal_wrapped(|ui| {
+        if !live {
+            // The question is gone — evicted, or already answered elsewhere — so the
+            // buttons would send a verdict nothing is waiting for. Say so instead.
+            ui.label(RichText::new("this question is no longer answerable").color(DIM).small());
+            return;
+        }
+        if ui.button(RichText::new("allow").color(OK).monospace()).clicked() {
+            act = Some(CardAct::Choose(Choice::Allow));
+        }
+        if ui.button(RichText::new("allow & remember").color(OK).monospace()).clicked() {
+            act = Some(CardAct::Choose(Choice::AllowAndRemember));
+        }
+        if ui.button(RichText::new("deny").color(BAD).monospace()).clicked() {
+            act = Some(CardAct::Choose(Choice::Deny));
+        }
+    });
+    act
+}
+
+fn approval_verdict(ui: &mut egui::Ui, answer: Answer) -> Option<CardAct> {
+    let (word, color) = match answer.verdict {
+        Verdict::Allow => ("allowed", OK),
+        Verdict::Deny => ("denied", BAD),
+    };
+    let mut act = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(word).color(color).small().strong());
+        if answer.from_memory {
+            ui.label(RichText::new("· from a decision you already made").color(DIM).small());
+        }
+        if answer.remembered {
+            ui.label(
+                RichText::new("· the console will answer this the same way again")
+                    .color(DIM)
+                    .small(),
+            );
+            // The revocation. It is on the card, not in a settings screen, because this is
+            // where a human is looking when they realise they granted too much.
+            if ui.button(RichText::new("forget").monospace().small()).clicked() {
+                act = Some(CardAct::Forget);
+            }
+        }
+    });
+    act
 }
 
 /// **The artifact that is not a picture of anything: a live control panel, inline.**
@@ -884,13 +1201,29 @@ fn status_line(ui: &mut egui::Ui, pane: &ConversationPane) {
             ui.label(RichText::new(failure).color(BAD).small());
             return;
         }
-        if pane.transcript.is_working() {
+        // Waiting on a human outranks working: one of them the agent can finish on its own.
+        if pane.transcript.is_waiting() {
+            let n = pane.transcript.pending_approvals().len();
+            let plural = if n == 1 { "request" } else { "requests" };
+            ui.label(
+                RichText::new(format!("◈ {n} permission {plural} — waiting on you"))
+                    .color(ASKING)
+                    .small(),
+            );
+        } else if pane.transcript.is_working() {
             let n = pane.transcript.running_tools().len();
             let plural = if n == 1 { "tool" } else { "tools" };
             ui.label(RichText::new(format!("● {n} {plural} running")).color(RUNNING).small());
         } else {
             let session = pane.transcript.session_id().unwrap_or("connecting…");
             ui.label(RichText::new(session).color(DIM).small().monospace());
+        }
+        // The standing count, so a memory built up over a session is never invisible; each
+        // entry's own card carries the button that revokes it.
+        if !pane.memory.is_empty() {
+            let n = pane.memory.len();
+            let plural = if n == 1 { "decision" } else { "decisions" };
+            ui.label(RichText::new(format!("· {n} remembered {plural}")).color(DIM).small());
         }
         if let Some(last) = pane.log.back() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -963,6 +1296,27 @@ pub fn argument_fields(args: &Arguments) -> Vec<(String, String)> {
         // Complete but not an object (or not parseable): show it rather than hide it.
         _ if args.text.is_empty() || args.text == "null" => Vec::new(),
         _ => vec![(String::new(), one_line(&args.text))],
+    }
+}
+
+/// How a gated tool names itself on an approval card.
+///
+/// **MCP's real value here is legibility, not permission** (§"What this decides"): approvals
+/// are answered either way, so the argument for naming tools as capabilities is that a card
+/// can say *"organon · background"* rather than `mcp__organon__background`. The namespacing
+/// is the client's wire spelling and carries no information a human wants — but the server
+/// it came from does, so it is kept and separated rather than stripped.
+///
+/// A built-in (`Bash`, `Write`) is already the name a human reads, and is left alone.
+pub fn capability_label(tool_name: &str) -> String {
+    let Some(rest) = tool_name.strip_prefix("mcp__") else {
+        return tool_name.to_string();
+    };
+    match rest.split_once("__") {
+        Some((server, tool)) if !server.is_empty() && !tool.is_empty() => {
+            format!("{server} · {tool}")
+        }
+        _ => tool_name.to_string(),
     }
 }
 
@@ -1222,6 +1576,31 @@ mod tests {
         );
         assert_eq!(surfaces[0].look, "slate", "no button pressed, no material change");
         assert_eq!(surfaces[0].sliders, vec![("exposure".to_string(), 0.75)]);
+    }
+
+    /// An approval card names a **capability**, not a wire identifier — the honest reason
+    /// for putting the console's verbs on MCP at all, since approvals are answered either
+    /// way. A name that is not namespaced is already the one a human reads.
+    #[test]
+    fn a_gated_tool_is_named_the_way_a_human_reads_it() {
+        assert_eq!(capability_label("mcp__organon__background"), "organon · background");
+        assert_eq!(capability_label("mcp__probe__echo_probe"), "probe · echo_probe");
+        assert_eq!(capability_label("Bash"), "Bash", "a built-in is already legible");
+        assert_eq!(capability_label("Write"), "Write");
+        // Nothing that is not the measured shape is reinterpreted into one.
+        assert_eq!(capability_label("mcp__lonely"), "mcp__lonely");
+        assert_eq!(capability_label("mcp____x"), "mcp____x", "an empty server name is not a name");
+        assert_eq!(capability_label(""), "");
+    }
+
+    /// The arguments a card shows are the model's **final** input, so they go through the
+    /// settled path — a permission request never carries a fragment. This pins the join
+    /// between the request's JSON text and the rows the card draws.
+    #[test]
+    fn an_approvals_arguments_render_as_the_fields_a_human_is_authorising() {
+        let input = serde_json::json!({ "command": "cargo build --release" }).to_string();
+        let fields = argument_fields(&Arguments { text: input, complete: true });
+        assert_eq!(fields, vec![("command".to_string(), "cargo build --release".to_string())]);
     }
 
     /// Clipping is the VIEW's, and it reports what it hid — the model keeps the whole

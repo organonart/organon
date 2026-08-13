@@ -44,11 +44,19 @@
 //! [`agent_map`] is the seam between the two, [`agent_session`] owns the live child
 //! process, and [`conversation_view`] draws the result. `SHELL_ARCHITECTURE.md` §
 //! "Two front-ends" owns the shape.
+//!
+//! **Approvals** close the loop that front-end opened: [`mcp`] is the console's MCP server
+//! as a value, [`mcp_http`] serves it over loopback HTTP inside the console process so
+//! Claude Code's `--permission-prompt-tool` can reach it, and [`approval`] is the console's
+//! answer — the blocking hook, the decision memory that "allow and remember" is built from,
+//! and what a click means. `doc/console_approval_protocol.md` is the measured spec all
+//! three are written against.
 
 pub mod agent_event;
 pub mod agent_map;
 pub mod agent_session;
 pub mod app;
+pub mod approval;
 pub mod block_anchor;
 pub mod block_panel;
 pub mod command;
@@ -56,6 +64,7 @@ pub mod conversation;
 pub mod conversation_view;
 pub mod harness;
 pub mod mcp;
+pub mod mcp_http;
 pub mod mock_agent;
 pub mod platform;
 pub mod scroll_anchor;

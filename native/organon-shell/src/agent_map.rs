@@ -356,6 +356,7 @@ mod tests {
                 Body::Tool(_) => "tool",
                 Body::RunEnd(_) => "end",
                 Body::Artifact(_) => "artifact",
+                Body::Approval(_) => "approval",
             })
             .collect();
         assert_eq!(

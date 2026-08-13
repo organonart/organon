@@ -67,6 +67,42 @@ pub const ARGS: &[&str] = &[
     "--verbose",
 ];
 
+/// How this session reaches the console's own MCP server — the wiring that turns a
+/// permission request into a card instead of a red error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpWiring {
+    /// The `--mcp-config` document, written per session because it carries an ephemeral
+    /// port ([`crate::mcp_http::ConfigFile`]).
+    pub config: PathBuf,
+    /// The handler's fully namespaced name, exactly as
+    /// [`crate::mcp::McpServer::permission_tool_flag_value`] spells it.
+    pub permission_tool: String,
+}
+
+/// The three flags that route approvals through the console (§2, §8).
+///
+/// * `--mcp-config <file>` — the `http` entry the client connects **out** to.
+/// * `--strict-mcp-config` — so the user's *other* MCP servers are not pulled into this
+///   session as a side effect of us adding one.
+/// * `--permission-prompt-tool mcp__organon__…` — the decisive one. It is **absent from
+///   `--help`** on 2.1.228 but present in the binary, it requires `--print` (which
+///   [`ARGS`] already passes as `-p`), and it gates **`Bash` as well as MCP tools** — so
+///   the console answers for everything the agent does, not only for its own verbs.
+///
+/// 🚨 Naming the handler here is also what *protects* it: Claude Code removes the named
+/// tool from the model's own tool set, so the model cannot hand itself
+/// `{"behavior":"allow"}` (§7). The guarantee is tied to this flag, which is why the
+/// console must never serve a second approval-shaped tool.
+pub fn mcp_args(wiring: &McpWiring) -> Vec<String> {
+    vec![
+        "--mcp-config".to_string(),
+        wiring.config.display().to_string(),
+        "--strict-mcp-config".to_string(),
+        "--permission-prompt-tool".to_string(),
+        wiring.permission_tool.clone(),
+    ]
+}
+
 /// One line off the child, already classified.
 #[derive(Debug, Clone)]
 pub enum StreamItem {
@@ -131,8 +167,14 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    /// Spawn the agent in `cwd` (the app's own directory when `None`).
-    pub fn spawn(cwd: Option<&str>) -> Result<Self, SpawnError> {
+    /// Spawn the agent in `cwd` (the app's own directory when `None`), routing permission
+    /// prompts through `mcp` when there is one.
+    ///
+    /// ⚠️ `None` is a **degraded** session, not a plain one: nothing answers approvals, so
+    /// any tool that needs permission bounces as a red error card — the exact failure this
+    /// wiring exists to remove. The caller says so rather than letting it look like the
+    /// agent's own fault.
+    pub fn spawn(cwd: Option<&str>, mcp: Option<&McpWiring>) -> Result<Self, SpawnError> {
         let binary = std::env::var("ORGANON_CLAUDE_BIN")
             .ok()
             .filter(|s| !s.is_empty())
@@ -141,8 +183,10 @@ impl AgentSession {
             binary: binary.clone(),
         })?;
 
+        let extra: Vec<String> = mcp.map(mcp_args).unwrap_or_default();
         let mut cmd = launch_command(&resolved);
         cmd.args(ARGS);
+        cmd.args(&extra);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -226,7 +270,9 @@ impl AgentSession {
             stdin: Some(stdin),
             rx,
             exited: false,
-            command: format!("{} {}", resolved.display(), ARGS.join(" ")),
+            command: format!("{} {} {}", resolved.display(), ARGS.join(" "), extra.join(" "))
+                .trim_end()
+                .to_string(),
         })
     }
 
@@ -405,5 +451,29 @@ mod tests {
     #[test]
     fn an_explicit_path_that_is_not_a_file_does_not_resolve() {
         assert!(resolve("./no/such/claude-binary").is_none());
+    }
+
+    /// The three flags that make an approval a card. `--permission-prompt-tool` needs
+    /// `--print`, so the two sets are checked together — passing one without the other is
+    /// a session where nothing prompts and nothing says why.
+    #[test]
+    fn the_approval_flags_name_the_config_and_the_handler() {
+        let args = mcp_args(&McpWiring {
+            config: PathBuf::from("/tmp/organon-console-mcp-1-8931.json"),
+            permission_tool: "mcp__organon__approve_tool".into(),
+        });
+        assert_eq!(
+            args,
+            vec![
+                "--mcp-config",
+                "/tmp/organon-console-mcp-1-8931.json",
+                "--strict-mcp-config",
+                "--permission-prompt-tool",
+                "mcp__organon__approve_tool",
+            ]
+        );
+        assert!(ARGS.contains(&"-p"), "--permission-prompt-tool only works with --print");
+        // The namespaced spelling is the client's, not ours to invent.
+        assert!(args.last().unwrap().starts_with("mcp__"));
     }
 }

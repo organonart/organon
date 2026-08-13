@@ -11,6 +11,26 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — an agent's permission request arrives as a card you can answer
+
+- **The console now answers "may I?" for everything the agent does.** Three tools bounced on
+  permission in the first real session and rendered as red errors, because nothing answered
+  approvals. `--permission-prompt-tool` gates **`Bash` as well as MCP tools**, so one card
+  covers all of it: the tool, its arguments as fields, and allow · allow & remember · deny.
+  The console serves that tool **itself, over loopback HTTP, inside its own process** — the
+  fork that matters, because a stdio server is a separate process with no access to the UI
+  and every approval would have to cross a boundary and come back. The hook blocks for as
+  long as a human takes, on a serve thread that is never the UI's, which is what makes a
+  card with no timeout possible. Remembering is ours — there is no upstream persistence — so
+  the console keys a decision on the **whole call** rather than the tool, still draws a card
+  for one it answered from memory, and puts `forget` on that card; an authority granted once
+  and thereafter invisible is worse than being asked every time. Scope is the session, and
+  the honesty ledger says so. Verified against the real CLI: a `Write` outside the session's
+  scratchpad reached the server as a `tools/call` and the file appeared, and `system/init`
+  reported the server connected with **zero** of its 36 model-visible tools mentioning it —
+  the handler is withheld from the model *because* the flag names it, which is why the
+  console must never serve a second approval-shaped tool.
+
 ### Console Spike — the panel drives a rendered surface in its own view
 
 - **`/surface` puts the engine's picture in the transcript, with the controls that drive it

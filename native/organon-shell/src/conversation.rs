@@ -85,6 +85,13 @@
 //! either the texture or the live look is in this module — which is exactly the test that the
 //! split holds.
 //!
+//! [`Body::Approval`] is the third such element and the one with something real on the
+//! other end of it: an agent thread, blocked on a socket, waiting for a human to press a
+//! button. The same split holds and matters more — the element *describes* a decision
+//! (which tool, which arguments, pending or answered), the view draws it, and the pane
+//! holds the half-answered question and sends the verdict back. There is no channel in this
+//! module and there must never be one.
+//!
 //! Ids are also **contiguous** over the retained window, because every id issued is
 //! immediately appended and eviction only ever happens at the front. That is what makes
 //! [`Transcript::get`] O(1) index arithmetic instead of a map, and
@@ -357,6 +364,74 @@ pub struct PanelSpec {
     pub drives: Option<ElementId>,
 }
 
+/// Which way a permission request was answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Allow,
+    Deny,
+}
+
+/// How an approval was answered, once it was.
+///
+/// The two flags are separate because they answer different questions and a card says both:
+/// `from_memory` is *who* answered (the console, from a decision already made), `remembered`
+/// is whether the answer was written down for next time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Answer {
+    pub verdict: Verdict,
+    /// Answered from the console's decision memory rather than by a click just now.
+    pub from_memory: bool,
+    /// The decision is in the memory, and will answer the identical call again — until it
+    /// is revoked ([`Transcript::revoke_approval`]).
+    pub remembered: bool,
+}
+
+/// An approval's state. `Pending` is the only state in which the agent is waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalState {
+    Pending,
+    Answered(Answer),
+}
+
+impl ApprovalState {
+    pub fn is_pending(&self) -> bool {
+        matches!(self, ApprovalState::Pending)
+    }
+
+    pub fn answer(&self) -> Option<Answer> {
+        match self {
+            ApprovalState::Pending => None,
+            ApprovalState::Answered(a) => Some(*a),
+        }
+    }
+}
+
+/// **One "may I?" as an element in the flow.**
+///
+/// A permission request is the console's own insertion, exactly like [`ArtifactBlock`] —
+/// no harness emits it, and it arrives through [`Transcript::insert_approval`] rather than
+/// as a ninth [`AgentEvent`], for the reason that method gives.
+///
+/// 🚨 **It describes a decision; it does not make one.** There is no channel here, no
+/// closure and no egui — the same rule the whole module keeps, and a sharper case of it,
+/// because the thing on the other end of a real approval is a blocked thread on a socket.
+/// The view draws this and reports the button; the pane holds the half-answered question
+/// and sends the verdict back. If this type ever gains a `Sender`, the transcript has
+/// stopped being a state machine and become an actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalBlock {
+    /// The tool being gated, namespaced as the client spells it: `Bash`, `mcp__organon__…`.
+    /// Not necessarily one of the console's — the handler answers for everything the agent
+    /// calls, which is the finding that made this feature worth building.
+    pub tool_name: String,
+    /// The proposed arguments as JSON **text**, on [`Arguments`]' contract: carried, never
+    /// interpreted. A view parses it; this module does not.
+    pub input: String,
+    /// The `toolu_…` id, so a card can be tied to the tool element for the same call.
+    pub tool_use_id: String,
+    pub state: ApprovalState,
+}
+
 /// The end of a run, as an element so it keeps its place in the flow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunEnd {
@@ -377,6 +452,9 @@ pub enum Body {
     /// [`Transcript::insert_artifact`] rather than from an [`AgentEvent`] — see that
     /// method for why the summoning path is deliberately not an event.
     Artifact(ArtifactBlock),
+    /// A permission request awaiting a human. Inserted by the console for the same reason
+    /// an artifact is, and answered by [`Transcript::answer_approval`].
+    Approval(ApprovalBlock),
 }
 
 /// One renderable thing, with stable identity and a turn it belongs to.
@@ -419,6 +497,13 @@ impl Element {
     pub fn artifact(&self) -> Option<&ArtifactBlock> {
         match &self.body {
             Body::Artifact(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn approval(&self) -> Option<&ApprovalBlock> {
+        match &self.body {
+            Body::Approval(a) => Some(a),
             _ => None,
         }
     }
@@ -471,6 +556,10 @@ pub enum Ignored {
     /// An argument fragment for an id with no card. Nothing renderable to attach it to —
     /// and nothing is lost, because the authoritative arguments arrive with the call.
     UnknownToolFragment,
+    /// An answer for an approval that has already been answered, or for an id that is not
+    /// an approval at all. A question is answered **once**: the agent is unblocked by the
+    /// first answer, and a second would record a verdict nothing acted on.
+    ApprovalAlreadyAnswered,
 }
 
 /// Bounds, stated rather than assumed. See "What is bounded" in the module doc.
@@ -506,6 +595,15 @@ pub struct Stats {
     pub duplicate_calls: u64,
     /// Events that landed in an already-finished turn.
     pub trailing_events: u64,
+    /// Answers for an approval that was already answered, or for an element that is not
+    /// one.
+    pub duplicate_answers: u64,
+    /// ⚠️ Approvals the cap evicted **while the agent was still waiting on them**. Unlike
+    /// the other counters this one is not merely informational: whoever holds the other
+    /// end of the question has to fail it closed, or the agent waits forever. Counted
+    /// separately from [`Stats::dropped_elements`] so "we lost a decision" can never be
+    /// read as ordinary trimming.
+    pub dropped_pending_approvals: u64,
 }
 
 /// The transcript: events in, ordered renderable elements out.
@@ -516,6 +614,7 @@ pub struct Transcript {
     by_message: HashMap<String, ElementId>,
     by_tool: HashMap<String, ElementId>,
     running: Vec<ElementId>,
+    pending: Vec<ElementId>,
     session: Option<String>,
     next_element: u64,
     next_turn: u64,
@@ -541,6 +640,7 @@ impl Transcript {
             by_message: HashMap::new(),
             by_tool: HashMap::new(),
             running: Vec::new(),
+            pending: Vec::new(),
             session: None,
             next_element: 0,
             next_turn: 0,
@@ -607,6 +707,19 @@ impl Transcript {
     /// Whether anything is unresolved right now — the spinner's condition.
     pub fn is_working(&self) -> bool {
         !self.running.is_empty()
+    }
+
+    /// **The approvals a human still owes an answer to**, in arrival order. Each names an
+    /// [`ApprovalBlock`] whose state is `Pending`, and behind each is an agent that cannot
+    /// proceed — which is why this is a first-class query and not a filter the view is
+    /// expected to remember to write.
+    pub fn pending_approvals(&self) -> &[ElementId] {
+        &self.pending
+    }
+
+    /// Whether the agent is blocked on a human right now.
+    pub fn is_waiting(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// The card for a call id, resolved or not.
@@ -801,6 +914,70 @@ impl Transcript {
         Change::Appended(self.append(turn, Body::Artifact(artifact)))
     }
 
+    /// Put a permission request in the flow — **where the agent is working**, which is the
+    /// end of the current turn, exactly where an artifact lands.
+    ///
+    /// It is [`Transcript::insert_artifact`]'s sibling and for the same reason: no harness
+    /// emits this. It arrives from the console's own MCP handler, off a serve thread, and
+    /// making it a ninth [`AgentEvent`] would oblige every harness mapping to carry an
+    /// event none of them can produce.
+    ///
+    /// A block inserted already `Answered` — the decision memory answering for the human —
+    /// is **still an element**, deliberately: a remembered decision nobody can see is worse
+    /// than being asked every time. It simply never joins [`Transcript::pending_approvals`].
+    pub fn insert_approval(&mut self, approval: ApprovalBlock) -> Change {
+        let turn = self.ensure_turn();
+        let pending = approval.state.is_pending();
+        let id = self.append(turn, Body::Approval(approval));
+        if pending {
+            self.pending.push(id);
+        }
+        Change::Appended(id)
+    }
+
+    /// Answer a pending approval. `Ignored` if it was already answered, was evicted, or is
+    /// not an approval at all — the caller then knows not to send a verdict on the wire.
+    pub fn answer_approval(&mut self, id: ElementId, answer: Answer) -> Change {
+        let Some(index) = self.index_of(id) else {
+            self.stats.duplicate_answers += 1;
+            return Change::Ignored(Ignored::ApprovalAlreadyAnswered);
+        };
+        let open = matches!(&self.elements[index].body, Body::Approval(a) if a.state.is_pending());
+        if !open {
+            self.stats.duplicate_answers += 1;
+            return Change::Ignored(Ignored::ApprovalAlreadyAnswered);
+        }
+        let turn = self.elements[index].turn;
+        if let Body::Approval(a) = &mut self.elements[index].body {
+            a.state = ApprovalState::Answered(answer);
+        }
+        self.pending.retain(|x| *x != id);
+        self.touch_turn(turn);
+        Change::Updated(id)
+    }
+
+    /// Clear the `remembered` mark on an answered approval — the revocation the memory's
+    /// visibility exists for.
+    ///
+    /// **The verdict itself never changes.** What happened, happened; only the promise to
+    /// answer the same way again is withdrawn. Ignored for anything that is not an
+    /// answered, remembered approval, so a second click is a no-op rather than a lie.
+    pub fn revoke_approval(&mut self, id: ElementId) -> Change {
+        let Some(index) = self.index_of(id) else {
+            return Change::Ignored(Ignored::ApprovalAlreadyAnswered);
+        };
+        let Body::Approval(a) = &mut self.elements[index].body else {
+            return Change::Ignored(Ignored::ApprovalAlreadyAnswered);
+        };
+        match a.state {
+            ApprovalState::Answered(answer) if answer.remembered => {
+                a.state = ApprovalState::Answered(Answer { remembered: false, ..answer });
+                Change::Updated(id)
+            }
+            _ => Change::Ignored(Ignored::ApprovalAlreadyAnswered),
+        }
+    }
+
     // ---- internals -------------------------------------------------------------
 
     fn index_of(&self, id: ElementId) -> Option<usize> {
@@ -885,6 +1062,15 @@ impl Transcript {
                     if c.state.is_running() {
                         self.running.retain(|x| *x != gone.id);
                         self.stats.dropped_unresolved_tools += 1;
+                    }
+                }
+                // ⚠️ An evicted *pending* approval is the one eviction with a consequence
+                // outside this module: an agent is blocked on it. The count is how the
+                // pane learns to fail it closed rather than leave the question hanging.
+                Body::Approval(a) => {
+                    if a.state.is_pending() {
+                        self.pending.retain(|x| *x != gone.id);
+                        self.stats.dropped_pending_approvals += 1;
                     }
                 }
                 // An artifact holds no correlation and no running-ness; the view's
@@ -1432,6 +1618,138 @@ mod tests {
         assert_eq!(t.get(surface_id), None, "the target is gone, not reassigned");
     }
 
+    fn pending_approval(tool: &str) -> ApprovalBlock {
+        ApprovalBlock {
+            tool_name: tool.to_string(),
+            input: r#"{"command":"cargo test"}"#.to_string(),
+            tool_use_id: "toolu_1".to_string(),
+            state: ApprovalState::Pending,
+        }
+    }
+
+    fn allowed() -> Answer {
+        Answer { verdict: Verdict::Allow, from_memory: false, remembered: false }
+    }
+
+    /// **The state machine a blocked agent depends on.** A question is pending exactly
+    /// until it is answered, it is answered exactly once, and answering does not move it.
+    #[test]
+    fn an_approval_is_pending_until_it_is_answered_exactly_once() {
+        let mut t = Transcript::new();
+        feed(&mut t, vec![human("build it"), complete("m1", "I'll run the build.")]);
+
+        let Change::Appended(id) = t.insert_approval(pending_approval("Bash")) else {
+            panic!("an approval must append");
+        };
+        let before = ids(&t);
+        assert_eq!(t.pending_approvals(), &[id][..]);
+        assert!(t.is_waiting());
+        assert_eq!(t.get(id).unwrap().approval().unwrap().state, ApprovalState::Pending);
+        assert_eq!(t.get(id).unwrap().approval().unwrap().tool_use_id, "toolu_1");
+        assert_eq!(t.stats().events, 2, "an insertion is not an event and is not counted as one");
+
+        let answer = Answer { verdict: Verdict::Allow, from_memory: false, remembered: true };
+        assert_eq!(t.answer_approval(id, answer), Change::Updated(id));
+        assert_eq!(ids(&t), before, "answering must not move, add or renumber anything");
+        assert!(t.pending_approvals().is_empty());
+        assert!(!t.is_waiting());
+        assert_eq!(t.get(id).unwrap().approval().unwrap().state, ApprovalState::Answered(answer));
+
+        // A second answer changes nothing: the agent was unblocked by the first.
+        let flipped = Answer { verdict: Verdict::Deny, from_memory: false, remembered: false };
+        assert_eq!(
+            t.answer_approval(id, flipped),
+            Change::Ignored(Ignored::ApprovalAlreadyAnswered)
+        );
+        assert_eq!(t.get(id).unwrap().approval().unwrap().state.answer().unwrap().verdict, Verdict::Allow);
+        assert_eq!(t.stats().duplicate_answers, 1);
+
+        // …and neither does answering something that is not an approval, or is not there.
+        let prose = t.elements()[1].id;
+        assert_eq!(
+            t.answer_approval(prose, allowed()),
+            Change::Ignored(Ignored::ApprovalAlreadyAnswered)
+        );
+        assert_eq!(
+            t.answer_approval(ElementId(999), allowed()),
+            Change::Ignored(Ignored::ApprovalAlreadyAnswered)
+        );
+    }
+
+    /// An approval the memory answered for the human is **still an element**. A decision
+    /// nobody can see is worse than being asked every time — so it renders, and it is
+    /// simply never pending.
+    #[test]
+    fn an_approval_answered_from_memory_is_visible_and_never_pending() {
+        let mut t = Transcript::new();
+        let remembered = Answer { verdict: Verdict::Allow, from_memory: true, remembered: true };
+        let Change::Appended(id) = t.insert_approval(ApprovalBlock {
+            state: ApprovalState::Answered(remembered),
+            ..pending_approval("Bash")
+        }) else {
+            panic!("an approval must append");
+        };
+        assert_eq!(t.len(), 1, "it is drawn, not swallowed");
+        assert!(t.pending_approvals().is_empty(), "nothing is waiting on it");
+        assert!(!t.is_waiting());
+        assert_eq!(t.get(id).unwrap().approval().unwrap().state.answer(), Some(remembered));
+    }
+
+    /// Revocation: the promise is withdrawn, the history is not rewritten.
+    #[test]
+    fn revoking_clears_the_promise_and_keeps_the_verdict() {
+        let mut t = Transcript::new();
+        let Change::Appended(id) = t.insert_approval(pending_approval("Bash")) else {
+            panic!("an approval must append");
+        };
+        t.answer_approval(id, Answer { verdict: Verdict::Allow, from_memory: false, remembered: true });
+
+        assert_eq!(t.revoke_approval(id), Change::Updated(id));
+        let answer = t.get(id).unwrap().approval().unwrap().state.answer().unwrap();
+        assert_eq!(answer.verdict, Verdict::Allow, "what happened, happened");
+        assert!(!answer.remembered, "the promise to answer again is gone");
+
+        // Nothing left to revoke, and nothing else is revocable.
+        assert_eq!(t.revoke_approval(id), Change::Ignored(Ignored::ApprovalAlreadyAnswered));
+        let mut fresh = Transcript::new();
+        let Change::Appended(open) = fresh.insert_approval(pending_approval("Bash")) else {
+            panic!("append");
+        };
+        assert_eq!(fresh.revoke_approval(open), Change::Ignored(Ignored::ApprovalAlreadyAnswered));
+        assert_eq!(fresh.revoke_approval(ElementId(999)), Change::Ignored(Ignored::ApprovalAlreadyAnswered));
+    }
+
+    /// ⚠️ The eviction with a consequence outside this module. The cap takes a question a
+    /// human never answered; the count is how the pane knows to fail it closed instead of
+    /// leaving an agent blocked for the rest of the session.
+    #[test]
+    fn an_evicted_pending_approval_stops_being_pending_and_is_counted_on_its_own() {
+        let mut t = Transcript::with_limits(Limits { max_elements: 2 });
+        let Change::Appended(id) = t.insert_approval(pending_approval("Bash")) else {
+            panic!("append");
+        };
+        feed(&mut t, vec![human("hurry up")]);
+        assert_eq!(t.pending_approvals(), &[id][..], "still retained at the cap");
+        assert_eq!(t.stats().dropped_pending_approvals, 0);
+
+        feed(&mut t, vec![complete("m1", "pushing it off the front")]);
+        assert_eq!(t.get(id), None, "evicted, not reassigned");
+        assert!(t.pending_approvals().is_empty());
+        assert_eq!(t.stats().dropped_pending_approvals, 1);
+        assert_eq!(t.stats().dropped_elements, 1);
+
+        // An *answered* approval evicts like anything else, with no special count — there
+        // is nobody waiting on it.
+        let mut t = Transcript::with_limits(Limits { max_elements: 1 });
+        let Change::Appended(id) = t.insert_approval(pending_approval("Bash")) else {
+            panic!("append");
+        };
+        t.answer_approval(id, allowed());
+        feed(&mut t, vec![human("next")]);
+        assert_eq!(t.stats().dropped_pending_approvals, 0);
+        assert_eq!(t.stats().dropped_elements, 1);
+    }
+
     /// Deterministic, dependency-free — the `scroll_anchor` precedent; there is no new
     /// dev-dependency in this crate for a sweep.
     struct Lcg(u64);
@@ -1512,6 +1830,17 @@ mod tests {
                         content: ArtifactContent::Panel(PanelSpec::default()),
                     });
                 }
+                // …and an approval, on a different stride, answered a few steps later —
+                // so the pending list is swept against the same invariants as `running`,
+                // including being evicted mid-question at the small caps.
+                if step % 23 == 0 {
+                    t.insert_approval(pending_approval(&format!("Bash{n}")));
+                }
+                if step % 31 == 0 {
+                    if let Some(oldest) = t.pending_approvals().first().copied() {
+                        t.answer_approval(oldest, allowed());
+                    }
+                }
 
                 let ctx = format!("seed {seed} cap {cap} step {step}");
 
@@ -1528,10 +1857,21 @@ mod tests {
                         Body::Tool(_) => "tool",
                         Body::RunEnd(_) => "run_end",
                         Body::Artifact(_) => "artifact",
+                        Body::Approval(_) => "approval",
                     };
                     let was = kinds.entry(e.id.0).or_insert(kind);
                     assert_eq!(*was, kind, "{ctx}: element {} changed kind", e.id.0);
                 }
+
+                // 3a. `pending` is exactly the retained unanswered approvals, in order.
+                let unanswered: Vec<ElementId> = t
+                    .elements()
+                    .iter()
+                    .filter(|e| e.approval().map(|a| a.state.is_pending()).unwrap_or(false))
+                    .map(|e| e.id)
+                    .collect();
+                assert_eq!(t.pending_approvals(), &unanswered[..], "{ctx}: pending list drifted");
+                assert_eq!(t.is_waiting(), !unanswered.is_empty(), "{ctx}");
 
                 // 3. `running` is exactly the retained unresolved cards, in call order.
                 let derived: Vec<ElementId> = t
