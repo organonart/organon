@@ -37,7 +37,7 @@ position.
   machine, advanced by a **lock-free pull loop** (reader thread → channel → the UI
   thread owns parser+`Term` exclusively, drained once per frame). `term_view` draws
   the grid through egui as per-line same-style runs: full color stack (phosphor
-  ANSI16, xterm-256 pinned by test, truecolor, inverse/dim, OSC overrides), block
+  the theme's ANSI 16, xterm-256 pinned by test, truecolor, inverse/dim, OSC overrides), block
   cursor, wheel scrollback, bracketed paste, the xterm key table pinned by test
   (Ctrl-C, DECCKM app-cursor). ⌘-keys are chrome, never PTY. **The one provisional
   layer**: glyph painting rides egui text runs behind the `renderable_content()`
@@ -2039,7 +2039,54 @@ and changes not one pixel. That is §1.2's silent trap met from the other side. 
 fix it (the camera really did move, and it will be there the moment something shows the world), so
 `camera::viewpoint_is_visible` decides whether to say so on stderr instead.
 
-### 1.4 Preferences — the console's first thing that remembers what a person chose
+### 1.4 The theme — every colour the console paints, in one owned value
+
+**`organon-shell/src/theme.rs` holds `Theme`: a plain struct of `Color32` fields, one per
+semantic role, grouped by area (transcript, cards, status strip, composer, terminal, patch
+panels, timeline, tabs).** `Theme::organon()` is the phosphor-green look the console has
+always had and is the only palette this build ships. The extraction is meant to be
+pixel-identical, and `theme_organon_is_the_look_that_shipped` is what backs that: it pins
+every field against the literal RGB the corresponding `const` held on `main` before the move.
+⚠️ No window has been opened on it — see the ledger.
+
+**One owner: `Shell` in `native/src/shell_main.rs`**, one field, borrowed into `redraw`'s
+closure beside `sessions` and `strip` and passed down as `&Theme` to every draw call —
+`tabs::tab_bar`, `term_view::draw`, `conversation_view::draw`, `block_panel::draw`,
+`paint_portal`, and (for the dormant v2 compositor) `app::ui` → `timeline::show`. There is
+no `static`, no `thread_local!` and no `OnceCell`. That is the property the tier is for: a
+palette reachable from anywhere stops being state, and a per-tab theme or a live preview
+while one is being chosen becomes a rewrite instead of a second value. `ShellApp` gets no
+theme field for the same reason — its `ui` takes one, so the process still has exactly one
+owner however many front-ends draw.
+
+🚨 **Roles that share bytes today are separate fields, and merging them is the mistake this
+shape exists to prevent.** `term_fg`, `human_text`, `tab_active`, `tab_menu_installed` and
+`panel_text` are all `#c8e6c8`; `context_arc_high` is `mode_alert`'s amber (it was literally
+written `= MODE_ALERT`); `timeline_status_denied` equals `timeline_status_failed` and
+`timeline_status_cancelled` equals `timeline_status_pending`. Deduplicating by value welds
+two decisions together — a lighter palette almost certainly wants a terminal foreground and
+a human's typed line to part company — so `roles_that_share_a_value_are_still_separate_fields`
+asserts the coincidences *and* the separation on purpose.
+
+**What a second palette would override, and what it must not touch.** Every field on
+`Theme`, and only those. Four things stay outside it, each because it is not taste:
+
+- **The scrim's alpha.** Only the three colour channels moved (`term_scrim_tint`);
+  `SCRIM_DEFAULT`/`SCRIM_FLOOR` stay in `term_view`, because PRD §4.6's floor is an
+  instrument and a palette that could raise it could trade the glyphs away.
+- **The xterm 256-colour cube and greyscale ramp.** `ansi16` is the theme's — a light
+  console beside a black grid is two products in one window — but indices 16..=255 are a
+  *standard*: a program asking for 196 is asking for xterm's red.
+- **Truecolor and OSC overrides**, which belong to the program that sent them.
+- **`Color32::WHITE` at five `painter.image` calls** (`term_view`'s band and patch quads,
+  `conversation_view`'s surface, `paint_portal`, `app`'s scene pane). That argument is a
+  per-channel multiplier, not a colour; white is the identity, and a theme reaching it would
+  tint the engine's own render. Each site carries a one-line comment saying so.
+
+egui's own `Visuals` — widget chrome, `weak`/`strong` text, `extreme_bg_color` — is the
+remaining uncovered surface and is untouched by this tier.
+
+### 1.5 Preferences — the console's first thing that remembers what a person chose
 
 `prefs.rs` writes `preferences.json` at the store root, beside `harnesses.json`. It is a
 `Preferences` struct — today one field, `theme: Option<String>` — loaded with
@@ -2118,7 +2165,7 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
-- ⚠️ **No preferences file has ever been written on a real machine.** §1.4 is pinned by ten
+- ⚠️ **No preferences file has ever been written on a real machine.** §1.5 is pinned by ten
   headless tests against temp directories — round trip, missing file, malformed file, a
   BOM'd file, an unknown key, a missing key, the atomic replace, the stranded-temp check,
   first-run directory creation, and that the store root is literally
@@ -2130,6 +2177,15 @@ path silently breaks the three-products-simultaneously guarantee that
   first honest test of the durable promise happens when the theme picker lands on top of
   it; until then this is a writer with no writer.
 
+- ⚠️ **The theme extraction has not been seen on screen, and "the look did not change" is a
+  claim about a test rather than about a window.** `theme_organon_is_the_look_that_shipped`
+  compares every field against the literal RGB read out of `main` before the move, `cargo
+  test -p organon-shell --lib` is green (484 tests, one more than before — the new one checks
+  that `indexed_256`'s first sixteen come from the theme), and `cargo check --features
+  shell-edition --bin organon-console` is green. That proves no *value* drifted. It does not
+  prove the console still draws it in the same place: the extraction also moved four `&Theme`
+  borrows through the draw path and rewrapped a dozen call sites, and only a running window
+  can say the strip, the composer and the grid still look like themselves.
 - 🚨 **The working-directory fix is necessary and I could not prove it sufficient — there is
   a second, independent reason `organon-cli` may not reach the model, and it is not in this
   code.** Measured against the real `claude.exe` (2026-08-13, two headless invocations, the
@@ -2165,7 +2221,7 @@ path silently breaks the three-products-simultaneously guarantee that
   object; whether the World at the console's default snapshot is *legible* at that size (the
   console publishes `OrganicMathParams::default()`, which nobody has looked at through a
   window this small); whether the drag orbits at a rate a hand likes; whether the wheel claim
-  feels right or merely correct; and whether one frame of `PANEL_FILL` before the first render
+  feels right or merely correct; and whether one frame of `Theme::panel_fill` before the first render
   reads as a beat or as a flicker. The verb is the only part with a cheap self-check —
   `organon console portal open` prints `queued: portal open`, which says the line was written,
   not that anything drew.
@@ -2536,7 +2592,7 @@ path silently breaks the three-products-simultaneously guarantee that
   backdrop was `off`, or that predates the tab it is in, has no texture and no way to get
   one. Its rows show the panel's own background — which is what was behind them at the
   time — rather than borrowing the neighbouring look's picture. The scrim over it is a
-  no-op by construction: it is `DEFAULT_BG` with an alpha, painted onto `DEFAULT_BG`.
+  no-op by construction: it is `Theme::term_scrim_tint` with an alpha, painted onto `Theme::term_bg` — the same three channels.
 - **The `dropped` counter UNDER-counts in two regimes, never over-counts.** Once
   scrollback is full (10 000 lines), an eviction is only observable through the display
   pin — so at the live edge (`display_offset == 0`), and parked against the top of a full

@@ -109,6 +109,35 @@ working copy. Each fix uncovered the next failure.
   Shell's living-state doc had never been on the list at all.
 - Findings now carry their line numbers straight out of the awk pass rather than a second
   `grep` over the file, which is also what makes per-table line numbers possible.
+### Console — colour became a value the console owns, and nothing on screen moved
+
+- **`organon-shell/src/theme.rs`: one `Theme`, a plain struct of `Color32` fields.** The
+  console's palette was ~50 `const Color32` declarations across six files plus a handful of
+  literals written inline at the draw site. Most already carried a *semantic* name — `RUNNING`,
+  `CONTEXT_ARC`, `COMPOSER_EDGE_DEAD` — so the hard half of theming was done; what a `const`
+  cannot do is hold a second answer. `Theme::organon()` is the look that shipped and the only
+  palette this build has.
+- **One owner, no globals.** `Shell` holds it and every draw site gets `&Theme` as an argument
+  — no `static`, no `thread_local!`, no `OnceCell`. That is the point rather than an
+  aesthetic: a palette reachable from anywhere stops being state, and a per-tab theme or a
+  live preview then becomes a rewrite instead of a second value.
+- 🚨 **The pinning test is the whole safety net, and its values were read out of `main` before
+  a line was moved.** A wrong shade compiles and draws, so nothing else in the suite could
+  tell whether the extraction changed one. `theme_organon_is_the_look_that_shipped` asserts
+  every field, `ANSI16`'s sixteen entries and `PANEL_FILL`'s premultiplied alpha included.
+- 🚨 **Roles that share bytes today are kept as separate fields.** `term_fg`, `human_text`,
+  `tab_active`, `tab_menu_installed` and `panel_text` are one colour in five roles;
+  `context_arc_high` was written `= MODE_ALERT`; `timeline_status_denied` equals
+  `timeline_status_failed`. Deduplicating by value is exactly what would stop a second palette
+  diverging — a lighter one almost certainly wants a terminal foreground and a human's typed
+  line to part company. A second test asserts the coincidences *and* the separation.
+- **Four things stayed out of the theme because they are not taste**: the scrim's *alpha*
+  (PRD §4.6's floor is an instrument — only its three colour channels moved), the xterm
+  256-colour cube and greyscale ramp (indices 16..=255 are a standard, not a palette),
+  truecolor and OSC values a running program sent, and `Color32::WHITE` at the five
+  `painter.image` calls, where it is the identity multiplier rather than a colour.
+- ⚠️ Green and ready to deploy, **not** seen: no window has been opened on it. See
+  `SHELL_ARCHITECTURE.md` §1.4 and its honesty ledger.
 
 ### Console — one document that says what the console is, and what has not been looked at
 

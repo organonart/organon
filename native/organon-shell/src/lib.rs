@@ -62,6 +62,11 @@
 //! answer — the blocking hook, the decision memory that "allow and remember" is built from,
 //! and what a click means. `doc/console_approval_protocol.md` is the measured spec all
 //! three are written against.
+//!
+//! [`theme`] holds every colour the console paints. It is a plain struct with one owner in
+//! the app state and `&Theme` at every draw site — the roles were already named (`RUNNING`,
+//! `CONTEXT_ARC`, `COMPOSER_EDGE_DEAD`), and what they lacked was the ability to hold a
+//! second answer, which a `const` cannot.
 
 pub mod agent_event;
 pub mod agent_map;
@@ -87,4 +92,5 @@ pub mod tabs;
 pub mod term;
 pub mod term_view;
 pub mod text_diff;
+pub mod theme;
 pub mod timeline;

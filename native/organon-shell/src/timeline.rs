@@ -19,6 +19,7 @@ use egui::{Color32, CornerRadius, Frame, Margin, RichText};
 use crate::session::{
     ApprovalState, CommandRunRecord, EventKind, Issuer, RunStatus, SessionEvent, ToolCallRecord,
 };
+use crate::theme::Theme;
 
 /// What the user asked the timeline to do this frame. `seq` names the event the
 /// decision belongs to — the caller owns what (if anything) happens next.
@@ -61,18 +62,19 @@ pub fn show(
     events: &[SessionEvent],
     state: &mut TimelineState,
     scripted: bool,
+    theme: &Theme,
 ) -> Option<TimelineAction> {
     let mut action = None;
 
     if scripted {
         Frame::new()
-            .fill(Color32::from_rgb(0x33, 0x2b, 0x12))
+            .fill(theme.timeline_scripted_fill)
             .corner_radius(CornerRadius::same(4))
             .inner_margin(Margin::symmetric(8, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("● scripted demo").color(Color32::from_rgb(0xe6, 0xc0, 0x4c)),
+                        RichText::new("● scripted demo").color(theme.timeline_scripted_mark),
                     );
                     ui.weak("— every event below is replayed from a built-in script, not a live agent");
                 });
@@ -86,7 +88,7 @@ pub fn show(
         .show(ui, |ui| {
             ui.add_space(4.0);
             for event in events {
-                card(ui, event, &mut action);
+                card(ui, event, &mut action, theme);
                 ui.add_space(6.0);
             }
         });
@@ -108,14 +110,14 @@ fn issuer_label(issuer: &Issuer) -> String {
     }
 }
 
-fn status_text(status: &RunStatus) -> (&'static str, Color32) {
+fn status_text(status: &RunStatus, theme: &Theme) -> (&'static str, Color32) {
     match status {
-        RunStatus::Pending => ("pending", Color32::from_rgb(0xb0, 0xb0, 0xb0)),
-        RunStatus::Running => ("running", Color32::from_rgb(0xe6, 0xc0, 0x4c)),
-        RunStatus::Ok => ("ok", Color32::from_rgb(0x6f, 0xc2, 0x76)),
-        RunStatus::Failed => ("failed", Color32::from_rgb(0xe0, 0x6c, 0x5f)),
-        RunStatus::Denied => ("denied", Color32::from_rgb(0xe0, 0x6c, 0x5f)),
-        RunStatus::Cancelled => ("cancelled", Color32::from_rgb(0xb0, 0xb0, 0xb0)),
+        RunStatus::Pending => ("pending", theme.timeline_status_pending),
+        RunStatus::Running => ("running", theme.timeline_status_running),
+        RunStatus::Ok => ("ok", theme.timeline_status_ok),
+        RunStatus::Failed => ("failed", theme.timeline_status_failed),
+        RunStatus::Denied => ("denied", theme.timeline_status_denied),
+        RunStatus::Cancelled => ("cancelled", theme.timeline_status_cancelled),
     }
 }
 
@@ -140,9 +142,14 @@ fn card_frame(ui: &mut egui::Ui, accent: Option<Color32>, add: impl FnOnce(&mut 
     });
 }
 
-fn card(ui: &mut egui::Ui, event: &SessionEvent, action: &mut Option<TimelineAction>) {
+fn card(
+    ui: &mut egui::Ui,
+    event: &SessionEvent,
+    action: &mut Option<TimelineAction>,
+    theme: &Theme,
+) {
     match &event.kind {
-        EventKind::Message(m) => message_bubble(ui, &m.from, &m.text),
+        EventKind::Message(m) => message_bubble(ui, &m.from, &m.text, theme),
         EventKind::Plan(p) => card_frame(ui, None, |ui| {
             ui.strong(format!("Plan — {}", p.summary));
             for (i, step) in p.steps.iter().enumerate() {
@@ -150,12 +157,12 @@ fn card(ui: &mut egui::Ui, event: &SessionEvent, action: &mut Option<TimelineAct
             }
         }),
         EventKind::ToolCall(t) => tool_card(ui, t),
-        EventKind::CommandRun(r) => command_card(ui, r),
+        EventKind::CommandRun(r) => command_card(ui, r, theme),
         EventKind::Approval(a) => {
             // The card that asks the human for something stands apart: accent
             // stroke, explicit buttons. Pending = requested with no decision yet.
             let pending = a.state == ApprovalState::Requested && a.decided_unix_ms.is_none();
-            let accent = Color32::from_rgb(0xe6, 0xc0, 0x4c);
+            let accent = theme.timeline_approval_accent;
             card_frame(ui, Some(accent), |ui| {
                 ui.strong(RichText::new("Approval requested").color(accent));
                 ui.label(&a.action);
@@ -202,18 +209,14 @@ fn card(ui: &mut egui::Ui, event: &SessionEvent, action: &mut Option<TimelineAct
 
 /// Message bubbles: the user sits right, everyone else left — the chat convention
 /// that makes issuer-side legible without reading a name.
-fn message_bubble(ui: &mut egui::Ui, from: &Issuer, text: &str) {
+fn message_bubble(ui: &mut egui::Ui, from: &Issuer, text: &str, theme: &Theme) {
     let from_user = *from == Issuer::User;
     let layout = if from_user {
         egui::Layout::top_down(egui::Align::Max)
     } else {
         egui::Layout::top_down(egui::Align::Min)
     };
-    let fill = if from_user {
-        Color32::from_rgb(0x24, 0x33, 0x42)
-    } else {
-        Color32::from_rgb(0x26, 0x26, 0x2b)
-    };
+    let fill = if from_user { theme.timeline_bubble_user } else { theme.timeline_bubble_other };
     ui.with_layout(layout, |ui| {
         Frame::new()
             .fill(fill)
@@ -243,8 +246,8 @@ fn tool_card(ui: &mut egui::Ui, t: &ToolCallRecord) {
     });
 }
 
-fn command_card(ui: &mut egui::Ui, r: &CommandRunRecord) {
-    let (status, color) = status_text(&r.status);
+fn command_card(ui: &mut egui::Ui, r: &CommandRunRecord, theme: &Theme) {
+    let (status, color) = status_text(&r.status, theme);
     card_frame(ui, None, |ui| {
         ui.horizontal(|ui| {
             ui.strong(format!("$ {}", r.command.name));
