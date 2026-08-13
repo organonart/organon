@@ -603,12 +603,13 @@ impl ConversationPane {
             return true;
         }
         match control {
-            Control::Initialize => {
-                let models = response.models();
-                let found = models.len();
-                self.models = models;
-                self.note(format!("the session offers {found} models"));
-            }
+            // ⚠️ **Kept, and deliberately silent.** The list is what the picker is built
+            // from ([`model_rows`]), so it is load-bearing — but a note counting it put
+            // "the session offers 5 models" on the band's log at every cold start, where
+            // the one line of diagnostic width is worth more than a number nobody can act
+            // on. The count is discoverable by clicking the plate, which is where a list
+            // of models belongs.
+            Control::Initialize => self.models = response.models(),
             // ⚠️ Nothing is confirmed here. The ack has no body (§2), so it says the
             // request was accepted and not what the session is now running; the repeat
             // `system/init` is what settles the plate, and `pump` watches for it.
@@ -1226,6 +1227,36 @@ pub fn subagent_summary(log: &SubagentLog, parent_running: bool) -> SubagentSumm
     SubagentSummary { counts, open }
 }
 
+/// One subagent step's mark, and the colour that goes with it.
+///
+/// 🚨 **`✓` and `✗` were TOFU here, and `.monospace()` was never going to fix them** —
+/// which is why this is a character change rather than the font change the two earlier
+/// tofu fixes in this file were. James's fan-out capture showed `□ Bash` where a returned
+/// step belonged. Measured, by reading the `cmap` tables of all four fonts egui 0.33
+/// bundles (`Hack-Regular`, `Ubuntu-Light`, `NotoEmoji-Regular`, `emoji-icon-font`):
+/// **U+2713 `✓` and U+2717 `✗` are in none of them.** Asking for the mono face only
+/// chooses *which* font is missing the glyph. The same read confirms the earlier fix was
+/// right about its own case — `◈` U+25C8 and `●` U+25CF are in Hack and not in Ubuntu,
+/// exactly as that note says — so the two rules are siblings, not rivals: **draw symbols
+/// monospace, and only draw symbols Hack has.**
+///
+/// The three replacements are each measured present:
+///
+/// * `→` U+2192 — Hack only, unchanged, and the reason the `.monospace()` at the draw
+///   site stays.
+/// * `•` U+2022 — a returned step. In **both** faces, so this one cannot regress even if
+///   a later edit drops the mono call. A bullet rather than a tick because there is no
+///   tick in the fonts available; green is what says the return was clean.
+/// * `×` U+00D7 — a step that returned an error. Also in both faces, and read as a
+///   failure mark by everyone without needing to be a dingbat.
+fn step_mark(state: &StepState) -> (&'static str, Color32) {
+    match state {
+        StepState::Running => ("→", RUNNING),
+        StepState::Done { is_error: false } => ("•", OK),
+        StepState::Done { is_error: true } => ("×", BAD),
+    }
+}
+
 /// **What a subagent is doing, inside the card that dispatched it.**
 ///
 /// Before this, a coordinator session that fanned out showed a `Task` card sitting on
@@ -1242,9 +1273,10 @@ pub fn subagent_summary(log: &SubagentLog, parent_running: bool) -> SubagentSumm
 fn subagent_body(ui: &mut egui::Ui, log: &SubagentLog, running: bool) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        // ⚠️ `·` and `→`/`✓`/`✗` below are all glyphs the PROPORTIONAL face carries or
-        // that are drawn monospace here. The box-drawing characters this file was once
-        // full of rendered as tofu; see `draw_element`'s note on the em dash.
+        // ⚠️ `·` is carried by the proportional face; the step marks below are drawn
+        // monospace *and* chosen from what the mono face has — [`step_mark`] says which,
+        // and why the pair of rules is not one rule. This comment used to claim `✓`/`✗`
+        // were covered by that argument. They were not, and the band showed a box.
         ui.label(RichText::new("subagent").color(ASKING).small().monospace());
         let summary = subagent_summary(log, running);
         ui.label(RichText::new(summary.counts).color(DIM).small());
@@ -1276,11 +1308,7 @@ fn subagent_body(ui: &mut egui::Ui, log: &SubagentLog, running: bool) {
                     ui.label(RichText::new(one_line(text)).color(PROSE).small());
                 }
                 SubagentAct::Tool { id, name, state } => {
-                    let (mark, color) = match state {
-                        StepState::Running => ("→", RUNNING),
-                        StepState::Done { is_error: false } => ("✓", OK),
-                        StepState::Done { is_error: true } => ("✗", BAD),
-                    };
+                    let (mark, color) = step_mark(state);
                     ui.label(RichText::new(mark).color(color).small().monospace());
                     // An unnamed step is a return whose call this log never saw — the same
                     // "(call not seen)" a card shows, for the same reason.
@@ -1650,6 +1678,18 @@ const MODE_NOTE: Color32 = Color32::from_rgb(0x8a, 0xa6, 0xc2);
 /// The context ring's unfilled circumference — present enough to say "this is a dial and
 /// it is not full", dim enough not to compete with the band's actual readings.
 const CONTEXT_TRACK: Color32 = Color32::from_rgb(0x2c, 0x38, 0x2c);
+/// …and the same circumference **before anything has been measured**.
+///
+/// 🚨 **The one visual difference between "no reading yet" and "a reading of 0 %".** Both
+/// draw a bare circle — a zero fill has no arc either — so if the two circles looked alike
+/// the ring would be making the exact false claim [`ContextSlot`]'s original
+/// draw-nothing rule existed to prevent. Sat roughly midway between [`STRIP_FILL`] and
+/// [`CONTEXT_TRACK`]: legible as a shape at arm's length, so it still reads as the
+/// container an answer will appear in, and unmistakably fainter beside a track that is
+/// holding a real one. The hover carries the same distinction in words
+/// ([`ring_hover_rows`]), because a colour difference alone is not an answer to "which is
+/// this?".
+const CONTEXT_TRACK_EMPTY: Color32 = Color32::from_rgb(0x1a, 0x22, 0x1a);
 /// The filled arc below [`CONTEXT_HIGH_PERCENT`].
 ///
 /// Blue rather than a green off this band's own palette, and that is the point: every
@@ -1731,23 +1771,36 @@ pub enum ModelSlot {
     Absent,
 }
 
-/// The context half of the band: the little ring at the far right, or nothing at all.
+/// The context half of the band: the little ring at the far right.
 ///
-/// 🚨 **`Unknown` draws nothing, and that is the honest rendering rather than a shortcut.**
-/// A ring is a proportion; before the first `result` there is no window and before the
-/// first `message_start` there is no prompt, and a ring drawn empty in either case reads
-/// as *"0 % full"* — a confident, specific, false number. [`ModelSlot::Connecting`] says
-/// "no model yet" instead of vanishing because that plate is the headline affordance and
-/// a hole where it sits reads as broken; the ring sits at the end of the dim half beside
-/// the chips, which appear when their number does and are absent before it. It follows
-/// the chips.
+/// 🚨 **The TRACK is chrome and the FILL is the measurement, and separating those two is
+/// what lets the ring be present from the first frame without claiming anything.** This
+/// reverses an earlier decision, so the reversal is stated rather than quietly applied:
+/// `Unknown` used to draw *nothing at all*, on the grounds that an empty ring reads as
+/// "0 % full" — a confident, specific, false number. That reasoning was right about the
+/// arc and wrong about the circle. A ring drawn with no arc in it is not a reading of
+/// zero; it is the container the reading will appear in, exactly as an empty gauge face
+/// is not a needle pointing at nought. What outweighed the original call is a cost it did
+/// not price: the whole dim half — cost, ring, chips — materialised at the first turn's
+/// `result`, so the band a hand had been looking at for a minute *rearranged itself* the
+/// moment the session became interesting. Stable chrome is worth more than the point, and
+/// the point survives anyway, because the arc still refuses.
 ///
-/// ⚠️ So a session's first turn has no ring, and the ring appears at that turn's `result`.
-/// From then on it moves **per API round trip**, not per turn — a `message_start` updates
-/// it mid-turn, which is the visible consequence of the numerator being what it is.
+/// 🚨 **An unmeasured ring must not be mistakable for a measured 0 %**, and that is a real
+/// case rather than a hypothetical: a `message_start` reporting a zero prompt against a
+/// known window builds a `Known` fill whose `fraction()` is `0.0`, which draws no arc
+/// either. Two states, one picture, is precisely the false claim the original design
+/// feared — so the *track itself* carries the difference: [`ring_track_color`] draws the
+/// unmeasured circle at [`CONTEXT_TRACK_EMPTY`], visibly fainter than the
+/// [`CONTEXT_TRACK`] a measured reading sits on, and [`ring_hover_rows`] answers "not
+/// measured yet" where the other answers "0 % at the last request".
+///
+/// ⚠️ A session's first turn still has no *arc*, and the arc appears at that turn's
+/// `result`. From then on it moves **per API round trip**, not per turn — a `message_start`
+/// updates it mid-turn, which is the visible consequence of the numerator being what it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextSlot {
-    /// One or both halves have not been measured yet. Nothing is drawn.
+    /// One or both halves have not been measured yet. The track is drawn; no arc is.
     Unknown,
     /// Both halves measured. See [`ContextFill`] for exactly what they are.
     Known(ContextFill),
@@ -2008,9 +2061,10 @@ pub struct StripContent {
     pub identity: Vec<(String, String)>,
     pub reading: StatusReading,
     /// How full the model's context was at the last request — the ring at the far right,
-    /// or [`ContextSlot::Unknown`] and no ring at all.
+    /// or [`ContextSlot::Unknown`], which draws the ring's track and no arc.
     pub context: ContextSlot,
-    /// Dim, right-aligned, joined with `·`. Bounded by construction: at most three.
+    /// Dim, right-aligned, joined with `·`. Bounded by construction: at least one — the
+    /// session's cost is on the band from the first frame — and at most three.
     pub chips: Vec<String>,
     /// The most recent diagnostic line off the child, if any. Drawn truncated.
     pub log: Option<String>,
@@ -2239,16 +2293,39 @@ pub fn strip_content(
     // Three at most, in reading order. Each is either a measurement or absent — there is no
     // arm here that computes one number out of two.
     let mut chips: Vec<String> = Vec::new();
-    if let Some(cost) = facts.cost_usd {
-        // "session" is not decoration: `cost_usd` accumulates on the wire and the sibling
-        // token counts do not, so the one number on the band says which kind it is.
-        chips.push(format!("session {}", cost_label(cost)));
-    }
+    // 🚨 **Always, and zero before the first `result` is a measurement rather than a
+    // placeholder.** Nothing has been spent, so nought is simply what the session has
+    // cost — there is none of the honesty tension the ring's arc has, because this is a
+    // total and not a proportion of an unknown. Showing it from the first frame is what
+    // gives the dim half something to *be* at a cold start, which is the whole of why the
+    // band no longer rearranges itself at the end of turn one. `unwrap_or(0.0)` rather
+    // than a separate cold-start string so the figure keeps [`cost_label`]'s shape for the
+    // life of the session: `$0.0000` becomes `$0.0123` in place, and never reformats.
+    //
+    // "session" is not decoration: `cost_usd` accumulates on the wire and the sibling
+    // token counts do not, so the one number on the band says which kind it is.
+    chips.push(format!("session {}", cost_label(facts.cost_usd.unwrap_or(0.0))));
+    // ⚠️ **This one stays conditional, and the asymmetry with the cost above is the
+    // decision.** "0 remembered decisions" is *true*, but it is a tally of things the
+    // human did rather than a meter that runs on its own, and there is nothing to watch
+    // until the first one exists. It is also the one chip whose arrival the reader
+    // themself caused — they answered a permission card and asked for it to be
+    // remembered — so it is not something that happens *to* the band. Band height is
+    // unaffected either way; [`STRIP_CHROME`] reserves one row of text regardless.
     if live.remembered > 0 {
         let n = live.remembered;
         let plural = if n == 1 { "decision" } else { "decisions" };
         chips.push(format!("{n} remembered {plural}"));
     }
+    // ⚠️ **The one right-hand element with no honest cold-start form, so it is omitted.**
+    // There is no last turn before the first turn, and `last turn 0.0s` would be a
+    // *duration* asserted about an event that did not happen — not a zero total like the
+    // cost and not an empty container like the ring's track, but a fabricated measurement.
+    // Neither of the two escape hatches works: `last turn —` is a chip whose whole content
+    // is an apology, and the ring's track/fill split has no analogue in a string. So it
+    // arrives at the first `result`, alongside the ring's first arc, and the band's
+    // *height* does not move when it does — which is the property James asked for and the
+    // one `the_strip_is_one_band_and_leaves_the_scrollback_the_rest` pins.
     if let Some(ms) = facts.last_turn_duration_ms {
         chips.push(format!("last turn {}", duration_label(ms)));
     }
@@ -2457,11 +2534,10 @@ fn strip_box(
 /// *wrongly* exactly as the reading became urgent. A thick stroked polyline has no such
 /// case and is what the indicator this copies looks like anyway.
 fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
-    // Nothing at all when either half is missing: see [`ContextSlot`] for why an empty
-    // ring is worse than no ring.
-    let ContextSlot::Known(fill) = slot else {
-        return;
-    };
+    // 🚨 **Allocated and drawn every frame, measured or not** — see [`ContextSlot`] for the
+    // track/fill split and for the decision this reverses. The allocation is the half that
+    // matters structurally: a child that appears at the first `result` is a band that
+    // reshuffles at the first `result`.
     let diameter = ui.text_style_height(&egui::TextStyle::Body);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(diameter, diameter),
@@ -2475,9 +2551,12 @@ fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
     painter.circle_stroke(
         center,
         radius,
-        egui::Stroke::new(CONTEXT_RING_STROKE, CONTEXT_TRACK),
+        egui::Stroke::new(CONTEXT_RING_STROKE, ring_track_color(slot)),
     );
-    let filled = fill.fraction();
+    let filled = match slot {
+        ContextSlot::Unknown => 0.0,
+        ContextSlot::Known(fill) => fill.fraction(),
+    };
     if filled > 0.0 {
         // Twelve o'clock, clockwise — a clock face, because that is the shape everyone
         // already knows how to read. Screen y grows downward, so a growing angle is
@@ -2501,13 +2580,49 @@ fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
     // The provenance lives here, in the same shape as the model plate's identity hover:
     // what it measures, what it does not, and both raw counts.
     response.on_hover_ui(|ui| {
-        for (label, value) in context_rows(fill) {
+        for (label, value) in ring_hover_rows(slot) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{label}:")).color(DIM).small().monospace());
                 ui.label(RichText::new(value).color(PROSE).small().monospace());
             });
         }
     });
+}
+
+/// Which circle the ring draws — **the whole of the difference between "no reading yet"
+/// and "a reading of nought"**, in the only place a reader who is not hovering can see it.
+///
+/// A pure function of the slot rather than two `circle_stroke` calls in the two arms of a
+/// `match`, because the property this has to hold — that the two are *not the same
+/// colour* — is a statement about the pair, and a test can only make it about the pair if
+/// there is one thing to ask twice.
+fn ring_track_color(slot: &ContextSlot) -> Color32 {
+    match slot {
+        ContextSlot::Unknown => CONTEXT_TRACK_EMPTY,
+        ContextSlot::Known(_) => CONTEXT_TRACK,
+    }
+}
+
+/// The ring's hover, for either state.
+///
+/// 🚨 **An unmeasured ring says so in words, and says when that changes.** The faint track
+/// is the glanceable half of the distinction; this is the answerable half. Without it the
+/// only way to tell an empty container from a zero reading would be to remember which
+/// shade of green means which, which is not a thing an interface may require.
+fn ring_hover_rows(slot: &ContextSlot) -> Vec<(String, String)> {
+    match slot {
+        ContextSlot::Known(fill) => context_rows(fill),
+        // ⚠️ "not measured yet", never "0 %". The second row is what makes the first
+        // actionable: it names the event the reader is waiting on rather than leaving them
+        // to wonder whether the ring is broken.
+        ContextSlot::Unknown => vec![
+            ("context".to_string(), "not measured yet".to_string()),
+            (
+                "waiting on".to_string(),
+                "a window from `result`, a prompt from `message_start`".to_string(),
+            ),
+        ],
+    }
 }
 
 /// The ring's hover, and the place the reading states what it is.
@@ -3754,11 +3869,14 @@ mod tests {
         }
     }
 
-    /// ⚠️ CONTRACT: no ring until both halves are measured. An empty ring reads as
-    /// "0% full", which is a specific claim the console cannot make before a `result`
-    /// has stated a window and a `message_start` has stated a prompt.
+    /// ⚠️ CONTRACT: **no ring FILL until both halves are measured** — the arc is a
+    /// proportion and there is none before a `result` has stated a window and a
+    /// `message_start` has stated a prompt. (The ring's *track* is drawn throughout; that
+    /// is [`ring_track_color`]'s contract, pinned separately below. This test was named
+    /// `the_band_carries_no_ring_until_both_halves_are_measured` and asserted the whole
+    /// ring was absent — the half of it that still holds is this one.)
     #[test]
-    fn the_band_carries_no_ring_until_both_halves_are_measured() {
+    fn the_band_carries_no_ring_fill_until_both_halves_are_measured() {
         let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
         assert_eq!(cold.context, ContextSlot::Unknown, "nothing measured");
 
@@ -3775,6 +3893,81 @@ mod tests {
             panic!("{:?}", both.context)
         };
         assert_eq!(fill.percent(), 5);
+    }
+
+    /// 🚨 CONTRACT: **an unmeasured ring must not look like a measured nought.** Both draw
+    /// a bare circle — a zero fill sweeps no arc either — so the whole of the difference
+    /// has to live in the track and in the hover, or the ring is making the confident,
+    /// specific, false claim that the draw-nothing rule was written to prevent.
+    ///
+    /// A zero reading is reachable rather than theoretical: a `message_start` reporting a
+    /// zero prompt against a known window builds exactly this pair.
+    #[test]
+    fn an_unmeasured_ring_is_distinguishable_from_a_measured_nought() {
+        let nought = ContextSlot::Known(ContextFill { prompt_tokens: 0, context_window: 1_000_000 });
+        assert_eq!(nought.is_high(), false, "nought is not high, and draws no arc");
+        assert_eq!(
+            match nought {
+                ContextSlot::Known(fill) => fill.fraction(),
+                ContextSlot::Unknown => 0.0,
+            },
+            0.0,
+            "the reachable case: a real reading that sweeps no arc"
+        );
+
+        assert_ne!(
+            ring_track_color(&ContextSlot::Unknown),
+            ring_track_color(&nought),
+            "two states drawing one picture is the false claim itself"
+        );
+        // The unmeasured track is the FAINTER of the two — it is a container, and the one
+        // holding an answer should be the one that carries more presence.
+        let dim = ring_track_color(&ContextSlot::Unknown);
+        let lit = ring_track_color(&nought);
+        assert!(
+            dim.r() < lit.r() && dim.g() < lit.g() && dim.b() < lit.b(),
+            "the empty container must be the fainter circle: {dim:?} vs {lit:?}"
+        );
+        // …and it is still visible against the band it sits on, or it is not a container.
+        assert_ne!(dim, STRIP_FILL, "an invisible track is a ring that vanished");
+
+        // The glanceable half is a colour; the answerable half is words.
+        let unmeasured = ring_hover_rows(&ContextSlot::Unknown);
+        let measured = ring_hover_rows(&nought);
+        assert_ne!(unmeasured, measured, "the hover has to answer 'which is this?'");
+        let (label, value) = &unmeasured[0];
+        assert_eq!(label, "context");
+        assert_eq!(value, "not measured yet", "never a percentage it has not been given");
+        assert!(
+            !unmeasured.iter().any(|(_, v)| v.contains('%')),
+            "no percent sign anywhere on an unmeasured hover: {unmeasured:?}"
+        );
+        assert_eq!(measured[0].1, "0% at the last request", "the measured nought says so");
+    }
+
+    /// 📌 CONTRACT: **the model list is a picker input and never band text.** A note
+    /// counting it — "the session offers 5 models" — used to be written at every
+    /// `initialize` ack and spent the band's one line of diagnostic width on a number
+    /// nobody can act on. The list itself is untouched: it is what the plate's menu is
+    /// built from, and `the_picker_is_built_from_the_list_the_cli_offered` is the other
+    /// half of this contract.
+    #[test]
+    fn the_band_says_nothing_about_how_many_models_were_offered() {
+        assert_eq!(model_rows(&offered(), None).len(), 4, "the list is kept, and it is the picker's");
+
+        let mut facts = started("claude-opus-5[1m]");
+        facts.cost_usd = Some(0.42);
+        facts.last_turn_duration_ms = Some(7_389);
+        let content = strip_content(None, live(0, 2), &facts, Some("abc"), None);
+        let band = format!(
+            "{} {} {:?}",
+            content.chips.join(" · "),
+            content.reading.text,
+            content.identity
+        );
+        for word in ["models", "offers", "offered"] {
+            assert!(!band.contains(word), "the band must not mention the list ({word}): {band}");
+        }
     }
 
     /// The percentage the reader is **actually shown**, read back out of the ring's hover.
@@ -3963,7 +4156,16 @@ mod tests {
             "and the status half stays silent rather than saying it a second time"
         );
         assert!(content.identity.is_empty(), "nothing is known, so the hover claims nothing");
-        assert!(content.chips.is_empty(), "no cost, no memory, no turn — no chips");
+        // ⚠️ This assertion **moved**: it used to read `content.chips.is_empty()`, "no
+        // cost, no memory, no turn — no chips". That encoded the dim half appearing at the
+        // first `result`, which is the reshuffle this tier removes. The cost is now on the
+        // band from the first frame at its true value; the other two are still absent, and
+        // `the_cold_band_reports_a_cost_and_a_ring_and_does_not_grow` says why.
+        assert_eq!(
+            content.chips,
+            vec!["session $0.0000"],
+            "the session's spend is on the band from the first frame, and it is nought"
+        );
     }
 
     /// Once init arrives the model is the headline, and everything else it said is on the
@@ -4444,6 +4646,79 @@ mod tests {
         }
     }
 
+    /// Every non-ASCII character the console is **measured** to be able to draw.
+    ///
+    /// 🚨 Read out of the `cmap` tables of the four fonts egui 0.33 bundles — `Hack-Regular`,
+    /// `Ubuntu-Light`, `NotoEmoji-Regular`, `emoji-icon-font` — rather than assumed. egui does
+    /// no OS font fallback, so a codepoint in none of those four is a box on screen no matter
+    /// which family the draw site asks for.
+    ///
+    /// **Adding a symbol to the console means adding it here, which means measuring it.**
+    /// That is the point of an allowlist over a blocklist: the previous guard forbade the one
+    /// range that had bitten (`U+2500..=U+259F`), and `✓` U+2713 sailed straight past it into
+    /// a card that did not exist when the guard was written.
+    fn drawable(c: char) -> bool {
+        // ASCII is in everything.
+        if c.is_ascii() {
+            return true;
+        }
+        // `·` U+00B7 and `×` U+00D7 are in Hack *and* Ubuntu-Light — Latin-1, carried
+        // everywhere. `•` U+2022 is in both faces too. `→` U+2192, `◈` U+25C8 and `●`
+        // U+25CF are in Hack alone, which is exactly why their draw sites say
+        // `.monospace()`. `—` U+2014 is the em dash the prose already uses.
+        matches!(c, '·' | '×' | '•' | '→' | '◈' | '●' | '—')
+    }
+
+    /// 🚨 CONTRACT: **no site the console draws symbols at may draw one egui has no glyph
+    /// for**, and the two rules that keep that true are siblings rather than one rule.
+    ///
+    /// *Choose* a character the mono face has, *then* ask for the mono face. The band's
+    /// earlier tofu fix was the second half alone and was right about its own case; the
+    /// subagent card's `✓`/`✗` were already drawn `.monospace()` and were boxes anyway,
+    /// because Hack has no dingbats. A guard that only tested the band could not have caught
+    /// it — this one covers both sites, and the previous band-only version is the reason the
+    /// same defect reached a third site before anyone saw it.
+    #[test]
+    fn no_symbol_the_console_draws_is_a_glyph_egui_lacks() {
+        let mut checked = 0;
+        let mut check = |where_: &str, text: &str| {
+            for c in text.chars() {
+                assert!(
+                    drawable(c),
+                    "{where_} draws U+{:04X} {c:?}, which is in none of egui's fonts \
+                     — pick a character Hack has, or measure this one and list it in \
+                     `drawable`: {text}",
+                    c as u32
+                );
+            }
+            checked += 1;
+        };
+
+        // The band's status half, in every state that carries a symbol.
+        let facts = started("claude-opus-5");
+        for (name, content) in [
+            ("asking", strip_content(None, live(1, 0), &facts, Some("abc"), None)),
+            ("working", strip_content(None, live(0, 2), &facts, Some("abc"), None)),
+            ("writing", strip_content(None, live_generating(0, 0), &facts, Some("abc"), None)),
+        ] {
+            check(name, &content.reading.text);
+            check(name, &content.chips.join(" · "));
+        }
+
+        // The subagent card's step markers — the site the band-only guard did not reach.
+        for state in [
+            StepState::Running,
+            StepState::Done { is_error: false },
+            StepState::Done { is_error: true },
+        ] {
+            let (mark, _) = step_mark(&state);
+            check("a subagent step marker", mark);
+            // Belt and braces on the one that regressed: the dingbats are gone by name.
+            assert!(!mark.contains('✓') && !mark.contains('✗'), "{state:?} is back on a dingbat");
+        }
+        assert!(checked >= 9, "the guard must actually have looked at something: {checked}");
+    }
+
     /// One frame of the strip, headless — the same shape [`composer_frame`] uses, measuring
     /// the room the band took *away from what follows it*.
     fn strip_frame(ctx: &egui::Context, content: &StripContent, pane: &mut FakePane) -> (f32, f32) {
@@ -4542,6 +4817,78 @@ mod tests {
         assert!(
             left > 400.0,
             "the scrollback must keep the remainder of the 700 pt pane, not a sliver: {left}"
+        );
+    }
+
+    /// 🚨 **THE ANTI-RESHUFFLE PROPERTY, and the whole of why this tier exists.**
+    ///
+    /// The dim half used to be *empty* until the first turn's `result`, at which point the
+    /// cost, the ring and the last-turn figure all arrived at once and the band a hand had
+    /// been looking at for a minute rearranged itself. So the contract is in two halves and
+    /// both are asserted here rather than inferred:
+    ///
+    /// 1. **At a cold start the band already reports something** — the session's spend, at
+    ///    its true value of nought, and a ring, as a track with no arc in it.
+    /// 2. **The band is exactly as tall then as it is fully populated.** This is the
+    ///    assertion `the_strip_is_one_band_and_leaves_the_scrollback_the_rest` also makes,
+    ///    and it is deliberately made twice: there it is a corollary of "one line, whatever
+    ///    arrives", here it is the primary claim. An always-present ring is a new child of
+    ///    the horizontal layout, and a child taller than the reserved row is precisely how a
+    ///    one-line strip becomes two.
+    #[test]
+    fn the_cold_band_reports_a_cost_and_a_ring_and_does_not_grow() {
+        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+
+        // (1) There is something on the right from the first frame, and it is true.
+        assert_eq!(
+            cold.chips,
+            vec!["session $0.0000"],
+            "nought spent is a measurement, not a placeholder"
+        );
+        assert_eq!(cold.context, ContextSlot::Unknown, "…and the ring has no reading yet");
+        assert_eq!(
+            ring_track_color(&cold.context),
+            CONTEXT_TRACK_EMPTY,
+            "which draws the empty track — present, and not a claim of 0%"
+        );
+        assert!(
+            !cold.chips.iter().any(|c| c.contains("last turn")),
+            "there has been no last turn, so no duration is invented for one: {:?}",
+            cold.chips
+        );
+
+        // (2) …and the band it sits in is the height it will always be.
+        let ctx = egui::Context::default();
+        let mut pane = FakePane::new("x");
+        pane.want_focus = false;
+
+        let mut facts = started("claude-opus-5[1m]");
+        facts.cost_usd = Some(12.3456);
+        facts.last_turn_duration_ms = Some(7_389);
+        facts.context_window = Some(1_000_000);
+        facts.last_prompt_tokens = Some(910_000);
+        let settled = strip_content(
+            None,
+            LiveCounts { remembered: 9, has_session: true, ..live(0, 3) },
+            &facts,
+            Some("11111111-2222-3333-4444-555555555555"),
+            Some("a diagnostic line"),
+        );
+        assert_eq!(settled.chips.len(), 3, "the settled band carries all three chips");
+
+        let mut cold_band = 0.0;
+        for _ in 0..3 {
+            cold_band = strip_frame(&ctx, &cold, &mut pane).0;
+        }
+        let mut settled_band = 0.0;
+        for _ in 0..3 {
+            settled_band = strip_frame(&ctx, &settled, &mut pane).0;
+        }
+        assert!(cold_band > 0.0, "the cold band is real space: {cold_band}");
+        assert!(
+            (cold_band - settled_band).abs() < 0.5,
+            "the band must not grow when the first turn lands — that is the reshuffle: \
+             cold {cold_band} vs settled {settled_band}"
         );
     }
 
