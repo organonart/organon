@@ -87,6 +87,17 @@
 //! down instead of implying it was direct. See [`Transcript::apply`]'s
 //! `SubagentActivity` arm for how the chain is resolved.
 //!
+//! ✏️ **The card also carries what the HARNESS says about the agent** — a
+//! [`SubagentProgress`], from Claude Code's `system`/`task_*` lines. It is the same event,
+//! addressed the same way, and it is deliberately **not** a step:
+//! [`Subagent::Progressed`] describes one changing state and *replaces* field by field,
+//! where the other three arms record things that happened and accumulate. 🚨 Which is why
+//! it is also the one activity that does **not** flatten up the chain: a step carries a
+//! depth and can say whose work it was, a single replacing value cannot, so a nested
+//! task's progress would overwrite its grandparent's in the grandparent's voice. Declined
+//! and counted instead ([`Stats::nested_subagent_progress`]). None of this is live text
+//! either — a `description` is the harness's gloss, never the agent's prose.
+//!
 //! # Ordering and identity
 //!
 //! Elements are appended in arrival order and **mutate in place**: a tool card that
@@ -247,13 +258,24 @@ pub enum AgentEvent {
 
 /// One thing a subagent did, before it is placed on a card.
 ///
-/// 🚨 **Every arm is a completed fact.** There is no fragment and no in-progress arm,
+/// 🚨 **Every arm is a complete report.** There is no fragment and no half-arrived arm,
 /// because behaviour 5 measured that no deltas are forwarded for a subagent — an activity
-/// that could be half-arrived would be modelling something the wire cannot produce.
+/// that could be partial would be modelling something the wire cannot produce.
+/// [`Progressed`](Self::Progressed) is no exception: a progress line is a whole statement
+/// that arrived at once, not a piece of one.
+///
+/// ⚠️ **Three arms are *steps* and one is not.** `Said`, `Used` and `Returned` are things
+/// that happened, and they append to (or resolve within) the card's [`SubagentLog`].
+/// `Progressed` is a *description of the task's current state* and **replaces** what the
+/// card knew, field by field — putting it in the log would fill a trace with restatements
+/// of one changing fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Subagent {
     /// A complete text block the subagent produced.
     Said(String),
+    /// The harness restated how the dispatched agent is getting on — Claude Code's
+    /// `system`/`task_*` lines. See [`SubagentProgress`], which owns the retention rule.
+    Progressed(SubagentProgress),
     /// The subagent called a tool of its own.
     Used { id: ToolId, name: String },
     /// One of the subagent's own tool calls came back.
@@ -267,6 +289,106 @@ pub enum Subagent {
     /// *finished* and whether it failed; the parent `Task`'s own result is carried in full
     /// by the card, as it always was.
     Returned { id: ToolId, is_error: bool },
+}
+
+/// **What a dispatched agent has reported about how it is getting on.**
+///
+/// The answer to a card that said "running" and then nothing for eight minutes. Claude
+/// Code sends a `task_started`, then a `task_progress` every few seconds while the agent
+/// works, then a `task_updated`/`task_notification` when it finishes — each naming the
+/// dispatch it belongs to. This is what those lines say, accumulated.
+///
+/// 🚨 **Every field is a phrase or a number the harness stated, and nothing here is
+/// live.** In particular [`duration_ms`](Self::duration_ms) is the *harness's* stopwatch
+/// as of the last line it sent, never a clock of ours — this module has none, by design,
+/// and a view that ticked one would be presenting its own arithmetic in the harness's
+/// voice. The number moves when a line arrives and is still between them.
+///
+/// ⚠️ **This is metadata, not tokens, and it does not soften behaviour 5.** No text of the
+/// agent's own reaches this type; a `description` is the harness's one-line gloss, not
+/// prose the agent wrote. Nothing built on it may imply a live feed.
+///
+/// # What is deliberately not carried
+///
+/// The `task_*` lines restate a good deal the card already shows, and taking it twice
+/// would put the same sentence in two places on one card — rule 4's objection to
+/// rendering `result.result`, one level in:
+///
+/// * **`subagent_type`** (`"general-purpose"`) and **`prompt`** — both are arguments of
+///   the `Agent` call itself, measured present in its `input` object, and the card
+///   renders its arguments in full.
+/// * **`summary`** on `task_notification` — the agent's final answer, which arrives
+///   again as the dispatch's own `tool_result` and is what the card's output already is.
+/// * **`output_file`** — a path into the session's task directory. Nothing a reader of
+///   the card can act on that the card does not already hold.
+///
+/// [`description`](Self::description) is kept despite `task_started`'s copy of it being
+/// the same duplicate, because `task_progress` **replaces** it with the live activity —
+/// which is the one thing on this type that no other part of the card can say.
+///
+/// 🚨 **One source, and the alternative was measured to disagree.** An `Agent`
+/// `tool_use_result` carries its own `totalTokens` / `totalDurationMs` /
+/// `totalToolUseCount`, and on the capture the durations and tool counts match exactly
+/// while the **token totals do not**: `62949` here against `62951` there, and `63564`
+/// against `63803`. The result's figure is struck later and counts output the
+/// notification had not yet seen. Both are honest; taking both would make one card's
+/// token count jump at completion with nothing to explain it. The `task_*` stream wins
+/// because it is the only source that exists *while the card is otherwise silent*, which
+/// is the entire reason this type exists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubagentProgress {
+    /// The harness's one-line gloss — the dispatch's title at first, then what the agent
+    /// is doing now.
+    pub description: Option<String>,
+    /// The tool the agent most recently ran.
+    pub last_tool: Option<String>,
+    /// How many tools it has run.
+    pub tool_uses: Option<u64>,
+    /// Tokens **this agent** has spent. Not the session's, and not summed with anything.
+    pub total_tokens: Option<u64>,
+    /// Wall time as the harness measured it, at the moment of the last line.
+    pub duration_ms: Option<u64>,
+    /// A terminal status once one is reported — `completed`, and whatever else the CLI
+    /// says. Reported verbatim; nothing here interprets it.
+    pub status: Option<String>,
+}
+
+impl SubagentProgress {
+    /// Whether the harness has said anything at all. A card with nothing reported adds no
+    /// row.
+    pub fn is_empty(&self) -> bool {
+        *self == SubagentProgress::default()
+    }
+
+    /// **Latest-wins per field; an absent field leaves the standing one alone.**
+    ///
+    /// 🚨 Not a wholesale replace, and the difference is load-bearing rather than
+    /// defensive: a `task_updated` carries **only** a status, so replacing the whole
+    /// value on one would blank the description and the counts the card had been showing
+    /// — at exactly the moment the task finishes, which is when a reader looks. Same
+    /// shape as [`crate::agent_map::SessionFacts`]'s rule, and for the same reason.
+    fn merge(&mut self, next: SubagentProgress) {
+        let SubagentProgress { description, last_tool, tool_uses, total_tokens, duration_ms, status } =
+            next;
+        if description.is_some() {
+            self.description = description;
+        }
+        if last_tool.is_some() {
+            self.last_tool = last_tool;
+        }
+        if tool_uses.is_some() {
+            self.tool_uses = tool_uses;
+        }
+        if total_tokens.is_some() {
+            self.total_tokens = total_tokens;
+        }
+        if duration_ms.is_some() {
+            self.duration_ms = duration_ms;
+        }
+        if status.is_some() {
+            self.status = status;
+        }
+    }
 }
 
 /// Whether one of a subagent's own tool steps came back.
@@ -492,6 +614,12 @@ pub struct ToolCard {
     /// arrives, and empty forever for a tool that reports nothing — `Default` for the same
     /// reason [`Self::subagent`] is.
     pub detail: ResultDetail,
+    /// What the *harness* said about the dispatched agent's progress
+    /// ([`SubagentProgress`]). Like [`Self::subagent`], only an `Agent` call ever gains
+    /// one — and unlike it, this **replaces itself** rather than accumulating, because it
+    /// describes one changing state instead of recording a sequence of things that
+    /// happened.
+    pub progress: SubagentProgress,
 }
 
 /// One assistant text block.
@@ -803,6 +931,13 @@ pub enum Ignored {
     /// an approval at all. A question is answered **once**: the agent is unblocked by the
     /// first answer, and a second would record a verdict nothing acted on.
     ApprovalAlreadyAnswered,
+    /// A [`Subagent::Progressed`] whose card is not held. Unlike every other missing
+    /// parent in this module it opens nothing — see the `SubagentActivity` arm, and
+    /// [`Stats::orphan_subagent_progress`].
+    UnknownProgressParent,
+    /// A [`Subagent::Progressed`] for a nested dispatch, which has no card of its own to
+    /// describe. See [`Stats::nested_subagent_progress`].
+    NestedProgress,
 }
 
 /// Bounds, stated rather than assumed. See "What is bounded" in the module doc.
@@ -854,6 +989,40 @@ pub struct Stats {
     /// the two arrive for different reasons and only one of them is evidence the parent
     /// **finished**.
     pub orphan_subagent_activity: u64,
+    /// A [`Subagent::Progressed`] naming a card this transcript does not hold — and the
+    /// one orphan in this module that is **counted and dropped** rather than kept on a
+    /// nameless card.
+    ///
+    /// ⚠️ **Read it next to [`orphan_subagent_activity`](Self::orphan_subagent_activity),
+    /// never as a smaller version of it.** That one means content was recovered; this one
+    /// means a description of a card outlived the card. The `SubagentActivity` arm argues
+    /// the difference in full. A number that climbs while cards are on screen would mean
+    /// the correlation itself has stopped working, which is exactly what it is here to
+    /// make visible.
+    pub orphan_subagent_progress: u64,
+    /// A [`Subagent::Progressed`] naming a call that is a **nested** dispatch — a step
+    /// inside some card's log rather than a card of its own. Declined, because a card
+    /// carries one progress value and no depth, so merging it would overwrite the
+    /// grandparent's own.
+    ///
+    /// 🚨 **Expected to be non-zero on a healthy nesting fan-out**, which is why it is not
+    /// [`orphan_subagent_progress`](Self::orphan_subagent_progress). It is the measure of
+    /// what this tier declines, not of anything wrong — and it is the number to watch if a
+    /// card's own progress ever starts reading like somebody else's.
+    ///
+    /// ⚠️ **The capture's nested task sends FOUR `task_*` lines and this counter reads 3.**
+    /// That is a split, not a discrepancy, and knowing which half goes where is the only
+    /// way to reconcile the two numbers: `task_started` arrives one line *before* the
+    /// `tool_use` block that creates its card, so at that moment its call is neither a card
+    /// nor a known nested one and it is counted by
+    /// [`orphan_subagent_progress`](Self::orphan_subagent_progress) instead. `task_progress`,
+    /// `task_updated` and `task_notification` all land here. **3 here + 1 there**, each half
+    /// pinned by its own test.
+    ///
+    /// 📌 It is also the *finding*: the `task_*` family reaches **depth 2**, where every
+    /// other subagent line on the wire stops at depth 1. A nested agent's work is
+    /// narrated after all — the console just has nowhere honest to put it yet.
+    pub nested_subagent_progress: u64,
     /// A [`Subagent::Returned`] naming a step this card's log has no [`Subagent::Used`]
     /// for. Recorded as its own step rather than dropped; counted so a correlation that
     /// stops working cannot hide behind a log that still looks busy.
@@ -1111,6 +1280,7 @@ impl Transcript {
                     state: ToolState::Running,
                     subagent: SubagentLog::default(),
                     detail: ResultDetail::default(),
+                    progress: SubagentProgress::default(),
                 };
                 let eid = self.append(turn, Body::Tool(card));
                 self.by_tool.insert(id.0, eid);
@@ -1166,6 +1336,7 @@ impl Transcript {
                     // else: with no call there are no arguments, so the detail's own
                     // `file_path` is the only thing that says what the tool touched.
                     detail,
+                    progress: SubagentProgress::default(),
                 };
                 let eid = self.append(turn, Body::Tool(card));
                 self.by_tool.insert(id.0, eid);
@@ -1187,6 +1358,51 @@ impl Transcript {
             // one: a subagent has no place of its own in the flow, and giving it one is
             // precisely the "turns belonging to nobody" §5.9.3 rule 5 refused.
             AgentEvent::SubagentActivity { parent, activity } => {
+                // 🚨 **Progress does NOT go through `resolve_subagent_parent`, and the two
+                // reasons are the whole correctness of this branch.**
+                //
+                // A step is content — a sentence a subagent wrote, a tool it ran — and
+                // flattening it up the chain onto the top-level card is right, because the
+                // step carries its own `depth` and says whose work it was. Progress is a
+                // *single replacing value* with nowhere to put a depth, so flattening it
+                // would let a nested agent's description, tool count and terminal status
+                // **overwrite its grandparent's** — measured on the real capture, where
+                // task `…403` runs inside card `…0402` and would have made that card read
+                // "Reading one.txt · 1 tool · completed" while it was still working on
+                // something else entirely. Silence is the bug this feature fixes; a card
+                // confidently narrating another agent's work would be worse than silence.
+                //
+                // ⚠️ And a missing card is likewise **counted and dropped**, where a step
+                // would open a nameless one. A step's content would otherwise be lost; a
+                // progress line carries nothing that is not either restated by the card's
+                // own arguments or superseded by the next line. Inventing the card it
+                // describes would also invent it *wrong*: a `task_notification` saying
+                // `completed` is the line most likely to outlive its card, and the orphan
+                // path opens `Running`.
+                let activity = match activity {
+                    Subagent::Progressed(progress) => {
+                        let Some(index) = self.index_by_tool(&parent) else {
+                            // A call we know the owner of is a *nested* task, not a lost
+                            // one — see above. Counted apart so a healthy nesting fan-out
+                            // does not read as breakage.
+                            if self.subagent_owner.contains_key(parent.as_str()) {
+                                self.stats.nested_subagent_progress += 1;
+                                return Change::Ignored(Ignored::NestedProgress);
+                            }
+                            self.stats.orphan_subagent_progress += 1;
+                            return Change::Ignored(Ignored::UnknownProgressParent);
+                        };
+                        let (eid, turn) = (self.elements[index].id, self.elements[index].turn);
+                        if let Body::Tool(card) = &mut self.elements[index].body {
+                            // Replaces field by field — `SubagentProgress::merge` owns why.
+                            card.progress.merge(progress);
+                        }
+                        self.touch_turn(turn);
+                        return Change::Updated(eid);
+                    }
+                    step => step,
+                };
+
                 let (owner, depth) = self.resolve_subagent_parent(&parent);
                 let mut opened_card = false;
                 let index = match self.index_by_tool(&owner) {
@@ -1214,6 +1430,7 @@ impl Transcript {
                             state: ToolState::Running,
                             subagent: SubagentLog::default(),
                             detail: ResultDetail::default(),
+                            progress: SubagentProgress::default(),
                         };
                         let eid = self.append(turn, Body::Tool(card));
                         self.by_tool.insert(owner.0.clone(), eid);
@@ -1242,6 +1459,9 @@ impl Transcript {
                 let mut dropped = 0u64;
                 if let Body::Tool(card) = &mut self.elements[index].body {
                     match activity {
+                        // Returned above, before any of the step bookkeeping. The arm is
+                        // here because the type permits it, not because it can be reached.
+                        Subagent::Progressed(_) => {}
                         Subagent::Said(text) => {
                             card.subagent
                                 .steps

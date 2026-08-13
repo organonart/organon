@@ -700,15 +700,51 @@ either. `fixtures/README.md` carries all four corrections; three bear on this se
   reached the console only as the parent's `tool_result`. The card fills with *steps*, and
   a design that assumed prose would arrive was assuming.
 
-📌 **And the capture opened a door the design did not know was there.** Five `system`
-subtypes nobody had seen — `task_started`, `task_progress`, `task_updated`,
-`task_notification`, `task_summary` — carry live subagent progress: a rolling
-`description`, `last_tool_name`, `usage.tool_uses`, `duration_ms`, a terminal `status`,
-and a `tool_use_id` that names the card. They are **main**-scoped (no `parent_tool_use_id`
-key at all), so rule 5 cannot see them and all five currently decode to `Notice` and render
-nothing. This does not weaken "there is no live text": these are not tokens. It does mean
-the honest liveness a card can show is larger than "a burst arrived", and reaching it needs
-a second correlation — by `tool_use_id` on a `system` line — that no rule currently has.
+📌 **And the capture opened a door the design did not know was there — rule 5b, now
+walked through.** Five `system` subtypes nobody had seen — `task_started`,
+`task_progress`, `task_updated`, `task_notification`, `task_summary` — carry live subagent
+progress: a rolling `description`, `last_tool_name`, `usage.{tool_uses,total_tokens,
+duration_ms}` and a terminal `status`. They are **main**-scoped (no `parent_tool_use_id`
+key at all), so rule 5 cannot see them, and reaching them took a second correlation of
+their own. This does not weaken "there is no live text": these are not tokens. What it
+means is that the honest liveness a card can show is larger than "a burst arrived" — a
+`Task` card now says *"Reading one.txt · → Read · 1 tool · 10.3s"* while the agent works,
+where it used to say nothing at all for eight to sixteen minutes.
+
+🚨 **The correlation is `task_id`, not `tool_use_id`, and the difference is not a
+detail.** Measured line by line across the capture:
+
+| subtype | `task_id` | `tool_use_id` | what it adds |
+|---|---|---|---|
+| `task_started` | yes | yes | the dispatch's title, its prompt |
+| `task_progress` | yes | yes | the live activity, `last_tool_name`, the counts |
+| `task_notification` | yes | yes | the terminal status, the final counts |
+| `task_updated` | yes | **no** | a `patch` — `status`, `end_time`, and nothing else |
+| `task_summary` | **no** | **no** | a nullable `detail`, belonging to no card |
+
+So the mapper learns `task_id → tool_use_id` from any line that states both and resolves a
+`task_updated` through it; a `task_summary` is a gloss of the *session* and stays unmapped.
+Keying on `tool_use_id` alone — the obvious reading of the first capture — would have
+dropped every status transition, silently, on a path where silence is the failure mode.
+
+⚠️ **A card holds ONE progress value, so a nested task's is declined rather than merged.**
+The `task_*` family reaches **depth 2**, unlike every other subagent line on this wire: a
+grandchild's lifecycle really is forwarded, naming a call that is only a step in its
+grandparent's log. Merging it would have made that card narrate somebody else's work in its
+own voice, mid-flight. Counted as `Stats::nested_subagent_progress`, because a number that
+reads non-zero on a *healthy* nesting fan-out must not be mistaken for a fault — and
+because it is the measure of the next increment. ⚠️ **The nested task sends four `task_*`
+lines here and that counter reads 3**: its `task_started` arrives one line *before* the
+`tool_use` block that creates its card, so the call is not yet known to be nested and that
+one is counted by `orphan_subagent_progress`. **3 here + 1 there**, each half pinned.
+
+⚠️ **One source per fact.** An `Agent` `tool_use_result` carries its own `totalTokens` /
+`totalDurationMs` / `totalToolUseCount`. Durations and tool counts match the `task_*`
+figures exactly; **the token totals do not** — 62 949 against 62 951, and 63 564 against
+63 803, because the result is struck later and counts output the notification had not seen.
+Both are honest. Taking both would make one card's token count jump at completion with
+nothing to explain it, so only the `task_*` stream is read: it is the one that exists while
+the card is otherwise silent, which is the whole reason the row exists.
 
 **The process contract (§5.9.2, measured):** `-p --input-format stream-json
 --output-format stream-json --include-partial-messages --replay-user-messages --verbose`
@@ -1592,6 +1628,91 @@ harness-agnostic in full; the conversation view is harness-specific and says whi
 harness; and **degrading to a terminal tab is always available** — a harness we have not
 integrated is not unsupported, it is supported the old way.
 
+#### 🚨 Where the agent works — four rules, stated out loud, never inherited
+
+**The defect, measured 2026-08-13.** An agent in a conversation tab was asked to use the
+`organon-cli` skill and answered `Unknown skill: organon-cli`. Before that, asked to show
+something in the portal, it spent several approval cards running `ls` and `--help` to
+rediscover a CLI with an 18 KB guide sitting in the repo. The built-in `claude-chat` row
+carries no `cwd`, `AgentSession::spawn` turns `None` into *the app's own directory*, and a
+console launched from Explorer or from a PATH shim is in no project at all. So the agent saw
+no repo-local `.claude/skills/`, no project `CLAUDE.md`, no `SHELL_ARCHITECTURE.md` — and
+**nothing anywhere said so.** The only symptom is an agent that seems oddly ignorant.
+
+**Why it is worth more than one broken lookup.** Execution plan §5.9.26 records James's
+direction: the console is to be extensible from inside itself, on the Pi paradigm — the agent
+gets its own docs plus a skill teaching it to change the thing it lives in. An agent that
+cannot see the repo cannot do any of that, and §5.9.26 names this file as the authority it
+should consult *before* the tree. The paradigm was failing at its first step, silently.
+
+`harness::conversation_cwd` is the one place that decides, and it is pure — a function of
+(spec, platform, launch directory, environment, a marker test), so every rule below is a unit
+test rather than a thing you find out by launching:
+
+| # | Rule | `CwdSource` |
+|---|---|---|
+| 1 | `HarnessSpec::cwd`, tilde-expanded — the user's per-**tab** answer | `Spec` |
+| 2 | `$ORGANON_SHELL_PROJECT`, tilde-expanded — the user's per-**launch** answer | `Env` |
+| 3 | the nearest project root **at or above** the launch directory | `ProjectRoot` |
+| 4 | the launch directory itself — today's behaviour, now *stated* | `LaunchDir` |
+
+📌 **The product must not name a project, and rule 3 is how it avoids having to.** A
+conversation tab is not inherently about this repo — someone may want an agent about their own
+work, and an explicit `cwd` on the built-in spec would be wrong for them and unmaintainable
+for us. But *"`cd` into a checkout and start the console"* is the ordinary way anyone reaches
+any project, and rule 3 makes that land in the checkout's root with **no configuration at
+all**, for any checkout, without a single path in the source. The console's own repo therefore
+works for the same reason everybody else's does. `is_project_dir` is the marker: `.claude/`
+first (the literal thing that was missing), then `CLAUDE.md`, then `.git` — existence, not
+directory-ness, because a git worktree's `.git` is a file.
+
+⚠️ **Home is never *discovered*, only inherited.** The walk stops at the home directory: a
+`~/.claude` is user-global configuration that every agent gets wherever it starts, so treating
+it as a project root would quietly aim a console launched from `~/Documents` at the whole home
+directory — which on this machine is explicitly not a codebase. Launching *in* home still
+lands there, via rule 4. The stop test is `Path::starts_with`, component-wise and
+case-sensitive; a Windows launch path cased differently from `%USERPROFILE%` walks one or two
+ancestors further, which costs an extra marker test and cannot produce a wrong answer.
+
+📌 **Rule 3 is deliberately NOT applied to terminal tabs, and rules 1–2 already were.** A
+shell announces its directory in the prompt and `cd` is one keystroke, so a tab that started
+in `native/` because that is where you were is right — ascending to the repo root would be an
+unasked-for correction, and running `cargo` is the commonest reason to be in a subdirectory.
+An agent's working directory is invisible *and* decides which instructions and skills exist at
+all. The two cases genuinely differ, so the resolution is conversation-only and terminal-tab
+behaviour is byte-for-byte unchanged.
+
+⚠️ **The alternatives, and what they cost.** *An explicit `cwd` on the built-in spec* — names
+Organon's checkout in product data, wrong for every other user, and stale the moment the repo
+moves. *The launch directory alone* — that is rule 4, i.e. today, and it does not survive
+being started from a shim or from Explorer, which is exactly how the defect was reached.
+*Per-tab only, via `harnesses.json`* — correct but not sufficient on its own: that file is
+**machine configuration outside this repo**, so it cannot be shipped, cannot be tested here,
+and a fresh clone gets nothing. It stays rule 1 because a user's explicit row must win; it is
+not the default because a default that requires hand-editing JSON on every machine is not a
+default. Rule 2 exists because the launch shims on this machine already set `ORGANON_SHELL_*`
+and one more line there is cheaper than editing a JSON file in the app's store root.
+
+**Nothing is silent any more, and that was the point.** `harness::cwd_notes` produces the
+lines — the directory and *which rule chose it*, **always**, plus a warning when the resolved
+directory satisfies no marker at all (*"no `.claude/`, `CLAUDE.md` or `.git` here — this agent
+starts with no project skills and no project instructions"*, naming all three ways to fix it).
+⚠️ The first line is unconditional on purpose: a diagnostic that only fires when something is
+*detectably* wrong cannot cover a resolution that is wrong in a way this code cannot see — a
+root found two levels above the one you meant — and stating the answer every time is what
+makes that inspectable at all. `shell_main` says it twice, to two different readers: `stderr`
+for whoever started the console from a terminal, and `ConversationPane::note` for whoever is
+looking at the console. The agent's *own* report of its cwd is on the model plate's hover
+(`SessionFacts::cwd`, from `system/init`) — that is the independent confirmation, since it
+comes from the process rather than from the code that spawned it.
+
+⚠️ **`ConversationPane`'s log had never been drawn anywhere**, from the day the pane was
+built. `pub fn log()` existed and no caller used it, so *"approvals are not wired — a tool
+that needs permission will fail instead of asking"* has been written to a reader that does not
+exist for its whole life. `scrollback` now draws those lines dimmed at the head of the
+transcript. Same defect as an inherited working directory, one layer over: the console knows,
+and says it to nobody.
+
 ### 1.2 The portal — a screen-anchored, live, orbitable window onto the world
 
 `organon console portal open`, typed at a prompt **inside the console**, floats a rendered
@@ -1723,6 +1844,31 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **The working-directory fix is necessary and I could not prove it sufficient — there is
+  a second, independent reason `organon-cli` may not reach the model, and it is not in this
+  code.** Measured against the real `claude.exe` (2026-08-13, two headless invocations, the
+  second killed at the `system/init` line so no turn ran): `system/init` carries **both** a
+  `slash_commands` array and a `skills` array. `organon-cli` is in `slash_commands` from a
+  cwd inside the repo *and* from a scratch directory outside it — so the CLI does discover
+  it, by both routes. It is **absent from `skills` in both**, while three neighbouring
+  user-global skills (`comfyui-video`, `hip-reduction`, `organon-mind-social`) are in both.
+  Ruled out by measurement: it is not the duplicate (project-local *and* user-global) copies,
+  since it is missing from the scratch cwd where only one copy exists; not description length
+  (582 bytes, against 607 for one that appears); not file size (18 KB, against 23 KB for one
+  that appears); not a frontmatter difference — both carry exactly `name` and `description`.
+  **The remaining hypothesis, untested:** `~/.claude/skills/organon-cli` is a *junction* whose
+  real path is inside another repo's `.claude/skills/`, and the loader may register the slash
+  command while declining to offer the model a skill it resolves outside the session's scope.
+  The cheap test is a machine change and needs James: replace the junction with a real copy,
+  relaunch, and re-read `skills` in `system/init`. Until then, **do not read this change as
+  "the agent can now use the skill"** — read it as "the agent is now in the repo, is told so,
+  and the skill is at least registered by name."
+- ⚠️ **Nothing in this change has been seen running.** No GPU here, and the console was
+  deliberately not launched. The four resolution rules, the home stop, the notes and the
+  bare-directory warning are pinned by ten headless tests; `cargo check --features
+  shell-edition --bin organon-console` is green. That the notes actually *appear* at the head
+  of a live conversation tab's scrollback — the right colour, the right place, not colliding
+  with the empty-transcript placeholder — is unverified.
 - 🚨 **Nobody has seen the portal. Not one pixel of it, and not one interaction.** It was
   built in a cloud session with no GPU: the state machine, the rect arithmetic, the wheel
   claim, the CLI round trip and the one-render-per-frame invariant are pinned by headless
@@ -1802,15 +1948,44 @@ path silently breaks the three-products-simultaneously guarantee that
   the entry above said in as many words that only somebody looking would. 🚨 The fix was not
   the one assumed either — the draw site already asked for a monospace face, and reading
   egui 0.33's four bundled `cmap` tables showed the *character* was in none of them.
-- 📌 **The console renders none of the subagent lifecycle the CLI actually sends.** Five
-  `system` subtypes in that capture — `task_started`, `task_progress`, `task_updated`,
-  `task_notification`, `task_summary` — carry a rolling description, the last tool name,
-  tool counts, durations and a terminal status, each naming its card by a `tool_use_id`
-  field. All five land as `Notice` and draw nothing, because rule 5 correlates on
-  `parent_tool_use_id` and these lines do not carry that key at all. This is a **gap, not
-  a decision**: it was never weighed, because until this capture nobody knew the lines
-  existed. It is the cheapest remaining improvement to a coordinator view, and it does not
-  disturb the liveness measurement above — progress metadata is not token deltas.
+- ✏️ **The subagent lifecycle is rendered now — the gap above is closed, and closing it
+  corrected the description of it.** ~~The console renders none of the subagent lifecycle
+  the CLI actually sends… a **gap, not a decision**: it was never weighed, because until
+  this capture nobody knew the lines existed.~~ It has been weighed. A dispatch card now
+  carries a `task` row: what the agent said it is doing, the tool it last ran, its tool
+  count, the harness's elapsed and its tokens, and a terminal status — thirteen lines of
+  the capture that used to draw nothing (rule 5b, `agent_map.rs`).
+
+  🚨 **Two of the five do not correlate the way that entry said, and building on its
+  description would have lost work silently.** `task_updated` carries a `task_id` and a
+  `patch` and **no `tool_use_id`** — so a correlation keyed on `tool_use_id`, which is what
+  "each naming its card by a `tool_use_id` field" licenses, drops every status transition
+  in the stream. And `task_summary` carries **neither** key, only a nullable `detail`: it
+  is a gloss of what the *session* is doing and belongs to no card at all, so it stays
+  unmapped. The key is `task_id`, learned against a card from any line stating both.
+
+  📌 **And the family reaches depth 2, where every other subagent line stops at depth 1.**
+  A nested agent's `task_*` lines *are* forwarded, naming a call that exists only as a step
+  inside its grandparent's log. They are **declined and counted**
+  (`Stats::nested_subagent_progress`): a card holds one progress value with nowhere to
+  record a depth, so merging them would have made the outer card read "Reading one.txt ·
+  1 tool · completed" — the grandchild's work in the parent's voice, while the parent was
+  still going. That is the honest next increment, and the number is the measure of what is
+  being given up. ⚠️ Four `task_*` lines on the capture, counter reads **3**: the
+  `task_started` lands one line before the `tool_use` block that creates its card and goes
+  to `orphan_subagent_progress` instead. **3 here + 1 there**, each half pinned.
+
+  ⚠️ **What has *not* changed is the liveness measurement**, and the row is built so it
+  cannot drift into implying otherwise: no caret, no partial text, and the elapsed is the
+  harness's own stopwatch as of its last line, frozen between them — `conversation.rs` has
+  no clock, and a ticking number would be the view's arithmetic in the harness's voice,
+  still counting for an agent that had died. `MapStats::subagent_stream_events` still reads
+  **0** on this capture and is still the canary.
+
+  ⚠️ **Nobody has seen this on screen.** Same class as the entry above it, which took a
+  human looking to find a tofu glyph no replay could: the row is pinned by tests against
+  the real capture, and every glyph in it is one `step_mark` already measured present in
+  Hack — but the pixels are unverified. Somebody runs a fan-out and looks.
 - **The card's clipping is the VIEW's, and it says what it hid.** `conversation.rs` leaves
   per-element text unbounded on purpose — a tool result can be a whole file, and
   truncating it in the model would misrepresent the tool's output while looking like the

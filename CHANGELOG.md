@@ -34,7 +34,116 @@ From here on, this file gets an entry per meaningful change, newest first.
   says which to trust and that the other wants fixing; neither doc is edited here, because a
   paper is not the place to quietly change what another document claims.
 - **Nothing else moved.** No source file, no test, no build. `cargo test -p organon-shell
-  --lib` was run to source one number the document quotes: **433 passing**.
+  --lib` was run to source one number the document quotes.
+
+### Console Spike — a dispatched agent's card says what it is doing while it does it
+
+- ✏️ **The subagent lifecycle the CLI has always sent is rendered.** A `Task` card used to
+  say "running" and then nothing at all for eight to sixteen minutes — the agent's whole
+  working life as a spinner. Claude Code narrates that life the entire time, on five
+  undocumented `system` subtypes (`task_started`, `task_progress`, `task_updated`,
+  `task_notification`, `task_summary`), and the console could not see any of them: they are
+  **main**-scoped, with no `parent_tool_use_id` key at all, and §5.9.3 rule 5 correlates on
+  exactly that key. All five decoded to `Notice` and drew nothing. **Rule 5b** is the second
+  correlation they need. The card now carries a `task` row — the agent's own gloss
+  ("Reading one.txt"), its last tool, its tool count, the harness's elapsed and its tokens,
+  and a terminal status. Thirteen lines of the real capture that used to draw nothing.
+- 🚨 **Two of the five do not correlate the way every doc in this tree said they did**, and
+  the wrong reading fails silently. `task_updated` carries a `task_id` and a `patch` and
+  **no `tool_use_id`** — so keying on that field alone, which is what the standing
+  description licensed, drops **every status transition in the stream** while looking like
+  it works. And `task_summary` carries neither key, only a nullable `detail`: it is a gloss
+  of what the *session* is doing, belongs to no card, and stays unmapped. The key is
+  `task_id`, paired against a card by any line that states both. Four docs corrected.
+- 🚨 **The family reaches depth 2, where every other subagent line on this wire stops at
+  depth 1** — a finding the fixture had to be read a second time to see. A nested agent
+  whose `assistant` and `user` lines are never forwarded has its whole lifecycle forwarded,
+  naming a call that exists only as a *step* inside its grandparent's log. Merging that
+  would have made the outer card read "Reading one.txt · 1 tool · completed" — the
+  grandchild's work in the parent's voice, while the parent was still going. **Declined and
+  counted**, because a card holds one progress value with nowhere to record a depth. That
+  counter reads non-zero on a *healthy* nesting fan-out, which is why it is not the orphan
+  counter beside it. ⚠️ The capture's nested task sends **four** `task_*` lines and
+  `Stats::nested_subagent_progress` reads **3** — a split, not a discrepancy: its
+  `task_started` arrives one line *before* the `tool_use` block that creates its card, so
+  that one is counted by `orphan_subagent_progress` instead. **3 here + 1 there**, each half
+  pinned by its own test.
+- 🚨 **This does not soften §5.9.1, and the row is built so it cannot drift into implying
+  that it does.** Progress metadata is not token deltas — not one character of the agent's
+  own prose is on these lines. No caret, no partial text, nothing that suggests live prose.
+  `MapStats::subagent_stream_events` still reads **0** on the real capture and is still the
+  standing canary. The elapsed shown is the **harness's** stopwatch as of its last line and
+  is frozen between them: `conversation.rs` has no clock by design, and a ticking one would
+  be the view's own arithmetic in the harness's voice, still counting for an agent that had
+  quietly died.
+- ⚠️ **One source per fact, because the two disagree.** An `Agent` `tool_use_result` carries
+  its own `totalTokens` / `totalDurationMs` / `totalToolUseCount`. The durations and tool
+  counts match the `task_*` figures exactly; the **token totals do not** — 62 949 against
+  62 951, and 63 564 against 63 803, the result being struck later and counting output the
+  notification had not seen. Both are honest, which is precisely why taking both would be
+  wrong: one card's token count would jump at completion with nothing to explain it. Only
+  the `task_*` stream is read — the one that exists while the card is otherwise silent.
+- ⚠️ **A progress line for a card the transcript no longer holds is counted and dropped**,
+  the one place this tree declines `orphan_results`' keep-it-anyway precedent. A step
+  carries content that would be lost; a progress line carries nothing not either restated
+  by the card's own arguments or superseded by the next line — and the card the orphan path
+  would open opens `Running`, which is exactly wrong for the `task_notification` most likely
+  to outlive its card. A card confidently disagreeing with its own header is worse than the
+  silence this change exists to end.
+- 📌 **`MapStats::unmapped` kept its name because it kept its meaning.** Its population went
+  19 → 6 on the capture; "we drew nothing for this line" is still exactly what it says.
+  Contrast `subagent_dropped`, which was *removed* rather than renamed when its sense
+  reversed — a counter telling the truth about a smaller set is a different thing from one
+  whose name has become a lie. (The 19 is also now pinned with its arithmetic: 19 `system`
+  lines less the `init` that maps, **plus** a `rate_limit_event` that is not a `system` line
+  at all.)
+- ⚠️ **Nobody has seen this on screen.** Every claim is pinned by tests against the real
+  capture and every glyph in the row is one `step_mark` already measured present in Hack —
+  but the last time a subagent card changed, it took a human looking to find that its
+  marker was tofu, and no replay could have. 461 tests in the compositor lib, from 443.
+
+### Console Spike — a conversation tab now runs in a project, and says which one
+
+- 🚨 **An agent in a conversation tab was standing in no project at all, silently.** The
+  built-in `claude-chat` row carries no `cwd`, `AgentSession::spawn` reads `None` as *the
+  app's own directory*, and a console started from a PATH shim is nowhere in particular — so
+  the agent saw no repo-local `.claude/skills/`, no project `CLAUDE.md`, no
+  `SHELL_ARCHITECTURE.md`. Measured: it answered `Unknown skill: organon-cli` with the skill
+  correctly on disk, and separately spent several approval cards running `ls` and `--help` to
+  rediscover a CLI with an 18 KB guide in the checkout. The only symptom is an agent that
+  seems oddly ignorant. It also failed execution plan §5.9.26 at its first step: an agent that
+  cannot see the repo cannot extend the console from inside the console.
+- **Four rules in one pure place, and the product still names no project.**
+  `harness::conversation_cwd` resolves, in order: the harness's own `cwd`,
+  `$ORGANON_SHELL_PROJECT`, **the nearest project root at or above the launch directory**,
+  then the launch directory. Rule 3 is the one that does the work — *`cd` into a checkout and
+  start the console* lands in that checkout's root with no configuration whatsoever, for any
+  checkout, so Organon's own repo is reachable for exactly the reason everybody else's is and
+  no path ships in product data. The marker is `.claude/`, then `CLAUDE.md`, then `.git`.
+- ⚠️ **Home is never discovered, only inherited.** The walk stops at the home directory,
+  because a `~/.claude` is user-global configuration rather than a project — otherwise a
+  console launched from `~/Documents` would quietly aim at the whole home directory. Launching
+  *in* home still lands there.
+- 📌 **Terminal tabs are deliberately unchanged.** A shell announces its directory and `cd` is
+  one keystroke, so starting in `native/` because that is where you were is right; ascending
+  would be an unasked-for correction. An agent's directory is invisible *and* decides which
+  instructions exist at all.
+- ⚠️ **Nothing is silent now, including success.** `harness::cwd_notes` states the directory
+  and *which rule chose it* every time — not only on failure, because a resolution can be
+  wrong in a way the code cannot detect — plus a warning when the directory satisfies no
+  marker at all. Said to `stderr` for whoever launched from a terminal and into the pane for
+  whoever is looking at the console.
+- ⚠️ **`ConversationPane`'s log had never been drawn anywhere.** `pub fn log()` had no caller,
+  so *"approvals are not wired — a tool that needs permission will fail instead of asking"*
+  has been written to nobody for the pane's whole life. The scrollback now draws it, dimmed,
+  above the first message.
+- 🚨 **Half-verified, and the half that is open is named.** Against the real `claude.exe`,
+  `system/init` lists `organon-cli` in `slash_commands` from inside *and* outside the repo,
+  but in **neither** case in its `skills` array, while three neighbouring user-global skills
+  appear in both. Duplicate copies, description length, file size and frontmatter shape are
+  each ruled out by measurement. So the cwd is right and the skill is registered; whether the
+  model is *offered* it is unanswered, and the honesty ledger carries the remaining hypothesis
+  and the one cheap test for it. 443 tests in the compositor lib, from 433.
 
 ### Console Spike — the canary on `tool_use_result` fired, on its first real chance
 

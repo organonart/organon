@@ -684,6 +684,45 @@ total and `num_turns` are each declined). None of that was written as preparatio
 useful inference: the eventual guide is more **assembling what already exists** than authoring
 something new.
 
+🚨 **A hole in the foundation this section calls already-built, found 2026-08-13: the agent
+was not in the repo.** Everything above argues the paradigm's ground exists — the docs are
+here, they are hook-enforced, the skill is a real directory since #27. All true, and all of
+it unreachable from a conversation tab, because **that tab did not run in any project.**
+`claude-chat` ships with no `cwd`, `AgentSession::spawn` reads `None` as *the app's own
+directory*, and a console started from a PATH shim is nowhere in particular. Measured: an
+agent in a conversation tab answered `Unknown skill: organon-cli`, and separately spent
+several approval cards running `ls` and `--help` to rediscover a CLI whose 18 KB guide was
+sitting in the checkout. It could not have read `SHELL_ARCHITECTURE.md` either — the very
+authority the paragraph above tells it to consult *before* the tree.
+
+Worth stating plainly because the section reads optimistically without it: **the two of three
+pieces that "already exist" existed only for an agent standing in the repo, and the console
+gave its own agent no way to stand there.** The severity argument made above for #19 applies
+unchanged here — a missing skill under this direction is not "the agent does not know a
+command", it is "the agent cannot extend the thing it lives in, and has no way to discover
+that." Same silence, reached by a different road, and it survived #27 closing the first one.
+
+✅ **Closed on `console/tab-cwd`.** `harness::conversation_cwd` decides in one pure place, in
+four rules — spec `cwd`, `$ORGANON_SHELL_PROJECT`, the nearest project root at or above the
+launch directory, then the launch directory — and `harness::cwd_notes` states the answer and
+the rule that produced it every single time, warning when the directory carries no `.claude/`,
+`CLAUDE.md` or `.git`. Rule 3 is the one that matters for this section: it makes *"`cd` into a
+checkout, start the console"* land in that checkout with no configuration, so the console's
+own repo is reachable for exactly the reason anyone else's is, and no path is named in product
+data. `SHELL_ARCHITECTURE.md` §1.1 owns the reasoning, including why terminal tabs are
+deliberately left alone and what the rejected alternatives cost.
+
+⚠️ **One half is measured and unexplained, and it bounds the claim.** `system/init` reports
+both a `slash_commands` list and a `skills` list; `organon-cli` is in the first from inside
+and outside the repo, and in **neither** copy of the second, while three neighbouring
+user-global skills are in both. So the skill is registered and the cwd is now right, and
+*whether the model is offered it* is still open — see the honesty ledger. **Do not record this
+direction as unblocked until that is answered.**
+
+⚠️ **`harnesses.json` is machine configuration and lives outside this repo**, so anything that
+needs a row there — a `claude-chat` row with a `cwd`, say — is a request to James, never a
+commit. That is exactly why the default had to get better rather than be documented around.
+
 **What is NOT decided, deliberately, by James, tonight:**
 
 - **How a change takes effect.** Hot load, rebuild-and-relaunch, or data-only. Open.
@@ -787,10 +826,56 @@ in a real capture, and getting any of them wrong produces a view that looks near
    📌 **What the capture added:** five undocumented `system` subtypes carrying subagent
    lifecycle — `task_started`, `task_progress`, `task_updated`, `task_notification`,
    `task_summary` — with a `description`, `last_tool_name`, `usage.tool_uses`,
-   `duration_ms`, `status`, and a `tool_use_id` naming the card. They are **main-scoped**
-   (no `parent_tool_use_id` key), so this rule cannot reach them; the console renders none
-   of them today. That is the next honest increment to a coordinator view, and it is not
-   in tension with the liveness measurement — progress metadata is not token deltas.
+   `duration_ms` and `status`. They are **main-scoped** (no `parent_tool_use_id` key), so
+   this rule cannot reach them. ✏️ **Rendered as of 2026-08-13 by rule 5b below**, which
+   is the second correlation they need.
+
+   ✏️ **RULE 5b — a dispatched agent's LIFECYCLE is main-scoped and correlates by
+   `task_id`.** Added 2026-08-13, as a second correlation beside rule 5 rather than a
+   change to it. Rule 5 routes what a subagent *says*; 5b routes what the harness says
+   *about* it, onto the same card, as `cv::Subagent::Progressed` → `ToolCard::progress`. A
+   dispatch card now reports the agent's own gloss, its last tool, its tool count, the
+   harness's elapsed and its tokens, where it used to sit on "running" for the whole of an
+   agent's working life.
+
+   🚨 **The key is `task_id`, and "they correlate by a `tool_use_id` field of their own" —
+   the note above, written off the first read of the capture — is wrong for two of the
+   five.** Measured line by line: `task_updated` carries a `task_id` and a `patch` and **no
+   `tool_use_id`**, so keying on that field alone drops every status transition in the
+   stream; `task_summary` carries **neither**, only a nullable `detail`, and is a gloss of
+   the session rather than of a card. The mapper learns `task_id → tool_use_id` from any
+   line stating both; a `task_summary` stays in `MapStats::unmapped`.
+
+   🚨 **This does not soften §5.9.1 and nothing built on it may imply that it does.**
+   Progress metadata is not token deltas: not one character of the agent's own prose is on
+   these lines. No caret, no partial text. `MapStats::subagent_stream_events` still reads
+   **0** on the capture and remains the canary. The elapsed shown is the *harness's*
+   stopwatch as of its last line and is frozen between them — `conversation.rs` has no
+   clock by design, and a ticking one would be the view's arithmetic in the harness's
+   voice, still counting for an agent that had died.
+
+   ⚠️ **A nested task's progress is declined, not merged.** This family reaches **depth
+   2** where every other subagent line stops at depth 1 — a grandchild's lifecycle really
+   is forwarded, naming a call that exists only as a step in its grandparent's log. A card
+   holds one progress value with nowhere to record a depth, so merging would have made the
+   outer card narrate its grandchild's work in its own voice while still running.
+   `Stats::nested_subagent_progress` counts it and is expected non-zero on a healthy
+   nesting fan-out, which is why it is not the orphan counter. ⚠️ The nested task sends
+   **four** `task_*` lines here and that counter reads **3** — its `task_started` arrives
+   one line *before* the `tool_use` block that creates its card, so it is counted by
+   `orphan_subagent_progress` instead. **3 here + 1 there**, each half pinned.
+
+   ⚠️ **`MapStats::unmapped` kept its name because it kept its meaning** — "we drew
+   nothing for this line" — while its population went 19 → 6 on the capture. Contrast
+   `subagent_dropped` under rule 5, which was *removed* because its sense reversed. A
+   counter telling the truth about a smaller set is not the same as one whose name has
+   become a lie.
+
+   📌 **One source per fact.** An `Agent` `tool_use_result` carries its own
+   `totalTokens`/`totalDurationMs`/`totalToolUseCount`; durations and tool counts agree
+   with the `task_*` figures exactly and **the token totals do not** (62 949 vs 62 951,
+   63 564 vs 63 803 — the result is struck later). Only the `task_*` stream is read, being
+   the one that exists while the card is otherwise silent.
 6. **The first line of a real run is not JSON.** It is `Warning: no stdin data received in 3s…`,
    plain text on the same pipe. Log and continue; a decoder that treats non-JSON as fatal dies
    before the conversation starts.

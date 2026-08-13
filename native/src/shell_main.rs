@@ -1483,27 +1483,36 @@ impl Shell {
         // `launch_argv` — the flags that make the CLI a persistent session are the
         // agent session's own, not a user-editable argv (see `HarnessSpec::conversation`).
         if spec.conversation {
-            let cwd = spec.cwd.as_deref().map(|c| {
-                organon_shell::platform::expand_tilde(
-                    c,
-                    organon_shell::platform::home_dir(Platform::current(), |k| {
-                        std::env::var(k).ok()
-                    })
-                    .as_deref(),
-                )
-            });
+            // Where the agent works, decided once and out loud — never inherited. See
+            // `harness::conversation_cwd` for the four rules and why the product may not
+            // name a project of its own.
+            let launch = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            let resolved = harness::conversation_cwd(
+                &spec,
+                Platform::current(),
+                &launch,
+                |k| std::env::var(k).ok(),
+                harness::is_project_dir,
+            );
             // The labels an inline panel offers, handed down for `claim_patch`'s reason:
             // `organon-shell` cannot see `substrate_materials` and must not learn to. It
             // draws them and says which was pressed; this file is the only place that knows
             // a `metal` button and `organon console background metal` are the same act.
-            let pane = ConversationPane::new(
-                cwd.as_deref(),
+            let mut pane = ConversationPane::new(
+                Some(resolved.dir.as_str()),
                 substrate_materials::MATERIAL_NAMES.iter().map(|s| (*s).to_string()).collect(),
                 // …and the knobs, for the same reason and from the same place: a slider label
                 // means a lane in `Shared`, which is this file's knowledge and not the
                 // compositor crate's. See `surface_slider_table`.
                 surface_slider_table(),
             );
+            // Said twice on purpose, to two different readers: into the pane, where it
+            // appears at the head of the scrollback for whoever is looking at the console,
+            // and onto stderr for whoever started it from a terminal.
+            for note in harness::cwd_notes(&resolved) {
+                eprintln!("organon-console: {} — {note}", spec.name);
+                pane.note(note);
+            }
             // The pane keeps its own failure and shows it; the log line is for whoever
             // started the console from a terminal and is watching stderr.
             if let Some(failure) = pane.failure.as_deref() {

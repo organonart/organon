@@ -250,12 +250,24 @@ What the flow renders:
   with a date on it:** no capture on this machine contains one, and building a second render
   path against an unobserved shape is the mistake the subagent fixture already charged for
   once. Re-scope the first time a capture shows one.
-- **Notices, rate limits and the five subagent-lifecycle `system` subtypes** — read for facts
-  or not at all; nothing is drawn. The five subtypes (`task_started`, `task_progress`,
-  `task_updated`, `task_notification`, `task_summary`) carry a rolling description, the last
-  tool name, tool counts and a terminal status, each naming its card by a `tool_use_id`. This
-  is a **gap, not a decision** — nobody knew the lines existed until a real capture showed
-  them — and it is the cheapest remaining improvement to a coordinator view. **planned.**
+- **The subagent lifecycle — a card that says what it is doing while it does it.** Claude Code
+  narrates a dispatched agent's whole working life on five undocumented `system` subtypes
+  (`task_started`, `task_progress`, `task_updated`, `task_notification`, `task_summary`), and
+  the console drew none of them for a while: they are **main**-scoped, with no
+  `parent_tool_use_id` key at all, so the subagent rule above cannot see them. **Rule 5b** is
+  the second correlation they need, and 🚨 **the key is `task_id`, not `tool_use_id`** — two
+  of the five do not carry a `tool_use_id`, so keying on that field alone drops every status
+  transition in the stream *while looking like it works*. The card now carries a `task` row:
+  the agent's own gloss, its last tool, its tool count, elapsed and tokens, and a terminal
+  status. `task_summary` carries neither key and stays unmapped — it is a gloss of what the
+  *session* is doing and belongs to no card. Depth-2 lifecycle lines are **declined and
+  counted** rather than merged, because a card holds one progress value with nowhere to record
+  a depth, and merging would put the grandchild's work in the parent's voice. None of this
+  weakens the no-live-text measurement: progress metadata is not token deltas, the elapsed is
+  the *harness's* stopwatch frozen at its last line (this path has no clock by design), and
+  the canary still reads zero. **unseen** — and the last time a subagent card changed, it took
+  a human looking to find its marker was tofu.
+- **Notices and rate limits** — still read for facts on the way past and drawn nowhere.
 
 ### 3.3 The console as approval authority
 
@@ -363,7 +375,7 @@ conversation tab and the model plate read as an identity at real width. 🚨 **E
 since is unseen, and the unseen list is longer than the seen part**: the generating standing,
 the model picker and its pending annotation, the permission-mode plate and its marker, the
 context ring including the empty-track decision that only a person can settle, the cold-start
-cost chip, and the replacement glyphs from the tofu fix. 433 green tests in the compositor lib
+cost chip, and the replacement glyphs from the tofu fix. 461 green tests in the compositor lib
 are not a substitute for having looked once.
 
 ### 3.5 The portal
@@ -535,26 +547,48 @@ hard version: **the gap between "edit source and rebuild" and "hot load" is far 
 anything expressible as data than for code**, and a good deal of the console is data-shaped —
 command specs, material names, harness rows. Only harness rows are read from disk today.
 
-### 🚨 The paradigm's delivery has been demonstrated to fail, silently
+### 🚨 The paradigm's delivery has failed twice, silently both times
 
-This is the part to take seriously, because it is the failure mode that cannot be recovered by
-the agent noticing.
+This is the part to take seriously. Both failures produced no error at all, and the second one
+broke §5.9.26 at its *first* step.
 
-The mechanism was already broken once, in a way that produced no error at all: the skill was
-committed as a git **symlink**, and on a Windows checkout without `core.symlinks=true` it
-materialised as a 24-byte text file containing a path. No warning, no error — the skill simply
-was not there. A directory junction installed machine-side hid it on the one machine anybody
-tested. That is fixed: `SKILL.md` is now an ordinary tracked file at the path the tool reads,
-and a fresh clone on any platform gets a real directory.
+**One: the skill was a symlink.** It was committed with git mode `120000`, and on a Windows
+checkout without `core.symlinks=true` it materialised as a 24-byte text file containing a
+path. No warning — the skill simply was not there, and a machine-side directory junction hid
+that on the one machine anybody tested. **Fixed:** `SKILL.md` is an ordinary tracked file at
+the path the tool reads, and a fresh clone on any platform gets a real directory.
 
-⚠️ **And it has failed again since.** An agent asked for the skill **by name** answered
-*"Unknown skill"* as recently as this session. The specific cause is not established here, and
-it is not the same defect as #19 — but the class is: **skill delivery fails without saying so,
-and the agent has no way to tell "this skill does not exist" from "this skill did not reach
-me".** For self-extension that failure is not a missing feature; it is an agent that cannot
-change the thing it lives in and cannot discover why. Anyone building on §5.9.26 should treat
-verifying delivery — on the actual machine, from the actual harness, by name — as part of the
-mechanism rather than as setup.
+**Two: a conversation tab was standing in no project at all.** The built-in `claude-chat`
+registry row carried no `cwd`, spawning reads that as *the app's own directory*, and a console
+started from a PATH shim is nowhere in particular — so the agent saw no repo-local
+`.claude/skills/`, no project `CLAUDE.md` and no `SHELL_ARCHITECTURE.md`. Measured: it
+answered `Unknown skill: organon-cli` with the skill correctly on disk, and separately spent
+several approval cards running `ls` and `--help` to rediscover a CLI that has an 18 KB guide
+sitting in the checkout. The only symptom is an agent that seems oddly ignorant. **Fixed:**
+`harness::conversation_cwd` resolves four rules in order — the harness's own `cwd`, an env
+override, **the nearest project root at or above the launch directory**, then the launch
+directory — with the marker order `.claude/`, `CLAUDE.md`, `.git`. Rule 3 does the work: `cd`
+into a checkout and start the console and it lands in that checkout's root with no
+configuration, for any checkout, so no path ships in product data. Home is never *discovered*,
+only inherited, or a console launched from `~/Documents` would aim at the whole home
+directory. Terminal tabs are deliberately unchanged: a shell announces its directory and `cd`
+is one keystroke, while an agent's directory is invisible **and** decides which instructions
+exist at all. And nothing is silent now, including success — the resolution states the
+directory *and which rule chose it* every time.
+
+⚠️ **Half of that second finding is still open.** Against the real CLI, `organon-cli` is
+listed in `slash_commands` from inside *and* outside the repo, and in **neither** case in the
+`skills` array — while three neighbouring user-global skills appear in both. Duplicate copies,
+description length, file size and frontmatter shape are each ruled out by measurement. So the
+cwd is right and the skill is registered; whether the model is *offered* it is unanswered, and
+the honesty ledger carries the remaining hypothesis and the one cheap test for it.
+
+The class is what to carry away: **skill delivery fails without saying so, and the agent has
+no way to tell "this skill does not exist" from "this skill did not reach me".** For
+self-extension that is not a missing feature; it is an agent that cannot change the thing it
+lives in and cannot discover why. Anyone building on §5.9.26 should treat verifying delivery —
+on the actual machine, from the actual harness, by name — as part of the mechanism rather than
+as setup.
 
 ---
 
