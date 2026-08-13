@@ -2114,9 +2114,10 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane) {
 /// 🚨 **The band is reserved, not discovered** — `allocate_ui_with_layout`, exactly as
 /// [`composer_box`] does and for the same measured reason: this is a bottom-up column, and a
 /// child that places itself at `available_rect_before_wrap().min` eats everything between the
-/// top of the remaining space and the cursor at its bottom. Reserving one row plus
-/// [`STRIP_CHROME`] is also what holds the strip to a single line no matter what arrives —
-/// every label that could be long is [`egui::Label::truncate`]d rather than wrapped.
+/// top of the remaining space and the cursor at its bottom. Reserving the taller of the two
+/// faces the band draws plus [`STRIP_CHROME`] is also what holds the strip to a single line no
+/// matter what arrives — every label that could be long is [`egui::Label::truncate`]d rather
+/// than wrapped.
 fn strip_box(
     ui: &mut egui::Ui,
     content: &StripContent,

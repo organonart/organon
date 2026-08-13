@@ -646,19 +646,20 @@ while the bottom-up cursor sits at the bottom, so allocating it eats everything 
 `ui.vertical`, `ui.scope` and an enclosing `Frame` all inherit the failure; `ui.horizontal`
 places correctly and then pins the area to one row. Both bands therefore **reserve their
 height first** with `allocate_ui_with_layout`, which does go through the placer, and lay
-out top-down inside the reservation. For the strip that height is one text row plus
-`STRIP_CHROME`, *derived* from both plates' padding and strokes rather than rounded off, so
-a reserved band cannot disagree with its own chrome. ✏️ **"One text row" now means the
-taller of the two faces the band actually draws** — `max(Body, Monospace)` — because the
-model name and the standing are `Monospace` while the chips and the trailing log are `Body`,
-and on this build the mono row is the taller: **18.125 against 17.96875**. ⚠️ Reserving
-`Body` alone therefore left the band a hair *under* what it held, and had been right only by
-accident of which face happened to be taller — an accident that started to matter the moment
-the dim half stopped being `.small()`. The max is a computation that matches what is drawn
-rather than one that happens to fit. ✅ Measured against the layout test's busiest content —
+out top-down inside the reservation. For the strip that height is **the taller of the two
+faces the band actually draws** — `max(Body, Monospace)` — plus `STRIP_CHROME`, *derived*
+from both plates' padding and strokes rather than rounded off, so a reserved band cannot
+disagree with its own chrome. Both faces are in play and neither is decorative: the model
+name and the standing are `Monospace`, the chips and the trailing log are `Body`.
+⚠️ On this build the mono row is the taller — **18.125 against 17.96875** — so reserving
+`Body` alone left the band a hair *under* what it held, and had been right only by accident
+of which face happened to be taller, an accident that started to matter the moment the dim
+half stopped being `.small()`. The max is a computation that matches what is drawn rather
+than one that happens to fit. ✅ Measured against the layout test's busiest content —
 permission marker, unconfirmed model change, and an eight-times-repeated overlong log line —
-the band went **35.96875 → 36.125**, inside the same `44.0` one-line bound, which did not
-have to move. For the composer it is the text's own height, which is why
+the band measures **36.125** against the **35.96875** the `Body`-only reservation gave it,
+inside the same `44.0` one-line bound, which did not have to move.
+For the composer it is the text's own height, which is why
 `ConversationPane::composer_height` is carried state: it is fed from
 `ScrollAreaOutput::content_size`, the **unclipped** content size and deliberately not
 `Response::rect`, so the measurement cannot feed back on the band that clips it. Growth
