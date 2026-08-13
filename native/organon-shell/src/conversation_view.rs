@@ -2122,7 +2122,15 @@ fn strip_box(
     content: &StripContent,
     models: &[ModelRow],
 ) -> Option<StripAct> {
-    let row = ui.text_style_height(&egui::TextStyle::Body);
+    // ⚠️ **The reserved row must cover the tallest face the band actually draws**, not one
+    // of them. Two are in play and neither is decorative: the model name and the standing
+    // are `Monospace`, the chips and the log are `Body`. Reserving `Body` alone was only
+    // ever right by accident of which face happened to be taller, and the moment the dim
+    // half stopped being `.small()` that accident became the whole margin. Take the larger
+    // of the two and the reservation cannot disagree with what it holds.
+    let row = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.text_style_height(&egui::TextStyle::Monospace));
     let band = row + STRIP_CHROME;
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), band),
@@ -2151,9 +2159,15 @@ fn strip_box(
                                     // the same fix the approval card's own `◈ may I`
                                     // already carries. Leave it on, or the band's symbols
                                     // come back as boxes.
+                                    //
+                                    // Full size, not `.small()`: this is a *reading*, the
+                                    // second thing a hand looks for after the model name,
+                                    // and it is the only item between the plates and the
+                                    // dim half. Left small it would be the one shrunken
+                                    // word in a band that is otherwise one size, which
+                                    // reads as a mistake rather than as a hierarchy.
                                     RichText::new(&reading.text)
                                         .color(standing_color(reading.standing))
-                                        .small()
                                         .monospace(),
                                 )
                                 .truncate(),
@@ -2162,19 +2176,28 @@ fn strip_box(
                         // The dim half. Right-aligned so the eye lands on the model and the
                         // standing first; the log is added last and is therefore leftmost,
                         // which is what gives it the slack and lets it truncate into it.
+                        //
+                        // ⚠️ **Dim, not small.** These carry numbers a hand reads across a
+                        // desk — the session's spend, the turn it just paid for — and at
+                        // `.small()` they were legibly smaller than the model name sitting
+                        // opposite them on the same band. Colour is what makes this half
+                        // secondary; size was doing a second job it was never needed for,
+                        // and doing it at the cost of the one thing on the band with a
+                        // number in it. The band is still one line: the reserved row above
+                        // now covers this face, and the log still [`Label::truncate`]s into
+                        // whatever slack the chips leave — larger text simply means less of
+                        // it fits before the ellipsis.
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
                                 if !content.chips.is_empty() {
                                     ui.label(
-                                        RichText::new(content.chips.join(" · "))
-                                            .color(DIM)
-                                            .small(),
+                                        RichText::new(content.chips.join(" · ")).color(DIM),
                                     );
                                 }
                                 if let Some(log) = &content.log {
                                     ui.add(
-                                        egui::Label::new(RichText::new(log).color(DIM).small())
+                                        egui::Label::new(RichText::new(log).color(DIM))
                                             .truncate(),
                                     );
                                 }

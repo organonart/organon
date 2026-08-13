@@ -646,13 +646,28 @@ while the bottom-up cursor sits at the bottom, so allocating it eats everything 
 `ui.vertical`, `ui.scope` and an enclosing `Frame` all inherit the failure; `ui.horizontal`
 places correctly and then pins the area to one row. Both bands therefore **reserve their
 height first** with `allocate_ui_with_layout`, which does go through the placer, and lay
-out top-down inside the reservation. For the strip that height is a constant — one text row
-plus `STRIP_CHROME`, *derived* from both plates' padding and strokes rather than rounded
-off, so a reserved band cannot disagree with its own chrome. For the composer it is the
-text's own height, which is why `ConversationPane::composer_height` is carried state: it is
-fed from `ScrollAreaOutput::content_size`, the **unclipped** content size and deliberately
-not `Response::rect`, so the measurement cannot feed back on the band that clips it. Growth
+out top-down inside the reservation. For the strip that height is one text row plus
+`STRIP_CHROME`, *derived* from both plates' padding and strokes rather than rounded off, so
+a reserved band cannot disagree with its own chrome. ✏️ **"One text row" now means the
+taller of the two faces the band actually draws** — `max(Body, Monospace)` — because the
+model name and the standing are `Monospace` while the chips and the trailing log are `Body`,
+and on this build the mono row is the taller: **18.125 against 17.96875**. ⚠️ Reserving
+`Body` alone therefore left the band a hair *under* what it held, and had been right only by
+accident of which face happened to be taller — an accident that started to matter the moment
+the dim half stopped being `.small()`. The max is a computation that matches what is drawn
+rather than one that happens to fit. ✅ Measured against the layout test's busiest content —
+permission marker, unconfirmed model change, and an eight-times-repeated overlong log line —
+the band went **35.96875 → 36.125**, inside the same `44.0` one-line bound, which did not
+have to move. For the composer it is the text's own height, which is why
+`ConversationPane::composer_height` is carried state: it is fed from
+`ScrollAreaOutput::content_size`, the **unclipped** content size and deliberately not
+`Response::rect`, so the measurement cannot feed back on the band that clips it. Growth
 lands one frame late — the same trade egui's own panels make.
+
+📌 The correction generalises past this band: **a reserved height has to be computed from
+the text style that is actually drawn in it.** Two styles in one reservation means taking
+the max of them, or the number is right only until someone changes a font call — and it
+goes wrong as a second row, in the one place that has to stay one line.
 
 **The composer** opens at a three-row floor whether or not anything is in it (a one-line
 field is what makes an input read as an afterthought), grows a row at a time to a
@@ -774,6 +789,24 @@ not something a hand should have to discover by hovering. Both plates are now **
 the next subsection is what that cost. Then, dim and right-aligned, at most three
 chips (session cost, remembered decisions, last turn's wall time) and the most recent
 diagnostic line off the child, truncated rather than wrapped.
+
+✏️ **Dim, not small.** The chips, the trailing log and the standing have all dropped
+`.small()`: the chips and the log sit at `Body`, the standing at `Monospace` — the model
+name's own face and size, since it keeps `.monospace()` for the tofu reason two subsections
+down. Colour is what makes that half secondary, and size was doing a second job it was never
+needed for, at the cost of the only items on the band with numbers in them — a session spend
+read across a desk was legibly smaller than the model name opposite it. Raising the standing
+alongside them was the judgement call: left small it would have been the one shrunken item
+between the plates and a now-full-size dim half, which reads as a mistake rather than as a
+hierarchy. ⚠️ The trade is horizontal, not vertical — the band is still one line, and larger
+text simply means fewer characters of the log before the ellipsis.
+
+📌 **What stayed small stayed small for a reason.** The mode plate's text, the model's
+variant badge, the pending `→` arrow and the cold-start placeholders all sit *inside*
+bordered plates, where a smaller face reads as deliberate subordination rather than as a
+mismatch. The mode marker stayed small on separate grounds: it is a whole sentence rather
+than a word, and it is the one item that would eat serious horizontal budget from the log's
+slack.
 
 ⚠️ **Two omissions are the view's own judgement, on top of `SessionFacts`' refusals above.**
 The running-tools reading says **tools, not "thinking"** — it is derived from unresolved
