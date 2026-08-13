@@ -11,7 +11,7 @@ Two instruments are built on its engine:
 | | What it is | |
 |---|---|---|
 | **Organon Mind** | A standalone instrument for **watching a language model think**. Load a `.gguf` and it draws the model's true wiring, read from the file, then lights it up while it runs. | [organonmind.org](https://organonmind.org) |
-| **Organon Shell** | An agent-operating workstation: a GPU-composited terminal for working with AI agents on living software. | |
+| **Organon Shell** | An agent-operating workstation: a GPU-composited terminal for working with AI agents. | |
 
 The direction is one-way: Mind and Shell are spin-outs of capabilities that live primarily
 in Organon, drawing on its engine, algorithm, shaders and preset store.
@@ -24,7 +24,7 @@ the product name, the IPC namespace and the visible surface.
 cd native
 cargo build --release                                              # Organon
 cargo build --release --features mind-edition  --bin organon-mind  # Organon Mind
-cargo build --release --features shell-edition --bin organon-shell # Organon Shell
+cargo build --release --features shell-edition --bin organon-console # Organon Shell
 ```
 
 ## Build
@@ -92,7 +92,7 @@ trampling each other. The CLI reads it too — export it in the same shell.
 
 ```bash
 cargo run --release --features mind-edition  --bin organon-mind    # load a .gguf
-cargo run --release --features shell-edition --bin organon-shell   # a terminal; --help works
+cargo run --release --features shell-edition --bin organon-console # a terminal; --help works
 ```
 
 **As a plugin:** `./bundle.sh` writes `target/bundled/Organon.{vst3,clap}` with the visual

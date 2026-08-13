@@ -16,6 +16,7 @@ pub mod audio;
 pub mod audio_ring;
 pub mod cli;
 pub mod clip;
+pub mod console_catalog;
 mod controller;
 
 /// #626 Tier 3 — **`organon-core`'s modules, re-exported so `crate::` paths still resolve.**
@@ -118,6 +119,24 @@ pub mod recipe;
 /// because both editions compile `editor_ui`; only a host that draws a scene behind the panel
 /// (`EditorCtx::scene_behind`) ever registers the region.
 pub mod scene_input;
+/// Console Spike Tier 1 Leaf A — the substrate camera rig: where the camera goes and how
+/// narrow the lens is, so a flat plane exactly fills the console's backdrop. Pure glam
+/// arithmetic; ungated because the default `cargo test --workspace` is the only thing that
+/// covers it (`world`, which consumes it, compiles only under mind/shell-edition).
+pub mod substrate_camera;
+/// Console Spike Tier 4 Leaf B — the console backdrop's **epoch ledger**: which look was live
+/// over which stretch of scrollback, which of those still deserve a cached texture, and the
+/// honest logged cap on that. Pure bookkeeping — it owns no `wgpu` object and no scroll
+/// geometry — and ungated like its Tier 1/2 siblings, because the default
+/// `cargo test --workspace` is the only leg that covers it.
+pub mod substrate_epochs;
+/// Console Spike Tier 2 Leaf A — four substrate MATERIALS and two lighting RIGS, each a pure
+/// delta on [`substrate_scene`]'s snapshot. Ungated for the same reason as its two Tier 1
+/// siblings: the default `cargo test --workspace` is the only leg that covers it, and the
+/// `organon` CLI (a default-build binary) binds its name tables.
+pub mod substrate_materials;
+/// Console Spike Tier 1 Leaf B — the substrate LOOK as a pure function over `Shared`.
+pub mod substrate_scene;
 pub mod synth;
 /// #542 Tier 1 — the house style: design tokens, the egui theme, and the control-row
 /// grid. Everything that decides how the editor *looks* resolves here rather than being

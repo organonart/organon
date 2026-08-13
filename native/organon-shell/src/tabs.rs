@@ -1,6 +1,6 @@
 //! Tabs (Shell #11 Tier 1): the Superconductor model in terminal clothes.
 //!
-//! Each tab is one harness session in its own PTY; the strip along the bottom is
+//! Each tab is one harness session in its own PTY; the strip along the top is
 //! the ONE permitted piece of chrome (PRD v3.1 FR-T11), styled like the founder's
 //! Kitty setup — monospace chips on the dark ground, nothing rounded, nothing
 //! glossy. The **+** control drops the numbered harness list exactly like the

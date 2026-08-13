@@ -4,7 +4,11 @@
 //! live state and drive its controls without MCP, sockets, or the editor:
 //! - reads decode the `Shared` IPC mmap directly (frame-fresh);
 //! - writes append `CliOp` lines to the command sidecar, drained each frame by
-//!   the visual into the #317 Performer's override lane (last-touched-wins).
+//!   the visual into the #317 Performer's override lane (last-touched-wins);
+//! - `console` verbs (#4 Tier 2) append `ConsoleOp` lines to a **separate**
+//!   sidecar, drained by the console. Different destination, different channel —
+//!   see `cli.rs`'s console-lane comment for why routing them over `cli.txt`
+//!   would be silently wrong.
 //!
 //! This binary owns the **clap** argument surface — per-subcommand `--help`,
 //! "did you mean" suggestions, `--version`, and `organon completions <shell>`
@@ -20,6 +24,63 @@ use organic_math_native::{agent, cli, ipc};
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
 fn param_ids() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(agent::ACTUATABLE_IDS.iter().copied())
+}
+
+// ---------------------------------------------------------------------------
+// `organon console` — the console's own vocabulary (#4 Tier 2).
+//
+// 🚨 **INTEGRATOR: the two lists below are COPIES and must be bound to their
+// source in the change that merges Tier 2's leaves.** The materials and the rigs
+// are canonically owned by Leaf A's new `substrate_materials` module
+// (`MATERIAL_NAMES` / `RIG_NAMES`), which was being written concurrently with
+// this file and so could not be imported yet. `substrate_camera` and
+// `substrate_scene` are ungated `pub mod`s in `lib.rs`, so `substrate_materials`
+// will be reachable from this bin the moment it lands. Add, in `tests` below:
+//
+//     assert_eq!(CONSOLE_MATERIALS, substrate_materials::MATERIAL_NAMES);
+//     assert_eq!(CONSOLE_RIGS,      substrate_materials::RIG_NAMES);
+//
+// An equality test, not a re-import, so the failure names the drift instead of
+// hiding it: `--help` and the renderer must agree, and if they do not, the CLI
+// accepts a name nothing can draw. This is exactly the failure `agent::id_range`
+// already demonstrated by hand-maintaining a second copy of `params.rs`'s ranges
+// (drifted on 9 of 45 ids — brief R6). Two copies for the length of one tier is
+// a declared debt; two copies with no test is how it becomes permanent.
+// ---------------------------------------------------------------------------
+
+/// The substrate **materials** — Leaf A's to own; see the block comment above.
+const CONSOLE_MATERIALS: &[&str] = &["graphite", "paper", "slate", "metal"];
+
+/// The backdrop **sources**, which are not materials and not Leaf A's. These come from
+/// `shell_main.rs`'s `BackdropSource` value space — `world` keeps the live `organon
+/// set`/`generator`/`recipe` response behind the glyphs, `off` is a flat fill, and
+/// `substrate` selects the lit plane without saying which material. One verb covers both
+/// because from the outside there is one question: what is behind the text?
+const CONSOLE_SOURCES: &[&str] = &["world", "off", "substrate"];
+
+/// The lighting rigs — Leaf A's to own; see the block comment above.
+const CONSOLE_RIGS: &[&str] = &["studio", "daylight"];
+
+/// Possible-values parser for `console background <NAME>`: materials, then sources.
+fn background_names() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        CONSOLE_MATERIALS.iter().chain(CONSOLE_SOURCES.iter()).copied(),
+    )
+}
+
+/// Possible-values parser for `console rig <NAME>`.
+fn rig_names() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(CONSOLE_RIGS.iter().copied())
+}
+
+/// Possible-values parser for `console patch --kind <KIND>`.
+///
+/// Unlike the two lists above this one is **built from the library's own table**
+/// (`cli::PATCH_KIND_WORDS`) rather than restated here, so it cannot drift: the kinds are
+/// `cli::PatchKind`'s value space, and `cli.rs` is where both ends of the sidecar already
+/// speak one vocabulary from one place.
+fn patch_kinds() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(cli::PATCH_KIND_WORDS.iter().copied())
 }
 
 #[derive(Parser)]
@@ -162,6 +223,13 @@ enum Cmd {
         #[command(subcommand)]
         action: RecordAction,
     },
+    /// Drive the console itself — the surface behind the glyphs and the shape of the
+    /// transcript, not the world in front of it. e.g. `organon console background slate`,
+    /// `organon console rig daylight`, `organon console block 12`
+    Console {
+        #[command(subcommand)]
+        action: ConsoleAction,
+    },
     /// Print a shell completion script (bash / zsh / fish / …)
     #[command(after_help = "install:\n  zsh:  organon completions zsh > \
                             /usr/local/share/zsh/site-functions/_organon  (then restart zsh)\n  \
@@ -202,7 +270,68 @@ enum RecordAction {
     Stop,
 }
 
+/// `organon console …` — the console's chrome, kept in a namespace of its own rather than
+/// flattened into the verbs above.
+///
+/// The split is not cosmetic. Every other verb here addresses **the world**: what Organon
+/// renders, reachable in any edition, answered by the visual or by `Shared`. These address
+/// **the console** — a different process's own state, on a different channel, meaningful
+/// only when a console is running. A `background` at the top level would sit beside
+/// `material` and read like a sibling of it, which is the one thing it is not.
+#[derive(Subcommand)]
+enum ConsoleAction {
+    /// Set what sits behind the glyphs — a substrate material, or a backdrop source
+    #[command(after_help = "Materials dress the lit plane; `world`, `off` and `substrate` \
+                            choose what is drawn at all. `world` keeps the live response \
+                            to `organon set` / `generator` / `recipe` behind the text.")]
+    Background {
+        /// The material or source (see the value list above)
+        #[arg(value_parser = background_names())]
+        name: String,
+    },
+    /// Set the substrate's lighting rig
+    Rig {
+        /// The rig (see the value list above)
+        #[arg(value_parser = rig_names())]
+        name: String,
+    },
+    /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
+    #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
+                            the next prompt lands underneath them. They are ordinary \
+                            scrollback rows: they age, scroll and evict like any other. \
+                            Nothing is painted into them yet — this reserves the space.")]
+    Block {
+        /// How many rows to open
+        #[arg(value_parser = clap::value_parser!(u16).range(1..=cli::MAX_BLOCK_ROWS as i64))]
+        rows: u16,
+    },
+    /// Claim a rectangle you already left in your own output — the console only records it
+    #[command(after_help = "Print your text with a gap in it — ordinary blank lines, ordinary \
+                            stdout — then say where the gap is. `--up` counts back from the \
+                            line you are on now. The console writes NOTHING: it records the \
+                            rectangle and paints it. This is the correct verb; `block` has \
+                            the console open the rows itself, which lands them between a \
+                            prompt and the typing and is wrong wherever anything is waiting \
+                            for input.\n\n`--kind` says what sort of thing belongs in the \
+                            rectangle — a name the console resolves, never a command and \
+                            never a path. It defaults to the kind the verb shipped with, so \
+                            a claim written without one is unchanged.")]
+    Patch {
+        /// How many lines above the current line the rectangle's first row sits
+        #[arg(long, value_parser = clap::value_parser!(u16).range(0..=cli::MAX_BLOCK_ROWS as i64))]
+        up: u16,
+        /// How many rows tall
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=cli::MAX_BLOCK_ROWS as i64))]
+        rows: u16,
+        /// What the console draws in it (see the value list above)
+        #[arg(long, default_value = "scene", value_parser = patch_kinds())]
+        kind: String,
+    },
+}
+
 /// Map the clap surface onto the library's command model (validation included).
+///
+/// ⚠️ **`Console` is deliberately absent from this mapping** — see the `unreachable!` arm.
 fn to_ctl(cmd: Cmd) -> Result<cli::CtlCmd, String> {
     Ok(match cmd {
         Cmd::Status { json } => cli::CtlCmd::Status { json },
@@ -225,7 +354,18 @@ fn to_ctl(cmd: Cmd) -> Result<cli::CtlCmd, String> {
         Cmd::Generator { which } => cli::CtlCmd::Generator { which },
         Cmd::Surface { which } => cli::CtlCmd::Surface { which },
         Cmd::Material { which } => cli::CtlCmd::Material { which },
-        Cmd::Completions { .. } | Cmd::Snap { .. } | Cmd::Record { .. } | Cmd::Docs { .. } => {
+        // `Console` sits here rather than gaining an arm above because it never becomes a
+        // `CtlCmd`. `CtlCmd` is the *world's* command model — `ops_for` turns it into
+        // `CliOp`s bound for `cli.txt`, which the World drains (brief R3). A console verb
+        // has a different reader and a different channel, so giving it a `CtlCmd` would
+        // mean inventing a variant that `ops_for` must then remember to return `None` for
+        // — a silent-failure shape, one forgotten match arm from writing a backdrop
+        // command into a queue nothing that can act on it will ever read.
+        Cmd::Completions { .. }
+        | Cmd::Snap { .. }
+        | Cmd::Record { .. }
+        | Cmd::Docs { .. }
+        | Cmd::Console { .. } => {
             unreachable!("handled before mapping")
         }
     })
@@ -369,6 +509,49 @@ fn run_eyes(req: cli::EyesReq, timeout: std::time::Duration) -> ! {
     }
 }
 
+/// Queue one console op on the console sidecar and exit (#4 Tier 2). Fire-and-forget:
+/// the console drains `cli::console_cmd_path()` on its next frame.
+///
+/// Exit codes: **0** on a successful append · **1** on an I/O failure. A bad name never
+/// reaches here — clap rejects it at parse time with the usual **2**, with "did you mean"
+/// for free, which is why the name is a plain `String` by the time we see it.
+///
+/// **The op-path's `is_live` warning is deliberately absent here, and that is not an
+/// oversight.** Below, a queued `CliOp` prints "no live Organon snapshot detected" when
+/// `ipc::Reader::open().is_live()` is false. That heuristic is about the **World** lane
+/// (brief R3): it probes the `Shared` mmap's `seq` counter for *motion*, so what it really
+/// measures is redraw cadence, not existence. The console publishes `Shared` every redraw
+/// (`shell_main.rs`), so a console idling between repaints can read "dead" while it is
+/// plainly alive and about to drain this very line. Printing "your command was dropped" at
+/// the moment it is being honoured is worse than saying nothing. The probe also costs up
+/// to ~150 ms per invocation, which a console verb — the one people will hold a key down
+/// on — should not pay.
+fn run_console(action: ConsoleAction) -> ! {
+    let op = match action {
+        ConsoleAction::Background { name } => cli::ConsoleOp::Background(name),
+        ConsoleAction::Rig { name } => cli::ConsoleOp::Rig(name),
+        ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
+        // clap has already restricted `kind` to `cli::PATCH_KIND_WORDS`, so `from_word`
+        // cannot miss here; `unwrap_or_default` rather than an `expect` because the fallback
+        // is not a guess — it is the same default a kindless sidecar line resolves to, so
+        // both spellings of "no kind stated" land on one answer.
+        ConsoleAction::Patch { up, rows, kind } => cli::ConsoleOp::Patch {
+            up,
+            rows,
+            kind: cli::PatchKind::from_word(&kind).unwrap_or_default(),
+        },
+    };
+    if let Err(e) = cli::append_console_ops(std::slice::from_ref(&op)) {
+        eprintln!(
+            "organon: cannot write the console command channel ({}): {e}",
+            cli::console_cmd_path().display()
+        );
+        std::process::exit(1);
+    }
+    println!("queued: {}", cli::console_op_to_line(&op));
+    std::process::exit(0);
+}
+
 fn main() {
     let parsed = Cli::parse(); // --help/-V/usage errors exit here (code 2)
 
@@ -380,6 +563,15 @@ fn main() {
     if let Cmd::Docs { out, check } = parsed.cmd {
         write_docs(out, check);
         return;
+    }
+
+    // #4 Tier 2: the console lane. It branches HERE, beside the other early exits, rather
+    // than falling through to `to_ctl` — a console verb never becomes a `CtlCmd` because it
+    // addresses the console's own state on its own sidecar, not the World's on `cli.txt`
+    // (brief R3). Branching before the mapping is what keeps that structural instead of
+    // conventional.
+    if let Cmd::Console { action } = parsed.cmd {
+        run_console(action);
     }
 
     // #452 Tier 3 ("the eyes"): snap/record ride a request+reply channel (the visual does
@@ -657,6 +849,174 @@ mod tests {
         // Mapping rejects: bad pairs / a bare `get`.
         assert!(to_ctl(parse(&["set", "metallic"]).unwrap().cmd).is_err());
         assert!(to_ctl(parse(&["get"]).unwrap().cmd).is_err());
+    }
+
+    /// `organon console <verb> <NAME>` parses, and every name in the two vocabularies is
+    /// accepted while anything else is refused by clap (exit 2, "did you mean" for free).
+    ///
+    /// This is the whole validation story for the console lane: nothing downstream checks
+    /// the name again, because clap is the only place that can produce a good error for it.
+    #[test]
+    fn console_subcommand_validates_its_vocabularies() {
+        for name in CONSOLE_MATERIALS.iter().chain(CONSOLE_SOURCES.iter()).copied() {
+            let c = parse(&["console", "background", name]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Background { name: got } } => {
+                    assert_eq!(got, name)
+                }
+                _ => panic!("`console background {name}` parsed as something else"),
+            }
+        }
+        for name in CONSOLE_RIGS.iter().copied() {
+            let c = parse(&["console", "rig", name]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Rig { name: got } } => {
+                    assert_eq!(got, name)
+                }
+                _ => panic!("`console rig {name}` parsed as something else"),
+            }
+        }
+
+        // clap rejects unknown names, a missing name, and an unknown console verb.
+        assert!(parse(&["console", "background", "nonsense"]).is_err());
+        assert!(parse(&["console", "rig", "nonsense"]).is_err());
+        // The two vocabularies are separate: a rig is not a background and vice versa.
+        assert!(parse(&["console", "background", "studio"]).is_err());
+        assert!(parse(&["console", "rig", "slate"]).is_err());
+        assert!(parse(&["console", "background"]).is_err());
+        assert!(parse(&["console"]).is_err());
+        assert!(parse(&["console", "frobnicate", "x"]).is_err());
+    }
+
+    /// **`console block` is bounded at the clap boundary, which is the only place a row count
+    /// can produce a good error.** The sidecar skips a malformed line in silence by design, so
+    /// a count that slipped past here would become a command that vanishes — or, without the
+    /// upper bound, a single word that pushes a fifth of the scrollback out of the buffer.
+    #[test]
+    fn console_block_takes_a_bounded_row_count() {
+        for rows in [1u16, 12, cli::MAX_BLOCK_ROWS] {
+            let c = parse(&["console", "block", &rows.to_string()]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Block { rows: got } } => {
+                    assert_eq!(got, rows)
+                }
+                _ => panic!("`console block {rows}` parsed as something else"),
+            }
+        }
+        assert!(parse(&["console", "block", "0"]).is_err(), "a block of nothing is a typo");
+        assert!(parse(&["console", "block", &(cli::MAX_BLOCK_ROWS + 1).to_string()]).is_err());
+        assert!(parse(&["console", "block", "-3"]).is_err());
+        assert!(parse(&["console", "block", "12.5"]).is_err());
+        assert!(parse(&["console", "block", "lots"]).is_err());
+        assert!(parse(&["console", "block"]).is_err(), "the count is not optional");
+    }
+
+    /// **`console patch` names a kind, and the kind is optional in exactly one direction.**
+    /// Omitting it must keep meaning what the verb meant before kinds existed — the arm that
+    /// is already verified on screen — while a word the console cannot resolve has to fail
+    /// *here*, at the clap boundary, since the sidecar's own answer to an unknown kind is to
+    /// skip the line in silence.
+    #[test]
+    fn console_patch_names_a_kind_and_defaults_to_the_one_it_shipped_with() {
+        let c = parse(&["console", "patch", "--up", "12", "--rows", "12"]).unwrap();
+        match c.cmd {
+            Cmd::Console { action: ConsoleAction::Patch { up, rows, kind } } => {
+                assert_eq!((up, rows), (12, 12));
+                assert_eq!(cli::PatchKind::from_word(&kind), Some(cli::PatchKind::default()));
+            }
+            _ => panic!("`console patch` parsed as something else"),
+        }
+        for word in cli::PATCH_KIND_WORDS {
+            let c =
+                parse(&["console", "patch", "--up", "0", "--rows", "8", "--kind", word]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Patch { kind, .. } } => {
+                    assert_eq!(kind, *word)
+                }
+                _ => panic!("`console patch --kind {word}` parsed as something else"),
+            }
+        }
+        assert!(
+            parse(&["console", "patch", "--up", "0", "--rows", "8", "--kind", "hologram"])
+                .is_err(),
+            "a kind nothing can draw must fail where the error can be good"
+        );
+        // The two counts stay required and stay bounded — a kind does not soften them.
+        assert!(parse(&["console", "patch", "--rows", "8"]).is_err());
+        assert!(parse(&["console", "patch", "--up", "0"]).is_err());
+        assert!(parse(&["console", "patch", "--up", "0", "--rows", "0"]).is_err());
+        assert!(parse(&[
+            "console",
+            "patch",
+            "--up",
+            "0",
+            "--rows",
+            &(cli::MAX_BLOCK_ROWS + 1).to_string()
+        ])
+        .is_err());
+    }
+
+    /// **The drift guard the block comment at the top of this file asks for** (#4 Tier 2,
+    /// closed by the integrator). `--help`'s value lists and the renderer's tables are now
+    /// one table: a material added to `substrate_materials` reaches this CLI's completion and
+    /// its "did you mean" with no hand edit, and a material *removed* from there fails here
+    /// rather than leaving clap accepting a name nothing can draw.
+    ///
+    /// An equality test rather than a re-import, deliberately: clap wants `&'static str`
+    /// possible values and the failure should *name* the drift. This is the fix for exactly
+    /// the failure `agent::id_range` demonstrated by hand-maintaining a second copy of
+    /// `params.rs`'s ranges — drifted on 9 of 45 ids (brief R6).
+    ///
+    /// ⚠️ **`CONSOLE_SOURCES` is pinned by a literal, not bound.** `world`/`off`/`substrate`
+    /// are `BackdropSource`'s value space, and `BackdropSource` lives in `src/shell_main.rs`
+    /// — another `[[bin]]`, which no `bin` can import. The other half of this literal is
+    /// `BACKDROP_SOURCE_WORDS` there, asserted against `console_source` by
+    /// `every_source_word_resolves_and_a_typed_name_is_stricter_than_the_env_var`. Two
+    /// alarms, one wire missing; the fix is a `pub const` in `cli.rs` beside
+    /// `parse_console_op` (already the declared home of "both ends speak one vocabulary from
+    /// one place"), and it is in SHELL_ARCHITECTURE.md's honesty ledger.
+    #[test]
+    fn the_console_vocabularies_are_bound_to_the_tables_that_draw_them() {
+        use organic_math_native::substrate_materials;
+        assert_eq!(
+            CONSOLE_MATERIALS,
+            &substrate_materials::MATERIAL_NAMES[..],
+            "clap offers a material list the renderer does not have"
+        );
+        assert_eq!(
+            CONSOLE_RIGS,
+            &substrate_materials::RIG_NAMES[..],
+            "clap offers a rig list the renderer does not have"
+        );
+        assert_eq!(
+            CONSOLE_SOURCES,
+            &["world", "off", "substrate"][..],
+            "the other half of this literal is BACKDROP_SOURCE_WORDS in src/shell_main.rs"
+        );
+        // The two vocabularies must stay disjoint, or `background studio` would parse.
+        for r in CONSOLE_RIGS {
+            assert!(!CONSOLE_MATERIALS.contains(r), "`{r}` is in both vocabularies");
+            assert!(!CONSOLE_SOURCES.contains(r), "`{r}` is in both vocabularies");
+        }
+    }
+
+    /// The console lane must not leak into the World's. Two ends of the same claim: a
+    /// console verb never reaches `to_ctl` (it branches in `main` first, so reaching the
+    /// mapping is the `unreachable!`), and the op it does produce parses back through the
+    /// console vocabulary — not `CliOp`'s.
+    #[test]
+    fn console_ops_ride_their_own_lane() {
+        let c = parse(&["console", "background", "slate"]).unwrap();
+        let Cmd::Console { action: ConsoleAction::Background { name } } = c.cmd else {
+            panic!("expected a console background");
+        };
+        let op = cli::ConsoleOp::Background(name);
+        let line = cli::console_op_to_line(&op);
+        assert_eq!(line, "background slate");
+        assert_eq!(cli::parse_console_op(&line), Some(op));
+        // The World's parser must NOT understand it — if it did, a mis-wired drain would
+        // half-apply console commands instead of visibly ignoring them.
+        assert_eq!(agent::CliOp::parse(&line), None);
     }
 
     #[test]

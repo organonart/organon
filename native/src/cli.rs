@@ -1,8 +1,8 @@
 //! #452 Tiers 1–2: the `organon` CLI's brain — input validation, catalog /
 //! state formatting, and command-channel op building. Everything here is pure
-//! (no I/O except [`append_ops`]) so it unit-tests headless; `bin/ctl.rs` owns
-//! the **clap** argument surface (per-subcommand `--help`, suggestions, shell
-//! completions) and maps it onto [`CtlCmd`].
+//! (no I/O except [`append_ops`] and [`append_console_ops`]) so it unit-tests
+//! headless; `bin/ctl.rs` owns the **clap** argument surface (per-subcommand
+//! `--help`, suggestions, shell completions) and maps it onto [`CtlCmd`].
 //!
 //! The CLI exists so **external local agents** (Bianca, #452) can play Organon:
 //! - **read side (Tier 1)**: `catalog` / `get` / `watch` / `status` decode the
@@ -11,6 +11,10 @@
 //!   `surface` / `material` append [`CliOp`] lines to `ipc::cli_cmd_path()`;
 //!   the visual drains them each frame into the Performer's override lane
 //!   (last-touched-wins, slider mirroring, mind-log — all shared with #317).
+//! - **the console lane (#4 Tier 2, extended by Tier 5)**: `console background` /
+//!   `console rig` / `console block` append [`ConsoleOp`] lines to
+//!   [`console_cmd_path`], drained by the **console**, not by the World. A
+//!   separate destination needs a separate channel — see that section's comment.
 
 use crate::agent::{self, CliOp, SlotKind};
 use crate::ipc::{self, Shared};
@@ -229,6 +233,212 @@ pub fn find_eyes_reply(body: &str, nonce: &str) -> Option<Result<String, String>
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// The console lane (#4 Tier 2) — the CLI's write path to the **console**.
+//
+// This is a third transport, not a third verb on an existing one, because it has
+// a third destination (brief R3). `CliOp` lines on `ipc::cli_cmd_path()` are
+// drained by the **World**, inside `World::frame_body`; the eyes channel is
+// answered by the **visual**. A backdrop or a lighting rig is neither: it is
+// `Shell` state, owned by `shell_main.rs`, and nothing in the World can reach it.
+// Routing a console verb over `cli.txt` would put it in a queue read by a process
+// that cannot act on it — green, silent, and wrong. So: its own sidecar,
+// [`console_cmd_path`], drained in the console's frame path.
+//
+// The discipline is copied from the command channel deliberately: append-only
+// UTF-8, one op per line, created on first write, reader self-detects growth by
+// file length, and the CLI is never an IPC writer. Plain text, verb first — no
+// JSON, matching [`CliOp`]'s simplicity.
+//
+// **Versioning is the verb.** There is no version token and there should not be
+// one: a reader that meets a verb it does not know skips the line
+// ([`parse_console_op`] returns `None`), so a newer CLI talking to an older
+// console degrades to "that op did nothing" instead of to a parse error that
+// poisons the rest of the drain. Adding a verb is how this format changes.
+// ---------------------------------------------------------------------------
+
+/// One console command, as it crosses the CLI→console sidecar.
+///
+/// The payload is an unvalidated name on purpose. `bin/ctl.rs` rejects an unknown one
+/// at the clap boundary — before a line is ever written — so validation lives where the
+/// error message can be good ("did you mean"), and the drain resolves what it is given.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConsoleOp {
+    /// What sits behind the glyphs: a substrate material, or a backdrop *source*
+    /// (`world` / `off` / `substrate` — `shell_main.rs`'s `BackdropSource` value space).
+    Background(String),
+    /// The substrate's lighting rig.
+    Rig(String),
+    /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
+    /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
+    /// painted into later. The payload is the row count, validated against
+    /// [`MAX_BLOCK_ROWS`] at the clap boundary before a line is ever written.
+    Block(u16),
+    /// **Claim** a rectangle the writer already left in its own output (Console Spike
+    /// Tier 5) — `up` lines above the cursor, `rows` tall.
+    ///
+    /// 🚨 **This, not [`ConsoleOp::Block`], is the correct shape, and the difference is not
+    /// a refinement — it is the whole mechanism.** `Block` has the console *write* rows into
+    /// the transcript at the cursor. But the cursor is, by definition, the live input point:
+    /// the place a shell's prompt is waiting and a keystroke will land. Injecting there puts
+    /// the hole **between the prompt and the typing**, which no terminal does, and which is
+    /// worst precisely when the shell is idle — measured on 2026-08-11, prompt stranded above
+    /// an eight-row hole with the cursor below it.
+    ///
+    /// So the console never writes. The program leaves the gap as part of its own output —
+    /// ordinary blank lines through the ordinary PTY, which the shell, ConPTY and the console
+    /// all agree exist — and then says where it is. The console only *records*.
+    ///
+    /// `kind` is what the console should draw in it — see [`PatchKind`].
+    Patch { up: u16, rows: u16, kind: PatchKind },
+}
+
+/// What a claimed rectangle **shows**: the `kind` field
+/// `doc/console_patch_protocol.md` §3 declares as required on every claim.
+///
+/// 🚨 **A name the console resolves — never a command, never a path.** The writer says what
+/// *sort* of thing belongs in the gap it left; which scene, which panel, and how either is
+/// drawn are the console's business entirely. That asymmetry is why this is a closed set of
+/// words rather than a payload: a claim that could carry a command would be a claim that
+/// could carry anything, and the whole point of a claim is that a program which can print can
+/// ask for a rectangle without being able to drive the machine.
+///
+/// It is also why the two arms are so unequal in what they *cost* and so equal in what they
+/// *say*. Everything up to the paint — the claim, the anchor arithmetic, the per-pane ledger —
+/// is shared; the kind selects the last step and nothing before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatchKind {
+    /// The rendered scene, sampled through the claimed rows. **The default**, because it is
+    /// what a claim meant before there was anything to choose between.
+    #[default]
+    Scene,
+    /// A live control panel: real widgets living in the transcript, not a picture of them.
+    Panel,
+}
+
+/// The kind words, in the order `--help` should list them.
+///
+/// One table, read by `bin/ctl.rs`'s possible-values parser, by the console's command schema
+/// and by [`PatchKind::from_word`] — the arrangement `console background`'s materials use, for
+/// the reason recorded there: a second hand-maintained copy is how a CLI comes to accept a
+/// word nothing can draw.
+pub const PATCH_KIND_WORDS: &[&str] = &["scene", "panel"];
+
+impl PatchKind {
+    /// The word this kind travels as, on the wire and in `--help`.
+    pub fn as_word(self) -> &'static str {
+        match self {
+            PatchKind::Scene => "scene",
+            PatchKind::Panel => "panel",
+        }
+    }
+
+    /// The kind a word names, or `None` — which the sidecar reader treats as a line to skip,
+    /// exactly as it treats an unknown verb.
+    pub fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "scene" => Some(PatchKind::Scene),
+            "panel" => Some(PatchKind::Panel),
+            _ => None,
+        }
+    }
+}
+
+/// The tallest block `organon console block` will open.
+///
+/// A ceiling rather than an adjective: the pane is a few tens of rows on any real display,
+/// so a block is a hole in a screenful — not a way to push the whole scrollback out of the
+/// buffer one command at a time. 200 leaves room for a wall-sized pane and still costs less
+/// than 2 % of the 10 000-line scrollback.
+pub const MAX_BLOCK_ROWS: u16 = 200;
+
+/// `$TMPDIR/<namespace>-console.txt` — the console command channel.
+///
+/// Namespace-derived through [`ipc::ns_file`] like every other IPC file, which is the one
+/// cross-product invariant: it is what lets a console and a plain Organon run at once
+/// without either steering the other. A hard-coded `$TMPDIR` path would silently break
+/// that co-existence.
+///
+/// It lives here rather than beside `cli_cmd_path` in `organon-core`'s `ipc.rs` because
+/// `ns_file` is **public**: this lane is between the CLI and the console, and adding a
+/// sidecar needs no edit to the host-free spine. If a third party ever has to build this
+/// path too, moving it into `ipc.rs` is the moment — not before.
+pub fn console_cmd_path() -> std::path::PathBuf {
+    ipc::ns_file("console.txt")
+}
+
+/// Serialize one console op to a single sidecar line (newline-free).
+pub fn console_op_to_line(op: &ConsoleOp) -> String {
+    match op {
+        ConsoleOp::Background(name) => format!("background {name}"),
+        ConsoleOp::Rig(name) => format!("rig {name}"),
+        ConsoleOp::Block(rows) => format!("block {rows}"),
+        ConsoleOp::Patch { up, rows, kind } => {
+            format!("patch {up} {rows} {}", kind.as_word())
+        }
+    }
+}
+
+/// Parse one sidecar line. `None` for a malformed line **or an unknown verb** — the
+/// drain skips those rather than failing, which is what makes the format
+/// forward-compatible (see the section comment above).
+///
+/// Paired with [`console_op_to_line`] so both ends of the lane — this CLI writing and
+/// the console reading — speak one vocabulary from one place. That pairing is the whole
+/// reason these are here and not inlined at either end.
+pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
+    let mut it = line.trim().split_whitespace();
+    match it.next()? {
+        "background" => Some(ConsoleOp::Background(it.next()?.to_string())),
+        "rig" => Some(ConsoleOp::Rig(it.next()?.to_string())),
+        // A row count that does not parse — or does not fit — is a malformed line, and a
+        // malformed line is skipped exactly like an unknown verb. The two `Background`/`Rig`
+        // arms take their payload unvalidated because a *name* is only meaningful to the
+        // console's own tables; a count is meaningful right here, and `u16` is the type the
+        // whole lane carries.
+        "block" => it.next()?.parse::<u16>().ok().map(ConsoleOp::Block),
+        // Two counts, both required: a claim with a missing half is malformed, not a claim
+        // with a default. Defaulting `up` would silently anchor the rectangle at the cursor —
+        // exactly the placement this verb exists to avoid.
+        "patch" => {
+            let up = it.next()?.parse::<u16>().ok()?;
+            let rows = it.next()?.parse::<u16>().ok()?;
+            // The kind is the one field on this lane with a default, and only because it
+            // arrived after the verb did: a line with no third word was written when a claim
+            // had nothing to choose between, and [`PatchKind::Scene`] is what it meant. An
+            // *unknown* third word is a different thing entirely — a newer CLI naming a kind
+            // this build cannot draw — and the lane's standing rule for that is to skip the
+            // line rather than guess, since guessing would paint the wrong object in a
+            // rectangle someone else's output is holding open.
+            let kind = match it.next() {
+                None => PatchKind::Scene,
+                Some(word) => PatchKind::from_word(word)?,
+            };
+            Some(ConsoleOp::Patch { up, rows, kind })
+        }
+        _ => None,
+    }
+}
+
+/// Append console ops to the console command channel (one line each), creating the file
+/// if it is not there yet.
+///
+/// Fire-and-forget, exactly like [`append_ops`]: the console drains them on its next
+/// frame, and ops written while no console is running are never read — deliberately not
+/// replayed at its next start.
+pub fn append_console_ops(ops: &[ConsoleOp]) -> std::io::Result<()> {
+    use std::io::Write;
+    let body: String = ops
+        .iter()
+        .map(|o| format!("{}\n", console_op_to_line(o)))
+        .collect();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(console_cmd_path())?;
+    f.write_all(body.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,6 +1251,231 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // The range tables, pinned to the engine
+    // -----------------------------------------------------------------------
+
+    /// The engine's own answer for every id the two hand-written range tables speak for:
+    /// `params.rs` field name → `(min, max)`.
+    ///
+    /// **No bound is restated here** — every number is read off the real param object, which
+    /// is the whole point: a third hand-written copy would just be a third thing to drift.
+    /// The one hand-written part is the id → field *join*, and the compiler checks that. Every
+    /// arm below touches `p.<field>` at a declared type, so a renamed field, a retyped param
+    /// or a mis-paired enum is a build error rather than a silent disagreement.
+    ///
+    /// `OrganicMathParams::default()` constructs all 1372 host params with no host, no audio
+    /// thread and no GPU, so reading them is as headless as the tables being checked.
+    fn engine_ranges() -> std::collections::BTreeMap<&'static str, (f32, f32)> {
+        use crate::params::{CamPath, HostFuncName, OrganicMathParams};
+        use nih_plug::prelude::{BoolParam, EnumParam, FloatParam, IntParam, Param};
+
+        let p = OrganicMathParams::default();
+        let mut m = std::collections::BTreeMap::new();
+
+        /// A float's range IS `preview_plain` at the two ends of normalized space.
+        macro_rules! float {
+            ($($f:ident),* $(,)?) => {$({
+                let q: &FloatParam = &p.$f;
+                m.insert(stringify!($f), (q.preview_plain(0.0), q.preview_plain(1.0)));
+            })*};
+        }
+        /// Same for an int — the actuation lane carries every id as an `f32` regardless.
+        macro_rules! int {
+            ($($f:ident),* $(,)?) => {$({
+                let q: &IntParam = &p.$f;
+                m.insert(
+                    stringify!($f),
+                    (q.preview_plain(0.0) as f32, q.preview_plain(1.0) as f32),
+                );
+            })*};
+        }
+        /// A bool carries no range of its own; the lane spells it 0/1.
+        macro_rules! boolean {
+            ($($f:ident),* $(,)?) => {$({
+                let _: &BoolParam = &p.$f;
+                m.insert(stringify!($f), (0.0, 1.0));
+            })*};
+        }
+        /// An enum is an `IntParam` over variant INDICES, so its top is `variants() - 1` —
+        /// exactly the bound `cam_path` got wrong, by one, in the direction that admits a
+        /// variant which does not exist.
+        macro_rules! choice {
+            ($($f:ident: $e:ty),* $(,)?) => {$({
+                let _: &EnumParam<$e> = &p.$f;
+                m.insert(stringify!($f), (0.0, (<$e as Enum>::variants().len() - 1) as f32));
+            })*};
+        }
+
+        float!(
+            rot_amp_x, rot_amp_y, rot_amp_z, rot_mod_x, rot_mod_y, rot_mod_z, //
+            trans_amp_x, trans_amp_y, trans_amp_z, trans_mod_x, trans_mod_y, trans_mod_z,
+            scale_amp, //
+            ambient, key_intensity, fill_intensity, elevation, azimuth, glow, opacity, //
+            metallic, roughness, exposure, env_intensity, env_rotation, bloom_intensity,
+            bloom_threshold, ior, //
+            subsurface, sss_distortion, sss_power, iridescence, irid_scale, irid_shift, //
+            cam_speed, cam_kick, cam_damping, mat_hue, tempo,
+        );
+        int!(loop_count_x, loop_count_y, loop_count_z, loop_count_q);
+        boolean!(bell_physical, animate, pulse);
+        choice!(
+            cam_path: CamPath,
+            rot_func: HostFuncName,
+            trans_func: HostFuncName,
+            scale_func: HostFuncName,
+        );
+        m
+    }
+
+    /// `clip::RANGES` slot → the `params.rs` field whose value that slot carries, in the
+    /// canonical CC order `clip::get`/`clip::set` route. `None` marks a slot **no single param
+    /// backs**; both are argued at the assertion below rather than waved through here.
+    const CLIP_SLOT_FIELDS: [Option<&str>; crate::clip::N] = [
+        Some("loop_count_x"), Some("loop_count_y"), Some("loop_count_z"), Some("loop_count_q"),
+        Some("rot_amp_x"), Some("rot_amp_y"), Some("rot_amp_z"),
+        Some("rot_mod_x"), Some("rot_mod_y"), Some("rot_mod_z"),
+        Some("trans_amp_x"), Some("trans_amp_y"), Some("trans_amp_z"),
+        Some("trans_mod_x"), Some("trans_mod_y"), Some("trans_mod_z"),
+        None, // 16 — the effective-speed EXPRESSION slot, not a param
+        Some("scale_amp"),
+        Some("ambient"), Some("key_intensity"), Some("fill_intensity"),
+        Some("elevation"), Some("azimuth"), Some("glow"), Some("opacity"),
+        Some("tempo"),
+        None, // 26 — reserved/inert; `to_shared` hard-codes 0.0, no param exists
+        Some("rot_func"), Some("trans_func"), Some("scale_func"),
+        Some("animate"), Some("pulse"),
+    ];
+
+    /// The gate: **the hand-written range tables equal the engine's ranges**, and the engine's
+    /// taper is the linear law those tables assume.
+    ///
+    /// `agent::id_range` and `clip::RANGES` are hand-written mirrors of `params.rs`. Nothing
+    /// pinned them and they drifted — 9 of the 45 actuatable ids were wrong when this test was
+    /// written: `trans_amp_x/y/z` by **10× on the maximum** (which the published
+    /// `doc/reference/parameters.md` shipped to readers), plus `exposure`, `bloom_intensity`,
+    /// `sss_power`, `irid_scale`, `cam_damping`, and `cam_path`, whose top admitted a 12th
+    /// `CamPath` variant that does not exist. An agent told a param runs to 200 when it stops
+    /// at 20 gets no error — it gets a silent clamp and a look it did not ask for, and
+    /// `recipe.rs` was validating against the same wrong bounds. That is the failure mode a
+    /// mirror with no mirror-check always ends in, so the fix is not "be careful": it is this.
+    ///
+    /// Two claims, one test, because they are one claim from both ends:
+    ///
+    /// 1. **The tables equal the engine** — every [`agent::ACTUATABLE_IDS`] entry and every
+    ///    [`crate::clip::RANGES`] slot, against the param object that owns the bound.
+    /// 2. **The engine's taper is linear**, over all ~1372 host params — the law the tables,
+    ///    the CC lane's `apply_normalized`, and any descriptor built on a `(min, max)` pair
+    ///    all assume when they treat a range as two numbers. `FloatRange::Linear` is hard-coded
+    ///    in `params.rs::flin` today; the day someone reaches for `Skewed`, two numbers stop
+    ///    describing the parameter, and this fails instead of letting the tables lie again.
+    ///
+    /// Headless by construction, so it runs everywhere `cargo test --workspace` does.
+    #[test]
+    fn taper_round_trips_against_the_engine_range() {
+        use crate::params::OrganicMathParams;
+        use nih_plug::prelude::{Param, ParamPtr, Params};
+
+        let engine = engine_ranges();
+        let mut wrong: Vec<String> = Vec::new();
+
+        // --- 1. `agent::id_range` ------------------------------------------------------
+        for id in agent::ACTUATABLE_IDS {
+            let want = *engine.get(id).unwrap_or_else(|| {
+                panic!("{id} is actuatable but has no `engine_ranges` join — add one")
+            });
+            let got = agent::id_range(id).unwrap_or_else(|| panic!("{id} has no range"));
+            if got != want {
+                wrong.push(format!("agent::id_range {id}: table {got:?}, engine {want:?}"));
+            }
+        }
+
+        // --- 2. `clip::RANGES` ---------------------------------------------------------
+        //
+        // Two slots have no param behind them, and each is exempt for a stated reason, not
+        // because checking them was inconvenient:
+        //
+        // * **16 — effective global speed.** The slot carries `rot_mod[3]`, which
+        //   `param_table.rs` packs as the EXPRESSION `inc_scale × 10^speed_exp`, not as a
+        //   parameter. Its `(0, 0.1)` is a deliberate playable-range choice for the CC lane
+        //   (the product's default is 0.01 and its ceiling is 1.0, so a full-span CC would
+        //   spend 90% of its travel past anything usable) — see the comment at the table.
+        // * **26 — reserved.** The Pulse Depth knob was removed; `params.rs::to_shared`
+        //   hard-codes `pulse_depth: 0.0` and no param exists to check against.
+        //
+        // A slot gaining a param must therefore be *joined here*, not left as `None`.
+        for (i, field) in CLIP_SLOT_FIELDS.iter().enumerate() {
+            let Some(field) = field else { continue };
+            let want = *engine.get(field).unwrap_or_else(|| {
+                panic!("clip slot {i} names `{field}`, which `engine_ranges` has no join for")
+            });
+            let got = crate::clip::RANGES[i];
+            if got != want {
+                wrong.push(format!(
+                    "clip::RANGES[{i}] ({field}): table {got:?}, engine {want:?}"
+                ));
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "{} range table entries disagree with `params.rs`:\n  {}",
+            wrong.len(),
+            wrong.join("\n  ")
+        );
+
+        // --- 3. The engine's taper, over every host param -------------------------------
+        let p = OrganicMathParams::default();
+        for (wire_id, ptr, _group) in p.param_map() {
+            // SAFETY: `Params::param_map`'s contract — the pointers are valid for as long as
+            // the object they came from is, and `p` outlives this loop.
+            unsafe {
+                match ptr {
+                    ParamPtr::FloatParam(q) => {
+                        let q = &*q;
+                        let (lo, hi) = (q.preview_plain(0.0), q.preview_plain(1.0));
+                        assert!(lo <= hi, "{wire_id}: min {lo} > max {hi}");
+                        let d = q.default_plain_value();
+                        assert!(d >= lo && d <= hi, "{wire_id}: default {d} outside {lo}..{hi}");
+                        for step in 0..=20 {
+                            let n = step as f32 / 20.0;
+                            let want = lo + n * (hi - lo);
+                            let got = q.preview_plain(n);
+                            let tol = (want.abs().max(1.0)) * 1.0e-5;
+                            assert!(
+                                (got - want).abs() <= tol,
+                                "{wire_id} is not linear: preview_plain({n}) = {got}, \
+                                 linear law says {want}"
+                            );
+                        }
+                    }
+                    // An int (and an enum, which is an int over variant indices) rounds to the
+                    // nearest step, so the law is the linear one THEN `.round()`.
+                    ParamPtr::IntParam(q) => check_int(&*q, &wire_id),
+                    ParamPtr::EnumParam(q) => check_int(&*q, &wire_id),
+                    // A bool has no range to round-trip.
+                    ParamPtr::BoolParam(_) => {}
+                }
+            }
+        }
+
+        fn check_int<P: Param<Plain = i32>>(q: &P, wire_id: &str) {
+            let (lo, hi) = (q.preview_plain(0.0), q.preview_plain(1.0));
+            assert!(lo <= hi, "{wire_id}: min {lo} > max {hi}");
+            let d = q.default_plain_value();
+            assert!(d >= lo && d <= hi, "{wire_id}: default {d} outside {lo}..{hi}");
+            for step in 0..=20 {
+                let n = step as f32 / 20.0;
+                let want = (n * (hi - lo) as f32).round() as i32 + lo;
+                let got = q.preview_plain(n);
+                assert_eq!(
+                    got, want,
+                    "{wire_id} is not linear: preview_plain({n}) = {got}, linear law says {want}"
+                );
+            }
+        }
+    }
+
     /// Every generator, surface and material reaches the docs, and every one of them
     /// carries real prose. The `match`es in `agent.rs` are exhaustive, so a new variant
     /// cannot compile undescribed — but it *could* land with a placeholder, and a
@@ -1106,5 +1541,164 @@ mod tests {
             "these ids reach doc/reference/parameters.md with no description — add one to \
              `agent::param_desc`: {missing:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The console lane (#4 Tier 2)
+    // -----------------------------------------------------------------------
+
+    /// The format/parse pair is the shared vocabulary of two processes, so the round trip
+    /// is the contract, not a nicety: the CLI writes with `console_op_to_line` and the
+    /// console reads with `parse_console_op`, and if they ever disagree the failure is a
+    /// silently ignored command rather than an error anybody sees.
+    #[test]
+    fn console_ops_round_trip_through_the_wire_format() {
+        for op in [
+            ConsoleOp::Background("graphite".into()),
+            ConsoleOp::Background("paper".into()),
+            ConsoleOp::Background("slate".into()),
+            ConsoleOp::Background("metal".into()),
+            // The three backdrop *sources* ride the same verb as the materials.
+            ConsoleOp::Background("world".into()),
+            ConsoleOp::Background("off".into()),
+            ConsoleOp::Background("substrate".into()),
+            ConsoleOp::Rig("studio".into()),
+            ConsoleOp::Rig("daylight".into()),
+            // Tier 5: the payload is a count, not a name — the first op on this lane whose
+            // argument is not a word.
+            ConsoleOp::Block(1),
+            ConsoleOp::Block(12),
+            ConsoleOp::Block(MAX_BLOCK_ROWS),
+            // …and the claim, whose payload is two counts and a kind. Every kind rides the
+            // round trip, because the kind is the field that decides what gets *painted* and
+            // a spelling that survived one direction only would paint the wrong object.
+            ConsoleOp::Patch { up: 0, rows: 1, kind: PatchKind::Scene },
+            ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Scene },
+            ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Panel },
+            ConsoleOp::Patch {
+                up: MAX_BLOCK_ROWS,
+                rows: MAX_BLOCK_ROWS,
+                kind: PatchKind::Panel,
+            },
+        ] {
+            let line = console_op_to_line(&op);
+            assert!(!line.contains('\n'), "a line must be one line: {line:?}");
+            assert_eq!(parse_console_op(&line), Some(op.clone()), "line was {line:?}");
+            // The drain reads whole lines from a file; trailing whitespace is not a
+            // different command.
+            assert_eq!(parse_console_op(&format!("  {line}  ")), Some(op));
+        }
+
+        // The exact bytes on the wire, pinned — the console's drain is written against
+        // these, and "the round trip works" would still hold if both ends changed together
+        // while an already-running console spoke the old spelling.
+        assert_eq!(
+            console_op_to_line(&ConsoleOp::Background("slate".into())),
+            "background slate"
+        );
+        assert_eq!(console_op_to_line(&ConsoleOp::Rig("studio".into())), "rig studio");
+        assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
+        assert_eq!(
+            console_op_to_line(&ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Panel }),
+            "patch 12 12 panel"
+        );
+    }
+
+    /// **The kind's two directions must agree, and the word list is what `--help` and the
+    /// console's schema are both built from** — so a kind added to the enum and forgotten in
+    /// the table would be a value the CLI cannot express and the palette cannot show.
+    ///
+    /// The default is pinned separately and deliberately: it is what a claim written before
+    /// there was a choice resolves to, so changing it silently repaints every such claim.
+    #[test]
+    fn every_patch_kind_word_resolves_and_round_trips() {
+        for word in PATCH_KIND_WORDS {
+            let kind = PatchKind::from_word(word).unwrap_or_else(|| panic!("{word} resolves"));
+            assert_eq!(kind.as_word(), *word, "the word and the enum must agree");
+        }
+        for kind in [PatchKind::Scene, PatchKind::Panel] {
+            assert!(
+                PATCH_KIND_WORDS.contains(&kind.as_word()),
+                "{kind:?} is not in the table `--help` is built from"
+            );
+        }
+        assert_eq!(PatchKind::from_word("nonsense"), None);
+        assert_eq!(PatchKind::from_word("Panel"), None, "the wire form is lowercase");
+        assert_eq!(PatchKind::default(), PatchKind::Scene, "a claim with no kind is a scene");
+    }
+
+    /// A claim's kind: absent means `scene` (the shape the verb shipped with), unknown means
+    /// **skip the line**. The two are deliberately not the same answer — see `parse_console_op`.
+    #[test]
+    fn a_claim_with_no_kind_is_a_scene_and_an_unknown_kind_is_skipped() {
+        assert_eq!(
+            parse_console_op("patch 12 12"),
+            Some(ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Scene }),
+            "a line from before the kind existed still claims a rectangle"
+        );
+        assert_eq!(
+            parse_console_op("patch 0 8 panel"),
+            Some(ConsoleOp::Patch { up: 0, rows: 8, kind: PatchKind::Panel })
+        );
+        assert_eq!(parse_console_op("patch 12 12 hologram"), None, "a kind we cannot draw");
+        assert_eq!(parse_console_op("patch 12"), None, "a claim with a missing half");
+        assert_eq!(parse_console_op("patch"), None);
+        assert_eq!(parse_console_op("patch up rows"), None);
+        assert_eq!(parse_console_op("patch -1 12"), None, "negative is not a u16");
+    }
+
+    /// An unknown verb parses to `None` so the drain SKIPS it. That is the whole
+    /// forward-compatibility story of this format: a newer CLI writing a verb an older
+    /// console has never heard of must degrade to "that op did nothing", never to a parse
+    /// failure that poisons the rest of the file.
+    #[test]
+    fn an_unknown_console_verb_is_skipped_not_fatal() {
+        assert_eq!(parse_console_op("scrim 0.5"), None); // a plausible future verb
+        assert_eq!(parse_console_op("frobnicate x"), None);
+        assert_eq!(parse_console_op(""), None);
+        assert_eq!(parse_console_op("   "), None);
+        // A known verb with no argument is malformed, not a different command.
+        assert_eq!(parse_console_op("background"), None);
+        assert_eq!(parse_console_op("rig"), None);
+        // `CliOp`'s vocabulary is a DIFFERENT lane's — a `cli.txt` line landing here (a
+        // mis-wired drain) must be skipped rather than half-understood.
+        assert_eq!(parse_console_op("set metallic 0.9"), None);
+        assert_eq!(parse_console_op("gen 3"), None);
+    }
+
+    /// **`block` is the first console verb whose argument is a number**, so the malformed
+    /// cases are a different set from a name's: a count that is not a count, or one this lane
+    /// cannot carry. All of them are skipped rather than clamped — a clamp would open a block
+    /// of a size nobody asked for, which is worse than opening none.
+    #[test]
+    fn a_block_row_count_that_is_not_a_count_is_skipped() {
+        assert_eq!(parse_console_op("block 8"), Some(ConsoleOp::Block(8)));
+        assert_eq!(parse_console_op("block 0"), Some(ConsoleOp::Block(0)));
+        assert_eq!(parse_console_op("block"), None, "no argument at all");
+        assert_eq!(parse_console_op("block rows"), None);
+        assert_eq!(parse_console_op("block -1"), None, "negative is not a u16");
+        assert_eq!(parse_console_op("block 8.5"), None, "fractional rows do not exist");
+        assert_eq!(parse_console_op("block 70000"), None, "past u16 entirely");
+        // Trailing junk after the count is ignored, exactly as a name's is — the wire form
+        // is `<verb> <word>` and the drain reads whole lines.
+        assert_eq!(parse_console_op("block 8 rows"), Some(ConsoleOp::Block(8)));
+    }
+
+    /// The console sidecar is namespace-derived like every other IPC file. This is the
+    /// invariant that lets a console and a plain Organon run side by side; a hard-coded
+    /// `$TMPDIR` name would break co-existence silently, which is precisely the failure
+    /// `ns_file` exists to prevent.
+    #[test]
+    fn the_console_channel_is_namespaced() {
+        let p = console_cmd_path();
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(name, format!("{}-console.txt", ipc::namespace()));
+        // Same directory as its sibling channels — compared against one of them rather
+        // than against `temp_dir()` so the assertion cannot drift from `ns_file`.
+        assert_eq!(p.parent(), ipc::cli_cmd_path().parent());
+        // …and it is its OWN file: routing console ops onto the World's lane is the exact
+        // mistake this channel exists to avoid (brief R3).
+        assert_ne!(console_cmd_path(), ipc::cli_cmd_path());
+        assert_ne!(console_cmd_path(), ipc::eyes_cmd_path());
     }
 }

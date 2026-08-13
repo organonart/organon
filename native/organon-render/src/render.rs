@@ -3645,11 +3645,43 @@ impl Renderer {
             && neural_batches.is_none()
             && plexus_batches.is_none()
             && demo_batches.is_empty();
+        // Material-set scoping — a SEPARATE predicate from the bevel above, because the two
+        // scope different things. `cube_draw` exists to protect the shared cube MESH from a
+        // morph meant only for the generator's cubes; the material set is not geometry, it is
+        // a surface response, and any draw that shades through `cube.wgsl` with the main
+        // uniform can carry it. The Membrane sheet is exactly that draw: an arbitrary
+        // world-space triangle mesh through the cube pipeline with one identity instance, and
+        // group(5) is ALREADY bound at both its sites (the scene branch below and the depth
+        // prepass) — so this is a uniform-value gate, never a pipeline one.
+        //
+        // Console Spike Tier 2 (`doc/console_spike_as_built_brief.md` R5,
+        // `native/src/substrate_materials.rs`): the substrate backdrop is a flat membrane
+        // plane, and graphite / paper / slate are map-driven — they cannot exist on this path
+        // while `u.mtl[0]` is forced to 0. Widening the predicate is the same move the five
+        // patched uniform copies below make in the other direction (plexus overlay, liquid,
+        // scenery, scenery water, demo sub-batches each copy `u` and zero `mtl[0]` because
+        // their geometry has a material of its OWN); the membrane has no material of its own,
+        // it shares the generator's, so it belongs on the near side of the gate.
+        //
+        // Byte-identical by default (the repo's 4th invariant): `u.mtl[0]` is set from
+        // `material[0] || material_layer[16]` (`world.rs:10850-10852`), both 0 at the stock
+        // defaults, so a membrane with no material configured writes exactly the same
+        // uniform it did before. `material_maps` specialisation (`sync_material_specialisation`)
+        // additionally compiles the whole sampling block out while `present_mask` is 0.
+        //
+        // Scoped to the lofted SHEET, not Skin-Arms: `membrane_arms` draws rods/welded arm
+        // meshes and is already excluded from `cube_draw` for the bevel. The sheet's optional
+        // boundary strands (Show Strands) do come with it — they share the main uniform and
+        // every other material dial already, and a boundary that disagreed with its own
+        // surface would be the odd result. The depth prepass reads this SAME uniform, so a
+        // future height-displacing material stays consistent between the two by construction.
+        let material_draw = cube_draw || (membrane && !membrane_arms);
         if !cube_draw {
             u.shape[0] = 0.0;
-            // #472 Tier 1: only the generator's Original/Flow-Aligned cubes sample
-            // the material texture set; every other instanced draw keeps the scalar
-            // PBR path (byte-identical when materials are off).
+        }
+        if !material_draw {
+            // #472 Tier 1: every other draw keeps the scalar PBR path (byte-identical
+            // when materials are off).
             u.mtl[0] = 0.0;
         }
         queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));

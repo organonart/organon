@@ -41,6 +41,16 @@ The tree already has the machinery and the discipline: `doc/reference/` is gener
 `generated_reference_is_current` fails the build on drift. Descriptors are generated the same
 way and guarded the same way. See *Tests that must exist*.
 
+🚨 **`agent.rs::id_range` is NOT the source of truth for a descriptor's range.** It and
+`clip.rs::RANGES` are hand-written mirrors of `params.rs`, pinned by no test — and as of
+2026-08-10, **9 of 45 actuatable ids disagree with `params.rs`**: `trans_amp_x/y/z` by 10×
+on the maximum (the published `doc/reference/parameters.md` ships the wrong range), plus
+`exposure`, `bloom_intensity`, `sss_power`, `irid_scale`, `cam_damping`, and `cam_path`
+(whose declared max admits a 12th `CamPath` variant that does not exist). A descriptor's
+`min`/`max`/`default` come from the parameter object — `Param::preview_plain(0.0)` /
+`preview_plain(1.0)` / `default_plain_value()` — and
+`taper_round_trips_against_the_engine_range` is what keeps them there.
+
 ---
 
 ## The three legs
@@ -65,15 +75,25 @@ agent's scarce resource is context, not round trips, and the CLI surfaces ~1,370
 
 ## Invocation
 
-Canonical form, and the only one the console uses:
+**These are subcommands, not flags, and `describe` already exists.** The `organon` CLI is
+subcommand-styled throughout — `catalog`, `describe`, `status`, `get`, `set`, `snap`, `recipe`,
+`watch` — so a `--discover` flag would be foreign to it. More importantly,
+`skills/organon-cli/SKILL.md` already documents `organon describe <query>` returning *"its
+kind, range, current value, and what it does."* **That is the control descriptor, in prose.**
 
 ```
-<source> --discover --at <path>          # path omitted = root
-<source> --describe --at <path> [--all]
+organon discover [path]            # path omitted = root
+organon describe <query> --json    # the descriptor, machine-readable
 ```
 
-Ergonomic form for humans, equivalent to the above — `organon explore surface --discover`
-means `--at explore.surface`.
+🚨 **`--json` is a second rendering of `describe`, never a second implementation.** One
+command, two outputs, one source — the same discipline that makes the CLI, the agent's
+catalog and the strip three renderings of one table. If the prose and the JSON can disagree
+about a range, this whole schema is decorative.
+
+The source's *invocation* is configuration, never payload (I1). The forms above are Organon's;
+a foreign source is invoked however its Tier 5 mapping recorded, and the console does not care
+which — it consumes documents, not command lines.
 
 **Requirements on an emitter:**
 
@@ -201,7 +221,7 @@ bulk from `--describe`.
   "default": 0.2,
   "range": { "min": 0.0, "max": 1.0, "taper": "linear" },
   "unit": null,
-  "format": { "decimals": 2 },
+  "format": { "style": "magnitude" },
   "widget": "knob",
   "writable": true,
   "mapped": { "surface": "midi", "control": "CC 21" }
@@ -220,7 +240,7 @@ names; do not build them.**
   "id": "synth.cutoff", "label": "Cutoff", "kind": "float",
   "value": 880.0, "default": 1000.0,
   "range": { "min": 20.0, "max": 20000.0, "taper": "log" },
-  "unit": "Hz", "format": { "decimals": 0 }
+  "unit": "Hz", "format": { "style": "fixed", "decimals": 0 }
 }
 ```
 
@@ -248,9 +268,14 @@ right, so it survives review.
 Permitted: `{"taper":"linear"}` · `{"taper":"log"}` · `{"taper":"skewed","factor":0.3}`.
 Enough to be truthful about what the engine actually does, and no more.
 
-📌 **Verify the permitted set against the real range types in `param_table.rs` at
-implementation, and widen this list if the engine has a case it cannot express.** A taper the
-schema cannot say is a control the console will render wrong.
+📌 **Verified 2026-08-10 against `native/src/params.rs`** — not `param_table.rs`, which
+declares no ranges (it is the slot-packing table). Every one of the engine's 1372 parameters
+is `FloatRange::Linear` or `IntRange::Linear`: `FloatParam::new` is called exactly once in
+the tree, inside `flin()`, which hard-codes Linear; `Skewed`, `SymmetricalSkewed`,
+`Reversed` and `with_step_size` are unused, and no host parameter is drawn with a non-linear
+widget. So `taper` is `"linear"` for every Organon control today; `log` and
+`skewed{factor}` remain permitted as headroom for foreign emitters and for a future skewed
+range — `taper_round_trips_against_the_engine_range` is what will catch one.
 
 ### Values live in the display domain
 
@@ -260,6 +285,30 @@ knowing, and the agent should not have to do the mapping to say "set cutoff to 8
 
 `taper` is what lets a knob compute its own position from those four numbers. That is the
 entire reason it is in the document.
+
+### `format` says how to print, and `"magnitude"` is the engine's actual rule
+
+`format` is `{ "style": "fixed", "decimals": N }` or `{ "style": "magnitude" }`. `style`
+defaults to `"fixed"`; `decimals` is required for `"fixed"` and ignored otherwise.
+
+Every Organon float goes through one magnitude-scaled formatter (`v2s_va` in
+`native/src/params.rs`): decimals = 0 when |v| ≥ 1000, 1 when ≥ 100, 2 when ≥ 10, else 3;
+trailing zeros and a trailing `.` are trimmed; `""` and `"-0"` render as `"0"`. A fixed
+decimal count renders `2160` as `2160.000` and `0.005` as `0.01` — both visibly wrong next
+to the editor, which is why `{decimals: N}` alone could not say the truth. Ints are
+`{"style": "fixed", "decimals": 0}`.
+
+**Round-trip law:** `format(v)` must equal the parameter's own
+`normalized_value_to_string(preview_normalized(v), false)` — asserted inside
+`taper_round_trips_against_the_engine_range`; same walk, same params, no second test.
+
+### `unit` is `null` until a parameter declares one
+
+nih-plug's `with_unit` is unused across all 1372 parameters, so `Param::unit()` is `""`
+everywhere; units exist only as prose inside names (`"Exposure (EV)"`) and glosses.
+Emitting `null` is the honest answer, and I2 forbids inventing one at the emitter. When
+units are wanted, they get declared at the parameter — in `flin`/`ilin` or a sibling table
+generated from the same slot lists — never typed into a descriptor.
 
 ### `mapped` is the promotion ladder made observable
 
@@ -279,9 +328,10 @@ on the right side of the line.
 
 ---
 
-## `--describe`
+## `describe --json`
 
-Returns descriptors for a node.
+The existing `organon describe` rendered as data instead of prose. Returns descriptors for a
+node.
 
 ```json
 {
@@ -295,6 +345,27 @@ Returns descriptors for a node.
 Default page size applies — **a panel with 84 controls is a menu, not an instrument.** `--all`
 lifts it for programmatic consumers. `coverage` is required here in practice for the same
 reason it matters on the strip.
+
+---
+
+## The skill moves with the CLI
+
+`skills/organon-cli/SKILL.md` is the agent-facing teaching document for this CLI, and it
+already makes the correct split: it teaches the loop and the grammar, and defers the surface
+to the live catalog — *"the live catalog is the authority … ask the tool, not your memory."*
+
+**Keep that split.** Adding `discover`, `describe --json`, or an `organon console` branch means
+the skill gains the *shape* of the new vocabulary; it must never gain an enumeration of what
+lives inside it, because an enumeration is what rots.
+
+📌 `.claude/hooks/doc-rules.sh` now lists the skill as accountable for `native/src/bin/ctl.rs`
+and `native/src/cli.rs` — the files that define the command *shape*. Parameter-level detail is
+deliberately not a trigger: that is already guarded by `generated_reference_is_current`, and a
+rule that fires on every parameter change is a rule everyone learns to ignore.
+
+⚠️ The skill currently covers 45 of ~1,370 parameters without saying so. **That is the same
+lie `coverage` exists to prevent**, one layer up — worth a sentence in the skill stating it is
+a curated teaching subset, not an index.
 
 ---
 

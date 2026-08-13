@@ -1,7 +1,7 @@
 //! Organon Shell — the agent-operating workstation (Shell #3).
 //!
-//! A native, GPU-composited workspace for collaborating with AI agents to build and
-//! operate living software systems. Product definition: `doc/organon_shell_prd.md`
+//! A native, GPU-composited workspace for working with AI agents.
+//! Product definition: `doc/organon_shell_prd.md`
 //! (private annex); living code state: `SHELL_ARCHITECTURE.md` at the repo root, which
 //! travels with this crate wherever it goes.
 //!
@@ -24,12 +24,50 @@
 //! v2-era modules below it remain compiled and tested: `session`/`command` are
 //! load-bearing foundations; `app`/`timeline`/`mock_agent` await re-homing into
 //! the block system (tree C) and the structured register (tree D).
+//!
+//! Console Spike Tier 4 adds [`scroll_anchor`]: absolute line coordinates over the
+//! scrollback, so the backdrop's look-epochs can be painted as viewport bands that
+//! age with the text instead of with the window. Pure arithmetic — its caller
+//! contract is the checklist in its module doc.
+//!
+//! Console Spike Tier 5 adds the two halves of a **patch** — a rectangle a writer left in its
+//! own output and then claimed. [`block_anchor`] is *where*: the same arithmetic applied to a
+//! reserved run of lines, two integers in and viewport rows out. [`block_panel`] is *what*:
+//! the kinds a claim can name, one of which is a live egui control panel rather than a
+//! picture of one. The split is the tier's whole shape — claim, anchor and ledger are common
+//! to every kind, and the kind selects the paint and nothing before it.
+//!
+//! Console Spike §5.9 forks the console into **two front-ends over one renderer**, and
+//! five modules make the second one. The terminal host ([`term`] + [`term_view`]) is
+//! untouched and remains the universal fallback. Beside it now: [`agent_event`] decodes
+//! Claude Code's NDJSON, [`conversation`] folds those into a renderable transcript,
+//! [`agent_map`] is the seam between the two, [`agent_session`] owns the live child
+//! process, and [`conversation_view`] draws the result. `SHELL_ARCHITECTURE.md` §
+//! "Two front-ends" owns the shape.
+//!
+//! **Approvals** close the loop that front-end opened: [`mcp`] is the console's MCP server
+//! as a value, [`mcp_http`] serves it over loopback HTTP inside the console process so
+//! Claude Code's `--permission-prompt-tool` can reach it, and [`approval`] is the console's
+//! answer — the blocking hook, the decision memory that "allow and remember" is built from,
+//! and what a click means. `doc/console_approval_protocol.md` is the measured spec all
+//! three are written against.
 
+pub mod agent_event;
+pub mod agent_map;
+pub mod agent_session;
 pub mod app;
+pub mod approval;
+pub mod block_anchor;
+pub mod block_panel;
 pub mod command;
+pub mod conversation;
+pub mod conversation_view;
 pub mod harness;
+pub mod mcp;
+pub mod mcp_http;
 pub mod mock_agent;
 pub mod platform;
+pub mod scroll_anchor;
 pub mod session;
 pub mod tabs;
 pub mod term;
