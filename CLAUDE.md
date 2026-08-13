@@ -289,7 +289,10 @@ native/organon-shell/  Organon Shell's compositor lib. No nih_plug, ever.
                                                     → SHELL_ARCHITECTURE.md
 doc/arch/     the architecture child docs (render, topology)
 doc/          Organon Mind's public doc set (PRD, build plan, the honesty essay)
-skills/       organon-cli — driving the running app via the `organon` command
+.claude/skills/  organon-cli — driving the running app via the `organon` command.
+              A real directory, NOT a symlink: a git symlink here materialises as a
+              24-byte text file on any Windows checkout and the skill silently
+              does not load (#19).
 ```
 
 That is all of it. This repository is Rust and its documentation — no npm, no

@@ -223,8 +223,7 @@ on:
       - 'brand/**'
       - 'songs/**'
       - 'original_code/**'   # the C++ reference
-      - 'skills/**'          # organon-cli (symlinked into .claude/skills)
-      - '.claude/**'         # hooks, skills, settings
+      - '.claude/**'         # hooks, settings, and organon-cli (the skill's one home)
       - '**.md'              # CLAUDE.md, ARCHITECTURE.md, STATUS.md, CHANGELOG.md…
       # Added by #626 T2 after the filter's first miss: that PR changed only
       # `.claude/**` + `**.md` + this file, and CI ran anyway — two full matrix
