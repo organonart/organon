@@ -123,6 +123,62 @@ braces.
 
 ---
 
+### 🚨 8. The transport is HTTP, and it lets the console serve MCP **in-process**
+
+Measured on 2.1.228. `claude mcp add --help` lists three transports — `stdio, sse, http` — and
+`--mcp-config` accepts an `http` entry that the client connects **out** to.
+
+```json
+{ "mcpServers": { "organon": { "type": "http", "url": "http://127.0.0.1:8931/mcp" } } }
+```
+
+Two fields. No auth, no headers for loopback. Passed with `--strict-mcp-config` and
+`--permission-prompt-tool mcp__organon__approve`.
+
+**Verified end to end:** `system/init` reported `"mcp_servers":[{"name":"probe","status":"connected"}]`
+with the server's tool in the model's list and the **approval tool correctly withheld** (§7's
+filtering holds over HTTP too). A permission prompt then arrived at the HTTP server as a real
+`tools/call`, carrying `tool_name`, `input`, `tool_use_id` and the `_meta` block; the server
+answered `{"behavior":"allow","updatedInput":{…}}` and the write went through.
+
+**Why this decides the architecture.** A stdio server is a *separate process* with no access to
+the console's UI or state, so every approval would have to cross a process boundary and come
+back — an IPC design with a race and a lifetime per request. Over HTTP the console serves MCP
+**inside itself**, and the permission hook becomes a direct call into the state the UI is
+already drawing.
+
+**The handshake to serve** (both phases hit the same endpoint — there is no respawn, because
+there is no process to spawn):
+
+1. `POST /mcp` — `server/discover`, `mcp-protocol-version: 2026-07-28`.
+2. `POST /mcp` — `initialize` at `2025-11-25`.
+3. `POST /mcp` — `notifications/initialized`, no `id` → answer `202`, empty body.
+4. `GET /mcp` with `Accept: text/event-stream` — the optional push stream. **Returning `405` is
+   fine**; the client carried on. Request/response POST alone is sufficient.
+5. `POST /mcp` — `tools/list`, then `tools/call`.
+
+Client `Accept` is `application/json, text/event-stream`; plain `application/json` with a
+`Content-Length` works throughout. An `Mcp-Session-Id` header is echoed back by the client — a
+free per-connection handle if the console wants one.
+
+⚠️ **Two traps that each cost a measurement run, and will cost a developer an afternoon:**
+
+- **`echo` never prompts.** Safe read-only Bash is auto-approved, so `--permission-prompt-tool`
+  looks dead when it is working perfectly. A first probe ran `echo HELLO` with zero traffic
+  reaching the server.
+- **Writes inside the session's own scratchpad never prompt either.** Asked for "a file
+  probe.txt", the model picked a pre-blessed path. **Only an explicit absolute path outside it
+  triggers the prompt.** When testing the console's approval card, pick a target the harness
+  cannot pre-approve.
+
+**Not determined:** `sse` (untested — `http` answered the question); session lifetime and
+whether `Mcp-Session-Id` is validated or merely echoed; the `DELETE /mcp` teardown, never seen
+in short runs; and whether the GET/SSE stream becomes mandatory for server-initiated traffic —
+the client advertises `elicitation` and `roots.listChanged`, so a console that ever wants to
+*push* will need to hold that GET open rather than `405` it.
+
+---
+
 ## What this decides
 
 **The console runs one MCP server serving two distinct things:**
