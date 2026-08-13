@@ -5,10 +5,12 @@
 > `CONSOLE_ARCHITECTURE.md` owns that, and everything below is unbuilt unless this document
 > says otherwise and names the file.
 >
-> **Status: nothing here is implemented.** No exhibit has been rendered, no pane has been
-> split, no image has appeared in the console. The measured facts are marked as such; the
-> rest is design. Keep that distinction when quoting this file — the console's honesty
-> discipline applies to its plans as much as to its readouts.
+> **Status: one section has been built — §5's double kind registry is now single (#48 Tier 1),
+> and §5 and §8 say so where they said otherwise.** Everything else is unimplemented: no
+> exhibit has been rendered, no pane has been split, no image has appeared in the console. The
+> measured facts are marked as such; the rest is design. Keep that distinction when quoting
+> this file — the console's honesty discipline applies to its plans as much as to its
+> readouts.
 >
 > Decisions marked 📌 were made by James on 2026-08-13 and are settled. Their rejected
 > alternatives are recorded because a decision without its alternative reads as an accident.
@@ -152,7 +154,26 @@ like a three-candidate gallery and is exactly why it must not be allowed.
 A **kind** is a name that resolves to something that can render an exhibit. The registry of
 kinds is the surface along which the console is extended "always, for all time".
 
-🚨 **This already exists in embryo TWICE, the two copies already overlap, and they have
+✅ **Landed — this section is the one part of this document that is no longer design.** #48
+Tier 1 made `organon_core::kind::Kind` the single vocabulary both front-ends resolve from;
+`cli::PatchKind` is gone and `conversation::ArtifactContent` answers `kind()` from the same
+set. The rest of this section is kept in the past tense it was written in, because it is why
+the change was made.
+
+⚠️ **The count below is wrong, and the correction is the more useful fact: there were
+THREE.** `block_panel::PatchContent` — the terminal front-end's *paint* target, one layer in
+from the wire — is the same two-item taxonomy again, and it carries payloads exactly as
+`ArtifactContent` does. So the real shape is one vocabulary and **two payload carriers, one per
+placement**, which is a better answer than the two-way merge this section imagined: a patch's
+panel owns live widget state pinned to scrollback lines, an artifact's is a description the
+view keys state off, and neither could be flattened into the other without losing something.
+Both now answer `kind()`, each pinned by its own test.
+
+⚠️ **One thing Tier 1 did NOT do, deliberately: unify the two *words*.** The terminal lane says
+`scene` and the composer says `/surface`, and both are typed by humans — so an inert tier
+could change neither. `SHELL_ARCHITECTURE.md` §1.1 records what unifying them would cost.
+
+🚨 **This already existed in embryo TWICE, the two copies already overlapped, and they had
 already begun to drift.** Measured 2026-08-13 by reading the tree:
 
 | Concept | Terminal side — `cli.rs::PatchKind` | Conversation side — `conversation.rs::ArtifactContent` |
@@ -245,10 +266,10 @@ a collection from day one. That is the one detail that must not be deferred: ret
 Explicitly **not** in a first tier: the pane refactor (§2), which is its own tier and should
 land on a quiet tree; and any kind below "images" on the §7 ladder.
 
-⚠️ **But §5's double registry comes first, and it is small right now.** `PatchKind` and
-`ArtifactContent` are two variants each today. Reconciling them is a contained change on a
-quiet tree; doing it after a dozen kinds exist on one side is not. This is the cheapest thing
-in this document and the one whose cost grows fastest if deferred.
+⚠️ **But §5's double registry came first, and it has landed** (#48 Tier 1). It was two variants
+each when it was reconciled, which is the only reason it was contained; doing it after a dozen
+kinds existed on one side would not have been. The next kind is now a variant in
+`organon_core::kind` plus a renderer, which is the property the rest of this document assumes.
 
 ---
 
