@@ -181,8 +181,8 @@
 use std::collections::HashMap;
 
 use crate::agent_event::{
-    AgentEvent, ContentBlock, Delta, EventKind, Notice, RateLimit, SessionStart, StreamEvent,
-    TurnResult, Usage,
+    AgentEvent, ContentBlock, Delta, EventKind, ModelUsage, Notice, RateLimit, SessionStart,
+    StreamEvent, TurnResult, Usage,
 };
 use crate::conversation as cv;
 
@@ -243,18 +243,34 @@ pub struct MapStats {
 ///
 /// # What this deliberately does not carry
 ///
-/// Three numbers a status strip obviously wants are missing, and each is missing because
+/// Two numbers a status strip obviously wants are missing, and each is missing because
 /// the stream does not honestly carry it:
 ///
-/// * **A context-window percentage.** The denominator appears only inside the
-///   unmodelled `modelUsage` block, per model, and the numerator would have to be a
-///   running conversation size nothing on the wire reports. Two guesses would make a
-///   confident-looking bar that is wrong.
 /// * **A quota percentage.** `rate_limit_event` carries a *status* and a reset time —
 ///   no numerator, no denominator anywhere.
 /// * **A session token total.** Only `total_cost_usd` is cumulative on the wire. The
 ///   sibling `usage` is per turn, and summing it would double-count every cache read.
 ///   Cost is taken, tokens are not, and the field names say which is which.
+///
+/// ✏️ **A context-window percentage was on that list and has come off it, with the
+/// numerator changed.** The refusal read: *"the denominator appears only inside the
+/// unmodelled `modelUsage` block, per model, and the numerator would have to be a
+/// running conversation size nothing on the wire reports."* Half of that was a gap and
+/// half was a mistake. The denominator was never unavailable, only undecoded —
+/// `modelUsage.contextWindow` is now [`ModelUsage::context_window`]. And the numerator
+/// does not have to be a running total at all: **the last request's prompt is on the
+/// wire, per request, on `message_start`.** So the reading is
+/// [`ContextFill`] — the conversation as the model last saw it, over that model's
+/// window, both measured — and the refusal survives in the shape of what is still
+/// declined:
+///
+/// * 🚨 **Not `result.usage`.** It is summed across a turn's API round trips (the
+///   `iterations` array is the proof), so on the two-request capture it reads **106 606**
+///   against a largest true prompt of **54 050** — a bar that would show a session as
+///   twice as full as it is, while looking exactly as confident. [`Usage::prompt_tokens`]
+///   names both readings and says which object gives which.
+/// * **Not a cumulative fill.** Nothing is summed here either. A conversation's context
+///   goes *down* when the CLI compacts it, and only the next request reports that.
 ///
 /// **`num_turns` is also declined**, for a different reason: it counts the turns of that
 /// *run* and does not accumulate (it was `1` on both results of the two-turn capture), so
@@ -305,6 +321,32 @@ pub struct SessionFacts {
     pub last_turn_usage: Option<Usage>,
     /// Wall time of the most recent turn.
     pub last_turn_duration_ms: Option<u64>,
+    /// The context window of the model the last request used, off `modelUsage`.
+    ///
+    /// A property of the *model*, not of the session, so latest-wins is a formality —
+    /// two results for one model restate the same number. It changes on a model switch,
+    /// which is exactly when latest-wins is the right rule. Chosen by name rather than
+    /// by position: see [`context_window_for`].
+    pub context_window: Option<u64>,
+
+    // -- from `stream_event`/`message_start`, LATEST WINS --------------------
+    /// The prompt the most recent API request carried — the conversation as the model
+    /// last saw it, [`Usage::prompt_tokens`] of a `message_start`.
+    ///
+    /// 🚨 **Per request, and a turn makes several.** This moves mid-turn, once per round
+    /// trip, which is the whole reason it is not read off the `result` — that line's
+    /// `usage` is their sum. Latest-wins and **never summed**.
+    ///
+    /// ⚠️ It belongs here rather than beside `is_generating` even though its source is a
+    /// stream event, because the retention rule is what decides that split (rule 7): this
+    /// is a value the session *reported* and that stays true until the next request
+    /// replaces it. A message closing does not make the last prompt size stale.
+    pub last_prompt_tokens: Option<u64>,
+    /// The model that request went to — `message_start`'s own `model` field, which is
+    /// the **canonical** spelling (`claude-opus-5`) where `system/init` reports the
+    /// variant one (`claude-opus-5[1m]`). Kept solely to pair the numerator above with
+    /// the right window.
+    pub last_prompt_model: Option<String>,
 
     // -- from `system/post_turn_summary`, LATEST WINS ------------------------
     /// A sentence describing the finished turn.
@@ -370,6 +412,42 @@ impl SessionFacts {
         if let Some(duration) = result.duration_ms {
             self.last_turn_duration_ms = Some(duration);
         }
+        // ⚠️ The window only, and deliberately nothing else out of `modelUsage`: its
+        // token and cost fields are session-cumulative restatements of what `cost_usd`
+        // already carries, and a second writer for a number that has one is how two
+        // readouts start disagreeing. A block that names no window leaves the standing
+        // one alone rather than blanking the ring.
+        if let Some(window) =
+            context_window_for(self.last_prompt_model.as_deref(), &result.model_usage)
+        {
+            self.context_window = Some(window);
+        }
+    }
+
+    /// One API request opening: the prompt it carried, and which model it went to.
+    ///
+    /// 🚨 **`message_start`'s usage is the one prompt size in the stream**, and this is
+    /// the only place it is read. Nothing accumulates: the field is *assigned*, so the
+    /// second request of a turn replaces the first rather than adding to it, which is
+    /// the difference between this reading and the one `result.usage` would give.
+    fn record_request(&mut self, model: Option<&String>, usage: Option<&Usage>) {
+        if let Some(usage) = usage {
+            self.last_prompt_tokens = Some(usage.prompt_tokens());
+        }
+        if let Some(model) = model.and_then(|m| non_empty(m)) {
+            self.last_prompt_model = Some(model);
+        }
+    }
+
+    /// The context reading, when both halves have been measured.
+    ///
+    /// `None` is a real answer and the common one at a cold start: no `result` has stated
+    /// a window yet, or — on a session run without `--include-partial-messages`, which is
+    /// what the `live_session` fixture captures — no `message_start` will ever state a
+    /// prompt. There is deliberately no fallback for either half.
+    pub fn context_fill(&self) -> Option<ContextFill> {
+        let context_window = self.context_window.filter(|window| *window > 0)?;
+        Some(ContextFill { prompt_tokens: self.last_prompt_tokens?, context_window })
     }
 
     /// The three `post_turn_summary` fields are replaced **as a unit**, so a later turn
@@ -410,6 +488,73 @@ impl SessionFacts {
         if let Some(limit_type) = &limit.limit_type {
             self.rate_limit_type = non_empty(limit_type);
         }
+    }
+}
+
+/// **Context at the last request** — the whole of what the console claims to know about
+/// how full a conversation is.
+///
+/// Both halves are *measured*, and the name is the marker: this is not a running total,
+/// not a session fill, and not a projection of where the turn will end up. It is the size
+/// of the prompt the most recent API round trip carried, over the context window the
+/// model that served it reports. A turn that makes three requests moves this three times.
+///
+/// 🚨 **The pairing is the correctness.** A numerator from one request and a denominator
+/// from a different model would be a plausible-looking number with nothing behind it, so
+/// [`context_window_for`] matches them by name and refuses when it cannot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextFill {
+    /// [`Usage::prompt_tokens`] of the most recent `message_start`.
+    pub prompt_tokens: u64,
+    /// `modelUsage.contextWindow` for the model that request went to. Never zero — a
+    /// zero window is treated as absence by [`SessionFacts::context_fill`], because a
+    /// fraction over it is not a small reading, it is no reading.
+    pub context_window: u64,
+}
+
+impl ContextFill {
+    /// 0.0–1.0, **clamped at the top**.
+    ///
+    /// The clamp is for the drawing rather than for the truth: a prompt cannot really
+    /// exceed the window it was accepted against, so a value over 1 would mean the two
+    /// halves had been mispaired — and an arc that wrapped past its own start would hide
+    /// exactly that. The raw counts are kept beside it and are what the hover states.
+    pub fn fraction(&self) -> f32 {
+        (self.prompt_tokens as f32 / self.context_window as f32).clamp(0.0, 1.0)
+    }
+
+    /// Whole percent, rounded to nearest, for a reading a person can say out loud.
+    pub fn percent(&self) -> u64 {
+        (self.fraction() * 100.0).round() as u64
+    }
+}
+
+/// Which `modelUsage` entry describes the model a request went to — **by name, never by
+/// position**.
+///
+/// ⚠️ Two spellings have to be tried, and that is a measurement rather than defensiveness:
+/// the block is keyed `claude-opus-5[1m]` while the `message_start` that names the model
+/// says `claude-opus-5`, which is the entry's own `canonicalModel`. Matching only the key
+/// would find nothing on the one capture that carries both.
+///
+/// **The single-entry fallback is the one inference here, and it is deliberate**: a turn
+/// whose whole `modelUsage` block names one model used one model, so its window is not
+/// ambiguous even when the identifiers do not line up (a gateway's fully-qualified id, a
+/// spelling this build has not met). With two or more entries and no match there is a
+/// real choice to make and nothing to make it with, so the answer is `None` and the ring
+/// simply does not appear.
+fn context_window_for(model: Option<&str>, entries: &[ModelUsage]) -> Option<u64> {
+    if let Some(model) = model {
+        let named = entries.iter().find(|entry| {
+            entry.model == model || entry.canonical_model.as_deref() == Some(model)
+        });
+        if let Some(entry) = named {
+            return entry.context_window;
+        }
+    }
+    match entries {
+        [only] => only.context_window,
+        _ => None,
     }
 }
 
@@ -714,7 +859,12 @@ impl EventMapper {
 
     fn map_stream(&mut self, stream: &StreamEvent) -> Vec<cv::AgentEvent> {
         match stream {
-            StreamEvent::MessageStart { message_id, .. } => {
+            StreamEvent::MessageStart { message_id, model, usage } => {
+                // Rule 6, and the one fact that arrives on a stream event rather than on
+                // a `system` or `result` line: this request's prompt size. Recorded
+                // before anything else here because it is true the moment the line lands,
+                // whatever the message goes on to do.
+                self.facts.record_request(model.as_ref(), usage.as_ref());
                 self.streaming_message = Some(match message_id {
                     Some(id) => id.clone(),
                     None => {
@@ -1545,6 +1695,104 @@ mod tests {
         assert_eq!(usage.cache_creation_input_tokens, 1128);
         assert_eq!(usage.output_tokens, 9);
         assert_eq!(m.facts().last_turn_duration_ms, Some(7389), "turn two's 7389ms");
+    }
+
+    /// 🚨 CONTRACT — **the numerator is one request's prompt, never the turn's total.**
+    /// This is the mistake the reading invites and the only thing standing between an
+    /// honest ring and a confident wrong one, so both numbers are asserted here: the two
+    /// requests of the capture's single turn, and the `result` that sums them.
+    #[test]
+    fn the_context_numerator_is_the_last_request_not_the_turns_total() {
+        let (_, m) = fold(TWO_TOOLS);
+        let facts = m.facts();
+        assert_eq!(
+            facts.last_prompt_tokens,
+            Some(54_050),
+            "the SECOND message_start's prompt — the conversation as the model last saw it"
+        );
+        let turn = facts.last_turn_usage.expect("the result arrived");
+        assert_eq!(
+            turn.prompt_tokens(),
+            106_606,
+            "the result's own usage, which is the two requests added together"
+        );
+        assert_ne!(
+            facts.last_prompt_tokens,
+            Some(turn.prompt_tokens()),
+            "a ring built on the result would read 10% where the truth is 5%"
+        );
+    }
+
+    /// The window comes off `modelUsage` and is paired with the model the request named.
+    /// ⚠️ The two spellings differ — `message_start` says `claude-opus-5`, the block is
+    /// keyed `claude-opus-5[1m]` — so matching the key alone would find nothing.
+    #[test]
+    fn the_window_is_matched_to_the_model_the_request_actually_used() {
+        let (_, m) = fold(TWO_TOOLS);
+        let facts = m.facts();
+        assert_eq!(
+            facts.last_prompt_model.as_deref(),
+            Some("claude-opus-5"),
+            "the canonical spelling, not the init one"
+        );
+        assert_eq!(facts.context_window, Some(1_000_000));
+        let fill = facts.context_fill().expect("both halves measured");
+        assert_eq!(fill.prompt_tokens, 54_050);
+        assert_eq!(fill.percent(), 5, "54050 / 1000000");
+    }
+
+    /// A model whose entry is not in the block, alongside another that is, is not a
+    /// window to guess at. One entry and no match is unambiguous; two are not.
+    #[test]
+    fn an_unmatched_model_takes_the_sole_window_and_refuses_a_choice() {
+        let entry = |model: &str, window: u64| ModelUsage {
+            model: model.to_string(),
+            canonical_model: None,
+            context_window: Some(window),
+            ..Default::default()
+        };
+        let one = [entry("some-gateway/opus", 200_000)];
+        let two = [entry("some-gateway/opus", 200_000), entry("haiku", 100_000)];
+        assert_eq!(
+            context_window_for(Some("unheard-of"), &one),
+            Some(200_000),
+            "one model served the turn, so its window is not ambiguous"
+        );
+        assert_eq!(
+            context_window_for(Some("unheard-of"), &two),
+            None,
+            "two models and no match is a choice with nothing to make it with"
+        );
+        assert_eq!(context_window_for(Some("haiku"), &two), Some(100_000), "matched by key");
+    }
+
+    /// ⚠️ CONTRACT: a session that never states a per-request prompt gets **no reading**,
+    /// not a reading off the `result`. `live_session` was captured without
+    /// `--include-partial-messages`, so it carries a window and no `message_start` at all
+    /// — which is exactly the shape that would tempt a fallback.
+    #[test]
+    fn a_window_without_a_prompt_size_is_no_context_reading_at_all() {
+        let (_, m) = fold(LIVE_SESSION);
+        let facts = m.facts();
+        assert_eq!(facts.context_window, Some(1_000_000), "the window did arrive");
+        assert_eq!(facts.last_prompt_tokens, None, "no message_start ever landed");
+        assert!(
+            facts.last_turn_usage.is_some(),
+            "and the result's usage IS sitting there, unused — the fallback that must not exist"
+        );
+        assert_eq!(facts.context_fill(), None);
+    }
+
+    /// A zero window is absence rather than an infinitely full context: a fraction over
+    /// it is not a small reading, it is no reading.
+    #[test]
+    fn a_zero_window_reports_nothing_rather_than_dividing_by_it() {
+        let facts = SessionFacts {
+            context_window: Some(0),
+            last_prompt_tokens: Some(4_096),
+            ..Default::default()
+        };
+        assert_eq!(facts.context_fill(), None);
     }
 
     /// The `post_turn_summary` fields, latest wins. `needs_action` is empty on both turns

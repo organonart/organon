@@ -34,7 +34,7 @@ use std::time::Instant;
 use egui::{Color32, CornerRadius, Frame, Margin, RichText};
 
 use crate::agent_event::{EventKind, ModelChoice};
-use crate::agent_map::{EventMapper, SessionFacts};
+use crate::agent_map::{ContextFill, EventMapper, SessionFacts};
 use crate::agent_session::{AgentSession, Control, McpWiring, StreamItem};
 use crate::approval::{
     approval_channel, decision_for, decision_key, resolve_choice, Choice, DecisionMemory,
@@ -1634,6 +1634,37 @@ const MODEL_BADGE: Color32 = Color32::from_rgb(0x8a, 0xb0, 0x8a);
 const MODE_ALERT: Color32 = Color32::from_rgb(0xd8, 0x9a, 0x5c);
 const MODE_NOTE: Color32 = Color32::from_rgb(0x8a, 0xa6, 0xc2);
 
+/// The context ring's unfilled circumference — present enough to say "this is a dial and
+/// it is not full", dim enough not to compete with the band's actual readings.
+const CONTEXT_TRACK: Color32 = Color32::from_rgb(0x2c, 0x38, 0x2c);
+/// The filled arc below [`CONTEXT_HIGH_PERCENT`].
+///
+/// Blue rather than a green off this band's own palette, and that is the point: every
+/// other colour here is a *standing* — [`RUNNING`] busy, [`ASKING`] blocked, [`BAD`]
+/// gone — and the ring is not a standing. It is a resource gauge, true continuously, and
+/// giving it a hue no reading uses is what keeps a half-full context from looking like a
+/// state the agent is in.
+const CONTEXT_ARC: Color32 = Color32::from_rgb(0x5f, 0x93, 0xcc);
+/// …and above it. [`MODE_ALERT`]'s exact amber, reused rather than re-chosen: it already
+/// means "worth acting on, not a failure" on this band, which is precisely the reading.
+const CONTEXT_ARC_HIGH: Color32 = MODE_ALERT;
+const CONTEXT_RING_STROKE: f32 = 2.0;
+
+/// Where the ring turns amber — **a display decision, and the console's own.**
+///
+/// Nothing on the wire says when the CLI will compact a conversation, so any threshold
+/// here is a judgement about how much runway a reader needs rather than a measurement,
+/// and it says so instead of borrowing the authority of the two numbers around it.
+///
+/// Seventy-five, because the amber has to arrive while the answers are still cheap —
+/// start a fresh tab, ask for a summary, let a long tool result go — and each of those
+/// costs a turn or two. A turn is not small against this window: on
+/// `claude_stream_two_tools.jsonl` one turn's two requests carried 52 556 then 54 050
+/// tokens, so the conversation grew ~1 500 in a single round trip and had already spent
+/// 5 % of a 1 000 000 window on its first. A warning at 90 % would leave a handful of
+/// round trips; a quarter of the window leaves room to finish the thought.
+const CONTEXT_HIGH_PERCENT: u64 = 75;
+
 const STRIP_PAD_X: i8 = 10;
 const STRIP_PAD_Y: i8 = 5;
 const STRIP_STROKE: f32 = 1.0;
@@ -1685,6 +1716,45 @@ pub enum ModelSlot {
     Connecting,
     /// …and it is not, because the agent is gone.
     Absent,
+}
+
+/// The context half of the band: the little ring at the far right, or nothing at all.
+///
+/// 🚨 **`Unknown` draws nothing, and that is the honest rendering rather than a shortcut.**
+/// A ring is a proportion; before the first `result` there is no window and before the
+/// first `message_start` there is no prompt, and a ring drawn empty in either case reads
+/// as *"0 % full"* — a confident, specific, false number. [`ModelSlot::Connecting`] says
+/// "no model yet" instead of vanishing because that plate is the headline affordance and
+/// a hole where it sits reads as broken; the ring sits at the end of the dim half beside
+/// the chips, which appear when their number does and are absent before it. It follows
+/// the chips.
+///
+/// ⚠️ So a session's first turn has no ring, and the ring appears at that turn's `result`.
+/// From then on it moves **per API round trip**, not per turn — a `message_start` updates
+/// it mid-turn, which is the visible consequence of the numerator being what it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextSlot {
+    /// One or both halves have not been measured yet. Nothing is drawn.
+    Unknown,
+    /// Both halves measured. See [`ContextFill`] for exactly what they are.
+    Known(ContextFill),
+}
+
+impl ContextSlot {
+    /// Whether the reading has crossed [`CONTEXT_HIGH_PERCENT`].
+    ///
+    /// Integer arithmetic on purpose: a threshold compared as a float is a threshold that
+    /// can fall on either side of its own boundary depending on the window, and this one
+    /// is pinned at exactly 75 % by a test.
+    pub fn is_high(&self) -> bool {
+        match self {
+            ContextSlot::Unknown => false,
+            ContextSlot::Known(fill) => {
+                fill.prompt_tokens.saturating_mul(100)
+                    >= fill.context_window.saturating_mul(CONTEXT_HIGH_PERCENT)
+            }
+        }
+    }
 }
 
 /// A model identifier, split for display.
@@ -1917,6 +1987,9 @@ pub struct StripContent {
     /// and must not be allowed to try.
     pub identity: Vec<(String, String)>,
     pub reading: StatusReading,
+    /// How full the model's context was at the last request — the ring at the far right,
+    /// or [`ContextSlot::Unknown`] and no ring at all.
+    pub context: ContextSlot,
     /// Dim, right-aligned, joined with `·`. Bounded by construction: at most three.
     pub chips: Vec<String>,
     /// The most recent diagnostic line off the child, if any. Drawn truncated.
@@ -2165,12 +2238,19 @@ pub fn strip_content(
         mode: facts.permission_mode.clone(),
         marker: facts.permission_mode.as_deref().and_then(mode_marker),
     };
+    // Two measurements or nothing. `context_fill` refuses when either half is missing,
+    // and there is no arm here that supplies one — see [`ContextSlot`].
+    let context = match facts.context_fill() {
+        Some(fill) => ContextSlot::Known(fill),
+        None => ContextSlot::Unknown,
+    };
     StripContent {
         model,
         mode,
         pending_model: None,
         identity: identity_rows(facts, session),
         reading: status_reading(failure, live, facts),
+        context,
         chips,
         log: log.map(str::to_string),
     }
@@ -2310,6 +2390,11 @@ fn strip_box(
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
+                                // First in a right-to-left layout is rightmost: the ring
+                                // is the last thing on the band, which is where a gauge
+                                // that is true continuously belongs and where the eye
+                                // learns to find it without reading.
+                                context_ring(ui, &content.context);
                                 if !content.chips.is_empty() {
                                     ui.label(
                                         RichText::new(content.chips.join(" · ")).color(DIM),
@@ -2331,6 +2416,117 @@ fn strip_box(
         },
     )
     .inner
+}
+
+/// The context ring: how full the model's window was at the **last request**.
+///
+/// A dial rather than a number because the question it answers is "how much room is
+/// left", which is a proportion, and because it has to be readable without being read —
+/// this band is looked at for hours and the ring is at the edge of the eye. The counts
+/// themselves are on the hover, where they cost no width and cannot push the band to two
+/// lines.
+///
+/// ⚠️ **The diameter is exactly one [`egui::TextStyle::Body`] row**, which is what makes
+/// it free: [`strip_box`] reserves `row + STRIP_CHROME` *before* laying anything out, and
+/// the plates beside this are that same row plus their own padding. A ring drawn at any
+/// size a designer liked would be the one child of the horizontal layout taller than the
+/// reservation, and the strip would silently become two lines.
+///
+/// 🚨 **An arc, not a pie.** A filled wedge past 180° is not convex, and egui's
+/// `convex_polygon` tessellation produces a folded-over shape for one — it would draw
+/// *wrongly* exactly as the reading became urgent. A thick stroked polyline has no such
+/// case and is what the indicator this copies looks like anyway.
+fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
+    // Nothing at all when either half is missing: see [`ContextSlot`] for why an empty
+    // ring is worse than no ring.
+    let ContextSlot::Known(fill) = slot else {
+        return;
+    };
+    let diameter = ui.text_style_height(&egui::TextStyle::Body);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(diameter, diameter),
+        egui::Sense::hover(),
+    );
+    let center = rect.center();
+    // Inset by half the stroke so the ring stays inside its own allocation rather than
+    // bleeding a pixel into the chip beside it.
+    let radius = diameter * 0.5 - CONTEXT_RING_STROKE * 0.5;
+    let painter = ui.painter();
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(CONTEXT_RING_STROKE, CONTEXT_TRACK),
+    );
+    let filled = fill.fraction();
+    if filled > 0.0 {
+        // Twelve o'clock, clockwise — a clock face, because that is the shape everyone
+        // already knows how to read. Screen y grows downward, so a growing angle is
+        // clockwise here without a sign flip.
+        const SEGMENTS: f32 = 64.0;
+        let steps = ((SEGMENTS * filled).ceil() as usize).max(1);
+        let sweep = filled * std::f32::consts::TAU;
+        let points: Vec<egui::Pos2> = (0..=steps)
+            .map(|step| {
+                let angle = -std::f32::consts::FRAC_PI_2
+                    + sweep * (step as f32 / steps as f32);
+                center + egui::vec2(radius * angle.cos(), radius * angle.sin())
+            })
+            .collect();
+        let color = if slot.is_high() { CONTEXT_ARC_HIGH } else { CONTEXT_ARC };
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(CONTEXT_RING_STROKE, color),
+        ));
+    }
+    // The provenance lives here, in the same shape as the model plate's identity hover:
+    // what it measures, what it does not, and both raw counts.
+    response.on_hover_ui(|ui| {
+        for (label, value) in context_rows(fill) {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{label}:")).color(DIM).small().monospace());
+                ui.label(RichText::new(value).color(PROSE).small().monospace());
+            });
+        }
+    });
+}
+
+/// The ring's hover, and the place the reading states what it is.
+///
+/// ⚠️ **"at the last request" is not phrasing, it is the marker.** A turn makes several
+/// API round trips and this is one of them — the most recent — so a hover that said
+/// "context used" would invite the reader to add turns up, which is the exact mistake
+/// `result.usage` would have made for them. `agent_map`'s [`ContextFill`] carries the
+/// argument.
+fn context_rows(fill: &ContextFill) -> Vec<(String, String)> {
+    vec![
+        ("context".to_string(), format!("{}% at the last request", fill.percent())),
+        (
+            "prompt".to_string(),
+            format!("{} tokens", thousands(fill.prompt_tokens)),
+        ),
+        (
+            "window".to_string(),
+            format!("{} tokens", thousands(fill.context_window)),
+        ),
+        (
+            "measured".to_string(),
+            "message_start.usage / modelUsage.contextWindow".to_string(),
+        ),
+    ]
+}
+
+/// `54050` → `54,050`. Six-figure token counts are unreadable without it, and this band
+/// has no number formatting anywhere else to borrow.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// **The headline affordance**: which model is behind this tab, on its own plate — and now
@@ -3380,6 +3576,83 @@ mod tests {
         }
     }
 
+    /// A session with both halves of a context reading measured.
+    fn filled(prompt: u64, window: u64) -> SessionFacts {
+        SessionFacts {
+            context_window: Some(window),
+            last_prompt_tokens: Some(prompt),
+            ..started("claude-opus-5[1m]")
+        }
+    }
+
+    /// ⚠️ CONTRACT: no ring until both halves are measured. An empty ring reads as
+    /// "0% full", which is a specific claim the console cannot make before a `result`
+    /// has stated a window and a `message_start` has stated a prompt.
+    #[test]
+    fn the_band_carries_no_ring_until_both_halves_are_measured() {
+        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        assert_eq!(cold.context, ContextSlot::Unknown, "nothing measured");
+
+        let window_only = SessionFacts { context_window: Some(1_000_000), ..started("m") };
+        let half = strip_content(None, live(0, 0), &window_only, None, None);
+        assert_eq!(
+            half.context,
+            ContextSlot::Unknown,
+            "a denominator alone is not a proportion"
+        );
+
+        let both = strip_content(None, live(0, 0), &filled(54_050, 1_000_000), None, None);
+        let ContextSlot::Known(fill) = both.context else {
+            panic!("{:?}", both.context)
+        };
+        assert_eq!(fill.percent(), 5);
+    }
+
+    /// CONTRACT: amber at exactly [`CONTEXT_HIGH_PERCENT`], not a token before it. The
+    /// threshold is the console's own judgement and is therefore the one number here a
+    /// reader could reasonably argue with — so it is pinned rather than approximated.
+    #[test]
+    fn the_ring_turns_amber_at_three_quarters_and_not_before() {
+        let at = |prompt| strip_content(None, live(0, 0), &filled(prompt, 1_000), None, None).context;
+        assert!(!at(749).is_high(), "74.9% is still blue");
+        assert!(at(750).is_high(), "75.0% is the boundary and it counts as high");
+        assert!(at(1_000).is_high());
+        assert!(!ContextSlot::Unknown.is_high(), "no reading is not a high reading");
+    }
+
+    /// CONTRACT: the ring is a proportion of the window and nothing else — it does not
+    /// grow with the session, and a compaction that shrinks the prompt shrinks the ring.
+    /// Latest-wins all the way through, which is what makes that true for free.
+    #[test]
+    fn the_ring_follows_the_last_prompt_down_as_well_as_up() {
+        let grown = strip_content(None, live(0, 0), &filled(800_000, 1_000_000), None, None);
+        let compacted = strip_content(None, live(0, 0), &filled(120_000, 1_000_000), None, None);
+        assert!(grown.context.is_high());
+        assert!(!compacted.context.is_high(), "a compacted context is not a full one");
+        let ContextSlot::Known(fill) = compacted.context else {
+            panic!("{:?}", compacted.context)
+        };
+        assert_eq!(fill.percent(), 12);
+    }
+
+    /// The hover is where the reading states what it is, so it must say *which* request
+    /// it describes and where both numbers came from.
+    #[test]
+    fn the_rings_hover_names_the_last_request_and_its_two_sources() {
+        let fill = ContextFill { prompt_tokens: 54_050, context_window: 1_000_000 };
+        let rows = context_rows(&fill);
+        let joined = rows
+            .iter()
+            .map(|(label, value)| format!("{label}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("at the last request"), "{joined}");
+        assert!(joined.contains("54,050"), "the prompt, readable: {joined}");
+        assert!(joined.contains("1,000,000"), "the window, readable: {joined}");
+        assert!(joined.contains("message_start.usage"), "provenance: {joined}");
+        assert!(joined.contains("modelUsage.contextWindow"), "provenance: {joined}");
+    }
+
     fn live(pending: usize, running: usize) -> LiveCounts {
         LiveCounts {
             pending_approvals: pending,
@@ -3948,6 +4221,10 @@ mod tests {
         // unconfirmed model change — the two things this tier added to a row that was
         // already full, and either of which wrapping would make the strip two lines.
         facts.permission_mode = Some("dontAsk".into());
+        // …and the ring, which is the one thing on the band that is not text and so the
+        // one thing that could be taller than the row the band reserves for it.
+        facts.context_window = Some(1_000_000);
+        facts.last_prompt_tokens = Some(910_000);
         let busy = strip_content(
             None,
             LiveCounts {
