@@ -731,9 +731,12 @@ dropped every status transition, silently, on a path where silence is the failur
 The `task_*` family reaches **depth 2**, unlike every other subagent line on this wire: a
 grandchild's lifecycle really is forwarded, naming a call that is only a step in its
 grandparent's log. Merging it would have made that card narrate somebody else's work in its
-own voice, mid-flight. Counted as `Stats::nested_subagent_progress` (3 here), because a
-number that reads non-zero on a *healthy* nesting fan-out must not be mistaken for a fault
-— and because it is the measure of the next increment.
+own voice, mid-flight. Counted as `Stats::nested_subagent_progress`, because a number that
+reads non-zero on a *healthy* nesting fan-out must not be mistaken for a fault — and
+because it is the measure of the next increment. ⚠️ **The nested task sends four `task_*`
+lines here and that counter reads 3**: its `task_started` arrives one line *before* the
+`tool_use` block that creates its card, so the call is not yet known to be nested and that
+one is counted by `orphan_subagent_progress`. **3 here + 1 there**, each half pinned.
 
 ⚠️ **One source per fact.** An `Agent` `tool_use_result` carries its own `totalTokens` /
 `totalDurationMs` / `totalToolUseCount`. Durations and tool counts match the `task_*`
@@ -1964,11 +1967,13 @@ path silently breaks the three-products-simultaneously guarantee that
   📌 **And the family reaches depth 2, where every other subagent line stops at depth 1.**
   A nested agent's `task_*` lines *are* forwarded, naming a call that exists only as a step
   inside its grandparent's log. They are **declined and counted**
-  (`Stats::nested_subagent_progress`, 3 on the capture): a card holds one progress value
-  with nowhere to record a depth, so merging them would have made the outer card read
-  "Reading one.txt · 1 tool · completed" — the grandchild's work in the parent's voice,
-  while the parent was still going. That is the honest next increment, and the number is
-  the measure of what is being given up.
+  (`Stats::nested_subagent_progress`): a card holds one progress value with nowhere to
+  record a depth, so merging them would have made the outer card read "Reading one.txt ·
+  1 tool · completed" — the grandchild's work in the parent's voice, while the parent was
+  still going. That is the honest next increment, and the number is the measure of what is
+  being given up. ⚠️ Four `task_*` lines on the capture, counter reads **3**: the
+  `task_started` lands one line before the `tool_use` block that creates its card and goes
+  to `orphan_subagent_progress` instead. **3 here + 1 there**, each half pinned.
 
   ⚠️ **What has *not* changed is the liveness measurement**, and the row is built so it
   cannot drift into implying otherwise: no caret, no partial text, and the elapsed is the

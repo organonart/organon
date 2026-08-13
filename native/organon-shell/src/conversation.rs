@@ -1006,10 +1006,18 @@ pub struct Stats {
     /// grandparent's own.
     ///
     /// 🚨 **Expected to be non-zero on a healthy nesting fan-out**, which is why it is not
-    /// [`orphan_subagent_progress`](Self::orphan_subagent_progress): four lines on the
-    /// real capture. It is the measure of what this tier declines, not of anything wrong
-    /// — and it is the number to watch if a card's own progress ever starts reading like
-    /// somebody else's.
+    /// [`orphan_subagent_progress`](Self::orphan_subagent_progress). It is the measure of
+    /// what this tier declines, not of anything wrong — and it is the number to watch if a
+    /// card's own progress ever starts reading like somebody else's.
+    ///
+    /// ⚠️ **The capture's nested task sends FOUR `task_*` lines and this counter reads 3.**
+    /// That is a split, not a discrepancy, and knowing which half goes where is the only
+    /// way to reconcile the two numbers: `task_started` arrives one line *before* the
+    /// `tool_use` block that creates its card, so at that moment its call is neither a card
+    /// nor a known nested one and it is counted by
+    /// [`orphan_subagent_progress`](Self::orphan_subagent_progress) instead. `task_progress`,
+    /// `task_updated` and `task_notification` all land here. **3 here + 1 there**, each half
+    /// pinned by its own test.
     ///
     /// 📌 It is also the *finding*: the `task_*` family reaches **depth 2**, where every
     /// other subagent line on the wire stops at depth 1. A nested agent's work is

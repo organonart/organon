@@ -859,8 +859,11 @@ in a real capture, and getting any of them wrong produces a view that looks near
    is forwarded, naming a call that exists only as a step in its grandparent's log. A card
    holds one progress value with nowhere to record a depth, so merging would have made the
    outer card narrate its grandchild's work in its own voice while still running.
-   `Stats::nested_subagent_progress` counts it (3 here) and is expected non-zero on a
-   healthy nesting fan-out, which is why it is not the orphan counter.
+   `Stats::nested_subagent_progress` counts it and is expected non-zero on a healthy
+   nesting fan-out, which is why it is not the orphan counter. ⚠️ The nested task sends
+   **four** `task_*` lines here and that counter reads **3** — its `task_started` arrives
+   one line *before* the `tool_use` block that creates its card, so it is counted by
+   `orphan_subagent_progress` instead. **3 here + 1 there**, each half pinned.
 
    ⚠️ **`MapStats::unmapped` kept its name because it kept its meaning** — "we drew
    nothing for this line" — while its population went 19 → 6 on the capture. Contrast

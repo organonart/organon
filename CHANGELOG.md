@@ -36,9 +36,13 @@ From here on, this file gets an entry per meaningful change, newest first.
   naming a call that exists only as a *step* inside its grandparent's log. Merging that
   would have made the outer card read "Reading one.txt · 1 tool · completed" — the
   grandchild's work in the parent's voice, while the parent was still going. **Declined and
-  counted** (`Stats::nested_subagent_progress`, 3 on the capture), because a card holds one
-  progress value with nowhere to record a depth. That counter reads non-zero on a *healthy*
-  nesting fan-out, which is why it is not the orphan counter beside it.
+  counted**, because a card holds one progress value with nowhere to record a depth. That
+  counter reads non-zero on a *healthy* nesting fan-out, which is why it is not the orphan
+  counter beside it. ⚠️ The capture's nested task sends **four** `task_*` lines and
+  `Stats::nested_subagent_progress` reads **3** — a split, not a discrepancy: its
+  `task_started` arrives one line *before* the `tool_use` block that creates its card, so
+  that one is counted by `orphan_subagent_progress` instead. **3 here + 1 there**, each half
+  pinned by its own test.
 - 🚨 **This does not soften §5.9.1, and the row is built so it cannot drift into implying
   that it does.** Progress metadata is not token deltas — not one character of the agent's
   own prose is on these lines. No caret, no partial text, nothing that suggests live prose.
@@ -71,7 +75,7 @@ From here on, this file gets an entry per meaningful change, newest first.
 - ⚠️ **Nobody has seen this on screen.** Every claim is pinned by tests against the real
   capture and every glyph in the row is one `step_mark` already measured present in Hack —
   but the last time a subagent card changed, it took a human looking to find that its
-  marker was tofu, and no replay could have. 451 tests in the compositor lib.
+  marker was tofu, and no replay could have. 461 tests in the compositor lib, from 443.
 
 ### Console Spike — a conversation tab now runs in a project, and says which one
 
