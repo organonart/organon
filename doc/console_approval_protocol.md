@@ -218,6 +218,39 @@ to parse. That is a genuine UX difference and it is the honest reason to do it.
 
 ---
 
+## §9 — What building against this document revealed it was missing
+
+Added 2026-08-12, after the first implementation. **Nothing above was wrong** — every shape held
+exactly as quoted. These are gaps, and each cost time or would have.
+
+1. 🚨 **§8 enumerates the handshake but not the HTTP framing you owe back.** A notification
+   (`handle` → `None`) still owes a **status**: `202` with an empty body, **not** `200 null`.
+   And every response needs an explicit `Content-Length: 0` when empty, or the client holds the
+   connection waiting for a body that never comes.
+2. **The client frames its requests with `Content-Length`, never chunked.** §8 characterises the
+   client's `Accept` header and says nothing about how it sends. Defensive chunked decoding is
+   wasted work.
+3. 🚨 **The request shape in §3 is complete, but its *timing* is not stated — and the timing
+   decides where the card goes.** The permission `tools/call` arrives **after** the tool's
+   `content_block_stop` and after the complete `tool_use` in the `assistant` message. So the
+   tool card already exists in the transcript when the question lands, and the approval card
+   belongs directly **beneath it**. Had it arrived first, "appearing where the agent is working"
+   would have needed an entirely different mechanism.
+4. **§7's withholding guarantee was measured against a *probe* server; re-measure it per
+   server.** Done for ours: `tools mentioning 'organon' = []` out of 36 offered. It is the
+   security property, it is one line of output, and it is cheap enough to check every time.
+5. **The empty-capability-table case is not discussed and is what an approvals tier actually
+   wants.** A server whose `tools/list` returns **only the handler** still reports
+   `status: connected`, and the model simply sees no tools from it. That is the *safest* shape —
+   answer for everything, expose nothing — and §"What this decides" wrongly implies both must be
+   served together.
+
+📌 **One API consequence, forced by §8's own conclusion.** The serve loop must not be the UI
+thread, so the responder crosses one: `PermissionResponder` is now `+ Send` and `McpServer` is
+`Send`.
+
+---
+
 ## Open, and worth one run each when it matters
 
 - Whether `--allowedTools` accepts a wildcard over a server (`mcp__probe__*`); the literal name
