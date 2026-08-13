@@ -38,6 +38,67 @@ From here on, this file gets an entry per meaningful change, newest first.
   list exists to refuse. An `Agent` result renders no detail, and says so in a number. 420
   tests in the compositor lib.
 
+### Console Spike — the band stopped rearranging itself at the end of the first turn
+
+- **The dim half of the status strip is now present from the first frame.** It used to be
+  empty until the first turn's `result`, at which point the session cost, the context ring
+  and the last-turn figure all arrived together — so a band a hand had been looking at for a
+  minute reshuffled at exactly the moment the session became interesting. The cost is now on
+  the band from the moment the tab opens, reading `$0.0000`, which is not a placeholder but
+  the true total of what has been spent. 421 tests in the compositor lib, from 417.
+- 🚨 **This reverses a documented decision, and the reversal is decomposed rather than
+  waved through.** `ContextSlot::Unknown` was deliberately built to draw **nothing at all**,
+  on the stated grounds that an empty ring asserts *"0 % full"* — specific, confident and
+  false. That was right about the **arc** and wrong about the **circle**: a ring with no arc
+  in it is not a needle pointing at nought, it is the container the answer will appear in.
+  So the **track is chrome and the fill is the measurement** — the track is drawn from the
+  first frame, the arc still refuses until a `result` has stated a window and a
+  `message_start` has stated a prompt. The honesty point survives intact; what it lost was
+  the argument about which part of the ring it applied to.
+- ⚠️ **An unmeasured ring must not be mistakable for a measured nought, and that case is
+  reachable rather than theoretical** — a zero prompt against a known window builds a real
+  reading whose arc is also empty. Two states drawing one picture would *be* the false claim
+  the original rule existed to prevent. So the track carries the difference: `CONTEXT_TRACK_EMPTY`
+  is visibly fainter than the track a measured reading sits on, and the hover says
+  *"not measured yet · waiting on: a window from `result`, a prompt from `message_start`"*
+  where the other says *"0 % at the last request"*. A shade alone is not an answer to
+  "which is this?".
+- ⚠️ **`last turn` has no honest zero, so it is omitted rather than invented.** Nought spent
+  is a total and a bare ring is a container, but `last turn 0.0s` is a *duration* asserted
+  about an event that did not happen. It arrives at the first `result` alongside the ring's
+  first arc, and the band's **height** does not move when it does — which is the property
+  that was actually asked for. `remembered decisions` stays conditional on its own grounds:
+  it counts things the reader themself did.
+- **`the_strip_is_one_band_and_leaves_the_scrollback_the_rest` was not loosened, and its
+  "identical height with everything in it as with nothing" assertion now carries more
+  weight** — the ring is a child of the band's layout on every frame rather than only on
+  measured ones, so the cold case is no longer trivially empty. A second test states the
+  same equality as its primary claim rather than as a corollary, because it is the whole
+  point of the change. Two existing tests moved and are named in `SHELL_ARCHITECTURE.md`;
+  none was deleted.
+- **The band no longer counts the models.** Every `initialize` ack wrote a note —
+  *"the session offers 5 models"* — onto the band's single line of diagnostic width. It is a
+  number nobody can act on and the list is one click away on the model plate. ⚠️ The list
+  itself is untouched: it is what the picker is built from.
+- 🚨 **A subagent step marker was tofu, and `.monospace()` was never going to fix it.** James
+  ran a real fan-out and the card read `□ Bash` where a returned step belonged — at a draw
+  site that had asked for the mono face since the day it was written. Measured by reading the
+  `cmap` tables of all four fonts egui 0.33 bundles: **`✓` U+2713 and `✗` U+2717 are in none
+  of them**, and egui does no OS font fallback, so choosing a family only chooses which font
+  is missing the glyph. They are now `•` U+2022 and `×` U+00D7, both present in *both* faces.
+  The rule is therefore two rules — **choose a character Hack has, then ask for Hack** — and
+  the same read confirms the earlier fix was right about its own case.
+- ⚠️ **The guard that missed it is replaced by one that cannot.** The old test forbade a
+  single range (`U+2500..=U+259F`) at a single site (a band reading); `✓` is in neither. The
+  new one is an **allowlist** of every non-ASCII character the console is *measured* to be
+  able to draw, applied to the band, the chips and the subagent step markers — so adding a
+  symbol now means measuring it first. That is worth more than the one-character fix, since
+  this defect has now reached a fourth site by growing a new one each time.
+- 🚨 **Unseen, and a person has to settle it.** Whether a fainter circle reads as "waiting
+  for a reading" rather than as "a ring someone forgot to finish" is a claim about legibility
+  at the edge of the eye, and no test can make it. If it fails, the fix is a wider gap
+  between the two track values, not a return to drawing nothing.
+
 ### Console Spike — a one-character edit stopped rendering as twenty lines
 
 - **The `Edit` diff is aligned now.** It printed `old_string`'s lines as removals and

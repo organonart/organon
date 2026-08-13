@@ -901,11 +901,22 @@ grows a second row has stopped being a strip. ✏️ **The permission mode has s
 promoted out of the hover onto a plate of its own** — it stayed on the hover as well,
 because it is still identity, but a setting that can silence the console's approvals is
 not something a hand should have to discover by hovering. Both plates are now **controls**;
-the next subsection is what that cost. Then, dim and right-aligned, at most three
+the next subsection is what that cost. Then, dim and right-aligned, one to three
 chips (session cost, remembered decisions, last turn's wall time) and the most recent
 diagnostic line off the child, truncated rather than wrapped. ✏️ **And at the very end
 of the row, a context ring** — the one readout on this band that is not text; the
 subsection after next is why it took a different numerator to become honest.
+
+✏️ **One to three, not zero to three: the dim half is now present from the first frame.**
+The session cost is on the band from the moment the tab opens, reading `$0.0000`, and the
+ring's track is drawn beside it — see "the ring's track is chrome" below for the honesty
+argument, which is the interesting half of this change. `last turn` is the one element with
+no truthful cold-start form and it is **omitted** until there is a last turn: nought spent
+is a total and a bare ring is a container, but `last turn 0.0s` is a duration asserted about
+an event that did not happen. `remembered decisions` stays conditional on separate grounds —
+it is a tally of things the reader themself did, so its arrival is not something that happens
+*to* the band. ⚠️ Neither omission moves the band's **height**, which is the property
+`the_cold_band_reports_a_cost_and_a_ring_and_does_not_grow` pins directly.
 
 ✏️ **Dim, not small.** The chips, the trailing log and the standing have all dropped
 `.small()`: the chips and the log sit at `Body`, the standing at `Monospace` — the model
@@ -987,13 +998,41 @@ whole block names one model used one model. ⚠️ The `Vec` order is `serde_jso
 key order, which is sorted rather than as-written, so "the first entry" means nothing and
 nothing reads it that way.
 
-🚨 **"We do not know yet" is a real state and it draws NOTHING.** Before the first `result`
-there is no window; before the first `message_start` there is no prompt; and a ring drawn
-empty in either case reads as *0 % full*, which is a specific, confident, false number.
-`ModelSlot::Connecting` says "no model yet" rather than vanishing because that plate is the
-headline affordance and a hole where it sits reads as broken — the ring is at the end of the
-dim half beside the chips, which appear when their number does, and it follows the chips.
-So a session's first turn has no ring and it arrives at that turn's `result`. ⚠️ A session
+🚨 **"We do not know yet" is a real state. The ring's TRACK is chrome and its FILL is the
+measurement, so the track is drawn throughout and the arc is not.** ✏️ This reverses an
+earlier decision recorded here, and the reversal is stated rather than quietly applied.
+
+The rule used to be that `ContextSlot::Unknown` draws **nothing at all**, on the grounds
+that before the first `result` there is no window, before the first `message_start` there is
+no prompt, and a ring drawn empty in either case reads as *0 % full* — a specific,
+confident, false number. That reasoning was right about the **arc** and wrong about the
+**circle**. A ring with no arc in it is not a needle pointing at nought; it is the container
+the answer will appear in, the same way an unlit gauge face is not a reading of zero. What
+outweighed the original call is a cost it never priced: the whole dim half — cost, ring,
+chips — materialised at the first turn's `result`, so a band a hand had been looking at for
+a minute **rearranged itself** the moment the session became interesting. James asked for
+stable chrome, and the decomposition gives it up nothing: the arc still refuses.
+
+🚨 **The remaining hazard is real rather than hypothetical, and it is handled in the track's
+colour.** A `message_start` reporting a zero prompt against a known window builds a `Known`
+fill whose `fraction()` is `0.0` and which therefore sweeps **no arc either** — so an
+unmeasured ring and a measured nought would draw one identical picture, which is precisely
+the false claim the original rule existed to prevent. `ring_track_color` gives the two
+different circles: `CONTEXT_TRACK_EMPTY` (visibly fainter, sat about midway between the
+band's fill and the measured track) when nothing has been read, `CONTEXT_TRACK` when
+something has. And because a shade is not an answer to "which is this?",
+`ring_hover_rows` carries the same distinction in words — *"context: not measured yet ·
+waiting on: a window from `result`, a prompt from `message_start`"* against the measured
+ring's *"0% at the last request"*. `an_unmeasured_ring_is_distinguishable_from_a_measured_nought`
+pins both halves, including that the empty track is the fainter of the two and is still
+visible against `STRIP_FILL`.
+
+`ModelSlot::Connecting` says "no model yet" rather than vanishing for the reason it always
+did: that plate is the headline affordance and a hole where it sits reads as broken. The
+ring now belongs to the same family — present, and silent about what it has not measured.
+So a session's first turn has no ring **fill** and the arc arrives at that turn's `result`;
+`the_band_carries_no_ring_fill_until_both_halves_are_measured` is the renamed and narrowed
+survivor of the test that used to assert the whole ring was absent. ⚠️ A session
 run **without `--include-partial-messages`** never gets one at all: it has a window and no
 `message_start` ever, which is exactly the shape that tempts a fallback to `result.usage`,
 and `a_window_without_a_prompt_size_is_no_context_reading_at_all` asserts the unused
@@ -1038,7 +1077,13 @@ the one child of that horizontal layout that could have been taller than the res
 quietly made the strip two lines. `the_strip_is_one_band_and_leaves_the_scrollback_the_rest`
 now builds its busiest band with a 91 %-full ring in it and still asserts the same bound and
 the same "identical height with everything in it as with nothing" — **no assertion was
-loosened and the band did not grow.** Drawn as a stroked **arc**, not a pie: a filled wedge
+loosened and the band did not grow.** ✏️ That last clause carries more weight since the ring
+became unconditional: the ring is now a child of the horizontal layout on **every** frame
+rather than only on measured ones, so the cold band is no longer the trivially-empty case it
+was when that assertion was written. Both bounds are unchanged and both still hold, and
+`the_cold_band_reports_a_cost_and_a_ring_and_does_not_grow` states the same equality as its
+*primary* claim rather than as a corollary — deliberately twice, because it is the property
+the change exists to deliver. Drawn as a stroked **arc**, not a pie: a filled wedge
 past 180° is not convex and egui's `convex_polygon` tessellation folds it over, so the naive
 version would have drawn wrongly exactly as the reading became urgent.
 
@@ -1047,6 +1092,17 @@ version would have drawn wrongly exactly as the reading became urgent.
 anywhere. A session token total — only `total_cost_usd` accumulates on the wire, and summing
 per-turn usage double-counts every cache read. And a cumulative context fill, which this ring
 is emphatically not.
+
+✏️ **And one thing withdrawn: the band no longer counts the models.** Every `initialize` ack
+used to write a note — *"the session offers 5 models"* — which landed on the band's single
+line of diagnostic width. It is a number nobody can act on, and the list it counts is one
+click away on the model plate, which is where a list of models belongs. **The list itself is
+untouched**: it is what `model_rows` builds the picker from, and
+`the_picker_is_built_from_the_list_the_cli_offered` is unchanged.
+`the_band_says_nothing_about_how_many_models_were_offered` is the other half of that
+contract. ⚠️ The note's absence is not directly unit-testable — `receive_control` needs a
+live session to resolve a `request_id` — so that test guards the reachable half: no chip,
+reading or identity row mentions the list.
 
 ##### The two plates became controls — and what a control had to prove first
 
@@ -1183,12 +1239,12 @@ CLI emits a dedicated `system/status` line carrying the new mode. The mode has t
 sources; the model has only the repeat init. Implementing the two as though they were
 symmetric is the trap the protocol doc names.
 
-##### The tofu fix — three glyphs the proportional font does not have
+##### The tofu fix — four glyphs egui's fonts do not have
 
 James saw two empty boxes on screen where a rule should have been, and the same class of
 defect turned out to be at three sites: **egui's proportional face carries no box-drawing
 or block-element glyphs**, and a missing glyph draws as tofu rather than failing. The
-three fixes are deliberately **not** the same fix, because the right answer depends on
+fixes are deliberately **not** the same fix, because the right answer depends on
 what the glyph sits in:
 
 | Site | Was | Now | Why not the other fix |
@@ -1196,12 +1252,35 @@ what the glyph sits in:
 | the run-end rule | `──` (U+2500 ×2) | `—` (U+2014) | a rule leading into small dim **proportional** text does not want to become monospace, and an em dash is the mark a typesetter would have reached for anyway |
 | the streaming caret | `▍` (U+258D) | `\|` | it is concatenated into the agent's prose, which is proportional on purpose — so the glyph changes rather than the face |
 | the strip's `◈` / `●` | unchanged | `.monospace()` at the **draw** site | the strings stay exactly as they were, so every existing test still pins them |
+| ✏️ a subagent step marker | `✓` / `✗` (U+2713 / U+2717) | `•` / `×` (U+2022 / U+00D7) | it was **already** `.monospace()` and drew a box anyway — Hack has no dingbats, so the face was never the problem |
 
 📌 The precedent already existed — the approval card's `◈ may I` was monospace — and had
 simply not been generalised. `the_bands_symbols_are_the_ones_the_mono_face_has_to_draw`
-now asserts that no character in `U+2500..=U+259F` may appear in a band reading, which
+asserts that no character in `U+2500..=U+259F` may appear in a band reading, which
 pins the strings; the `.monospace()` in `strip_box` is the other half, and only a person
 can confirm that half.
+
+🚨 ✏️ **The fourth row is why the rule is two rules, and the guard is now an allowlist.**
+James's fan-out capture showed `□ Bash` inside an `Agent` card — a returned subagent step,
+drawn at a site that did not exist when the three fixes above landed, and drawn
+`.monospace()` from the day it was written. Measured by reading the `cmap` tables of all
+four fonts egui 0.33 bundles — `Hack-Regular`, `Ubuntu-Light`, `NotoEmoji-Regular`,
+`emoji-icon-font`: **U+2713 `✓` and U+2717 `✗` are in none of them.** egui does no OS font
+fallback, so asking for a family only chooses *which* font is missing the glyph. The same
+read confirms the third row was right about its own case (`◈` U+25C8 and `●` U+25CF are in
+Hack and not in Ubuntu-Light) and that `→` U+2192 is Hack-only, which is why the
+`.monospace()` at that draw site stays. So: **choose a character Hack has, then ask for
+Hack.** The two replacements are in *both* faces, so they cannot regress if a later edit
+drops the font call.
+
+⚠️ **The old guard could not have caught this, and that is the more valuable half of the
+fix.** It forbade one range (`U+2500..=U+259F`) at one site (a band reading); `✓` is in
+neither the range nor the site. `no_symbol_the_console_draws_is_a_glyph_egui_lacks`
+replaces the blocklist with an **allowlist** of every non-ASCII character the console is
+measured to be able to draw, and applies it to the band readings, the chips *and* the
+subagent step markers (`step_mark`, extracted from the draw site precisely so a test can
+ask it). Adding a symbol anywhere those reach now means adding it to that list, which means
+measuring it first. The band-only test is kept alongside for its own narrower claim.
 
 #### The scrollback's own elements — a tool call as a card, and a control panel in the flow
 
@@ -1568,6 +1647,14 @@ path silently breaks the three-products-simultaneously guarantee that
   card has never been drawn from a real fan-out by anyone who looked at it, and a capture
   cannot answer that any more than the other fixtures could answer the conversation view's
   first entry above. Same class, same remedy: somebody runs one and looks.
+- ✅ **Somebody looked, and looking found a defect no replay could.** James ran a real
+  fan-out in the console on 2026-08-13. The structure was right — `subagent · 2 steps` with
+  a nested step beneath it, the shape the path predicted — and the **step marker was tofu**,
+  a missing-glyph box where the mark belonged. That is the tofu section's fourth row, and it
+  is this ledger paying for itself: no headless test could have caught an absent glyph, and
+  the entry above said in as many words that only somebody looking would. 🚨 The fix was not
+  the one assumed either — the draw site already asked for a monospace face, and reading
+  egui 0.33's four bundled `cmap` tables showed the *character* was in none of them.
 - 📌 **The console renders none of the subagent lifecycle the CLI actually sends.** Five
   `system` subtypes in that capture — `task_started`, `task_progress`, `task_updated`,
   `task_notification`, `task_summary` — carry a rolling description, the last tool name,
@@ -1666,11 +1753,25 @@ path silently breaks the three-products-simultaneously guarantee that
   **model picker** and its `→ Sonnet` pending annotation; the **permission-mode plate**,
   its picker, and the persistent amber marker whose whole design claim is that it stays
   legible across hours without becoming wallpaper; and the **tofu fix**, of which only the
-  first of the three sites was ever confirmed broken on screen and none of the three has
-  been confirmed *fixed* on screen. **353 green tests in the compositor lib are not a
+  first of the sites was ever confirmed broken on screen and none has
+  been confirmed *fixed* on screen. **421 green tests in the compositor lib are not a
   substitute for having looked once** — and the strings being pinned is explicitly only
   half of the tofu fix, since the `.monospace()` that makes them draw is at the draw site
   where no test can reach it.
+
+  ✏️ **Two more join that list, and the first is the one a person has to settle.** The
+  **empty ring track** is drawn from the first frame at `CONTEXT_TRACK_EMPTY`, and the whole
+  argument for it rests on a claim no test can make: that a fainter circle beside a
+  brighter one reads as *"waiting for a reading"* rather than as *"a reading of nought"* —
+  or worse, as a ring someone forgot to finish. A test can prove the two colours differ; it
+  cannot prove the difference is legible at the edge of the eye, on this display, at this
+  scaling, which is exactly where the ring lives. If it is not, the fix is a wider gap
+  between the two values, not a return to drawing nothing. And the **cold-start cost chip**
+  (`session $0.0000`) is unseen: nought spent is true, but whether four decimals of nothing
+  reads as a meter at rest or as clutter is a judgement about a band, not about a number.
+  ⚠️ Also unseen: the **new subagent step markers** `•` / `×`, which replace the two
+  dingbats that drew as boxes — the glyphs are measured present in egui's fonts, but "present
+  in the font" and "reads as *returned* and *failed* at `.small()`" are different claims.
 
   ⚠️ Two questions from the original entry also remain open, because nothing since has
   addressed them: whether the model plate's **hover is discoverable at all** when nothing
