@@ -31,6 +31,33 @@ setting, and the skill's own name.
 why review could not see it. This is the third fix in the same place: the skill was a git
 symlink (unusable on Windows), then a real tracked file, which is what gave it a CRLF
 working copy. Each fix uncovered the next failure.
+### The portal recon lands, with the one claim the tree has since falsified marked as false
+
+- **`doc/console_portal_recon.md`.** The site-by-site investigation the portal was built from —
+  written before it existed, merged after it. `SHELL_ARCHITECTURE.md` has cited it by branch name
+  since §1.2 landed; that citation now points at a file in the tree instead of at a branch, which
+  is the whole reason to land a document nobody will change again.
+- 🚨 **"Immersive is landed" was the recon's first headline row and it is wrong, so it now says
+  so.** The backdrop's *rendering* really is already there; the inference — that immersive is
+  therefore nearly free — is not, because `paint_portal` paints the portal **over** the front-end
+  and immersive needs its texture **under** the glyphs with the scrim over it, through
+  `term_view::draw`'s `Some(bands)` seam that the portal does not touch. A merged investigation
+  asserting something false is worse than an unmerged one: it acquires the authority of the tree.
+  Corrected in the headline table and argued in §1.1, with the measurement kept — it was right,
+  and it is what immersive will be built out of.
+- **Amended in place, never overwritten**, on the execution-plan convention this repo already
+  uses. `render_source`'s quoted body is marked superseded by `engine_plan` (the third input §6
+  predicted, added where §6 said it belonged); `surface_budget_bytes should gain a portal term` is
+  marked solved differently, by `free_portal` reporting the two quantities separately; §4's
+  texture-churn finding is marked **confirmed live**, since `render_portal` carries the identical
+  free-and-realloc body and a window-resize drag now exercises it every frame.
+- **Which recommendations were taken is recorded at the top**, so the document can be read as
+  history rather than as a to-do list: §2, §3, §5, §6's risk 1, §8 and §9 were adopted as written;
+  immersive, full screen, the animated grow, `scene_viewport`'s `Sense` parameter and
+  state-conditional Escape remain the open work. §7's four states and five events shipped as two
+  and three, deliberately — *an event nothing can raise is an untested arm pretending to be a
+  design*.
+- **No source file changed, and no cargo run was needed.** The branch is documentation only.
 
 ### The doc-coherence hook stops crying wolf, and starts watching the console's doc
 
