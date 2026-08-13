@@ -865,7 +865,9 @@ because it is still identity, but a setting that can silence the console's appro
 not something a hand should have to discover by hovering. Both plates are now **controls**;
 the next subsection is what that cost. Then, dim and right-aligned, at most three
 chips (session cost, remembered decisions, last turn's wall time) and the most recent
-diagnostic line off the child, truncated rather than wrapped.
+diagnostic line off the child, truncated rather than wrapped. ✏️ **And at the very end
+of the row, a context ring** — the one readout on this band that is not text; the
+subsection after next is why it took a different numerator to become honest.
 
 ✏️ **Dim, not small.** The chips, the trailing log and the standing have all dropped
 `.small()`: the chips and the log sit at `Body`, the standing at `Monospace` — the model
@@ -896,6 +898,117 @@ were. And the
 cost chip is labelled **`session`** while per-turn tokens are not shown at all: `cost_usd`
 accumulates on the wire and `last_turn_usage` does not, so one band carrying both would
 invite a reader to add them up.
+
+##### The context ring — the readout that was declined, and the numerator that unblocked it
+
+✏️ At the far right of the band, past the chips, sits a small ring that fills with blue as
+the conversation grows and turns amber when it is three-quarters gone. **`SessionFacts`
+refused this readout once**, and the entry is worth reading before this one because half of
+the refusal was right and is still enforced.
+
+The refusal read: *"the denominator appears only inside the unmodelled `modelUsage` block,
+per model, and the numerator would have to be a running conversation size nothing on the
+wire reports."* The first clause was a gap rather than a wall — `modelUsage.contextWindow`
+was never unavailable, only undecoded, and it is now `ModelUsage::context_window` (measured
+**1 000 000** for `claude-opus-5[1m]`, alongside `canonicalModel`, `maxOutputTokens` and a
+per-model `costUSD`). The second clause was a mistake about what the ring had to measure.
+
+🚨 **The obvious numerator is wrong, and it is wrong in the direction that hides.** A
+`result`'s `usage` is summed across the turn's several API round trips — the `iterations`
+array beside it is the proof there is more than one — so it is a *turn total* wearing the
+shape of a prompt. Measured on `claude_stream_two_tools.jsonl`, whose one turn makes two
+requests: the requests carry prompts of **52 556** and **54 050** tokens, and the `result`
+reports `4 + 28 766 + 77 836 = 106 606`, exactly their sum and **1.97×** the conversation
+that was actually in front of the model. A ring built on it would have sat at 11 % where the
+truth was 5 %, filled at roughly twice the real rate, and looked entirely plausible doing it.
+`a_results_usage_is_the_sum_of_the_turns_requests_not_a_prompt` and
+`the_context_numerator_is_the_last_request_not_the_turns_total` pin both numbers so the
+ratio is visible in the failure message.
+
+✅ **The honest numerator is `message_start.usage`, which is a prompt size per request** and
+was already decoded and thrown away by the mapper. So the ring measures **context at the
+last request** — `Usage::prompt_tokens()` of the most recent `message_start` over the
+context window of the model that served it. Both halves *measured*; nothing derived, nothing
+projected, nothing summed. ⚠️ `prompt_tokens()` is the three **input** counts and excludes
+`output_tokens`, which on a `message_start` is the placeholder `1` the module doc records —
+a "total tokens" spelling would have been wrong twice, adding a completion to a prompt and
+lying about the completion.
+
+**"At the last request" is the provenance marker, not a turn of phrase.** The ring moves
+**per API round trip**, not per turn: a turn making three requests steps it three times, and
+a compaction that shrinks the prompt shrinks the ring at the next request. That is why
+nothing accumulates — `last_prompt_tokens` is assigned, never added — and why the hover says
+which request it describes and names both wire fields it came from.
+
+⚠️ **Pairing the two halves is the remaining correctness**, and it needs two spellings: the
+`modelUsage` block is keyed `claude-opus-5[1m]` while the `message_start` that names the
+model says `claude-opus-5`, which is that entry's own `canonicalModel`. `context_window_for`
+matches on either, and with two or more entries and no match it returns `None` rather than
+picking one — the one inference it allows itself is a **sole** entry, because a turn whose
+whole block names one model used one model. ⚠️ The `Vec` order is `serde_json::Map`'s
+key order, which is sorted rather than as-written, so "the first entry" means nothing and
+nothing reads it that way.
+
+🚨 **"We do not know yet" is a real state and it draws NOTHING.** Before the first `result`
+there is no window; before the first `message_start` there is no prompt; and a ring drawn
+empty in either case reads as *0 % full*, which is a specific, confident, false number.
+`ModelSlot::Connecting` says "no model yet" rather than vanishing because that plate is the
+headline affordance and a hole where it sits reads as broken — the ring is at the end of the
+dim half beside the chips, which appear when their number does, and it follows the chips.
+So a session's first turn has no ring and it arrives at that turn's `result`. ⚠️ A session
+run **without `--include-partial-messages`** never gets one at all: it has a window and no
+`message_start` ever, which is exactly the shape that tempts a fallback to `result.usage`,
+and `a_window_without_a_prompt_size_is_no_context_reading_at_all` asserts the unused
+`last_turn_usage` is sitting right there and stays unused. The console always passes that
+flag; the `live_session` fixture was captured without it, which is what makes it the
+regression.
+
+📌 **Blue, because the ring is not a standing.** Every other colour on this band is a state
+the agent is in — `RUNNING` busy, `ASKING` blocked, `BAD` gone — and a resource gauge that
+is true continuously must not look like one of them. The amber above the threshold is
+`MODE_ALERT`'s exact value, reused rather than re-chosen: it already means "worth acting on,
+not a failure" here.
+
+⚠️ **The 75 % threshold is a display decision and says so.** Nothing on the wire states when
+the CLI will compact a conversation, so any number here is the console's judgement about how
+much runway a reader needs, not a measurement, and it must not borrow the authority of the
+two counts around it. Seventy-five because the cheap answers — a fresh tab, a summary,
+letting a long tool result go — each cost a turn or two, and a turn is not small against this
+window: the capture's two requests grew the conversation ~1 500 tokens in one round trip and
+had already spent 5 % of a million on the first. A warning at 90 % leaves a handful of round
+trips; a quarter of the window leaves room to finish the thought. Pinned at exactly 75 by
+`the_ring_turns_amber_at_three_quarters_and_not_before`, with integer arithmetic so the
+boundary cannot drift with the window size.
+
+⚠️ **The colour is a statement about the printed figure, so it is computed from it.**
+`ContextSlot::is_high` reads `ContextFill::percent` rather than comparing the two counts
+again, and the reading **floors** rather than rounds. Both halves came out of one defect:
+with a rounding `percent()` and a second, independent threshold comparison, `7 495 / 10 000`
+printed "75 % at the last request" under a ring that was still blue — `74.95` rounded up to
+the threshold while the comparison saw `749 500 < 750 000`. Rounding was the deeper of the
+two, because a fill gauge that rounds *overstates*: it claims a threshold the conversation
+has not reached, which is the same species of error as the `result.usage` numerator this
+readout exists to avoid, at a tenth the scale. **Never report a fill you have not reached.**
+`the_ring_cannot_contradict_the_percentage_it_prints` holds the review's case, and the
+amber test now asserts the colour against the number parsed back out of the hover — it
+previously checked `is_high()` alone, which is why a ring disagreeing with its own hover
+was not something it could have caught.
+
+⚠️ **The diameter is exactly one `TextStyle::Body` row**, which is the only reason the ring
+is free. The band reserves `row + STRIP_CHROME` *before* laying anything out, so the ring is
+the one child of that horizontal layout that could have been taller than the reservation and
+quietly made the strip two lines. `the_strip_is_one_band_and_leaves_the_scrollback_the_rest`
+now builds its busiest band with a 91 %-full ring in it and still asserts the same bound and
+the same "identical height with everything in it as with nothing" — **no assertion was
+loosened and the band did not grow.** Drawn as a stroked **arc**, not a pie: a filled wedge
+past 180° is not convex and egui's `convex_polygon` tessellation folds it over, so the naive
+version would have drawn wrongly exactly as the reading became urgent.
+
+**Still declined, and for the reasons the original entry gave.** A quota percentage —
+`rate_limit_event` carries a status and a reset time, no numerator and no denominator
+anywhere. A session token total — only `total_cost_usd` accumulates on the wire, and summing
+per-turn usage double-counts every cache read. And a cumulative context fill, which this ring
+is emphatically not.
 
 ##### The two plates became controls — and what a control had to prove first
 

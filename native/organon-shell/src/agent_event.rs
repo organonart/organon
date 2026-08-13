@@ -29,8 +29,22 @@
 //!   as an end.
 //! - **`num_turns` counts the turns of that run, and does not accumulate** across a
 //!   persistent session — it was `1` on both results of a verified two-turn stream.
-//!   `total_cost_usd` and the (unmodelled) `modelUsage` block *are* cumulative, while
-//!   the sibling `usage` block is per-turn. Do not add costs across results.
+//!   `total_cost_usd` and the `modelUsage` block *are* cumulative, while the sibling
+//!   `usage` block is per-turn. Do not add costs across results.
+//! - **🚨 A `result`'s `usage` is a TURN total, not a prompt.** It is summed across the
+//!   turn's several API round trips, and the `iterations` array beside it is the proof
+//!   there is more than one. Measured on `claude_stream_two_tools.jsonl`, whose turn
+//!   makes two requests: the two `message_start`s carry prompts of **52 556** and
+//!   **54 050** tokens, and the `result` reports `input 4 + cache_creation 28 766 +
+//!   cache_read 77 836 = 106 606` — exactly their sum, and **1.97×** the conversation
+//!   that was actually in front of the model. So the `result` answers "what did this
+//!   turn cost"; only a `message_start` answers "how full is the context". See
+//!   [`Usage::prompt_tokens`], which is defined on the type rather than at either call
+//!   site so the two questions cannot be answered with the same arithmetic by accident.
+//! - **`modelUsage` is the only place a context-window size appears anywhere in the
+//!   stream**, and it is per model: an object keyed by the reported model identifier
+//!   (`claude-opus-5[1m]`) carrying `contextWindow`, `canonicalModel`, `costUSD` and
+//!   `maxOutputTokens`. Decoded as [`ModelUsage`].
 //! - **`system`/`init` recurs mid-stream.** A second init arrived before turn two of
 //!   the same session, with a *different* field count. It is a re-announcement, not a
 //!   new session; the `session_id` is what identifies the session.
@@ -736,7 +750,21 @@ pub struct TurnResult {
     /// Cumulative across the session, unlike the per-turn [`usage`](Self::usage).
     pub total_cost_usd: Option<f64>,
     /// This turn's tokens.
+    ///
+    /// 🚨 **Summed across the turn's API round trips — this is not a prompt size.** The
+    /// module docs carry the measurement; [`Usage::prompt_tokens`] carries the reason a
+    /// context reading must come off a `message_start` instead.
     pub usage: Option<Usage>,
+    /// The `modelUsage` block, flattened out of its object into one entry per model.
+    ///
+    /// The **only** place the stream states a context-window size. Empty when the line
+    /// carried no such block (the `edges` fixture's `result` does not).
+    ///
+    /// ⚠️ **The order is the key order of a `serde_json::Map`, which is sorted rather
+    /// than as-written** — this build does not enable `preserve_order`. So nothing may
+    /// read "the first entry" as "the model that was used": pick by name. `agent_map`'s
+    /// `context_window_for` is the one place that choice is made.
+    pub model_usage: Vec<ModelUsage>,
     pub stop_reason: Option<String>,
     /// `completed`, `error`, …
     pub terminal_reason: Option<String>,
@@ -760,6 +788,56 @@ pub struct Usage {
     pub cache_creation_input_tokens: u64,
     #[serde(default)]
     pub cache_read_input_tokens: u64,
+}
+
+impl Usage {
+    /// The three input counts added together: everything that occupied the context
+    /// window when this request went out.
+    ///
+    /// **What it means depends entirely on which object it was read from**, which is why
+    /// it is one named method rather than the same sum spelled twice:
+    ///
+    /// * on a **`message_start`** it is that request's **prompt** — the conversation as
+    ///   the model saw it, one API round trip's worth. This is the honest numerator for
+    ///   a context reading.
+    /// * on a **`result`** it is the **turn's total**, summed across every round trip
+    ///   that turn made (measured: 106 606 for a turn whose largest single prompt was
+    ///   54 050). Useful as a cost figure, meaningless as a context figure.
+    ///
+    /// ⚠️ **`output_tokens` is excluded, and on a `message_start` it is a placeholder
+    /// `1` besides** — the real output count only settles in the `message_delta`. So a
+    /// "total tokens" spelling of this would be wrong twice over: it would add the
+    /// completion to the prompt, and the completion it added would be a lie.
+    pub fn prompt_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.cache_creation_input_tokens)
+            .saturating_add(self.cache_read_input_tokens)
+    }
+}
+
+/// One model's slice of a `result`'s `modelUsage` block.
+///
+/// Cumulative across the session for the token and cost fields, exactly as
+/// `total_cost_usd` is — which is why only the two *constants* are decoded here.
+/// [`context_window`](Self::context_window) and
+/// [`max_output_tokens`](Self::max_output_tokens) describe the model rather than the
+/// session, so a later `result` restating them changes nothing.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ModelUsage {
+    /// The object's key, verbatim: `claude-opus-5[1m]`. The same spelling
+    /// `system/init` reports as `model`.
+    pub model: String,
+    /// `canonicalModel` — the same identifier with the variant suffix resolved away:
+    /// `claude-opus-5`. ⚠️ **This, not the key, is what a `message_start` reports as its
+    /// `model`**, so pairing a request with its window needs both spellings.
+    pub canonical_model: Option<String>,
+    /// `contextWindow` — measured at 1 000 000 for `claude-opus-5[1m]`. The only
+    /// denominator the stream carries.
+    pub context_window: Option<u64>,
+    /// `maxOutputTokens` — 64 000 in the same capture. Reported, not used.
+    pub max_output_tokens: Option<u64>,
+    /// `costUSD`, this model's share of the session's spend so far.
+    pub cost_usd: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,6 +1201,7 @@ fn decode_result(map: &Map<String, Value>) -> EventKind {
         duration_api_ms: map.get("duration_api_ms").and_then(Value::as_u64),
         total_cost_usd: map.get("total_cost_usd").and_then(Value::as_f64),
         usage: usage_of(map.get("usage")),
+        model_usage: model_usage_of(map.get("modelUsage")),
         stop_reason: string_at(map, "stop_reason"),
         terminal_reason: string_at(map, "terminal_reason"),
         api_error_status: map
@@ -1245,6 +1324,29 @@ fn usage_of(value: Option<&Value>) -> Option<Usage> {
     value
         .cloned()
         .and_then(|value| serde_json::from_value::<Usage>(value).ok())
+}
+
+/// `modelUsage`'s object → one [`ModelUsage`] per key, key included.
+///
+/// Hand-walked rather than `Deserialize`d because the key is data: the model identifier
+/// is *only* stated there, and a `HashMap<String, T>` would keep it but lose the ability
+/// to hand a caller a plain slice. Anything that is not an object decodes to nothing —
+/// this block is undocumented, so a shape change must be a missing readout rather than a
+/// failed line.
+fn model_usage_of(value: Option<&Value>) -> Vec<ModelUsage> {
+    let Some(Value::Object(models)) = value else {
+        return Vec::new();
+    };
+    models
+        .iter()
+        .map(|(model, body)| ModelUsage {
+            model: model.clone(),
+            canonical_model: string_of(body.get("canonicalModel")),
+            context_window: body.get("contextWindow").and_then(Value::as_u64),
+            max_output_tokens: body.get("maxOutputTokens").and_then(Value::as_u64),
+            cost_usd: body.get("costUSD").and_then(Value::as_f64),
+        })
+        .collect()
 }
 
 /// Decodes a whole buffer of NDJSON at once. Convenience for tests and for replaying
@@ -1782,6 +1884,93 @@ mod tests {
             .expect("captured");
         assert_eq!(settled.output_tokens, 1, "the assistant line's is a placeholder");
         assert_eq!(delta.output_tokens, 309);
+    }
+
+    // -- the context reading: one prompt size, one window -------------------
+
+    /// CONTRACT: `modelUsage` carries the only context-window size in the stream, keyed
+    /// by the model identifier `system/init` reports and carrying the canonical spelling
+    /// a `message_start` reports. Both are needed to pair a prompt with its window.
+    #[test]
+    fn a_results_model_usage_states_the_window_under_both_spellings() {
+        let result = last_result(TWO_TOOLS);
+        assert_eq!(result.model_usage.len(), 1, "one model served this turn");
+        let usage = &result.model_usage[0];
+        assert_eq!(usage.model, "claude-opus-5[1m]", "the key is the init spelling");
+        assert_eq!(
+            usage.canonical_model.as_deref(),
+            Some("claude-opus-5"),
+            "and canonicalModel is the message_start spelling"
+        );
+        assert_eq!(usage.context_window, Some(1_000_000));
+        assert_eq!(usage.max_output_tokens, Some(64_000));
+    }
+
+    /// CONTRACT: a `result` that carries no `modelUsage` decodes to no entries rather
+    /// than failing — the block is undocumented, so its absence must be a missing readout.
+    #[test]
+    fn a_result_without_a_model_usage_block_carries_no_entries() {
+        assert!(last_result(EDGES).model_usage.is_empty());
+    }
+
+    /// CONTRACT: `prompt_tokens` is the three *input* counts and excludes
+    /// `output_tokens`, which on a `message_start` is the placeholder `1`.
+    #[test]
+    fn a_prompt_size_is_the_input_counts_and_never_the_output_placeholder() {
+        let usage = message_start_usages(TWO_TOOLS)[0];
+        assert_eq!(usage.output_tokens, 1, "the placeholder the module doc records");
+        assert_eq!(
+            usage.prompt_tokens(),
+            usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens,
+            "the sum is of the three input counts only"
+        );
+        assert_eq!(usage.prompt_tokens(), 52_556);
+    }
+
+    /// 🚨 CONTRACT — the mistake this whole reading exists to avoid. A `result`'s usage
+    /// is the SUM of the turn's requests, so it is not a prompt size and must never be
+    /// used as one. Both numbers are asserted here so the ratio is visible in the test.
+    #[test]
+    fn a_results_usage_is_the_sum_of_the_turns_requests_not_a_prompt() {
+        let prompts: Vec<u64> = message_start_usages(TWO_TOOLS)
+            .iter()
+            .map(Usage::prompt_tokens)
+            .collect();
+        assert_eq!(prompts, vec![52_556, 54_050], "two requests, two prompts");
+        let turn = last_result(TWO_TOOLS).usage.expect("captured");
+        assert_eq!(
+            turn.prompt_tokens(),
+            prompts.iter().sum::<u64>(),
+            "the result is exactly their sum, which is why it is not a prompt"
+        );
+        assert_eq!(turn.prompt_tokens(), 106_606);
+        assert!(
+            turn.prompt_tokens() > prompts[1],
+            "and it is 1.97x the conversation actually in front of the model: {} vs {}",
+            turn.prompt_tokens(),
+            prompts[1]
+        );
+    }
+
+    fn last_result(capture: &str) -> TurnResult {
+        kinds(capture)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                EventKind::Finished(result) => Some(result),
+                _ => None,
+            })
+            .last()
+            .expect("captured")
+    }
+
+    fn message_start_usages(capture: &str) -> Vec<Usage> {
+        kinds(capture)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                EventKind::Stream(StreamEvent::MessageStart { usage, .. }) => usage,
+                _ => None,
+            })
+            .collect()
     }
 
     // -- trap 5: `result` terminates a turn, not the stream -----------------
