@@ -87,6 +87,40 @@ working copy. Each fix uncovered the next failure.
   point: a pick stores correctly, then a variable baked into a launch shim wins silently next
   launch — indistinguishable from the evaporation this exists to end.
 - Nothing reads it yet. This is the storage half; the picker is a separate change.
+### Organon Shell — an agent can ask where the camera is
+
+- 🚨 **`console.camera.read`: the console's first read verb.** The console gave an agent
+  camera *verbs* and no way to ask what the camera was doing, so framing an object cost five
+  round trips — set a distance blind, shell out to `organon snap`, read the PNG back off disk,
+  judge it, go round again — each with its own approval prompt. Measured live, 2026-08-13. The
+  framing verbs are absolute *because* nothing could read; a read is what makes a relative move
+  computable at all. One call now returns the three axes, whether anything on screen is showing
+  them, who moved them last, and whether a hand is holding them.
+- 🚨 **It reports the camera, never the last command.** A hand on the portal outranks an
+  agent, so the value an agent last set is routinely *not* where the camera is — echoing it
+  back would be a lie the console told confidently. `Shell::redraw` publishes from
+  `World::camera_framing()` (the world's own three fields, after its own clamps) at the one
+  point in the frame where both writers have run: the agent's drained framing and the hand's
+  drained gesture.
+- **A separate verb, not a zero-argument `console.camera`.** Every axis on the write is already
+  optional, so `{}` is a shape it can be called with — and it currently earns *"needs at least
+  one of […]"*, the right answer to a model that forgot its arguments. Overloading would turn
+  that mistake into a silent success, and would hand the approval layer one name for two acts
+  that deserve different answers to "may I?".
+- **MCP only, deliberately — the CLI still cannot read.** The MCP server runs inside the
+  console process, so it has somewhere for an answer to arrive; `organon console …` is
+  fire-and-forget with no return path and giving it one needs a request/reply sidecar that is
+  not built. So the served table is `mcp_specs()` = `console_specs()` + this one verb, and a
+  test pins that the difference is exactly that.
+- **Small honesty rules, each with a test.** `hand_holds` is settled at *read* time, not
+  publish time (the hold is two seconds; a snapshot can be older). The axes are widened
+  exactly rather than rounded, so a caller can write one straight back and land on the same
+  `f32`. A non-finite axis is omitted rather than serialised as `null`. And a cell nobody has
+  published to answers as a *failure* — before the first frame there is genuinely no
+  measurement, and `{"yaw":0,…}` is a viewpoint a caller would act on.
+- ⚠️ **Nothing here has been seen running.** `cargo test -p organon-shell --lib` (486) and
+  `cargo check --features shell-edition --bin organon-console` are green; that an agent's
+  reading matches the shot on screen is unverified, and is in the honesty ledger.
 
 ### The doc-coherence hook stops crying wolf, and starts watching the console's doc
 

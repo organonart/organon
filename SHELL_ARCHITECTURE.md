@@ -1527,7 +1527,7 @@ permission hook is a direct call into the state the UI is already drawing.
 | The element | `Body::Approval(ApprovalBlock)` — tool, arguments as text, `tool_use_id`, pending / answered / **abandoned** | `conversation.rs` |
 | The card | allow · allow & remember · **allow everything this session** · deny, with the arguments shown as fields | `conversation_view.rs` |
 | The memory | `DecisionMemory` — per-call entries keyed on tool **plus canonicalised arguments**, and one session-wide allow | `approval.rs` |
-| The capability tools | every `CommandSpec` in `console_specs()`, schema generated from the spec; dispatch is `SidecarDispatch` | `mcp.rs` · `shell_main.rs` |
+| The capability tools | every `CommandSpec` in `mcp_specs()` (= `console_specs()` + the camera read), schema generated from the spec; dispatch is `ConsoleDispatch` | `mcp.rs` · `shell_main.rs` |
 | The exposure audit | `ExposureAudit` — §7's withholding property, re-checked at every `system/init` from the reported tool list | `mcp.rs` |
 
 🚨 **The serve loop must not be the UI thread, and that is the whole shape.** The hook is
@@ -1659,7 +1659,7 @@ the substrate's material and rig tables, which the compositor crate cannot see, 
 a verb needs the `Shell` that owns the backdrop. `Capabilities::none()` is the caller with
 nothing to offer, and `NoDispatch` stays as its honest dispatch.
 
-⚠️ **`SidecarDispatch` writes onto the console's own command channel rather than applying
+⚠️ **`ConsoleDispatch` writes onto the console's own command channel rather than applying
 anything, and that is the design.** `Shell::drain_console` already reads that file every
 frame, routes each line through the real `CommandService` — validating against the same
 `CommandSpec` the tool's schema was generated from, and leaving a `CommandRun` record either
@@ -1673,6 +1673,14 @@ on the next frame (~16 ms), and a failure *after* validation — a name this bui
 audited path; the alternative was blocking an MCP call on the UI thread's next frame.
 ⚠️ Verbs are **window**-scoped exactly as the CLI's are: `background` and `rig` dress the
 window, `block` and `patch` land on the active pane, whichever tab called the tool.
+
+🚨 **One verb on this lane is a *read*, and it is the one thing a conversation tab has that
+the CLI does not.** `console.camera.read` answers in-process from `Shell`'s published
+viewpoint instead of writing a line nobody can collect an answer to — see §1.3, "Reading it
+back". So the served table is `mcp_specs()` = `console_specs()` **+ 1**, and the difference is
+a fact about transports rather than drift; a test pins that the extra verb is exactly that one,
+because any *other* extra would be served, called, and refused by `op_from` as a name the
+sidecar has no line for.
 
 ⚠️ **A verb that collides is announced in the pane, not only on stderr.** Two spec names that
 sanitise to one tool name leave the later one unserved — the agent is simply never told it
@@ -1943,6 +1951,8 @@ far away and I don't think the CLI has commands to move it, but it's fundamental
 | the vocabulary | `cli::{CameraFraming, CAMERA_WORDS}` + `cli::ConsoleOp::Camera` → `console.camera` |
 | **who wins** — pure | `organon-shell/src/camera.rs` (`arbitrate`, `HAND_HOLD`, `viewpoint_is_visible`) |
 | the site that obeys it | `shell_main.rs::Shell::frame_camera`; the hand's stamp is in `redraw` |
+| **reading it back** — pure | `camera::{Viewpoint, ViewpointCell, Mover, last_mover}`; `Viewpoint::report` is the JSON |
+| the read's source of truth | `World::camera_framing()` → published in `redraw`, served by `console.camera.read` |
 
 #### ⚠️ There are TWO cameras and this is only one of them
 
@@ -1988,6 +1998,66 @@ convenience: it is the one framing a caller can name **without knowing the curre
 `--reset --distance 40` ("the default view, then pull in") is a complete workflow with no
 read-back anywhere in it. `scene_input::DEFAULT_*` are `World::new`'s own initial values, named
 rather than repeated, so reset is provably *the framing the window opened with*.
+
+#### Reading it back — `console.camera.read`, on the one lane that can answer
+
+An agent in a conversation tab can now ask **where the camera is**. It gets the three axes as
+measured this frame, whether anything on screen is showing them, who moved them last, and
+whether a hand is holding them right now:
+
+```json
+{"yaw":0.699999988079071,"pitch":0.44999998807907104,"distance":520.0,
+ "portal_open":false,"backdrop_shows_world":false,"visible":false,
+ "moved_by":"nobody","hand_holds":false}
+```
+
+**The problem it ends, measured 2026-08-13.** Asked to frame an object, an agent set a distance
+blind, shelled out to `organon snap`, read the PNG back off disk, judged it, and went round
+again — five round trips, each costing a human approval prompt, to compose one shot. The verbs
+are absolute *because* nothing could read; a read is what makes a relative move computable.
+
+🚨 **The read is served over MCP and has no CLI spelling, deliberately.** The MCP server runs
+**inside the console process** (`McpHttp::start`, from a conversation tab), so it can hand back
+the console's own state. `organon console …` still cannot: giving it a read needs the
+request/reply sidecar §2 names, which is not built and is not half-built here. So
+`console.camera.read` lives in `mcp_specs()` and **not** in `console_specs()` — the latter's
+totality (every entry has a `ConsoleOp`, a sidecar line and a clap subcommand) is what `op_from`
+and the round-trip test depend on, and a read has none of the three.
+
+🚨 **It reports the camera, never the last command.** `Shell::redraw` publishes a `Viewpoint`
+into a `ViewpointCell` from `World::camera_framing()` — the world's own three fields, *after its
+own clamps* — at the one point in the frame where **both** writers have run: the agent's framing
+(drained at the top of `redraw`) and the hand's gesture (applied a few lines above the publish).
+Anything remembered on the console side would be an echo, and an echo is exactly wrong here:
+a hand outranks an agent, so the value an agent last set is routinely not where the camera is,
+and handing it back as current would be a lie the console told confidently.
+
+- ⚠️ **`hand_holds` is settled at *read* time, not publish time.** The hold is two seconds and a
+  snapshot can be older than that. It is the field that closes half of §1.3's "the refusal
+  reaches nobody" gap: an agent whose framing vanished can now ask why and be told a hand has it.
+- ⚠️ **The axes are widened exactly, never rounded.** `f64::from(0.7f32)` is `0.699999988079071`,
+  and that is the only spelling a caller can write straight back and land on the same `f32`.
+  Rounding would also let a value sitting on a clamp boundary read as outside its own band.
+- ⚠️ **A non-finite axis is omitted, not serialised.** `serde_json` renders one as `null`, which
+  a model will try to use. `apply_camera_input` filters non-finite input, so this is a belt.
+- ⚠️ **An unpublished cell is a tool *failure*, not an empty object.** Before the first frame
+  there is genuinely no measurement, and `{"yaw":0,…}` is a viewpoint a caller would act on.
+- ⚠️ **A write is still one frame behind a read.** A framing travels the sidecar and lands on the
+  next drain, so a read issued in the same breath may answer from the frame before it. The read
+  is honest about what it is — the last measured frame — and it is not a synchronous echo of a
+  write that has not happened yet.
+- 📌 **`moved_by` is derived from two stamps** (`hand_camera_at`, `agent_camera_at`) by
+  `camera::last_mover`; the agent's is taken **after** the arbitration, so a framing the hand
+  held off never claims to have moved anything. A tie goes to the hand, as every other decision
+  in that module does. `nobody` is a real answer and a different fact from "an agent set it to
+  the default".
+
+**A separate verb, not a zero-argument `console.camera`.** Every axis on the write is already
+optional, so `{}` is a shape it can be called with — and it earns *"needs at least one of […] —
+a framing that names no axis would move nothing"*, which is the right answer to a model that
+forgot its arguments. Overloading would turn that mistake into a silent success returning
+something nobody asked for, give one tool two descriptions to be chosen by, and give the
+approval layer one name for two acts that plainly deserve different answers to "may I?".
 
 #### Refused, not clamped — and the asymmetry with the hand is deliberate
 
@@ -2153,9 +2223,9 @@ startup read into a field nobody reads is dead code.
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
-| Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `SidecarDispatch` onto the audited drain) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
+| Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `ConsoleDispatch` onto the audited drain, plus the one in-process read §1.3 adds) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
 | The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md` — the site-by-site investigation these follow from, now merged, carrying this correction as its own §1.1 amendment so the two cannot drift apart |
-| A **read** path for the console's own state | §1.3's camera is absolute *because* `organon console …` is fire-and-forget with no return path, and `--reset` is the workaround: the one framing a caller can name without knowing the current one. That is a complete workflow and it is not a substitute for reading. The honest fix is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs — after which `console.camera` gains a read and every other console verb gains one with it. ⚠️ The tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
+| A **read** path for the console's own state | **The camera half has landed, on the MCP lane only** — `console.camera.read` (§1.3, "Reading it back"), answered in-process from the viewpoint `redraw` publishes. What is left is the *other* transport and the *other* verbs. `organon console …` is still fire-and-forget with no return path, so the CLI reads nothing; the honest fix there is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs. ⚠️ **Do not generalise the camera's shape to reach it.** A published cell works because the camera is one small `Copy` tuple owned by the frame path; "the console's state" at large is panes, transcripts and textures, and a cell per fact is a second state tree that will drift from the first. ⚠️ The other tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -2186,6 +2256,26 @@ path silently breaks the three-products-simultaneously guarantee that
   prove the console still draws it in the same place: the extraction also moved four `&Theme`
   borrows through the draw path and rewrapped a dozen call sites, and only a running window
   can say the strip, the composer and the grid still look like themselves.
+- 🚨 **No agent has ever called `console.camera.read`, and the number it would return has never
+  been checked against a picture.** Built on this machine without launching the console:
+  `cargo test -p organon-shell --lib` (486 pass, 11 of them this module's) and `cargo check
+  --features shell-edition --bin organon-console` are green, and the pure half — the JSON shape,
+  the non-finite omission, the provenance rule, read-time `hand_holds`, the unpublished cell —
+  is pinned by test. **What that does not establish:** that the three axes an agent reads back
+  correspond to the shot on screen; that the publication point in `redraw` really lands after
+  every camera writer in a *live* frame rather than only in the source order I read; and that
+  `moved_by: "hand"` appears after an actual drag on an actual portal. The first real use is
+  the measurement — frame something, read, compare — and it needs a window.
+- ⚠️ **`backdrop_shows_world` is what the console is *rendering*, not proof anything is
+  legible.** It is `render_source() == World`, the same predicate `frame_camera` warns from, so
+  it inherits that predicate's whole meaning and no more: a world backdrop rendered at a scrim
+  the glyphs sit on top of still reports `true`. `visible` answers "would a move show up
+  anywhere", never "can you see it".
+- ⚠️ **The read cannot see a framing an agent posted moments earlier.** A write travels the
+  sidecar and lands on the next frame's drain; the read answers from the last *published* frame.
+  So set-then-immediately-read can return the previous framing, and that is not a bug the read
+  can fix from its side — it is the write lane's fire-and-forget shape, one frame wide. Nothing
+  papers over it; the reading is labelled for what it is.
 - 🚨 **The working-directory fix is necessary and I could not prove it sufficient — there is
   a second, independent reason `organon-cli` may not reach the model, and it is not in this
   code.** Measured against the real `claude.exe` (2026-08-13, two headless invocations, the

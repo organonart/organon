@@ -133,6 +133,15 @@ loop, forward. Two rules make that work and are easy to break:
   ⚠️ Non-finite input is **dropped, not clamped**: `f32::clamp` panics on a NaN bound and
   returns NaN for a NaN input, and a NaN yaw poisons `view_proj` into a black window with no
   error at all.
+  📌 **And the read half: `camera_framing() -> (yaw, pitch, distance)`.** All four writers land
+  on those three fields and the world *clamps* on the way in, so a host that remembered what it
+  last asked for would report a value the camera may never have held — and would be blind to
+  every move a hand made. Nothing in the render path reads it; Organon Shell publishes it once
+  per frame and serves it to an agent (`SHELL_ARCHITECTURE.md` §1.3). ⚠️ It is the **base
+  orbit**, not the camera the frame is drawn with: `cam_path`'s offset is added downstream and
+  an installed substrate rig (below) overrides all six wholesale. That is the right answer for a
+  caller computing a delta to write back, and the wrong one for anybody asking what the pixels
+  were rendered from.
 - **A fourth camera entry point, and it is absolute in a much stronger sense** (Console Spike
   Tier 1, for Organon Shell's substrate backdrop). `set_substrate_rig(Option<(center, yaw,
   pitch, distance, roll, fov_deg)>)` installs the whole tuple; the camera finalization then
