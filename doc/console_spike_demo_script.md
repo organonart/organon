@@ -239,6 +239,35 @@ crops the right edge and reads exactly like a text-wrapping bug. Oversize the bi
 
 ---
 
+### 8 — "It asks, and you answer." · approvals · **built, not yet checked on screen**
+
+Ask the agent for something that needs permission. A card appears **under the tool card it
+gates**, showing what is being asked and with what arguments, and offering allow / deny /
+allow-and-remember. The decision goes back over the wire and the tool runs or does not.
+
+*The point:* the console stops being a viewer and becomes the **authority**. It answers for
+everything the agent does — `--permission-prompt-tool` was measured to gate Bash as well as MCP
+tools — so the red error cards from the first real session become cards you click.
+
+*Architecture, measured before it was built* (`doc/console_approval_protocol.md`): the console
+serves MCP **in-process over loopback HTTP**, so the permission hook is a direct call into the
+state the UI is already drawing — no second process, no IPC, no lifetime to supervise. Verified
+live: the server binds a port and writes
+`{"mcpServers":{"organon":{"type":"http","url":"http://127.0.0.1:<port>/mcp"}}}`.
+
+⚠️ **Two things that look exactly like the feature being dead**, both measured and both worth
+saying aloud before anyone demos this: a safe read-only command like `echo` is auto-approved by
+a classifier that **never consults our handler**, and a vaguely-requested file lands in the
+model's own pre-blessed scratchpad. **An absolute path outside it is what makes the question get
+asked.**
+
+*Status:* the machinery is verified from the outside — port bound, config correct, and the
+protocol probes confirmed a real permission request arriving and being honoured. **What has not
+been seen is the card itself**, because the coordinator's synthetic input neither reaches this
+app (clicks) nor stays in it (keystrokes leaked into another window), so this one needs James.
+
+---
+
 ## Rehearsal log
 
 *One line per full run-through: date, platform, which beat broke, what was done about it.*
