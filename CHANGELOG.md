@@ -11,6 +11,42 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the strip grew a context ring, on a numerator that is a prompt rather than a bill
+
+- **A small ring at the far right of the conversation strip fills with blue as the context fills
+  and turns amber at three-quarters.** It measures **context at the last request**:
+  `Usage::prompt_tokens()` of the most recent `message_start` over `modelUsage.contextWindow` for
+  the model that served it. Both halves **measured**, nothing derived and nothing summed. 366 tests
+  in the compositor lib, from 353.
+- 🚨 **`SessionFacts` had declined this readout, and the refusal was half right.** The denominator
+  was never unavailable, only undecoded — `modelUsage` is now parsed (`contextWindow`,
+  `canonicalModel`, `maxOutputTokens`, per-model `costUSD`), measured at **1 000 000** for
+  `claude-opus-5[1m]`. What was genuinely missing was a numerator, and the obvious one is
+  **wrong**: a `result`'s `usage` is summed across the turn's API round trips, which the
+  `iterations` array beside it proves. On the two-request capture the requests carry **52 556** and
+  **54 050** tokens while the `result` reports **106 606** — exactly their sum, **1.97×** the
+  conversation actually in front of the model. A ring on it would have read 11 % where the truth
+  was 5 %, filled at twice the real rate, and looked entirely plausible. Both numbers are asserted
+  in one test so the ratio shows up in the failure message.
+- **So the ring moves per API round trip, not per turn**, and a compaction that shrinks the prompt
+  shrinks the ring at the next request. `last_prompt_tokens` is assigned, never added. The hover
+  says "at the last request" and names both wire fields — that phrase is the provenance marker,
+  not a turn of phrase.
+- 🚨 **"We do not know yet" draws nothing.** A ring drawn empty before a window or a prompt has
+  arrived asserts *0 % full*, which is specific and false. A session's first turn therefore has no
+  ring; one run without `--include-partial-messages` never gets one at all, and the test for that
+  case asserts the `result`'s usage is sitting right there unused — the fallback that must not
+  exist.
+- ⚠️ **The 75 % threshold is the console's own judgement and says so**: nothing on the wire states
+  when the CLI will compact. Chosen because the cheap answers each cost a turn or two and a turn is
+  not small — the capture grew ~1 500 tokens in one round trip and had spent 5 % of a million on
+  its first. Integer arithmetic, pinned at exactly 75 so the boundary cannot drift with the window.
+- ⚠️ **The ring is exactly one `Body` row across**, because the band reserves its height before
+  laying anything out. The one-band test now builds its busiest strip with a 91 %-full ring in it
+  and still asserts the same bound and the same identical-height property — **no assertion was
+  loosened.** Drawn as a stroked arc rather than a pie: a wedge past 180° is not convex and egui's
+  tessellation would have folded it over exactly as the reading became urgent.
+
 ### Console Spike — the two plates the strip only reported became the two controls that change them
 
 - **The model plate and a new permission-mode plate beside it are clickable.** `set_model` and
