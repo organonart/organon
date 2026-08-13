@@ -60,7 +60,8 @@ pub fn cell_metrics(ui: &mut egui::Ui) -> (f32, f32) {
 // `ansi16` / `term_scrim_tint`. A palette that could not reach the terminal would not be a
 // palette: a light console beside a black grid is two products in one window.
 //
-// ⚠️ The scrim's **alpha** is deliberately not the theme's — see `SCRIM_FLOOR` below.
+// ⚠️ The scrim's **alpha** is still not a colour, but its **floor** is now the palette's —
+// see `SCRIM_FLOOR` / `SCRIM_FLOOR_LIGHT` and `Theme::scrim_floor` below.
 
 /// `ORGANON_SHELL_SCRIM`'s default and its structural floor, as an **alpha byte** —
 /// the scrim is an `egui::Color32` alpha, so the scale is 0–255, not 0–1.
@@ -73,26 +74,59 @@ pub fn cell_metrics(ui: &mut egui::Ui) -> (f32, f32) {
 /// fix docs a stranger would follow. Formatting the help from the constants makes that class
 /// of drift impossible rather than merely fixed once.
 pub const SCRIM_DEFAULT: u8 = 185;
-/// The floor is the inviolable half of PRD §4.6: no setting may trade the glyphs away —
-/// **and no theme may either**, which is why only the scrim's three colour channels moved
-/// onto [`Theme`] and its alpha stayed here. A palette is taste; the floor is an
-/// instrument.
+/// The floor for a palette whose **page is dark** — `organon`, `dark`, `chocolate`. PRD §4.6's
+/// own number, unchanged: this is the palette it was chosen against.
+///
+/// 🚨 **The inviolable half of PRD §4.6 is "no setting may trade the glyphs away", and that is
+/// exactly as true as it was.** [`scrim_alpha`] still clamps `ORGANON_SHELL_SCRIM` up to a
+/// floor and no value it can be given — in range, out of range, negative, empty or nonsense —
+/// can cross one. What changed (2026-08-13, James's decision) is *which* floor: it is asked of
+/// the palette, through [`Theme::scrim_floor`], instead of being this one constant.
+///
+/// ⚠️ **Read the old rule as "the glyphs stay legible", not "the wash stays dark", or the next
+/// change here will re-break a light theme.** The scrim is the palette's tint over the live
+/// backdrop and the floor is how much backdrop it may leave showing. 96/255 of near-black keeps
+/// a bright frame from washing out pale glyphs. The same 96 under a *white* tint protects
+/// nothing: the glyphs are dark, the danger is a dark backdrop, and the composite is a mid-grey
+/// that dark text vanishes into. So a light palette was not reachable by swapping colours at
+/// all — it would have sat under a compulsory near-black veil however its fields were set.
+///
+/// ⚠️ **A palette is not a setting, and that distinction is the whole of why this is safe.** A
+/// floor named by a compiled-in palette is part of a coherent instrument — the terms on which
+/// *its* glyphs stay readable, chosen with them. `ORGANON_SHELL_SCRIM` is a preference typed
+/// into a shim, which is what the rule has always been aimed at, and it still cannot win.
 pub const SCRIM_FLOOR: u8 = 96;
+/// The floor for a palette whose **page is light** — `light`.
+///
+/// ⚠️ **CHOSEN, not measured, and nobody has seen it.** It is not derivable from
+/// [`SCRIM_FLOOR`]: a strict "same worst-case contrast" mirror actually returns a *lower*
+/// number, because sRGB gamma makes dark text on mid-grey read better than pale text on the
+/// same grey — which would produce a light console under a 40 % grey wash, technically
+/// legible and not a page at all. The reasoning behind the value instead: 96 lets the world
+/// keep about 62 % of the frame, which a near-black page can afford because its glyphs are
+/// pale and the backdrop is mostly dark anyway. Against a light page and dark glyphs the
+/// world may be allowed roughly a quarter, or the page stops reading as a page — so the floor
+/// is the complement of that, `192`. The number wants a human eye on a real frame before it is
+/// treated as settled.
+pub const SCRIM_FLOOR_LIGHT: u8 = 192;
 
 /// The scrim's alpha for a given `ORGANON_SHELL_SCRIM` value — parse, default, **floor**.
-/// `None` is "unset".
+/// `None` is "unset"; `floor` is the active palette's [`Theme::scrim_floor`].
 ///
 /// Extracted from [`draw`] by the Console Spike's Tier 1 (brief R1 (b)): the floor is the one
 /// inviolable rule in this file and it lived in an expression nothing could reach. As a
-/// function it is a test — over every byte, and over the inputs that do *not* parse.
+/// function it is a test — over every byte, over every floor, and over the inputs that do
+/// *not* parse.
 ///
 /// ⚠️ **A value that fails the `u8` parse falls back to the DEFAULT, not to the floor.** `300`,
 /// `-1`, `0.5` and `abc` are all "unset" as far as this is concerned, which is the same
 /// swallowing that made `--help`'s original `<0..1>` a silent no-op. It is the tolerant
 /// behaviour and it is deliberate — but it means the floor is what protects the glyphs, and the
-/// default is merely where a typo lands.
-pub fn scrim_alpha(env: Option<&str>) -> u8 {
-    env.and_then(|v| v.parse::<u8>().ok()).unwrap_or(SCRIM_DEFAULT).max(SCRIM_FLOOR)
+/// default is merely where a typo lands. ⚠️ Note the default is itself below
+/// [`SCRIM_FLOOR_LIGHT`], so on a light palette *every* unset launch is lifted to the floor.
+/// That is the floor working, not a bug: the default was chosen against a dark page.
+pub fn scrim_alpha(env: Option<&str>, floor: u8) -> u8 {
+    env.and_then(|v| v.parse::<u8>().ok()).unwrap_or(SCRIM_DEFAULT).max(floor)
 }
 
 /// Resolve a cell color against overrides → named table → 256-cube → truecolor.
@@ -709,10 +743,13 @@ pub fn draw(
             // text never fights it. `ORGANON_SHELL_SCRIM` tunes the reveal — but the
             // floor is structural, so no setting can trade the glyphs away
             // (PRD §4.6, the inviolable half). See [`scrim_alpha`], which owns the rule.
-            let scrim = scrim_alpha(std::env::var("ORGANON_SHELL_SCRIM").ok().as_deref());
-            // The tint is the theme's, the alpha is the env var's, floored. Split that way
-            // round because the two answer different questions: what colour dims the world
-            // is taste, how far it may be dimmed is PRD §4.6.
+            let scrim =
+                scrim_alpha(std::env::var("ORGANON_SHELL_SCRIM").ok().as_deref(), theme.scrim_floor);
+            // The tint and the floor are the palette's, the alpha within that floor is the env
+            // var's. Split that way round because the three answer different questions: what
+            // colour dims the world, and how far it may be dimmed before the glyphs go, are
+            // both properties of the palette; how far *within* that a person wants it dimmed
+            // is the setting.
             let tint = theme.term_scrim_tint;
             painter.rect_filled(
                 rect,
@@ -904,25 +941,53 @@ mod tests {
 
     /// **The floor holds against anything.** PRD §4.6's inviolable half, as a test rather than
     /// a comment: no `ORGANON_SHELL_SCRIM` value — in range, out of range, negative, empty,
-    /// unset or nonsense — can put the scrim below [`SCRIM_FLOOR`] and trade the glyphs away.
+    /// unset or nonsense — can put the scrim below the active palette's floor and trade the
+    /// glyphs away.
+    ///
+    /// ⚠️ **Run over EVERY palette's floor, not just the dark one.** Making the floor
+    /// theme-aware is precisely the change that could have weakened "no setting may cross it",
+    /// so the property is asserted against each palette's own answer rather than against one
+    /// constant that happens to still be there.
     #[test]
     fn no_scrim_setting_can_cross_the_floor() {
-        // The hostile set: the two ends of the byte scale, the forms that fail the parse (an
-        // out-of-range number, a negative, the `<0..1>` spelling the first `--help` invented),
-        // and unset.
-        assert_eq!(scrim_alpha(Some("0")), SCRIM_FLOOR, "0 must be lifted to the floor");
-        assert_eq!(scrim_alpha(Some("95")), SCRIM_FLOOR);
-        assert_eq!(scrim_alpha(Some("255")), 255, "the top of the scale is honoured");
-        assert_eq!(scrim_alpha(None), SCRIM_DEFAULT, "unset is the default");
-        for junk in ["", " ", "abc", "0.5", "-1", "300", "96 ", "0x60"] {
-            assert_eq!(scrim_alpha(Some(junk)), SCRIM_DEFAULT, "{junk:?} must fall back");
+        for name in Theme::NAMES {
+            let floor = Theme::by_name(name).expect("NAMES resolves").scrim_floor;
+            // The hostile set: the two ends of the byte scale, the forms that fail the parse
+            // (an out-of-range number, a negative, the `<0..1>` spelling the first `--help`
+            // invented), and unset.
+            assert_eq!(scrim_alpha(Some("0"), floor), floor, "{name}: 0 must be lifted");
+            assert_eq!(scrim_alpha(Some("95"), floor), floor.max(95), "{name}");
+            assert_eq!(scrim_alpha(Some("255"), floor), 255, "{name}: the top is honoured");
+            assert_eq!(
+                scrim_alpha(None, floor),
+                SCRIM_DEFAULT.max(floor),
+                "{name}: unset is the default, still floored"
+            );
+            for junk in ["", " ", "abc", "0.5", "-1", "300", "96 ", "0x60"] {
+                assert_eq!(
+                    scrim_alpha(Some(junk), floor),
+                    SCRIM_DEFAULT.max(floor),
+                    "{name}: {junk:?} must fall back"
+                );
+            }
+            // And exhaustively over the whole byte scale — the property, not a sample of it.
+            for v in 0u16..=255 {
+                let a = scrim_alpha(Some(&v.to_string()), floor);
+                assert!(a >= floor, "{name}: scrim {v} produced {a}, below the floor");
+                assert_eq!(a, (v as u8).max(floor));
+            }
         }
-        // And exhaustively over the whole byte scale — the property, not a sample of it.
-        for v in 0u16..=255 {
-            let a = scrim_alpha(Some(&v.to_string()));
-            assert!(a >= SCRIM_FLOOR, "scrim {v} produced {a}, below the floor");
-            assert_eq!(a, (v as u8).max(SCRIM_FLOOR));
-        }
+        // The two floors this build actually has, named rather than inferred — a light page
+        // needs a *higher* one, and a change that quietly equalised them would pass every
+        // assertion above while re-breaking the light palette.
+        assert_eq!(Theme::organon().scrim_floor, SCRIM_FLOOR);
+        assert_eq!(Theme::dark().scrim_floor, SCRIM_FLOOR);
+        assert_eq!(Theme::chocolate().scrim_floor, SCRIM_FLOOR);
+        assert_eq!(Theme::light().scrim_floor, SCRIM_FLOOR_LIGHT);
+        assert!(
+            SCRIM_FLOOR_LIGHT > SCRIM_FLOOR,
+            "a light page has to hold back MORE of a dark world, not less"
+        );
     }
 
     // -------------------------------------------------------------------------

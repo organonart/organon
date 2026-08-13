@@ -1512,7 +1512,17 @@ fn engine_plan(
 impl Shell {
     fn new() -> Self {
         let egui_ctx = egui::Context::default();
-        egui_ctx.set_visuals(egui::Visuals::dark());
+        // The palette this process paints. Chosen here and nowhere else — `organon` is still
+        // the default and nothing selects another yet (`Theme::by_name` is the seam a picker
+        // and `prefs.rs` will share).
+        let theme = Theme::organon();
+        // egui's own chrome — sliders, popup frames, the `TextEdit` selection wash, scrollbars
+        // — comes from the palette rather than from a hardcoded `Visuals::dark()`. This call
+        // *was* that hardcoded line, and it is why a light palette could not have worked from
+        // `Theme`'s fields alone: roughly half the window would have stayed dark. For
+        // `Theme::organon` the derivation returns `Visuals::dark()` byte-for-byte, so this
+        // console is unchanged — see `Theme::visuals` and the test that pins it.
+        egui_ctx.set_visuals(theme.visuals());
         let source =
             parse_backdrop_source(std::env::var("ORGANON_SHELL_BACKDROP").ok().as_deref());
         let shared = initial_shared(source);
@@ -1589,9 +1599,9 @@ impl Shell {
             hand_camera_at: None,
             agent_camera_at: None,
             viewpoint: camera::ViewpointCell::new(),
-            // The only palette this build ships. A second one arrives as another
-            // constructor on `Theme`, not as a branch here.
-            theme: Theme::organon(),
+            // Built above, because `set_visuals` needs it too — one palette per process, and
+            // the chrome and the fields must come from the same one.
+            theme,
         }
     }
 

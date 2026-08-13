@@ -34,15 +34,67 @@
 //! light theme almost certainly wants the terminal's foreground and a human's typed line
 //! to part company, and it cannot do that if one field is serving both.
 //!
-//! # What a second palette would have to override
+//! # What a second palette overrides
 //!
-//! Every field below, and only these. The console's remaining colour comes from three
-//! places this tier does not touch: egui's own `Visuals` (widget chrome, `weak`/`strong`
-//! text, `extreme_bg_color`), the xterm 256-colour cube and greyscale ramp — which are a
-//! **standard**, not a taste, and are computed rather than stored — and the truecolor and
+//! Every field below, and only these. The console's remaining colour comes from two places
+//! a palette still does not touch: the xterm 256-colour cube and greyscale ramp — which are
+//! a **standard**, not a taste, and are computed rather than stored — and the truecolor and
 //! OSC-override values a running program sends, which belong to that program.
+//!
+//! egui's own `Visuals` — widget plates, popup frames, the text-selection wash, scrollbars —
+//! *was* the third, and is not any more: [`Theme::visuals`] derives it from the fields below.
+//! Leaving it out was survivable while every palette was dark; it is not survivable at all
+//! once one is light, because half the pixels in the window would stay hardcoded dark and the
+//! light palette would read as broken rather than as light.
+//!
+//! # Four palettes, one default
+//!
+//! [`Theme::organon`] is the console's own look and is still the default; [`Theme::light`],
+//! [`Theme::dark`] and [`Theme::chocolate`] are the three James specified. **Nothing selects
+//! one yet** — [`Theme::by_name`] exists so a picker and `prefs.rs`'s stored `theme` name can
+//! both resolve a string, and that is all.
+//!
+//! ⚠️ **The specs name about ten roles each; this struct has about fifty fields.** Every field
+//! a spec does not reach is *derived*, and the rule is written at the site rather than left as
+//! a hex nobody can argue with. The rules, in one place, so a fifth palette can follow them:
+//!
+//! 1. **The surface ladder.** A spec gives a page and a panel; the second raised step is the
+//!    spec's own hairline colour, which is by construction exactly one step further from the
+//!    page. Chocolate names all four of its steps and none of this applies to it.
+//! 2. **States.** A state the spec names takes its named colour. A state it does not name is
+//!    drawn from the palette's **text ladder**, never from a hue the spec never introduced —
+//!    which is why none of the three has an amber, and why "a tool is running" is primary text
+//!    rather than the orange `organon` uses.
+//! 3. **The one exception to (2)**: "blocked on a human", the context ring, and the
+//!    non-default-permission note all take the palette's accent. They are the roles the accent
+//!    exists for — present, not an outcome, and the field docs already forbid drawing them red.
+//! 4. **Tinted plates** (the user bubble, the scripted-replay banner) are a stated linear mix
+//!    of a state colour into a surface, at the ratio written beside each one.
+//!
+//! ⚠️ **`ansi16` is CHOSEN for all three, not specified.** All three specs were written against
+//! the conversation view, and none of them says anything about a terminal. See the comment on
+//! each array.
 
 use egui::Color32;
+
+/// Where a palette's egui chrome comes from.
+///
+/// Not a colour and not a form token: it answers "which of the two egui bases does
+/// [`Theme::visuals`] start from, and does it derive at all". Three answers rather than a
+/// bool, because [`Theme::organon`] needs a third: **its chrome is `egui::Visuals::dark()`
+/// byte-for-byte**, which is what `shell_main.rs` has called since the console's first frame.
+/// Deriving `organon`'s chrome from its own fields would silently restyle the shipped console
+/// while adding new palettes, so the shipped palette says "not derived" and
+/// `organon_chrome_is_still_egui_dark_to_the_byte` holds it there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChromeSource {
+    /// egui's built-in dark chrome, unmodified — what the console has always painted.
+    EguiDark,
+    /// Derived from the palette's own fields, over egui's dark base.
+    DerivedDark,
+    /// Derived from the palette's own fields, over egui's light base.
+    DerivedLight,
+}
 
 /// The console's palette. One value, one owner, borrowed at every draw site.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,10 +186,9 @@ pub struct Theme {
     /// The default screen: near-black with a whisper of green, phosphor foreground.
     pub term_bg: Color32,
     pub term_fg: Color32,
-    /// The legibility scrim's tint. **Its alpha is not stored here** — that is
-    /// `ORGANON_SHELL_SCRIM`'s, floored by [`crate::term_view::scrim_alpha`], and a theme
-    /// that could set it would be able to trade the glyphs away. Only the three colour
-    /// channels are the palette's.
+    /// The legibility scrim's tint — the three colour channels only. The **alpha** a given
+    /// launch paints is `ORGANON_SHELL_SCRIM`'s, floored by [`Theme::scrim_floor`] through
+    /// [`crate::term_view::scrim_alpha`].
     pub term_scrim_tint: Color32,
     /// The `[process exited …]` notice under a dead tab.
     pub term_exited_notice: Color32,
@@ -191,6 +242,31 @@ pub struct Theme {
     pub tab_menu_fill: Color32,
     pub tab_menu_installed: Color32,
     pub tab_menu_missing: Color32,
+
+    // ── Not pigment: the two things a palette decides that are not a colour ──
+    /// **The floor the legibility scrim may never go below**, as an alpha byte — PRD §4.6's
+    /// inviolable half, now asked of the palette rather than of a single constant.
+    ///
+    /// 🚨 **The rule is "the glyphs stay legible", and it always was. What moved is the
+    /// assumption that legibility means *darkness*.** A scrim is `term_scrim_tint` laid over
+    /// the live backdrop, and the floor is how much of the backdrop it is allowed to leave
+    /// showing. `96` — the number PRD §4.6 fixed — protects pale glyphs on a near-black page
+    /// by keeping a bright frame from washing them out. Laid over a **light** page it protects
+    /// nothing at all: the glyphs are dark, the danger is a *dark* backdrop, and 96/255 of
+    /// white over a dark scene leaves a mid-grey that dark text disappears into. A light theme
+    /// is therefore not reachable by swapping colours — without this field it would sit under a
+    /// compulsory near-black veil forever.
+    ///
+    /// ⚠️ **It is still un-overridable by a setting, which is the half that must not weaken.**
+    /// [`crate::term_view::scrim_alpha`] takes this value and clamps `ORGANON_SHELL_SCRIM` up
+    /// to it; no environment variable, in range or out of it, can cross it. What changed is
+    /// *who names it*: the palette, which is compiled in, rather than user configuration. A
+    /// palette is a whole coherent instrument including the terms on which its glyphs stay
+    /// readable; a scrim value typed into a shim is a preference about one of them.
+    pub scrim_floor: u8,
+    /// Where this palette's egui chrome comes from — see [`ChromeSource`] and
+    /// [`Theme::visuals`].
+    pub chrome: ChromeSource,
 }
 
 impl Theme {
@@ -279,7 +355,457 @@ impl Theme {
             tab_menu_fill: Color32::from_rgb(0x10, 0x14, 0x10),
             tab_menu_installed: Color32::from_rgb(0xc8, 0xe6, 0xc8),
             tab_menu_missing: Color32::from_rgb(0x50, 0x5a, 0x50),
+
+            // PRD §4.6's number, unchanged: this is the palette it was chosen against.
+            scrim_floor: crate::term_view::SCRIM_FLOOR,
+            // Not derived, deliberately — `shell_main.rs` has called `Visuals::dark()` since
+            // the console's first frame and this palette must keep painting exactly that.
+            chrome: ChromeSource::EguiDark,
         }
+    }
+
+    /// **A printed technical publication** — quiet, typographic, no phosphor green anywhere.
+    /// Specified by James; the ten roles he named are marked `[spec]` below and everything
+    /// else follows the module's derivation rules.
+    ///
+    /// ⚠️ **"No green anywhere" and a green success colour are both in the spec, and they are
+    /// not in conflict.** The prohibition is on green as *structure* — the console's phosphor
+    /// text, borders and terminal foreground, which is what makes `organon` look like a
+    /// terminal rather than a page. `#1a6b46` is a named **state**, and a publication that
+    /// could not say "this succeeded" in green would be paying for the rule twice.
+    pub const fn light() -> Self {
+        // [spec] page #ffffff · panel #f7f8f9 · primary #0f1114 · secondary #5d636c ·
+        //        faint #8b919b · hairline #e2e5e9 · strong #c9ced6 · accent #1440c4 ·
+        //        success #1a6b46 · error #a32020
+        //
+        // Derived, rule 1: the ladder's second raised step is the spec's hairline `#e2e5e9`
+        // — the spec names one panel, and a bubble sitting *on* a panel needs a step past it.
+        Self {
+            human_text: Color32::from_rgb(0x0f, 0x11, 0x14),
+            human_fill: Color32::from_rgb(0xe2, 0xe5, 0xe9),
+            prose: Color32::from_rgb(0x0f, 0x11, 0x14),
+            dim: Color32::from_rgb(0x8b, 0x91, 0x9b),
+
+            // Rule 2: no amber is specified, so "in flight" is primary text — present and
+            // unmissable without introducing a hue the publication never uses.
+            running: Color32::from_rgb(0x0f, 0x11, 0x14),
+            asking: Color32::from_rgb(0x14, 0x40, 0xc4),
+            ok: Color32::from_rgb(0x1a, 0x6b, 0x46),
+            bad: Color32::from_rgb(0xa3, 0x20, 0x20),
+            surface_empty: Color32::from_rgb(0xf7, 0xf8, 0xf9),
+
+            strip_fill: Color32::from_rgb(0xf7, 0xf8, 0xf9),
+            strip_edge: Color32::from_rgb(0xe2, 0xe5, 0xe9),
+            model_fill: Color32::from_rgb(0xe2, 0xe5, 0xe9),
+            model_edge: Color32::from_rgb(0xc9, 0xce, 0xd6),
+            model_text: Color32::from_rgb(0x0f, 0x11, 0x14),
+            model_badge: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            // Rule 3: accent, not the error red the field doc forbids and not an amber this
+            // palette does not have.
+            mode_alert: Color32::from_rgb(0x14, 0x40, 0xc4),
+            mode_note: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            context_track: Color32::from_rgb(0xc9, 0xce, 0xd6),
+            // Fainter than the track and still not the band it sits on — on a light page
+            // "fainter" means *closer to the page*, which inverts the ordering `organon` has.
+            context_track_empty: Color32::from_rgb(0xe2, 0xe5, 0xe9),
+            context_arc: Color32::from_rgb(0x14, 0x40, 0xc4),
+            // The arc above the high-water mark is the one reading on the band that becomes a
+            // failure if it is ignored, so it takes the error colour rather than `organon`'s
+            // amber. It is deliberately no longer equal to `mode_alert`.
+            context_arc_high: Color32::from_rgb(0xa3, 0x20, 0x20),
+
+            composer_fill: Color32::from_rgb(0xf7, 0xf8, 0xf9),
+            composer_edge: Color32::from_rgb(0xe2, 0xe5, 0xe9),
+            composer_edge_focus: Color32::from_rgb(0x14, 0x40, 0xc4),
+            // Rule 4: the error colour mixed 1:1 into the page — a dead composer is a failure
+            // worn at the weight of a border, not shouted.
+            composer_edge_dead: Color32::from_rgb(0xd1, 0x90, 0x90),
+
+            term_bg: Color32::from_rgb(0xff, 0xff, 0xff),
+            term_fg: Color32::from_rgb(0x0f, 0x11, 0x14),
+            term_scrim_tint: Color32::from_rgb(0xff, 0xff, 0xff),
+            term_exited_notice: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            // ⚠️ **CHOSEN, not specified.** The spec is silent on the terminal, and a light
+            // background changes what the sixteen names can mean: "white" and "bright white"
+            // have to become dark or the text vanishes, and every hue has to darken to hold
+            // contrast against paper. These follow the GitHub Light lineage, which is the
+            // most widely-read light terminal palette and therefore the one a TUI's own
+            // colour scheme is most likely to have been checked against. Nobody has read a
+            // TUI through them.
+            ansi16: [
+                Color32::from_rgb(0x24, 0x29, 0x2e), // black
+                Color32::from_rgb(0xd1, 0x24, 0x2f), // red
+                Color32::from_rgb(0x1a, 0x7f, 0x37), // green
+                Color32::from_rgb(0x9a, 0x67, 0x00), // yellow
+                Color32::from_rgb(0x09, 0x69, 0xda), // blue
+                Color32::from_rgb(0x82, 0x50, 0xdf), // magenta
+                Color32::from_rgb(0x1b, 0x7c, 0x83), // cyan
+                Color32::from_rgb(0x6e, 0x77, 0x81), // white — grey, or it is invisible
+                Color32::from_rgb(0x57, 0x60, 0x6a), // bright black
+                Color32::from_rgb(0xa4, 0x0e, 0x26), // bright red
+                Color32::from_rgb(0x11, 0x63, 0x29), // bright green
+                Color32::from_rgb(0x7d, 0x4e, 0x00), // bright yellow
+                Color32::from_rgb(0x05, 0x50, 0xae), // bright blue
+                Color32::from_rgb(0x66, 0x39, 0xba), // bright magenta
+                Color32::from_rgb(0x1b, 0x7c, 0x83), // bright cyan
+                Color32::from_rgb(0x24, 0x29, 0x2e), // bright white — the darkest, deliberately
+            ],
+
+            // Rule 4: the page at the same 0xe6 alpha `organon` uses, premultiplied.
+            panel_fill: Color32::from_rgba_premultiplied(0xe6, 0xe6, 0xe6, 0xe6),
+            panel_edge: Color32::from_rgb(0xc9, 0xce, 0xd6),
+            panel_title: Color32::from_rgb(0x0f, 0x11, 0x14),
+            panel_text: Color32::from_rgb(0x0f, 0x11, 0x14),
+
+            // Rule 4: the error colour at 20 % over the page. A replay must never pass as a
+            // live agent, so the banner is drawn from the palette's warning family rather than
+            // from its accent.
+            timeline_scripted_fill: Color32::from_rgb(0xed, 0xd2, 0xd2),
+            timeline_scripted_mark: Color32::from_rgb(0xa3, 0x20, 0x20),
+            timeline_status_pending: Color32::from_rgb(0x8b, 0x91, 0x9b),
+            timeline_status_running: Color32::from_rgb(0x0f, 0x11, 0x14),
+            timeline_status_ok: Color32::from_rgb(0x1a, 0x6b, 0x46),
+            timeline_status_failed: Color32::from_rgb(0xa3, 0x20, 0x20),
+            timeline_status_denied: Color32::from_rgb(0xa3, 0x20, 0x20),
+            timeline_status_cancelled: Color32::from_rgb(0x8b, 0x91, 0x9b),
+            timeline_approval_accent: Color32::from_rgb(0x14, 0x40, 0xc4),
+            // Rule 4: the accent at 1:5 over the panel — a tinted plate, not a coloured one.
+            timeline_bubble_user: Color32::from_rgb(0xd1, 0xd9, 0xf0),
+            timeline_bubble_other: Color32::from_rgb(0xf7, 0xf8, 0xf9),
+
+            tab_strip_fill: Color32::from_rgb(0xf7, 0xf8, 0xf9),
+            tab_active: Color32::from_rgb(0x0f, 0x11, 0x14),
+            tab_inactive: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            tab_plus: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            tab_menu_fill: Color32::from_rgb(0xe2, 0xe5, 0xe9),
+            tab_menu_installed: Color32::from_rgb(0x0f, 0x11, 0x14),
+            tab_menu_missing: Color32::from_rgb(0x8b, 0x91, 0x9b),
+
+            scrim_floor: crate::term_view::SCRIM_FLOOR_LIGHT,
+            chrome: ChromeSource::DerivedLight,
+        }
+    }
+
+    /// **The same publication as a photographic negative** — calm, low contrast, never pure
+    /// black. Every derivation is [`Theme::light`]'s, applied to the inverted ladder; read the
+    /// comments there for the reasoning rather than having it restated twice.
+    pub const fn dark() -> Self {
+        // [spec] page #0f1114 · panel #16181c · primary #e6e9ed · secondary #9aa1ab ·
+        //        faint #6b727c · hairline #24272d · strong #363b43 · accent #8fb0ff ·
+        //        success #6fbf95 · error #e88b8b
+        //
+        // Rule 1: the second raised step is the hairline `#24272d`.
+        Self {
+            human_text: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            human_fill: Color32::from_rgb(0x24, 0x27, 0x2d),
+            prose: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            dim: Color32::from_rgb(0x6b, 0x72, 0x7c),
+
+            running: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            asking: Color32::from_rgb(0x8f, 0xb0, 0xff),
+            ok: Color32::from_rgb(0x6f, 0xbf, 0x95),
+            bad: Color32::from_rgb(0xe8, 0x8b, 0x8b),
+            surface_empty: Color32::from_rgb(0x16, 0x18, 0x1c),
+
+            strip_fill: Color32::from_rgb(0x16, 0x18, 0x1c),
+            strip_edge: Color32::from_rgb(0x24, 0x27, 0x2d),
+            model_fill: Color32::from_rgb(0x24, 0x27, 0x2d),
+            model_edge: Color32::from_rgb(0x36, 0x3b, 0x43),
+            model_text: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            model_badge: Color32::from_rgb(0x9a, 0xa1, 0xab),
+            mode_alert: Color32::from_rgb(0x8f, 0xb0, 0xff),
+            mode_note: Color32::from_rgb(0x9a, 0xa1, 0xab),
+            context_track: Color32::from_rgb(0x36, 0x3b, 0x43),
+            context_track_empty: Color32::from_rgb(0x24, 0x27, 0x2d),
+            context_arc: Color32::from_rgb(0x8f, 0xb0, 0xff),
+            context_arc_high: Color32::from_rgb(0xe8, 0x8b, 0x8b),
+
+            composer_fill: Color32::from_rgb(0x16, 0x18, 0x1c),
+            composer_edge: Color32::from_rgb(0x24, 0x27, 0x2d),
+            composer_edge_focus: Color32::from_rgb(0x8f, 0xb0, 0xff),
+            // Rule 4: error mixed 1:1 into the page.
+            composer_edge_dead: Color32::from_rgb(0x7c, 0x4e, 0x50),
+
+            term_bg: Color32::from_rgb(0x0f, 0x11, 0x14),
+            term_fg: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            term_scrim_tint: Color32::from_rgb(0x0f, 0x11, 0x14),
+            term_exited_notice: Color32::from_rgb(0x9a, 0xa1, 0xab),
+            // ⚠️ **CHOSEN, not specified** — the spec says nothing about a terminal. Built to
+            // this palette's own brief rather than borrowed: the six hues are the spec's own
+            // accent/success/error plus a yellow, magenta and cyan mixed to the same muted
+            // weight, so a TUI's colours sit at the page's contrast instead of shouting over
+            // it, and the greys are the palette's own text ladder. Nobody has read a TUI
+            // through them.
+            ansi16: [
+                Color32::from_rgb(0x24, 0x27, 0x2d), // black — the hairline
+                Color32::from_rgb(0xe8, 0x8b, 0x8b), // red — the spec's error
+                Color32::from_rgb(0x6f, 0xbf, 0x95), // green — the spec's success
+                Color32::from_rgb(0xd9, 0xb2, 0x6f), // yellow
+                Color32::from_rgb(0x8f, 0xb0, 0xff), // blue — the spec's accent
+                Color32::from_rgb(0xc9, 0x9b, 0xdb), // magenta
+                Color32::from_rgb(0x7f, 0xc9, 0xc9), // cyan
+                Color32::from_rgb(0x9a, 0xa1, 0xab), // white — secondary text
+                Color32::from_rgb(0x6b, 0x72, 0x7c), // bright black — faint text
+                Color32::from_rgb(0xf0, 0xa3, 0xa3), // bright red
+                Color32::from_rgb(0x8a, 0xd4, 0xac), // bright green
+                Color32::from_rgb(0xe8, 0xc9, 0x8a), // bright yellow
+                Color32::from_rgb(0xa9, 0xc3, 0xff), // bright blue
+                Color32::from_rgb(0xd9, 0xb3, 0xe8), // bright magenta
+                Color32::from_rgb(0x9a, 0xdc, 0xdc), // bright cyan
+                Color32::from_rgb(0xe6, 0xe9, 0xed), // bright white — primary text
+            ],
+
+            panel_fill: Color32::from_rgba_premultiplied(0x0e, 0x0f, 0x12, 0xe6),
+            panel_edge: Color32::from_rgb(0x36, 0x3b, 0x43),
+            panel_title: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            panel_text: Color32::from_rgb(0xe6, 0xe9, 0xed),
+
+            timeline_scripted_fill: Color32::from_rgb(0x3a, 0x29, 0x2c),
+            timeline_scripted_mark: Color32::from_rgb(0xe8, 0x8b, 0x8b),
+            timeline_status_pending: Color32::from_rgb(0x6b, 0x72, 0x7c),
+            timeline_status_running: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            timeline_status_ok: Color32::from_rgb(0x6f, 0xbf, 0x95),
+            timeline_status_failed: Color32::from_rgb(0xe8, 0x8b, 0x8b),
+            timeline_status_denied: Color32::from_rgb(0xe8, 0x8b, 0x8b),
+            timeline_status_cancelled: Color32::from_rgb(0x6b, 0x72, 0x7c),
+            timeline_approval_accent: Color32::from_rgb(0x8f, 0xb0, 0xff),
+            timeline_bubble_user: Color32::from_rgb(0x2a, 0x31, 0x42),
+            timeline_bubble_other: Color32::from_rgb(0x16, 0x18, 0x1c),
+
+            tab_strip_fill: Color32::from_rgb(0x16, 0x18, 0x1c),
+            tab_active: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            tab_inactive: Color32::from_rgb(0x9a, 0xa1, 0xab),
+            tab_plus: Color32::from_rgb(0x9a, 0xa1, 0xab),
+            tab_menu_fill: Color32::from_rgb(0x24, 0x27, 0x2d),
+            tab_menu_installed: Color32::from_rgb(0xe6, 0xe9, 0xed),
+            tab_menu_missing: Color32::from_rgb(0x6b, 0x72, 0x7c),
+
+            // A dark page, so PRD §4.6's own number applies unchanged.
+            scrim_floor: crate::term_view::SCRIM_FLOOR,
+            chrome: ChromeSource::DerivedDark,
+        }
+    }
+
+    /// **A working desktop instrument** — warm graphite, overwhelmingly monochrome, colour as
+    /// functional punctuation.
+    ///
+    /// 🚨 **The accent discipline is part of the spec, not decoration.** Green appears once, as
+    /// the tiny state indicator; blue marks one selected semantic label; red is errors alone.
+    /// Two consequences are visible below and neither is an oversight: [`Theme::ok`] is the
+    /// **secondary grey**, because that field colours the literal word `ok` beside a finished
+    /// tool call and the spec says that word is not green; and there is no amber anywhere, so
+    /// "running" is primary text (module rule 2).
+    ///
+    /// ⚠️ **The green the spec does name lives on [`Theme::timeline_status_ok`]**, the nearest
+    /// thing the current field set has to "a tiny state indicator". The console draws the word
+    /// and its marker from **one** field, so the spec's word/dot split cannot be expressed
+    /// without a new field and a draw-site change — out of scope for a palette-only change, and
+    /// reported rather than fudged.
+    ///
+    /// ⚠️ **Never a cool blue-grey.** Every neutral below has its three channels equal, so no
+    /// dark surface can pick up a blue cast; the ladder `#191919 → #1F1F1F → #262626 → #303030`
+    /// is the palette's spine and a fifth step would have to be argued, not interpolated.
+    pub const fn chocolate() -> Self {
+        // [spec] page #191919 · nested code/output + input #1F1F1F · raised card #262626 ·
+        //        raised/tab surface #303030 · hairline #3A3A3A · primary #EDEDED ·
+        //        secondary #8F8F8F · muted #6E6E6E · success #4CC76E · accent #6699FF ·
+        //        error #F0655E
+        Self {
+            human_text: Color32::from_rgb(0xed, 0xed, 0xed),
+            human_fill: Color32::from_rgb(0x26, 0x26, 0x26),
+            prose: Color32::from_rgb(0xed, 0xed, 0xed),
+            dim: Color32::from_rgb(0x6e, 0x6e, 0x6e),
+
+            running: Color32::from_rgb(0xed, 0xed, 0xed),
+            asking: Color32::from_rgb(0x66, 0x99, 0xff),
+            // [spec] the word `ok` is the secondary grey, not the green.
+            ok: Color32::from_rgb(0x8f, 0x8f, 0x8f),
+            bad: Color32::from_rgb(0xf0, 0x65, 0x5e),
+            surface_empty: Color32::from_rgb(0x1f, 0x1f, 0x1f),
+
+            strip_fill: Color32::from_rgb(0x1f, 0x1f, 0x1f),
+            strip_edge: Color32::from_rgb(0x3a, 0x3a, 0x3a),
+            model_fill: Color32::from_rgb(0x26, 0x26, 0x26),
+            model_edge: Color32::from_rgb(0x3a, 0x3a, 0x3a),
+            model_text: Color32::from_rgb(0xed, 0xed, 0xed),
+            model_badge: Color32::from_rgb(0x8f, 0x8f, 0x8f),
+            mode_alert: Color32::from_rgb(0x66, 0x99, 0xff),
+            mode_note: Color32::from_rgb(0x8f, 0x8f, 0x8f),
+            context_track: Color32::from_rgb(0x3a, 0x3a, 0x3a),
+            context_track_empty: Color32::from_rgb(0x26, 0x26, 0x26),
+            context_arc: Color32::from_rgb(0x66, 0x99, 0xff),
+            context_arc_high: Color32::from_rgb(0xf0, 0x65, 0x5e),
+
+            composer_fill: Color32::from_rgb(0x1f, 0x1f, 0x1f),
+            composer_edge: Color32::from_rgb(0x3a, 0x3a, 0x3a),
+            composer_edge_focus: Color32::from_rgb(0x66, 0x99, 0xff),
+            // Rule 4: error mixed 1:1 into the page.
+            composer_edge_dead: Color32::from_rgb(0x85, 0x3f, 0x3c),
+
+            term_bg: Color32::from_rgb(0x19, 0x19, 0x19),
+            term_fg: Color32::from_rgb(0xed, 0xed, 0xed),
+            term_scrim_tint: Color32::from_rgb(0x19, 0x19, 0x19),
+            term_exited_notice: Color32::from_rgb(0x8f, 0x8f, 0x8f),
+            // ⚠️ **CHOSEN, not specified**, and the one place this palette's monochrome
+            // discipline is deliberately not applied: a program asking for ANSI red is asking
+            // for red, and rendering `git diff` in graphite would be the console overpainting
+            // what a program said. The accent/success/error trio is the spec's own; the other
+            // three hues and their bright pairs are matched to that weight. Nobody has read a
+            // TUI through them.
+            ansi16: [
+                Color32::from_rgb(0x30, 0x30, 0x30), // black — the raised surface
+                Color32::from_rgb(0xf0, 0x65, 0x5e), // red — the spec's error
+                Color32::from_rgb(0x4c, 0xc7, 0x6e), // green — the spec's success
+                Color32::from_rgb(0xd9, 0xa4, 0x41), // yellow
+                Color32::from_rgb(0x66, 0x99, 0xff), // blue — the spec's accent
+                Color32::from_rgb(0xb9, 0x8b, 0xe0), // magenta
+                Color32::from_rgb(0x5f, 0xc9, 0xc9), // cyan
+                Color32::from_rgb(0x8f, 0x8f, 0x8f), // white — secondary text
+                Color32::from_rgb(0x6e, 0x6e, 0x6e), // bright black — muted text
+                Color32::from_rgb(0xf5, 0x8a, 0x84), // bright red
+                Color32::from_rgb(0x74, 0xd9, 0x8f), // bright green
+                Color32::from_rgb(0xe6, 0xbc, 0x6b), // bright yellow
+                Color32::from_rgb(0x8f, 0xb4, 0xff), // bright blue
+                Color32::from_rgb(0xcb, 0xa8, 0xeb), // bright magenta
+                Color32::from_rgb(0x85, 0xda, 0xda), // bright cyan
+                Color32::from_rgb(0xed, 0xed, 0xed), // bright white — primary text
+            ],
+
+            panel_fill: Color32::from_rgba_premultiplied(0x17, 0x17, 0x17, 0xe6),
+            panel_edge: Color32::from_rgb(0x3a, 0x3a, 0x3a),
+            panel_title: Color32::from_rgb(0xed, 0xed, 0xed),
+            panel_text: Color32::from_rgb(0xed, 0xed, 0xed),
+
+            timeline_scripted_fill: Color32::from_rgb(0x44, 0x28, 0x27),
+            timeline_scripted_mark: Color32::from_rgb(0xf0, 0x65, 0x5e),
+            timeline_status_pending: Color32::from_rgb(0x6e, 0x6e, 0x6e),
+            timeline_status_running: Color32::from_rgb(0xed, 0xed, 0xed),
+            // The one green in the palette — see the ⚠️ on this constructor.
+            timeline_status_ok: Color32::from_rgb(0x4c, 0xc7, 0x6e),
+            timeline_status_failed: Color32::from_rgb(0xf0, 0x65, 0x5e),
+            timeline_status_denied: Color32::from_rgb(0xf0, 0x65, 0x5e),
+            timeline_status_cancelled: Color32::from_rgb(0x6e, 0x6e, 0x6e),
+            timeline_approval_accent: Color32::from_rgb(0x66, 0x99, 0xff),
+            timeline_bubble_user: Color32::from_rgb(0x2b, 0x33, 0x44),
+            timeline_bubble_other: Color32::from_rgb(0x26, 0x26, 0x26),
+
+            tab_strip_fill: Color32::from_rgb(0x30, 0x30, 0x30),
+            tab_active: Color32::from_rgb(0xed, 0xed, 0xed),
+            tab_inactive: Color32::from_rgb(0x8f, 0x8f, 0x8f),
+            tab_plus: Color32::from_rgb(0x8f, 0x8f, 0x8f),
+            tab_menu_fill: Color32::from_rgb(0x30, 0x30, 0x30),
+            tab_menu_installed: Color32::from_rgb(0xed, 0xed, 0xed),
+            tab_menu_missing: Color32::from_rgb(0x6e, 0x6e, 0x6e),
+
+            scrim_floor: crate::term_view::SCRIM_FLOOR,
+            chrome: ChromeSource::DerivedDark,
+        }
+    }
+
+    /// Every palette's name, in the order a picker should offer them — the default first.
+    ///
+    /// One list rather than a `match` arm each, so [`Theme::by_name`] and anything that wants
+    /// to *enumerate* the palettes cannot disagree about which exist. A fifth palette is a row
+    /// here and a row in `by_name`, and `every_name_resolves` fails if only one of them is
+    /// written.
+    pub const NAMES: [&'static str; 4] = ["organon", "light", "dark", "chocolate"];
+
+    /// Resolve a stored or typed palette name.
+    ///
+    /// `None` for a name this build does not have — **never a panic, and never a substitute
+    /// palette**, because the two callers want different things from a miss. A picker wants to
+    /// say the name is unknown; `prefs.rs` (whose `theme` field is a plain `String` written by
+    /// some other version of this console) wants to fall back to [`Theme::default`] silently,
+    /// which is `unwrap_or_default()` at the call site. Answering with the default here would
+    /// take the first of those away.
+    ///
+    /// 📌 **Nothing calls this yet.** `organon` is still the default and no picker, CLI verb or
+    /// startup read selects anything — this is the seam those need, built with them, not for
+    /// them.
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "organon" => Some(Self::organon()),
+            "light" => Some(Self::light()),
+            "dark" => Some(Self::dark()),
+            "chocolate" => Some(Self::chocolate()),
+            _ => None,
+        }
+    }
+
+    /// egui's own chrome, derived from this palette.
+    ///
+    /// **Why this exists.** `shell_main.rs` called `set_visuals(egui::Visuals::dark())` once, at
+    /// construction, hardcoded — and that one call colours the sliders, the popup frames, the
+    /// `TextEdit` selection wash and the scrollbars. A palette assembled only from `Theme`'s
+    /// fields would leave those dark whatever it did, which is survivable for three dark
+    /// palettes and fatal for a light one: `light` would read as broken rather than as light.
+    ///
+    /// **What it does not touch, on purpose.** Only colours are written. Corner radii, widget
+    /// expansion, shadows and every other geometric field come from the egui base and are left
+    /// exactly as they were — those are *form*, and form is a separate axis with a separate
+    /// owner. `bg_stroke` and `fg_stroke` have their `color` assigned rather than being
+    /// replaced, so each stroke keeps the width egui chose for it.
+    ///
+    /// 🚨 **[`Theme::organon`] returns `Visuals::dark()` unmodified**, so adding three palettes
+    /// cannot restyle the console that already ships. That is the early return below, and
+    /// `organon_chrome_is_still_egui_dark_to_the_byte` is what would catch it if someone
+    /// "tidied" the special case away.
+    pub fn visuals(&self) -> egui::Visuals {
+        let mut v = match self.chrome {
+            ChromeSource::EguiDark => return egui::Visuals::dark(),
+            ChromeSource::DerivedDark => egui::Visuals::dark(),
+            ChromeSource::DerivedLight => egui::Visuals::light(),
+        };
+
+        // Colour only — the width and the corner radius each widget already has are form.
+        fn tint(
+            w: &mut egui::style::WidgetVisuals,
+            bg: Color32,
+            weak: Color32,
+            edge: Color32,
+            fg: Color32,
+        ) {
+            w.bg_fill = bg;
+            w.weak_bg_fill = weak;
+            w.bg_stroke.color = edge;
+            w.fg_stroke.color = fg;
+        }
+
+        v.dark_mode = self.chrome == ChromeSource::DerivedDark;
+
+        // The five widget states map onto the console's own surface ladder: a widget nobody is
+        // touching sits at the status band's weight, one under the pointer rises to the model
+        // plate, and a pressed one rises again to that plate's own edge. `inactive`'s text is
+        // the inactive tab's, which is the palette's existing answer to "present, not chosen".
+        tint(&mut v.widgets.noninteractive, self.strip_fill, self.strip_fill, self.strip_edge, self.prose);
+        tint(&mut v.widgets.inactive, self.model_fill, self.strip_fill, self.strip_edge, self.tab_inactive);
+        tint(&mut v.widgets.hovered, self.model_fill, self.model_fill, self.model_edge, self.human_text);
+        tint(&mut v.widgets.active, self.model_edge, self.model_edge, self.composer_edge_focus, self.human_text);
+        tint(&mut v.widgets.open, self.model_fill, self.model_fill, self.model_edge, self.prose);
+
+        // The selection wash is the user bubble's plate — the palette already had to decide
+        // "the accent, tinted far enough into a surface that text stays readable on it", and
+        // that is exactly the question a selection asks.
+        v.selection.bg_fill = self.timeline_bubble_user;
+        v.selection.stroke.color = self.prose;
+
+        v.hyperlink_color = self.asking;
+        v.faint_bg_color = self.strip_fill;
+        // The `TextEdit` plate is the composer's, so egui's own text fields and the console's
+        // hand-painted one cannot drift apart. `text_edit_bg_color` is left `None`, which means
+        // "follow `extreme_bg_color`" — one answer, not two.
+        v.extreme_bg_color = self.composer_fill;
+        v.code_bg_color = self.surface_empty;
+        v.warn_fg_color = self.mode_alert;
+        v.error_fg_color = self.bad;
+
+        // A popup is the harness menu's plate wearing the strongest border the palette has —
+        // on a light page a window filled with the page colour has no other way to end.
+        v.window_fill = self.tab_menu_fill;
+        v.window_stroke.color = self.model_edge;
+        v.panel_fill = self.term_bg;
+
+        v
     }
 }
 
@@ -477,5 +1003,280 @@ mod tests {
         // grey.
         assert_eq!(t.timeline_status_denied, t.timeline_status_failed);
         assert_eq!(t.timeline_status_cancelled, t.timeline_status_pending);
+    }
+
+    // -------------------------------------------------------------------------
+    // The three palettes James specified
+    // -------------------------------------------------------------------------
+
+    /// 🚨 **Every hex the spec names, on the field the spec names it for.** These are not
+    /// derived values and there is nothing to reason about: a spec said `#ffffff` is the page,
+    /// so `term_bg` is `#ffffff` or the palette is not the one that was asked for. A wrong
+    /// colour compiles and draws, and nobody has opened a window on any of these — this test
+    /// is the only thing standing between "typed correctly" and "typed".
+    #[test]
+    fn the_specified_hexes_land_on_the_fields_they_were_specified_for() {
+        let t = Theme::light();
+        // page · panel/input · primary · secondary · faint · hairline · strong · accent ·
+        // success · error
+        assert_eq!(t.term_bg, Color32::from_rgb(0xff, 0xff, 0xff), "light page");
+        assert_eq!(t.term_scrim_tint, Color32::from_rgb(0xff, 0xff, 0xff), "light scrim tint");
+        assert_eq!(t.composer_fill, Color32::from_rgb(0xf7, 0xf8, 0xf9), "light input plate");
+        assert_eq!(t.strip_fill, Color32::from_rgb(0xf7, 0xf8, 0xf9), "light panel");
+        assert_eq!(t.prose, Color32::from_rgb(0x0f, 0x11, 0x14), "light primary text");
+        assert_eq!(t.term_fg, Color32::from_rgb(0x0f, 0x11, 0x14), "light primary text");
+        assert_eq!(t.model_badge, Color32::from_rgb(0x5d, 0x63, 0x6c), "light secondary");
+        assert_eq!(t.dim, Color32::from_rgb(0x8b, 0x91, 0x9b), "light faint metadata");
+        assert_eq!(t.strip_edge, Color32::from_rgb(0xe2, 0xe5, 0xe9), "light hairline");
+        assert_eq!(t.model_edge, Color32::from_rgb(0xc9, 0xce, 0xd6), "light stronger border");
+        assert_eq!(t.asking, Color32::from_rgb(0x14, 0x40, 0xc4), "light accent blue");
+        assert_eq!(t.ok, Color32::from_rgb(0x1a, 0x6b, 0x46), "light success");
+        assert_eq!(t.bad, Color32::from_rgb(0xa3, 0x20, 0x20), "light error");
+        // "No green anywhere" is about structure, so nothing that draws text, a border or a
+        // surface may be green — but the named success colour stays green.
+        for (name, c) in [
+            ("prose", t.prose),
+            ("term_fg", t.term_fg),
+            ("dim", t.dim),
+            ("term_bg", t.term_bg),
+            ("strip_fill", t.strip_fill),
+            ("strip_edge", t.strip_edge),
+            ("model_edge", t.model_edge),
+            ("tab_active", t.tab_active),
+            ("panel_edge", t.panel_edge),
+        ] {
+            // Widened, because `#ffffff` is one of these and `255 + 8` is not a `u8`.
+            let (r, g, b) = (c.r() as i32, c.g() as i32, c.b() as i32);
+            assert!(
+                !(g > r + 8 && g > b + 8),
+                "{name} is green-dominant in a palette that forbids structural green: {c:?}"
+            );
+        }
+
+        let t = Theme::dark();
+        assert_eq!(t.term_bg, Color32::from_rgb(0x0f, 0x11, 0x14), "dark page");
+        assert_eq!(t.term_scrim_tint, Color32::from_rgb(0x0f, 0x11, 0x14), "dark scrim tint");
+        assert_eq!(t.composer_fill, Color32::from_rgb(0x16, 0x18, 0x1c), "dark input plate");
+        assert_eq!(t.strip_fill, Color32::from_rgb(0x16, 0x18, 0x1c), "dark panel");
+        assert_eq!(t.prose, Color32::from_rgb(0xe6, 0xe9, 0xed), "dark primary");
+        assert_eq!(t.term_fg, Color32::from_rgb(0xe6, 0xe9, 0xed), "dark primary");
+        assert_eq!(t.model_badge, Color32::from_rgb(0x9a, 0xa1, 0xab), "dark secondary");
+        assert_eq!(t.dim, Color32::from_rgb(0x6b, 0x72, 0x7c), "dark faint");
+        assert_eq!(t.strip_edge, Color32::from_rgb(0x24, 0x27, 0x2d), "dark hairline");
+        assert_eq!(t.model_edge, Color32::from_rgb(0x36, 0x3b, 0x43), "dark stronger border");
+        assert_eq!(t.asking, Color32::from_rgb(0x8f, 0xb0, 0xff), "dark accent blue");
+        assert_eq!(t.ok, Color32::from_rgb(0x6f, 0xbf, 0x95), "dark success");
+        assert_eq!(t.bad, Color32::from_rgb(0xe8, 0x8b, 0x8b), "dark error");
+        // "Never pure black" — the negative is calm, not switched off.
+        assert_ne!(t.term_bg, Color32::BLACK);
+        assert!(t.term_bg.r() >= 0x0f && t.term_bg.g() >= 0x0f && t.term_bg.b() >= 0x0f);
+
+        let t = Theme::chocolate();
+        assert_eq!(t.term_bg, Color32::from_rgb(0x19, 0x19, 0x19), "chocolate page");
+        assert_eq!(t.term_scrim_tint, Color32::from_rgb(0x19, 0x19, 0x19), "chocolate scrim tint");
+        assert_eq!(t.model_fill, Color32::from_rgb(0x26, 0x26, 0x26), "chocolate raised card");
+        assert_eq!(t.human_fill, Color32::from_rgb(0x26, 0x26, 0x26), "chocolate raised card");
+        assert_eq!(t.surface_empty, Color32::from_rgb(0x1f, 0x1f, 0x1f), "chocolate nested");
+        assert_eq!(t.composer_fill, Color32::from_rgb(0x1f, 0x1f, 0x1f), "chocolate input");
+        assert_eq!(t.tab_strip_fill, Color32::from_rgb(0x30, 0x30, 0x30), "chocolate tab surface");
+        assert_eq!(t.tab_menu_fill, Color32::from_rgb(0x30, 0x30, 0x30), "chocolate raised");
+        assert_eq!(t.strip_edge, Color32::from_rgb(0x3a, 0x3a, 0x3a), "chocolate hairline");
+        assert_eq!(t.composer_edge, Color32::from_rgb(0x3a, 0x3a, 0x3a), "chocolate input border");
+        assert_eq!(t.prose, Color32::from_rgb(0xed, 0xed, 0xed), "chocolate primary");
+        assert_eq!(t.model_badge, Color32::from_rgb(0x8f, 0x8f, 0x8f), "chocolate secondary");
+        assert_eq!(t.dim, Color32::from_rgb(0x6e, 0x6e, 0x6e), "chocolate muted");
+        assert_eq!(t.timeline_status_ok, Color32::from_rgb(0x4c, 0xc7, 0x6e), "chocolate success");
+        assert_eq!(t.asking, Color32::from_rgb(0x66, 0x99, 0xff), "chocolate accent blue");
+        assert_eq!(t.bad, Color32::from_rgb(0xf0, 0x65, 0x5e), "chocolate error");
+        // 🚨 The spec's own sentence, as an assertion: the WORD `ok` is the secondary grey.
+        // `conversation_view` draws that word from `theme.ok`, so this is the field it names.
+        assert_eq!(t.ok, Color32::from_rgb(0x8f, 0x8f, 0x8f), "the word `ok` is NOT green");
+    }
+
+    /// 🚨 **Chocolate's surface ladder is its spine, and every neutral in it is neutral.**
+    /// "Warm graphite, never cool blue-grey" is a property that can be checked rather than
+    /// admired: a blue cast is `b` running ahead of `r`, and the four named steps are the exact
+    /// bytes the spec gives. A palette that drifted toward egui's own blue-tinted greys would
+    /// still compile and would still look like a dark theme.
+    #[test]
+    fn chocolate_stays_neutral_and_keeps_its_ladder() {
+        let t = Theme::chocolate();
+        let ladder = [0x19u8, 0x1f, 0x26, 0x30];
+        for (i, step) in ladder.iter().enumerate() {
+            assert!(
+                i == 0 || *step > ladder[i - 1],
+                "the ladder must climb: {ladder:?} broke at step {i}"
+            );
+        }
+        // Every surface and every neutral text weight: channels equal, so no blue cast.
+        for (name, c) in [
+            ("term_bg", t.term_bg),
+            ("surface_empty", t.surface_empty),
+            ("composer_fill", t.composer_fill),
+            ("strip_fill", t.strip_fill),
+            ("model_fill", t.model_fill),
+            ("human_fill", t.human_fill),
+            ("tab_strip_fill", t.tab_strip_fill),
+            ("tab_menu_fill", t.tab_menu_fill),
+            ("strip_edge", t.strip_edge),
+            ("composer_edge", t.composer_edge),
+            ("model_edge", t.model_edge),
+            ("panel_edge", t.panel_edge),
+            ("context_track", t.context_track),
+            ("context_track_empty", t.context_track_empty),
+            ("prose", t.prose),
+            ("ok", t.ok),
+            ("dim", t.dim),
+            ("running", t.running),
+            ("tab_inactive", t.tab_inactive),
+        ] {
+            assert!(
+                c.r() == c.g() && c.g() == c.b(),
+                "{name} is not a neutral: {c:?} — chocolate must never pick up a blue cast"
+            );
+        }
+        // Blue is a label, never a wash: no surface may be the accent.
+        for (name, c) in [
+            ("term_bg", t.term_bg),
+            ("strip_fill", t.strip_fill),
+            ("model_fill", t.model_fill),
+            ("tab_strip_fill", t.tab_strip_fill),
+        ] {
+            assert_ne!(c, t.asking, "{name} must not be an accent wash");
+        }
+    }
+
+    /// **Every state a card can be in still reads as a different state.** The three new
+    /// palettes drop `organon`'s amber (module rule 2 — no spec names one), so the pairs the
+    /// field docs say must not read alike are exactly the pairs at risk from that decision.
+    #[test]
+    fn busy_blocked_done_and_failed_stay_four_different_answers() {
+        for name in ["light", "dark", "chocolate"] {
+            let t = Theme::by_name(name).expect("NAMES resolves");
+            assert_ne!(t.running, t.asking, "{name}: 'busy' must not read as 'blocked on you'");
+            assert_ne!(t.running, t.bad, "{name}: busy vs failed");
+            assert_ne!(t.ok, t.bad, "{name}: done vs failed");
+            assert_ne!(t.asking, t.bad, "{name}: blocked vs failed");
+            // The field doc's standing rule: the permission alert is never the error colour,
+            // because it sits on the band for hours and a permanent klaxon is skipped.
+            assert_ne!(t.mode_alert, t.bad, "{name}: the mode alert must not be red");
+            // The ring's two tracks, the contract `an_unmeasured_ring_is_distinguishable…`
+            // states for `organon`: an unmeasured container is fainter than a measured one and
+            // is still not the band it sits on.
+            assert_ne!(t.context_track_empty, t.context_track, "{name}: the ring's two tracks");
+            assert_ne!(t.context_track_empty, t.strip_fill, "{name}: an invisible track");
+        }
+    }
+
+    /// Names resolve, round-trip, and a name this build does not have is a `None` rather than a
+    /// panic or a silent substitution.
+    #[test]
+    fn every_name_resolves_and_an_unknown_one_falls_back() {
+        assert_eq!(Theme::NAMES.len(), 4);
+        for name in Theme::NAMES {
+            assert!(Theme::by_name(name).is_some(), "{name} is listed but does not resolve");
+        }
+        assert_eq!(Theme::by_name("organon"), Some(Theme::organon()));
+        assert_eq!(Theme::by_name("light"), Some(Theme::light()));
+        assert_eq!(Theme::by_name("dark"), Some(Theme::dark()));
+        assert_eq!(Theme::by_name("chocolate"), Some(Theme::chocolate()));
+        // The four are genuinely four.
+        assert_ne!(Theme::light(), Theme::dark());
+        assert_ne!(Theme::dark(), Theme::chocolate());
+        assert_ne!(Theme::chocolate(), Theme::organon());
+        // A miss is a miss — including the near-misses a stored file or a typed word produces.
+        for miss in ["", "Organon", "ORGANON", " organon", "light ", "solarized", "choc"] {
+            assert_eq!(Theme::by_name(miss), None, "{miss:?} must not resolve");
+        }
+        // …and the documented way a caller turns that into a palette is the default, which is
+        // still `organon`. This is the line `prefs.rs`'s stored name will be read through.
+        assert_eq!(Theme::by_name("nonesuch").unwrap_or_default(), Theme::organon());
+    }
+
+    /// 🚨 **Adding three palettes must not restyle the console that ships.** `shell_main.rs`
+    /// called `set_visuals(egui::Visuals::dark())` once, hardcoded; it now calls
+    /// `theme.visuals()`, and for `organon` the two have to be the same value to the byte —
+    /// otherwise every slider, popup frame, selection wash and scrollbar in the current console
+    /// silently changed while nobody was looking at a new palette.
+    #[test]
+    fn organon_chrome_is_still_egui_dark_to_the_byte() {
+        assert_eq!(Theme::organon().visuals(), egui::Visuals::dark());
+        assert_eq!(Theme::organon().chrome, ChromeSource::EguiDark);
+    }
+
+    /// **The derivation actually runs, and it moves the surfaces a hardcoded dark chrome would
+    /// have left behind.** The failure this guards is the quiet one: a `visuals()` that returns
+    /// its base unchanged would pass the `organon` pin above and leave `light` sitting in
+    /// egui's dark widget chrome — which is exactly the "half the pixels stay dark" failure the
+    /// method exists to fix.
+    #[test]
+    fn a_derived_chrome_carries_the_palette_rather_than_eguis() {
+        for name in ["light", "dark", "chocolate"] {
+            let t = Theme::by_name(name).expect("NAMES resolves");
+            let v = t.visuals();
+            assert_ne!(v, egui::Visuals::dark(), "{name}: chrome never left egui's dark base");
+            assert_ne!(v, egui::Visuals::light(), "{name}: chrome never left egui's light base");
+            // The four surfaces that decide whether a window reads as this palette at all.
+            assert_eq!(v.panel_fill, t.term_bg, "{name}: the panel is the page");
+            assert_eq!(v.extreme_bg_color, t.composer_fill, "{name}: a TextEdit is the composer");
+            assert_eq!(v.window_fill, t.tab_menu_fill, "{name}: a popup is the menu's plate");
+            assert_eq!(v.selection.bg_fill, t.timeline_bubble_user, "{name}: the selection wash");
+            assert_eq!(v.error_fg_color, t.bad, "{name}");
+            assert_eq!(v.warn_fg_color, t.mode_alert, "{name}");
+            assert_eq!(v.hyperlink_color, t.asking, "{name}");
+            // `text_edit_bg_color` is left `None` on purpose: it means "follow
+            // extreme_bg_color", so the composer's plate is stated once rather than twice.
+            assert_eq!(v.text_edit_bg_color, None, "{name}");
+        }
+        // `dark_mode` is egui's own summary of the palette's polarity, and a light palette that
+        // reported itself dark would make every egui default that consults it wrong.
+        assert!(!Theme::light().visuals().dark_mode, "light is not dark mode");
+        assert!(Theme::dark().visuals().dark_mode);
+        assert!(Theme::chocolate().visuals().dark_mode);
+    }
+
+    /// ⚠️ **The chrome derivation writes colours and nothing else.** Corner radii, widget
+    /// expansion, stroke *widths* and shadows are form — a separate axis with a separate owner
+    /// — so every one of them must still be whatever the egui base said. This is the test that
+    /// notices if a colour change ever grows a geometry change beside it.
+    #[test]
+    fn the_chrome_derivation_never_touches_form() {
+        let bases = [
+            (Theme::light().visuals(), egui::Visuals::light()),
+            (Theme::dark().visuals(), egui::Visuals::dark()),
+            (Theme::chocolate().visuals(), egui::Visuals::dark()),
+        ];
+        for (derived, base) in bases {
+            assert_eq!(derived.window_corner_radius, base.window_corner_radius);
+            assert_eq!(derived.menu_corner_radius, base.menu_corner_radius);
+            assert_eq!(derived.window_shadow, base.window_shadow);
+            assert_eq!(derived.popup_shadow, base.popup_shadow);
+            assert_eq!(derived.window_stroke.width, base.window_stroke.width);
+            for (d, b) in [
+                (&derived.widgets.noninteractive, &base.widgets.noninteractive),
+                (&derived.widgets.inactive, &base.widgets.inactive),
+                (&derived.widgets.hovered, &base.widgets.hovered),
+                (&derived.widgets.active, &base.widgets.active),
+                (&derived.widgets.open, &base.widgets.open),
+            ] {
+                assert_eq!(d.corner_radius, b.corner_radius, "a corner radius moved");
+                assert_eq!(d.expansion, b.expansion, "a widget expansion moved");
+                assert_eq!(d.bg_stroke.width, b.bg_stroke.width, "a bg stroke width moved");
+                assert_eq!(d.fg_stroke.width, b.fg_stroke.width, "a fg stroke width moved");
+            }
+        }
+    }
+
+    /// **`organon` is byte-for-byte what it was, including the two new non-pigment fields.**
+    /// The pin above covers every colour; this covers the pair added for the palettes, because
+    /// a scrim floor that moved would change what the shipped console paints over its backdrop
+    /// without changing a single colour value.
+    #[test]
+    fn organon_is_unchanged_by_the_new_palettes() {
+        let t = Theme::organon();
+        assert_eq!(t.scrim_floor, crate::term_view::SCRIM_FLOOR, "PRD §4.6's own number");
+        assert_eq!(t.scrim_floor, 96, "…and it is still literally 96");
+        assert_eq!(t.chrome, ChromeSource::EguiDark);
+        assert_eq!(Theme::default(), t);
     }
 }
