@@ -43,8 +43,8 @@ use crate::approval::{
 use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
 use crate::conversation::{
     Answer, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent, Body, Change,
-    Element, ElementId, Ignored, PanelSpec, RunOutcome, SurfaceSpec, ToolCard, ToolState,
-    Transcript, Verdict,
+    Element, ElementId, Ignored, PanelSpec, RunOutcome, StepState, SubagentAct, SubagentLog,
+    SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
 };
 use crate::mcp::{McpServer, NoDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
@@ -67,6 +67,13 @@ const BAD: Color32 = Color32::from_rgb(0xe0, 0x6c, 0x5f);
 
 /// How much of a tool's output a card draws before it says how much it is not drawing.
 const OUTPUT_LINES: usize = 10;
+/// How many of a subagent's most recent steps a card draws.
+///
+/// The **tail**, not the head: the question a running `Task` card answers is "what is it
+/// doing now", and the transcript keeps far more than this
+/// ([`crate::conversation::Limits::max_subagent_steps`]). Everything not drawn is counted
+/// on the line above it, so the card never quietly implies this was all of it.
+const SUBAGENT_LINES: usize = 6;
 /// The same, for the two halves of an `Edit` diff.
 const DIFF_LINES: usize = 12;
 /// Diagnostic lines kept (non-JSON stdout, stderr). Bounded and logged, never silent.
@@ -1155,6 +1162,10 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
                 None => arguments_body(ui, &card.arguments),
             }
 
+            if !card.subagent.is_empty() {
+                subagent_body(ui, &card.subagent, card.state.is_running());
+            }
+
             if let Some(output) = card.state.output() {
                 ui.add_space(4.0);
                 let (shown, hidden) = clip_lines(output, OUTPUT_LINES);
@@ -1166,6 +1177,114 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
                 }
             }
         });
+}
+
+/// What a subagent card's header says, as text — the judgment, without the egui.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubagentSummary {
+    /// How much happened. Always present when there is a log at all.
+    pub counts: String,
+    /// Tool steps that never came back, phrased for whether the parent is still running.
+    /// `None` when there are none.
+    pub open: Option<String>,
+}
+
+/// **What the header of a subagent log claims, and the two things it must not claim.**
+///
+/// 🚨 It reports **counts**, never liveness. §5.9.1 measured that no token deltas are
+/// forwarded from a subagent, so the console cannot know whether one is thinking or has
+/// silently died; the gaps between bursts are real and minutes long. A header that said
+/// "working" would be inventing the one fact this whole path does not have.
+///
+/// ⚠️ And an open step reads differently depending on the **parent**, which is the only
+/// thing that does carry liveness (behaviour 1: running-ness is a derived unresolved id).
+/// While the parent runs, an unreturned step is work in flight. Once the parent has come
+/// back, the same number means the subagent stopped without those tools ever returning —
+/// worth seeing, and not the same sentence.
+pub fn subagent_summary(log: &SubagentLog, parent_running: bool) -> SubagentSummary {
+    let total = log.len() as u64 + log.dropped;
+    let unit = if total == 1 { "step" } else { "steps" };
+    let mut counts = format!("· {total} {unit}");
+    // Depth stays silent in the ordinary case and speaks when it is not, because a
+    // flattened depth-2 step read as direct misattributes who did the work.
+    if let Some(depth) = log.max_depth().filter(|d| *d > 1) {
+        counts.push_str(&format!(" · nested {depth} deep"));
+    }
+    let open = match (log.unreturned(), parent_running) {
+        (0, _) => None,
+        (n, true) => Some(format!("· {n} out")),
+        (n, false) => Some(format!("· {n} never returned")),
+    };
+    SubagentSummary { counts, open }
+}
+
+/// **What a subagent is doing, inside the card that dispatched it.**
+///
+/// Before this, a coordinator session that fanned out showed a `Task` card sitting on
+/// "running" for eight to sixteen minutes and then a wall of text — the agent's whole
+/// working life reduced to a spinner. The events were there all along; §5.9.3 rule 5 was
+/// dropping them because they had nowhere to go that was not a turn belonging to nobody.
+///
+/// 🚨 **There is no live text here, and this function must never grow any.** §5.9.1
+/// measured that Claude Code does not forward token deltas from a subagent: every line
+/// below is a completed fact that arrived in a burst, and the gaps between bursts are
+/// real and can be minutes long. That is why nothing here streams a caret the way
+/// [`draw_element`] does for the agent's own prose, and why the header says how long ago
+/// nothing — it reports *counts*, which are true, rather than liveness, which would not be.
+fn subagent_body(ui: &mut egui::Ui, log: &SubagentLog, running: bool) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        // ⚠️ `·` and `→`/`✓`/`✗` below are all glyphs the PROPORTIONAL face carries or
+        // that are drawn monospace here. The box-drawing characters this file was once
+        // full of rendered as tofu; see `draw_element`'s note on the em dash.
+        ui.label(RichText::new("subagent").color(ASKING).small().monospace());
+        let summary = subagent_summary(log, running);
+        ui.label(RichText::new(summary.counts).color(DIM).small());
+        if let Some(open) = summary.open {
+            let color = if running { RUNNING } else { DIM };
+            ui.label(RichText::new(open).color(color).small());
+        }
+    });
+    if log.dropped > 0 {
+        ui.label(
+            RichText::new(format!("+{} earlier steps not kept", log.dropped)).color(DIM).small(),
+        );
+    }
+    let skip = log.len().saturating_sub(SUBAGENT_LINES);
+    if skip > 0 {
+        ui.label(RichText::new(format!("+{skip} earlier steps")).color(DIM).small());
+    }
+    for step in log.steps.iter().skip(skip) {
+        let deeper = step.depth > 1;
+        ui.horizontal(|ui| {
+            if deeper {
+                ui.label(RichText::new(format!("{}·", "  ".repeat(step.depth as usize - 1)))
+                    .color(DIM)
+                    .small()
+                    .monospace());
+            }
+            match &step.act {
+                SubagentAct::Said(text) => {
+                    ui.label(RichText::new(one_line(text)).color(PROSE).small());
+                }
+                SubagentAct::Tool { id, name, state } => {
+                    let (mark, color) = match state {
+                        StepState::Running => ("→", RUNNING),
+                        StepState::Done { is_error: false } => ("✓", OK),
+                        StepState::Done { is_error: true } => ("✗", BAD),
+                    };
+                    ui.label(RichText::new(mark).color(color).small().monospace());
+                    // An unnamed step is a return whose call this log never saw — the same
+                    // "(call not seen)" a card shows, for the same reason.
+                    let label = name.as_deref().unwrap_or("(call not seen)");
+                    ui.label(RichText::new(label).color(PROSE).small().monospace());
+                    if name.is_none() {
+                        ui.label(RichText::new(id.as_str()).color(DIM).small().monospace());
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// What an approval card reported this frame.
@@ -2736,6 +2855,68 @@ mod tests {
 
     fn complete(text: &str) -> Arguments {
         Arguments { text: text.to_string(), complete: true }
+    }
+
+    fn step(act: SubagentAct, depth: u8) -> crate::conversation::SubagentStep {
+        crate::conversation::SubagentStep { act, depth }
+    }
+
+    fn tool_step(name: &str, state: StepState, depth: u8) -> crate::conversation::SubagentStep {
+        step(SubagentAct::Tool { id: name.into(), name: Some(name.into()), state }, depth)
+    }
+
+    fn log_of(steps: Vec<crate::conversation::SubagentStep>, dropped: u64) -> SubagentLog {
+        SubagentLog { steps: steps.into(), dropped }
+    }
+
+    /// The header counts what happened, **including what the log no longer holds** — a
+    /// trace that silently starts in the middle reads as the whole trace.
+    #[test]
+    fn the_subagent_header_counts_dropped_steps_too() {
+        let log = log_of(vec![step(SubagentAct::Said("a".into()), 1)], 40);
+        assert_eq!(subagent_summary(&log, true).counts, "· 41 steps");
+        let one = log_of(vec![step(SubagentAct::Said("a".into()), 1)], 0);
+        assert_eq!(subagent_summary(&one, true).counts, "· 1 step", "singular reads as one");
+    }
+
+    /// Depth is stated only when there is nesting to state. A flattened depth-2 step read
+    /// as direct misattributes the work; a depth badge on every ordinary card is noise.
+    #[test]
+    fn the_subagent_header_mentions_depth_only_when_it_is_nested() {
+        let flat = log_of(vec![step(SubagentAct::Said("a".into()), 1)], 0);
+        assert_eq!(subagent_summary(&flat, true).counts, "· 1 step");
+        let nested = log_of(
+            vec![step(SubagentAct::Said("a".into()), 1), step(SubagentAct::Said("b".into()), 3)],
+            0,
+        );
+        assert_eq!(subagent_summary(&nested, true).counts, "· 2 steps · nested 3 deep");
+    }
+
+    /// 🚨 CONTRACT — the same open-step count means two different things, and the parent is
+    /// what decides which. While the parent runs it is work in flight; once the parent has
+    /// returned it means the subagent stopped without those tools ever coming back. The
+    /// header must not report the second as the first.
+    #[test]
+    fn an_open_step_reads_differently_once_the_parent_has_returned() {
+        let log = log_of(vec![tool_step("Grep", StepState::Running, 1)], 0);
+        assert_eq!(subagent_summary(&log, true).open.as_deref(), Some("· 1 out"));
+        assert_eq!(
+            subagent_summary(&log, false).open.as_deref(),
+            Some("· 1 never returned"),
+            "a finished parent with an open step is not 'working'"
+        );
+    }
+
+    /// Nothing open, nothing said about it — the header stays quiet rather than printing a
+    /// zero.
+    #[test]
+    fn a_fully_returned_subagent_says_nothing_about_open_steps() {
+        let log = log_of(
+            vec![tool_step("Grep", StepState::Done { is_error: false }, 1)],
+            0,
+        );
+        assert_eq!(subagent_summary(&log, true).open, None);
+        assert_eq!(subagent_summary(&log, false).open, None);
     }
 
     /// The contract that matters: a streaming call's half-JSON is shown, never parsed.

@@ -739,10 +739,37 @@ in a real capture, and getting any of them wrong produces a view that looks near
 4. **`total_cost_usd` is session-cumulative while the sibling `usage` is per-turn.** Turn two's
    cache-read figure was exactly turn one's plus its own. **Never sum costs across results** —
    take the latest.
-5. **Subagent-scoped events are dropped in milestone 1.** The decoder distinguishes them
-   (`AgentScope::Subagent { tool_use_id }`, from `parent_tool_use_id`). Rendered naively they
-   appear as free-floating turns belonging to nobody. They belong *inside* the tool card that
-   spawned them, which is milestone 2.
+5. ~~**Subagent-scoped events are dropped in milestone 1.**~~ ✏️ **Amended 2026-08-12: they
+   are rendered inside the tool card that spawned them.** The rule's *reasoning* was right
+   and is unchanged — the decoder distinguishes them
+   (`AgentScope::Subagent { tool_use_id }`, from `parent_tool_use_id`), and rendered naively
+   they appear as free-floating turns belonging to nobody. What changed is that the place
+   they belong now exists: `AgentEvent::SubagentActivity` addresses the card named by the
+   scope instead of appending an element, and `ToolCard` carries a `SubagentLog`.
+
+   🚨 **This does not make a subagent live, and nothing built on it may imply otherwise.**
+   §5.9.1's measurement stands untouched: **Claude Code never forwards token-level deltas
+   from a subagent.** Activity arrives as complete bursts, sometimes minutes apart. What a
+   card can honestly show is that an agent is running, which tool spawned it, and what it
+   did — counts and finished steps, never a feed. `MapStats::subagent_stream_events` is the
+   canary on that measurement and should read zero forever; if it ever does not, this path
+   needs designing again rather than patching.
+
+   ⚠️ **Depth is flattened to one and recorded rather than nested** — a subagent can
+   dispatch its own, and cards inside cards in a scrollback have no bottom. Every step lands
+   on the top-level card carrying the depth it happened at. 🚨 The trap found while building
+   it: capping *attribution* at a maximum depth, rather than capping the reported *number*,
+   makes deep steps fall through to the orphan path and open **new top-level cards** — the
+   nesting hazard again in a flat disguise.
+
+   ⚠️ `MapStats::subagent_dropped` is **removed, not renamed**: its sense reversed, so a
+   reader who trusted the name would have been wrong in the worst direction.
+   `subagent_routed` and `subagent_unrendered` replace it.
+
+   📌 **No capture on this machine contains a `Task` call**, so the fixture this is tested
+   against (`fixtures/claude_stream_subagent.jsonl`) is hand-written and declared as such.
+   The correlation is the decoder's own measured field applied twice; the line kinds and
+   their order are reasoned, not observed. Re-capture at the first real fan-out.
 6. **The first line of a real run is not JSON.** It is `Warning: no stdin data received in 3s…`,
    plain text on the same pipe. Log and continue; a decoder that treats non-JSON as fatal dies
    before the conversation starts.
