@@ -10,6 +10,25 @@ the difference is the point.
 | `claude_stream_edges.jsonl` | **Hand-written.** Shapes the schema permits, or a future CLI might send, that no capture on this machine happens to contain. |
 | `claude_stream_subagent.jsonl` | **Hand-written.** A `Task` call and the subagent inside it, including one that dispatches its own. See the warning below. |
 
+## ⚠️ `claude_stream_two_tools.jsonl` holds the tree's only `tool_use_result` objects, and both are `Read`s
+
+`tool_use_result` is an undocumented sibling of `message`, and this file is the only place
+in the repository where a real one exists — twice, both carrying
+`{"type":"text","file":{"filePath","content","numLines","startLine","totalLines"}}` for a
+`Read`. `conversation::ResultDetail`'s four fields are exactly that list and stop there.
+
+So what a `Bash`, a `Write` or an `Edit` puts in this object is **unknown on this machine**.
+`agent_map::result_detail` reads the `file` sub-object whatever `type` the line claims,
+which is a bet on shape-stability rather than a measurement, and
+`MapStats::tool_details_declined` is what catches the day the bet is wrong. Two smaller
+notes worth having before anyone "fixes" a test against this file:
+
+- **`numLines` is `4` for a three-line file.** The numbered `tool_result` text ends `4\t`,
+  i.e. the trailing empty line is counted. That is the tool's own arithmetic and is passed
+  through untouched.
+- **`filePath` is a sanitised value** (`C:\work\demo\fx-a.txt`), per the section below — the
+  *shape* is the capture's, the string is not.
+
 ## 🚨 `claude_stream_subagent.jsonl` is a reconstruction, and nobody has checked it against a real fan-out
 
 It was written from the schema and from the one real subagent line in the tree —

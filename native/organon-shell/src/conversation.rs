@@ -228,7 +228,11 @@ pub enum AgentEvent {
     ToolArgumentsDelta { id: ToolId, fragment: String },
     /// The tool's result, correlated by `id`. This is the **only** thing that ends a
     /// card's running state.
-    ToolResult { id: ToolId, output: String, is_error: bool },
+    ///
+    /// `detail` is what the tool reported *about* the result beyond its text — see
+    /// [`ResultDetail`], and note that it is not an `Option`: a harness that reports
+    /// nothing and a tool that has nothing to report are the same thing to a reader.
+    ToolResult { id: ToolId, output: String, is_error: bool, detail: ResultDetail },
     /// The run reached its final result. Records an outcome; closes nothing (behaviour 3).
     RunFinished { outcome: RunOutcome, detail: Option<String> },
     /// **A subagent reported something** (behaviour 6). The one event that addresses an
@@ -424,6 +428,50 @@ impl ToolState {
     }
 }
 
+/// What a tool reported *about* its result, beyond the text of it.
+///
+/// 🚨 **Every field here appears in a real capture, and the list stops there.** Claude
+/// Code sends an undocumented `tool_use_result` beside the `tool_result` block, and the
+/// only shape any capture on this machine contains is a `Read`'s: `{"type":"text","file":
+/// {"filePath","content","numLines","startLine","totalLines"}}`. So those are the fields,
+/// and the ones a richer card would obviously want — a byte count, an exit status, a
+/// truncation flag, the unified patch Pi's `Edit` result carries — are **absent because
+/// nothing has been observed sending them**, not because they were forgotten. An omitted
+/// field beats an invented one; this repo labels what it shows measured or derived, and a
+/// field with no capture behind it could be labelled neither.
+///
+/// 📌 **`content` is decoded and dropped.** It is the file's text, which is already the
+/// `tool_result` block's own content in numbered form — carrying it here would be the same
+/// file twice in one card, and [`ToolState::Complete`] already holds the version a person
+/// reads.
+///
+/// ⚠️ This is a *harness-agnostic* shape on purpose, like every other type in this module:
+/// "the tool acted on this file and covered N of its M lines" is a sentence Pi's
+/// `totalLines`/`truncatedBy` can also fill in. The wire spellings stay in
+/// [`crate::agent_map`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResultDetail {
+    /// The file the tool acted on, spelled exactly as the tool spelled it — an absolute
+    /// Windows path in the capture, backslashes included. Not normalised: a path a person
+    /// can paste is worth more than a tidy one.
+    pub file_path: Option<String>,
+    /// Lines this result covers.
+    pub lines: Option<u64>,
+    /// Lines the file has. Equal to [`Self::lines`] for a whole small file, which is why
+    /// both are kept — "4 of 4" and "4 of 900" are different facts and a card that showed
+    /// only the first number could not tell them apart.
+    pub total_lines: Option<u64>,
+    /// The first line covered, when the tool said one.
+    pub start_line: Option<u64>,
+}
+
+impl ResultDetail {
+    /// Whether the tool said anything at all. A card with nothing to add adds no row.
+    pub fn is_empty(&self) -> bool {
+        *self == ResultDetail::default()
+    }
+}
+
 /// One tool call and its outcome, as a view draws it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCard {
@@ -440,6 +488,10 @@ pub struct ToolCard {
     /// `Option`, because "no subagent" and "a subagent that has said nothing yet" are the
     /// same thing to every reader of it.
     pub subagent: SubagentLog,
+    /// What the tool said about its own result ([`ResultDetail`]). Empty until the result
+    /// arrives, and empty forever for a tool that reports nothing — `Default` for the same
+    /// reason [`Self::subagent`] is.
+    pub detail: ResultDetail,
 }
 
 /// One assistant text block.
@@ -1058,6 +1110,7 @@ impl Transcript {
                     },
                     state: ToolState::Running,
                     subagent: SubagentLog::default(),
+                    detail: ResultDetail::default(),
                 };
                 let eid = self.append(turn, Body::Tool(card));
                 self.by_tool.insert(id.0, eid);
@@ -1082,7 +1135,7 @@ impl Transcript {
                 Change::Updated(eid)
             }
 
-            AgentEvent::ToolResult { id, output, is_error } => {
+            AgentEvent::ToolResult { id, output, is_error, detail } => {
                 if let Some(idx) = self.index_by_tool(&id) {
                     let resolved =
                         matches!(&self.elements[idx].body, Body::Tool(c) if !c.state.is_running());
@@ -1093,6 +1146,7 @@ impl Transcript {
                     let (eid, turn) = (self.elements[idx].id, self.elements[idx].turn);
                     if let Body::Tool(c) = &mut self.elements[idx].body {
                         c.state = ToolState::Complete { output, is_error };
+                        c.detail = detail;
                     }
                     self.running.retain(|x| *x != eid);
                     self.touch_turn(turn);
@@ -1108,6 +1162,10 @@ impl Transcript {
                     arguments: Arguments::pending(),
                     state: ToolState::Complete { output, is_error },
                     subagent: SubagentLog::default(),
+                    // ⚠️ Kept on an orphan card, and it is worth more here than anywhere
+                    // else: with no call there are no arguments, so the detail's own
+                    // `file_path` is the only thing that says what the tool touched.
+                    detail,
                 };
                 let eid = self.append(turn, Body::Tool(card));
                 self.by_tool.insert(id.0, eid);
@@ -1155,6 +1213,7 @@ impl Transcript {
                             arguments: Arguments::pending(),
                             state: ToolState::Running,
                             subagent: SubagentLog::default(),
+                            detail: ResultDetail::default(),
                         };
                         let eid = self.append(turn, Body::Tool(card));
                         self.by_tool.insert(owner.0.clone(), eid);
@@ -1530,6 +1589,17 @@ mod tests {
             id: id.into(),
             output: output.to_string(),
             is_error: false,
+            detail: ResultDetail::default(),
+        }
+    }
+
+    /// The same, carrying what the tool said about the file it read.
+    fn result_with_detail(id: &str, output: &str, detail: ResultDetail) -> AgentEvent {
+        AgentEvent::ToolResult {
+            id: id.into(),
+            output: output.to_string(),
+            is_error: false,
+            detail,
         }
     }
 
@@ -1733,6 +1803,47 @@ mod tests {
         assert_eq!(t.stats().orphan_results, 1);
     }
 
+    /// **CONTRACT.** A result's structured detail lands on the card it resolves, and a card
+    /// whose tool said nothing about itself carries no detail at all — the two states a
+    /// reader has to be able to tell apart.
+    #[test]
+    fn a_results_detail_lands_on_the_card_it_resolves() {
+        let mut t = Transcript::new();
+        let detail = ResultDetail {
+            file_path: Some("C:\\work\\demo\\fx-a.txt".into()),
+            lines: Some(4),
+            total_lines: Some(900),
+            start_line: Some(1),
+        };
+        feed(
+            &mut t,
+            vec![
+                call("t1", "Read", Some("{}")),
+                result_with_detail("t1", "1\talpha\n", detail.clone()),
+                call("t2", "Bash", Some("{}")),
+                result("t2", "done"),
+            ],
+        );
+        assert_eq!(t.tool(&"t1".into()).unwrap().detail, detail);
+        assert!(
+            t.tool(&"t2".into()).unwrap().detail.is_empty(),
+            "a tool that reported nothing must not inherit the last one's numbers"
+        );
+    }
+
+    /// **CONTRACT.** An orphan card keeps the detail, and this is the case where it matters
+    /// most: with no call there are no arguments, so the detail's path is the only record of
+    /// what the tool touched.
+    #[test]
+    fn an_orphan_card_keeps_the_detail_that_is_all_it_has() {
+        let mut t = Transcript::new();
+        let detail = ResultDetail { lines: Some(3), total_lines: Some(3), ..Default::default() };
+        t.apply(result_with_detail("ghost", "output", detail.clone()));
+        let card = t.elements()[0].tool().unwrap();
+        assert_eq!(card.name, None, "still nameless");
+        assert_eq!(card.detail, detail);
+    }
+
     #[test]
     fn a_second_result_for_the_same_call_is_ignored() {
         let mut t = Transcript::new();
@@ -1754,6 +1865,7 @@ mod tests {
             id: "t1".into(),
             output: "exit 1".into(),
             is_error: true,
+            detail: ResultDetail::default(),
         });
         let card = t.tool(&"t1".into()).unwrap();
         assert!(card.state.is_error());
@@ -2272,6 +2384,7 @@ mod tests {
                             id: format!("c{n}").into(),
                             output: format!("out {step}"),
                             is_error: step % 5 == 0,
+                            detail: ResultDetail::default(),
                         });
                     }
                     _ => {

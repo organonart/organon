@@ -780,9 +780,37 @@ in a real capture, and getting any of them wrong produces a view that looks near
    plain text on the same pipe. Log and continue; a decoder that treats non-JSON as fatal dies
    before the conversation starts.
 
-📌 Held for milestone 2, deliberately: `tool_use_result` (an undocumented sibling of `message`
-carrying structured per-tool detail — for `Read`, `filePath`/`numLines`/`totalLines`, which is
-what a rich tool card wants), `Notice`/`post_turn_summary`, `RateLimit`, and approvals.
+📌 Held for milestone 2, deliberately: ~~`tool_use_result` (an undocumented sibling of
+`message` carrying structured per-tool detail — for `Read`, `filePath`/`numLines`/`totalLines`,
+which is what a rich tool card wants)~~, `Notice`/`post_turn_summary`, `RateLimit`, and
+approvals.
+
+✏️ **Amended 2026-08-13: `tool_use_result` has landed**, as `conversation::ResultDetail` on the
+tool card — and it carries **four** fields rather than the three named above, `startLine`
+having been in the capture all along. `SHELL_ARCHITECTURE.md`'s "`tool_use_result` — the
+sibling object a terminal never sees" owns the shape. Three things the note above did not
+anticipate, each of which is a rule rather than a detail:
+
+- 🚨 **The object is a sibling of `message`, not of a block inside it.** On a line carrying two
+  `tool_result` blocks nothing says which call it describes, so the detail is **declined and
+  counted** rather than attached to both. Every capture has exactly one result per line; two is
+  unobserved, and a guess would put one call's line counts on another card.
+- ⚠️ **It was never counted in `MapStats::unmapped`**, though `agent_map`'s module doc said so:
+  the `user` line it rides on always mapped. `tool_details` / `tool_details_declined` are its
+  own numbers.
+- 📌 **`content` is dropped and the path is usually dropped too.** The first is the file's text,
+  which the `tool_result` block already carries in numbered form; the second is already an
+  argument field on the card, and survives only on an **orphan** card where there are no
+  arguments to state it.
+
+⚠️ **Approvals have also landed** (the card, the in-process MCP-over-HTTP server, the
+session-scoped decision memory — `doc/console_approval_protocol.md`), so what genuinely remains
+of this note is `Notice`/`post_turn_summary`, `RateLimit`, **and thinking blocks**. 🚨 Thinking
+is the one held for a reason that is not sequencing: the decoder reads it, rule 1 already spends
+a block ordinal on it, and **no real capture on this machine contains one** — only the
+hand-written `claude_stream_edges.jsonl`. Rendering it would be a second path built against an
+unobserved shape, which rule 5's own 📌 records the cost of. Re-scope at the first capture that
+has one.
 
 **Why Pi second, and genuinely second rather than dismissed.** `pi --mode rpc` is documented in
 its first sentence as being for "embedding the agent in other applications, IDEs, or custom

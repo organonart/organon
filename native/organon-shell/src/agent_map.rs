@@ -172,11 +172,20 @@
 //!
 //! # What is not mapped, and why that is not a gap
 //!
-//! `Notice` (including `post_turn_summary`), `RateLimit`, `tool_use_result`, thinking
-//! blocks, and approvals are all held for milestone 2 by §5.9.3's closing note. They are
-//! counted in [`MapStats::unmapped`], so "the view showed nothing" and "nothing arrived"
-//! stay distinguishable. Reading a *fact* off a notice does not make it mapped: nothing
-//! is rendered into the flow for it, so it stays counted exactly as before.
+//! `Notice` (including `post_turn_summary`), `RateLimit` and thinking blocks are held for
+//! milestone 2 by §5.9.3's closing note. They are counted in [`MapStats::unmapped`], so
+//! "the view showed nothing" and "nothing arrived" stay distinguishable. Reading a *fact*
+//! off a notice does not make it mapped: nothing is rendered into the flow for it, so it
+//! stays counted exactly as before.
+//!
+//! ✏️ **`tool_use_result` has come off that list** and is now attached to the tool card its
+//! `user` line resolves — see [`result_detail`], and [`cv::ResultDetail`] for the rule that
+//! only measured fields are carried. ⚠️ Note it was **never** counted in
+//! [`MapStats::unmapped`], despite the sentence above once saying so: it rides on a `user`
+//! line that always mapped to a `ToolResult`, so the line was rendered and only the sibling
+//! object was dropped. [`MapStats::tool_details`] and
+//! [`MapStats::tool_details_declined`] are what count it now, and they are separate from
+//! `unmapped` for exactly that reason.
 
 use std::collections::HashMap;
 
@@ -233,6 +242,21 @@ pub struct MapStats {
     /// folded into [`unmapped`](Self::unmapped): "the CLI answered us" and "we drew
     /// nothing for a stream event" are different facts.
     pub control_responses: u64,
+    /// A `tool_use_result` whose shape was recognised and attached to a card
+    /// ([`cv::ResultDetail`]).
+    pub tool_details: u64,
+    /// A `tool_use_result` that arrived and was **not** attached, for either of the two
+    /// reasons [`result_detail`] and its caller can have: the line carried more than one
+    /// `tool_result` block so there is nothing to say *which* call the detail describes, or
+    /// the object held no field this build knows.
+    ///
+    /// ⚠️ **One counter for two reasons on purpose.** Both are "the wire said something and
+    /// the card shows nothing", which is the only distinction a reader of this number needs;
+    /// splitting them would add a field whose difference nobody could act on. What matters
+    /// is that it is not folded into [`unmapped`](Self::unmapped) — the `user` line a
+    /// `tool_use_result` rides on always maps, so counting it there would say a line was
+    /// unrendered when its tool card was drawn in full.
+    pub tool_details_declined: u64,
 }
 
 /// What the session says about itself, as the stream says it (rule 6).
@@ -701,11 +725,37 @@ impl EventMapper {
             EventKind::Assistant(turn) => self.map_assistant(turn),
             EventKind::User(turn) => {
                 let mut out = Vec::new();
+                // 🚨 **The detail is attached only when the line carries exactly one
+                // result.** `tool_use_result` is a sibling of `message`, not of a block
+                // inside it, so on a line with two `tool_result` blocks nothing says which
+                // call it describes — and a card that showed another call's line counts
+                // would be wrong in the one way this front-end exists to avoid. Every
+                // capture has exactly one; a line with two is unobserved, and is counted
+                // rather than guessed at. A `null` detail on a single-result line is not
+                // "declined": there was nothing to attach.
+                let detail = match (&turn.tool_use_result, turn.tool_results.len()) {
+                    (None, _) => cv::ResultDetail::default(),
+                    (Some(value), 1) => match result_detail(value) {
+                        Some(detail) => {
+                            self.stats.tool_details += 1;
+                            detail
+                        }
+                        None => {
+                            self.stats.tool_details_declined += 1;
+                            cv::ResultDetail::default()
+                        }
+                    },
+                    (Some(_), _) => {
+                        self.stats.tool_details_declined += 1;
+                        cv::ResultDetail::default()
+                    }
+                };
                 for result in &turn.tool_results {
                     out.push(cv::AgentEvent::ToolResult {
                         id: cv::ToolId::from(result.tool_use_id.as_str()),
                         output: result.text(),
                         is_error: result.is_error,
+                        detail: detail.clone(),
                     });
                 }
                 // Rule 2's one exception: the CLI narrating one of its own local
@@ -806,6 +856,10 @@ impl EventMapper {
     /// * **human text on a `user` line** — a subagent's prompt is the `Task` call's own
     ///   arguments, which the card already shows in full. Rendering it again inside the
     ///   card would be the same text twice.
+    /// * ✏️ **`tool_use_result`** — a nested step carries no output
+    ///   ([`cv::Subagent::Returned`]'s own argument), and a file's line counts are exactly
+    ///   the kind of per-result detail that argument declines. A step says it finished and
+    ///   whether it failed; the same rule, one level in.
     fn map_subagent(&mut self, parent: &cv::ToolId, kind: &EventKind) -> Vec<cv::AgentEvent> {
         use cv::Subagent;
         let mut out = Vec::new();
@@ -974,6 +1028,44 @@ fn block_key(message: &str, ordinal: usize) -> String {
     format!("{message}#{ordinal}")
 }
 
+/// One `tool_use_result` object → the harness-agnostic [`cv::ResultDetail`], or `None`
+/// when it carries nothing this build recognises.
+///
+/// 🚨 **Written against the only shape any capture contains**, `claude_stream_two_tools`'s
+/// `Read` result:
+///
+/// ```text
+/// "tool_use_result": { "type": "text", "file": {
+///     "filePath": "C:\\work\\demo\\fx-a.txt", "content": "alpha\nbeta\ngamma\n",
+///     "numLines": 4, "startLine": 1, "totalLines": 4 } }
+/// ```
+///
+/// ⚠️ **Field-detected, not `type`-dispatched.** `"type":"text"` is checked nowhere: the
+/// value is undocumented, its `type` vocabulary is unknown past that one word, and a match
+/// on it would mean a `Bash` or `Write` result carrying a perfectly readable `file` object
+/// under some other type name renders nothing. Reading the fields that are there is the
+/// same feature-detect-don't-version-compare rule the decoder is built on.
+///
+/// 📌 **`numLines` counted `4` for a three-line file** in the capture — the numbered
+/// `tool_result` text ends `4\t`, i.e. the trailing empty line is counted. That is the
+/// tool's own arithmetic and is passed through untouched; a card that "corrected" it would
+/// be reporting something no tool said. Recorded here because the number looks wrong and
+/// is not.
+///
+/// Returns `None` — rather than an empty detail — when nothing was recognised, so the
+/// caller can tell "the wire said nothing" from "the wire said something we could not
+/// read" and count the second ([`MapStats::tool_details_declined`]).
+fn result_detail(value: &serde_json::Value) -> Option<cv::ResultDetail> {
+    let file = value.get("file")?.as_object()?;
+    let detail = cv::ResultDetail {
+        file_path: file.get("filePath").and_then(|v| v.as_str()).and_then(non_empty),
+        lines: file.get("numLines").and_then(|v| v.as_u64()),
+        total_lines: file.get("totalLines").and_then(|v| v.as_u64()),
+        start_line: file.get("startLine").and_then(|v| v.as_u64()),
+    };
+    (!detail.is_empty()).then_some(detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,6 +1180,113 @@ mod tests {
         assert!(cards[0].arguments.text.contains("fx-a.txt"));
         assert!(cards[1].arguments.text.contains("fx-b.txt"));
         assert!(!t.is_working(), "both results arrived");
+    }
+
+    /// **CONTRACT — against the real capture, which is the whole point.** The undocumented
+    /// `tool_use_result` beside each `tool_result` reaches the card it resolves, with the
+    /// numbers exactly as the CLI reported them.
+    ///
+    /// 📌 `numLines` is **4** for a file whose content is three lines. That is the tool's own
+    /// arithmetic (the numbered result text ends `4\t`), passed through rather than
+    /// corrected — see [`result_detail`].
+    #[test]
+    fn the_undocumented_tool_use_result_reaches_the_card() {
+        let (t, mapper) = fold(TWO_TOOLS);
+        let cards: Vec<_> = t.elements().iter().filter_map(|e| e.tool()).collect();
+        assert_eq!(
+            cards[0].detail,
+            cv::ResultDetail {
+                file_path: Some("C:\\work\\demo\\fx-a.txt".into()),
+                lines: Some(4),
+                total_lines: Some(4),
+                start_line: Some(1),
+            },
+            "verbatim from the capture, backslashes and off-by-one included"
+        );
+        assert_eq!(cards[1].detail.file_path.as_deref(), Some("C:\\work\\demo\\fx-b.txt"));
+        assert_eq!(cards[1].detail.total_lines, Some(3));
+        assert_eq!(mapper.stats().tool_details, 2, "both lines carried one");
+        assert_eq!(mapper.stats().tool_details_declined, 0);
+    }
+
+    /// **CONTRACT.** A capture with no `tool_use_result` on it leaves every card's detail
+    /// empty and declines nothing — absence is not a failure to read.
+    #[test]
+    fn a_stream_without_the_sibling_object_declines_nothing() {
+        let (t, mapper) = fold(SUBAGENT);
+        assert!(t.elements().iter().filter_map(|e| e.tool()).all(|c| c.detail.is_empty()));
+        assert_eq!(mapper.stats().tool_details, 0);
+        assert_eq!(mapper.stats().tool_details_declined, 0);
+    }
+
+    /// 🚨 **CONTRACT.** `tool_use_result` is a sibling of `message`, not of a block inside
+    /// it — so on a line carrying two `tool_result` blocks nothing says which call it
+    /// describes. It is declined and counted, never attached to both.
+    #[test]
+    fn a_detail_on_a_line_with_two_results_is_declined_rather_than_guessed_at() {
+        let line = concat!(
+            r#"{"type":"user","message":{"role":"user","content":["#,
+            r#"{"type":"tool_result","tool_use_id":"t1","content":"one"},"#,
+            r#"{"type":"tool_result","tool_use_id":"t2","content":"two"}"#,
+            r#"]},"parent_tool_use_id":null,"#,
+            r#""tool_use_result":{"file":{"filePath":"a.txt","numLines":2,"totalLines":2}}}"#,
+        );
+        let event = decode_line(line).expect("decodes");
+        let mut mapper = EventMapper::new();
+        let mapped = mapper.map(&event);
+        assert_eq!(mapped.len(), 2, "both results still map");
+        for event in &mapped {
+            match event {
+                cv::AgentEvent::ToolResult { detail, .. } => {
+                    assert!(detail.is_empty(), "neither call may claim the other's numbers")
+                }
+                other => panic!("expected a tool result, got {other:?}"),
+            }
+        }
+        assert_eq!(mapper.stats().tool_details, 0);
+        assert_eq!(mapper.stats().tool_details_declined, 1);
+    }
+
+    /// **CONTRACT.** A `tool_use_result` shape this build cannot read is counted, not
+    /// silently ignored — the number is how the next schema change announces itself.
+    #[test]
+    fn an_unreadable_detail_shape_is_counted() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"parent_tool_use_id":null,"tool_use_result":{"type":"bash","stdout":"hello","exitCode":0}}"#;
+        let event = decode_line(line).expect("decodes");
+        let mut mapper = EventMapper::new();
+        mapper.map(&event);
+        assert_eq!(mapper.stats().tool_details, 0);
+        assert_eq!(mapper.stats().tool_details_declined, 1, "unread, and said so");
+    }
+
+    /// **CONTRACT.** Field-detected, not `type`-dispatched: a `file` object under an
+    /// unknown `type` is still readable, and reading it is the same feature-detect rule the
+    /// decoder is built on.
+    #[test]
+    fn a_file_object_is_read_whatever_type_the_line_claims() {
+        let value = serde_json::json!({
+            "type": "something_new",
+            "file": { "filePath": "b.txt", "numLines": 12, "totalLines": 400, "startLine": 40 },
+        });
+        assert_eq!(
+            result_detail(&value),
+            Some(cv::ResultDetail {
+                file_path: Some("b.txt".into()),
+                lines: Some(12),
+                total_lines: Some(400),
+                start_line: Some(40),
+            })
+        );
+        // An empty path is absence, `non_empty`'s rule everywhere else in this module.
+        let blank = serde_json::json!({ "file": { "filePath": "", "numLines": 1 } });
+        assert_eq!(
+            result_detail(&blank).and_then(|d| d.file_path),
+            None,
+            "an empty string is not a path"
+        );
+        // Nothing recognised at all is `None`, so the caller can count it.
+        assert_eq!(result_detail(&serde_json::json!({ "file": { "mode": "text" } })), None);
+        assert_eq!(result_detail(&serde_json::json!({ "stdout": "hi" })), None);
     }
 
     /// The argument fragments really do stream: fed only the events up to the settled

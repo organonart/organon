@@ -45,6 +45,10 @@
 //! process, and [`conversation_view`] draws the result. `SHELL_ARCHITECTURE.md` §
 //! "Two front-ends" owns the shape.
 //!
+//! [`text_diff`] is the sixth, and the smallest: an `Edit` arrives as two whole strings
+//! and a card has to show what changed between them, so the line alignment lives in its
+//! own module with no egui in it and is tested with plain strings.
+//!
 //! **Approvals** close the loop that front-end opened: [`mcp`] is the console's MCP server
 //! as a value, [`mcp_http`] serves it over loopback HTTP inside the console process so
 //! Claude Code's `--permission-prompt-tool` can reach it, and [`approval`] is the console's
@@ -72,4 +76,5 @@ pub mod session;
 pub mod tabs;
 pub mod term;
 pub mod term_view;
+pub mod text_diff;
 pub mod timeline;

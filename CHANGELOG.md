@@ -11,6 +11,66 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — a one-character edit stopped rendering as twenty lines
+
+- **The `Edit` diff is aligned now.** It printed `old_string`'s lines as removals and
+  `new_string`'s as additions with nothing between them, so a one-character change inside a
+  ten-line block came out as **ten removals followed by ten additions** — honest about what
+  arrived, and useless to read. `text_diff::line_diff` trims the common prefix and suffix, aligns
+  what is left by longest common subsequence, and elides long unchanged runs to three lines of
+  context. Measured on the test that is the whole point of the change: one changed character in a
+  ten-line block is now **one removal and one addition**, and the same change 200 lines into a
+  400-line block costs the same rows — a diff's size is the size of the *change*, not of the block
+  it sits in.
+- **No diff crate.** `organon-shell` is deliberately dependency-light (its `Cargo.toml` header
+  requires every edge to earn its line), and after a prefix/suffix trim the changed region is
+  small enough that a plain LCS is the whole algorithm — ~120 lines in a module with no egui in it,
+  tested with plain strings. `crate::term::encode_key`'s shape: put the decision in a pure
+  function, then test the function.
+- ⚠️ **Three bounds, not one, and each says what it kept back.** `MAX_CELLS` (20 000) refuses the
+  alignment for a changed region past ~141 × 141 lines and degrades to a block replacement,
+  *naming the two sizes on the card*. `MAX_RUN` (8) caps each run of one kind. `MAX_ROWS` (24) caps
+  the whole diff. 🚨 **`MAX_RUN` is not redundant with `MAX_ROWS` and dropping it is a silent
+  regression:** a global row cap truncates the tail, and in a block replacement every removal
+  precedes every addition — so a global cap alone shows a wall of red and *no green at all*, which
+  is worse than the unaligned rendering it replaced.
+- **Whitespace-only and no-change edits stop reading as noise.** An identical pair draws no rows
+  and says `no change — old_string and new_string are identical` (it used to print the block twice,
+  which is the loudest possible way to say nothing happened). A re-indent, a stripped trailing
+  space or a changed line ending is named `whitespace only — no visible character differs`, because
+  its rows are *visibly identical* and a reader with no note reads the card as broken. ⚠️ The
+  predicate is computed on the whole strings rather than per row, which is also what catches a
+  **trailing-newline** difference — `str::lines` cannot see one, so there is no row for it, and
+  without this the card would have claimed the two were identical when they differ by a byte.
+- **`tool_use_result` is surfaced — and only the four fields a real capture contains.** The
+  undocumented sibling of `message` was decoded and dropped. For a `Read` it carries
+  `filePath`/`numLines`/`startLine`/`totalLines`, and a card now reads `4 of 900 lines, from line
+  40` — a thing a terminal never sees, because the CLI does not print it. 🚨 **The list stops
+  there.** A byte count, an exit status, a truncation flag, the unified patch Pi's `Edit` result
+  carries: all absent because **nothing has been observed sending them**. An omitted field beats an
+  invented one.
+- 📌 **The path is not printed twice, and `content` is dropped.** A `Read` card already shows
+  `file_path` as an argument field, so the detail contributes only the counts — except on an
+  **orphan** card, where there are no arguments and the detail's path is the only record of what
+  the tool touched. `content` is the file's text, which the `tool_result` block already carries in
+  numbered form.
+- 🚨 **A detail on a line carrying two `tool_result` blocks is declined and counted, never
+  attached to both.** `tool_use_result` is a sibling of `message`, not of a block inside it, so
+  nothing says which call it describes. Every capture has exactly one result per line; two is
+  unobserved, and guessing would put one call's line counts on another's card — wrong in precisely
+  the way this front-end exists to avoid. `MapStats::tool_details` / `tool_details_declined` count
+  both outcomes, and are **separate from `unmapped`**: ⚠️ the module doc claimed
+  `tool_use_result` was counted there and it never was — the `user` line it rides on always mapped,
+  so `unmapped` would have said a line was unrendered while its card was drawn in full.
+- **Declined: thinking blocks.** The decoder reads them and **no real capture on this machine
+  contains one** — the only fixture that has one is `claude_stream_edges.jsonl`, which declares
+  itself hand-written. Rendering against an unobserved shape is what the subagent path's 🚨 in the
+  honesty ledger already costs once; a second is not worth a dimmed paragraph. Re-scope it the
+  first time a capture shows one.
+- 🚨 **Nobody has seen any of this on screen.** Everything above is pinned by headless tests
+  against committed captures, which is replay and not a conversation. 417 tests in the compositor
+  lib, from 390.
+
 ### Console Spike — the twelve agents a coordinator dispatched stopped being eight minutes of silence
 
 - **A subagent's work now renders inside the tool card that spawned it.** A coordinator session
