@@ -66,7 +66,12 @@ position.
   `harnesses.json` merges by id, serde-tolerant), PATH-detected via injectable
   lookup. The strip along the top is the ONE permitted chrome (FR-T11); the **+**
   menu lists the numbered registry, installed selectable, missing greyed with
-  install URLs. ⌘T/⌘W/⌘1-9/⌘⇧[] via a pure, tested key table. Default tab =
+  install URLs, and **drops downward from the button's bottom edge** — the one
+  place the strip's position leaks into `tabs.rs`, which is why it is written
+  here. It grew *upward* for a while after the strip moved from the bottom of the
+  window to the top, and rendered acceptably anyway because egui clamps an
+  off-screen `Area` back into the screen rect; the anchor now derives from the
+  button, so a change to the strip's height cannot re-open that. ⌘T/⌘W/⌘1-9/⌘⇧[] via a pure, tested key table. Default tab =
   `$ORGANON_SHELL_DEFAULT` → Pi if installed → plain shell. All sessions pump
   every frame; the active one draws; closing the last quits.
 - **The living backdrop (#14 T1 + Console Spike T1, in `shell_main.rs`)** — a frame
