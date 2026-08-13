@@ -83,13 +83,44 @@ What the capture **confirmed**:
   line in the file, so a subagent's session bookkeeping is not merely declined here, it
   is never sent.
 
-📌 **What the capture opened rather than closed:** five `system` subtypes nobody had
-seen — `task_started`, `task_progress`, `task_updated`, `task_notification`,
-`task_summary`. They are main-scoped (no `parent_tool_use_id` key at all) and correlate
-by a `tool_use_id` field of their own, and they carry live progress a card would want:
-`description` ("Reading one.txt"), `last_tool_name`, `usage.tool_uses`, `duration_ms`,
-`status`. All five currently decode to `Notice` and render nothing. See
-`SHELL_ARCHITECTURE.md`'s honesty ledger.
+## The `task_*` family — what a second reading of the same capture settled
+
+📌 **The capture opened a door as well as closing four:** five `system` subtypes nobody
+had seen — `task_started`, `task_progress`, `task_updated`, `task_notification`,
+`task_summary` — carrying the live progress a card wants: `description` ("Reading
+one.txt"), `last_tool_name`, `usage.{tool_uses,total_tokens,duration_ms}`, `status`. They
+are main-scoped (no `parent_tool_use_id` key at all), so §5.9.3 rule 5 cannot reach them.
+They are rendered as of 2026-08-13 by **rule 5b**, and building that read the same lines
+again and found four things the first pass had not.
+
+- 🚨 **They do not all correlate the same way.** The first reading — recorded here and in
+  three other docs as *"they correlate by a `tool_use_id` field of their own"* — is right
+  for three of the five and **wrong for two**. `task_updated` carries a `task_id` and a
+  `patch` and **no `tool_use_id`**; `task_summary` carries **neither**, only a nullable
+  `detail`. So a consumer keyed on `tool_use_id` alone silently loses every status
+  transition in the stream. The key is `task_id`, paired against a card by any line that
+  states both.
+- 🚨 **A `task_summary` belongs to no card.** Two here, one with `detail: null`. With no
+  `task_id` and no `tool_use_id` it is a gloss of what the *session* is doing, so it is not
+  a card's progress at all and stays unmapped. The name invites the opposite reading.
+- 🚨 **This family reaches DEPTH 2, where every other subagent line stops at depth 1.**
+  The nested agent whose `assistant` and `user` lines are never forwarded (see above) has
+  its whole lifecycle forwarded — `task_started`, `task_progress`, `task_updated`,
+  `task_notification`, all naming `toolu_…0404`, a call that exists only as a *step* inside
+  card `…0402`'s log. So "the wire stops at depth 1" is true of rule 5's lines and **not**
+  of these. They are declined and counted rather than merged, because a card holds one
+  progress value with nowhere to record a depth.
+- ⚠️ **A `task_started` can precede the `tool_use` block that creates its card.** For the
+  nested task the CLI announces it on line 52 and sends the block on line **53**. Top-level
+  dispatches are streamed, so `content_block_start` has already opened their cards. Costs a
+  task's title, once, and is counted rather than lost.
+- ⚠️ **The `Agent` result's totals and the `task_*` totals disagree, in one field.**
+  `totalDurationMs` and `totalToolUseCount` match exactly; `totalTokens` does not —
+  **62 951 vs 62 949** and **63 803 vs 63 564**, the result being struck later and counting
+  output the notification had not yet seen. Both are honest. Only one is read, so a card's
+  token count cannot jump at completion with nothing to explain it.
+
+See `SHELL_ARCHITECTURE.md`'s honesty ledger for what is rendered and what is still owed.
 
 ## Sanitisation
 

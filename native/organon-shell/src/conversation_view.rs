@@ -44,7 +44,7 @@ use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TIT
 use crate::conversation::{
     Answer, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent, Body, Change,
     Element, ElementId, Ignored, PanelSpec, ResultDetail, RunOutcome, StepState, SubagentAct,
-    SubagentLog, SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
+    SubagentLog, SubagentProgress, SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
 };
 use crate::mcp::{McpServer, NoDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
@@ -1187,6 +1187,11 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
                 ui.label(RichText::new(row).color(DIM).small().monospace());
             }
 
+            // Above the step log on purpose: this describes the task, the log details it.
+            if !card.progress.is_empty() {
+                progress_body(ui, &card.progress);
+            }
+
             if !card.subagent.is_empty() {
                 subagent_body(ui, &card.subagent, card.state.is_running());
             }
@@ -1202,6 +1207,116 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
                 }
             }
         });
+}
+
+/// What a dispatch card's progress row says, as text — the judgment, without the egui.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgressSummary {
+    /// The harness's own one-line gloss of what the agent is doing.
+    pub headline: Option<String>,
+    /// The measured trailer: last tool, tool count, elapsed, tokens — in that order, and
+    /// only the parts that were reported. `None` when none were.
+    pub facts: Option<String>,
+    /// A terminal status, once one has been reported.
+    pub status: Option<String>,
+}
+
+/// **What a dispatch card may claim about an agent that is still working.**
+///
+/// This is the answer to the card that said "running" and then nothing for eight to
+/// sixteen minutes. Everything in it was stated by the harness on a `system`/`task_*`
+/// line ([`crate::conversation::SubagentProgress`]).
+///
+/// 🚨 **It reports what was last said, never what is true now, and the difference is the
+/// whole honesty of the row.** §5.9.1's measurement is untouched: no token deltas are
+/// forwarded from a subagent, so this is not a feed and must never be drawn as one — no
+/// caret, no partial text, nothing that implies prose is arriving. What changed is only
+/// that the harness *does* narrate its own progress, and that narration is a fact.
+///
+/// ⚠️ **The elapsed time is the HARNESS'S stopwatch, not ours**, and it is frozen between
+/// lines. `conversation.rs` has no clock by design; a ticking number here would be the
+/// view's own arithmetic wearing the harness's voice, and it would keep counting for an
+/// agent that had silently died. Reported as given, and it stops when the reports do —
+/// which is itself the honest signal.
+pub fn progress_summary(progress: &SubagentProgress) -> Option<ProgressSummary> {
+    if progress.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(tool) = &progress.last_tool {
+        // `→` U+2192 is in Hack and not in the proportional face — see `step_mark`, whose
+        // measurement this borrows, and note the draw site below is `.monospace()` for it.
+        parts.push(format!("→ {tool}"));
+    }
+    if let Some(n) = progress.tool_uses {
+        parts.push(format!("{n} tool{}", if n == 1 { "" } else { "s" }));
+    }
+    if let Some(ms) = progress.duration_ms {
+        parts.push(elapsed(ms));
+    }
+    if let Some(tokens) = progress.total_tokens {
+        parts.push(format!("{} tokens", grouped(tokens)));
+    }
+    Some(ProgressSummary {
+        headline: progress.description.clone(),
+        facts: (!parts.is_empty()).then(|| parts.join(" · ")),
+        status: progress.status.clone(),
+    })
+}
+
+/// A duration a person can read, from the harness's own milliseconds.
+///
+/// Tenths below a minute because that is the range a tool step lives in and a whole second
+/// there loses the difference between fast and instant; whole seconds above it, because
+/// nobody reads a tenth off a sixteen-minute agent. **Truncating, never rounding up** —
+/// the same rule [`crate::agent_map::ContextFill::percent`] argues: never report a figure
+/// the work has not reached.
+fn elapsed(ms: u64) -> String {
+    if ms < 60_000 {
+        format!("{}.{}s", ms / 1000, (ms % 1000) / 100)
+    } else {
+        let seconds = ms / 1000;
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    }
+}
+
+/// `61477` → `61,477`. Exact, because a token count is a measurement and `61.5k` would be
+/// this view rounding one — cheap here, and the habit is what matters.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// **What the harness says the dispatched agent is doing**, drawn above its step log.
+///
+/// 🚨 Nothing here streams and nothing here ticks — [`progress_summary`] owns both
+/// refusals and this function must not grow past what it returns.
+fn progress_body(ui: &mut egui::Ui, progress: &SubagentProgress) {
+    let Some(summary) = progress_summary(progress) else { return };
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        // `task`, not `subagent`: the row below is what the agent *did*, this is what the
+        // harness says about the task as a whole. Two labels because they are two claims
+        // with two different sources.
+        ui.label(RichText::new("task").color(ASKING).small().monospace());
+        if let Some(headline) = &summary.headline {
+            ui.label(RichText::new(headline).color(PROSE).small());
+        }
+        if let Some(status) = &summary.status {
+            ui.label(RichText::new(status).color(DIM).small());
+        }
+    });
+    if let Some(facts) = &summary.facts {
+        // Monospace for the `→`, per `step_mark`'s glyph measurement.
+        ui.label(RichText::new(facts).color(DIM).small().monospace());
+    }
 }
 
 /// What a subagent card's header says, as text — the judgment, without the egui.
@@ -3326,6 +3441,110 @@ mod tests {
         );
         assert_eq!(subagent_summary(&log, true).open, None);
         assert_eq!(subagent_summary(&log, false).open, None);
+    }
+
+    // -- the progress row ----------------------------------------------------
+
+    /// A progress value with the capture's own first-card numbers on it.
+    fn captured_progress() -> SubagentProgress {
+        SubagentProgress {
+            description: Some("Reading one.txt".into()),
+            last_tool: Some("Read".into()),
+            tool_uses: Some(1),
+            total_tokens: Some(62949),
+            duration_ms: Some(10335),
+            status: Some("completed".into()),
+        }
+    }
+
+    /// **CONTRACT** — the row a card shows for a working agent, in the order it reads:
+    /// what it is doing, then what it has measurably done.
+    #[test]
+    fn the_progress_row_reports_the_activity_then_the_measured_trailer() {
+        let summary = progress_summary(&captured_progress()).expect("a reported progress");
+        assert_eq!(summary.headline.as_deref(), Some("Reading one.txt"));
+        assert_eq!(summary.facts.as_deref(), Some("→ Read · 1 tool · 10.3s · 62,949 tokens"));
+        assert_eq!(summary.status.as_deref(), Some("completed"));
+    }
+
+    /// A card whose harness has said nothing shows no row at all — the same rule
+    /// [`ResultDetail`] follows, and the reason `SubagentProgress` is not an `Option`.
+    #[test]
+    fn a_card_with_nothing_reported_draws_no_progress_row() {
+        assert_eq!(progress_summary(&SubagentProgress::default()), None);
+    }
+
+    /// **CONTRACT** — only the parts the harness stated appear. A `task_started` carries a
+    /// description and no counts at all, and the row must not print zeros for the rest:
+    /// a `0 tools` that means "nobody said" is a measurement the wire never made.
+    #[test]
+    fn an_unreported_fact_is_absent_rather_than_zero() {
+        let started = SubagentProgress {
+            description: Some("Read one.txt second line".into()),
+            ..SubagentProgress::default()
+        };
+        let summary = progress_summary(&started).expect("a description is enough");
+        assert_eq!(summary.headline.as_deref(), Some("Read one.txt second line"));
+        assert_eq!(summary.facts, None, "no counts were stated, so none are shown");
+        assert_eq!(summary.status, None);
+    }
+
+    /// Tenths under a minute, whole seconds over it, and **truncating** either way — the
+    /// same never-overstate rule `ContextFill::percent` argues. A 16-minute agent does not
+    /// want a tenth, and a 900 ms step does.
+    #[test]
+    fn elapsed_reads_in_tenths_below_a_minute_and_never_rounds_up() {
+        assert_eq!(elapsed(7890), "7.8s", "7.89s must not read as 7.9");
+        assert_eq!(elapsed(10335), "10.3s");
+        assert_eq!(elapsed(900), "0.9s");
+        assert_eq!(elapsed(0), "0.0s");
+        assert_eq!(elapsed(59_999), "59.9s", "the last moment below the switch");
+        assert_eq!(elapsed(60_000), "1m 0s");
+        assert_eq!(elapsed(963_000), "16m 3s", "the coordinator case this exists for");
+    }
+
+    /// A token count is a measurement, so it is grouped rather than abbreviated: `61.5k`
+    /// would be this view rounding a number the harness stated exactly.
+    #[test]
+    fn token_counts_are_grouped_exactly_rather_than_abbreviated() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1000), "1,000");
+        assert_eq!(grouped(62949), "62,949");
+        assert_eq!(grouped(1_234_567), "1,234,567");
+    }
+
+    /// Singular reads as one, as it does in the subagent header beside it.
+    #[test]
+    fn one_tool_is_not_one_tools() {
+        let one = SubagentProgress { tool_uses: Some(1), ..SubagentProgress::default() };
+        assert_eq!(progress_summary(&one).unwrap().facts.as_deref(), Some("1 tool"));
+        let two = SubagentProgress { tool_uses: Some(2), ..SubagentProgress::default() };
+        assert_eq!(progress_summary(&two).unwrap().facts.as_deref(), Some("2 tools"));
+    }
+
+    /// 🚨 CONTRACT — **every glyph the row draws must be one Hack actually has.** The
+    /// subagent step marker shipped as tofu for exactly this reason (`step_mark` carries
+    /// the `cmap` measurement); the row reuses `→` and `·` and introduces nothing new, so
+    /// this test is the guard on that promise rather than a fresh measurement.
+    #[test]
+    fn the_progress_row_introduces_no_glyph_the_step_marks_have_not_proved() {
+        let summary = progress_summary(&captured_progress()).expect("a reported progress");
+        let drawn = format!(
+            "{}{}{}",
+            summary.headline.unwrap_or_default(),
+            summary.facts.unwrap_or_default(),
+            summary.status.unwrap_or_default()
+        );
+        let proved = ['→', '·'];
+        for ch in drawn.chars() {
+            assert!(
+                ch.is_ascii() || proved.contains(&ch),
+                "{ch:?} (U+{:04X}) is neither ASCII nor a measured-present symbol — see \
+                 `step_mark` before adding one",
+                ch as u32
+            );
+        }
     }
 
     /// The contract that matters: a streaming call's half-JSON is shown, never parsed.
