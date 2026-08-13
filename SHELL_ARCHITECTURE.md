@@ -1592,6 +1592,118 @@ harness-agnostic in full; the conversation view is harness-specific and says whi
 harness; and **degrading to a terminal tab is always available** — a harness we have not
 integrated is not unsupported, it is supported the old way.
 
+### 1.2 The portal — a screen-anchored, live, orbitable window onto the world
+
+`organon console portal open`, typed at a prompt **inside the console**, floats a rendered
+window over the transcript. The transcript keeps scrolling underneath it; the portal holds its
+place on screen. Drag it to orbit, wheel over it to zoom, `organon console portal close` to
+give the rows back.
+
+| Piece | Where |
+|---|---|
+| the state machine, the rect, the pointer test — all **pure** | `organon-shell/src/portal.rs` |
+| the wheel claim | `term_view::wheel_scrolls_the_transcript`, fed from `term_view::draw` |
+| the texture, the render, the paint | `shell_main.rs::{render_portal, free_portal, paint_portal}` |
+| which engine frame goes where | `shell_main.rs::engine_plan` |
+| the verb | `cli::ConsoleOp::Portal` + `cli::PORTAL_WORDS` → `console.portal` |
+
+**Screen-anchored is the new thing.** Every anchor the console had before this was a *scroll*
+anchor — `block_anchor` pins a rectangle to a run of lines and the picture rides them off the
+top. The portal is the complement, and it is what James asked for: *"the window could float in
+some way so that everything flows around it … so when it scrolls, the window doesn't scroll
+away."* The rect is recomputed from the pane every frame and remembered nowhere, so it is a
+function of where the window is *now*.
+
+⚠️ **It occludes the rows it floats over.** They are drawn and then covered. That is what
+floating means, and it is the other half of why the verb closes as easily as it opens.
+
+📌 **Anchored top-right on purpose.** A terminal's live edge is the bottom — new output, the
+prompt, the cursor. The top is where rows go to scroll away, so the portal covers the oldest
+visible text and never the newest.
+
+#### 🚨 It shows the WORLD, and that is correctness, not taste
+
+An installed substrate rig overrides the camera **wholesale**: `world.rs:6526` reads
+`substrate_rig` first and returns its whole six-tuple *before* `yaw`/`pitch`/`distance` are
+consulted — and those three are precisely what `World::apply_camera_input` writes. A portal
+showing the substrate would read a drag, convert it, apply it, and draw an identical frame:
+green build, no log line, and an investigation that starts in `scene_input.rs`, which is
+correct code. Showing the World clears the rig and dissolves it by construction.
+
+✅ **And it makes "control Organon from the shell" true for free.** The CLI's parameter lane
+drains inside `World::frame_body`, which is what `render_to_texture` runs, and `term.rs:195`
+injects `ORGANON_IPC_NS` into every tab the console spawns. So `organon set glow 1.0`,
+`organon generator dna` and `organon recipe nebula`, typed at a prompt in a console tab, drive
+the world inside the portal — **with no new code at all**. That was already built and shipped;
+the portal is the rectangle to see it through.
+
+It is also *simpler* than a conversation surface: a surface has to publish its own look into
+`Shared` and put the console's back afterwards or `organon status` reports a picture that is
+not the window. The portal shows the console's own snapshot, so there is no dance.
+
+#### 🚨 The portal claims the wheel — reversing a decision this file argued the other way
+
+`block_panel::pointer_inside` is fed `panel_placements` and not every patch, on a stated rule:
+*a scene patch is something to look at, so the wheel over one keeps scrolling the page exactly
+as the wheel over a paragraph does.* The portal reverses that, **for itself only**, and the
+argument is one sentence: **a scene patch is a picture; a portal is an instrument.** A picture
+that stole the wheel would break scrolling; an instrument that did not take it would be an
+instrument you cannot reach. The patch's behaviour is byte-for-byte unchanged.
+
+⚠️ **An explicit rect test is the only mechanism that works, and this is why.** `term_view`
+reads the wheel and every key from **raw input** (`i.raw_scroll_delta`, `i.events`), so egui
+layer order is irrelevant to it — an `Area`, a later-registered widget and a modal are all
+equally invisible. `scene_viewport` *does* consume the wheel from inside (it zeroes both scroll
+deltas), which is what covers a `ScrollArea`; the two are not alternatives, they cover
+different readers.
+
+#### 📌 The state machine is also the render budget
+
+`engine_plan(portal_open, backdrop, patches_want_image) -> (BackdropSource, bool)` is the one
+place both decisions are made, and `the_engine_is_asked_for_at_most_one_frame` proves the
+property over the entire input space: **at most one `World` render per console frame, in every
+state.** `SURFACE_RENDERS_PER_FRAME`'s doc rules the two-render case out — `frame_index` and
+the TAA jitter phase riding on it are shared between the targets, invisible on a still lit
+plane and visible-and-intermittent on a moving World. A live portal beside a live backdrop is
+exactly that case. So an open portal **takes the frame**.
+
+⚠️ **The cost, stated rather than discovered: while the portal is open, the backdrop does not
+paint and a scene patch has no picture.** The promotion that renders a substrate for a patch
+(`Off` + `patches_want_image`) is what the portal displaces. `backdrop_source` is never
+written, so closing the portal restores everything with no remembered value to get wrong. The
+alternative is a second `World` — ~50 shaders and ~62 pipelines by `render_surfaces`' own
+pricing, still trading jitter phases.
+
+#### Why it is a field and not a `SurfaceKey` variant
+
+`Shell::portal: Option<SurfaceTexture>`, beside `backdrop`. Eviction is a policy for *many
+things competing for few slots*; a portal is *one thing that is open or closed*. It is
+requested every frame it exists, so its stamp is always `now` and `surfaces_to_evict` could
+never choose it — the variant would exist only to be excluded from the one function the type
+serves, and would then have to be remembered out of `free_all_surfaces` and taught to the
+eviction log so it did not print a fabricated element id. The deciding argument is smaller and
+harder: **the portal must work in a terminal tab**, where there are no elements and `ElementId`
+means nothing. `SurfaceKey`, its tests, `SurfaceImages` and the whole `conversation_view` seam
+are untouched; `SurfaceTexture` and `make_surface_texture` are reused, which is the part worth
+reusing.
+
+#### What is deliberately NOT built
+
+**Immersive, full screen, the animated grow, and the click/double-click transitions.** This
+tier is one visible beat. The seam is `portal::step` being total over `(state, event)`; adding
+immersive is adding a variant and its arms, and the render-budget invariant already survives it
+(in immersive the portal *is* the backdrop, so again one render).
+
+⚠️ **Escape is not consumed, and that is a decision.** In a terminal tab the keyboard is the
+child's — *"the terminal owns the keyboard, full stop"* — and `vim` needs Escape, so taking it
+would have to be conditional on state. The states that need an Escape are the ones where the
+portal covers the window and a prompt may not be reachable; in this tier the prompt is right
+there and `organon console portal close` is the way out. Spending the console's **first
+state-dependent key ownership** on the one case that does not need it is the wrong first spend.
+`ctx.input_mut(|i| i.consume_key(..))` is the mechanism when it is time — it `retain`s the
+event out of the same `i.events` vector `term_view` clones, so it genuinely removes it from the
+PTY stream.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -1601,6 +1713,7 @@ integrated is not unsupported, it is supported the old way.
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; then the console's own verbs served as capability tools (needs a `CommandService` reachable from the serve thread — `NoDispatch` is the named seam), so a card can say *"organon · background"* instead of a shell command; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
+| The portal's other states | §1.2 landed the portal itself: the pure state machine, the screen anchor, the World render, the orbit, and `console.portal`. Next, in James's own order: **immersive** (the frame grows to fill the shell and becomes the backdrop, the overlay floating over it with the scrim) — nearly free, since `render_backdrop` already renders a pane-sized World, scrims it with an inviolable floor and switches source at runtime; then **full screen**, which is genuinely new (no path suppresses the tab strip, the glyph grid or the scrim, and `render_source` has no third axis for *overlay paints*); then the **animated grow** between the three rects. Two things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect), and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md`, on branch `console/portal-recon` — the site-by-site investigation these follow from, not yet merged |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -1609,6 +1722,40 @@ path silently breaks the three-products-simultaneously guarantee that
 `edition.rs`'s pairwise-distinct-namespace test pins.
 
 ## 3. Honesty ledger
+
+- 🚨 **Nobody has seen the portal. Not one pixel of it, and not one interaction.** It was
+  built in a cloud session with no GPU: the state machine, the rect arithmetic, the wheel
+  claim, the CLI round trip and the one-render-per-frame invariant are pinned by headless
+  tests, and `cargo check --features shell-edition --bin organon-console` is green. **None of
+  that is evidence that anything appears on screen.** Specifically unanswered, and each needs
+  James at the machine: whether a 42 %-width 16:9 rect at the top right reads as *floating*
+  rather than as a hole in the terminal; whether the phosphor hairline is enough to make it an
+  object; whether the World at the console's default snapshot is *legible* at that size (the
+  console publishes `OrganicMathParams::default()`, which nobody has looked at through a
+  window this small); whether the drag orbits at a rate a hand likes; whether the wheel claim
+  feels right or merely correct; and whether one frame of `PANEL_FILL` before the first render
+  reads as a beat or as a flicker. The verb is the only part with a cheap self-check —
+  `organon console portal open` prints `queued: portal open`, which says the line was written,
+  not that anything drew.
+- ⚠️ **The wheel claim is enforced in the TERMINAL front-end only.** `term_view` reads
+  `raw_scroll_delta` directly, so it gets the explicit rect test; a **conversation** tab's
+  `ScrollArea` reads egui's smoothed delta in its `end()`, which has already run by the time
+  `paint_portal` registers the region and zeroes it. So in a conversation tab a wheel over the
+  portal zooms **and** scrolls the transcript. The drag is fine in both (registering after the
+  content wins the tie, which is `scene_input`'s own tested property). Fixing it means
+  registering the region before the scroll area, which costs the tie for drags and needs
+  `SceneMode::Immersive`'s hit-test walk to give it back — a real design step, not a patch, and
+  out of this tier's one beat.
+- ⚠️ **A scene patch shows nothing while the portal is open**, by construction (§1.2, the
+  render budget). It returns when the portal closes. This is a documented cut in service of the
+  one-render invariant, not a bug, but it is a visible regression in an unrelated feature and
+  belongs here rather than only in a doc comment.
+- 📌 **The portal does not resize while the window does.** A window-resize drag changes the
+  pane every frame, so the portal frees and reallocates its texture — and logs one `[surface]`
+  line — on every frame of the drag, exactly as an open conversation surface already does. The
+  fix is the settle rule recorded in §2, and it was deliberately not built here: the animated
+  grow is the thing that makes it urgent, and building the rule without the animation would be
+  guessing at what it has to serve.
 
 - 🚨 **The conversation view has never been run against a live agent by the session that
   wrote it.** Every rule in §1.1 is pinned by headless tests against committed captures —

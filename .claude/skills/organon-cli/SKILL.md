@@ -80,6 +80,7 @@ organon console background <name>    # the surface behind the glyphs
 organon console rig <name>           # how that surface is lit
 organon console block <rows>         # reserve blank rows in the transcript
 organon console patch --up N --rows M --kind <kind>   # claim a gap you already printed
+organon console portal <state>       # float a live window onto the world over the transcript
 ```
 
 Reach for it when the ask is about *the workspace* ("make the background darker",
@@ -104,6 +105,16 @@ the console next drains, and anything you print in between moves it.
 and never a path. Ask `--help` for the kinds this build knows; it defaults to the one the
 verb shipped with, so a claim without it is unchanged. A rectangle scrolls, ages and
 evicts with the rows it is pinned to, and a terminal **width** change invalidates it.
+
+`portal` is the one that is **not** anchored to your output, and that is the whole
+difference: it holds a place on the *screen*, so the transcript scrolls past underneath
+it and nothing you print moves it. Nothing to print first, no counting back from the line
+you are on, and none of `patch`'s timing caveat — there is no line to resolve. Ask
+`--help` for the states it takes. Two consequences worth knowing before you open one:
+it **occludes** the rows it floats over until it is closed, and it shows the **world**,
+so the `set` / `generator` / `recipe` verbs above drive what is inside it — from this same
+console, with nothing else to wire up. While it is open the backdrop does not paint and a
+scene patch has no picture; closing it gives both back.
 
 Your changes ride an **override lane**. Two rules follow from that:
 
