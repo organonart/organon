@@ -11,6 +11,31 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console — one document that says what the console is, and what has not been looked at
+
+- **`doc/console_overview.md`.** The console's argument, its shape and its status now exist in
+  one place instead of being spread across an execution plan, three protocol docs, a demo
+  script, a 2000-line living architecture doc and two issues. It is written for a reader who
+  knows Organon thoroughly and knows nothing about the console — the engine, `Shared`, the
+  editions and the CLI are assumed rather than re-explained — because that is the reader who
+  keeps arriving. `SHELL_ARCHITECTURE.md` stays the authority and the overview says so.
+- 🚨 **Four status words, used on every capability, and the point is that they do not
+  collapse into one another.** *seen* (a person watched it work on real hardware), *unseen*
+  (built, green, and nobody has looked), *declined* (deliberately not built, reason recorded)
+  and *planned*. The honesty ledger already tracks exactly this distinction; a feature list
+  that flattened it would be the most useful-looking and least honest thing that could be
+  written about the console, since the unseen list is currently longer than the seen one.
+- **Two live doc disagreements were found by reading and are named in the overview rather
+  than silently picked between.** The honesty ledger still says *"no GPU has seen Tier 2's
+  materials"* while the demo script records them checked material-by-material on 2026-08-11;
+  and the demo script's beat 8 still says the approval card has not been seen on screen while
+  the ledger records a human driving it — which is how the 60 s client deadline was found. In
+  both cases the later record is right and the earlier one was never revised. The overview
+  says which to trust and that the other wants fixing; neither doc is edited here, because a
+  paper is not the place to quietly change what another document claims.
+- **Nothing else moved.** No source file, no test, no build. `cargo test -p organon-shell
+  --lib` was run to source one number the document quotes: **433 passing**.
+
 ### Console Spike — the canary on `tool_use_result` fired, on its first real chance
 
 - 🚨 **A third `tool_use_result` shape exists, and the counter built to notice one noticed
