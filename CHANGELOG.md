@@ -203,6 +203,69 @@ From here on, this file gets an entry per meaningful change, newest first.
   model is *offered* it is unanswered, and the honesty ledger carries the remaining hypothesis
   and the one cheap test for it. 443 tests in the compositor lib, from 433.
 
+### Console Spike — the portal's camera, and the rule that a hand outranks an agent
+
+- **`organon console camera` — the viewpoint an agent could never move.** Before this the CLI
+  could choose everything the world *is* and nothing about where to stand to look at it: the
+  catalog carries `cam_path` / `cam_speed` / `cam_kick` / `cam_damping` and **no distance, no
+  zoom, no FOV anywhere**. James, watching an agent try to show him something through the
+  portal: *"it's having trouble because the camera is far away and I don't think the CLI has
+  commands to move it, but it's fundamentally working."* The state was already there —
+  `World::apply_camera_input` writes the yaw, pitch and distance the portal's drag and wheel
+  drive — with no surface on it. `--reset`, `--yaw`, `--pitch`, `--distance`, any subset, one
+  move.
+- ⚠️ **Two cameras, and the change is careful not to conflate them.** `cam_path` is the
+  *world's* auto-orbit: part of the composition, in `Shared`, saved in a preset. This is where
+  the *viewer stands*: host state on `World`, in no snapshot and no preset. They **compose** —
+  the finalization adds the auto-orbit's offset to this base — so a shot framed here still spins
+  if `cam_path` says to, and neither had to learn about the other.
+- 🚨 **The hand always wins, and it is enforced rather than remembered.** A drag and a typed
+  command write the same three fields and `apply_camera_input` cannot tell them apart, so
+  without arbitration the last writer in the frame wins by accident and a command landing
+  mid-drag moves the picture under a hand that is holding it. *A control that fights your hand
+  is worse than no control.* The stamp is taken in `redraw` from the gesture — the last place
+  the two are still distinguishable — and `organon-shell/src/camera.rs` owns the policy as a
+  pure, tested predicate. This is the same rule the workshop's lighting renderer already runs
+  against a hand on the lamp.
+- **The hold is two seconds, and the number is bounded rather than felt.** *Longer* than any gap
+  inside one interaction (a drag stamps every ≈16 ms, a wheel-notch train ≈100 ms, a hand
+  releasing to re-grab a few hundred), so a pause mid-gesture is never read as the end of one.
+  *Shorter* than the time it takes to **ask** for something, so a command caused by the person
+  is not refused when it arrives. Both properties are tests, not prose. ⚠️ The refused command
+  is **dropped, never queued**: a deferred framing arrives after the hold expires as a jump into
+  a shot the person has since composed — the same failure, delayed.
+- **Absolute, and that is forced rather than chosen.** The console lane is fire-and-forget with
+  no return path, so a caller can never read where the camera is and therefore can never compute
+  a delta. That is also why `--reset` is not a convenience: it is the one framing nameable
+  *without* knowing the current one, so `--reset --distance 40` is a complete workflow with no
+  read-back in it. `scene_input::DEFAULT_*` are `World::new`'s own initial values, named rather
+  than copied, so reset is provably the framing the window opened with.
+- **Refused, not clamped — and the asymmetry with the hand is the point.** `apply_camera_input`
+  clamps, because a wheel that reaches the ceiling simply stops; a typed `--distance 9000` is
+  not an overshoot but a number that means something else, and a silent clamp would let the
+  mistake look like it worked. So the band gates the command lane twice (clap, then the
+  schema's `ArgKind::Float`) with the world's clamp underneath as the belt — and all three read
+  the **same** `scene_input` constants, since a second copy is how an agent comes to be refused
+  a viewpoint the drag can reach.
+- **It says so when it moves something nobody is looking at.** A substrate rig overrides the
+  whole camera tuple and `off` draws nothing, so a framing with the portal closed succeeds,
+  moves real state and changes not one pixel — the portal's own documented trap, met from the
+  other side. The console cannot fix it (the camera really did move), so it reports on stderr
+  instead of pretending.
+- ⚠️ **Immersive, full screen and the animated grow were NOT built**, and the honest reason is
+  recorded rather than deferred silently: the recon's "immersive is nearly free" does not
+  survive contact. It is true of the *rendering* and false of the *painting* — `paint_portal`
+  paints **over** the front-end, which is what floating means, while immersive needs the image
+  **under** the glyphs with the scrim over it, and the scrim lives inside `term_view::draw`'s
+  banded-backdrop arm. That is a new integration, not a variant added to `portal::step`, and
+  half of it would have left the portal in a state with no way out. The correction is in
+  `SHELL_ARCHITECTURE.md` §2 so the next scoping starts from it.
+- 🚨 **Nobody has seen any of this move.** 438 tests in the compositor lib (from 433) and
+  `cargo check --features shell-edition --bin organon-console` clean — neither is evidence that
+  a picture moved. Two thirds of the new tests (the wire round trip, the ranges, the schema
+  bands) live in the root package and were **compiled, not executed**; the safety-critical
+  third — who owns the camera — is deliberately in the pure crate, where it runs.
+
 ### Console Spike — the canary on `tool_use_result` fired, on its first real chance
 
 - 🚨 **A third `tool_use_result` shape exists, and the counter built to notice one noticed

@@ -117,7 +117,23 @@ loop, forward. Two rules make that work and are easy to break:
   ⚠️ **The one unit trap: egui reports drags in *points*, the winit arm in *physical pixels*.**
   `scene_input::orbit_pixels` converts, and skipping it would orbit the editor at half rate on
   every Retina display — working, so nobody would look for it.
-- **A third camera entry point, and it is *absolute* where #621's is relative** (Console Spike
+- **A third `CameraInput` variant, absolute, on the same seam** (Console Spike, the portal's
+  camera). `CameraInput::Frame { yaw, pitch, distance }` writes the base orbit directly, `None`
+  per axis meaning "leave it". It rides #621's entry point rather than becoming a fourth method
+  because it is the *same three fields a drag writes* — it just says where instead of how far,
+  which is the only shape a lane with no return path can carry. `cam_path` still orbits around
+  the result, exactly as it orbits around a hand-dragged viewpoint, so nothing in the
+  finalization changed.
+  ⚠️ **Its clamps are now named constants — `scene_input::{PITCH_LIMIT, DISTANCE_MIN,
+  DISTANCE_MAX}` — read by the Orbit and Zoom arms, by the finalization's pitch clamp, and by
+  Organon Shell's command schema.** Four readers, one number: a hand and an agent must not
+  disagree about where the instrument ends. `World::new`'s three initial values are likewise
+  `scene_input::DEFAULT_*`, which is what makes the console's `camera --reset` provably the
+  framing the window opened with.
+  ⚠️ Non-finite input is **dropped, not clamped**: `f32::clamp` panics on a NaN bound and
+  returns NaN for a NaN input, and a NaN yaw poisons `view_proj` into a black window with no
+  error at all.
+- **A fourth camera entry point, and it is absolute in a much stronger sense** (Console Spike
   Tier 1, for Organon Shell's substrate backdrop). `set_substrate_rig(Option<(center, yaw,
   pitch, distance, roll, fov_deg)>)` installs the whole tuple; the camera finalization then
   selects it as a **third arm** on the same `if` the rails branch already overrode all six

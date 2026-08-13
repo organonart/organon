@@ -1928,6 +1928,86 @@ state-dependent key ownership** on the one case that does not need it is the wro
 event out of the same `i.events` vector `term_view` clones, so it genuinely removes it from the
 PTY stream.
 
+### 1.3 The camera — the one an agent can move, and the rule that a hand outranks it
+
+`organon console camera --distance 40`, typed at a prompt **inside the console**, walks the
+viewpoint in. Before this the CLI could choose what the world *is* — every generator, every
+material, `cam_path`'s auto-orbit — and could not say where to stand to look at it. James, watching
+an agent try to show him something through the portal: *"it's having trouble because the camera is
+far away and I don't think the CLI has commands to move it, but it's fundamentally working."*
+
+| Piece | Where |
+|---|---|
+| the bands, the defaults — **one table, four readers** | `scene_input::{YAW_LIMIT, PITCH_LIMIT, DISTANCE_MIN, DISTANCE_MAX, DEFAULT_*}` |
+| the absolute write | `scene_input::CameraInput::Frame` → `World::apply_camera_input` |
+| the vocabulary | `cli::{CameraFraming, CAMERA_WORDS}` + `cli::ConsoleOp::Camera` → `console.camera` |
+| **who wins** — pure | `organon-shell/src/camera.rs` (`arbitrate`, `HAND_HOLD`, `viewpoint_is_visible`) |
+| the site that obeys it | `shell_main.rs::Shell::frame_camera`; the hand's stamp is in `redraw` |
+
+#### ⚠️ There are TWO cameras and this is only one of them
+
+`cam_path` / `cam_speed` / `cam_kick` / `cam_damping` — the `organon set` lane, on the **world** —
+are the *auto-orbit*: part of the composition, travelling in `Shared`, saved in a preset, and the
+only camera the CLI could reach before this. This is where the **viewer stands** to watch that
+composition: host state on `World`, in no snapshot and no preset, and exactly the three fields a
+drag and a wheel over the portal already write.
+
+📌 **They compose rather than compete.** The camera finalization adds the auto-orbit's offset to
+this base (`let yaw = self.yaw + off.dyaw`), so a shot framed here still spins if `cam_path` says
+to. Neither replaces the other and neither needed to learn about the other.
+
+#### 🚨 The hand always wins, and it is enforced rather than remembered
+
+This is not a new rule. It is the one the lighting renderer on this workstation already runs — it
+polls the lamp for a state it did not command, and a hand on the app drops the agent's scene and
+refuses new ones for a while. *A person always wins.* What makes it worth **enforcing** here is
+that the portal's camera is the first thing in the console an agent can move **while a hand is on
+it**: a drag and `console camera` write the same three fields, `World::apply_camera_input` cannot
+tell them apart, and without arbitration the last writer in the frame wins by accident. **A control
+that fights your hand is worse than no control.**
+
+- **The stamp is taken where the two are still distinguishable** — in `redraw`, from
+  `SceneGesture::inputs()`, one line before both become `CameraInput`. An idle console never
+  stamps, so an agent is never held off by a hand that is not there.
+- **`camera::HAND_HOLD` is two seconds**, and the number is bounded on both sides rather than
+  felt. *Longer* than any gap inside one interaction (a drag stamps every ≈16 ms, a wheel-notch
+  train ≈100 ms, a hand releasing to re-grab a few hundred), so a pause mid-gesture is never read
+  as the end of one. *Shorter* than the time it takes to **ask** for something — a request
+  reaching an agent and coming back is seconds — so a command caused by the person is not refused
+  when it arrives. Two properties, both pinned by a test.
+- ⚠️ **The refused command is dropped, never queued.** A deferred framing would arrive after the
+  hold expires, as a jump into a shot the person has since composed — the same failure the hold
+  exists to prevent, delayed.
+
+#### Absolute, and why that is forced rather than chosen
+
+The console command lane is fire-and-forget with **no return path** (`cli::console_cmd_path`'s
+doc). A caller on it can never read back where the camera is, so it can never compute a delta —
+absolute is the only shape the transport carries. That is also why `--reset` exists and is not a
+convenience: it is the one framing a caller can name **without knowing the current one**, so
+`--reset --distance 40` ("the default view, then pull in") is a complete workflow with no
+read-back anywhere in it. `scene_input::DEFAULT_*` are `World::new`'s own initial values, named
+rather than repeated, so reset is provably *the framing the window opened with*.
+
+#### Refused, not clamped — and the asymmetry with the hand is deliberate
+
+`World::apply_camera_input` **clamps**, because a hand physically cannot ask for more than the band:
+a wheel that reaches the ceiling simply stops. A typed `--distance 9000` is not a gesture that
+overshot, it is a number that means something else, and silently answering 4000 would let the
+mistake look like it worked. So the band is a **gate** on the command lane — `ArgKind::Float`'s
+range in the schema, `CameraFraming::in_range` at the clap boundary — and the world's clamp stays
+underneath as the belt. Both read `scene_input`'s constants; a second copy is how an agent comes to
+be refused a viewpoint the drag can reach, and that reads as the camera being broken rather than as
+two constants disagreeing.
+
+#### It says so when it moves something nobody is looking at
+
+An installed substrate rig overrides the whole camera tuple, and `off` draws nothing at all — so a
+framing applied with the portal closed and the backdrop on `substrate` succeeds, moves real state,
+and changes not one pixel. That is §1.2's silent trap met from the other side. The console cannot
+fix it (the camera really did move, and it will be there the moment something shows the world), so
+`camera::viewpoint_is_visible` decides whether to say so on stderr instead.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -1937,7 +2017,8 @@ PTY stream.
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `SidecarDispatch` onto the audited drain) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
-| The portal's other states | §1.2 landed the portal itself: the pure state machine, the screen anchor, the World render, the orbit, and `console.portal`. Next, in James's own order: **immersive** (the frame grows to fill the shell and becomes the backdrop, the overlay floating over it with the scrim) — nearly free, since `render_backdrop` already renders a pane-sized World, scrims it with an inviolable floor and switches source at runtime; then **full screen**, which is genuinely new (no path suppresses the tab strip, the glyph grid or the scrim, and `render_source` has no third axis for *overlay paints*); then the **animated grow** between the three rects. Two things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect), and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md`, on branch `console/portal-recon` — the site-by-site investigation these follow from, not yet merged |
+| The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md`, on branch `console/portal-recon` — the site-by-site investigation these follow from, not yet merged |
+| A **read** path for the console's own state | §1.3's camera is absolute *because* `organon console …` is fire-and-forget with no return path, and `--reset` is the workaround: the one framing a caller can name without knowing the current one. That is a complete workflow and it is not a substitute for reading. The honest fix is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs — after which `console.camera` gains a read and every other console verb gains one with it. ⚠️ The tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
@@ -1986,6 +2067,34 @@ path silently breaks the three-products-simultaneously guarantee that
   reads as a beat or as a flicker. The verb is the only part with a cheap self-check —
   `organon console portal open` prints `queued: portal open`, which says the line was written,
   not that anything drew.
+- 🚨 **Nobody has seen the camera verb either — not one frame of it moving.** §1.3 was built in
+  the same shape as §1.2 and with the same limit: `cargo test -p organon-shell --lib` is 438 green
+  and `cargo check --features shell-edition --bin organon-console` is clean, and **neither is
+  evidence that a picture moved.** What is genuinely proven is the arithmetic and the policy: the
+  hand-hold's boundary behaviour, the visibility predicate, the wire round trip in every
+  combination of the four flags, the malformed set, and that the schema's three bands are
+  literally `scene_input`'s constants. What is **not** proven, and each needs James at the
+  machine: whether `--distance 40` frames the default world *usefully* (520 is where it opens and
+  nobody has looked at that world through a 42 %-width rect to know what "close" means in it);
+  whether `--reset` looks like a return or like a glitch; whether two seconds of hand-hold feels
+  protective or obstructive in an actual back-and-forth; and whether the stderr advisory ever
+  fires when it should, since nothing on this branch has run with a substrate backdrop and a
+  closed portal. The cheap self-check is the same one the portal has — `organon console camera
+  --distance 40` prints `queued: camera distance 40`, which says the line was written.
+- ⚠️ **A refused camera command reaches nobody but a reader of the console's stderr.** The lane
+  has no return path by design, so an agent that is held off by the hand learns nothing at all: it
+  issued a command, the command was accepted by clap, written to the sidecar, validated by the
+  service, recorded — and then dropped. From the agent's side that is indistinguishable from a
+  camera that does not work. The console prints why; nobody may be reading. This is the concrete
+  cost of the missing read path in §2 and it is the strongest argument for building it.
+- ⚠️ **Two-thirds of §1.3's tests cannot be RUN on a Windows workstation session**, and the split
+  is worth knowing before trusting a green line. `camera.rs`'s six live in `organon-shell` and run
+  in 0.17 s. The `CameraFraming` round-trip and range tests live in `src/cli.rs` and the schema
+  tests in `src/shell_main.rs`; both need the root package's test binary, which is ~45 minutes of
+  codegen here, so they were **compiled and not executed** (`cargo check --profile test`, three
+  targets, exit 0). CI runs them. The pure-crate half was deliberately given the safety-critical
+  decision — who owns the camera — so the part that can be *proved* here is the part that matters
+  most.
 - ⚠️ **The wheel claim is enforced in the TERMINAL front-end only.** `term_view` reads
   `raw_scroll_delta` directly, so it gets the explicit rect test; a **conversation** tab's
   `ScrollArea` reads egui's smoothed delta in its `end()`, which has already run by the time

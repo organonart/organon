@@ -81,6 +81,7 @@ organon console rig <name>           # how that surface is lit
 organon console block <rows>         # reserve blank rows in the transcript
 organon console patch --up N --rows M --kind <kind>   # claim a gap you already printed
 organon console portal <state>       # float a live window onto the world over the transcript
+organon console camera [--reset] [--yaw R] [--pitch R] [--distance D]   # where you STAND
 ```
 
 Reach for it when the ask is about *the workspace* ("make the background darker",
@@ -115,6 +116,29 @@ it **occludes** the rows it floats over until it is closed, and it shows the **w
 so the `set` / `generator` / `recipe` verbs above drive what is inside it — from this same
 console, with nothing else to wire up. While it is open the backdrop does not paint and a
 scene patch has no picture; closing it gives both back.
+
+`camera` is where **you stand**, and it is the one to reach for when the picture is right and
+you cannot see it properly — too far away, or facing the wrong side. Do not confuse it with the
+world's own camera: `set cam_path …` and its siblings above are the *auto-orbit*, part of the
+composition; this walks around whatever that composition is doing. The two compose, so a shot
+framed here still spins.
+
+Three things about how to use it, all of which follow from the lane having **no return path**:
+
+- **Every axis is absolute**, in the units the drag and the wheel already write — you cannot
+  nudge, because you cannot read where the camera is to nudge from. Ask `--help` for the units
+  and the bands, and expect a value outside them to be **refused rather than clamped**.
+- **`--reset` is how you establish a known state**, and it is applied before the axes in the
+  same command — so "back to the default view, then pull in" is one line and needs no read-back
+  anywhere. Reach for it first when you have lost the camera.
+- 🚨 **The hand outranks you.** If James is dragging or wheeling the portal — or did so within
+  the last couple of seconds — your command is **dropped**, not queued, and you will not be told:
+  the console says so on its own stderr and nothing comes back to you. So do not conclude the
+  camera is broken from one command that appeared to do nothing. Wait a moment and say it again.
+
+And one thing that is not about the lane: a camera command with **no portal open and no
+`background world`** moves the viewpoint somewhere nothing is drawing it. It succeeds and
+changes no pixel. Open the portal first.
 
 Your changes ride an **override lane**. Two rules follow from that:
 

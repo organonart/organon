@@ -67,6 +67,7 @@ use organon_core::edition::EDITION;
 use organon_core::ipc;
 use organon_shell::block_anchor::Block;
 use organon_shell::block_panel::{self, BlockAction, BlockPanel, Patch};
+use organon_shell::camera;
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
@@ -81,6 +82,7 @@ use organon_shell::term::{self, TermSession};
 use organon_shell::term_view::{self, BandedBackdrop, PaneAnchor};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -384,6 +386,9 @@ const CMD_BLOCK: &str = "console.block";
 const CMD_PATCH: &str = "console.patch";
 /// See [`CMD_BACKGROUND`]. The portal: a screen-anchored, live window onto the world.
 const CMD_PORTAL: &str = "console.portal";
+/// See [`CMD_BACKGROUND`]. Where the viewer stands: the yaw/pitch/distance a drag and a wheel
+/// over the portal already write.
+const CMD_CAMERA: &str = "console.camera";
 /// The single argument the two **dressing** verbs take. One name, because the sidecar's wire
 /// form is `<verb> <word>` and inventing two spellings for one slot is how a schema drifts
 /// from its transport.
@@ -405,6 +410,21 @@ const CMD_KIND: &str = "kind";
 /// wrong thing. The `Choice` is built from `cli::PORTAL_WORDS`, so the schema, the CLI's
 /// `--help` and the parser are three renderings of one table.
 const CMD_STATE: &str = "state";
+/// [`CMD_CAMERA`]'s four slots. Named per axis rather than as one `axis` + `value` pair,
+/// because framing a shot is **one intent**: a caller that wants to be closer *and* a little
+/// above says so once and the viewpoint moves once, instead of travelling through an
+/// intermediate framing nobody asked to see — which on a live portal is a frame somebody
+/// watches. [`CMD_RESET`] is a `Bool` and the other three are `Float`s with their own bands,
+/// which is the second reason not to collapse them: one shared value slot could only declare
+/// the union of three different ranges, and a schema that states a range it does not mean is
+/// worse than one that states none.
+const CMD_YAW: &str = "yaw";
+/// See [`CMD_YAW`].
+const CMD_PITCH: &str = "pitch";
+/// See [`CMD_YAW`].
+const CMD_DISTANCE: &str = "distance";
+/// See [`CMD_YAW`].
+const CMD_RESET: &str = "reset";
 
 /// The console's vocabulary, as [`CommandService`] catalog data.
 ///
@@ -487,6 +507,52 @@ fn console_specs() -> Vec<CommandSpec> {
                 required: true,
             }],
         },
+        // 🚨 **The ranges are `scene_input`'s constants, not literals, and that is the whole
+        // point of the arrangement.** `World::apply_camera_input` clamps a *hand* to the same
+        // three numbers. A second copy here is how an agent comes to be refused a viewpoint the
+        // drag can reach — or granted one it cannot — and either reads as the camera being
+        // broken rather than as two constants disagreeing.
+        //
+        // ⚠️ Unlike `block`'s `Int`, `ArgKind::Float` **can** state its band, so `validate_args`
+        // is the real gate here and `op_from` is a belt. Out of range fails the dispatch with a
+        // record rather than clamping: a typed value that far out is a unit mistake far more
+        // often than an overshoot, and a silent clamp lets the mistake look like it worked.
+        CommandSpec {
+            name: CMD_CAMERA.into(),
+            doc: "Where the viewer stands: the portal's own yaw, pitch and distance".into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: CMD_RESET.into(),
+                    kind: ArgKind::Bool,
+                    required: false,
+                },
+                ArgSpec {
+                    name: CMD_YAW.into(),
+                    kind: ArgKind::Float {
+                        min: -f64::from(scene_input::YAW_LIMIT),
+                        max: f64::from(scene_input::YAW_LIMIT),
+                    },
+                    required: false,
+                },
+                ArgSpec {
+                    name: CMD_PITCH.into(),
+                    kind: ArgKind::Float {
+                        min: -f64::from(scene_input::PITCH_LIMIT),
+                        max: f64::from(scene_input::PITCH_LIMIT),
+                    },
+                    required: false,
+                },
+                ArgSpec {
+                    name: CMD_DISTANCE.into(),
+                    kind: ArgKind::Float {
+                        min: f64::from(scene_input::DISTANCE_MIN),
+                        max: f64::from(scene_input::DISTANCE_MAX),
+                    },
+                    required: false,
+                },
+            ],
+        },
     ]
 }
 
@@ -498,6 +564,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
+        cli::ConsoleOp::Camera(_) => CMD_CAMERA,
     }
 }
 
@@ -577,6 +644,42 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             .ok_or_else(|| {
                 format!("{name}: `{CMD_STATE}` must be one of {:?}", cli::PORTAL_WORDS)
             }),
+        // Every slot's *range* was already settled by `validate_args` against the `Float`
+        // bands above — this is the one thing the schema cannot say: **at least one axis**.
+        // `ArgSpec::required` is per-argument, so "all optional, but not all absent" has no
+        // spelling in it, and a framing that names nothing would otherwise dispatch, succeed,
+        // and move nothing.
+        CMD_CAMERA => {
+            let float = |slot: &str| -> Result<Option<f32>, String> {
+                match args.get(slot) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => v
+                        .as_f64()
+                        .map(|f| Some(f as f32))
+                        .ok_or_else(|| format!("{name}: `{slot}` is not a number")),
+                }
+            };
+            let framing = cli::CameraFraming {
+                reset: args.get(CMD_RESET).and_then(Value::as_bool).unwrap_or(false),
+                yaw: float(CMD_YAW)?,
+                pitch: float(CMD_PITCH)?,
+                distance: float(CMD_DISTANCE)?,
+            };
+            if framing.is_empty() {
+                return Err(format!(
+                    "{name}: needs at least one of {:?} — a framing that names no axis \
+                     would move nothing",
+                    cli::CAMERA_WORDS
+                ));
+            }
+            // The belt to `validate_args`' brace: `f64 as f32` can round a value that passed
+            // the band into one just outside it, and a NaN would pass `as_f64` and then poison
+            // the view matrix. Cheap, and it is the last gate before `World`.
+            if !framing.in_range() {
+                return Err(format!("{name}: an axis is out of range or not finite"));
+            }
+            Ok(cli::ConsoleOp::Camera(framing))
+        }
         _ => Err(format!("no console op for {name:?}")),
     }
 }
@@ -594,6 +697,17 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
             json!({ CMD_UP: up, CMD_ROWS: rows, CMD_KIND: kind.as_word() })
         }
         cli::ConsoleOp::Portal(cmd) => json!({ CMD_STATE: cmd.as_word() }),
+        // `null` for an axis nobody named, which `validate_args` reads as absent (its
+        // `object.and_then(get)` arm) and `op_from` maps straight back to `None`. Omitting the
+        // key entirely would do the same thing; spelling it keeps the dispatch record — which
+        // is what a reader of `events.jsonl` sees — showing the whole slot list rather than
+        // whichever subset happened to be set.
+        cli::ConsoleOp::Camera(f) => json!({
+            CMD_RESET: f.reset,
+            CMD_YAW: f.yaw,
+            CMD_PITCH: f.pitch,
+            CMD_DISTANCE: f.distance,
+        }),
     }
 }
 
@@ -728,9 +842,14 @@ fn console_step(
         // — but it does that by being consulted at render time, not by writing
         // `backdrop_source`. Folding it in here would make closing a portal restore whatever
         // source it had overwritten, which is one remembered value more than the feature needs.
+        //
+        // **A camera move is not a look at all.** It writes host state on the `World` — the
+        // same three fields a drag writes — which travels in no snapshot, is saved in no
+        // preset, and is not the console's dressing in any sense. It never reaches here either.
         cli::ConsoleOp::Block(_)
         | cli::ConsoleOp::Patch { .. }
-        | cli::ConsoleOp::Portal(_) => return None,
+        | cli::ConsoleOp::Portal(_)
+        | cli::ConsoleOp::Camera(_) => return None,
     }
     Some((source, look))
 }
@@ -1160,6 +1279,14 @@ struct Shell {
     /// recomputed from that frame's own pane, so the rectangle a person sees is never stale
     /// even though the pixels in it are one frame old.
     portal_points: Option<(f32, f32)>,
+    /// When a **hand** last moved the camera, or `None` if none ever has.
+    ///
+    /// 🚨 This is the whole of what makes "the hand always wins" enforceable, and it has to be
+    /// recorded on the console side rather than inside `World`: both a drag and
+    /// `organon console camera` arrive at `World::apply_camera_input`, which cannot tell them
+    /// apart, so by the time either reaches the world the distinction is gone. Stamped where
+    /// the *gesture* is drained (see `redraw`), read by `camera::arbitrate`.
+    hand_camera_at: Option<Instant>,
 }
 
 /// Register the portal's interaction region and paint it.
@@ -1349,6 +1476,7 @@ impl Shell {
             portal: None,
             portal_input: scene_input::SceneInput::default(),
             portal_points: None,
+            hand_camera_at: None,
         }
     }
 
@@ -1805,6 +1933,10 @@ impl Shell {
             }
             return;
         }
+        if let cli::ConsoleOp::Camera(framing) = op {
+            self.frame_camera(*framing);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -1823,6 +1955,71 @@ impl Shell {
         self.backdrop_source = source;
         self.console_look = look;
         *self.shared = *look_shared(self.backdrop_source, &self.console_look);
+    }
+
+    /// Move the viewer's viewpoint — **unless a hand is on it**.
+    ///
+    /// # 🚨 The hand always wins, and this is where that is enforced
+    ///
+    /// `organon console camera` and a drag on the portal write the same three fields, and
+    /// `World::apply_camera_input` cannot tell them apart — so without this the last writer in
+    /// the frame would win by accident, and a command landing mid-drag would move the picture
+    /// under a hand that is holding it. **A control that fights your hand is worse than no
+    /// control.** The policy, the hold and the argument for its length live in
+    /// [`organon_shell::camera`]; this is the site that obeys them.
+    ///
+    /// The refused command is **dropped**, never queued — see that module on why a deferred
+    /// framing is the same failure delayed.
+    ///
+    /// ⚠️ **The refusal reaches nobody but a reader of this process's stderr.** The console
+    /// command lane is fire-and-forget with no return path by design, so the caller cannot be
+    /// told. That gap is in `SHELL_ARCHITECTURE.md`'s honesty ledger.
+    ///
+    /// # The other thing it says out loud
+    ///
+    /// A framing applied while **nothing is drawing the world** succeeds, moves real state, and
+    /// changes not one pixel — an installed substrate rig overrides the whole camera tuple, and
+    /// `off` draws nothing at all. That is the silent trap `portal.rs`'s docs argue about, met
+    /// from the other side. The camera really did move and will be there the moment something
+    /// shows it, so this reports rather than refuses.
+    fn frame_camera(&mut self, framing: cli::CameraFraming) {
+        if camera::arbitrate(self.hand_camera_at, Instant::now()) == camera::Verdict::HandHolds {
+            eprintln!(
+                "organon-console: `{}` ignored — a hand is on the camera (it holds for {} s \
+                 after the last drag or wheel). Nothing was queued; ask again.",
+                cli::console_op_to_line(&cli::ConsoleOp::Camera(framing)),
+                camera::HAND_HOLD.as_secs(),
+            );
+            return;
+        }
+        // `reset` first, so `--reset --distance 40` reads as "the default view, then pull in".
+        // One `Frame` message either way: the reset supplies the defaults for the axes the
+        // caller did not name, and the caller's own values override them.
+        let framing = if framing.reset {
+            scene_input::CameraInput::Frame {
+                yaw: Some(framing.yaw.unwrap_or(scene_input::DEFAULT_YAW)),
+                pitch: Some(framing.pitch.unwrap_or(scene_input::DEFAULT_PITCH)),
+                distance: Some(framing.distance.unwrap_or(scene_input::DEFAULT_DISTANCE)),
+            }
+        } else {
+            scene_input::CameraInput::Frame {
+                yaw: framing.yaw,
+                pitch: framing.pitch,
+                distance: framing.distance,
+            }
+        };
+        self.world.apply_camera_input(framing);
+        if !camera::viewpoint_is_visible(
+            self.portal_state.is_open(),
+            self.render_source() == BackdropSource::World,
+        ) {
+            eprintln!(
+                "organon-console: the camera moved, but nothing on screen is showing the \
+                 world — `organon console portal open`, or `organon console background \
+                 world`. (A substrate backdrop frames its own plane and ignores the \
+                 viewpoint entirely.)"
+            );
+        }
     }
 
     /// Reserve `rows` blank rows in the **active** pane's transcript (Console Spike Tier 5).
@@ -2922,8 +3119,20 @@ impl Shell {
         // it was made. This is the line the whole "shows the World, not the substrate" argument
         // exists to make effective: with a substrate rig installed, every one of these writes
         // would be discarded downstream, with no error and no log line.
+        //
+        // 🚨 **And the stamp that makes "the hand always wins" enforceable.** It is taken here,
+        // from the gesture, because this is the last place the two kinds of camera input are
+        // still distinguishable: one line below they are both `CameraInput` and `World` has no
+        // way to ask which was which. `inputs()` is empty on every frame nobody is touching the
+        // portal, so an idle console never stamps and an agent is never held off by a hand that
+        // is not there.
+        let mut moved_by_hand = false;
         for input in camera.inputs() {
+            moved_by_hand = true;
             self.world.apply_camera_input(input);
+        }
+        if moved_by_hand {
+            self.hand_camera_at = Some(Instant::now());
         }
         if let Some(action) = action {
             self.apply(action);
@@ -3873,6 +4082,117 @@ mod cli_tests {
         }
     }
 
+    /// 🚨 **The camera schema's bands are the ones the HAND is clamped to** — read from
+    /// `scene_input` rather than restated, so a limit that moves for a drag moves for a typed
+    /// command in the same commit. A second copy here is how an agent comes to be refused a
+    /// viewpoint the drag can reach, and that reads as the camera being broken rather than as
+    /// two constants disagreeing.
+    #[test]
+    fn the_camera_schema_declares_the_same_bands_the_hand_is_clamped_to() {
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_CAMERA)
+            .expect("console.camera is registered");
+        assert_eq!(spec.target, TargetKind::Viewport, "where the viewer stands is the viewport");
+        assert_eq!(spec.args.len(), cli::CAMERA_WORDS.len(), "one slot per word in the table");
+        for word in cli::CAMERA_WORDS {
+            assert!(
+                spec.args.iter().any(|a| a.name == *word),
+                "`{word}` is in the CLI's table and has no slot in the schema"
+            );
+        }
+        for arg in &spec.args {
+            assert!(
+                !arg.required,
+                "`{}` must be optional — framing one axis must not oblige the other two",
+                arg.name
+            );
+        }
+        let band = |name: &str| match &spec.args.iter().find(|a| a.name == name).unwrap().kind {
+            ArgKind::Float { min, max } => (*min, *max),
+            other => panic!("`{name}` is {other:?}, so its range is not stated at all"),
+        };
+        assert_eq!(
+            band(CMD_YAW),
+            (-f64::from(scene_input::YAW_LIMIT), f64::from(scene_input::YAW_LIMIT))
+        );
+        assert_eq!(
+            band(CMD_PITCH),
+            (-f64::from(scene_input::PITCH_LIMIT), f64::from(scene_input::PITCH_LIMIT))
+        );
+        assert_eq!(
+            band(CMD_DISTANCE),
+            (f64::from(scene_input::DISTANCE_MIN), f64::from(scene_input::DISTANCE_MAX))
+        );
+        assert!(
+            matches!(
+                spec.args.iter().find(|a| a.name == CMD_RESET).unwrap().kind,
+                ArgKind::Bool
+            ),
+            "reset is a flag, not an axis with a value"
+        );
+        // The default framing `--reset` restores must sit inside the bands the schema states,
+        // or reset would be the one command the lane refuses.
+        for (v, (lo, hi)) in [
+            (scene_input::DEFAULT_YAW, band(CMD_YAW)),
+            (scene_input::DEFAULT_PITCH, band(CMD_PITCH)),
+            (scene_input::DEFAULT_DISTANCE, band(CMD_DISTANCE)),
+        ] {
+            assert!((lo..=hi).contains(&f64::from(v)), "the default {v} is outside {lo}..{hi}");
+        }
+    }
+
+    /// The one thing `ArgSpec::required` cannot say — **at least one of four** — is
+    /// [`op_from`]'s to say, and it must say it: a framing that names nothing would otherwise
+    /// dispatch, succeed, and move nothing, which is the shape of a bug nobody can see.
+    #[test]
+    fn a_camera_command_that_names_no_axis_is_refused_by_the_resolver() {
+        let e = op_from(CMD_CAMERA, &json!({})).expect_err("no axis at all");
+        assert!(e.contains("at least one"), "the message says what is missing: {e}");
+        let e = op_from(CMD_CAMERA, &json!({ CMD_RESET: false })).expect_err("a false flag");
+        assert!(e.contains("at least one"), "{e}");
+        assert_eq!(
+            op_from(CMD_CAMERA, &json!({ CMD_RESET: true })),
+            Ok(cli::ConsoleOp::Camera(cli::CameraFraming { reset: true, ..Default::default() })),
+            "reset alone is a whole command"
+        );
+        assert_eq!(
+            op_from(CMD_CAMERA, &json!({ CMD_DISTANCE: 40.0 })),
+            Ok(cli::ConsoleOp::Camera(cli::CameraFraming {
+                distance: Some(40.0),
+                ..Default::default()
+            }))
+        );
+        // The belt under `validate_args`' brace: a NaN passes `as_f64` and would poison the
+        // view matrix, and `f64 as f32` can round a just-legal value out of the band.
+        assert!(op_from(CMD_CAMERA, &json!({ CMD_YAW: f64::NAN })).is_err(), "NaN");
+        assert!(op_from(CMD_CAMERA, &json!({ CMD_DISTANCE: 9000.0 })).is_err(), "out of band");
+        assert!(op_from(CMD_CAMERA, &json!({ CMD_YAW: "sideways" })).is_err(), "not a number");
+    }
+
+    /// **A camera move is not a look**, so it falls through `console_step` untouched — a
+    /// sharper case than the portal's: it writes host state on the `World`, which travels in no
+    /// snapshot and is saved in no preset, so there is no `(source, look)` it could fold into
+    /// even in principle.
+    #[test]
+    fn a_camera_command_leaves_the_backdrop_and_its_dressing_exactly_as_it_found_them() {
+        let dressed = look(Some("graphite"), Some("daylight"));
+        let framings = [
+            cli::CameraFraming { reset: true, ..Default::default() },
+            cli::CameraFraming { distance: Some(40.0), ..Default::default() },
+            cli::CameraFraming { reset: false, yaw: Some(0.2), pitch: Some(0.1), distance: Some(9.0) },
+        ];
+        for f in framings {
+            for src in [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate] {
+                assert_eq!(
+                    console_step(src, &dressed, &cli::ConsoleOp::Camera(f)),
+                    None,
+                    "a camera move at {src:?} must fold into no look at all"
+                );
+            }
+        }
+    }
+
     /// Catalog name ↔ sidecar op, both directions. The service hands back the op it
     /// validated, so a mismatch here applies a command nobody issued.
     #[test]
@@ -3888,6 +4208,17 @@ mod cli_tests {
             cli::ConsoleOp::Portal(cli::PortalCmd::Open),
             cli::ConsoleOp::Portal(cli::PortalCmd::Close),
             cli::ConsoleOp::Portal(cli::PortalCmd::Toggle),
+            cli::ConsoleOp::Camera(cli::CameraFraming { reset: true, ..Default::default() }),
+            cli::ConsoleOp::Camera(cli::CameraFraming {
+                distance: Some(40.0),
+                ..Default::default()
+            }),
+            cli::ConsoleOp::Camera(cli::CameraFraming {
+                reset: false,
+                yaw: Some(-1.2),
+                pitch: Some(0.3),
+                distance: Some(12.5),
+            }),
         ] {
             assert_eq!(op_from(spec_name(&op), &op_args(&op)), Ok(op.clone()), "{op:?}");
         }
