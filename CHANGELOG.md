@@ -11,6 +11,38 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The re-wrap cost is measured: 6–9× per frame, and nothing culls
+
+`doc/console_rewrap_measurement.md`, with the instrument that produced it at
+`native/organon-shell/src/conversation_view/rewrap_bench.rs`. Posture's tween (issue #38)
+and pane splitting both change the conversation transcript's available width, and both were
+scoped without knowing what that costs; `console_view_paradigm.md` §9 had said in as many
+words that nobody had taken the measurement.
+
+**egui's galley cache is keyed on the wrap width** (`epaint-0.33.3/src/text/fonts.rs:884` →
+`text_layout_types.rs:439`), so a width that moves by a whole point is a *total* miss across
+the entire retained scrollback — and nothing culls, because `egui::Label::ui` builds its
+galley before it tests `is_rect_visible`. Measured through the real `scrollback` draw path,
+headless, release, on `ORGANON-ONE`: **≈ 7 µs to lay out a wrapped galley against ≈ 0.9 µs to
+reuse one.** Per frame that is 2.4 ms at a 100-element session, 9.1 ms at 400, 50.5 ms at
+2 000 and 308.6 ms at the 10 000-element cap. A *single* change — pane splitting, or snapping
+a tween at its end — costs exactly one such frame and nothing after it.
+
+📌 **The larger finding is the steady-state column.** The transcript is not virtualised, so
+its layout cost is linear in scrollback length with nothing animating at all: 8.1 ms per frame
+at 2 000 elements, 51.6 ms at the cap. The tween does not create that; it multiplies it by
+eight. Window-resize drags already pay the animating figure today.
+
+Five options are priced — tween as designed, animate the chrome only, snap once, quantise the
+tween, virtualise the scrollback — and **none is chosen**; that is downstream of the number,
+not contained in it. §8 lists what was not measured, including anything on a GPU, the
+`Edit`-card diff that recomputes every frame, and posture itself, which does not exist yet.
+
+Two tests hold the parts that can rot in silence and run in the default suite: one pins
+epaint's cache keying against a version bump, one pins that the whole scrollback is laid out
+rather than the visible slice. The benchmark is `#[ignore]`d —
+`cargo test --release -p organon-shell --lib -- --ignored --nocapture rewrap`.
+
 ### A CRLF checkout silently un-installs the `organon-cli` skill
 
 `SKILL.md` is now pinned to LF in `.gitattributes`. Claude Code reads a skill's YAML
