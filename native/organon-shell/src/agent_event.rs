@@ -95,10 +95,18 @@
 //!   card say *which* agent, in the agent's own words, without parsing the arguments.
 //! - **Five `system` subtypes carry subagent lifecycle and are MAIN-scoped.**
 //!   `task_started`, `task_progress`, `task_updated`, `task_notification` and
-//!   `task_summary` have **no `parent_tool_use_id` key at all** — they correlate by a
-//!   `tool_use_id` field of their own, and carry `description`, `last_tool_name`,
-//!   `usage.{total_tokens,tool_uses,duration_ms}`, a `patch` and a terminal `status`.
-//!   They decode to [`Notice`], which keeps them whole; nothing reads them yet.
+//!   `task_summary` have **no `parent_tool_use_id` key at all**, and carry
+//!   `description`, `last_tool_name`, `usage.{total_tokens,tool_uses,duration_ms}`, a
+//!   `patch` and a terminal `status`. They decode to [`Notice`], which keeps them whole,
+//!   and are read through the `task_*` accessors on it.
+//!
+//!   🚨 **They do not all correlate the same way, and the obvious reading of the first
+//!   capture — "they correlate by a `tool_use_id` field of their own" — is wrong for two
+//!   of the five.** Measured line by line: `task_updated` carries `task_id` and a `patch`
+//!   and **no `tool_use_id`**; `task_summary` carries **neither**, only a nullable
+//!   `detail`, and so names no card at all. So the correlation is `task_id` → the
+//!   `tool_use_id` learned from a sibling line ([`Notice::task_id`]), and a
+//!   `task_summary` is a session-wide gloss rather than a card's.
 //! - **🚨 A model switch narrates itself as a `user`-role line.** `set_model` emits
 //!   `"content":"<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>"`
 //!   with `isReplay: true`, *before* the ack — indistinguishable from a human turn by
@@ -305,6 +313,73 @@ impl Notice {
     /// summarises.
     pub fn summarizes_uuid(&self) -> Option<&str> {
         self.field("summarizes_uuid")
+    }
+
+    // -- the `task_*` family: a dispatched agent's lifecycle -------------------
+    //
+    // Five subtypes, all MAIN-scoped, all correlating by fields of their own rather than
+    // by `parent_tool_use_id`. The accessors below are the whole of what this build reads
+    // off them; `crate::agent_map` assembles them, exactly as it assembles a
+    // `tool_use_result`.
+
+    /// `system`/`task_*`: the CLI's own id for a dispatched agent's task.
+    ///
+    /// 🚨 **The one key every correlatable line of the family carries**, which is why the
+    /// mapper keys the family on *this* and not on [`tool_use_id`](Self::tool_use_id).
+    /// Measured across the whole capture: `task_started`, `task_progress`,
+    /// `task_updated` and `task_notification` all carry it; **`task_summary` carries
+    /// neither it nor a `tool_use_id`** and therefore names no card at all.
+    pub fn task_id(&self) -> Option<&str> {
+        self.field("task_id")
+    }
+
+    /// `system`/`task_*`: the dispatch call this task is running inside — the id of the
+    /// `Agent` tool card a view would draw it on.
+    ///
+    /// ⚠️ **Absent on `task_updated`**, which carries `task_id` and a `patch` and nothing
+    /// else. A consumer that correlated on this field alone would silently lose every
+    /// status transition — which is the whole reason [`task_id`](Self::task_id) is the
+    /// key and this is the value.
+    ///
+    /// 📌 It may name a **nested** dispatch: the capture's third task reports
+    /// `tool_use_id` `…0404`, a call one of the subagents made, which is only ever a step
+    /// inside another card's log. Resolving that to a card a human can see is
+    /// `conversation`'s job, not this one's.
+    pub fn tool_use_id(&self) -> Option<&str> {
+        self.field("tool_use_id")
+    }
+
+    /// `system`/`task_started` and `task_progress`: a one-line gloss of the task.
+    ///
+    /// ⚠️ **The same key means two things and the second replaces the first.** On
+    /// `task_started` it is the dispatch's own title (`"Read one.txt second line"`, the
+    /// `description` argument of the `Agent` call); on `task_progress` it is what the
+    /// agent is doing *now* (`"Reading one.txt"`). Latest-wins is therefore the right
+    /// retention rule and not merely a convenient one.
+    pub fn description(&self) -> Option<&str> {
+        self.field("description")
+    }
+
+    /// `system`/`task_progress`: the tool the agent most recently ran, e.g. `Read`.
+    pub fn last_tool_name(&self) -> Option<&str> {
+        self.field("last_tool_name")
+    }
+
+    /// One number out of a `usage` sub-object — `total_tokens`, `tool_uses`,
+    /// `duration_ms`. Observed on `task_progress` and `task_notification`.
+    pub fn usage_number(&self, key: &str) -> Option<u64> {
+        self.body.get("usage")?.get(key)?.as_u64()
+    }
+
+    /// A task's terminal status, from **either** place the CLI states one:
+    /// `task_notification` says it directly, `task_updated` puts it inside its `patch`.
+    ///
+    /// ⚠️ **Not [`status`](Self::status)**, despite reading the same key first. That one
+    /// answers the `system`/`status` line whose observed value is `requesting` and which
+    /// means something else entirely; a caller reaches this only for a line that already
+    /// identified itself with a [`task_id`](Self::task_id).
+    pub fn task_status(&self) -> Option<&str> {
+        self.field("status").or_else(|| self.body.get("patch")?.get("status")?.as_str())
     }
 }
 

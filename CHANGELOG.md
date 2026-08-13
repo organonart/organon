@@ -11,6 +11,68 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — a dispatched agent's card says what it is doing while it does it
+
+- ✏️ **The subagent lifecycle the CLI has always sent is rendered.** A `Task` card used to
+  say "running" and then nothing at all for eight to sixteen minutes — the agent's whole
+  working life as a spinner. Claude Code narrates that life the entire time, on five
+  undocumented `system` subtypes (`task_started`, `task_progress`, `task_updated`,
+  `task_notification`, `task_summary`), and the console could not see any of them: they are
+  **main**-scoped, with no `parent_tool_use_id` key at all, and §5.9.3 rule 5 correlates on
+  exactly that key. All five decoded to `Notice` and drew nothing. **Rule 5b** is the second
+  correlation they need. The card now carries a `task` row — the agent's own gloss
+  ("Reading one.txt"), its last tool, its tool count, the harness's elapsed and its tokens,
+  and a terminal status. Thirteen lines of the real capture that used to draw nothing.
+- 🚨 **Two of the five do not correlate the way every doc in this tree said they did**, and
+  the wrong reading fails silently. `task_updated` carries a `task_id` and a `patch` and
+  **no `tool_use_id`** — so keying on that field alone, which is what the standing
+  description licensed, drops **every status transition in the stream** while looking like
+  it works. And `task_summary` carries neither key, only a nullable `detail`: it is a gloss
+  of what the *session* is doing, belongs to no card, and stays unmapped. The key is
+  `task_id`, paired against a card by any line that states both. Four docs corrected.
+- 🚨 **The family reaches depth 2, where every other subagent line on this wire stops at
+  depth 1** — a finding the fixture had to be read a second time to see. A nested agent
+  whose `assistant` and `user` lines are never forwarded has its whole lifecycle forwarded,
+  naming a call that exists only as a *step* inside its grandparent's log. Merging that
+  would have made the outer card read "Reading one.txt · 1 tool · completed" — the
+  grandchild's work in the parent's voice, while the parent was still going. **Declined and
+  counted** (`Stats::nested_subagent_progress`, 3 on the capture), because a card holds one
+  progress value with nowhere to record a depth. That counter reads non-zero on a *healthy*
+  nesting fan-out, which is why it is not the orphan counter beside it.
+- 🚨 **This does not soften §5.9.1, and the row is built so it cannot drift into implying
+  that it does.** Progress metadata is not token deltas — not one character of the agent's
+  own prose is on these lines. No caret, no partial text, nothing that suggests live prose.
+  `MapStats::subagent_stream_events` still reads **0** on the real capture and is still the
+  standing canary. The elapsed shown is the **harness's** stopwatch as of its last line and
+  is frozen between them: `conversation.rs` has no clock by design, and a ticking one would
+  be the view's own arithmetic in the harness's voice, still counting for an agent that had
+  quietly died.
+- ⚠️ **One source per fact, because the two disagree.** An `Agent` `tool_use_result` carries
+  its own `totalTokens` / `totalDurationMs` / `totalToolUseCount`. The durations and tool
+  counts match the `task_*` figures exactly; the **token totals do not** — 62 949 against
+  62 951, and 63 564 against 63 803, the result being struck later and counting output the
+  notification had not seen. Both are honest, which is precisely why taking both would be
+  wrong: one card's token count would jump at completion with nothing to explain it. Only
+  the `task_*` stream is read — the one that exists while the card is otherwise silent.
+- ⚠️ **A progress line for a card the transcript no longer holds is counted and dropped**,
+  the one place this tree declines `orphan_results`' keep-it-anyway precedent. A step
+  carries content that would be lost; a progress line carries nothing not either restated
+  by the card's own arguments or superseded by the next line — and the card the orphan path
+  would open opens `Running`, which is exactly wrong for the `task_notification` most likely
+  to outlive its card. A card confidently disagreeing with its own header is worse than the
+  silence this change exists to end.
+- 📌 **`MapStats::unmapped` kept its name because it kept its meaning.** Its population went
+  19 → 6 on the capture; "we drew nothing for this line" is still exactly what it says.
+  Contrast `subagent_dropped`, which was *removed* rather than renamed when its sense
+  reversed — a counter telling the truth about a smaller set is a different thing from one
+  whose name has become a lie. (The 19 is also now pinned with its arithmetic: 19 `system`
+  lines less the `init` that maps, **plus** a `rate_limit_event` that is not a `system` line
+  at all.)
+- ⚠️ **Nobody has seen this on screen.** Every claim is pinned by tests against the real
+  capture and every glyph in the row is one `step_mark` already measured present in Hack —
+  but the last time a subagent card changed, it took a human looking to find that its
+  marker was tofu, and no replay could have. 451 tests in the compositor lib.
+
 ### Console Spike — a conversation tab now runs in a project, and says which one
 
 - 🚨 **An agent in a conversation tab was standing in no project at all, silently.** The

@@ -700,15 +700,48 @@ either. `fixtures/README.md` carries all four corrections; three bear on this se
   reached the console only as the parent's `tool_result`. The card fills with *steps*, and
   a design that assumed prose would arrive was assuming.
 
-📌 **And the capture opened a door the design did not know was there.** Five `system`
-subtypes nobody had seen — `task_started`, `task_progress`, `task_updated`,
-`task_notification`, `task_summary` — carry live subagent progress: a rolling
-`description`, `last_tool_name`, `usage.tool_uses`, `duration_ms`, a terminal `status`,
-and a `tool_use_id` that names the card. They are **main**-scoped (no `parent_tool_use_id`
-key at all), so rule 5 cannot see them and all five currently decode to `Notice` and render
-nothing. This does not weaken "there is no live text": these are not tokens. It does mean
-the honest liveness a card can show is larger than "a burst arrived", and reaching it needs
-a second correlation — by `tool_use_id` on a `system` line — that no rule currently has.
+📌 **And the capture opened a door the design did not know was there — rule 5b, now
+walked through.** Five `system` subtypes nobody had seen — `task_started`,
+`task_progress`, `task_updated`, `task_notification`, `task_summary` — carry live subagent
+progress: a rolling `description`, `last_tool_name`, `usage.{tool_uses,total_tokens,
+duration_ms}` and a terminal `status`. They are **main**-scoped (no `parent_tool_use_id`
+key at all), so rule 5 cannot see them, and reaching them took a second correlation of
+their own. This does not weaken "there is no live text": these are not tokens. What it
+means is that the honest liveness a card can show is larger than "a burst arrived" — a
+`Task` card now says *"Reading one.txt · → Read · 1 tool · 10.3s"* while the agent works,
+where it used to say nothing at all for eight to sixteen minutes.
+
+🚨 **The correlation is `task_id`, not `tool_use_id`, and the difference is not a
+detail.** Measured line by line across the capture:
+
+| subtype | `task_id` | `tool_use_id` | what it adds |
+|---|---|---|---|
+| `task_started` | yes | yes | the dispatch's title, its prompt |
+| `task_progress` | yes | yes | the live activity, `last_tool_name`, the counts |
+| `task_notification` | yes | yes | the terminal status, the final counts |
+| `task_updated` | yes | **no** | a `patch` — `status`, `end_time`, and nothing else |
+| `task_summary` | **no** | **no** | a nullable `detail`, belonging to no card |
+
+So the mapper learns `task_id → tool_use_id` from any line that states both and resolves a
+`task_updated` through it; a `task_summary` is a gloss of the *session* and stays unmapped.
+Keying on `tool_use_id` alone — the obvious reading of the first capture — would have
+dropped every status transition, silently, on a path where silence is the failure mode.
+
+⚠️ **A card holds ONE progress value, so a nested task's is declined rather than merged.**
+The `task_*` family reaches **depth 2**, unlike every other subagent line on this wire: a
+grandchild's lifecycle really is forwarded, naming a call that is only a step in its
+grandparent's log. Merging it would have made that card narrate somebody else's work in its
+own voice, mid-flight. Counted as `Stats::nested_subagent_progress` (3 here), because a
+number that reads non-zero on a *healthy* nesting fan-out must not be mistaken for a fault
+— and because it is the measure of the next increment.
+
+⚠️ **One source per fact.** An `Agent` `tool_use_result` carries its own `totalTokens` /
+`totalDurationMs` / `totalToolUseCount`. Durations and tool counts match the `task_*`
+figures exactly; **the token totals do not** — 62 949 against 62 951, and 63 564 against
+63 803, because the result is struck later and counts output the notification had not seen.
+Both are honest. Taking both would make one card's token count jump at completion with
+nothing to explain it, so only the `task_*` stream is read: it is the one that exists while
+the card is otherwise silent, which is the whole reason the row exists.
 
 **The process contract (§5.9.2, measured):** `-p --input-format stream-json
 --output-format stream-json --include-partial-messages --replay-user-messages --verbose`
@@ -1912,15 +1945,42 @@ path silently breaks the three-products-simultaneously guarantee that
   the entry above said in as many words that only somebody looking would. 🚨 The fix was not
   the one assumed either — the draw site already asked for a monospace face, and reading
   egui 0.33's four bundled `cmap` tables showed the *character* was in none of them.
-- 📌 **The console renders none of the subagent lifecycle the CLI actually sends.** Five
-  `system` subtypes in that capture — `task_started`, `task_progress`, `task_updated`,
-  `task_notification`, `task_summary` — carry a rolling description, the last tool name,
-  tool counts, durations and a terminal status, each naming its card by a `tool_use_id`
-  field. All five land as `Notice` and draw nothing, because rule 5 correlates on
-  `parent_tool_use_id` and these lines do not carry that key at all. This is a **gap, not
-  a decision**: it was never weighed, because until this capture nobody knew the lines
-  existed. It is the cheapest remaining improvement to a coordinator view, and it does not
-  disturb the liveness measurement above — progress metadata is not token deltas.
+- ✏️ **The subagent lifecycle is rendered now — the gap above is closed, and closing it
+  corrected the description of it.** ~~The console renders none of the subagent lifecycle
+  the CLI actually sends… a **gap, not a decision**: it was never weighed, because until
+  this capture nobody knew the lines existed.~~ It has been weighed. A dispatch card now
+  carries a `task` row: what the agent said it is doing, the tool it last ran, its tool
+  count, the harness's elapsed and its tokens, and a terminal status — thirteen lines of
+  the capture that used to draw nothing (rule 5b, `agent_map.rs`).
+
+  🚨 **Two of the five do not correlate the way that entry said, and building on its
+  description would have lost work silently.** `task_updated` carries a `task_id` and a
+  `patch` and **no `tool_use_id`** — so a correlation keyed on `tool_use_id`, which is what
+  "each naming its card by a `tool_use_id` field" licenses, drops every status transition
+  in the stream. And `task_summary` carries **neither** key, only a nullable `detail`: it
+  is a gloss of what the *session* is doing and belongs to no card at all, so it stays
+  unmapped. The key is `task_id`, learned against a card from any line stating both.
+
+  📌 **And the family reaches depth 2, where every other subagent line stops at depth 1.**
+  A nested agent's `task_*` lines *are* forwarded, naming a call that exists only as a step
+  inside its grandparent's log. They are **declined and counted**
+  (`Stats::nested_subagent_progress`, 3 on the capture): a card holds one progress value
+  with nowhere to record a depth, so merging them would have made the outer card read
+  "Reading one.txt · 1 tool · completed" — the grandchild's work in the parent's voice,
+  while the parent was still going. That is the honest next increment, and the number is
+  the measure of what is being given up.
+
+  ⚠️ **What has *not* changed is the liveness measurement**, and the row is built so it
+  cannot drift into implying otherwise: no caret, no partial text, and the elapsed is the
+  harness's own stopwatch as of its last line, frozen between them — `conversation.rs` has
+  no clock, and a ticking number would be the view's arithmetic in the harness's voice,
+  still counting for an agent that had died. `MapStats::subagent_stream_events` still reads
+  **0** on this capture and is still the canary.
+
+  ⚠️ **Nobody has seen this on screen.** Same class as the entry above it, which took a
+  human looking to find a tofu glyph no replay could: the row is pinned by tests against
+  the real capture, and every glyph in it is one `step_mark` already measured present in
+  Hack — but the pixels are unverified. Somebody runs a fan-out and looks.
 - **The card's clipping is the VIEW's, and it says what it hid.** `conversation.rs` leaves
   per-element text unbounded on purpose — a tool result can be a whole file, and
   truncating it in the model would misrepresent the tool's output while looking like the

@@ -110,6 +110,51 @@
 //! `Subagent::Said`(crate::conversation::Subagent::Said) is handled but unobserved, and
 //! a card fills with *steps*. `fixtures/README.md` holds the split.
 //!
+//! # 5b. A dispatched agent's LIFECYCLE arrives main-scoped, and needs its own correlation
+//!
+//! 🚨 **Rule 5 cannot reach the lines that say what an agent is doing, and this is
+//! structural rather than an oversight.** Five `system` subtypes — `task_started`,
+//! `task_progress`, `task_updated`, `task_notification`, `task_summary` — carry a rolling
+//! `description`, the `last_tool_name`, `usage.{tool_uses,total_tokens,duration_ms}` and a
+//! terminal `status`. They have **no `parent_tool_use_id` key at all**, so the scope rule
+//! above sees `AgentScope::Main` and rule 5 never fires. All five used to decode to
+//! [`Notice`] and render nothing, which is why a dispatch card said "running" and then
+//! stayed silent for the whole of an agent's working life.
+//!
+//! ⚠️ **The correlation is `task_id`, and reading the first capture as "they carry a
+//! `tool_use_id` of their own" is wrong for two of the five.** Measured line by line:
+//!
+//! | subtype | `task_id` | `tool_use_id` |
+//! |---|---|---|
+//! | `task_started`, `task_progress`, `task_notification` | yes | yes |
+//! | `task_updated` | yes | **no** — a `task_id` and a `patch`, nothing else |
+//! | `task_summary` | **no** | **no** — a nullable `detail` and nothing else |
+//!
+//! So the mapper learns `task_id → tool_use_id` from every line that states both
+//! ([`EventMapper::task_cards`]) and resolves a `task_updated` through it. A
+//! `task_summary` names nothing and is a gloss of the *session*, not of a card; it stays
+//! in [`MapStats::unmapped`].
+//!
+//! 📌 **A `tool_use_id` here may name a NESTED dispatch**, and that costs nothing because
+//! the transcript already resolves those: the capture's third task reports a call one of
+//! the subagents made, which is a step inside another card's log rather than an element.
+//! Emitting a [`cv::AgentEvent::SubagentActivity`] hands it to the same
+//! `resolve_subagent_parent` chain rule 5's steps go through, so nesting is inherited
+//! rather than reimplemented.
+//!
+//! 🚨 **This does NOT soften §5.9.1, and nothing built on it may imply that it does.**
+//! Progress metadata is not token deltas. Not one character of the agent's own prose is on
+//! these lines — a `description` is the harness's gloss — and
+//! [`MapStats::subagent_stream_events`] stays exactly where it was, reading 0 on the real
+//! capture. What a card can honestly show grew; what the wire carries did not.
+//!
+//! ⚠️ **One source for one fact.** An `Agent` `tool_use_result` carries its own
+//! `totalTokens`/`totalDurationMs`/`totalToolUseCount`, and the token totals **disagree**
+//! with the `task_*` figures (62 949 vs 62 951; 63 564 vs 63 803 — the result is struck
+//! later and counts output the notification had not seen). Only the `task_*` stream is
+//! read. [`cv::SubagentProgress`] argues it; it is the same refusal
+//! [`EventKind::ControlResponse`] gets, for the same reason.
+//!
 //! ⚠️ **Rule 1 still holds and costs nothing to hold — for a measured reason, not a lucky
 //! one.** A subagent's blocks never touch [`EventMapper::settled_blocks`] and are never
 //! given a [`MessageId`](crate::conversation::MessageId) at all, so they cannot consume a
@@ -232,9 +277,36 @@ pub struct MapStats {
     pub subagent_stream_events: u64,
     /// A `system/init` after the first (rule 3).
     pub repeat_session_starts: u64,
-    /// Known event kinds this milestone renders nothing for: notices, rate limits,
-    /// thinking, unknown blocks, unknown stream events.
+    /// Known event kinds this milestone renders nothing for: notices **that render
+    /// nothing**, rate limits, thinking, unknown blocks, unknown stream events.
+    ///
+    /// ✏️ **The population changed with rule 5b; the meaning did not, and that is why the
+    /// name was kept.** It has always meant "we drew nothing for this line", and it still
+    /// means exactly that — what moved is that fifteen `system`/`task_*` lines on the
+    /// subagent capture stopped qualifying, because they now reach a card. A counter
+    /// whose name had become a lie would have had to go the way `subagent_dropped` did
+    /// (removed, not renamed — see [`subagent_routed`](Self::subagent_routed)); this one
+    /// is simply telling the truth about a smaller set. `task_summary` still counts here,
+    /// because nothing can place it and so nothing is drawn for it.
     pub unmapped: u64,
+    /// Rule 5b: a `system`/`task_*` line that reached the card it names.
+    ///
+    /// Counted apart from [`subagent_routed`](Self::subagent_routed) on purpose. That one
+    /// means "a **subagent-scoped** line was routed by `parent_tool_use_id`"; these lines
+    /// are **main**-scoped and correlate by `task_id`, which is a different mechanism that
+    /// can break independently. One number would have hidden either failure behind the
+    /// other still working.
+    pub task_events_routed: u64,
+    /// A `system`/`task_*` line carrying a `task_id` this mapper could not resolve to a
+    /// card — a `task_updated` for a task whose `task_started` was never seen (a resumed
+    /// session, a stream joined mid-flight).
+    ///
+    /// ⚠️ **Not the same as an orphan**, and the split matters: this is "we could not work
+    /// out *which* card", which is a correlation failure here, while
+    /// [`cv::Stats::orphan_subagent_progress`] is "we knew the card and the transcript no
+    /// longer holds it", which is ordinary eviction. Should be 0 on any stream watched
+    /// from its start.
+    pub task_events_uncorrelated: u64,
     /// An `input_json_delta` whose block index named no open tool call. Never observed;
     /// counted so a stream shape change cannot hide.
     pub orphan_argument_fragments: u64,
@@ -649,6 +721,16 @@ pub struct EventMapper {
     /// Fallback identity for a message that arrived without an id. Monotonic so two
     /// anonymous messages never collide.
     anonymous: u64,
+    /// Rule 5b: `task_id` → the `tool_use_id` of the card it belongs to, learned from any
+    /// line that states both.
+    ///
+    /// ⚠️ **Not bounded, deliberately.** One short pair per dispatch for the life of the
+    /// tab: a coordinator that fans out a thousand agents holds a thousand of them, which
+    /// is a few tens of kilobytes. The transcript's own `subagent_owner` is bounded by
+    /// card eviction because it grows with every *nested* tool call; this grows only with
+    /// dispatches, and forgetting one would silently strand every later `task_updated`
+    /// for that task — a far worse trade than the memory.
+    task_cards: HashMap<String, String>,
     /// Rule 7: is an assistant message open right now?
     ///
     /// ⚠️ **Deliberately a second field rather than `streaming_message.is_some()`**, even
@@ -805,11 +887,37 @@ impl EventMapper {
                     .map(str::to_string);
                 vec![cv::AgentEvent::RunFinished { outcome, detail }]
             }
-            // These three render nothing into the flow and stay counted as `unmapped`
-            // exactly as before — two of them now leave a *fact* behind on the way past,
-            // which is a different question from whether anything was drawn.
+            // ✏️ A notice is no longer uniformly unrendered — rule 5b's `task_*` family
+            // reaches a card. Everything else here renders nothing into the flow and stays
+            // counted as `unmapped` exactly as before, leaving a *fact* behind on the way
+            // past, which is a different question from whether anything was drawn.
             EventKind::Notice(notice) => {
                 self.facts.record_notice(notice);
+                // Rule 5b. Keyed on the presence of `task_id` rather than on the five
+                // subtype spellings — the same feature-detect rule `record_notice` above
+                // and `result_detail` below are built on, and the one that keeps a sixth
+                // `task_*` subtype working the day it ships.
+                if let Some((task_id, tool_use_id, progress)) = task_progress(notice) {
+                    // Learned from every line that states both, because `task_updated`
+                    // states only the first and would otherwise reach no card at all.
+                    if let Some(id) = &tool_use_id {
+                        self.task_cards.insert(task_id.clone(), id.clone());
+                    }
+                    let card = tool_use_id.or_else(|| self.task_cards.get(&task_id).cloned());
+                    return match card {
+                        Some(id) => {
+                            self.stats.task_events_routed += 1;
+                            vec![cv::AgentEvent::SubagentActivity {
+                                parent: cv::ToolId::from(id.as_str()),
+                                activity: cv::Subagent::Progressed(progress),
+                            }]
+                        }
+                        None => {
+                            self.stats.task_events_uncorrelated += 1;
+                            Vec::new()
+                        }
+                    };
+                }
                 self.stats.unmapped += 1;
                 Vec::new()
             }
@@ -1042,6 +1150,37 @@ impl EventMapper {
 /// ordinal is the block's own index within that message.
 fn block_key(message: &str, ordinal: usize) -> String {
     format!("{message}#{ordinal}")
+}
+
+/// One `system` line → the dispatched agent's progress it carries, or `None` when it is
+/// not one of the `task_*` family.
+///
+/// Returns the task's id, the card it names **if this line names one**, and the facts.
+/// The caller resolves the middle value; this function does no correlation, exactly as
+/// [`result_detail`] does no attaching.
+///
+/// 🚨 **Detected by `task_id`, not by subtype**, for the reason the whole decoder is
+/// feature-detected: the family is undocumented, five spellings are what one capture
+/// happened to contain, and a match on those five stops working the day a sixth ships
+/// while a match on the key it correlates by does not.
+///
+/// ⚠️ **A `task_summary` deliberately falls out here**, and this is measured rather than
+/// assumed: it carries neither a `task_id` nor a `tool_use_id` — only a nullable `detail`
+/// — so it is a gloss of what the *session* is doing and belongs to no card. Two of them
+/// in the capture, one with `detail: null`. They stay counted in
+/// [`MapStats::unmapped`] exactly as before, which is the honest answer for a line
+/// nothing can place.
+fn task_progress(notice: &Notice) -> Option<(String, Option<String>, cv::SubagentProgress)> {
+    let task_id = notice.task_id()?.to_string();
+    let progress = cv::SubagentProgress {
+        description: notice.description().and_then(non_empty),
+        last_tool: notice.last_tool_name().and_then(non_empty),
+        tool_uses: notice.usage_number("tool_uses"),
+        total_tokens: notice.usage_number("total_tokens"),
+        duration_ms: notice.usage_number("duration_ms"),
+        status: notice.task_status().and_then(non_empty),
+    };
+    Some((task_id, notice.tool_use_id().map(str::to_string), progress))
 }
 
 /// One `tool_use_result` object → the harness-agnostic [`cv::ResultDetail`], or `None`
@@ -1574,6 +1713,302 @@ mod tests {
             !out.contains("bravoagentId"),
             "two content blocks were welded into one word: {out:?}"
         );
+    }
+
+    // -- rule 5b: the `task_*` family ----------------------------------------
+
+    /// The progress a card ended up holding, by its dispatch id.
+    fn progress_of(t: &Transcript, id: &str) -> crate::conversation::SubagentProgress {
+        t.tool(&id.into()).expect("the card").progress.clone()
+    }
+
+    /// 🚨 CONTRACT — rule 5b's whole point, against the real fan-out. A dispatch card
+    /// must end up holding what the harness said its agent was doing: the rolling
+    /// description, the last tool, the counts, and the terminal status.
+    ///
+    /// The values are the capture's own. Note what is **not** here: `62951`, the
+    /// `totalTokens` the same task's `Agent` result reports. One source, and this is the
+    /// assertion that pins which one — see [`cv::SubagentProgress`].
+    #[test]
+    fn a_dispatch_card_carries_what_the_harness_said_its_agent_was_doing() {
+        let (t, _) = fold(SUBAGENT);
+        let first = progress_of(&t, "toolu_0000000000000000000401");
+        assert_eq!(
+            first.description.as_deref(),
+            Some("Reading one.txt"),
+            "task_progress's live gloss must replace task_started's title"
+        );
+        assert_eq!(first.last_tool.as_deref(), Some("Read"));
+        assert_eq!(first.tool_uses, Some(1));
+        assert_eq!(first.duration_ms, Some(10335), "the harness's stopwatch, not ours");
+        assert_eq!(
+            first.total_tokens,
+            Some(62949),
+            "the task_notification's figure — the Agent result says 62951 and is not read"
+        );
+        assert_eq!(first.status.as_deref(), Some("completed"));
+    }
+
+    /// 🚨 MEASURED — **`task_updated` carries NO `tool_use_id`.** It states a `task_id`
+    /// and a `patch` and nothing else, so a correlation keyed on `tool_use_id` alone —
+    /// the obvious reading of the capture, and the one this work started from — loses
+    /// every status transition in the stream.
+    ///
+    /// The status on the cards above can only have come through the `task_id` map, and
+    /// this pins the mechanism directly rather than inferring it from that.
+    #[test]
+    fn a_task_updated_names_no_card_and_is_resolved_through_its_task_id() {
+        let updates: Vec<_> = decode_all(SUBAGENT)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| match e.kind {
+                EventKind::Notice(n) if n.subtype == "task_updated" => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates.len(), 3, "three status transitions in the capture");
+        for update in &updates {
+            assert!(update.task_id().is_some(), "a task_updated states its task");
+            assert!(
+                update.tool_use_id().is_none(),
+                "and states no card: {:?}",
+                update.body
+            );
+            assert_eq!(update.task_status(), Some("completed"), "the patch carries it");
+        }
+        // A `task_updated` before anything paired its task with a card reaches nothing,
+        // and says so rather than guessing.
+        let orphan = concat!(
+            r#"{"type":"system","subtype":"task_updated","task_id":"never-seen","#,
+            r#""patch":{"status":"completed"}}"#,
+        );
+        let (_, m) = fold(orphan);
+        assert_eq!(m.stats().task_events_uncorrelated, 1, "counted, not silently dropped");
+        assert_eq!(m.stats().task_events_routed, 0);
+    }
+
+    /// 🚨 MEASURED — **a `task_summary` correlates with nothing at all.** It carries
+    /// neither a `task_id` nor a `tool_use_id`, only a nullable `detail`, so it is a gloss
+    /// of what the session is doing rather than of any one card.
+    ///
+    /// It therefore stays in [`MapStats::unmapped`], which is the honest answer for a line
+    /// nothing can place — and is why that counter's *name* survived rule 5b even though
+    /// its population shrank.
+    #[test]
+    fn a_task_summary_belongs_to_no_card_and_stays_unmapped() {
+        let summaries: Vec<_> = decode_all(SUBAGENT)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| match e.kind {
+                EventKind::Notice(n) if n.subtype == "task_summary" => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries.len(), 2);
+        for summary in &summaries {
+            assert!(summary.task_id().is_none(), "names no task: {:?}", summary.body);
+            assert!(summary.tool_use_id().is_none(), "and no card");
+        }
+        assert_eq!(summaries[0].detail(), Some("Reading two.txt first line"));
+        assert_eq!(summaries[1].detail(), None, "the trailing one is null");
+    }
+
+    /// **CONTRACT — the counters, pinned with their new meanings.**
+    ///
+    /// `unmapped` kept its name because it kept its meaning — "we drew nothing for this
+    /// line". What moved is the population: **19 → 6** on this capture.
+    ///
+    /// 📌 The arithmetic, because the 19 is easy to misattribute and was: the file holds
+    /// 19 `system` lines, of which 1 is an `init` that maps — so 18 — **plus one
+    /// `rate_limit_event`**, which is the 19th unmapped line and is not a `system` line at
+    /// all. Thirteen `task_*` lines carrying a `task_id` now reach a card, leaving two
+    /// `status`, two `task_summary`, one `post_turn_summary` and that rate limit.
+    #[test]
+    fn rule_5b_moves_thirteen_lines_out_of_unmapped_without_changing_what_it_means() {
+        let (_, m) = fold(SUBAGENT);
+        assert_eq!(m.stats().task_events_routed, 13, "{:?}", m.stats());
+        assert_eq!(m.stats().task_events_uncorrelated, 0, "every task reached a card");
+        assert_eq!(
+            m.stats().unmapped,
+            6,
+            "two status, two task_summary, one post_turn_summary, one rate limit — and \
+             nothing else: {:?}",
+            m.stats()
+        );
+        // The other subagent counters are untouched by rule 5b: it is a different
+        // mechanism on differently-scoped lines, which is why it has its own numbers.
+        assert_eq!(m.stats().subagent_routed, 6);
+        assert_eq!(m.stats().subagent_unrendered, 2);
+    }
+
+    /// 🚨 CONTRACT — **the canary again, and the reason rule 5b is allowed to exist.**
+    /// Progress metadata is not token deltas. Rendering what the harness says about an
+    /// agent must not have taught anything to forward the agent's own stream, and this is
+    /// the assertion that says so on the capture rule 5b was built against.
+    #[test]
+    fn rule_5b_forwards_no_subagent_stream_event() {
+        let (_, m) = fold(SUBAGENT);
+        assert_eq!(
+            m.stats().subagent_stream_events,
+            0,
+            "§5.9.1 stands: no token deltas from a subagent, progress lines or not"
+        );
+    }
+
+    /// ⚠️ CONTRACT — a `task_*` line naming a card the transcript does not hold is
+    /// **counted and dropped**, not made into a card.
+    ///
+    /// This is the one place this tree declines to follow `orphan_results`' keep-it-anyway
+    /// precedent, and the transcript's own arm argues why at length: a progress line
+    /// carries no content to lose, and the card the orphan path would open reads `running`
+    /// — which is precisely wrong for the `task_notification` most likely to outlive its
+    /// card.
+    #[test]
+    fn progress_for_a_card_we_do_not_hold_is_counted_rather_than_given_a_card() {
+        let line = concat!(
+            r#"{"type":"system","subtype":"task_progress","task_id":"a1","#,
+            r#""tool_use_id":"toolu_gone","description":"Reading","#,
+            r#""usage":{"tool_uses":1,"duration_ms":10}}"#,
+        );
+        let (t, m) = fold(line);
+        assert_eq!(m.stats().task_events_routed, 1, "the mapper did its half");
+        assert!(t.elements().is_empty(), "and no card was invented: {:?}", t.elements());
+        assert_eq!(t.stats().orphan_subagent_progress, 1, "counted, not silent");
+        assert_eq!(t.stats().orphan_subagent_activity, 0, "and not confused with the other");
+    }
+
+    /// 🚨 MEASURED, and a finding the capture had to be re-read to see: **the `task_*`
+    /// family reaches DEPTH 2, where every other subagent line stops at depth 1.**
+    ///
+    /// The capture's second agent dispatched an agent of its own, and none of *that*
+    /// agent's assistant or user lines are ever forwarded. Its `task_started`,
+    /// `task_progress`, `task_updated` and `task_notification` all are — naming
+    /// `toolu_…0404`, a call that exists only as a step inside card `…0402`'s log.
+    ///
+    /// They are declined, and the alternative is why: a card holds **one** progress value
+    /// with nowhere to record a depth, so merging these would have made card `…0402` read
+    /// `Reading one.txt · 1 tool · completed` — the grandchild's work, in the parent's
+    /// voice, while the parent was still going. Silence is what this tier fixes; a card
+    /// narrating somebody else's work is worse than silence.
+    #[test]
+    fn a_nested_tasks_progress_is_declined_rather_than_overwriting_its_grandparents() {
+        let (t, _) = fold(SUBAGENT);
+        assert_eq!(
+            t.stats().nested_subagent_progress,
+            3,
+            "the depth-2 task's progress, updated and notification — its task_started \
+             lands one line early, see the test below"
+        );
+        let outer = progress_of(&t, "toolu_0000000000000000000402");
+        assert_eq!(
+            outer.description.as_deref(),
+            Some("Reading two.txt"),
+            "card 402 says what 402 was doing, never what its grandchild was"
+        );
+        assert_eq!(outer.tool_uses, Some(2), "402 ran two tools; its grandchild ran one");
+        assert_eq!(outer.total_tokens, Some(63564), "402's own total, not 403's 62973");
+        assert_eq!(outer.duration_ms, Some(22652));
+        assert_eq!(outer.status.as_deref(), Some("completed"));
+    }
+
+    /// ⚠️ CONTRACT — **a status-only `task_updated` must not blank what the card knows.**
+    ///
+    /// The patch carries a `status` and nothing else, so a wholesale replace would wipe
+    /// the description and the counts at exactly the moment a task finishes — which is
+    /// when somebody looks. Field-by-field latest-wins is what prevents it.
+    #[test]
+    fn a_status_only_patch_leaves_the_rest_of_the_progress_standing() {
+        let lines = concat!(
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_a","name":"Agent","input":{}}]},"parent_tool_use_id":null}"#,
+            "\n",
+            r#"{"type":"system","subtype":"task_progress","task_id":"a1","tool_use_id":"toolu_a","description":"Reading one.txt","last_tool_name":"Read","usage":{"tool_uses":3,"total_tokens":900,"duration_ms":1200}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"task_updated","task_id":"a1","patch":{"status":"completed","end_time":1}}"#,
+            "\n",
+        );
+        let (t, _) = fold(lines);
+        let progress = progress_of(&t, "toolu_a");
+        assert_eq!(progress.status.as_deref(), Some("completed"), "the patch landed");
+        assert_eq!(
+            progress.description.as_deref(),
+            Some("Reading one.txt"),
+            "and took nothing else with it"
+        );
+        assert_eq!(progress.last_tool.as_deref(), Some("Read"));
+        assert_eq!(progress.tool_uses, Some(3));
+        assert_eq!(progress.total_tokens, Some(900));
+        assert_eq!(progress.duration_ms, Some(1200));
+    }
+
+    /// **CONTRACT.** Rule 5b is detected by `task_id`, not by the five subtype spellings —
+    /// so a sixth the CLI has not shipped yet works on the day it does, and an ordinary
+    /// `system`/`status` line is untouched by any of it.
+    #[test]
+    fn the_task_family_is_detected_by_its_key_and_not_by_its_subtype() {
+        let future = concat!(
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_a","name":"Agent","input":{}}]},"parent_tool_use_id":null}"#,
+            "\n",
+            r#"{"type":"system","subtype":"task_retried","task_id":"a1","tool_use_id":"toolu_a","description":"Trying again"}"#,
+            "\n",
+            r#"{"type":"system","subtype":"status","status":"requesting"}"#,
+            "\n",
+        );
+        let (t, m) = fold(future);
+        assert_eq!(
+            progress_of(&t, "toolu_a").description.as_deref(),
+            Some("Trying again"),
+            "a subtype nobody has seen still reaches its card"
+        );
+        assert_eq!(m.stats().task_events_routed, 1);
+        assert_eq!(m.stats().unmapped, 1, "and the status line is unaffected");
+    }
+
+    /// ⚠️ CONTRACT — a progress line never becomes a step, and never disturbs the log.
+    /// The two live on one card and are counted by different numbers precisely because
+    /// they are different claims; a progress line landing in the trace would fill it with
+    /// restatements of one changing fact.
+    #[test]
+    fn progress_never_lands_in_the_step_log() {
+        let (t, _) = fold(SUBAGENT);
+        let card = t.tool(&"toolu_0000000000000000000401".into()).expect("the first card");
+        assert!(!card.progress.is_empty(), "the progress is there");
+        assert_eq!(
+            card.subagent.len(),
+            1,
+            "and the log still holds only the one tool that agent actually ran — four \
+             task_* lines landed on this card and none of them became a step: {:?}",
+            card.subagent.steps
+        );
+        assert_eq!(t.stats().dropped_subagent_steps, 0);
+    }
+
+    /// 🚨 MEASURED — **a `task_started` can arrive BEFORE the `tool_use` block that
+    /// creates its card**, and a nested one always does.
+    ///
+    /// A top-level dispatch is streamed, so `content_block_start` has already opened the
+    /// card by the time its `task_started` lands. A *nested* dispatch is not streamed at
+    /// all — it arrives only as a settled subagent-scoped `assistant` line — and in the
+    /// capture the CLI announces the task on line 52 and sends that block on line **53**.
+    /// So its `task_started` names an id that is, for one line, neither a card nor a known
+    /// nested call.
+    ///
+    /// ⚠️ **The one-line gap is not worth chasing.** It costs a task's *title*, which is
+    /// the one field on a progress value that duplicates the dispatch's own arguments, and
+    /// buying it back would mean holding un-correlatable lines against a card that may
+    /// never appear. What it must not do is vanish, which is what the counter is for.
+    #[test]
+    fn a_task_can_be_announced_one_line_before_the_call_that_creates_its_card() {
+        let (t, _) = fold(SUBAGENT);
+        assert_eq!(
+            t.stats().orphan_subagent_progress,
+            1,
+            "exactly the nested task_started, and nothing else went missing"
+        );
+        // The two top-level dispatches are streamed, so their cards exist first and their
+        // own `task_started` lines land normally.
+        for id in ["toolu_0000000000000000000401", "toolu_0000000000000000000402"] {
+            assert!(!progress_of(&t, id).is_empty(), "{id} was reported on");
+        }
     }
 
     /// ⚠️ CONTRACT — §5.9.1's measurement, pinned as a *canary* rather than assumed.
