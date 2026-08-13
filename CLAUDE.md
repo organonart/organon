@@ -105,6 +105,14 @@ today's files would silently stop covering tomorrow's. **The table lives in
 the SessionStart staleness check ("Y has fallen behind X"). Two questions, one table —
 a second copy would rot.
 
+⚠️ **"Changed" means *this session*, and it is deliberately not the branch-vs-main diff.**
+`.claude/hooks/session-changes.sh` owns that definition for both Stop checks: commits whose
+committer date falls inside this session, plus the working tree. The obvious spelling —
+`git diff $(git merge-base origin/main HEAD)...HEAD` — is what it replaced, and on a
+long-lived branch it makes every session inherit every earlier session's obligations, which
+trains everyone to dismiss the reminder. The session boundary comes from the stdin payload's
+`transcript_path`; that file has the measurements and the fallback behaviour.
+
 **Exactly ONE doc is SessionStart-injected: the root `ARCHITECTURE.md`.** Everything
 else — `doc/arch/render.md`, `MIND_ARCHITECTURE.md`, `SHELL_ARCHITECTURE.md` — is **read
 on demand**, which is the whole point: the injected core stays small and the depth is
