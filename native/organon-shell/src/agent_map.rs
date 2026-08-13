@@ -99,7 +99,16 @@
 //! honesty of the feature.** §5.9.1 measured that Claude Code **never forwards
 //! token-level deltas from a subagent**. So there is no live text here and there cannot
 //! be: activity lands as complete bursts, sometimes minutes apart, and everything this
-//! module emits for a subagent is a finished fact. Nothing may imply otherwise.
+//! module emits for a subagent is a finished fact. Nothing may imply otherwise. ✏️
+//! **Re-confirmed against a real fan-out** (`claude_stream_subagent.jsonl`, 2026-08-13):
+//! all 41 `stream_event` lines in it are main-scoped, including the ones streaming the
+//! dispatch's own arguments.
+//!
+//! ⚠️ **What that capture also showed: a subagent may say nothing at all.** Every
+//! subagent-scoped `assistant` line in it carried a `tool_use` block and nothing else —
+//! the answer reached the console only as the parent's `tool_result`. So
+//! `Subagent::Said`(crate::conversation::Subagent::Said) is handled but unobserved, and
+//! a card fills with *steps*. `fixtures/README.md` holds the split.
 //!
 //! ⚠️ **Rule 1 still holds and costs nothing to hold — for a measured reason, not a lucky
 //! one.** A subagent's blocks never touch [`EventMapper::settled_blocks`] and are never
@@ -852,10 +861,17 @@ impl EventMapper {
     ///   view acquires a code path nobody has ever seen run.
     /// * **`system`/`init` and `result`** — a subagent's session bookkeeping is not the
     ///   console's session. Folding a subagent's `result` into
-    ///   [`SessionFacts`] would let a subagent's cost overwrite the turn's.
-    /// * **human text on a `user` line** — a subagent's prompt is the `Task` call's own
+    ///   [`SessionFacts`] would let a subagent's cost overwrite the turn's. ✏️ The real
+    ///   capture sends **neither**: no `system` line carries a `parent_tool_use_id` key at
+    ///   all, and no subagent emits a `result`. So this branch is now a guard against a
+    ///   shape the CLI does not produce, which is the cheapest kind to keep.
+    /// * **human text on a `user` line** — a subagent's prompt is the dispatch call's own
     ///   arguments, which the card already shows in full. Rendering it again inside the
-    ///   card would be the same text twice.
+    ///   card would be the same text twice. ✏️ **Measured, and it is the common case**: the
+    ///   CLI echoes each dispatched prompt back as a subagent-scoped `user` line before any
+    ///   work happens. Two of them in the capture, and they are the entirety of
+    ///   [`MapStats::subagent_unrendered`] there — so that counter reads 2 on a healthy
+    ///   two-agent fan-out and is not evidence of a gap.
     /// * ✏️ **`tool_use_result`** — a nested step carries no output
     ///   ([`cv::Subagent::Returned`]'s own argument), and a file's line counts are exactly
     ///   the kind of per-result detail that argument declines. A step says it finished and
@@ -1075,9 +1091,9 @@ mod tests {
     const TWO_TOOLS: &str = include_str!("../fixtures/claude_stream_two_tools.jsonl");
     const LIVE_SESSION: &str = include_str!("../fixtures/claude_stream_live_session.jsonl");
     const EDGES: &str = include_str!("../fixtures/claude_stream_edges.jsonl");
-    /// 🚨 Hand-written, not captured — no fan-out has ever been recorded on this machine.
-    /// `fixtures/README.md` states exactly which parts of it are reasoned rather than
-    /// observed.
+    /// **Captured** — a real two-agent fan-out, one of which dispatched an agent of its
+    /// own. It replaced a hand-written reconstruction and refuted three of its claims; the
+    /// tests below name which. `fixtures/README.md` carries the provenance.
     const SUBAGENT: &str = include_str!("../fixtures/claude_stream_subagent.jsonl");
 
     /// Just the text a subagent produced, in order.
@@ -1377,64 +1393,156 @@ mod tests {
         assert_eq!(m.stats().subagent_unrendered, 0);
     }
 
-    /// 🚨 CONTRACT — the correlation the whole feature turns on. The subagent's activity
-    /// lands **inside** the `Task` card that spawned it, keyed by `parent_tool_use_id`, and
-    /// appends no element of its own.
+    /// 🚨 CONTRACT — the correlation the whole feature turns on, now against a **real**
+    /// two-agent fan-out. Each dispatch is one card; the work the subagent did inside it
+    /// lands as steps on that card and appends no element of its own.
     #[test]
-    fn a_subagents_work_lands_inside_the_task_card_that_spawned_it() {
+    fn a_subagents_work_lands_inside_the_card_that_spawned_it() {
         let (t, m) = fold(SUBAGENT);
         let cards: Vec<_> = t.elements().iter().filter_map(|e| e.tool()).collect();
         assert_eq!(
             cards.len(),
-            1,
-            "one Task call is one card; the subagent's own tools are steps, not elements: {:?}",
+            2,
+            "two dispatches are two cards; the subagents' own tools are steps, not \
+             elements — three more calls happened inside them: {:?}",
             cards.iter().map(|c| c.name.as_deref()).collect::<Vec<_>>()
         );
-        let task = cards[0];
-        assert_eq!(task.name.as_deref(), Some("Task"));
-        assert!(!task.subagent.is_empty(), "the card carries the subagent's log");
-        assert!(
-            said(&task.subagent).iter().any(|s| s == "Searching the tree for ns_file."),
-            "the subagent's text is on the card: {:?}",
-            said(&task.subagent)
-        );
-        assert_eq!(m.stats().subagent_unrendered, 0, "{:?}", m.stats());
+        // 🚨 `Agent`, not `Task` — see the naming test below.
+        assert!(cards.iter().all(|c| c.name.as_deref() == Some("Agent")));
+        assert!(cards.iter().all(|c| !c.subagent.is_empty()), "each card carries its log");
+        // The two prompt echoes are the whole of `subagent_unrendered`: a subagent-scoped
+        // `user` line whose content is the Task prompt, declined because the card already
+        // shows those arguments in full.
+        assert_eq!(m.stats().subagent_routed, 6, "{:?}", m.stats());
+        assert_eq!(m.stats().subagent_unrendered, 2, "{:?}", m.stats());
+        assert_eq!(t.stats().orphan_subagent_activity, 0, "every parent resolved");
     }
 
-    /// ⚠️ CONTRACT — the whole chain through the real decoder: a `Task` whose subagent
-    /// dispatches its own `Task`. Both levels land on the **one** card the human can see,
-    /// and the depth-2 work is labelled as such rather than passed off as direct.
+    /// 🚨 MEASURED, and the fixture's largest correction. `system`/`init` advertises the
+    /// dispatch tool as **`Task`** — and every `tool_use` block naming it on the wire is
+    /// called **`Agent`**. Both spellings are in the same capture, in the same session.
     ///
-    /// 📌 The fixture is hand-written — no fan-out has ever been captured on this machine
-    /// — so what this proves is that the decoder's `parent_tool_use_id`, applied twice,
-    /// resolves the way the model says. It does not prove a real subagent emits these
-    /// lines in this order. `fixtures/README.md` says which is which.
+    /// Nothing in this crate routes on the name (correlation is `parent_tool_use_id`
+    /// alone), which is the only reason the hand-written fixture's `"name":"Task"` never
+    /// showed up as a failure. A view that special-cased the name would have matched
+    /// nothing, for as long as it took someone to run a real fan-out.
     #[test]
-    fn a_nested_dispatch_flattens_onto_the_one_visible_card() {
+    #[allow(non_snake_case)]
+    fn the_dispatch_tool_is_named_Agent_on_the_wire_and_Task_in_the_tool_list() {
         let (t, _) = fold(SUBAGENT);
-        let task = t.tool(&"toolu_0000000000000000000401".into()).expect("the Task card");
-        assert_eq!(task.subagent.max_depth(), Some(2), "the inner dispatch was followed");
-        assert!(
-            said(&task.subagent).iter().any(|s| s == "Reading ipc.rs around line 41."),
-            "the depth-2 agent's text is on the top-level card: {:?}",
-            said(&task.subagent)
-        );
-        // The nested `Read` failed; its outcome survives two levels of flattening.
-        assert!(
-            task.subagent.steps.iter().any(|s| matches!(&s.act,
-                SubagentAct::Tool { name: Some(n), state, .. } if n == "Read" && state.is_error())),
-            "the depth-2 failure was lost: {:?}",
-            task.subagent.steps
-        );
+        let advertised = decode_all(SUBAGENT)
+            .into_iter()
+            .flatten()
+            .find_map(|e| match e.kind {
+                EventKind::SessionStarted(start) => Some(start.tools),
+                _ => None,
+            })
+            .expect("the init line");
+        assert!(advertised.iter().any(|t| t == "Task"), "init advertises Task: {advertised:?}");
+        assert!(!advertised.iter().any(|t| t == "Agent"), "and does not advertise Agent");
+        let dispatched: Vec<_> = t
+            .elements()
+            .iter()
+            .filter_map(|e| e.tool())
+            .filter(|c| !c.subagent.is_empty())
+            .filter_map(|c| c.name.as_deref())
+            .collect();
+        assert_eq!(dispatched, vec!["Agent", "Agent"], "but the calls say Agent");
+    }
+
+    /// 🚨 MEASURED — **the wire stops at depth 1, and this is what the hand-written
+    /// fixture got most wrong.** Its depth-2 chain cannot occur.
+    ///
+    /// The capture's second agent dispatched an agent of its own. That dispatch appears
+    /// exactly twice: as a `tool_use` and as a `tool_result`, both scoped to *its
+    /// parent*, so both land as ordinary depth-1 steps. The grandchild's own lines — the
+    /// `Read` it ran, the prose it wrote — **never reach the stream at all**: its
+    /// `tool_use.id` is never once a `parent_tool_use_id`. So a real card sees a nested
+    /// agent's existence and its answer, and nothing of its work.
+    ///
+    /// 📌 The depth-2 flattening machinery is *not* dead code and is not deleted: nothing
+    /// says the CLI will keep withholding those lines, and `resolve_subagent_parent`
+    /// stays covered by `conversation.rs`'s own synthetic tests, which declare their
+    /// provenance. What is removed is the claim that a capture proves it.
+    #[test]
+    fn a_nested_dispatch_arrives_as_one_step_and_its_work_never_does() {
+        let (t, _) = fold(SUBAGENT);
+        let outer = t.tool(&"toolu_0000000000000000000402".into()).expect("the second card");
         assert_eq!(
-            t.elements().iter().filter_map(|e| e.tool()).count(),
-            1,
-            "four tool calls across two levels, one card"
+            outer.subagent.max_depth(),
+            Some(1),
+            "nothing deeper than the direct subagent is on the wire: {:?}",
+            outer.subagent.steps
         );
+        let inner: Vec<_> = outer
+            .subagent
+            .steps
+            .iter()
+            .filter_map(|s| match &s.act {
+                SubagentAct::Tool { id, name, .. } => Some((id.clone(), name.clone())),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            task.state.output(),
-            Some("ns_file has three callers: ipc.rs:41, ipc.rs:88, mind_runtime.rs:12."),
-            "and the card still resolves from its own result, as it always did"
+            inner.iter().map(|(_, n)| n.as_deref()).collect::<Vec<_>>(),
+            vec![Some("Agent"), Some("Read")],
+            "the nested dispatch is a step like any other: {inner:?}"
+        );
+        // The decisive half: the nested call's id names nothing in the stream.
+        let nested = inner[0].0.clone();
+        let scoped = decode_all(SUBAGENT)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.subagent_tool_use_id() == Some(nested.0.as_str()))
+            .count();
+        assert_eq!(scoped, 0, "the depth-2 agent forwarded no line of its own");
+        assert!(
+            t.elements().iter().filter_map(|e| e.tool()).count() == 2,
+            "five tool calls across two levels, two cards"
+        );
+        assert!(
+            outer.state.output().unwrap_or_default().contains("delta"),
+            "and the card still resolves from its own result: {:?}",
+            outer.state.output()
+        );
+    }
+
+    /// ⚠️ MEASURED, and a hole the hand-written fixture hid: **no subagent in this capture
+    /// ever said anything.** Every subagent-scoped `assistant` line carried a `tool_use`
+    /// block and nothing else; the answer a subagent produced reached the console only as
+    /// its parent's `tool_result`.
+    ///
+    /// So `Subagent::Said` — a path the old fixture exercised twice — is now backed by
+    /// **no observation at all**. It is kept because the schema plainly permits it and
+    /// declining a text block would be a silent loss, but a view must not be built on the
+    /// assumption that a card fills with prose. `fixtures/README.md` carries this in the
+    /// honesty split.
+    #[test]
+    fn no_captured_subagent_has_said_anything() {
+        let (t, _) = fold(SUBAGENT);
+        for card in t.elements().iter().filter_map(|e| e.tool()) {
+            assert!(
+                said(&card.subagent).is_empty(),
+                "a subagent emitted prose after all — good news, and the honesty split in \
+                 fixtures/README.md now understates what is observed: {:?}",
+                said(&card.subagent)
+            );
+        }
+    }
+
+    /// 🚨 MEASURED — an `Agent` result is **two** content blocks, and the join between
+    /// them is visible to the human. See `ToolOutcome::text`: every array-form result in
+    /// every earlier fixture held one block, so the separator was unfalsifiable until now.
+    #[test]
+    fn an_agent_result_keeps_its_answer_off_the_id_trailer() {
+        let (t, _) = fold(SUBAGENT);
+        let first = t.tool(&"toolu_0000000000000000000401".into()).expect("the first card");
+        let out = first.state.output().expect("the card resolved");
+        assert!(out.starts_with("bravo"), "the answer leads: {out:?}");
+        assert!(out.contains("agentId:"), "the CLI's trailer is kept, not stripped: {out:?}");
+        assert!(
+            !out.contains("bravoagentId"),
+            "two content blocks were welded into one word: {out:?}"
         );
     }
 

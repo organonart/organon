@@ -772,10 +772,25 @@ in a real capture, and getting any of them wrong produces a view that looks near
    reader who trusted the name would have been wrong in the worst direction.
    `subagent_routed` and `subagent_unrendered` replace it.
 
-   📌 **No capture on this machine contains a `Task` call**, so the fixture this is tested
-   against (`fixtures/claude_stream_subagent.jsonl`) is hand-written and declared as such.
-   The correlation is the decoder's own measured field applied twice; the line kinds and
-   their order are reasoned, not observed. Re-capture at the first real fan-out.
+   📌 ~~**No capture on this machine contains a `Task` call**, so the fixture this is tested
+   against is hand-written.~~ ✏️ **Captured 2026-08-13** — one run of `claude.exe` 2.1.228
+   on this argv, two agents in parallel, one dispatching its own.
+   `fixtures/claude_stream_subagent.jsonl` is the real stream and `fixtures/README.md`
+   lists what it corrected. The correlation held. Three shape claims did not: 🚨 **the
+   dispatch tool is named `Agent` on the wire while `system`/`init` advertises `Task`**;
+   🚨 **the wire stops at depth 1** — a nested dispatch arrives only as a `tool_use` and
+   `tool_result` scoped to its *parent*, and the grandchild's own lines are never
+   forwarded, so the depth-flattening above is machinery for a case no capture contains;
+   and ⚠️ **no subagent in the capture said anything** — every subagent-scoped `assistant`
+   line was a `tool_use`, and the answer came back only as the parent's `tool_result`.
+
+   📌 **What the capture added:** five undocumented `system` subtypes carrying subagent
+   lifecycle — `task_started`, `task_progress`, `task_updated`, `task_notification`,
+   `task_summary` — with a `description`, `last_tool_name`, `usage.tool_uses`,
+   `duration_ms`, `status`, and a `tool_use_id` naming the card. They are **main-scoped**
+   (no `parent_tool_use_id` key), so this rule cannot reach them; the console renders none
+   of them today. That is the next honest increment to a coordinator view, and it is not
+   in tension with the liveness measurement — progress metadata is not token deltas.
 6. **The first line of a real run is not JSON.** It is `Warning: no stdin data received in 3s…`,
    plain text on the same pipe. Log and continue; a decoder that treats non-JSON as fatal dies
    before the conversation starts.

@@ -71,6 +71,25 @@
 //!   `pending_user_dialog_requests` — and a second `response`, which is the actual
 //!   payload holding `models`, `account`, `current_permission_mode`. A consumer that
 //!   reaches for `response.models` finds nothing at all.
+//! - **🚨 The dispatch tool is named `Agent`, and `system`/`init` says `Task`.** Both
+//!   spellings are in one capture (`claude_stream_subagent.jsonl`): the `tools` array
+//!   advertises `"Task"`, every `tool_use` block that dispatches carries
+//!   `"name":"Agent"`. Nothing here routes on the name — [`AgentScope`] is decoded from
+//!   `parent_tool_use_id` alone — which is why a hand-written fixture saying `Task` was
+//!   wrong for weeks without failing. Do not reintroduce a name-keyed path.
+//! - **🚨 A subagent's stream is one level deep, whatever the model does.** A subagent
+//!   that dispatches its own produces a `tool_use` and a `tool_result` scoped to *its
+//!   parent*, and nothing else: the grandchild's `tool_use.id` is never a
+//!   `parent_tool_use_id`. Measured on a run that really did nest.
+//! - **A subagent-scoped line carries `subagent_type` and `task_description` on the
+//!   envelope**, beside `parent_tool_use_id`. Not decoded yet; they are what would let a
+//!   card say *which* agent, in the agent's own words, without parsing the arguments.
+//! - **Five `system` subtypes carry subagent lifecycle and are MAIN-scoped.**
+//!   `task_started`, `task_progress`, `task_updated`, `task_notification` and
+//!   `task_summary` have **no `parent_tool_use_id` key at all** — they correlate by a
+//!   `tool_use_id` field of their own, and carry `description`, `last_tool_name`,
+//!   `usage.{total_tokens,tool_uses,duration_ms}`, a `patch` and a terminal `status`.
+//!   They decode to [`Notice`], which keeps them whole; nothing reads them yet.
 //! - **🚨 A model switch narrates itself as a `user`-role line.** `set_model` emits
 //!   `"content":"<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>"`
 //!   with `isReplay: true`, *before* the ack — indistinguishable from a human turn by
@@ -477,19 +496,25 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     /// The result as text: the string form directly, or the text blocks of the array
-    /// form joined.
+    /// form joined by a blank line.
+    ///
+    /// 🚨 **The separator is a measurement, not a taste.** Until the subagent capture
+    /// every array-form result in every fixture held exactly *one* block, so joining
+    /// with `""` and joining with anything else were indistinguishable. A real `Agent`
+    /// result carries **two**: the subagent's answer, then a trailer naming its
+    /// `agentId` and its `<usage>`. Concatenated with nothing between them the card
+    /// read `bravoagentId: a4d5…` — the last word of the answer welded to the next
+    /// block's first. These are separate content blocks, not fragments of one string
+    /// (that is what `input_json_delta` is), so they are joined the way separate blocks
+    /// read.
     pub fn text(&self) -> String {
         match &self.content {
             Value::String(text) => text.clone(),
-            Value::Array(items) => {
-                let mut out = String::new();
-                for item in items {
-                    if let Some(text) = item.get("text").and_then(Value::as_str) {
-                        out.push_str(text);
-                    }
-                }
-                out
-            }
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
             _ => String::new(),
         }
     }
