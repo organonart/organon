@@ -70,6 +70,21 @@ pub struct Theme {
     pub bad: Color32,
     /// The plate a rendered surface shows before the console has drawn into it.
     pub surface_empty: Color32,
+    /// **The rule down a card's left edge, which replaces its four-sided border as posture
+    /// opens** ([`crate::posture`]).
+    ///
+    /// 🚨 **The palette decides whether a card is edged at all; posture only decides how
+    /// present that edge is.** The box fades out and this rule fades in over one shared
+    /// lerp, with no per-theme branch at any draw site — so a palette that separates
+    /// surfaces by fill alone gives this a **fully transparent** colour and gets no rule,
+    /// while a palette that wants a hairline gives it a real one. `organon` takes the first
+    /// answer, which is what keeps this tier invisible: its cards are four-sided boxes and
+    /// there was no rule to preserve.
+    ///
+    /// The rejected alternative was a `Box | LeftRule | None` enum per theme. It puts a
+    /// branch in every card draw, and it makes the tween *discontinuous* precisely where the
+    /// enum flips — an alpha cannot do either.
+    pub card_left_rule: Color32,
 
     // ── The status strip ──────────────────────────────────────────────────
     /// The band along the bottom, and its hairline.
@@ -209,6 +224,11 @@ impl Theme {
             ok: Color32::from_rgb(0x6f, 0xc2, 0x76),
             bad: Color32::from_rgb(0xe0, 0x6c, 0x5f),
             surface_empty: Color32::from_rgb(0x0a, 0x0e, 0x0a),
+            // Fully transparent, and that is this palette's *answer* rather than a
+            // placeholder: the console's cards are four-sided boxes, so there is no left
+            // rule to preserve and a visible one would be a change nobody asked for. A
+            // palette that wants the desktop form to be ruled says so here.
+            card_left_rule: Color32::TRANSPARENT,
 
             strip_fill: Color32::from_rgb(0x0b, 0x11, 0x0b),
             strip_edge: Color32::from_rgb(0x22, 0x2c, 0x22),
@@ -438,6 +458,18 @@ mod tests {
             "an installed harness"
         );
         assert_eq!(t.tab_menu_missing, Color32::from_rgb(0x50, 0x5a, 0x50), "a missing harness");
+    }
+
+    /// ⚠️ **`card_left_rule` is deliberately NOT in the test above**, which pins values read
+    /// out of `main` before the extraction: this field is new, so there is nothing on `main`
+    /// to have read it from and adding it there would quietly weaken the one test that
+    /// backs "the look did not change". Its claim is different and is stated here — the
+    /// `organon` palette declines the rule, which is what makes the whole posture tier
+    /// invisible at every `t`.
+    #[test]
+    fn the_organon_palette_declines_the_left_rule() {
+        assert_eq!(Theme::organon().card_left_rule, Color32::TRANSPARENT);
+        assert_eq!(Theme::organon().card_left_rule.a(), 0, "…and it is the ALPHA that decides");
     }
 
     /// The default *is* the shipped look, so a construction site that says nothing cannot
