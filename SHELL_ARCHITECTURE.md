@@ -2039,6 +2039,65 @@ and changes not one pixel. That is §1.2's silent trap met from the other side. 
 fix it (the camera really did move, and it will be there the moment something shows the world), so
 `camera::viewpoint_is_visible` decides whether to say so on stderr instead.
 
+### 1.4 Preferences — the console's first thing that remembers what a person chose
+
+`prefs.rs` writes `preferences.json` at the store root, beside `harnesses.json`. It is a
+`Preferences` struct — today one field, `theme: Option<String>` — loaded with
+`Preferences::load_default()` and written with `Preferences::save_default()`.
+
+**Until this landed, the console persisted nothing a user chose.** Measured 2026-08-13 by
+reading the crate: the only writer was `SessionLog` (`session.rs`), and an append-only event
+corpus is evidence of what happened, not a statement of what is wanted. The only
+user-*configuration* path was a **read with no matching write** — `harness::load` over
+`harnesses.json` — and every other knob was an `ORGANON_SHELL_*` variable sampled once at
+startup. A picker could therefore offer a choice and lose it at exit, which is what makes a
+picker pointless. The colour theme is the immediate consumer and the reason this exists.
+
+**The store root is `SessionLog::store_root()`, called — not re-derived.** The one-resolver
+rule in `organon-shell/Cargo.toml` is usually read as "always use `dirs`", and
+`dirs::data_dir().join("OrganonShell")` here would satisfy that letter while still being
+wrong: two resolvers that *can* disagree eventually do, and the failure is a preferences file
+written beside a `harnesses.json` the console reads from somewhere else.
+
+**The failure posture is `harnesses.json`'s, exactly.** Missing, unreadable, or malformed ⇒
+"no stored preferences" — never an error, never a crash. A corrupt preferences file must cost
+you your preferences and never your ability to open the console. Growth is additive:
+container-level `#[serde(default)]` loads an older file missing a newer key, and serde's
+unknown-field tolerance means a newer file does not break an older binary, so adding a
+preference is one field rather than a migration.
+
+⚠️ **A write must not be able to destroy what is already stored.** `save` writes a temp file
+in the *same directory* and renames it over the target — same directory because a rename is
+only atomic within one volume and `%TEMP%` is routinely on another, and `std::fs::rename`
+replaces an existing target on Windows too (it is `MoveFileExW` with
+`MOVEFILE_REPLACE_EXISTING`, not the bare `MoveFileW` that fails when the target exists). The
+reason this is worth doing in version one rather than later: a half-written file would fail to
+parse, and the total read posture above would then *silently reset every preference the user
+had*. A stranded temp is cleaned up on a failed rename, and a test pins that the store holds
+one file rather than a litter.
+
+⚠️ **Never written with a UTF-8 BOM.** `serde_json` refuses a BOM outright, and the total read
+posture turns that refusal into silence — a file that is present, looks right in an editor, and
+does nothing. That exact failure is on record on this machine for `harnesses.json`, from a
+PowerShell `Set-Content -Encoding utf8`. Both halves are pinned: what we write has no BOM, and
+a BOM'd file reads as defaults rather than panicking.
+
+📌 **No environment variable overrides a stored preference, and that is a decision, not an
+omission.** The `ORGANON_SHELL_*` family is untouched — this module reads none of it. An
+override would defeat the thing being built: a user picks a theme, it stores correctly, and
+next launch a variable baked into a launch shim wins silently, which is indistinguishable from
+the evaporation the file exists to end. The shims already demonstrate the shape —
+`organon-console.cmd` sets `ORGANON_SHELL_TABS` unconditionally, so the documented way to
+override it is ignored without a word. A one-launch override, if ever wanted, belongs in a CLI
+flag that can say so in the console's own output.
+
+📌 **This is storage only; nothing reads `theme` yet.** The `Theme` type is being built
+separately, and the field is a plain `String` name so the two stay independent: the consumer
+maps a name it recognises and falls back to its own default for one it does not, which is also
+what makes a file written by a newer console harmless to an older one. Nothing in
+`shell_main.rs` calls `load_default()` yet — wiring it belongs with the consumer, because a
+startup read into a field nobody reads is dead code.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -2058,6 +2117,18 @@ path silently breaks the three-products-simultaneously guarantee that
 `edition.rs`'s pairwise-distinct-namespace test pins.
 
 ## 3. Honesty ledger
+
+- ⚠️ **No preferences file has ever been written on a real machine.** §1.4 is pinned by ten
+  headless tests against temp directories — round trip, missing file, malformed file, a
+  BOM'd file, an unknown key, a missing key, the atomic replace, the stranded-temp check,
+  first-run directory creation, and that the store root is literally
+  `SessionLog::store_root()`. `cargo test -p organon-shell --lib` is 490 green and `cargo
+  check --features shell-edition --bin organon-console` is clean. **That is the whole
+  claim: it compiles and the tests pass.** Nothing has written to a real
+  `%APPDATA%\OrganonShell\preferences.json`, no console has read one back at startup, and
+  no preference has survived an actual exit — because nothing calls this module yet. The
+  first honest test of the durable promise happens when the theme picker lands on top of
+  it; until then this is a writer with no writer.
 
 - 🚨 **The working-directory fix is necessary and I could not prove it sufficient — there is
   a second, independent reason `organon-cli` may not reach the model, and it is not in this
