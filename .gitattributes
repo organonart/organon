@@ -5,7 +5,9 @@
 #
 # `text=auto` above stores everything as LF in the repo and checks it out in the
 # platform's native ending — which on a Windows working tree means CRLF. That is
-# harmless for Rust, WGSL, Markdown and JSON, and actively breaks the files below.
+# harmless for Rust, WGSL and JSON — and for *most* Markdown — and actively breaks the
+# files below. ⚠️ Markdown was listed as harmless without qualification until 2026-08-13,
+# when a `SKILL.md` proved otherwise; see the SKILL.md pin at the foot of this file.
 # Each pin exists for a specific failure, not for tidiness:
 
 # Shebangs. A `#!/usr/bin/env bash` line ending in CRLF makes an interpreter lookup
@@ -98,3 +100,40 @@
 # only extensionless binary in the tree, so it is the one file where the heuristic is
 # working without a net; a mangled byte here decodes into a wrong sky.
 native/organon-render/src/BSC5 binary
+
+# ─── SKILL.md: the one Markdown that CRLF breaks (organon#19, measured 2026-08-13) ─────
+#
+# Claude Code reads a skill's YAML frontmatter from between two `---` fences. Its parser
+# does not accept `---\r\n`, so on a Windows working tree the frontmatter silently fails
+# to parse and the skill degrades in a way that reports nothing:
+#
+#   * `name` falls back to the directory name — which is why the skill still appears in
+#     `system/init`'s `slash_commands` and looks installed;
+#   * `description` falls back to the body's first heading;
+#   * and the skill is never offered to the model at all — absent from `skills`.
+#
+# Nothing errors, nothing warns. From the outside it is indistinguishable from an agent
+# that simply chose not to use the skill, which is how `organon-cli` went unread for days
+# while its SKILL.md was actively maintained.
+#
+# MEASURED against a real `claude -p` session, with three controls sitting in the same
+# directory. `~/.claude/skills` held four skills; `organon-cli` was the only one with
+# CRLF (LF=318, CR=318 — the other three had CR=0) and the only one missing from the
+# offered `skills` array. Converting a BYTE-IDENTICAL copy to LF took the offered count
+# 22 → 23 and flipped its description from the H1 fallback to the real one. Each of these
+# was ruled out first, by experiment rather than by argument: the junction at
+# `~/.claude/skills/organon-cli` (a real directory copy fails identically), file size (a
+# 22 986-byte sibling loads; this one is 19 924), description length (a 607-char sibling
+# loads; this one is 582), a BOM, duplicate copies elsewhere on the machine, a colliding
+# slash command, a disabling setting, and the skill's own name.
+#
+# ⚠️ The index was already LF throughout (`git ls-files --eol` → `i/lf w/crlf`), so this
+# is purely a checkout-conversion bug: nothing was ever committed wrong, and `text=auto`
+# did exactly what it promises. That is what makes it invisible to review — the file is
+# correct in the repository and broken on disk, for Windows checkouts only.
+#
+# Note this pin's history, because it is the third fix in the same place: the skill was
+# originally a git symlink (unusable on a Windows checkout without `core.symlinks=true`),
+# then became a real tracked file, which is what gave it a CRLF working copy. Each fix
+# uncovered the next failure.
+.claude/skills/**/SKILL.md text eol=lf

@@ -11,6 +11,27 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### A CRLF checkout silently un-installs the `organon-cli` skill
+
+`SKILL.md` is now pinned to LF in `.gitattributes`. Claude Code reads a skill's YAML
+frontmatter from between two `---` fences and its parser does not accept `---\r\n`, so on
+a Windows working tree the frontmatter fails to parse and the skill degrades without
+reporting anything: `name` falls back to the directory (so it still appears in
+`slash_commands` and looks installed), `description` falls back to the body's first
+heading, and the skill is **never offered to the model**.
+
+Measured against a real session with three controls in the same directory: `organon-cli`
+was the only one of four skills with CRLF and the only one missing from the offered
+`skills` array; converting a byte-identical copy to LF took the count 22 → 23 and
+restored its real description. Ruled out first, each by experiment: the junction, file
+size, description length, a BOM, duplicate copies, a colliding slash command, a disabling
+setting, and the skill's own name.
+
+⚠️ The index was already LF (`i/lf w/crlf`) — nothing was ever committed wrong, which is
+why review could not see it. This is the third fix in the same place: the skill was a git
+symlink (unusable on Windows), then a real tracked file, which is what gave it a CRLF
+working copy. Each fix uncovered the next failure.
+
 ### The doc-coherence hook stops crying wolf, and starts watching the console's doc
 
 - 🚨 **`doc-coherence.sh` fired on every single Stop, and had done for as long as §18 has
