@@ -500,7 +500,7 @@ flag: a conversation has no grid, no cursor, no scrollback and no absolute-line
 coordinate, so every terminal-only path (`open_block`, `claim_patch`, the anchor pump, the
 epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
 
-**Five modules, four of them harness-agnostic.**
+✏️ **Six modules, five of them harness-agnostic.**
 
 - **`agent_event.rs` — the decoder.** NDJSON → typed events. `EventStream::push(&[u8])`
   owns its own line buffering, because a chunk boundary mid-line is the normal case (one
@@ -528,6 +528,11 @@ epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
   removal carries exactly one field: the **rects its rendered surfaces landed in** — in
   points, never pixels, which is the whole of what the console needs to size a render
   target for one.
+- ✏️ **`text_diff.rs` — the alignment, and the smallest module in the set.** Two strings in,
+  diff rows out. It exists because an `Edit` arrives as two whole *fields* and a card has to
+  show what changed between them, and because that decision is the part that can be wrong:
+  no egui, no colours, no widths, tested with plain strings the way
+  `term::encode_key` is. See "The `Edit` diff is an alignment" below for its three bounds.
 
 **The mapping's five load-bearing rules**, each from a measurement, each producing a view
 that looks *nearly* right if got wrong:
@@ -607,6 +612,13 @@ which it measured itself.
 renders anything into the flow, so both stay counted in `MapStats::unmapped` exactly as
 before — pinned by a test, because silently changing what a counter means is its own
 class of bug.
+
+✏️ **`tool_use_result` was on that list and never belonged to `unmapped` at all.** It is a
+sibling of `message` on a `user` line that always mapped to a `ToolResult`, so counting it
+there would have said a line was unrendered while its tool card was drawn in full. It is now
+attached to the card that line resolves, with `MapStats::tool_details` /
+`tool_details_declined` as its own two numbers — see "`tool_use_result` — the sibling object
+a terminal never sees" above.
 
 #### ✏️ A subagent is not a turn — it is something a tool call is doing
 
@@ -1177,6 +1189,81 @@ those arrive as *fields* rather than as a patch someone has to parse back out of
 "A tool is running" has no event anywhere in the stream; it is derived from an unresolved
 id, and it stops being true when the result arrives.
 
+##### ✏️ The `Edit` diff is an alignment, and its three bounds are three different failures
+
+The first rendering printed `old_string`'s lines as removals and `new_string`'s as additions
+with nothing between them, so **a one-character change inside a ten-line block came out as
+ten removals followed by ten additions** — honest about what arrived, and useless to read.
+`text_diff::line_diff` trims the common prefix and suffix, aligns what is left by longest
+common subsequence, and elides long unchanged runs to `CONTEXT = 3`. Measured: one changed
+character in a ten-line block is one removal and one addition, and the same change 200 lines
+into a 400-line block costs the same rows — **a diff's size is the size of the change, not of
+the block it sits in.**
+
+📌 **No diff crate.** This crate's `Cargo.toml` header requires every dependency edge to earn
+its line, and after the trim the changed region is small enough that a plain LCS is the whole
+algorithm. The alignment is also **recomputed every frame**, exactly like the `serde_json`
+parse of the same argument text beside it in `edit_diff` — which is what `MAX_CELLS` is sized
+against rather than against "how large an edit could be".
+
+| Bound | The failure it answers | What it leaves on screen |
+|---|---|---|
+| `MAX_CELLS` (20 000 DP cells, ~141 × 141 lines) | the alignment costing more per frame than the card is worth | `not aligned — N lines against M is past the diff budget`, and a block replacement |
+| `MAX_RUN` (8) | one hunk filling the card | `… N more lines` inside the run |
+| `MAX_ROWS` (24) | *many* hunks filling the card, which no per-hunk bound catches | `… N more lines` at the end |
+
+🚨 **`MAX_RUN` is not redundant with `MAX_ROWS`, and dropping it is a silent regression rather
+than a smaller diff.** A global row cap truncates the tail, and in a block replacement every
+removal precedes every addition — so a global cap alone shows a wall of red and **no green at
+all**, which is worse than the unaligned rendering it replaced. Capping each same-kind run
+first is what keeps both sides of every change on screen.
+
+⚠️ **Whitespace-only and no-change edits are named rather than drawn.** An identical pair
+renders **no rows** and says `no change — old_string and new_string are identical`; printing
+the block as removals *and* additions is the loudest possible way to say nothing happened. A
+re-indent, a stripped trailing space or a changed line ending is named `whitespace only — no
+visible character differs`, because its rows are *visibly identical* and a reader with no note
+reads the card as broken. 🚨 The predicate is computed **on the whole strings, not per row**,
+which is also what catches a **trailing-newline** difference: `str::lines` cannot see one, so
+there is no row for it, and a per-row test would have had the card claim the two were
+identical when they differ by a byte.
+
+##### ✏️ `tool_use_result` — the sibling object a terminal never sees
+
+The decoder always kept it (`UserTurn::tool_use_result`, `Value` verbatim because its shape
+varies per tool) and nothing rendered it. It is now `conversation::ResultDetail` on the tool
+card, mapped by `agent_map::result_detail`, and a `Read` card reads `4 of 900 lines, from line
+40`.
+
+🚨 **Four fields, and the list stops at what a real capture contains.**
+`claude_stream_two_tools.jsonl` — a capture, not a reconstruction — carries
+`{"type":"text","file":{"filePath","content","numLines","startLine","totalLines"}}`, twice,
+both for `Read`. A byte count, an exit status, a truncation flag, the unified patch Pi's
+`Edit` result carries: **absent because nothing has been observed sending them**, not
+forgotten. This repo labels what it shows measured or derived, and a field with no capture
+behind it could be labelled neither.
+
+| Decision | Why |
+|---|---|
+| **`content` is dropped** | it is the file's text, which the `tool_result` block already carries in numbered form. The same file twice in one card |
+| **Field-detected, not `type`-dispatched** | `"type":"text"` is checked nowhere. The value is undocumented and its `type` vocabulary unknown past that one word, so matching on it would render nothing for a readable `file` object under a name we have not seen. The decoder's own feature-detect rule |
+| **`numLines` is passed through, off-by-one and all** | it read **4** for a three-line file (the numbered result text ends `4\t`). That is the tool's arithmetic; a card that "corrected" it would report something no tool said |
+| **The path is shown only when the arguments do not already state it** | a `Read` card prints `file_path` as an argument field. ⚠️ The case this preserves is the **orphan** card — no call means no arguments, and then the detail's path is the only record of what the tool touched |
+| **Counts need both halves** | `4 lines` alone says nothing a person wants; `4 of 4` and `4 of 900` are different facts. A half-reported count renders nothing rather than being completed by a guess |
+
+🚨 **A detail on a line carrying two `tool_result` blocks is declined, never attached to
+both.** `tool_use_result` is a sibling of `message`, not of a block inside it, so nothing says
+which call it describes. Every capture has exactly one result per line; two is unobserved, and
+guessing would put one call's line counts on another's card. `MapStats::tool_details` and
+`tool_details_declined` count the two outcomes — ⚠️ **and are separate from `unmapped`, which
+never counted this in the first place** despite `agent_map`'s module doc having said so: the
+`user` line a `tool_use_result` rides on always mapped to a `ToolResult`, so `unmapped` would
+have claimed a line was unrendered while its card was drawn in full.
+
+📌 A subagent's nested step **declines the detail**, on `Subagent::Returned`'s own argument: a
+step says it finished and whether it failed, and a file's line counts are exactly the
+per-result content that argument turns down.
+
 **A live control panel, inline — the artifact the other front-end needed a protocol for.**
 `Body::Artifact` is an element the console puts in the flow itself, and
 `conversation_view::panel_element` draws it as a real egui panel: sliders that move,
@@ -1393,7 +1480,7 @@ integrated is not unsupported, it is supported the old way.
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
-| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**. Then, in the order §5.9.3 holds them: `tool_use_result` (the undocumented structured per-tool detail a rich card wants); then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
+| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; then the console's own verbs served as capability tools (needs a `CommandService` reachable from the serve thread — `NoDispatch` is the named seam), so a card can say *"organon · background"* instead of a shell command; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
@@ -1407,8 +1494,8 @@ path silently breaks the three-products-simultaneously guarantee that
 - 🚨 **The conversation view has never been run against a live agent by the session that
   wrote it.** Every rule in §1.1 is pinned by headless tests against committed captures —
   the per-block key, the replayed human turn, the recurring `init`, the per-turn `result`,
-  ✏️ the subagent scope, the card's clipping and the `Edit` diff — and that is
-  **replay, not a conversation**. What no fixture can answer: whether the CLI stays alive
+  ✏️ the subagent scope, the card's clipping, the `Edit` diff's alignment and the result
+  detail's four measured fields — and that is **replay, not a conversation**. What no fixture can answer: whether the CLI stays alive
   when it is spawned with no prompt and nothing on stdin yet (it prints `Warning: no stdin
   data received in 3s…` and the pane logs it, but "proceeds without it" could mean it
   exits), whether stdin's line write reaches it promptly enough to feel live, and what the
@@ -1468,10 +1555,36 @@ path silently breaks the three-products-simultaneously guarantee that
   `CommandService` bound to the UI thread. So the legibility argument for MCP — an approval
   card naming *"organon · background"* instead of a shell command — is **built but unused**:
   `capability_label` renders the name, and nothing yet produces one.
-- **The `Edit` diff is a field render, not a diff algorithm.** It prints `old_string`'s
-  lines as removals and `new_string`'s as additions — there is no alignment, so an edit
-  that changes one character in the middle of a ten-line block shows ten removals and ten
-  additions. That is honest about what arrived; it is not `diff`.
+- ✏️ **The `Edit` diff is an alignment now, and what is left unverified is the *look*.** This
+  entry used to read *"a field render, not a diff algorithm — no alignment, so an edit that
+  changes one character in the middle of a ten-line block shows ten removals and ten
+  additions"*, and that is no longer true: `text_diff::line_diff` aligns it, and the
+  one-character case is pinned by the test the change was written for. 🚨 **What no test can
+  answer** is whether three lines of context is the right amount at the console's real width,
+  whether `… N unchanged lines` reads as a summary or as a missing row, and whether a
+  `MAX_ROWS`-capped diff looks bounded or looks broken. Nobody has seen a single row of it on
+  screen. ⚠️ Two things are named rather than claimed: the alignment is **recomputed every
+  frame** and is bounded rather than cached, so `MAX_CELLS` is a per-frame budget and not a
+  statement about how large an edit can be; and past that budget the rendering **is** the old
+  field render, so the failure mode this entry used to describe still exists — it is now
+  labelled on the card instead of being the only behaviour.
+- ✏️ **`tool_use_result` is rendered, and the fields it does not render are the honest part.**
+  Only `filePath`/`numLines`/`startLine`/`totalLines`, because those are what a real capture
+  contains; every richer field a card would want is absent because nothing has been observed
+  sending it. ⚠️ **Both captures that carry one are `Read` results**, so what a `Bash`, a
+  `Write` or an `Edit` puts in this object is *unknown on this machine* — `result_detail`
+  reads the `file` object whatever `type` the line claims, which is a guess about
+  shape-stability rather than a measurement. The counter that would catch it is
+  `MapStats::tool_details_declined`.
+- 🚨 **Thinking blocks still render nothing, and that is a refusal with a date on it.** The
+  decoder reads them (`ContentBlock::Thinking`, text plus the opaque signature) and the
+  transcript spends a block ordinal on them per rule 1, so the wiring is in place and the
+  view simply draws nothing. **No real capture on this machine contains one** — the only
+  fixture that has a thinking block is `claude_stream_edges.jsonl`, which declares itself
+  hand-written — so rendering them would mean building a second path against an unobserved
+  shape, which the subagent entries above already record the cost of once. Re-scope it the
+  first time a capture shows one; until then the honest state is that a model's reasoning is
+  invisible in this front-end.
 - **`/surface` is a temporary summoning seam and is not the feature.** The feature is the
   element; the local command is scaffolding that exists because agent-summoned artifacts
   are the next step. Exact-match only (`/surfaces` and `/surface slate` go to the agent),

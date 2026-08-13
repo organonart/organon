@@ -43,11 +43,12 @@ use crate::approval::{
 use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
 use crate::conversation::{
     Answer, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent, Body, Change,
-    Element, ElementId, Ignored, PanelSpec, RunOutcome, StepState, SubagentAct, SubagentLog,
-    SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
+    Element, ElementId, Ignored, PanelSpec, ResultDetail, RunOutcome, StepState, SubagentAct,
+    SubagentLog, SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
 };
 use crate::mcp::{McpServer, NoDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
+use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::timeline::pinned_after_scroll;
 
 /// The console's MCP `serverInfo.name`, and therefore the middle of every namespaced tool
@@ -74,8 +75,9 @@ const OUTPUT_LINES: usize = 10;
 /// ([`crate::conversation::Limits::max_subagent_steps`]). Everything not drawn is counted
 /// on the line above it, so the card never quietly implies this was all of it.
 const SUBAGENT_LINES: usize = 6;
-/// The same, for the two halves of an `Edit` diff.
-const DIFF_LINES: usize = 12;
+// An `Edit` diff's own bounds are [`crate::text_diff`]'s — `CONTEXT`, `MAX_RUN`,
+// `MAX_ROWS`, `MAX_CELLS` — and live there rather than here because they are inputs to the
+// alignment, not to the drawing of it. A constant here would be a second opinion.
 /// Diagnostic lines kept (non-JSON stdout, stderr). Bounded and logged, never silent.
 const LOG_LINES: usize = 200;
 
@@ -1132,9 +1134,11 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
 /// flattened. The event stream carries it structured — name, the complete input object,
 /// a correlation id, and later a result — so it is drawn as a card whose state is
 /// visible: amber and "running" while the id is unresolved, green or red once it is.
-/// `Edit` goes one step further and renders its `old_string`/`new_string` as a real diff,
-/// because those arrive as *fields*, not as a patch someone has to parse back out of
-/// prose.
+/// `Edit` goes one step further and renders its `old_string`/`new_string` as a real
+/// **aligned** diff ([`crate::text_diff`]), because those arrive as *fields*, not as a
+/// patch someone has to parse back out of prose. And the result's own sibling object —
+/// `tool_use_result`, which a terminal never sees — becomes [`detail_rows`]: for a `Read`,
+/// how much of the file the call actually covered.
 fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
     let (state_text, accent) = match &card.state {
         ToolState::Running => ("running", RUNNING),
@@ -1160,6 +1164,10 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
             match edit_diff(card.name.as_deref(), &card.arguments) {
                 Some(diff) => diff_body(ui, &diff),
                 None => arguments_body(ui, &card.arguments),
+            }
+
+            for row in detail_rows(&card.detail, &card.arguments) {
+                ui.label(RichText::new(row).color(DIM).small().monospace());
             }
 
             if !card.subagent.is_empty() {
@@ -1560,23 +1568,28 @@ fn arguments_body(ui: &mut egui::Ui, args: &Arguments) {
     }
 }
 
+/// The aligned diff, row by row.
+///
+/// ⚠️ **Every row is drawn `.monospace()`, the elisions included.** The prefixes are what
+/// makes a diff scannable and they only line up in a fixed-pitch face — and a dim
+/// proportional summary row between two mono ones reads as a different kind of thing
+/// rather than as part of the same column.
 fn diff_body(ui: &mut egui::Ui, diff: &EditDiff) {
     if !diff.path.is_empty() {
         ui.label(RichText::new(&diff.path).color(DIM).small().monospace());
     }
-    let (removed, removed_more) = clip_slice(&diff.removed, DIFF_LINES);
-    let (added, added_more) = clip_slice(&diff.added, DIFF_LINES);
-    for line in removed {
-        ui.label(RichText::new(format!("- {line}")).color(BAD).small().monospace());
+    for note in diff_notes(&diff.diff) {
+        ui.label(RichText::new(note).color(DIM).small());
     }
-    if removed_more > 0 {
-        ui.label(RichText::new(format!("  +{removed_more} more removed")).color(DIM).small());
-    }
-    for line in added {
-        ui.label(RichText::new(format!("+ {line}")).color(OK).small().monospace());
-    }
-    if added_more > 0 {
-        ui.label(RichText::new(format!("  +{added_more} more added")).color(DIM).small());
+    for row in &diff.diff.rows {
+        let (text, color) = match row {
+            DiffRow::Context(line) => (format!("  {line}"), DIM),
+            DiffRow::Removed(line) => (format!("- {line}"), BAD),
+            DiffRow::Added(line) => (format!("+ {line}"), OK),
+            DiffRow::Elided(n) => (format!("  … {n} unchanged lines"), DIM),
+            DiffRow::Held(n) => (format!("  … {n} more lines"), DIM),
+        };
+        ui.label(RichText::new(text).color(color).small().monospace());
     }
 }
 
@@ -2954,12 +2967,14 @@ fn composer_box(
 // The pure part — clipping and field extraction, tested headless
 // ---------------------------------------------------------------------------
 
-/// One `Edit` call, as a card draws it.
+/// One `Edit` call, as a card draws it: the file it touches, and the aligned diff.
+///
+/// The alignment itself is [`crate::text_diff`]'s — a module with no egui in it, so the
+/// part that can be *wrong* is tested with plain strings rather than by looking at a card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditDiff {
     pub path: String,
-    pub removed: Vec<String>,
-    pub added: Vec<String>,
+    pub diff: LineDiff,
 }
 
 /// A tool's arguments as `(key, value)` rows.
@@ -3025,20 +3040,79 @@ pub fn edit_diff(name: Option<&str>, args: &Arguments) -> Option<EditDiff> {
     let new = value.get("new_string")?.as_str()?;
     Some(EditDiff {
         path: value.get("file_path").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-        removed: old.lines().map(str::to_string).collect(),
-        added: new.lines().map(str::to_string).collect(),
+        diff: text_diff::line_diff(old, new),
     })
+}
+
+/// What a diff says about *itself*, above its rows — the size of the change, and each
+/// reason a card might have to show less than the whole of it.
+///
+/// Pure, and separate from [`diff_body`] for the reason every judgment in this file is:
+/// "an identical pair reads as *no change* rather than as the block twice" is a sentence
+/// a test can hold, and a `ui.label` inside a draw call is not.
+///
+/// ⚠️ **Order is deliberate.** The reason a diff looks strange comes before its arithmetic:
+/// a reader whose rows are visibly identical needs "whitespace only" first, and the counts
+/// afterwards.
+pub fn diff_notes(diff: &LineDiff) -> Vec<String> {
+    if diff.unchanged {
+        return vec!["no change — old_string and new_string are identical".to_string()];
+    }
+    let mut notes = Vec::new();
+    if diff.whitespace_only {
+        notes.push("whitespace only — no visible character differs".to_string());
+    }
+    if let Some((old_lines, new_lines)) = diff.declined {
+        notes.push(format!(
+            "not aligned — {old_lines} lines against {new_lines} is past the diff budget"
+        ));
+    }
+    if diff.has_changes() {
+        notes.push(format!("{} removed, {} added", diff.removed, diff.added));
+    }
+    notes
+}
+
+/// What a tool said about its own result, as rows for the card — the sibling object a
+/// terminal never sees at all.
+///
+/// 🚨 **The honesty rule governs this absolutely, and it is what makes the function
+/// short.** [`ResultDetail`] carries only fields a real capture contains, so there is
+/// nothing here to invent; what is left is deciding what is worth *repeating*.
+///
+/// Two rules, and each one is about not saying a thing twice:
+///
+/// 1. **The path is shown only when the arguments do not already state it.** A `Read`
+///    card already prints `file_path: …` as an argument field, and a second copy under it
+///    is pure noise. ⚠️ The case this preserves is the **orphan** card — a result whose
+///    call was never seen has no arguments at all, and then the detail's path is the only
+///    thing on the card that says what the tool touched.
+/// 2. **The counts are one row, and only when both halves are there.** `4 lines` alone
+///    says nothing a person wants; `4 of 4` and `4 of 900` are the fact. A `startLine`
+///    is appended only when it is not the first line, because "from line 1" is what
+///    reading a file means.
+pub fn detail_rows(detail: &ResultDetail, args: &Arguments) -> Vec<String> {
+    let mut rows = Vec::new();
+    if let Some(path) = &detail.file_path {
+        let stated = argument_fields(args).into_iter().any(|(_, value)| &value == path);
+        if !stated {
+            rows.push(path.clone());
+        }
+    }
+    if let (Some(lines), Some(total)) = (detail.lines, detail.total_lines) {
+        let mut row = format!("{lines} of {total} lines");
+        if let Some(start) = detail.start_line.filter(|s| *s > 1) {
+            row.push_str(&format!(", from line {start}"));
+        }
+        rows.push(row);
+    }
+    rows
 }
 
 /// The first `max` lines of `text`, and how many were left behind.
 pub fn clip_lines(text: &str, max: usize) -> (Vec<&str>, usize) {
     let total = text.lines().count();
     (text.lines().take(max).collect(), total.saturating_sub(max))
-}
-
-fn clip_slice(lines: &[String], max: usize) -> (&[String], usize) {
-    let shown = lines.len().min(max);
-    (&lines[..shown], lines.len() - shown)
 }
 
 /// Collapse a value to one display line. A tool argument can be a whole file's contents;
@@ -3175,8 +3249,96 @@ mod tests {
         );
         let diff = edit_diff(Some("Edit"), &args).expect("a diff");
         assert_eq!(diff.path, "src/lib.rs");
-        assert_eq!(diff.removed, vec!["let a = 1;", "let b = 2;"]);
-        assert_eq!(diff.added, vec!["let a = 1;", "let b = 3;", "let c = 4;"]);
+        // Aligned, so the shared first line is context and not a removal-plus-addition.
+        assert_eq!(
+            diff.diff.rows,
+            vec![
+                DiffRow::Context("let a = 1;".into()),
+                DiffRow::Removed("let b = 2;".into()),
+                DiffRow::Added("let b = 3;".into()),
+                DiffRow::Added("let c = 4;".into()),
+            ]
+        );
+        assert_eq!((diff.diff.removed, diff.diff.added), (1, 2));
+    }
+
+    /// **CONTRACT.** The notes above the rows are the diff's own account of itself, in the
+    /// order a confused reader needs them: why it looks odd, then how big it is.
+    #[test]
+    fn a_diff_reports_its_own_size_and_every_reason_it_shows_less() {
+        let plain = text_diff::line_diff("a\nb", "a\nc");
+        assert_eq!(diff_notes(&plain), vec!["1 removed, 1 added"]);
+
+        let identical = text_diff::line_diff("a\nb", "a\nb");
+        assert_eq!(
+            diff_notes(&identical),
+            vec!["no change — old_string and new_string are identical"],
+            "and no count line, because there is nothing to count"
+        );
+
+        let reindent = text_diff::line_diff("  x", "    x");
+        assert_eq!(
+            diff_notes(&reindent).first().map(String::as_str),
+            Some("whitespace only — no visible character differs"),
+            "the explanation comes before the arithmetic"
+        );
+    }
+
+    /// **CONTRACT.** A diff past the alignment budget says so on the card, naming the two
+    /// sizes — the house rule that what does not work is as visible as what does.
+    #[test]
+    fn a_declined_alignment_is_stated_on_the_card_with_its_sizes() {
+        let old = (1..=200).map(|i| format!("old {i}")).collect::<Vec<_>>().join("\n");
+        let new = (1..=200).map(|i| format!("new {i}")).collect::<Vec<_>>().join("\n");
+        let notes = diff_notes(&text_diff::line_diff(&old, &new));
+        assert!(
+            notes.iter().any(|n| n == "not aligned — 200 lines against 200 is past the diff budget"),
+            "{notes:?}"
+        );
+    }
+
+    /// **CONTRACT.** The path is not printed twice. A `Read` card already carries
+    /// `file_path` as an argument field, so the detail contributes only the line counts.
+    #[test]
+    fn a_detail_does_not_repeat_a_path_the_arguments_already_state() {
+        let path = "C:\\work\\demo\\fx-a.txt";
+        let args = complete(&serde_json::json!({ "file_path": path }).to_string());
+        let detail = ResultDetail {
+            file_path: Some(path.into()),
+            lines: Some(4),
+            total_lines: Some(4),
+            start_line: Some(1),
+        };
+        assert_eq!(detail_rows(&detail, &args), vec!["4 of 4 lines"]);
+    }
+
+    /// **CONTRACT.** …and it *is* printed on an orphan card, where the arguments were never
+    /// seen and the detail's path is the only record of what the tool touched.
+    #[test]
+    fn an_orphan_cards_detail_carries_the_path_because_nothing_else_does() {
+        let detail = ResultDetail {
+            file_path: Some("C:\\work\\demo\\fx-a.txt".into()),
+            lines: Some(4),
+            total_lines: Some(900),
+            start_line: Some(40),
+        };
+        assert_eq!(
+            detail_rows(&detail, &Arguments::pending()),
+            vec!["C:\\work\\demo\\fx-a.txt", "4 of 900 lines, from line 40"],
+            "and the start line is stated, because it is not the top of the file"
+        );
+    }
+
+    /// **CONTRACT.** A tool that said nothing adds no rows, and a half-reported count is
+    /// not completed by guessing the other half.
+    #[test]
+    fn a_detail_with_nothing_measured_renders_nothing() {
+        assert!(detail_rows(&ResultDetail::default(), &Arguments::pending()).is_empty());
+        let half = ResultDetail { lines: Some(4), ..Default::default() };
+        assert!(
+            detail_rows(&half, &Arguments::pending()).is_empty(),
+            "'4 lines' with no total says nothing a person wants, and inventing the total is worse"
+        );
     }
 
     /// …and only for `Edit`, only once settled, and never on a shape that lacks them.
