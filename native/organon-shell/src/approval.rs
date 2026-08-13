@@ -54,6 +54,28 @@
 //! look like two. **Scope is the session**: the memory lives in the pane and dies with the
 //! tab. Nothing is written to disk, deliberately — a remembered decision that outlives the
 //! window it was made in is one the human cannot find again.
+//!
+//! # And the widest gesture: allow everything for the rest of this session
+//!
+//! [`DecisionMemory::allow_everything`] is the same memory widened, not a second mechanism
+//! and **emphatically not an upstream permission mode**. `bypassPermissions` is unreachable
+//! (the CLI refuses it without a launch flag the console does not pass) and `dontAsk`
+//! **refuses** rather than allows — both measured, both recorded in
+//! `doc/console_approval_protocol.md`. This is the console answering *yes* to a question it
+//! is still being asked, which is why the handler still runs, the card is still drawn, and
+//! the transcript still records every call.
+//!
+//! ⚠️ **A per-call decision outranks it.** [`DecisionMemory::recall`] checks the entries
+//! first, so a call a human explicitly denied-and-remembered stays denied under a standing
+//! allow. The broad gesture is the *default* for calls nobody has decided, never an
+//! overrule of a specific refusal — and the card that says "denied · from a decision you
+//! already made" carries its own `forget` button, so the narrower rule is the one that can
+//! be found and undone.
+//!
+//! 🚨 **It is session-scoped and it dies with the tab, exactly like the entries** — nothing
+//! is written to disk, and a new tab starts asking again. It is also revocable from the
+//! band rather than from a card, because there is no one card it belongs to: see
+//! [`crate::conversation_view::StripContent::session_allow`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -61,7 +83,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::conversation::{Answer, Verdict};
+use crate::conversation::{Answer, AnsweredBy, Verdict};
 use crate::mcp::{
     Heartbeat, PermissionDecision, PermissionRequest, PermissionResponder, HEARTBEAT,
 };
@@ -91,6 +113,11 @@ pub enum Choice {
     Allow,
     /// Allow, and answer the *identical* call from memory next time.
     AllowAndRemember,
+    /// Allow, and stop asking about **anything** for the rest of this session.
+    ///
+    /// 🚨 The widest gesture the console offers, and the one the band must then carry a
+    /// standing marker for — see the module doc.
+    AllowEverythingThisSession,
     Deny,
 }
 
@@ -282,10 +309,46 @@ pub struct Remembered {
     pub verdict: Verdict,
 }
 
+/// Why the console answered a call without asking.
+///
+/// The two arms are the two standing sources, and they are kept apart all the way to the
+/// card because they are **revoked in different places** — see [`AnsweredBy`], which this
+/// maps onto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recall {
+    /// This exact call was decided before, and this is what was decided.
+    ThisCall(Verdict),
+    /// Nothing was decided about this call; everything is allowed for the rest of the
+    /// session.
+    SessionAllow,
+}
+
+impl Recall {
+    pub fn verdict(self) -> Verdict {
+        match self {
+            Recall::ThisCall(verdict) => verdict,
+            Recall::SessionAllow => Verdict::Allow,
+        }
+    }
+
+    /// How the card records it.
+    pub fn answered_by(self) -> AnsweredBy {
+        match self {
+            Recall::ThisCall(_) => AnsweredBy::ThisCall,
+            Recall::SessionAllow => AnsweredBy::SessionAllow,
+        }
+    }
+}
+
 /// The console's own decision memory. Session-scoped; see the module doc.
 #[derive(Clone, Debug, Default)]
 pub struct DecisionMemory {
     entries: Vec<Remembered>,
+    /// The standing allow. A plain `bool` because it holds no verdict worth choosing: a
+    /// standing *deny* would be a console that refuses everything while still looking like
+    /// it is asking, which is `dontAsk` — a mode that already exists upstream and that this
+    /// console offers a labelled row for. Nobody needs a second one.
+    session_allow: bool,
 }
 
 impl DecisionMemory {
@@ -293,10 +356,47 @@ impl DecisionMemory {
         Self::default()
     }
 
-    /// The verdict for this exact call, if one was remembered.
+    /// The verdict for this exact call, if one was remembered. **Entries only** — see
+    /// [`Self::recall`] for the answer that also honours a standing allow.
     pub fn lookup(&self, tool_name: &str, input: &str) -> Option<Verdict> {
         let key = decision_key(tool_name, input);
         self.entries.iter().find(|e| e.key == key).map(|e| e.verdict)
+    }
+
+    /// **The whole auto-answer.** A per-call decision if there is one, else a standing
+    /// allow if one is active, else `None` — which is the only case that reaches a human.
+    ///
+    /// ⚠️ The order is the policy, not an implementation detail: a specific decision wins
+    /// over the blanket one. The module doc carries the argument.
+    pub fn recall(&self, tool_name: &str, input: &str) -> Option<Recall> {
+        if let Some(verdict) = self.lookup(tool_name, input) {
+            return Some(Recall::ThisCall(verdict));
+        }
+        self.session_allow.then_some(Recall::SessionAllow)
+    }
+
+    /// Is the standing allow active? **The band reads this every frame** and derives its
+    /// marker from it, so this is the single fact behind that marker rather than a second
+    /// copy of it.
+    pub fn session_allow(&self) -> bool {
+        self.session_allow
+    }
+
+    /// Stop asking about anything for the rest of this session.
+    pub fn allow_everything(&mut self) {
+        self.session_allow = true;
+    }
+
+    /// Start asking again. `true` if there was a standing allow to revoke.
+    ///
+    /// **Per-call entries are untouched.** The two are different grants and revoking the
+    /// wide one must not silently discard the narrow ones a human made deliberately —
+    /// those are revoked from their own cards, one at a time, which is where they are
+    /// visible.
+    pub fn revoke_session_allow(&mut self) -> bool {
+        let was = self.session_allow;
+        self.session_allow = false;
+        was
     }
 
     /// Remember a verdict for this exact call. Re-deciding the same call **replaces**
@@ -323,8 +423,12 @@ impl DecisionMemory {
         self.entries.len() != before
     }
 
+    /// Forget everything — the entries **and** the standing allow. Total on purpose: a
+    /// "clear the memory" that left the widest grant standing would be the one call here
+    /// that could quietly do the opposite of what its name says.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.session_allow = false;
     }
 
     /// Everything remembered, oldest first — the list the UI shows so a decision is never
@@ -333,10 +437,15 @@ impl DecisionMemory {
         &self.entries
     }
 
+    /// How many **per-call** decisions are held. ⚠️ Not affected by the standing allow,
+    /// which is not an entry and has no card: the band carries it as its own marker rather
+    /// than as one more in a count.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// Whether there are no per-call entries. See [`Self::len`] — a session with a standing
+    /// allow and no entries is still `true` here, and the band still says so.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -405,18 +514,31 @@ pub fn resolve_choice(
     match choice {
         Choice::Allow => (
             PermissionDecision::allow_unchanged(request),
-            Answer { verdict: Verdict::Allow, from_memory: false, remembered: false },
+            Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: false },
         ),
         Choice::AllowAndRemember => {
             memory.remember(&request.tool_name, &input, Verdict::Allow);
             (
                 PermissionDecision::allow_unchanged(request),
-                Answer { verdict: Verdict::Allow, from_memory: false, remembered: true },
+                Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: true },
+            )
+        }
+        // ⚠️ **This call is answered by the click, not by the grant it just created.** The
+        // card reads `allowed` with no "from a decision you already made", because there was
+        // none when the question was asked — the standing allow starts with the *next* call.
+        // `remembered: false` for the same reason and a sharper one: nothing about this call
+        // went into the per-call memory, so its card must not offer a `forget` that would
+        // find nothing to forget. The revocation for what was just granted is on the band.
+        Choice::AllowEverythingThisSession => {
+            memory.allow_everything();
+            (
+                PermissionDecision::allow_unchanged(request),
+                Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: false },
             )
         }
         Choice::Deny => (
             PermissionDecision::deny(DENIED),
-            Answer { verdict: Verdict::Deny, from_memory: false, remembered: false },
+            Answer { verdict: Verdict::Deny, by: AnsweredBy::Click, remembered: false },
         ),
     }
 }
@@ -427,6 +549,25 @@ pub fn decision_for(verdict: Verdict, request: &PermissionRequest) -> Permission
         Verdict::Allow => PermissionDecision::allow_unchanged(request),
         Verdict::Deny => PermissionDecision::deny(DENIED),
     }
+}
+
+/// The whole auto-answer, as the pane needs it: the wire decision and the [`Answer`] the
+/// card records, from one [`Recall`].
+///
+/// Paired with [`resolve_choice`] deliberately — the two ways a question can end are the
+/// two functions here, and neither of them draws anything.
+pub fn resolve_recall(recall: Recall, request: &PermissionRequest) -> (PermissionDecision, Answer) {
+    let verdict = recall.verdict();
+    (
+        decision_for(verdict, request),
+        Answer {
+            verdict,
+            by: recall.answered_by(),
+            // Only a per-call decision is "remembered" in the sense the card's `forget`
+            // acts on. A standing allow has no entry to revoke — see [`Answer::remembered`].
+            remembered: matches!(recall, Recall::ThisCall(_)),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -573,7 +714,7 @@ mod tests {
 
         let (decision, answer) = resolve_choice(Choice::AllowAndRemember, &first, &mut memory);
         assert!(matches!(decision, PermissionDecision::Allow { .. }));
-        assert_eq!(answer, Answer { verdict: Verdict::Allow, from_memory: false, remembered: true });
+        assert_eq!(answer, Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: true });
 
         assert_eq!(memory.lookup("Bash", &first.input.to_string()), Some(Verdict::Allow));
         let other = bash("cargo test -p organon-core");
@@ -656,7 +797,7 @@ mod tests {
         let (decision, answer) = resolve_choice(Choice::Allow, &call, &mut memory);
         assert_eq!(decision.to_wire(), r#"{"behavior":"allow","updatedInput":{"command":"git push --force"}}"#);
         assert!(!answer.remembered);
-        assert!(!answer.from_memory);
+        assert_eq!(answer.by, AnsweredBy::Click);
         assert!(memory.is_empty());
 
         let (decision, answer) = resolve_choice(Choice::Deny, &call, &mut memory);
@@ -664,6 +805,116 @@ mod tests {
         assert_eq!(answer.verdict, Verdict::Deny);
         assert!(!answer.remembered);
         assert!(memory.is_empty(), "a deny is not remembered unless it was asked to be");
+    }
+
+    // -- allow everything for this session ---------------------------------
+
+    /// **The feature, in one test.** A call that would have raised a card is answered
+    /// instead — and the console can still say, in the transcript and on the band, that it
+    /// was the standing allow and not a decision about that call.
+    #[test]
+    fn a_session_allow_answers_a_call_that_would_otherwise_ask() {
+        let mut memory = DecisionMemory::new();
+        let call = bash("cargo build --release");
+        assert_eq!(memory.recall("Bash", &call.input.to_string()), None, "it would have asked");
+        assert!(!memory.session_allow());
+
+        let (decision, answer) =
+            resolve_choice(Choice::AllowEverythingThisSession, &call, &mut memory);
+        assert!(matches!(decision, PermissionDecision::Allow { .. }));
+        assert!(memory.session_allow(), "the grant is standing from here");
+        assert_eq!(
+            answer,
+            Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: false },
+            "the call in front of the human was answered by the click that granted it"
+        );
+
+        // The next call — any call, any tool — is answered without asking.
+        let other = request("Write", json!({ "file_path": "C:/tmp/x", "content": "y" }));
+        let recall = memory.recall(&other.tool_name, &other.input.to_string()).expect("answered");
+        assert_eq!(recall, Recall::SessionAllow);
+        let (decision, answer) = resolve_recall(recall, &other);
+        assert_eq!(
+            decision.to_wire(),
+            r#"{"behavior":"allow","updatedInput":{"content":"y","file_path":"C:/tmp/x"}}"#
+        );
+        assert_eq!(answer.verdict, Verdict::Allow);
+        assert_eq!(answer.by, AnsweredBy::SessionAllow);
+    }
+
+    /// 🚨 **The two standing sources must stay distinguishable, all the way to the card.**
+    /// They are revoked in different places — a per-call decision from its own card, a
+    /// session allow from the band — so a card that could not say which would send a reader
+    /// looking for a `forget` button that is not there.
+    #[test]
+    fn a_session_allow_is_recorded_differently_from_a_per_call_remember() {
+        let mut memory = DecisionMemory::new();
+        let remembered = bash("cargo test -p organon-shell");
+        resolve_choice(Choice::AllowAndRemember, &remembered, &mut memory);
+        memory.allow_everything();
+
+        let by_call = memory.recall("Bash", &remembered.input.to_string()).unwrap();
+        let by_session = memory.recall("Bash", &bash("cargo doc").input.to_string()).unwrap();
+        assert_eq!(by_call, Recall::ThisCall(Verdict::Allow));
+        assert_eq!(by_session, Recall::SessionAllow);
+        assert_ne!(by_call.answered_by(), by_session.answered_by());
+
+        // …and the difference survives into the answer the transcript keeps: only the
+        // per-call one is `remembered`, which is what puts a `forget` button on its card.
+        assert!(resolve_recall(by_call, &remembered).1.remembered);
+        assert!(!resolve_recall(by_session, &remembered).1.remembered);
+        assert_eq!(memory.len(), 1, "the standing allow is not an entry and is not counted");
+    }
+
+    /// ⚠️ **A specific refusal outranks the blanket grant.** Clicking "allow everything"
+    /// must not silently overturn a deny a human made deliberately about one call — that
+    /// call keeps its own card, its own verdict and its own `forget`.
+    #[test]
+    fn a_remembered_deny_survives_a_session_allow() {
+        let mut memory = DecisionMemory::new();
+        let dangerous = bash("git push --force");
+        memory.remember(&dangerous.tool_name, &dangerous.input.to_string(), Verdict::Deny);
+        memory.allow_everything();
+
+        let recall = memory.recall("Bash", &dangerous.input.to_string()).unwrap();
+        assert_eq!(recall, Recall::ThisCall(Verdict::Deny));
+        assert_eq!(resolve_recall(recall, &dangerous).0, PermissionDecision::deny(DENIED));
+        // Everything else is still allowed — the narrow rule bounds one call, not the grant.
+        assert_eq!(
+            memory.recall("Bash", &bash("git status").input.to_string()),
+            Some(Recall::SessionAllow)
+        );
+    }
+
+    /// **Revocation, from the band.** The grant is the one thing here with no card of its
+    /// own, so it needs a revoke that does not require finding one — and revoking it must
+    /// leave the per-call decisions a human made alone.
+    #[test]
+    fn revoking_a_session_allow_restores_prompting_and_keeps_the_entries() {
+        let mut memory = DecisionMemory::new();
+        let kept = bash("cargo build");
+        memory.remember(&kept.tool_name, &kept.input.to_string(), Verdict::Allow);
+        memory.allow_everything();
+
+        assert!(memory.revoke_session_allow());
+        assert!(!memory.session_allow());
+        assert!(!memory.revoke_session_allow(), "revoking twice is a no-op, not an error");
+        assert_eq!(
+            memory.recall("Bash", &bash("rm -rf /").input.to_string()),
+            None,
+            "a call nobody decided asks a human again"
+        );
+        assert_eq!(
+            memory.recall("Bash", &kept.input.to_string()),
+            Some(Recall::ThisCall(Verdict::Allow)),
+            "the narrow decisions are a different grant and are untouched"
+        );
+
+        // `clear` is the total one — it takes the standing allow with it.
+        memory.allow_everything();
+        memory.clear();
+        assert!(!memory.session_allow());
+        assert!(memory.is_empty());
     }
 
     /// A card has to show *what* is being permitted, so the summary must survive the

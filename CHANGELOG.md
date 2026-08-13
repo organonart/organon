@@ -77,6 +77,89 @@ From here on, this file gets an entry per meaningful change, newest first.
   but the last time a subagent card changed, it took a human looking to find that its
   marker was tofu, and no replay could have. 461 tests in the compositor lib, from 443.
 
+### Console Spike — the console serves its own verbs, and can be told to stop asking
+
+- 🚨 **The bug was one argument, and it had been there for weeks.** The console built its
+  in-process MCP server as `McpServer::new(&[], …)` — an empty spec table — so it answered
+  permission requests for everything the agent did and exposed **zero** capability tools.
+  The consequence was visible on screen: to open the portal, an agent ran
+  `./organon.exe console portal open` through `Bash`, spawning a second process to send a
+  message to the process it was already living inside, and the approval card asked *"may I
+  run this shell command"* instead of naming a capability. Every piece needed already
+  existed — `ToolEntry::from_spec`, `input_schema`, `set_tools`, argument checking against
+  the same `CommandSpec` that generated the schema, and `console_specs()` on the other side.
+  Nobody had joined the two ends. **456 tests in the compositor lib, from 443.**
+- **What the joining actually needed, since it is not one line.** A dispatch has to act on a
+  console verb from the *serve thread*, while the `CommandService` that validates one borrows
+  the session log on the *UI thread* — the constraint the empty table was standing in for.
+  The answer is neither a channel nor a second service: `SidecarDispatch` converts the tool's
+  arguments through the **same** `op_from` the CLI path uses and appends the line to the
+  console's own command sidecar, which the frame loop already drains through that very
+  service — validation, audit record and apply, unchanged. One vocabulary, one audited apply
+  path, one process. ⚠️ So the tool returns `{"accepted": "portal open"}`, not "applied": the
+  op lands on the next frame, and a post-validation failure reaches stderr rather than the
+  model. That is the price of reusing the audited path instead of building a second one.
+- **The vocabulary is handed down, for the reason the button and slider tables are.**
+  `ConversationPane::new` takes a `Capabilities { specs, dispatch }`; the compositor crate
+  cannot see the substrate's material tables and must not learn to, and applying a verb needs
+  the `Shell` that owns the backdrop. `Capabilities::none()` is the caller with nothing to
+  offer, and it is still the safest shape — a server that answers for everything and exposes
+  nothing.
+- 🚨 **The security property is now re-measured by the console, every session — and the live
+  check against this build is OUTSTANDING.** `doc/console_approval_protocol.md` §7 measured
+  that Claude Code withholds the `--permission-prompt-tool` handler from the model's own tool
+  list, and §9 point 4 says that guarantee is tied to the flag and must be re-checked **per
+  server**. Serving real capability tools from the same server is exactly the change that
+  could disturb it, and the session that made the change could not launch the console or
+  build a release binary, so no `system/init` from this build has been read. What was built
+  instead is the check: `ExposureAudit` reads the tool list the init event already carries and
+  prints its verdict to stderr and to the band at every init. ⚠️ It names **three** states,
+  not two — handler withheld, handler present (🚨, "do not trust this session's cards"), and
+  *nothing reported*, because a pass read off an empty list is the false negative the whole
+  arrangement exists to avoid. **Read that line before trusting a card on a fresh build.**
+- **"Allow everything for this session" — the console's own memory, widened.** A fourth
+  button on the approval card, session-scoped and dying with the tab like the per-call
+  entries beside it. It is **not** an upstream permission mode and is not implemented as one:
+  `bypassPermissions` is unreachable and `dontAsk` *refuses* rather than allows, both
+  measured. The handler still runs, the card is still drawn, every call is still recorded —
+  the console simply answers yes on the human's behalf.
+- 🚨 **The band carries a standing marker for exactly as long as it is on**, derived in
+  `strip_content` from the memory's own flag so it can neither stick nor be dismissed — the
+  rule already set for `dontAsk`, applied to a grant the human made themselves. ⚠️ **It says
+  which of the two facts it is**: *"you allowed everything — the console is not asking"* and
+  *"you are not being asked — anything needing permission is refused"* are different
+  conditions with different remedies, both can be true at once, and the band shows both. The
+  amber is `MODE_ALERT`'s, not red, for the reason already argued — this band is read for
+  hours and a permanent klaxon trains the eye past it. Clicking the marker revokes the grant,
+  with no confirmation: it withdraws an authority rather than granting one.
+- ⚠️ **A per-call decision outranks the blanket one**, so a call denied-and-remembered stays
+  denied under an "allow everything" — the wide grant is the default for calls nobody decided,
+  never an overrule of a specific refusal. The card records **who** answered
+  (`AnsweredBy::{Click, ThisCall, SessionAllow}`) because the two standing sources are revoked
+  in different places, and a card that could only say "from a decision you already made" would
+  send a reader looking for a `forget` button that is not there.
+- ⚠️ **A verb that is silently not served now says so where a human is.** Two spec names that
+  sanitise to one MCP tool name leave the later one unserved, and that was reported by an
+  `eprintln!` alone — invisible to a console started from a PATH shim, which is how it is
+  started. This change's own argument for the exposure audit ("on stderr *as well as* in the
+  band's log") applied a few dozen lines away and not here. `start_approvals` now hands the
+  sentence back for `ConversationPane::new` to seed the log with, so it lands at the head of
+  the scrollback — a route that only became real when the merge before this one started
+  drawing that log at all. The path stays dead by construction (a test asserts the real table
+  collides with nothing), so `collision_note` is pure and pinned by test: a safety net nobody
+  has pulled is worth exactly as much as its test.
+- **`AnsweredBy::is_standing()` is gone rather than wired in.** It collapsed `ThisCall` and
+  `SessionAllow` into one boolean, which is precisely the distinction the enum exists to keep
+  — every reader matches all three arms because each owes the human a different sentence and a
+  different place to undo it. Nothing asked the question, and a helper whose answer no correct
+  reader wants is worse than absence. The doc comment now says so, so the next person does not
+  re-add it.
+- **What is built and not seen.** No agent has called a capability tool yet, so the card
+  naming *"organon · console.portal"* instead of a shell command exists and has not been
+  looked at; and 📌 a capability tool costs the agent a `ToolSearch` first, because MCP tools
+  arrive deferred — the first console verb in a session is slower than the `Bash` call it
+  replaces, and only the second onwards is cheaper.
+
 ### Console Spike — a conversation tab now runs in a project, and says which one
 
 - 🚨 **An agent in a conversation tab was standing in no project at all, silently.** The

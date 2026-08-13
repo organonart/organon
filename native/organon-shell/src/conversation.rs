@@ -732,18 +732,44 @@ pub enum Verdict {
     Deny,
 }
 
+/// **Who** answered a permission request, and from what.
+///
+/// An enum rather than a second boolean beside [`Answer::remembered`], and the reason is
+/// that the two standing sources are different facts with different remedies: a decision
+/// about *this call* is revoked from this card, and a standing allow over *everything* is
+/// revoked from the band. A card that could only say "from a decision you already made"
+/// would send a reader looking for a per-call entry that does not exist.
+///
+/// ⚠️ **There is deliberately no `is_standing()` helper.** Collapsing the two standing
+/// sources into one boolean is exactly the distinction this enum was made to keep, and every
+/// reader here matches all three arms because each needs a different sentence. If something
+/// ever genuinely wants "not a click", it wants to know *which* one and has not noticed yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnsweredBy {
+    /// A human clicked a button on this card, just now.
+    Click,
+    /// The console, from a decision already made about **this exact call**
+    /// ([`crate::approval::DecisionMemory`]).
+    ThisCall,
+    /// The console, because a human allowed **everything** for the rest of this session.
+    SessionAllow,
+}
+
 /// How an approval was answered, once it was.
 ///
-/// The two flags are separate because they answer different questions and a card says both:
-/// `from_memory` is *who* answered (the console, from a decision already made), `remembered`
-/// is whether the answer was written down for next time.
+/// The two fields are separate because they answer different questions and a card says
+/// both: [`AnsweredBy`] is *who* answered, `remembered` is whether the answer was written
+/// down for next time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Answer {
     pub verdict: Verdict,
-    /// Answered from the console's decision memory rather than by a click just now.
-    pub from_memory: bool,
+    /// Who answered — a click, or one of the two standing sources.
+    pub by: AnsweredBy,
     /// The decision is in the memory, and will answer the identical call again — until it
     /// is revoked ([`Transcript::revoke_approval`]).
+    ///
+    /// ⚠️ **Only ever true for a per-call decision.** A session-wide allow is not written
+    /// into the per-call memory and has no card to be revoked from — see [`AnsweredBy`].
     pub remembered: bool,
 }
 
@@ -2375,7 +2401,7 @@ mod tests {
     }
 
     fn allowed() -> Answer {
-        Answer { verdict: Verdict::Allow, from_memory: false, remembered: false }
+        Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: false }
     }
 
     /// **The state machine a blocked agent depends on.** A question is pending exactly
@@ -2395,7 +2421,7 @@ mod tests {
         assert_eq!(t.get(id).unwrap().approval().unwrap().tool_use_id, "toolu_1");
         assert_eq!(t.stats().events, 2, "an insertion is not an event and is not counted as one");
 
-        let answer = Answer { verdict: Verdict::Allow, from_memory: false, remembered: true };
+        let answer = Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: true };
         assert_eq!(t.answer_approval(id, answer), Change::Updated(id));
         assert_eq!(ids(&t), before, "answering must not move, add or renumber anything");
         assert!(t.pending_approvals().is_empty());
@@ -2403,7 +2429,7 @@ mod tests {
         assert_eq!(t.get(id).unwrap().approval().unwrap().state, ApprovalState::Answered(answer));
 
         // A second answer changes nothing: the agent was unblocked by the first.
-        let flipped = Answer { verdict: Verdict::Deny, from_memory: false, remembered: false };
+        let flipped = Answer { verdict: Verdict::Deny, by: AnsweredBy::Click, remembered: false };
         assert_eq!(
             t.answer_approval(id, flipped),
             Change::Ignored(Ignored::ApprovalAlreadyAnswered)
@@ -2429,7 +2455,7 @@ mod tests {
     #[test]
     fn an_approval_answered_from_memory_is_visible_and_never_pending() {
         let mut t = Transcript::new();
-        let remembered = Answer { verdict: Verdict::Allow, from_memory: true, remembered: true };
+        let remembered = Answer { verdict: Verdict::Allow, by: AnsweredBy::ThisCall, remembered: true };
         let Change::Appended(id) = t.insert_approval(ApprovalBlock {
             state: ApprovalState::Answered(remembered),
             ..pending_approval("Bash")
@@ -2449,7 +2475,7 @@ mod tests {
         let Change::Appended(id) = t.insert_approval(pending_approval("Bash")) else {
             panic!("an approval must append");
         };
-        t.answer_approval(id, Answer { verdict: Verdict::Allow, from_memory: false, remembered: true });
+        t.answer_approval(id, Answer { verdict: Verdict::Allow, by: AnsweredBy::Click, remembered: true });
 
         assert_eq!(t.revoke_approval(id), Change::Updated(id));
         let answer = t.get(id).unwrap().approval().unwrap().state.answer().unwrap();

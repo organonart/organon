@@ -122,14 +122,17 @@ pub trait ToolDispatch {
 }
 
 /// A dispatch for a server that serves **no capability tools**, only the permission
-/// handler — which is what the console runs today ([`crate::conversation_view`]).
+/// handler.
 ///
 /// It is not a stub standing in for something missing: with an empty spec table
-/// [`McpServer::call_tool`] refuses an unknown tool as `INVALID_PARAMS` before dispatch
-/// is consulted, so nothing can reach this. It exists so the type is inhabited and the
-/// omission is named rather than implied. Routing the console's verbs over MCP needs a
-/// [`CommandService`], which borrows the session log on the UI thread and cannot be moved
-/// onto a serve thread — a wiring, not a line of code, and deliberately not this tier's.
+/// [`McpServer::call_tool`] refuses an unknown tool as `INVALID_PARAMS` before dispatch is
+/// consulted, so nothing can reach this. It exists so the type is inhabited and the
+/// omission is named rather than implied.
+///
+/// ⚠️ **This is no longer what the console runs** — a conversation tab is handed a real
+/// spec table and a real dispatch ([`crate::conversation_view::Capabilities`]). It remains
+/// the honest answer for a caller with no capabilities to offer, and for the tests of every
+/// path that does not need one.
 pub struct NoDispatch;
 
 impl ToolDispatch for NoDispatch {
@@ -465,6 +468,82 @@ fn permission_schema() -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// The exposure audit — §7's security property, checked per session
+// ---------------------------------------------------------------------------
+
+/// What the session says the model can actually see, checked against what this server
+/// serves. Built by [`McpServer::audit_exposure`]; the sentence a human reads is
+/// [`ExposureAudit::summary`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExposureAudit {
+    /// How many tools the session reported in total. **Zero means the audit proved
+    /// nothing**, which is a different fact from "the handler is absent".
+    pub reported: usize,
+    /// 🚨 **The failure.** The permission handler is in the model's own tool list, so the
+    /// model can call it and answer its own approvals. §7 measured that Claude Code
+    /// withholds it; if this is ever true, that guarantee has stopped holding for this
+    /// server and the console's authority is decorative.
+    pub handler_offered: bool,
+    /// The console's verbs the model can see — the point of serving them at all.
+    pub capabilities_offered: Vec<String>,
+    /// Served here, absent from the model's list. Not a fault by itself: MCP tools arrive
+    /// **deferred** in the measured build, so a name can be reachable without being
+    /// preloaded. Reported because "the agent could not find our tool" and "we never served
+    /// it" are otherwise indistinguishable from the outside.
+    pub capabilities_withheld: Vec<String>,
+}
+
+impl ExposureAudit {
+    /// The audit from three plain lists, so a caller that no longer owns the server can
+    /// still make it.
+    ///
+    /// ⚠️ [`McpServer::audit_exposure`] is a thin wrapper over this rather than a second
+    /// implementation: the console hands its server to the transport thread and keeps only
+    /// the two name lists, so both callers must reach the same arithmetic or the audit and
+    /// the thing it audits could come to disagree.
+    pub fn of(handler: &str, served: &[String], offered: &[String]) -> Self {
+        let visible = |name: &String| offered.iter().any(|t| t == name);
+        Self {
+            reported: offered.len(),
+            handler_offered: offered.iter().any(|t| t == handler),
+            capabilities_offered: served.iter().filter(|n| visible(n)).cloned().collect(),
+            capabilities_withheld: served.iter().filter(|n| !visible(n)).cloned().collect(),
+        }
+    }
+
+    /// Did the session report a tool list at all? Everything else here is only meaningful
+    /// when this is true.
+    pub fn reported_anything(&self) -> bool {
+        self.reported > 0
+    }
+
+    /// One line for the log, phrased so that the dangerous case cannot read as the safe
+    /// one. **Says what did not work as plainly as what did** — an audit against an empty
+    /// list announces that it proved nothing rather than staying silent.
+    pub fn summary(&self) -> String {
+        if !self.reported_anything() {
+            return "the session reported no tools — the approval handler's exposure could \
+                    not be checked this init"
+                .to_string();
+        }
+        if self.handler_offered {
+            return format!(
+                "🚨 the approval handler is in the model's own tool list ({} tools offered) — \
+                 it can answer its own permission requests; do not trust this session's cards",
+                self.reported
+            );
+        }
+        format!(
+            "approvals: handler withheld from the model as measured, {} of {} console tools \
+             visible ({} offered)",
+            self.capabilities_offered.len(),
+            self.capabilities_offered.len() + self.capabilities_withheld.len(),
+            self.reported
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The server
 // ---------------------------------------------------------------------------
 
@@ -584,6 +663,45 @@ impl McpServer {
     /// The exact string for `--permission-prompt-tool`.
     pub fn permission_tool_flag_value(&self) -> String {
         format!("mcp__{}__{}", self.server_name, self.permission_tool)
+    }
+
+    /// Every served capability tool, spelled the way the **client** names it — the same
+    /// `mcp__<server>__<tool>` form as [`Self::permission_tool_flag_value`], and the form
+    /// that appears in `system/init`'s `tools` array.
+    ///
+    /// One formatting site for both, so an audit of one against the other cannot be
+    /// comparing two spellings of the same thing.
+    pub fn namespaced_tool_names(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .map(|t| format!("mcp__{}__{}", self.server_name, t.tool_name))
+            .collect()
+    }
+
+    /// **The security property, re-measured against this server** —
+    /// `doc/console_approval_protocol.md` §7 and §9 point 4.
+    ///
+    /// 🚨 §7 measured that Claude Code **withholds the `--permission-prompt-tool` handler
+    /// from the model's own tool list**, so the model cannot call it and hand itself
+    /// `{"behavior":"allow"}`. §9 point 4 says the guarantee is tied to the flag and must be
+    /// re-measured **per server** — and serving real capability tools from the same server
+    /// is exactly the change that could disturb it.
+    ///
+    /// This makes that check something the console performs on itself at every
+    /// `system/init`, from the `tools` array the CLI already reports, rather than something
+    /// a person remembers to run once. A property nobody re-measures is a property that
+    /// quietly stops being true.
+    ///
+    /// ⚠️ `offered` must be the init event's list **verbatim**. An empty list is not a pass:
+    /// it means the session reported nothing, and [`ExposureAudit::reported`] is what says
+    /// so — a "handler absent" read off no data at all is the false negative this whole
+    /// arrangement exists to avoid.
+    pub fn audit_exposure(&self, offered: &[String]) -> ExposureAudit {
+        ExposureAudit::of(
+            &self.permission_tool_flag_value(),
+            &self.namespaced_tool_names(),
+            offered,
+        )
     }
 
     /// The protocol revision agreed at `initialize`, once one has been.
@@ -1207,6 +1325,106 @@ mod tests {
             handler["inputSchema"]["required"],
             json!(["tool_name", "input", "tool_use_id"])
         );
+    }
+
+    /// **The drift guard, as a test rather than as a promise.** A served tool's schema is a
+    /// function of its [`CommandSpec`] and of nothing else, so a spec that gains an argument
+    /// gains it in the tool the same instant. This tree has already paid for the other
+    /// arrangement — three hand-maintained range tables, nine of forty-five ids silently
+    /// wrong, and the wrong bounds published.
+    #[test]
+    fn every_served_tool_carries_the_schema_its_spec_generates() {
+        let specs = fixture_specs();
+        let mut server = McpServer::new(&specs, deny_all());
+        let mut dispatch = NeverDispatch;
+        let response = server.handle(&request(1, "tools/list", json!({})), &mut dispatch).unwrap();
+        let listed = response["result"]["tools"].as_array().unwrap().clone();
+
+        for spec in &specs {
+            let name = tool_name_for(&spec.name);
+            let served = listed
+                .iter()
+                .find(|t| t["name"] == json!(name))
+                .unwrap_or_else(|| panic!("'{}' must be served as '{name}'", spec.name));
+            assert_eq!(
+                served["inputSchema"],
+                input_schema(spec),
+                "'{}' is served a schema its spec did not generate",
+                spec.name
+            );
+            assert_eq!(served["description"], json!(spec.doc), "the doc is the description");
+        }
+        assert_eq!(
+            listed.len(),
+            specs.len() + 1,
+            "every spec, plus the handler, and nothing hand-added"
+        );
+    }
+
+    // -- the exposure audit (§7, re-measured per server) -------------------
+
+    /// 🚨 **The security property, and what the console checks about itself every init.**
+    /// §7 measured that Claude Code withholds the `--permission-prompt-tool` handler from
+    /// the model's own tool list; §9 point 4 says re-measure it per server. Serving real
+    /// capability tools is exactly the change that could disturb it, so the check has to
+    /// distinguish three states, not two.
+    #[test]
+    fn the_audit_separates_a_withheld_handler_from_a_reachable_one_and_from_no_data() {
+        let mut server = server().with_server_name("organon");
+        let handler = server.permission_tool_flag_value();
+        let served = server.namespaced_tool_names();
+        assert_eq!(served, ["mcp__organon__viewport_set", "mcp__organon__shell_echo"]);
+        assert!(!served.contains(&handler), "the handler is not one of the capability tools");
+
+        // ⚠️ **Two different lists, and the distinction is the whole property.** The handler
+        // IS in our `tools/list` — it has to be, or the client could not call it — and must
+        // NOT be in the tools the *model* is offered. This audit reads the second.
+        let mut dispatch = NeverDispatch;
+        let listed = server.handle(&request(1, "tools/list", json!({})), &mut dispatch).unwrap();
+        let names: Vec<String> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&DEFAULT_PERMISSION_TOOL.to_string()), "the client can call it");
+
+        // The measured shape: our verbs offered, the handler absent.
+        let healthy = server.audit_exposure(&[
+            "Bash".to_string(),
+            "Read".to_string(),
+            served[0].clone(),
+            served[1].clone(),
+        ]);
+        assert!(!healthy.handler_offered);
+        assert_eq!(healthy.capabilities_offered, served);
+        assert!(healthy.capabilities_withheld.is_empty());
+        assert!(healthy.summary().contains("handler withheld"));
+
+        // The failure: the handler in the model's own list. It must not be able to read as
+        // the healthy line.
+        let breached = server.audit_exposure(&["Bash".to_string(), handler.clone()]);
+        assert!(breached.handler_offered);
+        assert!(breached.summary().starts_with("🚨"));
+        assert!(!breached.summary().contains("handler withheld"));
+
+        // ⚠️ And the third state: nothing reported proves nothing. A pass read off an empty
+        // list is the false negative this exists to avoid.
+        let blind = server.audit_exposure(&[]);
+        assert!(!blind.handler_offered);
+        assert!(!blind.reported_anything());
+        assert!(blind.summary().contains("could not be checked"));
+    }
+
+    /// A served tool the model cannot see is reported rather than assumed away — MCP tools
+    /// arrive deferred, so this is information, not a fault.
+    #[test]
+    fn a_served_tool_missing_from_the_model_s_list_is_named() {
+        let server = server().with_server_name("organon");
+        let audit = server.audit_exposure(&["Bash".to_string(), "mcp__organon__shell_echo".into()]);
+        assert_eq!(audit.capabilities_offered, ["mcp__organon__shell_echo"]);
+        assert_eq!(audit.capabilities_withheld, ["mcp__organon__viewport_set"]);
+        assert!(audit.summary().contains("1 of 2 console tools visible"));
     }
 
     // -- tools/call --------------------------------------------------------
