@@ -677,12 +677,38 @@ than truncating it, because the alternative is a tool's full output nested two f
 multiplied by every tool every subagent runs. And a subagent's own `result` / `system` lines
 are not folded into `SessionFacts` — a subagent's cost is not the turn's.
 
-🚨 **The fixture is hand-written and nobody has seen this on screen.** No capture on this
-machine contains a `Task` call at all, so `fixtures/claude_stream_subagent.jsonl` is a shape
-reasoned from the schema, not one observed. The correlation is sound (it is the decoder's
-own field, applied twice); whether a real subagent emits exactly these line kinds in this
-order is **unverified**. `fixtures/README.md` marks the split, and says to re-capture the
-first time a real fan-out runs through the console.
+✏️ **The fixture is a real capture now** (2026-08-13, `claude.exe` 2.1.228, this argv, two
+agents in parallel and one of them dispatching its own). It replaced a reconstruction, and
+it confirmed the correlation, the zero subagent `stream_event`s, and — the question the old
+split left open — that a subagent emits **no `result` and no `system` line of its own**
+either. `fixtures/README.md` carries all four corrections; three bear on this section:
+
+- 🚨 **The dispatch tool is named `Agent` on the wire, while `system`/`init` advertises
+  `Task`.** Both spellings sit in the one capture. Nothing here routes on the name, which
+  is the only reason a fixture saying `Task` never failed — but a view that special-cased
+  it would have matched nothing, and this document said "`Task` card" throughout on the
+  strength of a guess.
+- 🚨 **The depth-2 case measured above does not occur.** A nested dispatch appears only as
+  a `tool_use` and a `tool_result` **scoped to its parent**, so it lands as an ordinary
+  depth-1 step; the grandchild's own lines are never forwarded, and its `tool_use.id` is
+  never once a `parent_tool_use_id`. The flattening machinery is kept — nothing promises
+  the CLI will keep withholding those lines, and the hazard it closes is real the day they
+  arrive — but it is `conversation.rs`'s synthetic tests that cover it, with their
+  provenance declared, and no capture proves it.
+- ⚠️ **`Subagent::Said` is now backed by nothing observed.** Every subagent-scoped
+  `assistant` line in the capture carried a `tool_use` block and nothing else; the answer
+  reached the console only as the parent's `tool_result`. The card fills with *steps*, and
+  a design that assumed prose would arrive was assuming.
+
+📌 **And the capture opened a door the design did not know was there.** Five `system`
+subtypes nobody had seen — `task_started`, `task_progress`, `task_updated`,
+`task_notification`, `task_summary` — carry live subagent progress: a rolling
+`description`, `last_tool_name`, `usage.tool_uses`, `duration_ms`, a terminal `status`,
+and a `tool_use_id` that names the card. They are **main**-scoped (no `parent_tool_use_id`
+key at all), so rule 5 cannot see them and all five currently decode to `Notice` and render
+nothing. This does not weaken "there is no live text": these are not tokens. It does mean
+the honest liveness a card can show is larger than "a burst arrived", and reaching it needs
+a second correlation — by `tool_use_id` on a `system` line — that no rule currently has.
 
 **The process contract (§5.9.2, measured):** `-p --input-format stream-json
 --output-format stream-json --include-partial-messages --replay-user-messages --verbose`
@@ -1243,6 +1269,20 @@ both for `Read`. A byte count, an exit status, a truncation flag, the unified pa
 forgotten. This repo labels what it shows measured or derived, and a field with no capture
 behind it could be labelled neither.
 
+🚨 **A second shape is now captured, it is not readable, and the counter is how that was
+found.** `claude_stream_subagent.jsonl` — the real fan-out that replaced a hand-written
+reconstruction — carries two `tool_use_result` objects of a third kind: `Agent` results,
+`{"status","prompt","agentId","agentType","content","usage",…}` with **no `file` sub-object
+and no `type` key at all**. `result_detail` reads the `file` object whatever the line claims
+to be, which was recorded above as a bet on shape-stability rather than a measurement, with
+`MapStats::tool_details_declined` named as the canary on it. Swapping the fixture made the
+bet's first real test: the counter went 0 → 2 and a test failed loudly, rather than a card
+quietly showing numbers no tool sent. ⚠️ **`result_detail` is deliberately not widened.**
+What an `Agent` card should display — a token total, a duration, a nested-agent id — is a
+card-design question that no observation answers yet, and inventing one here would be the
+exact move this section's four-field list exists to refuse. An `Agent` result renders no
+detail today, and says so in a number.
+
 | Decision | Why |
 |---|---|
 | **`content` is dropped** | it is the file's text, which the `tool_result` block already carries in numbered form. The same file twice in one card |
@@ -1518,14 +1558,25 @@ path silently breaks the three-products-simultaneously guarantee that
   card reports *counts and completed steps*, never liveness, because counts are what the
   wire honestly carries. A view of a coordinator will still be quieter than the work is —
   it is now quiet in a way that says what is happening.
-- 🚨 **Nobody has seen a subagent card on screen, and its fixture is a reconstruction.** No
-  capture on this machine contains a `Task` call at all, so the shape the whole path is
-  tested against was reasoned from the schema rather than observed
-  (`fixtures/claude_stream_subagent.jsonl`, declared as hand-written in
-  `fixtures/README.md`). The correlation is the decoder's own measured field applied twice
-  and is sound; the *line kinds and their order* are not verified, and neither is a single
-  pixel of the card. This is the same class of entry as the conversation view's own first
-  one above, and it is answered the same way: somebody runs a real fan-out and looks.
+- ✏️ **The subagent fixture is a real capture now — and nobody has still seen the card on
+  screen.** The two halves of this entry came apart on 2026-08-13. The *wire* was measured:
+  a real two-agent fan-out was driven through the console's own argv and replaced the
+  reconstruction (`fixtures/claude_stream_subagent.jsonl`, and `fixtures/README.md` for
+  what it corrected). The correlation held; three of the reconstruction's shape claims did
+  not — the tool is called `Agent` and not `Task`, the wire stops at depth 1, and no
+  subagent in the capture said anything at all. 🚨 **The pixels are still unverified.** The
+  card has never been drawn from a real fan-out by anyone who looked at it, and a capture
+  cannot answer that any more than the other fixtures could answer the conversation view's
+  first entry above. Same class, same remedy: somebody runs one and looks.
+- 📌 **The console renders none of the subagent lifecycle the CLI actually sends.** Five
+  `system` subtypes in that capture — `task_started`, `task_progress`, `task_updated`,
+  `task_notification`, `task_summary` — carry a rolling description, the last tool name,
+  tool counts, durations and a terminal status, each naming its card by a `tool_use_id`
+  field. All five land as `Notice` and draw nothing, because rule 5 correlates on
+  `parent_tool_use_id` and these lines do not carry that key at all. This is a **gap, not
+  a decision**: it was never weighed, because until this capture nobody knew the lines
+  existed. It is the cheapest remaining improvement to a coordinator view, and it does not
+  disturb the liveness measurement above — progress metadata is not token deltas.
 - **The card's clipping is the VIEW's, and it says what it hid.** `conversation.rs` leaves
   per-element text unbounded on purpose — a tool result can be a whole file, and
   truncating it in the model would misrepresent the tool's output while looking like the
@@ -1571,11 +1622,13 @@ path silently breaks the three-products-simultaneously guarantee that
 - ✏️ **`tool_use_result` is rendered, and the fields it does not render are the honest part.**
   Only `filePath`/`numLines`/`startLine`/`totalLines`, because those are what a real capture
   contains; every richer field a card would want is absent because nothing has been observed
-  sending it. ⚠️ **Both captures that carry one are `Read` results**, so what a `Bash`, a
-  `Write` or an `Edit` puts in this object is *unknown on this machine* — `result_detail`
-  reads the `file` object whatever `type` the line claims, which is a guess about
-  shape-stability rather than a measurement. The counter that would catch it is
-  `MapStats::tool_details_declined`.
+  sending it. ⚠️ **Two shapes are captured and only one is readable**: the `two_tools`
+  capture's `Read` results, and the subagent capture's `Agent` results, which carry no `file`
+  object and are declined. What a `Bash`, a `Write` or an `Edit` puts here is still *unknown
+  on this machine*. 📌 This entry used to say both captured details were `Read`s and that
+  `MapStats::tool_details_declined` was the counter that *would* catch a third shape — it
+  has, on the first capture that contained one, which is a designed safeguard reporting
+  rather than a regression.
 - 🚨 **Thinking blocks still render nothing, and that is a refusal with a date on it.** The
   decoder reads them (`ContentBlock::Thinking`, text plus the opaque signature) and the
   transcript spends a block ordinal on them per rule 1, so the wiring is in place and the

@@ -11,6 +11,33 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the canary on `tool_use_result` fired, on its first real chance
+
+- 🚨 **A third `tool_use_result` shape exists, and the counter built to notice one noticed
+  it.** Two changes landed independently: one taught the tool card to read the undocumented
+  sibling object, recording in the same breath that both captured examples were `Read`
+  results and that `result_detail` reads the `file` sub-object *whatever* the line claims to
+  be — a bet on shape stability, with `MapStats::tool_details_declined` named as the canary.
+  The other replaced the hand-written subagent fixture with a real fan-out. Their merge put
+  the two together: the real capture carries two `tool_use_result` objects, both **`Agent`**
+  results (`status`/`prompt`/`agentId`/`agentType`/`usage`, no `file` sub-object, no `type`
+  key), so `result_detail` declined both and the counter went 0 → 2. The failure was a test
+  asserting the old fixture's premise, not a bug: nothing was mis-parsed, nothing was
+  attached, and the shape announced itself in a number rather than in a card quietly showing
+  figures no tool sent.
+- **The test was re-contracted rather than re-pointed.** Its premise — "a capture with no
+  `tool_use_result` on it" — is simply false of the fixture now, and preserving it by aiming
+  at a different file would have thrown away the better test the collision handed over:
+  *a `tool_use_result` of a shape this card cannot use is declined and counted, never
+  mis-parsed and never attached.* It asserts both halves, because a test checking only the
+  decline count would pass while details were silently attaching. Renamed to say that, with
+  the movement of both numbers justified in its own doc comment.
+- ⚠️ **`result_detail` is deliberately not widened to parse `Agent` results.** What such a
+  card should show — a token total, a duration, a nested agent's id — is a card-design
+  question no observation answers yet, and inventing an answer is the move the four-field
+  list exists to refuse. An `Agent` result renders no detail, and says so in a number. 420
+  tests in the compositor lib.
+
 ### Console Spike — a one-character edit stopped rendering as twenty lines
 
 - **The `Edit` diff is aligned now.** It printed `old_string`'s lines as removals and
@@ -98,6 +125,71 @@ From here on, this file gets an entry per meaningful change, newest first.
   table added routes eight modules to the section of the architecture doc that owns them, and
   names that doc as the authority over itself.
 
+### Console Spike — the subagent fixture stopped being a guess
+
+- **A real fan-out was captured and replaced the reconstruction.** One run of `claude.exe`
+  2.1.228 on the console's own argv (`agent_session.rs::ARGS`), given a prompt that dispatches
+  two agents in parallel, one of which dispatches an agent of its own.
+  `fixtures/claude_stream_subagent.jsonl` is that stream, sanitised to the existing convention;
+  the README's honesty split collapses to "captured". **The correlation held** — every
+  subagent-scoped line routed onto the card that spawned it, `subagent_routed` 6,
+  `subagent_unrendered` 2, `orphan_subagent_activity` 0, nothing on the orphan path. The wire
+  shape did not, in three ways, and each was a test that failed rather than an expectation
+  quietly moved.
+- 🚨 **The dispatch tool is named `Agent`. `system`/`init` advertises it as `Task`.** Both
+  spellings are in the same capture, in the same session. The only reason a fixture saying
+  `Task` survived weeks of green tests is that nothing in this crate routes on the tool name —
+  correlation is `parent_tool_use_id` alone. A view that special-cased the name would have
+  matched nothing, for as long as it took someone to run a real fan-out. Now pinned by a test
+  that asserts *both* spellings, so the day they converge is a failure and not a mystery.
+- 🚨 **The wire stops at depth 1, so the flattening machinery guards a case nothing produces.**
+  The second agent really did dispatch its own. That dispatch appears exactly twice — a
+  `tool_use` and a `tool_result`, both scoped to *its parent* — and lands as an ordinary
+  depth-1 step. The grandchild's own lines never arrive: its `tool_use.id` is never once a
+  `parent_tool_use_id`, so a card sees a nested agent's existence and its answer and nothing of
+  its work. `MAX_TRACKED_DEPTH`, `subagent_owner` and the depth badge are **kept** — nothing
+  promises the CLI will keep withholding those lines, and the hazard they close is real the day
+  it does not — but their coverage is now `conversation.rs`'s synthetic tests, which declare
+  their provenance, and the claim that a capture proved it is withdrawn.
+- ⚠️ **No subagent in the capture said anything.** Every subagent-scoped `assistant` line
+  carried a `tool_use` block and nothing else; the answer reached the console only as the
+  parent's `tool_result`. `Subagent::Said` — which the reconstruction exercised twice — is now
+  backed by no observation at all. Kept, because the schema permits it and declining a text
+  block would be a silent loss; but a card fills with *steps*, and a design expecting prose was
+  expecting.
+- 🚨 **Confirmed, and this is the one that mattered most:** §5.9.1's measurement that Claude
+  Code never forwards token-level deltas from a subagent. All 41 `stream_event` lines in the
+  capture are main-scoped, including the ones streaming the dispatch's own arguments, and
+  `subagent_stream_events` reads 0. The rendering path was designed around a constraint that
+  holds. Also answered, having been explicitly open: a subagent emits **no `result` and no
+  `system` line of its own** either — `parent_tool_use_id` is absent as a *key* on every
+  `system` line in the file.
+- ⚠️ **`ToolOutcome::text` was joining content blocks with nothing, and it showed.** Every
+  array-form tool result in every earlier fixture held exactly one block, so the separator was
+  unfalsifiable. An `Agent` result carries **two** — the subagent's answer, then a trailer
+  naming its `agentId` and `<usage>` — and the card read `bravoagentId: a4d5…`, the last word
+  of the answer welded to the next block's first. These are separate content blocks, not
+  fragments of one string (that is what `input_json_delta` is), so they are now joined the way
+  separate blocks read.
+- 📌 **The capture opened a door the design did not know was there.** Five undocumented `system`
+  subtypes carry subagent lifecycle — `task_started`, `task_progress`, `task_updated`,
+  `task_notification`, `task_summary` — with a rolling `description` ("Reading one.txt"),
+  `last_tool_name`, `usage.tool_uses`, `duration_ms`, a terminal `status`, and a `tool_use_id`
+  naming the card. They are **main**-scoped, carrying no `parent_tool_use_id` key at all, so
+  rule 5 cannot reach them; all five decode to `Notice` and render nothing today. That is a gap
+  rather than a decision — it was never weighed, because nobody knew the lines existed — and it
+  is the cheapest remaining improvement to a coordinator view. It does not soften the liveness
+  finding above: progress metadata is not token deltas.
+- ⚠️ **One sanitisation in that fixture is not a straight replacement.** A dispatched agent's
+  prompt contains the working directory, and the `input_json_delta` fragments carrying it split
+  **mid-path** — the whole path is contiguous only in their concatenation, so no per-fragment
+  replacement can match it, and a naive scrub silently leaves the path in the file. Those
+  fragments were scrubbed as one string and re-split into the same number of pieces at the same
+  proportional offsets, with "the fragments rebuild exactly the settled `input`" asserted
+  either side. `fixtures/README.md` says so where someone re-capturing will read it.
+- organon-shell lib: **393 passing, from 390** — two tests built on the reconstruction rewritten
+  into five built on the capture. No expected value was adjusted to make a test pass.
+
 ### Console Spike — the twelve agents a coordinator dispatched stopped being eight minutes of silence
 
 - **A subagent's work now renders inside the tool card that spawned it.** A coordinator session
@@ -143,7 +235,9 @@ From here on, this file gets an entry per meaningful change, newest first.
   reasoned from the schema rather than observed, and is declared as hand-written in that
   directory's README. The correlation is sound — it is the decoder's own measured field applied
   twice — but whether a real subagent emits exactly these line kinds in this order is unverified,
-  as is every pixel of the card. Re-capture at the first real fan-out.
+  as is every pixel of the card. Re-capture at the first real fan-out. ✏️ **Re-captured** — see
+  the entry above; the correlation held, three shape claims did not, and the pixels are still
+  unseen.
 
 ### The + menu drops because of its geometry, not because egui caught it
 
