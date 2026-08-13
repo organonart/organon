@@ -68,6 +68,48 @@ capability worth designing for rather than discovering.
 
 A deny surfaces to the model as `"non_execution_kind":"permission-rule"`.
 
+### 🚨 4b. The permission call times out after **60 seconds** — and progress notifications extend it
+
+🚨 **Retraction.** §4 and §8 were written on the belief that the client waits indefinitely for a
+permission answer — *"a card with no timeout, the client just waits."* **That is false**, and it
+was found the only way it could be: James read a card, took longer than a minute, and the tool
+failed underneath him with `Error calling tool (Write): The operation timed out.`
+
+**Measured, 2026-08-12**, with a standalone probe that timestamps the request and watches the
+socket:
+
+```
+[  5852 ms] conn #1 PERMISSION CALL  id=2 progressToken=Some("2")
+[ 65862 ms] socket error at 60.010 s: connection forcibly closed (10054)
+[ 67872 ms] conn #2 PERMISSION CALL  id=3 progressToken=Some("3")   ← the model retried
+[127878 ms] socket error at 60.005 s
+```
+
+**60.0 s, twice, to the millisecond.** Both surfaced to the model as a tool-use timeout.
+
+**The `progressToken` in `_meta` (§3) is the way out, and it works.** Answer the POST with
+`text/event-stream` and emit `notifications/progress` against the request's own token:
+
+| beat | stalled | outcome |
+|---|---|---|
+| 5 s | 90 s | answered `allow` at 90.088 s, 17 notifications, file written |
+| 10 s | 300 s | answered `allow` at 300.142 s, 29 notifications, model reported success |
+
+No abort at any point, and **no ceiling found at 5× the deadline**.
+
+📌 **SSE is forced here, not chosen.** A server-initiated message about a request rides that
+request's own response stream, and §8 established that the optional `GET /mcp` push stream can
+be `405`ed. So the permission call — and only it — is answered on a stream; everything else
+stays plain request/response.
+
+⚠️ **The beat is also a liveness check, and it must fail closed.** If the agent stops waiting —
+turn cancelled, process gone, client gave up regardless — the gate **denies** and the card says
+so. It must never allow on timeout: a console that approves things because the human was slow is
+worse than one that asks twice.
+
+⚠️ **Never leave an orphaned card.** A card still offering *allow* for a call that already failed
+is worse than no card, because it invites an answer that cannot matter.
+
 ### 🚨 5. There is no persistence — every call is asked
 
 Three calls to the same tool produced three separate handler requests. **"Allow and remember"
