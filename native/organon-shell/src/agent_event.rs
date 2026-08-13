@@ -81,6 +81,15 @@
 //!   that dispatches its own produces a `tool_use` and a `tool_result` scoped to *its
 //!   parent*, and nothing else: the grandchild's `tool_use.id` is never a
 //!   `parent_tool_use_id`. Measured on a run that really did nest.
+//! - **A `tool_use` block carries a `caller` sibling of `input`** — `{"type":"direct"}`
+//!   in every capture, on every tool, dispatches included. [`ToolCall`] reads `id`,
+//!   `name` and `input`, so this is **dropped**, and it is the one place a known block
+//!   type loses a field where an unknown one would not (`ContentBlock::Unknown` keeps
+//!   the body whole). Recorded rather than decoded because no consumer wants it yet, and
+//!   a field with one observed value teaches nothing about its range. Present in
+//!   `claude_stream_two_tools.jsonl` since the first capture; noticed on the second.
+//!   An `Agent` call's `input` likewise carries `run_in_background`, which does reach
+//!   the card, since arguments are kept verbatim.
 //! - **A subagent-scoped line carries `subagent_type` and `task_description` on the
 //!   envelope**, beside `parent_tool_use_id`. Not decoded yet; they are what would let a
 //!   card say *which* agent, in the agent's own words, without parsing the arguments.
