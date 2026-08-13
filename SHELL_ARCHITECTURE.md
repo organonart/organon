@@ -2276,25 +2276,29 @@ path silently breaks the three-products-simultaneously guarantee that
   So set-then-immediately-read can return the previous framing, and that is not a bug the read
   can fix from its side — it is the write lane's fire-and-forget shape, one frame wide. Nothing
   papers over it; the reading is labelled for what it is.
-- 🚨 **The working-directory fix is necessary and I could not prove it sufficient — there is
-  a second, independent reason `organon-cli` may not reach the model, and it is not in this
-  code.** Measured against the real `claude.exe` (2026-08-13, two headless invocations, the
-  second killed at the `system/init` line so no turn ran): `system/init` carries **both** a
-  `slash_commands` array and a `skills` array. `organon-cli` is in `slash_commands` from a
-  cwd inside the repo *and* from a scratch directory outside it — so the CLI does discover
-  it, by both routes. It is **absent from `skills` in both**, while three neighbouring
-  user-global skills (`comfyui-video`, `hip-reduction`, `organon-mind-social`) are in both.
-  Ruled out by measurement: it is not the duplicate (project-local *and* user-global) copies,
-  since it is missing from the scratch cwd where only one copy exists; not description length
-  (582 bytes, against 607 for one that appears); not file size (18 KB, against 23 KB for one
-  that appears); not a frontmatter difference — both carry exactly `name` and `description`.
-  **The remaining hypothesis, untested:** `~/.claude/skills/organon-cli` is a *junction* whose
-  real path is inside another repo's `.claude/skills/`, and the loader may register the slash
-  command while declining to offer the model a skill it resolves outside the session's scope.
-  The cheap test is a machine change and needs James: replace the junction with a real copy,
-  relaunch, and re-read `skills` in `system/init`. Until then, **do not read this change as
-  "the agent can now use the skill"** — read it as "the agent is now in the repo, is told so,
-  and the skill is at least registered by name."
+- ✅ **RESOLVED 2026-08-13: the second reason was CRLF line endings, and the fix is a
+  `.gitattributes` pin.** Claude Code parses a skill's YAML frontmatter from between two
+  `---` fences and its parser does not accept `---\r\n`, so on a Windows working tree the
+  frontmatter fails to parse and the skill degrades silently: `name` falls back to the
+  directory (which is why it was in `slash_commands` and looked installed), `description`
+  falls back to the body's first heading, and it is **never offered to the model**. Measured
+  against a real `claude -p` session with three sibling skills as controls — `organon-cli`
+  was the only one of four with CRLF (LF=318, CR=318; the others CR=0) and the only one
+  missing from `skills`. Converting a **byte-identical** copy to LF took the offered count
+  22 → 23 and restored its real description.
+  ⚠️ **The junction hypothesis recorded here was tested and FALSIFIED** — a real directory
+  copy fails identically. So were file size (a 23 KB sibling loads), description length (a
+  607-byte sibling loads), a BOM, duplicate copies, a colliding slash command, a disabling
+  setting, and the skill's own name. Every one of those was ruled out by experiment, and the
+  measurement that mattered was a byte count rather than a `grep -c`, which had reported the
+  siblings as CRLF too.
+  ⚠️ **The index was always LF** (`git ls-files --eol` → `i/lf w/crlf`): nothing was ever
+  committed wrong, the file is correct in the repository and broken on disk, for Windows
+  checkouts only — which is what put it out of reach of review. Note this was the *third*
+  fix in the same place: the skill was a git symlink (unusable on a Windows checkout), then
+  a real tracked file, which is precisely what gave it a CRLF working copy. Each fix
+  uncovered the next failure. The working-directory fix this entry originally qualified was
+  necessary and is now also sufficient.
 - ⚠️ **Nothing in this change has been seen running.** No GPU here, and the console was
   deliberately not launched. The four resolution rules, the home stop, the notes and the
   bare-directory warning are pinned by ten headless tests; `cargo check --features
