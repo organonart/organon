@@ -1266,7 +1266,12 @@ fn diff_body(ui: &mut egui::Ui, diff: &EditDiff) {
 // * **"● N tools running" says tools, not "thinking".** `Transcript::is_working` is derived
 //   from unresolved tool calls only, so a model writing prose with nothing in flight is *not*
 //   working by that test. A label reading "thinking" would therefore be false exactly when it
-//   was most reassuring.
+//   was most reassuring. That hole is closed by a **different** signal rather than by
+//   loosening this one: [`Standing::Generating`] is the `message_start` … `message_stop`
+//   bracket off the wire ([`crate::agent_map`] rule 7), so the band can say tokens are
+//   arriving *because they are*, and "N tools running" still means exactly N tool calls.
+//   ⚠️ Neither reading is ever derived from "a turn is open and nothing else is happening",
+//   and no rate, bar or estimate goes beside them: the stream carries none of the three.
 // * **Cost is labelled `session`, and per-turn tokens are not shown at all.** `cost_usd` is
 //   cumulative on the wire and `last_turn_usage` is not, so one band carrying both invites the
 //   reader to add them up. Cost answers "what has this conversation cost" in four characters;
@@ -1318,6 +1323,13 @@ pub enum Standing {
     Asking,
     /// Tool calls in flight. **Not "thinking"** — see this section's note.
     Working,
+    /// An assistant message is open: tokens are arriving right now.
+    ///
+    /// Measured, never inferred — [`EventMapper::is_generating`] is the `message_start` …
+    /// `message_stop` bracket and nothing else. It is deliberately *not* "requesting",
+    /// which means the opposite half of a round trip and is emitted once per run rather
+    /// than once per message; [`crate::agent_map`] rule 7 owns that argument.
+    Generating,
     /// Alive, but nothing has arrived yet. The cold start every session opens in.
     Connecting,
     /// Alive, nothing outstanding.
@@ -1373,8 +1385,13 @@ pub struct StripContent {
     pub log: Option<String>,
 }
 
-/// The transcript-side inputs the strip reads, gathered so the decision below can be a pure
-/// function of plain numbers rather than of a live [`Transcript`].
+/// The **live** inputs the strip reads — the things that are true right now and will not be
+/// true in a minute — gathered so the decision below can be a pure function of plain values
+/// rather than of a live [`Transcript`], a [`DecisionMemory`] and an [`EventMapper`].
+///
+/// The split against [`SessionFacts`] is the retention rule, not the source: everything there
+/// was *reported* and stands until something replaces it; everything here is a reading taken
+/// this frame, and every field of it goes back to zero or `false` on its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LiveCounts {
     pub pending_approvals: usize,
@@ -1383,6 +1400,15 @@ pub struct LiveCounts {
     pub remembered: usize,
     /// Whether a `system/init` has been seen — the cold-start discriminator.
     pub has_session: bool,
+    /// [`EventMapper::is_generating`]: an assistant message is open and tokens are arriving.
+    ///
+    /// ⚠️ **This is the field that says why the struct is not "the transcript's numbers".**
+    /// It comes off the mapper, not the transcript, and it is here rather than on
+    /// [`SessionFacts`] because of what it *is*: a state that flips on and off, against a
+    /// type whose every field is a reported value that persists until replaced. Mixing the
+    /// two would mean a strip that keeps claiming the agent is writing after it stopped —
+    /// [`crate::agent_map`] rule 7 carries the full argument and the clearing paths.
+    pub generating: bool,
 }
 
 /// **The priority ordering, and the whole of it.**
@@ -1392,15 +1418,30 @@ pub struct LiveCounts {
 /// 2. **A pending approval outranks running tools.** The agent is *halted* on a human, and
 ///    only one of the two states it can get out of by itself. This is the ordering the first
 ///    status line had, and it is kept for the reason it had it.
-/// 3. **Running tools outrank a finished turn's `needs_action`.** ⚠️ This is the one place
-///    the "waiting outranks working" rule is deliberately not applied, and the reason is that
-///    `needs_action` describes a turn that has *ended*: the mapper only clears it when the
-///    next `post_turn_summary` arrives, so a demand answered by a reply the agent is already
-///    acting on stays set for the length of that turn. Showing it over live work would be a
-///    stale "waiting on you" — the failure `SessionFacts::record_notice` exists to avoid.
-/// 4. **`needs_action` then, verbatim.** It is the agent's own sentence about what it wants.
-/// 5. **Cold start**, when no init has been seen.
-/// 6. **`last_status_detail`**, else a bare "ready".
+/// 3. **Running tools outrank generating**, and the two are true *together* for most of a
+///    turn — a tool block opens inside the message that called it, so the bracket is still
+///    open while the call runs. The ordering is therefore not about which is more urgent; it
+///    is about which sentence is worth the one line there is. "● 3 tools running" names what
+///    is happening and can be checked against the cards above it; "● generating" only says
+///    that *something* is. The specific reading wins, and the general one is what the band
+///    falls back to when there is nothing more specific to say — which is exactly the stretch
+///    of a turn that used to read as idle.
+/// 4. **Generating outranks a finished turn's `needs_action`**, for the identical reason
+///    running tools do. ⚠️ This is the one place the "waiting outranks working" rule is
+///    deliberately not applied: `needs_action` describes a turn that has *ended*, and the
+///    mapper only clears it when the next `post_turn_summary` arrives — so a demand the human
+///    already answered stays standing for the whole of the reply that answered it. Tokens
+///    arriving now are live activity by exactly the measure a running tool is, and a rule
+///    that keeps a stale "waiting on you" off the band has to cover both or it does not hold.
+/// 5. **`needs_action` then, verbatim.** It is the agent's own sentence about what it wants.
+/// 6. **Cold start**, when no init has been seen.
+/// 7. **`last_status_detail`**, else a bare "ready".
+///
+/// ⚠️ **Between two messages of one turn this falls through to 7 for a frame or two** — the
+/// bracket really has closed and the next one has not opened yet. That flicker is the honest
+/// answer, and it is the price of refusing the alternative: holding "generating" across the
+/// gap would mean inventing a turn-open state the wire does not report, and that is the
+/// version that gets stuck on when a turn ends in a way nobody predicted.
 pub fn status_reading(
     failure: Option<&str>,
     live: LiveCounts,
@@ -1419,6 +1460,12 @@ pub fn status_reading(
         let n = live.running_tools;
         let plural = if n == 1 { "tool" } else { "tools" };
         return say(Standing::Working, format!("● {n} {plural} running"));
+    }
+    if live.generating {
+        // No count, no rate, no estimate. The wire says a message is open; it does not say
+        // how much is left, how fast it is arriving, or when it will stop, and every one of
+        // those would have to be invented to be shown.
+        return say(Standing::Generating, "● generating".to_string());
     }
     if let Some(action) = &facts.needs_action {
         return say(Standing::Asking, format!("◈ {action}"));
@@ -1575,7 +1622,11 @@ fn standing_color(standing: Standing) -> Color32 {
     match standing {
         Standing::Dead => BAD,
         Standing::Asking => ASKING,
-        Standing::Working => RUNNING,
+        // One colour for both, deliberately. The distinction the palette has to carry is
+        // busy-versus-blocked ([`ASKING`]'s note); busy-with-tools and busy-writing are the
+        // same answer to "can I walk away", and giving them two amber-ish colours would spend
+        // the band's whole colour budget on a difference the text already spells out.
+        Standing::Working | Standing::Generating => RUNNING,
         Standing::Connecting | Standing::Ready => DIM,
     }
 }
@@ -1588,6 +1639,10 @@ fn status_strip(ui: &mut egui::Ui, pane: &ConversationPane) {
             running_tools: pane.transcript.running_tools().len(),
             remembered: pane.memory.len(),
             has_session: pane.transcript.session_id().is_some(),
+            // The one reading that comes off the mapper rather than the transcript: the
+            // bracket is a stream fact, and the transcript is an ordered list of what was
+            // said, which cannot hold "and it is still being said".
+            generating: pane.mapper.is_generating(),
         },
         pane.mapper.facts(),
         pane.transcript.session_id(),
@@ -2504,7 +2559,14 @@ mod tests {
             running_tools: running,
             remembered: 0,
             has_session: true,
+            generating: false,
         }
+    }
+
+    /// The same, with an assistant message open — the state the strip could not see at all
+    /// before [`Standing::Generating`] existed.
+    fn live_generating(pending: usize, running: usize) -> LiveCounts {
+        LiveCounts { generating: true, ..live(pending, running) }
     }
 
     /// **The cold start, which every session opens in.** Before `system/init` there is no
@@ -2512,7 +2574,9 @@ mod tests {
     /// plate or the word "None" is worse than one that says it is connecting.
     #[test]
     fn before_the_first_line_the_strip_says_it_is_connecting() {
-        let content = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        let cold = LiveCounts::default();
+        assert!(!cold.generating, "nothing has opened a message, so nothing claims one is open");
+        let content = strip_content(None, cold, &SessionFacts::default(), None, None);
         assert_eq!(content.model, ModelSlot::Connecting, "the plate says it is coming");
         assert_eq!(content.reading.standing, Standing::Connecting);
         assert_eq!(
@@ -2551,7 +2615,13 @@ mod tests {
         facts.needs_action = Some("answer the question".into());
         let content = strip_content(
             Some("the agent stopped listening: broken pipe"),
-            LiveCounts { pending_approvals: 2, running_tools: 3, remembered: 1, has_session: true },
+            LiveCounts {
+                pending_approvals: 2,
+                running_tools: 3,
+                remembered: 1,
+                has_session: true,
+                generating: true,
+            },
             &facts,
             Some("abc-123"),
             None,
@@ -2595,6 +2665,101 @@ mod tests {
         let resumed = strip_content(None, live(0, 1), &facts, Some("abc"), None);
         assert_eq!(resumed.reading.standing, Standing::Working);
         assert_eq!(resumed.reading.text, "● 1 tool running");
+    }
+
+    /// **The hole this closed.** A model writing prose with no tool in flight used to fall all
+    /// the way through to "ready" — which is most of a turn reading as though nothing were
+    /// happening. It now reports the `message_start` … `message_stop` bracket, and it reports
+    /// only that: no count, no rate, no bar, no estimate, because the wire carries none of
+    /// them and each would have to be invented to be drawn.
+    #[test]
+    fn an_open_message_reports_generating_and_nothing_more_than_that() {
+        let facts = started("claude-opus-5");
+        let content = strip_content(None, live_generating(0, 0), &facts, Some("abc"), None);
+        assert_eq!(content.reading.standing, Standing::Generating);
+        assert_eq!(content.reading.text, "● generating");
+        for invented in ["%", "/s", "tok", "eta", "left", "of"] {
+            assert!(
+                !content.reading.text.contains(invented),
+                "the band must not imply a rate or a remainder ({invented}): {}",
+                content.reading.text
+            );
+        }
+        // The same session with the bracket closed is the old reading, unchanged.
+        let closed = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        assert_eq!(closed.reading.standing, Standing::Ready);
+        assert_eq!(closed.reading.text, "ready");
+    }
+
+    /// **Where generating sits, and it sits in two places at once.**
+    ///
+    /// Below running tools, because a tool block opens *inside* the message that called it —
+    /// so both are true for most of a turn and "3 tools running" is the sentence worth the one
+    /// line. Above `needs_action`, because that describes a turn which has *ended* and is only
+    /// cleared by the next `post_turn_summary`; tokens arriving now are live activity by
+    /// exactly the measure a running tool is, and the rule that keeps a stale "waiting on you"
+    /// off the band has to cover both.
+    #[test]
+    fn generating_yields_to_running_tools_and_supersedes_a_finished_demand() {
+        let mut facts = started("claude-opus-5");
+        facts.needs_action = Some("pick one of the three options".into());
+        facts.last_status_detail = Some("asked a question".into());
+
+        let with_tools = strip_content(None, live_generating(0, 2), &facts, Some("abc"), None);
+        assert_eq!(with_tools.reading.standing, Standing::Working);
+        assert_eq!(
+            with_tools.reading.text, "● 2 tools running",
+            "the specific reading wins: it names what is happening, generating only says that \
+             something is"
+        );
+
+        let writing = strip_content(None, live_generating(0, 0), &facts, Some("abc"), None);
+        assert_eq!(
+            writing.reading.standing,
+            Standing::Generating,
+            "a demand the human already answered must not sit on the band through the reply \
+             that answered it"
+        );
+        assert_eq!(writing.reading.text, "● generating");
+
+        // …and the moment the bracket closes, the demand is what is left to say.
+        let idle = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        assert_eq!(idle.reading.standing, Standing::Asking);
+        assert_eq!(idle.reading.text, "◈ pick one of the three options");
+    }
+
+    /// The two readings above generating still outrank it. A dead agent has no tokens
+    /// arriving whatever the last thing it said was, and a pending question is the agent
+    /// *halted* on a human — the one state it cannot get out of by itself.
+    #[test]
+    fn a_dead_agent_and_a_pending_question_both_still_outrank_generating() {
+        let facts = started("claude-opus-5");
+        let asked = strip_content(None, live_generating(1, 0), &facts, Some("abc"), None);
+        assert_eq!(asked.reading.standing, Standing::Asking);
+        assert_eq!(asked.reading.text, "◈ 1 permission request — waiting on you");
+
+        // ⚠️ The clearing path there is no event for: the process dies mid-message, so the
+        // mapper's state stays lit and nothing on the stream will ever put it out. `Dead`
+        // outranking everything is what answers that, which is why it is not a clear.
+        let gone = strip_content(
+            Some("the agent process ended"),
+            live_generating(0, 0),
+            &facts,
+            Some("abc"),
+            None,
+        );
+        assert_eq!(gone.reading.standing, Standing::Dead);
+        assert_eq!(gone.reading.text, "the agent process ended");
+    }
+
+    /// Busy is one colour. The distinction the palette has to carry is busy-versus-blocked,
+    /// and busy-with-tools against busy-writing is the same answer to "can I walk away" —
+    /// the text already spells out which.
+    #[test]
+    fn generating_and_working_read_as_the_same_kind_of_busy() {
+        assert_eq!(standing_color(Standing::Generating), standing_color(Standing::Working));
+        assert_ne!(standing_color(Standing::Generating), standing_color(Standing::Ready));
+        assert_ne!(standing_color(Standing::Generating), standing_color(Standing::Asking));
     }
 
     /// With nothing outstanding the band reports the turn the agent described, not a guess.
@@ -2736,7 +2901,13 @@ mod tests {
         facts.last_turn_duration_ms = Some(7_389);
         let busy = strip_content(
             None,
-            LiveCounts { pending_approvals: 2, running_tools: 0, remembered: 9, has_session: true },
+            LiveCounts {
+                pending_approvals: 2,
+                running_tools: 0,
+                remembered: 9,
+                has_session: true,
+                generating: true,
+            },
             &facts,
             Some("11111111-2222-3333-4444-555555555555"),
             Some(&"a diagnostic line off the child that is far too long for the band ".repeat(8)),

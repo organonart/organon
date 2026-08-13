@@ -11,6 +11,53 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the band can say the agent is thinking, and says nothing more than that
+
+- **`Standing::Generating` — `● generating`, fourth in the status strip's priority order.**
+  The band could report "3 tools running" and could not report that the model was *writing*:
+  `Transcript::is_working()` is derived from unresolved tool ids alone, so prose with nothing
+  in flight read as **idle** — during the stretch of a turn a person is most likely to be
+  watching. Closed with a second measured signal rather than by loosening the first, so
+  "N tools running" still means exactly N tool calls.
+- 🚨 **The signal is the `message_start` … `message_stop` bracket, NOT `system`/`status` =
+  `"requesting"`** — measured on the committed capture `claude_stream_two_tools.jsonl`. That
+  run makes **two** API round trips and `"requesting"` appears **once**, on line 4, ahead of
+  the first message; the second `message_start` has no status line before it. And nothing
+  anywhere reports the request returning — no `"responding"`, no closing status, no
+  counterpart of any kind. A state keyed off it would be shown for a session's first request
+  and silently absent for every one after, with nothing to tell those two cases apart, and
+  would need a clearing rule invented for it besides. The bracket is emitted once per message
+  and closes itself. `"requesting"` stays read-for-facts and renders nothing, a refusal pinned
+  by `a_requesting_status_alone_changes_nothing`.
+- ⚠️ **`EventMapper::streaming_message` was deliberately not reused for it.** It is set on
+  `message_start` and **never cleared** — `MessageStop` was a no-op arm before this change —
+  so `.is_some()` means "a start was seen at some point", not "a message is open". That is on
+  purpose: the id is what a late text delta keys against, and clearing it at the stop would
+  trade a stuck status for a **lost sentence**. The new flag is a second field beside it,
+  pinned by `closing_a_message_does_not_detach_a_late_delta_from_it`.
+- **It lives beside `SessionFacts` rather than on it, and the clearing paths are the whole of
+  the correctness.** Every fact is a reported value that holds until replaced; this one flips
+  on and off, and a stale one would be the band claiming the agent is writing after it
+  stopped. It clears on `message_stop`; on `result` (an interrupt or `error_during_execution`
+  ends the turn without ever reaching a stop); on a mid-stream `system/init`, cleared
+  **before** the repeat guard that otherwise drops that line; and a second `message_start` is
+  *assigned* rather than counted, so two opens without a stop cannot strand a tally. ⚠️ The
+  one exit with no event at all is **the process dying mid-message** — `Standing::Dead`
+  outranking every other reading is what answers it, which makes those two one dependency
+  rather than two features.
+- 🚨 **The wart, documented rather than hidden:** between two messages of one turn the band
+  falls through to "ready" for a frame or two. The bracket really has closed, and holding it
+  across the gap would mean inventing a turn-open state the wire does not report — the
+  version that gets stuck on when a turn ends in a way nobody predicted.
+- **What it refuses.** No token count, no rate, no progress bar, no ETA, no elapsed timer:
+  the wire says a message is open and says nothing about how much is left, how fast it is
+  arriving or when it will stop, and there is no clock in this path by design. It shares
+  `Working`'s amber, because busy-with-tools and busy-writing are the same answer to "can I
+  walk away" and the colour the band must keep distinct is *blocked on you*. Generating
+  outranks a finished turn's `needs_action` for the same reason running tools do: that demand
+  is only cleared by the next `post_turn_summary`, so it would otherwise sit on the band
+  through the entire reply that answered it. 313 tests in the compositor lib, from 302.
+
 ### Console Spike — a composer you can write in, and a band that says who you are talking to
 
 - **The composer is multiline.** Three rows at rest, growing a row at a time to a twelve-row

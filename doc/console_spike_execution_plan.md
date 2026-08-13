@@ -601,6 +601,90 @@ own verbs.
 That is a real reason to serve our verbs over MCP, and it is a different reason than the one
 written above.
 
+### 5.9.26 The console extends itself from inside itself — raised 2026-08-12 (James), NOT settled
+
+📌 **This is capture, not design.** James raised the direction and explicitly deferred the
+mechanism: *"we don't need to figure that all out tonight like how to hot load etc. I just want
+to bring it up."* What follows records the intent and the ground that already exists, so the
+next session starts from what is true rather than re-deriving it. Nothing here is a decision.
+
+In his own words:
+
+> "Soon we will be doing this inside of the console. So you need to make sure that the skill
+> includes directions regarding how to extend the console from within the console. This was the
+> idea behind Pi. It is the first self-extending agentic harness. And what that means mostly is
+> that the creator of Pi gave the agent its own docs, installed with it, and an accompanying
+> skill or context instructing the agent how to extend itself. I am consciously extending that
+> paradigm to organon-console."
+
+**The paradigm is three things, and only one of them is runtime machinery.** The agent's own
+docs, installed alongside it. A skill teaching it how to modify itself. And a loop where a
+change takes effect. The first two are context engineering — no build, no new subsystem — which
+is why this is nearer than "self-extending harness" makes it sound.
+
+**Two of the three already exist here, and one of them is stronger than Pi's version.**
+`SHELL_ARCHITECTURE.md` is the console's living state, and it is *hook-enforced*: ✅
+`.claude/hooks/doc-rules.sh:31` maps `native/organon-shell/src/*.rs` and
+`native/organon-shell/Cargo.toml` to it, so the code cannot move without the doc being called
+for. A shipped-docs approach normally cannot promise that — it ships a snapshot and hopes. Here
+the drift is caught by machinery. The skill exists too; §5.9.25 and §10 already govern it.
+
+**§5.9.25 leads here on its own, and does not need re-arguing.** It settled that the CLI is the
+agentic API because it is the only interface every agent already has. Self-extension is that
+argument's conclusion: an agent that can run a command and read a doc can change the thing it is
+running inside. The step from "reach the console's capabilities" to "alter them" is smaller than
+it looks, and it is the same seam.
+
+**There is already ONE working self-extension seam, and it is the template.** ✅ The harness
+registry: `harness::load` (`native/organon-shell/src/harness.rs:188`) seeds from `builtin()`,
+reads `harnesses.json` from the OrganonShell store root, and merges user entries **over the
+built-ins by id** — a matching id replaces the built-in wholesale, a new id appends in file
+order. `shell_main.rs:1236` calls it at startup. So **a new tab type is a data change with no
+rebuild**, and this machine already relies on it (the Vera and Shell (WSL) rows). The module
+documents its own traps, and two matter to anyone building on this shape: ⚠️ a missing *or
+unparseable* file is silently "no user entries" — `read_to_string(…).ok().and_then(|s|
+serde_json::from_str(&s).ok()).unwrap_or_default()` swallows a parse failure exactly like an
+absent file, which is how a BOM makes a valid-looking config do nothing; and ⚠️ `cwd` is a path
+in **the namespace the process actually starts in**, so a WSL harness takes a Linux path.
+
+The general point worth recording before anyone reaches for the hard version: **the gap between
+"edit source and rebuild" and "hot load" is far narrower for anything expressible as data than
+for code**, and a good deal of the console is data-shaped — command specs, material names,
+harness rows. Only harness rows are read from disk today; the others are compiled tables that
+*could* be. That is where this direction is cheap, and naming it now is what stops the first
+attempt reaching for hot-loading Rust.
+
+🚨 **Issue #19 stops being a papercut and becomes the blocker.** `.claude/skills/organon-cli` is
+committed as a git symlink (✅ mode `120000` in the index), and on a Windows checkout without
+`core.symlinks=true` it lands as a plain file containing the path. ✅ Verified in this checkout:
+24 bytes, contents `../../skills/organon-cli`. No error, no warning — the skill simply is not
+there. A directory junction was installed machine-side on organon-one, so it works *on this
+machine*; the repo-side fix is unfiled, and every other Windows checkout has the defect.
+
+The severity is what changes. A skill that is merely documentation degrades to *"the agent does
+not know a command."* A skill that is **the self-extension mechanism** degrades to *"the agent
+cannot extend the thing it lives in, and has no way to discover that."* Same defect, same
+silence, and the second one is not recoverable by the agent noticing. §10 already argues that a
+stale skill degrades worse than an absent one; a missing skill under this direction is worse
+still. The moment this direction is committed to, #19 is on the critical path.
+
+**Tonight's status strip is the test case, and it is encouraging.** An agent inside the console
+adding that strip would have needed three things: which file owns the bottom band, the
+🚨 `ScrollArea`-inside-`Layout::bottom_up` collapse, and the honesty rule about what may be
+displayed at all. ✅ All three are written down — the first two in `SHELL_ARCHITECTURE.md`'s
+"The two bands under the scrollback", the third in the `SessionFacts` doc comment in
+`native/organon-shell/src/agent_map.rs` (why a context bar, a quota percentage, a session token
+total and `num_turns` are each declined). None of that was written as preparation for this. The
+useful inference: the eventual guide is more **assembling what already exists** than authoring
+something new.
+
+**What is NOT decided, deliberately, by James, tonight:**
+
+- **How a change takes effect.** Hot load, rebuild-and-relaunch, or data-only. Open.
+- **What the skill actually says.** Not drafted, and deliberately not drafted here.
+- **Whether self-extension is scoped to the data seams or reaches code.** Open, and it is the
+  question the other two answers hang off.
+
 ### 5.9.3 The mapping contract — decoder → transcript, and the six measured facts that shape it
 
 The decoder (`agent_event.rs`) and the transcript model (`conversation.rs`) were written by

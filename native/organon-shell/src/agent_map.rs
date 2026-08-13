@@ -77,6 +77,42 @@
 //! **latest-wins** for everything that describes the most recent turn. Nothing is
 //! summed. See [`SessionFacts`] for what is deliberately *not* carried.
 //!
+//! # 7. A live turn state is not a fact, and only one of the two signals can carry it
+//!
+//! [`SessionFacts`] holds what the session *reported*: a field is set when a line carrying
+//! it arrives and then holds that value until a later line replaces it. "The agent is
+//! generating **right now**" is not that shape — it flips on and it flips off, and a
+//! reader shown a stale one would be told the agent is working after it stopped. So it
+//! lives beside the facts rather than on them, as [`EventMapper::is_generating`].
+//!
+//! Two candidate signals arrive, and 🚨 **they do not mean the same thing**:
+//!
+//! * **`system`/`status` = `"requesting"`** — a request is in flight. We are waiting on the
+//!   API and no tokens have arrived.
+//! * **`message_start` … `message_stop`** — tokens are actually arriving.
+//!
+//! **The bracket is what is reported**, and the reason is measured rather than a
+//! preference. In `claude_stream_two_tools.jsonl` `"requesting"` appears **once**, ahead of
+//! the first message, for a run that makes **two** API round trips — the second message
+//! opens with no status line before it. And nothing anywhere says the request came *back*:
+//! there is no `"responding"`, no closing status, no counterpart at all. A state keyed off
+//! it would therefore be shown for a session's first request and silently absent for every
+//! one after, with nothing to tell those two apart, and it would need a clearing rule
+//! invented for it besides. The bracket has neither problem: it is emitted once per
+//! message, and it closes itself.
+//!
+//! So a `requesting` notice is still read for facts and still renders nothing, exactly as
+//! before. That is a refusal, not an oversight — and it is why this is one state and not
+//! two: the honest second state would be blank most of the time it was true.
+//!
+//! ⚠️ **It must not stick on.** `message_stop` is the ordinary close and it is not the only
+//! one. `result` clears it as well — a turn that errors out mid-message never reaches a
+//! stop — and so does `system/init`, *including* a repeat one that rule 3 otherwise drops,
+//! because an init arriving mid-stream means the message that was open is never going to
+//! close. The one remaining exit is the process dying, and there is deliberately no clear
+//! for it here: there is no event to clear on, because there is no stream. The view answers
+//! that one with its own `Dead` reading, which outranks every other thing the band can say.
+//!
 //! # What is not mapped, and why that is not a gap
 //!
 //! `Notice` (including `post_turn_summary`), `RateLimit`, `tool_use_result`, thinking
@@ -270,6 +306,15 @@ pub struct EventMapper {
     /// Fallback identity for a message that arrived without an id. Monotonic so two
     /// anonymous messages never collide.
     anonymous: u64,
+    /// Rule 7: is an assistant message open right now?
+    ///
+    /// ⚠️ **Deliberately a second field rather than `streaming_message.is_some()`**, even
+    /// though the two look like one question. They are not: `streaming_message` is the *id
+    /// deltas key against*, and it is kept after the message closes on purpose, so a text
+    /// delta arriving late still lands on the block it belongs to instead of being dropped.
+    /// This one answers "is it open", and it has to go false at `message_stop`. Making the
+    /// id carry both meanings would trade a stuck status for lost text.
+    generating: bool,
     stats: MapStats,
     facts: SessionFacts,
 }
@@ -289,6 +334,20 @@ impl EventMapper {
         &self.facts
     }
 
+    /// Rule 7: **is an assistant message open — are tokens arriving right now?**
+    ///
+    /// Measured, not inferred. It is the `message_start` … `message_stop` bracket and
+    /// nothing else: it is never derived from "a turn is open and no tools are running",
+    /// which would be a guess wearing the same confident face as a measurement. Read-only,
+    /// like [`stats`](Self::stats) and [`facts`](Self::facts) — the mapper is the only
+    /// thing that writes it.
+    ///
+    /// ⚠️ **Not on [`SessionFacts`]**, and not a fact. See rule 7 for the retention
+    /// argument and for every path that puts it back to `false`.
+    pub fn is_generating(&self) -> bool {
+        self.generating
+    }
+
     /// Map one decoded event. Returns the transcript events it becomes, in order —
     /// often none, sometimes several (one `assistant` line can carry text *and* a tool
     /// call, and one `user` line can carry several tool results).
@@ -303,6 +362,11 @@ impl EventMapper {
         }
         match &event.kind {
             EventKind::SessionStarted(start) => {
+                // Rule 7, and **before the repeat guard on purpose**: an init arriving
+                // mid-stream (rule 3 saw one) means whatever message was open is never
+                // going to reach its `message_stop`. Dropping the line for the flow must
+                // not also drop the only notice that the stream restarted.
+                self.generating = false;
                 if self.session_started {
                     self.stats.repeat_session_starts += 1;
                     return Vec::new();
@@ -337,6 +401,11 @@ impl EventMapper {
             EventKind::Stream(stream) => self.map_stream(stream),
             EventKind::Finished(result) => {
                 self.facts.record_result(result);
+                // Rule 7's abnormal close. A turn that fails part-way through a message
+                // (`error_during_execution`, an interrupt) ends here and never reaches a
+                // `message_stop`, so a status keyed only on the bracket would stay lit for
+                // the rest of the session.
+                self.generating = false;
                 // Rule 4. `result`'s own text is the prose the assistant lines already
                 // carried; the detail is what the view can say that it could not.
                 let outcome =
@@ -423,6 +492,10 @@ impl EventMapper {
                 });
                 // Block indices restart with each message.
                 self.streaming_tools.clear();
+                // Rule 7: tokens are about to arrive. Assigned rather than asserted, so a
+                // message that opens while another is somehow still open is one open
+                // message and not a count that could fail to reach zero.
+                self.generating = true;
                 Vec::new()
             }
             StreamEvent::BlockStart { index, block } => match block {
@@ -467,9 +540,14 @@ impl EventMapper {
                     Vec::new()
                 }
             },
-            StreamEvent::BlockStop { .. }
-            | StreamEvent::MessageDelta { .. }
-            | StreamEvent::MessageStop => Vec::new(),
+            // Rule 7's ordinary close. ⚠️ `streaming_message` is **not** cleared with it:
+            // that id is what a late text delta keys against, and taking it away here would
+            // trade a status bug for a lost sentence. See the field's own note.
+            StreamEvent::MessageStop => {
+                self.generating = false;
+                Vec::new()
+            }
+            StreamEvent::BlockStop { .. } | StreamEvent::MessageDelta { .. } => Vec::new(),
             StreamEvent::Unknown { .. } => {
                 self.stats.unmapped += 1;
                 Vec::new()
@@ -892,6 +970,206 @@ mod tests {
         assert_eq!(facts.rate_limit_status.as_deref(), Some("allowed"));
         assert_eq!(facts.rate_limit_type.as_deref(), Some("five_hour"));
         assert_eq!(facts.rate_limit_resets_at, Some(1786573800));
+    }
+
+    // -- rule 7: the live turn state ----------------------------------------
+
+    /// One label per decoded line, for the lines this rule turns on. Everything else is
+    /// `…`, so a trace reads as the sequence of milestones rather than as forty deltas.
+    fn milestone(kind: &EventKind) -> String {
+        match kind {
+            EventKind::SessionStarted(_) => "init".to_string(),
+            EventKind::Notice(notice) => format!("notice:{}", notice.subtype),
+            EventKind::Finished(_) => "result".to_string(),
+            EventKind::Stream(StreamEvent::MessageStart { .. }) => "message_start".to_string(),
+            EventKind::Stream(StreamEvent::MessageStop) => "message_stop".to_string(),
+            _ => "…".to_string(),
+        }
+    }
+
+    /// What [`EventMapper::is_generating`] reads after each line of a capture.
+    fn generating_trace(text: &str) -> Vec<(String, bool)> {
+        let mut mapper = EventMapper::new();
+        let mut trace = Vec::new();
+        for outcome in decode_all(text) {
+            let Ok(event) = outcome else { continue };
+            let label = milestone(&event.kind);
+            mapper.map(&event);
+            trace.push((label, mapper.is_generating()));
+        }
+        trace
+    }
+
+    fn milestones(trace: &[(String, bool)]) -> Vec<(&str, bool)> {
+        trace.iter().filter(|(l, _)| l != "…").map(|(l, g)| (l.as_str(), *g)).collect()
+    }
+
+    /// 🚨 **The distinction rule 7 exists for, on the capture that carries both signals.**
+    ///
+    /// `claude_stream_two_tools.jsonl` opens with `system/status` = `"requesting"` and then
+    /// makes **two** message brackets. The trace has to show that the status line moved
+    /// nothing — a request in flight is not tokens arriving — and that each bracket both
+    /// set the state and put it back. If someone ever conflates the two, the second entry
+    /// of this list turns `true` and this test says exactly which line did it.
+    #[test]
+    fn the_message_bracket_reports_generating_and_the_requesting_status_does_not() {
+        let trace = generating_trace(TWO_TOOLS);
+        assert_eq!(
+            milestones(&trace),
+            vec![
+                ("init", false),
+                // ⚠️ The load-bearing row. `"requesting"` means we are *waiting on* the API.
+                ("notice:status", false),
+                ("message_start", true),
+                ("message_stop", false),
+                ("notice:task_summary", false),
+                ("message_start", true),
+                ("message_stop", false),
+                ("notice:post_turn_summary", false),
+                ("result", false),
+                ("notice:task_summary", false),
+            ],
+            "the full trace: {trace:?}"
+        );
+        // And it stays true for everything *inside* the bracket, not merely on the line that
+        // opened it — the deltas, the tool blocks and the tool results all land in there.
+        let opened = trace.iter().position(|(l, _)| l == "message_start").expect("a start");
+        let closed = trace.iter().position(|(l, _)| l == "message_stop").expect("a stop");
+        assert!(closed > opened + 1, "the capture carries content inside the bracket");
+        assert!(
+            trace[opened..closed].iter().all(|(_, generating)| *generating),
+            "the state dropped somewhere inside an open message: {:?}",
+            &trace[opened..closed]
+        );
+    }
+
+    /// The `requesting` notice on its own, with nothing else: it must leave no state, no
+    /// fact, and its `unmapped` count exactly as it was. Reading a line is not rendering it,
+    /// and *declining* to read one is a decision this pins rather than an omission.
+    #[test]
+    fn a_requesting_status_alone_changes_nothing() {
+        let line = r#"{"type":"system","subtype":"status","status":"requesting"}"#;
+        let mut mapper = EventMapper::new();
+        let event = decode_line(line).expect("a status notice decodes");
+        assert!(mapper.map(&event).is_empty(), "it renders nothing into the flow");
+        assert!(!mapper.is_generating(), "and it is NOT the signal that tokens are arriving");
+        assert_eq!(mapper.facts(), &SessionFacts::default(), "it carries no summary fields");
+        assert_eq!(mapper.stats().unmapped, 1, "counted, exactly as before");
+    }
+
+    /// ⚠️ **The abnormal ending.** A turn that fails part-way through a message never reaches
+    /// its `message_stop` — `result` is the last thing the stream says. Without this clear the
+    /// band would read "generating" for the rest of the session, which is worse than a band
+    /// that never said it at all.
+    #[test]
+    fn a_result_clears_generating_when_no_message_stop_ever_arrives() {
+        let lines = concat!(
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_x"}}}"#,
+            "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half a sen"}}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#,
+            "\n",
+        );
+        let trace = generating_trace(lines);
+        assert_eq!(
+            milestones(&trace),
+            vec![("message_start", true), ("result", false)],
+            "{trace:?}"
+        );
+    }
+
+    /// The other abnormal ending, and the one rule 3 nearly hides: a `system/init` arriving
+    /// mid-stream. The live-session capture really carries one, and the mapper drops it for
+    /// the flow — but dropping the line must not drop the fact that the stream restarted
+    /// underneath an open message.
+    #[test]
+    fn a_mid_stream_init_clears_generating_even_though_it_is_dropped() {
+        let init = LIVE_SESSION
+            .lines()
+            .find(|line| line.contains(r#""subtype":"init""#))
+            .expect("the capture carries an init")
+            .to_string();
+        let start =
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_x"}}}"#;
+        let mut mapper = EventMapper::new();
+        // The first init establishes identity; the message then opens under it.
+        mapper.map(&decode_line(&init).expect("valid"));
+        mapper.map(&decode_line(start).expect("valid"));
+        assert!(mapper.is_generating(), "a message is open");
+        // …and the repeat init arrives before it could ever close.
+        let repeat = decode_line(&init).expect("valid");
+        assert!(mapper.map(&repeat).is_empty(), "rule 3: a repeat init renders nothing");
+        assert_eq!(mapper.stats().repeat_session_starts, 1, "and is counted, not silent");
+        assert!(
+            !mapper.is_generating(),
+            "the message it interrupted will never reach a `message_stop`"
+        );
+    }
+
+    /// The blunt end of every clearing path at once: **no capture leaves the mapper claiming
+    /// the agent is still writing.** A new shape that opens a bracket and ends some way this
+    /// module has not thought of fails here, on whichever fixture carries it.
+    #[test]
+    fn no_capture_ends_still_generating() {
+        for (name, text) in
+            [("two_tools", TWO_TOOLS), ("live_session", LIVE_SESSION), ("edges", EDGES)]
+        {
+            let (_, mapper) = fold(text);
+            assert!(!mapper.is_generating(), "{name} ended with the state still lit");
+        }
+    }
+
+    /// A mapper that has seen nothing is not generating, and a message that opens twice
+    /// without closing is still one open message — the state is assigned, never counted, so
+    /// there is no tally that could fail to reach zero.
+    #[test]
+    fn generating_starts_false_and_a_second_open_still_closes_once() {
+        let mut mapper = EventMapper::new();
+        assert!(!mapper.is_generating(), "nothing has arrived");
+        let start =
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_x"}}}"#;
+        let stop = r#"{"type":"stream_event","event":{"type":"message_stop"}}"#;
+        for _ in 0..2 {
+            mapper.map(&decode_line(start).expect("valid"));
+        }
+        assert!(mapper.is_generating());
+        mapper.map(&decode_line(stop).expect("valid"));
+        assert!(!mapper.is_generating(), "one stop closes it, however many starts preceded it");
+    }
+
+    /// ⚠️ **The trade the second field buys.** `message_stop` must not clear
+    /// `streaming_message`: a text delta arriving after the stop still has to key against
+    /// the message it belongs to, or the console trades a stuck status indicator for a
+    /// silently lost sentence. Pinned because the tempting simplification — asking
+    /// `streaming_message.is_some()` and clearing it at the stop — breaks exactly this.
+    #[test]
+    fn closing_a_message_does_not_detach_a_late_delta_from_it() {
+        let lines = concat!(
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_x"}}}"#,
+            "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"before "}}}"#,
+            "\n",
+            r#"{"type":"stream_event","event":{"type":"message_stop"}}"#,
+            "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"after"}}}"#,
+            "\n",
+        );
+        let mut mapper = EventMapper::new();
+        let mut t = Transcript::new();
+        for outcome in decode_all(lines) {
+            for mapped in mapper.map(&outcome.expect("valid json")) {
+                t.apply(mapped);
+            }
+        }
+        assert!(!mapper.is_generating(), "the bracket closed");
+        assert_eq!(
+            texts(&t),
+            vec!["before after"],
+            "the late fragment still found its block: {:?}",
+            texts(&t)
+        );
+        assert_eq!(mapper.stats().unmapped, 0, "and nothing was dropped for want of an id");
     }
 
     /// ⚠️ Reading a fact off a notice or a rate limit must not change what `unmapped`

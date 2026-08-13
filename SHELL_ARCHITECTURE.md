@@ -652,16 +652,93 @@ the priority ordering — is testable without spawning an agent to find out what
 | 1 | `Dead` | the failure. Outranks everything: no other reading describes a process that exists |
 | 2 | `Asking` | `◈ N permission requests — waiting on you`. The agent is *halted* on a human |
 | 3 | `Working` | `● N tools running` |
-| 4 | `Asking` | `needs_action` verbatim — the agent's own sentence about what it wants |
-| 5 | `Connecting` | nothing, deliberately: the model plate already says "no model yet" |
-| 6 | `Ready` | `last_status_detail`, else a bare `ready` |
+| 4 | `Generating` | `● generating` — an assistant message is open and tokens are arriving |
+| 5 | `Asking` | `needs_action` verbatim — the agent's own sentence about what it wants |
+| 6 | `Connecting` | nothing, deliberately: the model plate already says "no model yet" |
+| 7 | `Ready` | `last_status_detail`, else a bare `ready` |
 
-⚠️ **Rank 3 above rank 4 is the one place "waiting outranks working" is deliberately not
-applied**, and the reason is that `needs_action` describes a turn that has *ended*: the
+⚠️ **Ranks 3 and 4 above rank 5 are the one place "waiting outranks working" is deliberately
+not applied**, and the reason is that `needs_action` describes a turn that has *ended*: the
 mapper only clears it when the next `post_turn_summary` arrives, so a demand the human
 already answered stays set for the whole of the turn that answers it. Showing it over live
 work would be a stale "waiting on you" — the failure the unit-replacement rule above exists
-to avoid.
+to avoid. Tokens arriving now are live activity by exactly the measure a running tool is, so
+the rule has to cover both readings or it does not hold.
+
+**Rank 3 above rank 4 is not a claim about urgency.** The two are true *together* for most
+of a turn — a tool block opens inside the message that called it, so the bracket is still
+open while the call runs — so the ordering is deciding which sentence is worth the one line
+there is. `● 3 tools running` names what is happening and can be checked against the cards
+above it; `● generating` only says that *something* is. The specific reading wins, and the
+general one is what the band falls back to for exactly the stretch of a turn that used to
+read as idle.
+
+##### Rank 4, and the signal it is keyed off
+
+The band could say "3 tools running" and could not say the agent was **thinking**.
+`Transcript::is_working()` is derived from unresolved tool ids alone, so a model writing
+prose with nothing in flight was *idle* by that test — during the stretch of a turn a person
+is most likely to be watching. `EventMapper::is_generating()` closes that with a **second**
+signal rather than by loosening the first, so `N tools running` still means exactly N tool
+calls.
+
+🚨 **It is the `message_start` … `message_stop` bracket, and NOT `system`/`status` =
+`"requesting"`.** That choice is measured, not preferred. On the committed capture
+`native/organon-shell/fixtures/claude_stream_two_tools.jsonl`, which makes **two** API round
+trips, `"requesting"` appears **once** — line 4, ahead of the first message; the second
+`message_start` (line 27) has no status line before it. And nothing anywhere reports the
+request coming *back*: there is no `"responding"`, no closing status, no counterpart of any
+kind (the file's only other statuses are `connected`, `pending` and `allowed`, none of them
+about a round trip). A state keyed off `"requesting"` would therefore be shown for a
+session's first request, be silently absent for every one after with nothing to tell those
+two cases apart, and need a clearing rule invented for it besides. The bracket has neither
+problem: it is emitted once per message, and it closes itself. `"requesting"` stays
+read-for-facts and rendered as nothing — a refusal, pinned by
+`a_requesting_status_alone_changes_nothing`.
+
+⚠️ **`EventMapper::streaming_message` is not that bracket, and was deliberately not
+repurposed into it.** It is set on `MessageStart` and **never cleared** — `MessageStop` was a
+no-op arm before this change — so `.is_some()` means "a `message_start` was seen at some
+point", not "a message is open". Keeping it that way is the point: that id is what a late
+text delta keys against, and clearing it at the stop would trade a stuck status for a **lost
+sentence**. So `generating` is a second `bool` beside it, and the distinction is pinned by
+`closing_a_message_does_not_detach_a_late_delta_from_it`.
+
+**It lives beside `SessionFacts` rather than on it, and the reason is the retention rule
+rather than the source.** Every field there is a value the session *reported*, held until a
+later line replaces it; this one flips on and flips off, and a stale one would be the band
+claiming the agent is still writing after it stopped. It reaches the strip through
+`LiveCounts`, whose every field goes back to zero or `false` on its own.
+
+**Which makes the clearing paths the whole of the correctness.** Four events clear it, and
+the fifth exit has no event at all:
+
+| Cleared by | Because |
+|---|---|
+| `message_stop` | the ordinary close |
+| `result` | a turn that fails part-way — `error_during_execution`, an interrupt — ends there and never reaches a stop |
+| a mid-stream `system/init` | an init means the open message is never going to close. Cleared **before** rule 3's repeat guard, deliberately: dropping the line for the flow must not also drop the only notice that the stream restarted |
+| a second `message_start` | the flag is **assigned**, not counted, so two opens without a stop are one open message and there is no tally that could fail to reach zero |
+| — **the process dying mid-message** | nothing clears it, because there is no event to clear on and no stream to carry one. `Standing::Dead` outranking every other reading is what answers this, which makes rank 1 and rank 4 one dependency rather than two features |
+
+🚨 **The honest wart: between two messages of one turn the band falls through to rank 7 for a
+frame or two**, and reads "ready" while the turn is plainly still going. The bracket really
+has closed and the next one has not opened. Holding it across the gap would mean inventing a
+turn-open state the wire does not report — and that is the version that gets stuck on when a
+turn ends in a way nobody predicted. The flicker is the price of the band never lying.
+
+**And it says nothing beyond the fact that it is happening.** No token count, no rate, no
+progress bar, no ETA, no elapsed timer. The wire says a message is open; it does not say how
+much is left, how fast it is arriving, or when it will stop, so each of those would have to
+be invented to be shown — and there is no clock in this path at all, by design
+(`conversation.rs`'s module doc owns that).
+`an_open_message_reports_generating_and_nothing_more_than_that` asserts the text carries none
+of `%`, `/s`, `tok`, `eta`, `left`, `of`.
+
+📌 `Generating` shares `Working`'s amber (`RUNNING`) rather than taking a colour of its own:
+busy-with-tools and busy-writing are the same answer to "can I walk away", and the split the
+band's small colour budget has to protect is busy versus *blocked on you*. The text already
+spells out which kind of busy it is.
 
 Beside the standing: a **model plate**, which is the headline affordance and the first
 thing a hand looks for — the reported identifier with any trailing bracketed suffix
@@ -679,7 +756,11 @@ diagnostic line off the child, truncated rather than wrapped.
 ⚠️ **Two omissions are the view's own judgement, on top of `SessionFacts`' refusals above.**
 The running-tools reading says **tools, not "thinking"** — it is derived from unresolved
 tool calls only, so a model writing prose with nothing in flight is not working by that
-test and a "thinking" label would be false exactly when it was most reassuring. And the
+test and a "thinking" label would be false exactly when it was most reassuring. ✏️ **The
+hole that left is now closed by rank 4**, and closed the way this entry implies it had to
+be: with a second measured signal (`is_generating`, the `message_start` … `message_stop`
+bracket) rather than by widening this one, so both readings stay exactly as literal as they
+were. And the
 cost chip is labelled **`session`** while per-turn tokens are not shown at all: `cost_usd`
 accumulates on the wire and `last_turn_usage` does not, so one band carrying both would
 invite a reader to add them up.
@@ -993,11 +1074,15 @@ path silently breaks the three-products-simultaneously guarantee that
   binary James checked was linked, so what sat under the composer in that session was still
   the old one-line session id. Every decision in it is pinned headless — the priority
   ordering, the model split, the chip labels, the band's height with everything in it and
-  with nothing in it — and 302 green tests in the compositor lib are not a substitute for
+  with nothing in it — and 313 green tests in the compositor lib are not a substitute for
   having looked at it once. What nobody can answer yet: whether the model plate reads as an
   identity rather than as a debug field, whether the hover is discoverable at all when
   nothing on screen suggests hovering, and whether a truncated diagnostic line beside three
-  chips is legible at real width. ⚠️ And the coordinator cannot find out — its synthetic
+  chips is legible at real width. **`Standing::Generating` joins that list and adds a
+  question only a person can settle**: whether the documented fall-through to "ready"
+  between two messages of one turn reads as an honest gap or as a flicker, since a
+  frame-or-two blink is precisely the kind of thing a fixture cannot have an opinion about.
+  ⚠️ And the coordinator cannot find out — its synthetic
   clicks do not reach this app and its synthetic keystrokes leak into another window (demo
   script beat 7), so this needs a person at the keyboard exactly as the surface does.
 - 🚨 **The rendered surface has never been drawn on screen by the session that wrote it.**
