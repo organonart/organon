@@ -11,6 +11,42 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Three palettes beside `organon` — `light`, `dark` and `chocolate`
+
+`Theme` gains three constructors and a `Theme::by_name` resolver. `organon` stays the
+default and is byte-unchanged. Nothing selects a palette yet: no picker, no CLI verb, no
+startup read — `by_name` is the seam a picker and `prefs.rs`'s stored `theme` name will
+share, and an unknown name is `None` rather than a panic or a substitution.
+
+Two things had to move first, because a palette alone could not have reached either.
+
+**The legibility scrim's floor is the palette's, not one constant.** `SCRIM_FLOOR = 96` is a
+mandatory near-black wash over the whole rect whenever a backdrop is live, so a light theme
+was not reachable by swapping colours — it would have sat under a compulsory dark veil
+however its fields were set. The floor is now `Theme::scrim_floor`, and `term_view` carries
+two: `SCRIM_FLOOR = 96` for a dark page, `SCRIM_FLOOR_LIGHT = 192` for a light one. ⚠️ PRD
+§4.6's rule was always *the glyphs stay legible*; what is dropped is the assumption that
+legibility means darkness. **No setting can still cross a floor** — `ORGANON_SHELL_SCRIM` is
+clamped up to the active palette's, and the exhaustive test now runs over every palette's own
+answer rather than one constant.
+
+**egui's own chrome is derived from the palette.** `set_visuals(egui::Visuals::dark())` was
+one hardcoded call colouring sliders, popup frames, the `TextEdit` selection wash and
+scrollbars — roughly half the pixels, which would have left `light` reading as broken rather
+than as light. `Theme::visuals()` derives them; ⚠️ for `organon` it returns `Visuals::dark()`
+byte-for-byte, pinned by test, so adding palettes cannot restyle the console that ships. It
+writes colours only — corner radii, widget expansion, stroke widths and shadows come from the
+egui base untouched.
+
+Each spec names about ten roles and `Theme` has about fifty fields; every derived field
+carries its rule at the site. ⚠️ Notably **none of the three has an amber** (no spec names
+one, so "a tool is running" is primary text), and `ansi16` is **chosen, not specified**, for
+all three and marked so — the specs were written against the conversation view and say nothing
+about a terminal.
+
+⚠️ **Nobody has seen any of them.** 508 tests green, `cargo check --features shell-edition`
+clean — that is the whole claim. A palette that passes its hex test can still look wrong.
+
 ### A CRLF checkout silently un-installs the `organon-cli` skill
 
 `SKILL.md` is now pinned to LF in `.gitattributes`. Claude Code reads a skill's YAML
