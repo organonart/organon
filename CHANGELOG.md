@@ -71,6 +71,33 @@ From here on, this file gets an entry per meaningful change, newest first.
   against committed captures, which is replay and not a conversation. 417 tests in the compositor
   lib, from 390.
 
+### The skill now tells an agent how to change the console it is running in
+
+- **`.claude/skills/organon-cli/SKILL.md` gains "Changing the console from inside it".** The
+  skill has always taught an agent to *operate* Organon from outside it; a tab of an Organon
+  Console is the one place that framing is wrong, because there the agent lives inside the
+  thing it is being asked to change. The new section covers where the code is (routing into
+  `SHELL_ARCHITECTURE.md`, which is hook-enforced current rather than a shipped snapshot), the
+  exact verification bar, the traps that are not visible in the code, and the honesty rule that
+  governs anything displayed — stated in the console's own terms (measured, or derived from a
+  measurement by a stated rule) rather than borrowing Mind's four-way provenance markers, which
+  `SHELL_ARCHITECTURE.md` does not use.
+- **It is assembly, not authorship** — which is the useful part. Every fact in it was already
+  written down for its own reasons: the shift-permissive modifier match and the
+  `ScrollArea`-in-`bottom_up` collapse in `SHELL_ARCHITECTURE.md`, the declined readouts in
+  `SessionFacts`'s doc comment, the harness registry's two traps in
+  `doc/console_spike_execution_plan.md` §5.9.26. The skill's job was to point at them in the
+  shape an agent reaching for them needs, not to restate them.
+- 🚨 **No mechanism was designed, deliberately.** How a change takes effect — hot load, rebuild,
+  or data-only — is open by James's decision, and the section says so and says not to reach for
+  it. What it does record is the one seam that already works without a rebuild: `harness::load`
+  merges `harnesses.json` over the built-ins by id, so a new tab type is a data change. Nothing
+  else is read from disk, so everything beyond a harness row is code.
+- **Nothing is enumerated.** No commands, no parameters, no catalog contents — §10's rule, and
+  the only reason a file this size can describe a surface this large without rotting. The one
+  table added routes eight modules to the section of the architecture doc that owns them, and
+  names that doc as the authority over itself.
+
 ### Console Spike — the twelve agents a coordinator dispatched stopped being eight minutes of silence
 
 - **A subagent's work now renders inside the tool card that spawned it.** A coordinator session
