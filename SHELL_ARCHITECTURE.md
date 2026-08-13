@@ -2000,6 +2000,37 @@ underneath as the belt. Both read `scene_input`'s constants; a second copy is ho
 be refused a viewpoint the drag can reach, and that reads as the camera being broken rather than as
 two constants disagreeing.
 
+#### 🚨 The axes are optional, and "optional" had to be taught to the validator
+
+`console.camera` is the first spec on this lane whose arguments are **not required**, and that
+turned out to be a new capability rather than a new value in an existing field.
+`op_args` serializes the whole slot list — `{"reset": false, "yaw": null, "pitch": null,
+"distance": 40.0}` — so the dispatch record a reader of `events.jsonl` sees names every axis,
+including the ones nobody set. `CommandService::dispatch` runs `validate_args` **before**
+`ConsoleTarget::execute` ever reaches `op_from`, and `validate_args` matched on key *presence*:
+a `null` reached the `Some(value)` arm, `ArgKind::Float`'s `as_f64` returned `None`, and the
+answer was `yaw: expected a number, got null`. **Every partial framing was refused, `--distance
+40` first among them.**
+
+The rule now lives in `validate_args`: **a declared argument present as `null` is absent**, and
+absence is only *permitted* where the schema says the argument is optional (a required argument
+spelled `null` is still refused, and now reports "missing" rather than naming a type). Two
+reasons it belongs there rather than in `op_args`. It is a general property of optional
+arguments, so the next verb with one does not re-discover the trap; and the same reading was
+already the intent one level up — `args: null` has always meant "no arguments", and a slot of
+`null` meaning "no value" is that same sentence, one level in.
+
+⚠️ **The comment in `op_args` asserting this behaviour was written before the behaviour
+existed.** It described `validate_args` as reading `null` as absent, which was simply not true
+of the code it named, and nothing failed — the contract was written down, believed by its own
+author, and depended on by the first caller to need it. That is the defect class worth
+remembering here: *a comment describing a collaborator has no test behind it unless someone
+writes one*, and the test that catches it must cross the boundary the comment spans.
+`an_optional_arg_present_as_null_is_absent_and_a_required_one_is_missing` (command.rs) pins the
+rule in the pure crate; `a_partial_framing_survives_the_real_dispatch_and_reaches_the_target`
+(shell_main.rs) pins the whole lane, because every other camera test calls `op_from`/`op_args`
+directly and **that is exactly why none of them saw it**.
+
 #### It says so when it moves something nobody is looking at
 
 An installed substrate rig overrides the whole camera tuple, and `off` draws nothing at all — so a
@@ -2094,7 +2125,12 @@ path silently breaks the three-products-simultaneously guarantee that
   codegen here, so they were **compiled and not executed** (`cargo check --profile test`, three
   targets, exit 0). CI runs them. The pure-crate half was deliberately given the safety-critical
   decision — who owns the camera — so the part that can be *proved* here is the part that matters
-  most.
+  most. ⚠️ **That split has a cost, and review found it**: the schema tests all called `op_from`
+  or `op_args` directly, so none of them crossed `CommandService::dispatch`, and the optional-arg
+  bug above lived in exactly that gap. The fix is pinned where it can be run — `command.rs`, in
+  the pure crate, 480 tests in 0.17 s — with the whole-lane test beside the ones it joins in
+  `shell_main.rs`. **When a bug lives between two components, put the test in whichever of them
+  can actually be executed here**, and let the crossing test be the compiled-only one.
 - ⚠️ **The wheel claim is enforced in the TERMINAL front-end only.** `term_view` reads
   `raw_scroll_delta` directly, so it gets the explicit rect test; a **conversation** tab's
   `ScrollArea` reads egui's smoothed delta in its `end()`, which has already run by the time

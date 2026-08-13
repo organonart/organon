@@ -260,11 +260,38 @@ From here on, this file gets an entry per meaningful change, newest first.
   banded-backdrop arm. That is a new integration, not a variant added to `portal::step`, and
   half of it would have left the portal in a state with no way out. The correction is in
   `SHELL_ARCHITECTURE.md` §2 so the next scoping starts from it.
-- 🚨 **Nobody has seen any of this move.** 438 tests in the compositor lib (from 433) and
-  `cargo check --features shell-edition --bin organon-console` clean — neither is evidence that
-  a picture moved. Two thirds of the new tests (the wire round trip, the ranges, the schema
-  bands) live in the root package and were **compiled, not executed**; the safety-critical
-  third — who owns the camera — is deliberately in the pure crate, where it runs.
+- 🚨 **An optional argument spelled `null` is absent — and until review, it was a type error.**
+  `console.camera` is the first spec on this lane whose arguments are optional, and
+  `validate_args` (`organon-shell/src/command.rs`, written when every schema was required-only)
+  matched on key *presence*: `op_args` emits the whole slot list, so a partial framing
+  serialized to `{"reset": false, "yaw": null, "pitch": null, "distance": 40.0}`, the `null`
+  reached the `Some(value)` arm, `ArgKind::Float`'s `as_f64` returned `None`, and
+  `CommandService::dispatch` refused the call — **`--distance 40`, this change's own flagship
+  example, included** — before `op_from` was ever reached. Fixed in `validate_args` rather than
+  by omitting the keys: it is a general property of optional arguments, so the next verb with
+  one does not re-find the trap, and it makes the reading uniform with `args: null` meaning "no
+  arguments", which this function has always done one level up. A **required** argument spelled
+  `null` is still refused, and now reports "missing" instead of naming a type.
+- ⚠️ **The comment asserting that behaviour predated the behaviour**, and that is the defect
+  class worth naming: a contract written down, believed by its author, never implemented, and
+  invisible until the first caller depended on it. Nothing failed, because nothing tested the
+  boundary the comment spanned — every camera test called `op_from`/`op_args` directly, which is
+  precisely why none of them saw it. Both halves are now pinned: the rule in the pure crate
+  (`an_optional_arg_present_as_null_is_absent_and_a_required_one_is_missing`), the whole lane in
+  `shell_main.rs` (`a_partial_framing_survives_the_real_dispatch_and_reaches_the_target`,
+  wired with the real specs, the real target and a real `SessionLog`).
+- ⚠️ **A second consequence of the same compile-don't-run split**, found while fixing the
+  first: `a_capability_call_becomes_the_sidecar_line_the_cli_would_have_written` loops over
+  every entry in `console_specs()` and panics on a name it has no arguments for — a guard that
+  exists so a new verb cannot be added without proving its tool call writes a line the drain
+  reads back. Adding `console.camera` to the catalog armed it, and nothing here could run it.
+  It now supplies the *partial* framing, which is the case worth pinning anyway.
+- 🚨 **Nobody has seen any of this move.** 480 tests in the compositor lib (from 433 before the
+  camera, 479 as rebased) and `cargo check --features shell-edition --bin organon-console`
+  clean — neither is evidence that a picture moved. Two thirds of the new tests (the wire round
+  trip, the ranges, the schema bands, and the whole-lane dispatch test above) live in the root
+  package and were **compiled, not executed**; the safety-critical third — who owns the camera,
+  and now the optional-argument rule — is deliberately in the pure crate, where it runs.
 
 ### Console Spike — the canary on `tool_use_result` fired, on its first real chance
 

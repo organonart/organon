@@ -697,11 +697,20 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
             json!({ CMD_UP: up, CMD_ROWS: rows, CMD_KIND: kind.as_word() })
         }
         cli::ConsoleOp::Portal(cmd) => json!({ CMD_STATE: cmd.as_word() }),
-        // `null` for an axis nobody named, which `validate_args` reads as absent (its
-        // `object.and_then(get)` arm) and `op_from` maps straight back to `None`. Omitting the
-        // key entirely would do the same thing; spelling it keeps the dispatch record — which
-        // is what a reader of `events.jsonl` sees — showing the whole slot list rather than
+        // `null` for an axis nobody named, which `validate_args` reads as absent for an
+        // optional argument and `op_from` maps straight back to `None`. Omitting the key
+        // entirely would do the same thing; spelling it keeps the dispatch record — which is
+        // what a reader of `events.jsonl` sees — showing the whole slot list rather than
         // whichever subset happened to be set.
+        //
+        // ⚠️ **That first clause was aspirational when it was written, and this verb is why
+        // it is now true.** `validate_args` was written against required-only schemas, so a
+        // present `null` hit its `Some(value)` arm and `ArgKind::Float`'s `as_f64` refused it
+        // — every partial framing, `--distance 40` included, rejected before the target. The
+        // fix is in `command.rs`, where the contract belongs, rather than here: omitting the
+        // keys would have unbroken this one caller and left the next optional argument to
+        // find the same trap. Never assume a comment describing a collaborator's behaviour
+        // has a test behind it; the one that would have caught this had to be written first.
         cli::ConsoleOp::Camera(f) => json!({
             CMD_RESET: f.reset,
             CMD_YAW: f.yaw,
@@ -3825,6 +3834,11 @@ mod cli_tests {
                 CMD_BLOCK => json!({ CMD_ROWS: 3 }),
                 CMD_PATCH => json!({ CMD_UP: 1, CMD_ROWS: 2, CMD_KIND: cli::PATCH_KIND_WORDS[0] }),
                 CMD_PORTAL => json!({ CMD_STATE: cli::PORTAL_WORDS[0] }),
+                // The partial form on purpose: the flagship framing is one axis, and the
+                // three nulls are what a partial call actually serializes to.
+                CMD_CAMERA => {
+                    json!({ CMD_RESET: false, CMD_YAW: null, CMD_PITCH: null, CMD_DISTANCE: 40.0 })
+                }
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -4168,6 +4182,97 @@ mod cli_tests {
         assert!(op_from(CMD_CAMERA, &json!({ CMD_YAW: f64::NAN })).is_err(), "NaN");
         assert!(op_from(CMD_CAMERA, &json!({ CMD_DISTANCE: 9000.0 })).is_err(), "out of band");
         assert!(op_from(CMD_CAMERA, &json!({ CMD_YAW: "sideways" })).is_err(), "not a number");
+    }
+
+    /// 🚨 **The whole lane, for the framing the PR was written for: `--distance 40`.**
+    ///
+    /// Every other camera test here calls [`op_from`] or [`op_args`] directly, and that is
+    /// exactly how a blocker reached review — the two halves each behaved correctly and the
+    /// thing between them did not. `CommandService::dispatch` validates against
+    /// [`console_specs`] *before* `ConsoleTarget::execute` ever calls `op_from`, so a partial
+    /// framing was refused by `validate_args` for a slot the caller had deliberately left
+    /// empty, and no test that skips the service could see it. This one is wired the way
+    /// [`Shell::dispatch_console`] is wired: the real specs, the real target, the real log.
+    ///
+    /// ⚠️ **The bug it pins is a `null`, not a missing key**, so the arguments have to come
+    /// from [`op_args`] rather than be spelled here — `op_args` is what puts the whole slot
+    /// list in the record, and hand-writing a tidier object would test a call this console
+    /// never makes.
+    ///
+    /// ⚠️ `cargo check --profile test` only in this session; CI executes it. The pure-crate
+    /// half — `an_optional_arg_present_as_null_is_absent_and_a_required_one_is_missing` in
+    /// `organon-shell/src/command.rs` — is the one that can be run on this machine, and it is
+    /// where the fix itself is pinned.
+    #[test]
+    fn a_partial_framing_survives_the_real_dispatch_and_reaches_the_target() {
+        let root = std::env::temp_dir()
+            .join(format!("organon-console-camera-dispatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut log = SessionLog::open(&root, "s1").unwrap();
+
+        let target = ConsoleTarget::default();
+        let bank = target.accepted.clone();
+        let mut service = CommandService::new(&mut log);
+        for spec in console_specs() {
+            service.register_spec(spec);
+        }
+        service.register_target(TargetKind::Viewport, Box::new(target));
+
+        // Each of these names a strict subset of the four slots, so each serializes with at
+        // least one `null` — the shape that was refused. `reset` alone is the sharpest: three
+        // nulls and a flag.
+        let framings = [
+            cli::CameraFraming { distance: Some(40.0), ..Default::default() },
+            cli::CameraFraming { reset: true, ..Default::default() },
+            cli::CameraFraming { yaw: Some(-1.2), ..Default::default() },
+            cli::CameraFraming { pitch: Some(0.3), distance: Some(12.5), ..Default::default() },
+            cli::CameraFraming { reset: true, distance: Some(40.0), ..Default::default() },
+        ];
+        for f in framings {
+            let op = cli::ConsoleOp::Camera(f);
+            let args = op_args(&op);
+            assert!(
+                cli::CAMERA_WORDS.iter().any(|w| args[*w].is_null()),
+                "{args} names every slot, so it is not the partial case this test is about"
+            );
+            if let Err(e) = service.dispatch(Issuer::Worker("organon-cli".into()), spec_name(&op), args) {
+                panic!("`{}` was refused before the target: {e}", cli::console_op_to_line(&op));
+            }
+        }
+        // The ops the *service* handed on, not a parallel copy — the same read
+        // `dispatch_console` makes one line after this.
+        assert_eq!(
+            bank.borrow().len(),
+            framings.len(),
+            "every framing reached ConsoleTarget::execute"
+        );
+        assert_eq!(
+            bank.borrow()[0],
+            cli::ConsoleOp::Camera(cli::CameraFraming {
+                distance: Some(40.0),
+                ..Default::default()
+            }),
+            "the axes nobody named must still be None on the far side"
+        );
+
+        // The band is still a gate — a null in a sibling slot is absence, never a bypass.
+        let out_of_band = json!({ CMD_RESET: false, CMD_YAW: null, CMD_PITCH: null,
+                                  CMD_DISTANCE: f64::from(scene_input::DISTANCE_MAX) + 1.0 });
+        let err = service
+            .dispatch(Issuer::Worker("organon-cli".into()), CMD_CAMERA, out_of_band)
+            .expect_err("out of band");
+        assert!(matches!(err, CommandError::InvalidArgs { .. }), "{err:?}");
+
+        // And the rule the schema cannot state still stops an empty framing, at the target.
+        let empty = op_args(&cli::ConsoleOp::Camera(cli::CameraFraming::default()));
+        let err = service
+            .dispatch(Issuer::Worker("organon-cli".into()), CMD_CAMERA, empty)
+            .expect_err("a framing that names no axis");
+        assert!(matches!(err, CommandError::Execution { .. }), "{err:?}");
+        assert_eq!(bank.borrow().len(), framings.len(), "neither refusal banked an op");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **A camera move is not a look**, so it falls through `console_step` untouched — a
