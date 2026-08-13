@@ -62,7 +62,7 @@ pub const DEFAULT_FG: egui::Color32 = egui::Color32::from_rgb(0xc8, 0xe6, 0xc8);
 /// the scrim is an `egui::Color32` alpha, so the scale is 0–255, not 0–1.
 ///
 /// ⚠️ **These are `pub` so `--help` can quote them rather than restate them.** The first
-/// draft of `organon-shell --help` documented `ORGANON_SHELL_SCRIM=<0..1>` from memory. That
+/// draft of `organon-console --help` documented `ORGANON_SHELL_SCRIM=<0..1>` from memory. That
 /// is not a cosmetic slip: `0.5` fails the `u8` parse, `.ok()` swallows the error, and the
 /// value silently falls back to the default — so a user following the docs exactly would see
 /// no effect and no complaint. The review that caught it noted the irony, this PR existing to

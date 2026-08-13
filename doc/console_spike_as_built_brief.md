@@ -15,7 +15,7 @@ determine" is written where that is the honest answer.
 ## Tier 0 — verified on this machine, 2026-08-10
 
 Both binaries built release on organon-one (cold tree, 7m07s total; warnings only).
-`organon-shell --help` prints the flag surface without starting the event loop. The console
+`organon-console --help` prints the flag surface without starting the event loop. The console
 was launched under `ORGANON_SHELL_BACKDROP=1`, `ORGANON_SHELL_SCRIM=96`,
 `ORGANON_SHELL_TABS=pi-wsl,shell-wsl,shell`, `ORGANON_SHELL_PTY_DEBUG=1`, and — load-bearing,
 see below — `ORGANON_IPC_NS=organon-t0`. Verified with eyes and screenshots:
@@ -191,7 +191,7 @@ off.
 ## R3 — The command surface
 
 **Answer, part 1 — `command.rs::register_spec` is seeded by nobody.** `CommandService` is
-constructed only in its own unit tests; `organon-shell/src/lib.rs:29` is the sole reference
+constructed only in its own unit tests; `organon-console/src/lib.rs:29` is the sole reference
 to the module outside itself; `shell_main.rs` never mentions it. The catalog is data
 (`Vec<CommandSpec>`, name-sorted; `register_spec` replaces on collision — idempotent,
 `command.rs:252-257`). `CommandSpec = {name, doc, target: TargetKind, args: Vec<ArgSpec>}`;
@@ -242,7 +242,7 @@ implementation branches beside the existing early exits (`:375-413`), and the
 `discover`/`describe --json` path must skip the unconditional ~150 ms `is_live` probe at
 `ctl.rs:452` — the strip must never block on liveness theatre.
 
-**The `is_live()` story — SHELL_ARCHITECTURE.md §3 had the wrong channel, and the recon
+**The `is_live()` story — CONSOLE_ARCHITECTURE.md §3 had the wrong channel, and the recon
 initially had the wrong writer.** `is_live` (`organon-core/src/ipc.rs:3446-3460`) probes
 the **`Shared` mmap's `seq` counter for motion** (up to ~150 ms) — it never reads the
 `Feedback` mmap (`:3483-3544`), so the ledger's "silence it by writing Feedback" remedy
@@ -320,7 +320,7 @@ on the first frame; `GridSize`'s `Dimensions` impl lies about `total_lines`/`his
 `tabs.rs:5` says the strip is "along the bottom" while it is at the top, and the `+` menu
 anchors upward (`tabs.rs:173-176`) — Leaf D fixes both while extracting the widget.
 `doc-rules.sh` does **not** trigger on `native/src/shell_main.rs`, so a tier done wholly
-there would dodge the SHELL_ARCHITECTURE.md reminder — the discipline is on us, not the
+there would dodge the CONSOLE_ARCHITECTURE.md reminder — the discipline is on us, not the
 hook.
 
 ---
@@ -499,7 +499,7 @@ no gloss, no CLI id and no actuation route.
    **Resolved against R3** by code (`shell_main.rs:425-427`), by James's live `organon
    status`, and by Tier 0 (namespaced `status` + a recipe landing). What survives from R3:
    `is_live()` probes `Shared` seq motion and never reads `Feedback`, so
-   SHELL_ARCHITECTURE.md §3's "write Feedback" remedy was wrong — corrected in this change.
+   CONSOLE_ARCHITECTURE.md §3's "write Feedback" remedy was wrong — corrected in this change.
    Descriptor `value` in-console is therefore **available**, not null, whenever the console
    is redrawing.
 2. **R1 and R4 found the same latent defect from two directions:** the backdrop texture is
@@ -514,7 +514,7 @@ no gloss, no CLI id and no actuation route.
    the product. Tier 2 must stand one up (owned by `shell_main.rs`) or its "registered
    spec" is dead code that looks green.
 5. **`snap`/`record` cannot work in-console** (the eyes sidecar has no reply side in
-   Shell) — known seam (SHELL_ARCHITECTURE §2), now stated where tier planners will read
+   Shell) — known seam (CONSOLE_ARCHITECTURE §2), now stated where tier planners will read
    it, so nobody demos it by accident.
 6. **The default look is not demo-grade at rest** (Tier 0 §3 above): the opening beat needs
    a recipe applied or the transport running. A mechanism being proven and a frame being
@@ -533,7 +533,7 @@ no gloss, no CLI id and no actuation route.
    narrow FOV carry the read" (R5).
 2. **Tier 1 ownership** — integrator additionally owns `world.rs` (camera arm + FOV clamps
    ×2 + auto-follow latch; R2) and `term_view.rs` (extract a testable `scrim_alpha`; R1);
-   `doc/arch/render.md` joins `SHELL_ARCHITECTURE.md` in the integrator's doc duty when
+   `doc/arch/render.md` joins `CONSOLE_ARCHITECTURE.md` in the integrator's doc duty when
    `world.rs`/`render.rs`/shaders move (hook `doc-rules.sh:29,31`).
 3. **Tier 1 keeps the World selectable** as a backdrop source beside the substrate —
    otherwise `organon set/generator/recipe` visibly dies (R1). The source switch is a field
@@ -543,7 +543,7 @@ no gloss, no CLI id and no actuation route.
 5. **Tier 2 transport decided:** a new `ns_file("console.txt")` sidecar drained in
    `shell_main.rs` — not a `CliOp` through `world.rs` (R3). Tier 2 also stands up the
    product's first `CommandService` instance, owned by the integrator.
-6. **Tier 3 Leaf B relocated and split:** it cannot live in `organon-shell` (nih-plug
+6. **Tier 3 Leaf B relocated and split:** it cannot live in `organon-console` (nih-plug
    firewall; `Cargo.toml` header + `cargo tree` acceptance) — it is a new **root-crate**
    module called from `shell_main.rs`, budgeted as two pieces: the field-name↔wire-id
    **namespace bridge** (generated from the slot lists), then the adapter. Its `pub mod`

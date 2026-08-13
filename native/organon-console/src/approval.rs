@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn remembering_answers_the_identical_call_and_only_that_one() {
         let mut memory = DecisionMemory::new();
-        let first = bash("cargo test -p organon-shell");
+        let first = bash("cargo test -p organon-console");
         assert_eq!(memory.lookup("Bash", &first.input.to_string()), None);
 
         let (decision, answer) = resolve_choice(Choice::AllowAndRemember, &first, &mut memory);

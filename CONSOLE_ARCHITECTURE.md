@@ -1,32 +1,47 @@
-# Organon Shell — living architecture
+# Organon Console — living architecture
 
-> **What this is.** The code-grounded state of **Organon Shell** as it exists *right
+> **What this is.** The code-grounded state of **Organon Console** as it exists *right
 > now* — not a spec, not a roadmap. It is the `MIND_ARCHITECTURE.md`-shaped sibling on
-> the code side of Shell's product definition (`doc/organon_shell_prd.md`, v3.2 — the
-> TUI host) and build plan (`doc/organon_shell_buildplan.md`), both of which are part
+> the code side of the Console's product definition (`doc/organon_shell_prd.md`, v3.2 —
+> the TUI host) and build plan (`doc/organon_shell_buildplan.md`), both of which are part
 > of the private annex and do not travel with this file. **Update it in the same change
-> as every Shell PR** — a Stop hook (`.claude/hooks/doc-rules.sh`) reminds you when
-> `native/organon-shell/*` moves without it.
+> as every Console PR** — a Stop hook (`.claude/hooks/doc-rules.sh`) reminds you when
+> `native/organon-console/*` moves without it.
 >
-> **`Shell #N` in this file, and in the crate's doc comments, is a Shell work item** —
-> a tree in the tracker Shell was planned in, not an issue in this repo. Bare `#N`
-> means this repo's tracker. Both are kept as provenance; neither is a link.
+> **`Shell #N` in this file, and in the crate's doc comments, is a Console work item** —
+> a tree in the tracker the product was planned in under its old name, not an issue in
+> this repo. Bare `#N` means this repo's tracker. Both are kept as provenance; neither
+> is a link. The same goes for the two private-annex filenames above: they name files in
+> another repo, so this rename does not get to change them.
 >
-> **Not auto-injected.** Open it deliberately when working on Shell, like
+> **Not auto-injected.** Open it deliberately when working on the Console, like
 > `MIND_ARCHITECTURE.md` and `doc/arch/render.md`.
 >
-> ⚠️ **The binary is `organon-console`; everything else is still `organon-shell`.** The
-> artifact carries the public name (`cargo build --features shell-edition --bin
-> organon-console`); the crate `native/organon-shell`, the `shell-edition` feature, the
-> `ORGANON_SHELL_*` variables, the `organon-shell` IPC namespace and this file's name
-> keep the working one, because each is read by something else. The gap is deliberate —
-> issue #3 owns closing it with deprecation aliases, not find-and-replace.
+> ⚠️ **What renamed and what did not** (issue #3). The product, the binary, the crate
+> (`native/organon-console`) and this file all carry the console name. Three things
+> deliberately do **not**, because each is read by something this repo cannot reach in
+> one commit:
+>
+> | Still `shell` | Read by |
+> |---|---|
+> | the `shell-edition` cargo feature | CLAUDE.md, README, CONTRIBUTING, `.github/workflows/ci.yml`, every build instruction in the tree |
+> | the `ORGANON_SHELL_*` variables | shipped `--help` output, and shims outside this repo (`organon-console.cmd`, `oc.cmd`) |
+> | 🚨 the `organon-shell` **IPC namespace** | the `organon` CLI, which joins on it to find this process. Change it and `organon console …` addresses a namespace nobody listens on — succeeding, reporting exit 0, and doing nothing. A coordinated change or a compatibility shim, never a find-and-replace. |
+>
+> Issue #3 leaves the door open to new `ORGANON_CONSOLE_*` spellings with the old kept
+> as working aliases; that is an addition to the flag surface, not part of the rename,
+> and it has not been done.
+>
+> 📌 **`Shell` and `Shell::…` below name a Rust type, not the product.** The binary's
+> app-state struct in `native/src/shell_main.rs` is still `struct Shell`, and so is that
+> file's name. Nothing outside this repo reads either — they are a clean follow-up, left
+> out here only because this doc's job is to be greppable against the code as it stands.
 
 ---
 
 ## 1. What exists right now (the terminal form — trees A/B/E Tier 1 + the landed v2 foundations)
 
-**Organon Shell is a next-gen TUI host** (PRD v3.2 §1.2, reframed 2026-08-08): tabs of
+**Organon Console is a next-gen TUI host** (PRD v3.2 §1.2, reframed 2026-08-08): tabs of
 agent harnesses — Pi first — drawn as a real GPU terminal, with the Organon engine
 available behind the glyphs. The bare shell is one menu entry, not the opening
 position.
@@ -208,7 +223,7 @@ position.
 
   Three pieces, each of which knows nothing about the other two:
 
-  1. **`scroll_anchor.rs` (organon-shell) — the arithmetic.** Absolute line indices:
+  1. **`scroll_anchor.rs` (organon-console) — the arithmetic.** Absolute line indices:
      `abs = screen_top + grid_line`, `screen_top = dropped + history_size`, **derived every
      frame rather than accumulated**, which is what makes emission age a boundary for free,
      scrolling move the window rather than the text, and a *row* resize need no bookkeeping
@@ -289,7 +304,7 @@ position.
 
   🚨 **The feed must be bracketed exactly as a real pump is**, and that is the one hard
   constraint in the increment. `TermSession::feed_local` is **`pub(crate)`**, so from outside
-  `organon-shell` — which is where the whole console lives — it is unreachable; the only caller
+  `organon-console` — which is where the whole console lives — it is unreachable; the only caller
   is `term_view::PaneAnchor::feed_local`, and `PaneAnchor::bracketed` is now the single function
   both it and `PaneAnchor::pump` route through. Unbracketed, a feed against a full buffer with
   the user scrolled into history evicts lines that `advance_dropped` never sees, which raises
@@ -397,7 +412,7 @@ position.
   is on screen *now*; the draw runs after it, so a panel lands where this frame's glyphs are.
   Keyboard focus is deliberately not taken — the terminal keeps the keyboard.
 
-  **A panel's buttons enter the command lane rather than imitating it.** `organon-shell` cannot
+  **A panel's buttons enter the command lane rather than imitating it.** `organon-console` cannot
   see `substrate_materials` and must not learn to, so a `BlockPanel` carries labels handed down
   by `shell_main.rs` and reports which one was pressed; `redraw` feeds that to
   `apply_console(&ConsoleOp::Background(name))` — exactly where a typed
@@ -508,7 +523,7 @@ epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
   (`Main` / `Subagent { tool_use_id }`, decoded from `parent_tool_use_id`, whose `null` is
   meaningful) and a `kind`. An unknown *event* is never an error — it decodes to
   `Unknown` with the body preserved. Tested against ✏️ **four** committed captures in
-  `organon-shell/fixtures/`, **two of them real** — the other two are hand-written and say
+  `organon-console/fixtures/`, **two of them real** — the other two are hand-written and say
   so, which is the point of the table in that directory's README.
 - **`conversation.rs` — the transcript model.** `Transcript::apply(AgentEvent) -> Change`,
   folding into ordered `Element`s
@@ -832,7 +847,7 @@ calls.
 
 🚨 **It is the `message_start` … `message_stop` bracket, and NOT `system`/`status` =
 `"requesting"`.** That choice is measured, not preferred. On the committed capture
-`native/organon-shell/fixtures/claude_stream_two_tools.jsonl`, which makes **two** API round
+`native/organon-console/fixtures/claude_stream_two_tools.jsonl`, which makes **two** API round
 trips, `"requesting"` appears **once** — line 4, ahead of the first message; the second
 `message_start` (line 27) has no status line before it. And nothing anywhere reports the
 request coming *back*: there is no `"responding"`, no closing status, no counterpart of any
@@ -1399,7 +1414,7 @@ Three rules hold it up, and each names a failure it prevents:
 |---|---|---|
 | The element is a **description** — a title, slider *names*, button *names*, and no value, colour, rect or closure | `conversation.rs` | the model acquiring layout, and stopping being a state machine you can test in milliseconds |
 | **Live widget values live in the view**, in a `HashMap<ElementId, PanelState>` beside the transcript, pruned each frame against `Transcript::get` | `conversation_view.rs` | a slider that snaps back mid-drag, because the transcript is folded from a stream and its elements mutate as events arrive. This is what stable ids are *for* |
-| Button labels are **handed down** and come back by label | `shell_main.rs` | `organon-shell` learning about `substrate_materials`; a pressed button re-enters `apply_console`, the same call `organon console background <name>` reaches |
+| Button labels are **handed down** and come back by label | `shell_main.rs` | `organon-console` learning about `substrate_materials`; a pressed button re-enters `apply_console`, the same call `organon console background <name>` reaches |
 
 #### The rendered surface — a control and its consequence in one glance
 
@@ -1601,7 +1616,7 @@ give the rows back.
 
 | Piece | Where |
 |---|---|
-| the state machine, the rect, the pointer test — all **pure** | `organon-shell/src/portal.rs` |
+| the state machine, the rect, the pointer test — all **pure** | `organon-console/src/portal.rs` |
 | the wheel claim | `term_view::wheel_scrolls_the_transcript`, fed from `term_view::draw` |
 | the texture, the render, the paint | `shell_main.rs::{render_portal, free_portal, paint_portal}` |
 | which engine frame goes where | `shell_main.rs::engine_plan` |

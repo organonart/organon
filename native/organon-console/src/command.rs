@@ -512,7 +512,7 @@ mod tests {
     /// session.rs convention (never the real store).
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir()
-            .join(format!("organon-shell-command-{}-{name}", std::process::id()));
+            .join(format!("organon-console-command-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root

@@ -101,7 +101,7 @@ const SURFACE_EMPTY: Color32 = Color32::from_rgb(0x0a, 0x0e, 0x0a);
 
 /// What the view needs the console to draw, for one surface element, this frame.
 ///
-/// **The seam between the two crates.** `organon-shell` knows a surface has a rect, an id and
+/// **The seam between the two crates.** `organon-console` knows a surface has a rect, an id and
 /// a look *by name*; it cannot see `substrate_materials`, a `World`, or a `wgpu::Device`, and
 /// must not learn to — the same contract [`ArtifactAction`] and
 /// [`crate::block_panel::BlockAction`] are already held to. So the view says what it laid out

@@ -101,7 +101,7 @@ Retry that one.
 
 ## Talking to the right instance
 
-Organon, Organon Mind and Organon Shell each use their own IPC namespace, which is what
+Organon, Organon Mind and Organon Console each use their own IPC namespace, which is what
 lets them run side by side without trampling each other. `ORGANON_IPC_NS` selects it, and
 the CLI reads it from **its own** environment:
 

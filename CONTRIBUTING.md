@@ -13,7 +13,7 @@ These are not style preferences. Each one has cost someone real work.
    either orphans the device in every saved session — the most destructive edit available
    in this codebase, and it looks like tidying up. The CLAP ID contains an old studio name;
    that is *why* it is commented, and it stays. Equally: never add a second plugin
-   identity. Organon Mind and Organon Shell are standalone-only, permanently.
+   identity. Organon Mind and Organon Console are standalone-only, permanently.
 
 2. **`Shared` — the IPC snapshot — is append-only.** The plugin process writes it and the
    visual process reads it at fixed byte offsets. Never reorder or insert fields. Append

@@ -5,7 +5,7 @@ scope.** This file exists so two ideas are written down while the machinery that
 cheap is fresh, rather than rediscovered later at full price.
 
 **Why record them now.** Both became obvious *because* of what the spike landed, and neither
-appears anywhere in issue #3, issue #4, `SHELL_ARCHITECTURE.md` or the spike docs — checked.
+appears anywhere in issue #3, issue #4, `CONSOLE_ARCHITECTURE.md` or the spike docs — checked.
 Issue #3's patch primitive is the parent of the first idea and stops one step short of it.
 
 ---

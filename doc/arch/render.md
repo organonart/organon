@@ -118,7 +118,7 @@ loop, forward. Two rules make that work and are easy to break:
   `scene_input::orbit_pixels` converts, and skipping it would orbit the editor at half rate on
   every Retina display — working, so nobody would look for it.
 - **A third camera entry point, and it is *absolute* where #621's is relative** (Console Spike
-  Tier 1, for Organon Shell's substrate backdrop). `set_substrate_rig(Option<(center, yaw,
+  Tier 1, for Organon Console's substrate backdrop). `set_substrate_rig(Option<(center, yaw,
   pitch, distance, roll, fov_deg)>)` installs the whole tuple; the camera finalization then
   selects it as a **third arm** on the same `if` the rails branch already overrode all six
   from, and latches off the `cam_center` auto-follow (the 5 %/frame lerp toward the generator

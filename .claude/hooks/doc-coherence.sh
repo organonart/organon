@@ -10,6 +10,43 @@
 # doc could rot silently into an incoherent state while unwatched — the exact
 # failure mode #618 T0b exists to catch. Parked is not unwatched.
 #
+# ⚠️ CONSOLE_ARCHITECTURE.md IS DELIBERATELY *NOT* IN THIS HOOK'S ARGUMENT LIST — and
+# that is a finding, not an omission (issue #3's rename, 2026-08-13). It was never in the
+# list under its old name either; adding it was tried in that change and immediately
+# reported a false positive, so it was left out on purpose rather than by default.
+#
+# What happens if you add it: check 1 fires on `` `result` `` appearing as the first
+# column of two DIFFERENT tables ~300 lines apart — one is `SessionFacts`'s retention rule
+# for the `result` event, the other is a "what clears the writing flag" rule for the same
+# event. Both rows are live and correct; neither is stale. The cause is check 1's
+# deliberate FILE scope (see its comment below — per-table scope was fooled once by a
+# stray `---`, so file scope was chosen on purpose). That trade is right for a file-map
+# doc, where a code-span first column really is a unique key. It is wrong for an
+# event-driven doc, where the same wire event legitimately keys several unrelated tables —
+# structurally the same case as the `| Full |` edition rows the check already excludes,
+# except that an event name is naturally written as a code span.
+#
+# So this is a gap in the check, not in the doc, and wiring it up as-is would put a
+# permanent false positive on every Stop — the "reminder people learn to ignore" that
+# CLAUDE.md and doc-rules.sh both warn is worse than no reminder.
+#
+# 🚨 AND IT IS ALREADY HAPPENING, which is the part worth acting on. Measured on `main`
+# at 8ffee42, with none of the rename's changes applied:
+#
+#     bash .claude/hooks/doc-coherence.sh ARCHITECTURE.md   → exit 1
+#     `record` `plexus` `chamber` `particle_aura`  (lines 878-881 vs 984-987)
+#
+# Those are the §-cluster tables: one says what each cluster OWNS, the other reports its
+# measured live-range share of `frame_body`. Four clusters, two questions, eight correct
+# rows — same false-positive shape as the console doc's. So check 1 is firing on every
+# Stop today against a doc that IS in the list, and has been for some time. Adding a
+# second such doc is not what needs doing; fixing the check is.
+#
+# Closing it properly is a change to THIS file (an exempt-keys list, or per-table scope
+# plus a stray-`---` guard), after which CONSOLE_ARCHITECTURE.md should join the list.
+# Check 2 (fence balance) already passes on it today, and
+# `bash .claude/hooks/doc-coherence.sh CONSOLE_ARCHITECTURE.md` runs by hand any time.
+#
 # The existing doc hooks answer two questions:
 #   architecture-doc-check.sh   (Stop)         "you changed X without Y"
 #   doc-staleness-check.sh      (SessionStart) "Y has fallen behind X over time"

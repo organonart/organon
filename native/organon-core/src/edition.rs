@@ -2,8 +2,8 @@
 //!
 //! One crate family, three products. Organon (the VST3/CLAP visualizer), **Organon
 //! Mind** (a standalone analysis instrument for local LLMs — see
-//! `doc/organon_mind_prd.md`) and **Organon Shell** (the agent-operating workstation —
-//! see `doc/organon_shell_prd.md`, private annex; its code is `native/organon-shell`)
+//! `doc/organon_mind_prd.md`) and **Organon Console** (the agent-operating workstation —
+//! see `doc/organon_shell_prd.md`, private annex; its code is `native/organon-console`)
 //! are the *same* codebase with a different front-of-house, selected at **build time**
 //! by the `mind-edition` / `shell-edition` cargo features (mutually exclusive,
 //! enforced by a `compile_error!` below). This is an edition, **not a fork**: the
@@ -61,8 +61,13 @@ pub enum Edition {
     Full,
     /// Organon Mind — the standalone LLM-analysis instrument (`--features mind-edition`).
     Mind,
-    /// Organon Shell — the agent-operating workstation (`--features shell-edition`,
+    /// Organon Console — the agent-operating workstation (`--features shell-edition`,
     /// Shell #3 T1). Standalone-only like Mind: no plugin identity, ever.
+    ///
+    /// 📌 The VARIANT keeps the `Shell` spelling after the product became Organon Console
+    /// (issue #3), because it is paired with the `shell-edition` cargo feature that selects
+    /// it — and that feature is quoted in CLAUDE.md, CI and every build instruction in the
+    /// tree. Renaming one without the other is what would actually be confusing.
     Shell,
 }
 
@@ -102,14 +107,14 @@ pub const EDITION: Edition = Edition::Shell;
 const MIND_TABS: &[UiTab] =
     &[UiTab::Mind, UiTab::Look, UiTab::Motion, UiTab::Environment, UiTab::Settings];
 
-/// The `UiTab`s Organon Shell would show (Shell #3 T1).
+/// The `UiTab`s Organon Console would show (Shell #3 T1).
 ///
-/// **Provisional, and honestly so:** Shell's front-of-house is its own workspace (the
-/// compositor in `native/organon-shell`), not the plugin editor, so no Shell binary
+/// **Provisional, and honestly so:** the Console's front-of-house is its own workspace (the
+/// compositor in `native/organon-console`), not the plugin editor, so no Console binary
 /// draws a tab bar today. The set still needs a defined answer — every edition-shaped
 /// decision is a pure function of the `Edition` value — and the defensible one is the
 /// look-shaping tabs an embedded editor pane would want: the same slice Mind ships,
-/// minus the Mind lane. Revisit when a Shell surface actually embeds the editor UI.
+/// minus the Mind lane. Revisit when a Console surface actually embeds the editor UI.
 const SHELL_TABS: &[UiTab] =
     &[UiTab::Look, UiTab::Motion, UiTab::Environment, UiTab::Settings];
 
@@ -121,7 +126,11 @@ impl Edition {
         match self {
             Edition::Full => "Organon",
             Edition::Mind => "Organon Mind",
-            Edition::Shell => "Organon Shell",
+            // The public name is **Organon Console** (issue #3). This string is read by
+            // `organon-console`'s own UI (`app.rs`'s heading and project line), so leaving it
+            // as "Organon Shell" named a product nobody launched. `Full` is the one arm that
+            // cannot move — it feeds `Plugin::NAME`.
+            Edition::Shell => "Organon Console",
         }
     }
 
@@ -152,6 +161,13 @@ impl Edition {
         match self {
             Edition::Full => "organic-math",
             Edition::Mind => "organon-mind",
+            // 🚨 **`organon-shell`, and it does NOT follow the console rename** (issue #3).
+            // This is a WIRE identifier, not an internal name: the console injects it into
+            // every PTY it spawns as `$ORGANON_IPC_NS`, and the `organon` CLI joins on it to
+            // find the running process. Change it here and `organon console …` addresses a
+            // namespace nobody listens on — succeeding, reporting exit 0, and doing nothing.
+            // Renaming it is a coordinated change or a compatibility shim, never a
+            // find-and-replace. The test below pins the literal for exactly that reason.
             Edition::Shell => "organon-shell",
         }
     }
@@ -305,11 +321,16 @@ mod tests {
         }
     }
 
-    /// Organon Shell's provisional tab answer (Shell #3 T1): the look-shaping
+    /// Organon Console's provisional tab answer (Shell #3 T1): the look-shaping
     /// tabs, no Mind lane, no Generator/Synth/Audio — and its own name + namespace.
+    ///
+    /// ⚠️ **The two literals below moved in opposite directions on purpose** (issue #3).
+    /// The product name is presentation and followed the rename; the namespace is the wire
+    /// identifier the `organon` CLI joins on and did not. If a future tidy-up makes them
+    /// agree, this test is what stops it.
     #[test]
     fn shell_edition_identity_and_tabs() {
-        assert_eq!(Edition::Shell.product_name(), "Organon Shell");
+        assert_eq!(Edition::Shell.product_name(), "Organon Console");
         assert_eq!(Edition::Shell.ipc_namespace(), "organon-shell");
         assert!(Edition::Shell.is_shell());
         assert!(!Edition::Shell.is_mind());
@@ -319,7 +340,7 @@ mod tests {
             &[UiTab::Look, UiTab::Motion, UiTab::Environment, UiTab::Settings]
         );
         for t in [UiTab::Mind, UiTab::Generator, UiTab::Synth, UiTab::Audio] {
-            assert!(!Edition::Shell.shows_tab(t), "{t:?} should be hidden in Organon Shell");
+            assert!(!Edition::Shell.shows_tab(t), "{t:?} should be hidden in Organon Console");
         }
     }
 

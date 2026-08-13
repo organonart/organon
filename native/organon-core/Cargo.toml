@@ -45,7 +45,7 @@ mind-edition = []
 
 # Same mechanism, third product (Shell #3 T1): selects `EDITION =
 # Edition::Shell`. Forwarded from the native crate's `shell-edition` and from
-# `organon-shell`'s own feature — every switch lands here, where EDITION lives.
+# `organon-console`'s own feature — every switch lands here, where EDITION lives.
 # Mutually exclusive with `mind-edition` (compile_error! in src/edition.rs).
 # OFF by default: the default-inert contract is unchanged.
 shell-edition = []

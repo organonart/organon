@@ -374,14 +374,14 @@ jobs:
         working-directory: native
         run: cargo test --release --workspace --features mind-edition
 
-  # ── Leg 2b: the Organon Shell edition (Shell #3 T1) ──────────────────────────
+  # ── Leg 2b: the Organon Console edition (Shell #3 T1) ────────────────────────
   # Same asymmetry argument as leg 2: `shell-edition` is default-off, so legs 1–2
   # compile none of `src/shell_main.rs` and none of the `Edition::Shell` arms.
   # Mind-symmetric commands: the bin lives in the root crate (the window will
   # render `World`, which lives here until #618), the compositor lib in the
-  # `organon-shell` package. Those two names differ on purpose — the ARTIFACT is
-  # `--bin organon-console` (the public name), the PACKAGE is still
-  # `-p organon-shell`. Don't "fix" one to match the other.
+  # `organon-console` package. The bin and the package now agree (issue #3); the
+  # cargo FEATURE below is the one that still says `shell-`, and the job id and
+  # cache key follow the feature deliberately. Don't "fix" one to match the other.
   shell-edition:
     name: build (shell-edition)
     runs-on: ubuntu-latest
@@ -403,7 +403,7 @@ jobs:
           workspaces: native
           key: shell-edition
 
-      - name: Build Organon Shell
+      - name: Build Organon Console
         working-directory: native
         run: cargo build --release --features shell-edition --bin organon-console
 

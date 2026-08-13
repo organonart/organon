@@ -172,14 +172,14 @@ the settings that let it show, and to look honestly at what comes back.
 
 Everything above is **operating** Organon. This is the other mode: you are running in a
 tab of an Organon Console and the ask is to change *the console you are running in*. That
-is not a new tool. It is this repository — `native/organon-shell`, plus `shell_main.rs`
+is not a new tool. It is this repository — `native/organon-console`, plus `shell_main.rs`
 and `cli.rs` in the root crate — and the ordinary workflow in `CONTRIBUTING.md` applies
 unchanged: branch off `main`, PR it, close a review cycle. What follows is only the part
 that is **not** discoverable by reading the code.
 
-**Read the doc before you read the tree.** `SHELL_ARCHITECTURE.md` is the console's living
+**Read the doc before you read the tree.** `CONSOLE_ARCHITECTURE.md` is the console's living
 state, and it is hook-enforced rather than hopeful: `.claude/hooks/doc-rules.sh` makes it
-accountable for `native/organon-shell/src/*.rs`, so the code cannot move without the doc
+accountable for `native/organon-console/src/*.rs`, so the code cannot move without the doc
 being called for. §1 is the terminal host, §1.1 the conversation view, §2 the seams
 already claimed by coming work, §3 the honesty ledger — what is known to be *unverified*,
 which is the section that tells you whether a thing you are about to trust has ever been
@@ -219,7 +219,7 @@ first mistake §5.9.26 exists to prevent.
 
 ```bash
 cd native
-cargo test -p organon-shell --lib                          # the compositor lib — the tight loop
+cargo test -p organon-console --lib                        # the compositor lib — the tight loop
 cargo check --features shell-edition --bin organon-console # the bin the lib is compiled into
 ```
 
@@ -259,8 +259,8 @@ readout is a normal outcome, and so is reversing a refusal on new measurement.**
 one, say what measured it; if you decline one, write down why, and put anything you have not
 actually seen on screen in §3's ledger.
 
-**And the doc moves in the same change as the code.** `SHELL_ARCHITECTURE.md` for anything
-under `organon-shell/`, `CHANGELOG.md` for anything meaningful, and this file if you add or
+**And the doc moves in the same change as the code.** `CONSOLE_ARCHITECTURE.md` for anything
+under `organon-console/`, `CHANGELOG.md` for anything meaningful, and this file if you add or
 change a command. The Stop hook is the safety net, not the instruction — it fires after the
 fact, and a sub-agent may never see it.
 
@@ -268,7 +268,7 @@ fact, and a sub-agent may never see it.
 
 - `organon status` / `organon get` / `organon watch` returning an error → **nothing is
   writing the snapshot.** Those three READ `Shared`, and only an editor writes it — the
-  standalone, the plugin in a host, or Organon Shell. A visual on its own will never
+  standalone, the plugin in a host, or Organon Console. A visual on its own will never
   satisfy them, no matter how long you wait, so this failure is structural and permanent
   rather than a timing problem. Say so plainly.
 - `snap` timing out → **different failure, do not confuse the two.** `snap` needs no
@@ -284,7 +284,7 @@ fact, and a sub-agent may never see it.
   `azimuth` and the six `rot_mod_*` / `trans_mod_*` axes.
 - Talking to the **wrong** Organon → the CLI resolves `$ORGANON_IPC_NS` from its own
   environment and addresses whatever it names (default `organic-math`). Organon Mind and
-  Organon Shell each use their own, which is what lets them run beside a plain Organon.
+  Organon Console each use their own, which is what lets them run beside a plain Organon.
   Export the same value the app was launched with, or you will read one product's state
   while trying to steer another's.
 - A control you set does not seem to take → confirm it is the right generator's

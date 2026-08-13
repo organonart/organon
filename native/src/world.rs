@@ -1389,7 +1389,7 @@ pub struct World {
     // above it is relative. `Some((center, yaw, pitch, distance, roll, fov_deg))`
     // overrides all six at the finalization below, exactly as the rails branch does,
     // and latches off the `cam_center` auto-follow while it is installed. Set by
-    // `set_substrate_rig`; the only caller today is Organon Shell's backdrop, which
+    // `set_substrate_rig`; the only caller today is Organon Console's backdrop, which
     // frames a flat plane and cannot have the field's AABB dragging the centre.
     substrate_rig: Option<(Vec3, f32, f32, f32, f32, f32)>,
     // Rails mode (#187): set each frame from the active generator. While riding,

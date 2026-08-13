@@ -1,11 +1,11 @@
-# organon-shell — Organon Shell's own code (Shell #3 T1).
+# organon-console — Organon Console's own code (Shell #3 T1).
 #
-# ⚠️ NO nih_plug. Enforced: `cargo tree -p organon-shell | grep nih_plug` must be
-# empty — the organon-mind rule (#536 T5), applied for a harder reason here: Shell is
-# standalone-only PERMANENTLY (PRD v2 FR-46). `nih_export_vst3!`/`nih_export_clap!`
+# ⚠️ NO nih_plug. Enforced: `cargo tree -p organon-console | grep nih_plug` must be
+# empty — the organon-mind rule (#536 T5), applied for a harder reason here: the Console
+# is standalone-only PERMANENTLY (PRD v2 FR-46). `nih_export_vst3!`/`nih_export_clap!`
 # are not edition-gated, so any nih_plug in this graph is a loaded gun pointed at
 # Organon's own class ID. The only safe amount is none — which also means building
-# this package never compiles the plugin host stack at all (`-p organon-shell` is the
+# this package never compiles the plugin host stack at all (`-p organon-console` is the
 # tight loop).
 #
 # The crate is the LIB ONLY — the compositor UI, Edition-parametric so it is
@@ -18,14 +18,19 @@
 #
 # This package crosses into the public repo: `scripts/mirror-platform.manifest` names
 # it with an INCLUDE, byte-identical like every other member. Its PRD and build plan do
-# not — `EXCLUDE doc` keeps those private, so a public reader sees what Shell is and
-# what exists today, but not the tactical sequencing.
+# not — `EXCLUDE doc` keeps those private, so a public reader sees what the Console is
+# and what exists today, but not the tactical sequencing.
+#
+# 📌 The package renamed (issue #3); the `shell-edition` FEATURE below did not. That is
+# the same test applied to two different names: a package name is resolved inside this
+# workspace, while the feature is spelled out in CLAUDE.md, CI, README and every build
+# instruction in the tree — renaming it is its own coordinated change.
 [package]
-name = "organon-shell"
+name = "organon-console"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Organon Shell: the agent-operating workstation's compositor and front-of-house."
+description = "Organon Console: the agent-operating workstation's compositor and front-of-house."
 repository = "https://github.com/organonart/organon"
 
 [features]

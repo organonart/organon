@@ -15,7 +15,7 @@
 //!
 //! Everything below was read off real captures from `claude.exe` 2.1.228 on this
 //! machine, not from documentation. The sanitised captures live in
-//! `organon-shell/fixtures/` and are what the tests at the bottom run against. The
+//! `organon-console/fixtures/` and are what the tests at the bottom run against. The
 //! surface changes weekly, so the findings are recorded here with the code that
 //! depends on them:
 //!
@@ -967,7 +967,7 @@ impl fmt::Display for Preview<'_> {
 /// safe because `\n` cannot occur inside a UTF-8 multi-byte sequence.
 ///
 /// ```
-/// use organon_shell::agent_event::EventStream;
+/// use organon_console::agent_event::EventStream;
 /// let mut stream = EventStream::new();
 /// assert!(stream.push(br#"{"type":"system","subty"#).is_empty());
 /// let events = stream.push(br#"pe":"status","status":"requesting"}"#.as_ref());

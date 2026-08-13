@@ -62,15 +62,15 @@ dance*, which is paid per unit of work, not per intermediate commit on a branch.
 
 ---
 
-## The fifth member — `organon-shell` (Shell #3 T1, 2026-08-07)
+## The fifth member — `organon-console` (Shell #3 T1, 2026-08-07)
 
-**Organon Shell** joined the workspace as its own crate (the organon-mind pattern:
+**Organon Console** joined the workspace as its own crate (the organon-mind pattern:
 a nih_plug-free lib, the `required-features`-gated bin in the root crate beside
 `mind_main.rs`, edition feature forwarded to `organon-core` where `EDITION`
 resolves). Three topology facts, so the tables above age predictably:
 
 - **Exported like every other member.** `mirror-platform.manifest` carries
-  `INCLUDE native/organon-shell`, so the crate crosses byte-identical and the root
+  `INCLUDE native/organon-console`, so the crate crosses byte-identical and the root
   manifest's forwarding feature `shell-edition = ["organon-core/shell-edition"]`
   stays valid on the far side, because organon-core crosses too and carries the
   target feature. A new member is one manifest decision, not two — see §"the export"
@@ -79,5 +79,5 @@ resolves). Three topology facts, so the tables above age predictably:
   with the root-crate bin), and no longer blocked by anything structural.
 - **Its product docs stay in the private annex** — `doc/organon_shell_prd.md` and
   `doc/organon_shell_buildplan.md`, which `EXCLUDE doc` keeps out. Only the code and
-  `SHELL_ARCHITECTURE.md` cross into the public tree, so a public reader sees what
-  Shell *is* and what exists today, but not the tactical sequencing.
+  `CONSOLE_ARCHITECTURE.md` cross into the public tree, so a public reader sees what
+  the Console *is* and what exists today, but not the tactical sequencing.

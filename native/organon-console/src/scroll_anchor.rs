@@ -10,7 +10,7 @@
 //! restyled after the fact.
 //!
 //! This module is the arithmetic and nothing else: plain integers in, row ranges out.
-//! No egui, no `alacritty_terminal`, no wgpu — so it is `cargo test -p organon-shell`
+//! No egui, no `alacritty_terminal`, no wgpu — so it is `cargo test -p organon-console`
 //! in seconds, on any machine, with no GPU and no window.
 //!
 //! # The coordinate system, and why this one

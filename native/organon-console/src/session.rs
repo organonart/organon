@@ -532,7 +532,7 @@ mod tests {
     /// start clean. Never the real store (std::env::temp_dir, no tempfile dep).
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir()
-            .join(format!("organon-shell-session-{}-{name}", std::process::id()));
+            .join(format!("organon-console-session-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root

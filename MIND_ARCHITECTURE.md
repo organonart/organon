@@ -76,7 +76,7 @@ and none of the host audio-thread constraints. The `.app` packaging is #483 Tier
 
 | Piece | File | What it does |
 |---|---|---|
-| `Edition` / `EDITION` | `native/organon-core/src/edition.rs` | compile-time `Full` \| `Mind` \| `Shell` (the third is **Organon Shell**, Shell #3 T1 — mutually exclusive features, `compile_error!` if both; Mind's behaviour is untouched, pinned by the same tests). Drives the front-of-house three (product name, IPC namespace, visible `UiTab`s) plus the three the visual grew in #554/#572 — the module doc is the authority on the count |
+| `Edition` / `EDITION` | `native/organon-core/src/edition.rs` | compile-time `Full` \| `Mind` \| `Shell` (the third is **Organon Console**, Shell #3 T1 — mutually exclusive features, `compile_error!` if both; Mind's behaviour is untouched, pinned by the same tests). Drives the front-of-house three (product name, IPC namespace, visible `UiTab`s) plus the three the visual grew in #554/#572 — the module doc is the authority on the count |
 | IPC namespace fork | `native/organon-core/src/ipc.rs` | all 27 `$TMPDIR` mmap/sidecar paths funnel through `ns_file(suffix)` → `$TMPDIR/<namespace>-<suffix>`; resolved once per process from `$ORGANON_IPC_NS` (sanitized) else the edition's own |
 | Tab filter + chrome | `native/organon-mind/src/mind_ui.rs`, `organon-core/src/tabs.rs` (`UiTab::ALL`/`label`), `lib.rs` | `tab_bar` draws only `EDITION.visible_tabs()`; `clamp_tab` re-homes an active-but-hidden tab so the window can't come up blank |
 | The Mind tab layout | `lib.rs` (one `fixed_columns` grid) | col 0 Neural Network · col 1 Model/Specimen · col 2 Chat/Agent + Design Space, dashboard below. **Same in both editions** (#520 T1) |

@@ -2,9 +2,9 @@
 
 > **Naming.** Three products, one engine: **Organon** (the visualizer — plugin name in
 > the host, window titles, bundle `Organon.vst3`/`.clap`), **Organon Mind** (the
-> standalone analysis instrument) and **Organon Shell** (the agent-operating
+> standalone analysis instrument) and **Organon Console** (the agent-operating
 > workstation) — the latter two standalone-only, each with its own name, window title
-> and IPC namespace, and no bundle; §4.1 owns the mechanism. Mind and Shell are
+> and IPC namespace, and no bundle; §4.1 owns the mechanism. Mind and the Console are
 > **spin-outs of capabilities that live primarily in Organon**, not peers of it.
 > **"Organic Math"** is the *original cube-field generator*
 > (`GeneratorMode::Original`) and its algorithm/papers — the seed they all grew from.
@@ -25,7 +25,7 @@
 > - `MIND_ARCHITECTURE.md` — **Organon Mind's living state** (what exists right now)
 >   and its honesty ledger. This file owns everything Mind *reuses*; that one owns what
 >   is Mind-specific. **Not auto-injected.**
-> - `SHELL_ARCHITECTURE.md` — the same, for **Organon Shell**. Same split: the engine
+> - `CONSOLE_ARCHITECTURE.md` — the same, for **Organon Console**. Same split: the engine
 >   it reuses is documented here, the compositor and terminal there. **Not
 >   auto-injected.**
 > - `doc/guide/` + `doc/reference/` — **the user documentation**: how to *operate*
@@ -105,7 +105,7 @@ doc/arch/               render.md · topology.md (children of this file)
 doc/                    Organon Mind's public doc set (PRD, build plan, the essay)
 .claude/skills/         organon-cli — driving the running app via the CLI
 
-ARCHITECTURE.md (this file)  ·  MIND_ARCHITECTURE.md  ·  SHELL_ARCHITECTURE.md
+ARCHITECTURE.md (this file)  ·  MIND_ARCHITECTURE.md  ·  CONSOLE_ARCHITECTURE.md
 CLAUDE.md  ·  CONTRIBUTING.md  ·  CHANGELOG.md
 ```
 
@@ -163,7 +163,7 @@ byte-identical to the historical layout.
 | **`organic-math-mind-writer`** | bin | #367 Tier 2 — synthetic activation-ring writer (fake per-token frames, zero inference; the model-free proof) |
 | **`organic-math-mind-runtime`** | bin | #367 Tier 2b — the **real** activation-ring writer: an embedded llama.cpp runtime that loads the `.gguf`, runs live inference on a typed prompt, and taps per-token activations into the ring. **`required-features = ["embedded-llm"]`** — the default build never compiles it (no llama.cpp/C++ dep) |
 | **`organon-mind`** | bin | #483 Tier 1 — **Organon Mind**, the standalone LLM-analysis instrument: the same editor, Mind-only front-of-house. **`required-features = ["mind-edition"]`** — the default build never compiles it. See §4.1 |
-| **`organon-console`** | bin | Shell #3 T1 — **Organon Shell**, the agent-operating workstation: a winit/wgpu/egui window (`src/shell_main.rs`) over the compositor lib in `native/organon-shell` (which is nih_plug-free by rule: `cargo tree -p organon-shell | grep nih_plug` must stay empty). The bin sits in this crate, like `organon-mind`'s, because the embedded viewport (Shell #6) renders `World`. **`required-features = ["shell-edition"]`** — the default build never compiles it. ⚠️ **The bin is `organon-console`, the crate is `organon-shell`** — the artifact carries the public name, the crate keeps the working one (issue #3 owns closing that gap). `--bin organon-console`, `-p organon-shell`. See §4.1 + `SHELL_ARCHITECTURE.md` |
+| **`organon-console`** | bin | Shell #3 T1 — **Organon Console**, the agent-operating workstation: a winit/wgpu/egui window (`src/shell_main.rs`) over the compositor lib in `native/organon-console` (which is nih_plug-free by rule: `cargo tree -p organon-console | grep nih_plug` must stay empty). The bin sits in this crate, like `organon-mind`'s, because the embedded viewport (Shell #6) renders `World`. **`required-features = ["shell-edition"]`** — the default build never compiles it. ⚠️ **The bin, the crate and the doc all say `console`; the cargo FEATURE is still `shell-edition` and the IPC namespace is still `organon-shell`** — a feature name quoted across CLAUDE.md/CI/README and a wire identifier the `organon` CLI joins on are each read by something the rename cannot reach in one commit. `--bin organon-console`, `-p organon-console`, `--features shell-edition`. See §4.1 + `CONSOLE_ARCHITECTURE.md` |
 
 `nih-plug` is a **git dependency** (not crates.io) — a remote/Linux session may be
 unable to fetch it, in which case the compile gate must be cleared on the Mac.
@@ -180,7 +180,7 @@ critically — the **visual binary** are byte-identical between them.
 ```
 cargo build --release                                      # Organon (default; unchanged)
 cargo build --release --features mind-edition --bin organon-mind   # Organon Mind
-cargo build --release --features shell-edition --bin organon-console # Organon Shell
+cargo build --release --features shell-edition --bin organon-console # Organon Console
 ```
 
 `organon-core/src/edition.rs` holds a compile-time `Edition` (`Full` | `Mind` |
@@ -189,7 +189,7 @@ cargo features (**both default OFF**, so `cargo build` / `cargo test` / `bundle.
 `deploy.sh` keep producing exactly today's Organon; enabling both at once is a
 `compile_error!`). **Shell** is the third product (Shell #3 T1): the
 agent-operating workstation, defined in `doc/organon_shell_prd.md` (private annex),
-living state in `SHELL_ARCHITECTURE.md`; its code is the `native/organon-shell`
+living state in `CONSOLE_ARCHITECTURE.md`; its code is the `native/organon-console`
 workspace crate (nih_plug-free, the organon-mind pattern) and its **binary** is
 `src/shell_main.rs` in **this** crate, `organon-mind`-style — the window renders
 `World` (Shell #6 T1), which lives here until #618 extracts it.
@@ -202,9 +202,9 @@ instrument-window vs projector-feed, UI-layer start visibility, and the gated
 
 | What | Full | Mind | Shell |
 |---|---|---|---|
-| `product_name()` — `Plugin::NAME`, window title, editor heading | `Organon` | `Organon Mind` | `Organon Shell` |
-| `ipc_namespace()` — the `$TMPDIR` filename prefix (§6) | `organic-math` | `organon-mind` | `organon-shell` |
-| `visible_tabs()` / `shows_tab()` / `default_tab()` — the `UiTab` set **and its order** | all 8, its own order | `Mind · Look · Motion · Environment · Settings` | `Look · Motion · Environment · Settings` (provisional — no Shell binary draws a tab bar yet) |
+| `product_name()` — `Plugin::NAME`, window title, editor heading | `Organon` | `Organon Mind` | `Organon Console` |
+| `ipc_namespace()` — the `$TMPDIR` filename prefix (§6) | `organic-math` | `organon-mind` | `organon-shell` (⚠️ a **wire** identifier the `organon` CLI joins on — deliberately *not* renamed with the product, issue #3) |
+| `visible_tabs()` / `shows_tab()` / `default_tab()` — the `UiTab` set **and its order** | all 8, its own order | `Mind · Look · Motion · Environment · Settings` | `Look · Motion · Environment · Settings` (provisional — no Console binary draws a tab bar yet) |
 
 Every one of those is a pure function of the `Edition` **value**, so every product's
 behaviour is unit-tested from a default (feature-off) build — the fork is verified

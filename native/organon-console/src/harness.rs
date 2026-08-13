@@ -129,7 +129,7 @@ pub fn builtin_for(platform: Platform) -> Vec<HarnessSpec> {
         command: cmd.iter().map(|s| s.to_string()).collect(),
         // Detection can only prove the BRIDGE exists, not that the harness is
         // installed inside the distro — probing that means booting WSL on every
-        // launch. Recorded in SHELL_ARCHITECTURE.md's honesty ledger.
+        // launch. Recorded in CONSOLE_ARCHITECTURE.md's honesty ledger.
         detect: vec!["wsl.exe".into()],
         install_url: url.map(Into::into),
         cwd: None,
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn user_file_merges_by_id_and_appends_new() {
-        let root = std::env::temp_dir().join(format!("organon-shell-harness-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("organon-console-harness-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn missing_user_file_is_just_builtins() {
-        let root = std::env::temp_dir().join("organon-shell-harness-none");
+        let root = std::env::temp_dir().join("organon-console-harness-none");
         assert_eq!(load(&root), builtin());
     }
 
@@ -533,7 +533,7 @@ mod tests {
     }
 
     /// A user file is how a personal project directory gets in — the shape quoted
-    /// in SHELL_ARCHITECTURE.md must actually deserialize.
+    /// in CONSOLE_ARCHITECTURE.md must actually deserialize.
     #[test]
     fn documented_wsl_user_entry_round_trips() {
         let s: HarnessSpec = serde_json::from_str(

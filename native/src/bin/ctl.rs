@@ -1042,7 +1042,7 @@ mod tests {
     /// `every_source_word_resolves_and_a_typed_name_is_stricter_than_the_env_var`. Two
     /// alarms, one wire missing; the fix is a `pub const` in `cli.rs` beside
     /// `parse_console_op` (already the declared home of "both ends speak one vocabulary from
-    /// one place"), and it is in SHELL_ARCHITECTURE.md's honesty ledger.
+    /// one place"), and it is in CONSOLE_ARCHITECTURE.md's honesty ledger.
     #[test]
     fn the_console_vocabularies_are_bound_to_the_tables_that_draw_them() {
         use organic_math_native::substrate_materials;

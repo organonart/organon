@@ -11,7 +11,7 @@
 //! events; an **integrator** spawns the process and draws the result; and in between sits
 //! this: a state machine that folds a stream of events into an ordered list of
 //! **renderable elements**. It is not a widget and not a layout — there is no egui here,
-//! no rect, no font, no pixel, no clock and no I/O — so it is `cargo test -p organon-shell`
+//! no rect, no font, no pixel, no clock and no I/O — so it is `cargo test -p organon-console`
 //! in seconds, on any machine, with no GPU and no window. The same bar `scroll_anchor` and
 //! `block_anchor` are held to, for the same reason.
 //!

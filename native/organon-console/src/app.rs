@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn heading_names_the_product() {
         let shell = ShellApp::new(Edition::Shell);
-        assert!(shell.heading().starts_with("Organon Shell"));
+        assert!(shell.heading().starts_with("Organon Console"));
         // Edition-parametric on purpose: the same skeleton dressed as another
         // product names that product — no string is hard-coded in the layout.
         let full = ShellApp::new(Edition::Full);
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn demo_events_land_in_an_attached_session_log() {
         let root = std::env::temp_dir()
-            .join(format!("organon-shell-app-demo-{}", std::process::id()));
+            .join(format!("organon-console-app-demo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let mut app = ShellApp::new(Edition::Shell);
         app.log = Some(crate::session::SessionLog::open(&root, "demo").unwrap());

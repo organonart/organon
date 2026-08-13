@@ -46,7 +46,7 @@
 //! # What a panel is made of, and who decides
 //!
 //! [`BlockPanel`] carries its own title, its own slider values and its own **button labels**;
-//! this module never learns what a button means. `organon-shell` cannot see
+//! this module never learns what a button means. `organon-console` cannot see
 //! `substrate_materials`, and should not: the caller (`shell_main.rs`) fills the labels from
 //! its own table and receives a [`BlockAction`] naming the one that was pressed, which it
 //! feeds to the same `apply_console` a typed `organon console background <name>` reaches.
@@ -72,7 +72,7 @@ pub struct Patch {
 /// The kinds a claim can name, as the console's side of them.
 ///
 /// The **wire** side is `cli::PatchKind`, in the other crate: this is a paint target, that is
-/// a word a writer types, and keeping them apart is what stops `organon-shell` from acquiring
+/// a word a writer types, and keeping them apart is what stops `organon-console` from acquiring
 /// an opinion about a command-line vocabulary it cannot see.
 #[derive(Clone, Debug)]
 pub enum PatchContent {

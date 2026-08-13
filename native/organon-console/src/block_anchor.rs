@@ -8,7 +8,7 @@
 //! and it disappears when its lines do.
 //!
 //! This module is the arithmetic and nothing else: plain integers in, viewport row ranges
-//! out. No egui, no `alacritty_terminal`, no wgpu — so it is `cargo test -p organon-shell`
+//! out. No egui, no `alacritty_terminal`, no wgpu — so it is `cargo test -p organon-console`
 //! in seconds, on any machine, with no GPU and no window.
 //!
 //! # It borrows its coordinates, it does not invent them

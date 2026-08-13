@@ -11,6 +11,55 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The console's name reaches the crate, the doc, and the hooks that watch them
+
+- **`SHELL_ARCHITECTURE.md` → `CONSOLE_ARCHITECTURE.md`, moved with `git mv`** so the blame
+  trail on a 2,133-line primary reference survives, and **the hook rules moved in the same
+  commit** — `.claude/hooks/doc-rules.sh` now maps `native/organon-console/src/*.rs` +
+  `Cargo.toml` to the new filename, `architecture-doc-check.sh`'s Stop case is keyed on it,
+  and `load-architecture-doc.sh`'s SessionStart banner names it. A doc that moves while its
+  rule does not is a rule that watches a file nobody will ever create again: it stops firing
+  and says nothing about having stopped. Both hooks were **run**, not read — the Stop check
+  was exercised against a touched console source file and named the new doc.
+- **The crate `organon-shell` → `organon-console`**, the last internal name in the rename's
+  scope: the workspace member, the path dependency, `use organon_console::` at ~25 sites,
+  the `-p` invocations in CLAUDE.md / the `organon-cli` skill, the `.github/labeler.yml`
+  glob (and its label, `shell` → `console`, matching the label issue #3 already carries).
+  CI needed no command change — its console leg is `--workspace`, never `-p`.
+- **`Edition::Shell.product_name()` now answers "Organon Console".** It was still "Organon
+  Shell", and `organon-console`'s own UI reads it for the window heading and project line —
+  so the console introduced itself as a product nobody launched. `Edition::Full` is the arm
+  that cannot move; it feeds `Plugin::NAME`.
+- 🚨 **What deliberately did NOT rename, each with the reader that justifies it.** The rule
+  is CLAUDE.md's: *"on purpose" is a reason, not a blanket rule — apply the reason*, which
+  makes the test "does anything outside this repo read this name?"
+  - **The `organon-shell` IPC namespace** — a **wire** identifier. The console injects it
+    into every PTY as `$ORGANON_IPC_NS`; the `organon` CLI joins on it to find the running
+    process. Renaming it makes every `organon console …` address a namespace nobody listens
+    on — **succeeding, reporting exit 0, and doing nothing.** Pinned by a test, and now
+    carrying a comment at the constant saying why.
+  - **The `ORGANON_SHELL_*` variables** — a shipped flag surface, quoted in `--help` and set
+    by shims outside this repo. Issue #3 permits `ORGANON_CONSOLE_*` aliases alongside them;
+    that is an addition, not part of a rename, and it is not done here.
+  - **The `shell-edition` cargo feature** — spelled out in CLAUDE.md, README, CONTRIBUTING,
+    CI and every build instruction in the tree. Its own coordinated change.
+  - **`%APPDATA%\OrganonShell`** (needs a store migration), everything `organic-math-*` (a
+    different rename), `doc/organon_shell_{prd,buildplan}.md` (files in the private annex —
+    this repo does not get to rename a file it cannot see), and `struct Shell` /
+    `src/shell_main.rs` (internal, safe, but not in #3's scope and the hottest file on the
+    board).
+  - Prior CHANGELOG entries are left verbatim: several record decisions *about these names*
+    at the time, and editing them would make the record claim things that were not true then.
+- **A hook gap found and reported rather than papered over.** `CONSOLE_ARCHITECTURE.md` was
+  never in `doc-coherence.sh`'s argument list. Adding it was tried and reverted: check 1 is
+  file-scoped on code-span keys (deliberately — per-table scope was fooled once by a stray
+  `---`), which over-fires on an event-driven doc where the same wire event legitimately
+  keys several tables. Measuring that turned up the larger finding — **the check already
+  fails on `ARCHITECTURE.md`, on `main`, today**, on four cluster names that appear in both
+  an "owns" table and a measurements table. The reasoning and the measurement are recorded
+  in `doc-coherence.sh`, whose convention is that the list lives in JSON and the explanation
+  lives in the hook. Fixing the check is the follow-up; adding a second noisy doc is not.
+
 ### Console Spike — the canary on `tool_use_result` fired, on its first real chance
 
 - 🚨 **A third `tool_use_result` shape exists, and the counter built to notice one noticed

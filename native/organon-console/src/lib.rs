@@ -1,8 +1,8 @@
-//! Organon Shell — the agent-operating workstation (Shell #3).
+//! Organon Console — the agent-operating workstation (Shell #3).
 //!
 //! A native, GPU-composited workspace for working with AI agents.
 //! Product definition: `doc/organon_shell_prd.md`
-//! (private annex); living code state: `SHELL_ARCHITECTURE.md` at the repo root, which
+//! (private annex); living code state: `CONSOLE_ARCHITECTURE.md` at the repo root, which
 //! travels with this crate wherever it goes.
 //!
 //! Tier 1 scope (Shell #3): the compositor skeleton — the five PRD §2 regions
@@ -42,7 +42,7 @@
 //! untouched and remains the universal fallback. Beside it now: [`agent_event`] decodes
 //! Claude Code's NDJSON, [`conversation`] folds those into a renderable transcript,
 //! [`agent_map`] is the seam between the two, [`agent_session`] owns the live child
-//! process, and [`conversation_view`] draws the result. `SHELL_ARCHITECTURE.md` §
+//! process, and [`conversation_view`] draws the result. `CONSOLE_ARCHITECTURE.md` §
 //! "Two front-ends" owns the shape.
 //!
 //! [`text_diff`] is the sixth, and the smallest: an `Edit` arrives as two whole strings

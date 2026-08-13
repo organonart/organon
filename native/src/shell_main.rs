@@ -1,4 +1,4 @@
-//! The Organon Shell binary (Shell #10 T1 + #14 T1): a terminal, with the
+//! The Organon Console binary (Shell #10 T1 + #14 T1): a terminal, with the
 //! engine underneath it.
 //!
 //! PRD v3.1's form: a real PTY + the adopted VT core, drawn as a GPU glyph grid —
@@ -7,7 +7,7 @@
 //! plumbing is the v2 lineage's (visual.rs's init, ui_layer.rs's paint order); the
 //! device negotiation is `wgpu_editor::bring_up`'s in full — the #6-era debt repaid:
 //! a default-limits device opens the window and then fails to create the engine's
-//! pipelines, so the shell window always negotiates like the renderer host it is.
+//! pipelines, so the console window always negotiates like the renderer host it is.
 //!
 //! Backdrop contract (PRD §4.6): summoned, never imposed — `ORGANON_SHELL_BACKDROP`
 //! is tonight's dev summons (the typed `surface` command is tree E's real one), and
@@ -21,7 +21,7 @@
 //! because a backdrop is `Shell` state and nothing in the World can reach it (brief R3).
 //! [`Shell::drain_console`] drains that file every frame on the same file-length
 //! watermark the World uses for `cli.txt`, routes each op through the product's first
-//! live [`organon_shell::command::CommandService`], and applies the survivors by
+//! live [`organon_console::command::CommandService`], and applies the survivors by
 //! recomputing the published snapshot from one pure function of
 //! `(source, material, rig)` — [`look_shared`]. No texture is recreated, no pane is
 //! re-measured, so a live switch costs one frame and moves no glyph.
@@ -46,9 +46,9 @@
 //! file hosts both.** The terminal host above is unchanged and is the universal fallback:
 //! it runs any program and knows nothing about it. Beside it now sits the **conversation
 //! view** — a tab that spawns no PTY at all, drives an agent over pipes, and renders its
-//! structured event stream natively ([`Pane`], [`organon_shell::conversation_view`]). The
+//! structured event stream natively ([`Pane`], [`organon_console::conversation_view`]). The
 //! window, the tab strip, the command lane and the backdrop are shared; only what a tab
-//! *is* differs. `SHELL_ARCHITECTURE.md` owns the shape.
+//! *is* differs. `CONSOLE_ARCHITECTURE.md` owns the shape.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -65,20 +65,20 @@ use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
-use organon_shell::block_anchor::Block;
-use organon_shell::block_panel::{self, BlockAction, BlockPanel, Patch};
-use organon_shell::command::{
+use organon_console::block_anchor::Block;
+use organon_console::block_panel::{self, BlockAction, BlockPanel, Patch};
+use organon_console::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
-use organon_shell::conversation::ElementId;
-use organon_shell::conversation_view::{self, ConversationPane, SurfaceImages, SurfaceRequest};
-use organon_shell::harness::{self, HarnessSpec};
-use organon_shell::platform::Platform;
-use organon_shell::portal::{self, PortalState};
-use organon_shell::session::{Issuer, SessionLog};
-use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
-use organon_shell::term::{self, TermSession};
-use organon_shell::term_view::{self, BandedBackdrop, PaneAnchor};
+use organon_console::conversation::ElementId;
+use organon_console::conversation_view::{self, ConversationPane, SurfaceImages, SurfaceRequest};
+use organon_console::harness::{self, HarnessSpec};
+use organon_console::platform::Platform;
+use organon_console::portal::{self, PortalState};
+use organon_console::session::{Issuer, SessionLog};
+use organon_console::tabs::{self, Tab, TabAction, TabStrip};
+use organon_console::term::{self, TermSession};
+use organon_console::term_view::{self, BandedBackdrop, PaneAnchor};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use winit::application::ApplicationHandler;
@@ -120,17 +120,20 @@ enum BackdropSource {
 const BACKDROP_SUBSTRATE: &str = "substrate";
 
 /// **How this binary introduces itself**: the window title, the `--help` header, `--version`,
-/// and the startup banner. Deliberately *not* `EDITION.product_name()`, which still answers
-/// "Organon Shell".
+/// and the startup banner.
 ///
 /// The artifact is `organon-console` and the public name is **Organon Console**, so a console
 /// whose title bar and `--help` said "Organon Shell" would introduce itself as a product that
-/// is not what you launched. Everything the rename does *not* touch is what something else
-/// reads: `EDITION` is `organon-core`'s shared spine (the compositor lib's heading and the
-/// edition tests quote it too), the crate is `organon-shell`, the feature is `shell-edition`,
-/// the variables below are a shipped flag surface, and `organon-shell` is a *wire* identifier
-/// — the IPC namespace the `organon` CLI joins on. Issue #3 owns collapsing the two names;
-/// this constant is the honest seam until then, not a half-done rename.
+/// is not what you launched. Issue #3 has since closed the gap this constant was opened to
+/// bridge: `EDITION.product_name()` answers "Organon Console" too, and the crate is
+/// `organon-console`. It stays a separate constant anyway, because it is *this binary's*
+/// front door — `EDITION` is `organon-core`'s shared spine, and a presentation string the
+/// window title depends on should not be one edition table away from the plugin's `NAME`.
+///
+/// What the rename still does **not** touch is what something outside this workspace reads:
+/// the `shell-edition` feature, the `ORGANON_SHELL_*` variables (a shipped flag surface), and
+/// above all `organon-shell` the *wire* identifier — the IPC namespace the `organon` CLI
+/// joins on. Presentation renames, identifiers do not.
 const PRODUCT_NAME: &str = "Organon Console";
 
 /// What a user types. Kept beside [`PRODUCT_NAME`] because `--help`'s usage line is the one
@@ -159,7 +162,7 @@ fn parse_backdrop_source(v: Option<&str>) -> BackdropSource {
 /// one fails that side's test naming the other — which is a smoke alarm, not a wire. The
 /// real fix is a `pub const` in `cli.rs` beside `parse_console_op` (already the declared home
 /// of "both ends speak one vocabulary from one place"); it is a four-line change and it is
-/// recorded in SHELL_ARCHITECTURE.md's honesty ledger rather than done here, because
+/// recorded in CONSOLE_ARCHITECTURE.md's honesty ledger rather than done here, because
 /// `cli.rs` is another leaf's file this tier only reads.
 const BACKDROP_SOURCE_WORDS: [&str; 3] = ["world", "off", BACKDROP_SUBSTRATE];
 
@@ -1060,7 +1063,8 @@ struct Shell {
     /// [`EpochLedger::plan`]'s `pane_resized` argument, consumed one call later; it is the
     /// existing `backdrop.size != (w, h)` condition and nothing new.
     pane_resized: bool,
-    /// The `Shared` snapshot writer (organon-shell namespace). In the two-process
+    /// The `Shared` snapshot writer (the `organon-shell` IPC namespace — a wire identifier,
+    /// which is why it did NOT follow the console rename). In the two-process
     /// design the PLUGIN writes this; Shell has no plugin, so the terminal writes
     /// the default look itself — which is what makes `organon status`/`get`/`watch`
     /// see a live system from inside the terminal, and gives the in-process world
@@ -1447,7 +1451,7 @@ impl Shell {
         if let Ok(c) = std::env::var("ORGANON_SHELL_CMD") {
             self.open_tab_command(
                 "sh".into(),
-                Some(organon_shell::platform::shell_dash_c(Platform::current(), &c, |k| {
+                Some(organon_console::platform::shell_dash_c(Platform::current(), &c, |k| {
                     std::env::var(k).ok()
                 })),
                 None,
@@ -1484,16 +1488,16 @@ impl Shell {
         // agent session's own, not a user-editable argv (see `HarnessSpec::conversation`).
         if spec.conversation {
             let cwd = spec.cwd.as_deref().map(|c| {
-                organon_shell::platform::expand_tilde(
+                organon_console::platform::expand_tilde(
                     c,
-                    organon_shell::platform::home_dir(Platform::current(), |k| {
+                    organon_console::platform::home_dir(Platform::current(), |k| {
                         std::env::var(k).ok()
                     })
                     .as_deref(),
                 )
             });
             // The labels an inline panel offers, handed down for `claim_patch`'s reason:
-            // `organon-shell` cannot see `substrate_materials` and must not learn to. It
+            // `organon-console` cannot see `substrate_materials` and must not learn to. It
             // draws them and says which was pressed; this file is the only place that knows
             // a `metal` button and `organon console background metal` are the same act.
             let pane = ConversationPane::new(
@@ -1669,7 +1673,7 @@ impl Shell {
     /// 🚨 **The no-log path applies without recording, and says so.** If the store could not
     /// be opened there is no service to dispatch through, and the choice is between dropping
     /// the command and applying it unaudited. It applies — the beat outranks the plumbing —
-    /// and the shortfall is in SHELL_ARCHITECTURE.md's honesty ledger rather than hidden here.
+    /// and the shortfall is in CONSOLE_ARCHITECTURE.md's honesty ledger rather than hidden here.
     /// It is not a silent equivalent: `Shell::new` has already printed why on stderr, and the
     /// apply path is total over its own vocabulary regardless (an unknown name changes
     /// nothing), so validation is defence in depth rather than the only gate.
@@ -1767,7 +1771,7 @@ impl Shell {
 
     /// Reserve `rows` blank rows in the **active** pane's transcript (Console Spike Tier 5).
     ///
-    /// The mechanism is [`organon_shell::term_view::PaneAnchor::feed_local`]: bytes the
+    /// The mechanism is [`organon_console::term_view::PaneAnchor::feed_local`]: bytes the
     /// console generated itself, through the same parser the child's bytes go through, inside
     /// the same bracket that keeps the scroll anchor's `dropped` counter honest. The rows are
     /// ordinary scrollback rows — they scroll, age, evict and reflow like every other row —
@@ -1847,7 +1851,7 @@ impl Shell {
     /// the first time when the rows are painted, where a mistake is a thing you can see.
     ///
     /// [`cli::PatchKind::Panel`] is the one arm that carries state, and it is built here
-    /// because the button labels are handed **down**: `organon-shell` cannot see
+    /// because the button labels are handed **down**: `organon-console` cannot see
     /// `substrate_materials` and must not learn to. It draws the labels and reports which one
     /// was pressed; this file is the only place that knows a `metal` button and
     /// `organon console background metal` are the same act.
@@ -2776,7 +2780,7 @@ impl Shell {
                     // where the window is *now*. Only the pixels inside it are a frame old.
                     portal_rect = pane_rect
                         .filter(|_| portal_open)
-                        .and_then(organon_shell::portal::portal_rect);
+                        .and_then(organon_console::portal::portal_rect);
                     // §5.9's fork, at the one place it shows: the same panel, the same
                     // window, two renderings. The terminal branch is what it was — Tier 5's
                     // patch ledger and the actions its panels return included; a conversation
@@ -2993,7 +2997,7 @@ impl ApplicationHandler for Shell {
 /// What the command line asked for, as a value.
 ///
 /// Pure so the decision is unit-tested without a window server — the same reason
-/// [`organon_shell::platform::Platform`] is a value rather than a `#[cfg]`.
+/// [`organon_console::platform::Platform`] is a value rather than a `#[cfg]`.
 #[derive(Debug, PartialEq, Eq)]
 enum Invocation {
     Help,
@@ -3056,7 +3060,7 @@ fn help_text() -> String {
              organon console background <{backgrounds}>\n    \
              organon console rig <{rigs}>\n\
          \n\
-         Docs: SHELL_ARCHITECTURE.md\n",
+         Docs: CONSOLE_ARCHITECTURE.md\n",
         substrate = BACKDROP_SUBSTRATE,
         scrim_default = term_view::SCRIM_DEFAULT,
         scrim_floor = term_view::SCRIM_FLOOR,
@@ -3130,11 +3134,11 @@ mod cli_tests {
         assert!(h.contains("ORGANON_SHELL_SCRIM=<0..255>"), "scrim scale is a u8, not 0..1");
         assert!(!h.contains("<0..1>"), "the 0..1 form silently no-ops — never document it");
         assert!(
-            h.contains(&format!("default {}", organon_shell::term_view::SCRIM_DEFAULT)),
+            h.contains(&format!("default {}", organon_console::term_view::SCRIM_DEFAULT)),
             "help does not quote SCRIM_DEFAULT"
         );
         assert!(
-            h.contains(&format!("floor {}", organon_shell::term_view::SCRIM_FLOOR)),
+            h.contains(&format!("floor {}", organon_console::term_view::SCRIM_FLOOR)),
             "help does not quote SCRIM_FLOOR"
         );
     }
@@ -3198,13 +3202,19 @@ mod cli_tests {
     /// **The binary introduces itself as what you launched.** `--help`'s header and usage line
     /// are the console's front door, and they are the one place the rename is *visible*: the
     /// artifact is `organon-console`, so a header reading "Organon Shell" would name a product
-    /// that is not what ran. This is a real regression risk rather than a hypothetical —
-    /// [`PRODUCT_NAME`] deliberately shadows `EDITION.product_name()`, which still answers
-    /// "Organon Shell" and will keep tempting a future tidy-up back onto it.
+    /// that is not what ran.
+    ///
+    /// 📌 When this test was written, [`PRODUCT_NAME`] shadowed an `EDITION.product_name()`
+    /// that still answered "Organon Shell", and that gap was the regression risk. Issue #3
+    /// closed it — the edition table says "Organon Console" now too, pinned by
+    /// `edition.rs`'s `shell_edition_identity_and_tabs`. The assertion stays because the
+    /// property is the point, not the gap: whatever a future refactor routes this header
+    /// through, it must not print the old product name.
     ///
     /// ⚠️ The **variable names** below are the opposite case: `ORGANON_SHELL_*` is a shipped
-    /// flag surface and stays. Presentation renames, identifiers do not — that split is the
-    /// whole content of this change.
+    /// flag surface — quoted in this help text and set by shims outside this repo — and it
+    /// stays. Presentation renames, identifiers do not; that split is the whole content of
+    /// the rename.
     #[test]
     fn the_console_does_not_introduce_itself_as_the_shell() {
         let h = help_text();
@@ -3802,7 +3812,7 @@ mod cli_tests {
         let mut opened_at: Vec<u64> = Vec::new();
         for (i, name) in ["graphite", "paper", "metal"].iter().enumerate() {
             history += 40;
-            let state = organon_shell::scroll_anchor::ViewState {
+            let state = organon_console::scroll_anchor::ViewState {
                 rows: 24,
                 display_offset: 0,
                 history,
@@ -3812,7 +3822,7 @@ mod cli_tests {
             let (s, l) = console_step(source, &dressing, &bg(name)).expect("a known material");
             source = s;
             dressing = l;
-            let at = organon_shell::scroll_anchor::boundary_now(state, 5);
+            let at = organon_console::scroll_anchor::boundary_now(state, 5);
             let out = ledger.open(ledger_look(source, &dressing), at);
             assert!(out.opened, "`background {name}` must close the epoch before it");
             assert_eq!(out.boundary, at, "and open exactly where the cursor is");
@@ -3878,7 +3888,7 @@ mod cli_tests {
 
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 200.0));
         let cell_h = 10.0;
-        let state = organon_shell::scroll_anchor::ViewState {
+        let state = organon_console::scroll_anchor::ViewState {
             rows: 20,
             display_offset: 0,
             history: 100,

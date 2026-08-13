@@ -89,7 +89,7 @@ seen — `task_started`, `task_progress`, `task_updated`, `task_notification`,
 by a `tool_use_id` field of their own, and they carry live progress a card would want:
 `description` ("Reading one.txt"), `last_tool_name`, `usage.tool_uses`, `duration_ms`,
 `status`. All five currently decode to `Notice` and render nothing. See
-`SHELL_ARCHITECTURE.md`'s honesty ledger.
+`CONSOLE_ARCHITECTURE.md`'s honesty ledger.
 
 ## Sanitisation
 
