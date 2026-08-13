@@ -35,16 +35,19 @@ cd "$root" 2>/dev/null || exit 0
 rules="$DOC_RULES"
 [ -n "$rules" ] || exit 0
 
-# This session's changed files: committed-vs-main + staged + unstaged + untracked.
-base="$(git merge-base origin/main HEAD 2>/dev/null)"
-changed="$(
-  {
-    [ -n "$base" ] && git diff --name-only "$base"...HEAD
-    git diff --name-only
-    git diff --name-only --cached
-    git ls-files --others --exclude-standard
-  } 2>/dev/null | sort -u
-)"
+# Likewise "changed this session" — shared with web-architecture-doc-check.sh.
+# shellcheck source=session-changes.sh
+. "$root/.claude/hooks/session-changes.sh" 2>/dev/null || exit 0
+
+# Files THIS SESSION changed: commits whose committer date falls inside this
+# session and which aren't already on origin/main, plus staged + unstaged +
+# untracked. The session boundary comes from the first timestamp in the
+# transcript named by the stdin payload's `transcript_path`; if that can't be
+# read, the committed leg is dropped and only the working tree counts. It is
+# deliberately NOT the branch-vs-main diff that used to live here — on a
+# long-lived branch that reported every earlier session's work as this one's.
+# session-changes.sh owns the reasoning and the measurements.
+changed="$(session_changed_files "$input")"
 
 reason=""
 set -f   # no pathname expansion: trigger globs must reach the matcher intact
