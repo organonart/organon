@@ -1047,8 +1047,8 @@ fn block_key(message: &str, ordinal: usize) -> String {
 /// One `tool_use_result` object → the harness-agnostic [`cv::ResultDetail`], or `None`
 /// when it carries nothing this build recognises.
 ///
-/// 🚨 **Written against the only shape any capture contains**, `claude_stream_two_tools`'s
-/// `Read` result:
+/// 🚨 **Written against the only *readable* shape any capture contains**,
+/// `claude_stream_two_tools`'s `Read` result:
 ///
 /// ```text
 /// "tool_use_result": { "type": "text", "file": {
@@ -1061,6 +1061,16 @@ fn block_key(message: &str, ordinal: usize) -> String {
 /// on it would mean a `Bash` or `Write` result carrying a perfectly readable `file` object
 /// under some other type name renders nothing. Reading the fields that are there is the
 /// same feature-detect-don't-version-compare rule the decoder is built on.
+///
+/// 📌 **A second shape has since been captured, and this function cannot read it.**
+/// `claude_stream_subagent` carries two `Agent` results —
+/// `{"status","prompt","agentId","agentType","content","usage",…}`, with **no `file`
+/// sub-object** — so both are declined. That is the correct outcome, not a gap to patch
+/// here: what an `Agent` card should show is a card-design question, and widening this
+/// function to invent one would be guessing. The part worth keeping is *how it was found* —
+/// the shape announced itself through [`MapStats::tool_details_declined`] the first time a
+/// real capture carried something other than a `Read`, which is the exact job that counter
+/// was added for.
 ///
 /// 📌 **`numLines` counted `4` for a three-line file** in the capture — the numbered
 /// `tool_result` text ends `4\t`, i.e. the trailing empty line is counted. That is the
@@ -1225,14 +1235,34 @@ mod tests {
         assert_eq!(mapper.stats().tool_details_declined, 0);
     }
 
-    /// **CONTRACT.** A capture with no `tool_use_result` on it leaves every card's detail
-    /// empty and declines nothing — absence is not a failure to read.
+    /// **CONTRACT.** The fan-out capture's two `tool_use_result` objects are **`Agent`**
+    /// results — `{"status","prompt","agentId","agentType","content","usage",…}` with no
+    /// `file` sub-object — and this build cannot read one. Both are declined *and counted*,
+    /// and no card takes a detail from them: a shape we do not understand is refused whole,
+    /// never part-parsed onto a card. Both halves matter, which is why both are asserted —
+    /// checking only the decline count would pass while details were quietly attaching.
+    ///
+    /// 📌 **Both numbers moved here, and the movement is the finding rather than the fix.**
+    /// This test was written against a hand-written `SUBAGENT` that genuinely carried no
+    /// sibling object, so it asserted `declined == 0` and was named for that absence; the
+    /// real capture that replaced it carries two. [`result_detail`] reads the `file`
+    /// sub-object whatever the line claims to be — a bet on shape stability, taken
+    /// knowingly, with [`MapStats::tool_details_declined`] as the canary on it. The canary
+    /// fired on the first captured result that was not a `Read`. Nothing in the decoder
+    /// changed; the premise did.
     #[test]
-    fn a_stream_without_the_sibling_object_declines_nothing() {
+    fn an_agent_shaped_detail_is_declined_and_counted_rather_than_part_read() {
         let (t, mapper) = fold(SUBAGENT);
-        assert!(t.elements().iter().filter_map(|e| e.tool()).all(|c| c.detail.is_empty()));
-        assert_eq!(mapper.stats().tool_details, 0);
-        assert_eq!(mapper.stats().tool_details_declined, 0);
+        assert!(
+            t.elements().iter().filter_map(|e| e.tool()).all(|c| c.detail.is_empty()),
+            "a shape this build cannot read must attach nothing to any card"
+        );
+        assert_eq!(mapper.stats().tool_details, 0, "nothing was attached");
+        assert_eq!(
+            mapper.stats().tool_details_declined,
+            2,
+            "both Agent results were seen and refused, not silently skipped"
+        );
     }
 
     /// 🚨 **CONTRACT.** `tool_use_result` is a sibling of `message`, not of a block inside

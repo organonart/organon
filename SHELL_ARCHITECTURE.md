@@ -1269,6 +1269,20 @@ both for `Read`. A byte count, an exit status, a truncation flag, the unified pa
 forgotten. This repo labels what it shows measured or derived, and a field with no capture
 behind it could be labelled neither.
 
+🚨 **A second shape is now captured, it is not readable, and the counter is how that was
+found.** `claude_stream_subagent.jsonl` — the real fan-out that replaced a hand-written
+reconstruction — carries two `tool_use_result` objects of a third kind: `Agent` results,
+`{"status","prompt","agentId","agentType","content","usage",…}` with **no `file` sub-object
+and no `type` key at all**. `result_detail` reads the `file` object whatever the line claims
+to be, which was recorded above as a bet on shape-stability rather than a measurement, with
+`MapStats::tool_details_declined` named as the canary on it. Swapping the fixture made the
+bet's first real test: the counter went 0 → 2 and a test failed loudly, rather than a card
+quietly showing numbers no tool sent. ⚠️ **`result_detail` is deliberately not widened.**
+What an `Agent` card should display — a token total, a duration, a nested-agent id — is a
+card-design question that no observation answers yet, and inventing one here would be the
+exact move this section's four-field list exists to refuse. An `Agent` result renders no
+detail today, and says so in a number.
+
 | Decision | Why |
 |---|---|
 | **`content` is dropped** | it is the file's text, which the `tool_result` block already carries in numbered form. The same file twice in one card |
@@ -1608,11 +1622,13 @@ path silently breaks the three-products-simultaneously guarantee that
 - ✏️ **`tool_use_result` is rendered, and the fields it does not render are the honest part.**
   Only `filePath`/`numLines`/`startLine`/`totalLines`, because those are what a real capture
   contains; every richer field a card would want is absent because nothing has been observed
-  sending it. ⚠️ **Both captures that carry one are `Read` results**, so what a `Bash`, a
-  `Write` or an `Edit` puts in this object is *unknown on this machine* — `result_detail`
-  reads the `file` object whatever `type` the line claims, which is a guess about
-  shape-stability rather than a measurement. The counter that would catch it is
-  `MapStats::tool_details_declined`.
+  sending it. ⚠️ **Two shapes are captured and only one is readable**: the `two_tools`
+  capture's `Read` results, and the subagent capture's `Agent` results, which carry no `file`
+  object and are declined. What a `Bash`, a `Write` or an `Edit` puts here is still *unknown
+  on this machine*. 📌 This entry used to say both captured details were `Read`s and that
+  `MapStats::tool_details_declined` was the counter that *would* catch a third shape — it
+  has, on the first capture that contained one, which is a designed safeguard reporting
+  rather than a regression.
 - 🚨 **Thinking blocks still render nothing, and that is a refusal with a date on it.** The
   decoder reads them (`ContentBlock::Thinking`, text plus the opaque signature) and the
   transcript spends a block ordinal on them per rule 1, so the wiring is in place and the

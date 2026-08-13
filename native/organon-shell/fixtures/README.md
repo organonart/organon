@@ -10,18 +10,29 @@ the difference is the point.
 | `claude_stream_subagent.jsonl` | **Captured.** The same CLI and the same argv, given a prompt that dispatches two agents in parallel, one of which dispatches an agent of its own. |
 | `claude_stream_edges.jsonl` | **Hand-written.** Shapes the schema permits, or a future CLI might send, that no capture on this machine happens to contain. |
 
-## ⚠️ `claude_stream_two_tools.jsonl` holds the tree's only `tool_use_result` objects, and both are `Read`s
+## ⚠️ `tool_use_result` — two shapes are captured, and only one is readable
 
-`tool_use_result` is an undocumented sibling of `message`, and this file is the only place
-in the repository where a real one exists — twice, both carrying
-`{"type":"text","file":{"filePath","content","numLines","startLine","totalLines"}}` for a
-`Read`. `conversation::ResultDetail`'s four fields are exactly that list and stop there.
+`tool_use_result` is an undocumented sibling of `message`. Four real ones exist in this
+tree, in two files and in **two different shapes**:
 
-So what a `Bash`, a `Write` or an `Edit` puts in this object is **unknown on this machine**.
-`agent_map::result_detail` reads the `file` sub-object whatever `type` the line claims,
-which is a bet on shape-stability rather than a measurement, and
-`MapStats::tool_details_declined` is what catches the day the bet is wrong. Two smaller
-notes worth having before anyone "fixes" a test against this file:
+| Where | Count | Shape | Read by `result_detail`? |
+|---|---|---|---|
+| `claude_stream_two_tools.jsonl` | 2 | `Read` — `{"type":"text","file":{"filePath","content","numLines","startLine","totalLines"}}` | **yes**, and `conversation::ResultDetail`'s four fields are exactly that list |
+| `claude_stream_subagent.jsonl` | 2 | `Agent` — `{"status","prompt","agentId","agentType","content","resolvedModel","totalTokens","usage",…}`, **no `file` sub-object**, and no `type` key at all | **no** — both are declined and counted |
+
+📌 **The second row was the first test of the bet the first row was written under, and the
+bet lost cleanly.** `agent_map::result_detail` reads the `file` sub-object whatever `type`
+the line claims — shape-stability assumed, not measured — with
+`MapStats::tool_details_declined` as the canary. When the hand-written subagent fixture was
+replaced by a real capture, that counter went from 0 to 2 and a test failed loudly, which is
+the whole reason it exists. Nothing was mis-parsed and nothing was silently attached; an
+`Agent` result simply renders no detail today, and what one *should* show is a card-design
+question rather than a parsing one. `agent_map.rs`'s
+`an_agent_shaped_detail_is_declined_and_counted_rather_than_part_read` pins it.
+
+So what a `Bash`, a `Write` or an `Edit` puts in this object is still **unknown on this
+machine** — and now known to be worth asking about rather than assumed. Two smaller notes
+worth having before anyone "fixes" a test against the `two_tools` capture:
 
 - **`numLines` is `4` for a three-line file.** The numbered `tool_result` text ends `4\t`,
   i.e. the trailing empty line is counted. That is the tool's own arithmetic and is passed
@@ -29,14 +40,12 @@ notes worth having before anyone "fixes" a test against this file:
 - **`filePath` is a sanitised value** (`C:\work\demo\fx-a.txt`), per the section below — the
   *shape* is the capture's, the string is not.
 
-## 🚨 `claude_stream_subagent.jsonl` is a reconstruction, and nobody has checked it against a real fan-out
-
 ## `claude_stream_subagent.jsonl` — what the capture settled
 
 It replaced a hand-written reconstruction on 2026-08-13, the first time a real fan-out
 was run through this argv. The reconstruction's **correlation** was right — that half
 was the decoder's own measured field applied twice, and it survived untouched. Its
-**wire shape** was wrong in four ways, each of which is now a named test in
+**wire shape** was wrong in five ways, each of which is now a named test in
 `agent_map.rs`:
 
 - 🚨 **The dispatch tool is called `Agent`, not `Task`.** Both spellings are in this one
@@ -59,6 +68,9 @@ was the decoder's own measured field applied twice, and it survived untouched. I
 - ⚠️ **A subagent-scoped `user` line carries the Task prompt as human text**, ahead of
   any work. Two of them here, and they are the whole of `subagent_unrendered`: declined
   on purpose, because the card already shows those arguments in full.
+- ⚠️ **An `Agent` result carries a `tool_use_result` of its own**, and it is a shape no
+  card can read — see the table above. The reconstruction had none, so the test written
+  against it asserted "this capture declines nothing"; the real one declines two.
 
 What the capture **confirmed**:
 

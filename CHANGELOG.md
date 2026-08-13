@@ -11,6 +11,33 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the canary on `tool_use_result` fired, on its first real chance
+
+- 🚨 **A third `tool_use_result` shape exists, and the counter built to notice one noticed
+  it.** Two changes landed independently: one taught the tool card to read the undocumented
+  sibling object, recording in the same breath that both captured examples were `Read`
+  results and that `result_detail` reads the `file` sub-object *whatever* the line claims to
+  be — a bet on shape stability, with `MapStats::tool_details_declined` named as the canary.
+  The other replaced the hand-written subagent fixture with a real fan-out. Their merge put
+  the two together: the real capture carries two `tool_use_result` objects, both **`Agent`**
+  results (`status`/`prompt`/`agentId`/`agentType`/`usage`, no `file` sub-object, no `type`
+  key), so `result_detail` declined both and the counter went 0 → 2. The failure was a test
+  asserting the old fixture's premise, not a bug: nothing was mis-parsed, nothing was
+  attached, and the shape announced itself in a number rather than in a card quietly showing
+  figures no tool sent.
+- **The test was re-contracted rather than re-pointed.** Its premise — "a capture with no
+  `tool_use_result` on it" — is simply false of the fixture now, and preserving it by aiming
+  at a different file would have thrown away the better test the collision handed over:
+  *a `tool_use_result` of a shape this card cannot use is declined and counted, never
+  mis-parsed and never attached.* It asserts both halves, because a test checking only the
+  decline count would pass while details were silently attaching. Renamed to say that, with
+  the movement of both numbers justified in its own doc comment.
+- ⚠️ **`result_detail` is deliberately not widened to parse `Agent` results.** What such a
+  card should show — a token total, a duration, a nested agent's id — is a card-design
+  question no observation answers yet, and inventing an answer is the move the four-field
+  list exists to refuse. An `Agent` result renders no detail, and says so in a number. 420
+  tests in the compositor lib.
+
 ### Console Spike — a one-character edit stopped rendering as twenty lines
 
 - **The `Edit` diff is aligned now.** It printed `old_string`'s lines as removals and
