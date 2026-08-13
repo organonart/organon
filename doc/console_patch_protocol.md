@@ -62,7 +62,7 @@ The wire format is a private contract between two Organon components.
 The temptation is to teach an agent the byte sequence. Do not. Three things go wrong at once:
 the skill acquires a wire format that rots the moment the format changes; an agent that knows
 the bytes will emit them somewhere they do not belong (a commit message, a log, a file); and
-the id-allocation rule below becomes unenforceable. `skills/organon-cli/SKILL.md` must be able
+the id-allocation rule below becomes unenforceable. `.claude/skills/organon-cli/SKILL.md` must be able
 to teach this without naming a single byte.
 
 ### 🚨 P3 — A gap is a picture of a gap at one width
@@ -270,7 +270,7 @@ is free from the same call. Whichever tier lands first owns it, and the other us
 
 ## §6 — The skill's share
 
-`skills/organon-cli/SKILL.md` teaches the *shape* and defers the surface to the live tool. That
+`.claude/skills/organon-cli/SKILL.md` teaches the *shape* and defers the surface to the live tool. That
 split holds here, with one difference worth stating: **this is the first place where the skill
 is the mechanism rather than documentation.** A patch exists because a program left a gap and
 claimed it, and the skill is the only route by which an agent knows to do that. Elsewhere a
