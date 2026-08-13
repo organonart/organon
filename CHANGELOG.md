@@ -11,6 +11,28 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The doc-coherence hook stops crying wolf, and starts watching the console's doc
+
+- 🚨 **`doc-coherence.sh` fired on every single Stop, and had done for as long as §18 has
+  existed.** Its duplicate-table-key check was scoped to the whole FILE, so
+  `ARCHITECTURE.md` naming the same eleven `World` clusters in an inventory table and again
+  in a binding-measurement table read as eight stale rows. Both tables are correct; the hook
+  was wrong. A hook that always fires is worse than no hook — it is the thing that teaches a
+  session to dismiss hooks in general, including the ones that are right.
+- **Scoped per table, where a table ends at its next `|---|` separator row — not at the
+  first non-table line.** That distinction is the whole reason file scope was chosen
+  originally: the #593 T3 defect hid behind a second defect, a stray `---` that split §19's
+  file map in half and carried the two duplicate rows into opposite halves. A stray rule
+  opens no new header, so both halves stay one scope and the pair is still caught, while two
+  genuinely separate tables — which always carry their own separator — do not collide.
+  Verified against that exact shape.
+- **`SHELL_ARCHITECTURE.md` and `CONSOLE_ARCHITECTURE.md` are both checked now**, and only
+  one of them exists at a time. `[ -f "$f" ] || continue` was already in the loop, so a
+  listed-but-absent doc is a silent skip and the list needs no edit when the rename lands.
+  Shell's living-state doc had never been on the list at all.
+- Findings now carry their line numbers straight out of the awk pass rather than a second
+  `grep` over the file, which is also what makes per-table line numbers possible.
+
 ### Console — one document that says what the console is, and what has not been looked at
 
 - **`doc/console_overview.md`.** The console's argument, its shape and its status now exist in

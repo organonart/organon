@@ -10,6 +10,12 @@
 # doc could rot silently into an incoherent state while unwatched — the exact
 # failure mode #618 T0b exists to catch. Parked is not unwatched.
 #
+# 📌 SHELL_ARCHITECTURE.md and CONSOLE_ARCHITECTURE.md are BOTH in the list, and only
+# one of them exists at a time — the Shell→Console rename lands on its own branch, and
+# a hook that has to be edited in the same commit as a rename is a hook that will be
+# wrong for whichever branch you are not on. `[ -f "$f" ] || continue` below makes a
+# listed-but-absent doc a silent skip, so the list is correct on both sides of it.
+#
 # The existing doc hooks answer two questions:
 #   architecture-doc-check.sh   (Stop)         "you changed X without Y"
 #   doc-staleness-check.sh      (SessionStart) "Y has fallen behind X over time"
@@ -46,42 +52,55 @@ for f in "$@"; do
   [ -f "$f" ] || continue
 
   # --- 1. duplicate first-column table keys -------------------------------------
-  # Scoped to the whole FILE, and to keys that are a bare code span (`foo.rs`).
+  # Scoped PER TABLE, and to keys that are a bare code span (`foo.rs`).
   #
-  # Both choices are deliberate, and the first one is the lesson of the very defect
-  # this check was written for. Scoping per-table looks more precise and is worse:
-  # the stray `---` that split §19's file map in half ALSO split the two duplicate
-  # rows into different tables, so a per-table check saw nothing. The defect hid
-  # itself behind the other defect. File scope cannot be fooled that way.
+  # File scope was the original choice and it cried wolf on every Stop: ARCHITECTURE.md
+  # §18 legitimately names the same eleven `World` clusters in an inventory table and
+  # again in a binding-measurement table, which is correct authoring, not a stale row.
+  # A hook that fires unconditionally teaches everyone to dismiss hooks, so it was
+  # catching nothing while costing attention on every turn.
   #
-  # Restricting to code-span keys is what keeps file scope quiet: those are the
-  # file-map / rule-table identifiers, where one row per key is the whole contract.
-  # Prose or numeric first columns (the generator table's `| 0 |`, the edition
-  # table's `| Full |`) legitimately repeat across tables and are ignored.
+  # ⚠️ A TABLE ENDS AT ITS NEXT SEPARATOR ROW, not at the first non-table line — and
+  # that distinction is the whole reason file scope was picked in the first place. The
+  # #593 T3 defect hid behind a second defect: a stray `---` split §19's file map in
+  # half and carried the two duplicate rows into different halves. A stray rule opens
+  # no new header, so both halves stay one scope here and the pair is still caught;
+  # only a real `|---|` separator — which two genuinely separate tables always have —
+  # starts a new one.
   #
-  # Separator rows are skipped, and fenced blocks are excluded so an ASCII diagram
-  # containing pipes cannot produce a false positive.
+  # Restricting to code-span keys keeps it quiet either way: those are the file-map /
+  # rule-table identifiers, where one row per key is the whole contract. Prose or
+  # numeric first columns (the generator table's `| 0 |`, the edition table's
+  # `| Full |`) legitimately repeat and are ignored.
+  #
+  # Fenced blocks are excluded so an ASCII diagram containing pipes cannot produce a
+  # false positive.
   dupes=$(awk '
     /^```/ { infence = !infence; next }
     infence { next }
     /^\|/ {
+      if ($0 ~ /^\|[ \t:|-]+$/ && $0 ~ /-/) { table++; next }   # separator → new scope
       line = $0
       sub(/^\|[ \t]*/, "", line)
       sub(/[ \t]*\|.*$/, "", line)
       gsub(/^[ \t]+|[ \t]+$/, "", line)
-      if (line ~ /^-+$/ || line == "") next
+      if (line == "") next
       if (line !~ /^`[^`]+`$/) next      # code-span keys only
-      seen[line]++
-      if (seen[line] == 2) print line
+      k = table SUBSEP line
+      seen[k]++
+      at[k] = (seen[k] == 1) ? NR : at[k] "," NR
+      if (seen[k] == 2) order[++n] = k
+    }
+    END {
+      for (i = 1; i <= n; i++) { split(order[i], p, SUBSEP); print p[2] "\t" at[order[i]] }
     }
   ' "$f")
 
   if [ -n "$dupes" ]; then
     status=1
     echo "‼️  $f — duplicate table rows (same first column twice in one table):"
-    while IFS= read -r key; do
+    while IFS=$'\t' read -r key lines; do
       [ -z "$key" ] && continue
-      lines=$(grep -n -- "^| *${key//\//\\/} *|" "$f" | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
       echo "      $key   (lines $lines)"
     done <<< "$dupes"
     echo "    One of each pair is stale. Delete it — do not merge them."
