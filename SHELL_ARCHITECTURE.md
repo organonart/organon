@@ -502,11 +502,14 @@ epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
   `tool_result` can carry a whole file). Events carry `session_id`, an `AgentScope`
   (`Main` / `Subagent { tool_use_id }`, decoded from `parent_tool_use_id`, whose `null` is
   meaningful) and a `kind`. An unknown *event* is never an error — it decodes to
-  `Unknown` with the body preserved. Tested against three committed captures in
-  `organon-shell/fixtures/`, two of them real.
+  `Unknown` with the body preserved. Tested against ✏️ **four** committed captures in
+  `organon-shell/fixtures/`, **two of them real** — the other two are hand-written and say
+  so, which is the point of the table in that directory's README.
 - **`conversation.rs` — the transcript model.** `Transcript::apply(AgentEvent) -> Change`,
-  folding into ordered `Element`s (`Human | Assistant | Tool | RunEnd | Artifact`) with
-  stable `ElementId`s. Its `AgentEvent` is **its own input enum, deliberately not the decoder's**
+  folding into ordered `Element`s
+  (`Human | Assistant | Tool | RunEnd | Artifact | Approval`) with
+  stable `ElementId`s. ✏️ A `Tool` element additionally carries a `SubagentLog` — the one
+  thing that nests, and it nests *inside* an element rather than becoming one. Its `AgentEvent` is **its own input enum, deliberately not the decoder's**
   — two modules cannot own one type, and a transcript fluent in the wire format would
   change shape every time the wire did. No egui, no clock, no I/O.
 - **`agent_map.rs` — the seam, and the only file in the tree that knows both types.** A
@@ -540,8 +543,12 @@ that looks *nearly* right if got wrong:
 4. **`result` ends a TURN, not the stream.** Two arrived in one session. Nothing closes the
    process on it, and `result.result` is dropped rather than rendered — it is the prose the
    `assistant` lines already delivered.
-5. **Subagent-scoped events are dropped in milestone 1**, and counted
-   (`MapStats::subagent_dropped`). They belong *inside* the tool card that spawned them.
+5. ✏️ **Subagent-scoped events go to the tool card that spawned them.** They were dropped
+   in milestone 1 and counted (`MapStats::subagent_dropped`); they are now routed as
+   `AgentEvent::SubagentActivity` onto the card named by their `parent_tool_use_id`, and
+   that counter is **gone rather than renamed** — its sense reversed, so keeping the name
+   would have left every reader of it wrong. `subagent_routed` / `subagent_unrendered`
+   replace it. See "A subagent is not a turn" below.
 6. **Some lines carry facts about the session, not content for the flow** — which model,
    which cwd, what the turn cost, what the standing is. None of that is an `Element`, so
    it accumulates in `SessionFacts` and the status strip reads it from `facts()`.
@@ -595,6 +602,70 @@ which it measured itself.
 renders anything into the flow, so both stay counted in `MapStats::unmapped` exactly as
 before — pinned by a test, because silently changing what a counter means is its own
 class of bug.
+
+#### ✏️ A subagent is not a turn — it is something a tool call is doing
+
+**The problem it closes.** A coordinator session that dispatches agents showed a `Task`
+card sitting on "running" for eight to sixteen minutes and then a wall of text. The events
+were arriving the whole time; rule 5 was dropping them, because rendered as ordinary events
+they become assistant turns belonging to nobody.
+
+They are folded onto the **card that spawned them** instead, correlated by the
+`parent_tool_use_id` the decoder already exposes as `AgentScope::Subagent`. One event —
+`AgentEvent::SubagentActivity { parent, activity }` — carries the three shapes that mean
+anything inside a card (`Subagent::Said` / `Used` / `Returned`), and `ToolCard` gains a
+`SubagentLog`. It is the only transcript event that **addresses an existing element rather
+than appending one**, which is precisely what stops a subagent acquiring a place in the
+flow of its own.
+
+🚨 **There is no live text here, and nothing in the view may imply there is.** §5.9.1
+measured that Claude Code **never forwards token-level deltas from a subagent**. So a step
+is always a *completed* burst, the gaps between bursts are real and can be minutes long,
+and `Subagent::Said` carries a whole string with no completeness bit because there is no
+provisional state for it to be in. What the card honestly shows is that an agent is
+running, which tool spawned it, and what it did — never a live feed.
+`MapStats::subagent_stream_events` is the **canary on that measurement**: it should be zero
+forever, and if it is not, the path needs redesigning rather than patching.
+
+⚠️ **Depth is flattened to one and recorded, not nested.** A subagent can dispatch its own,
+and cards inside cards inside a scrollback have no bottom. `Transcript::subagent_owner`
+maps a nested call id to the top-level card that owns it, so a chain of any length collapses
+onto the one card a human can see, each step carrying the `depth` it happened at.
+🚨 **`MAX_TRACKED_DEPTH` caps the reported number, never the attribution** — the first
+implementation made *ownership* conditional on it, and past the cutoff steps fell through to
+the orphan path and opened **new top-level cards**, which is the nesting hazard again in a
+flat disguise. What bounds the map is eviction: entries are swept when their card leaves the
+window.
+
+| Case | What happens | Why |
+|---|---|---|
+| Parent card scrolled away | Nothing special — the log is *inside* the element, so it scrolls with it | There is no floating overlay to keep alive |
+| Parent card **evicted** by the cap | Later activity opens a fresh nameless orphan card | The subagent has not stopped working just because we stopped retaining its card |
+| `parent_tool_use_id` naming a call we never saw | Nameless card, `Running`, counted `orphan_subagent_activity` | Exactly `orphan_results`' precedent — the content is real, so it is kept rather than dropped |
+| A `Returned` with no matching `Used` | Kept as a nameless step, counted `unmatched_subagent_returns` | The same keep-it-anyway rule, one level in |
+| A subagent that never stops | Log capped per card by `Limits::max_subagent_steps`, evicting the **front** | One `Task` must not be able to evict the conversation around it by working hard |
+
+⚠️ An orphan card opens **`Running` and joins the running set**, which is a claim. It is
+behaviour 1's derivation rather than an invention — live activity from inside a call is the
+strongest available evidence the call has not returned — and opening it `Complete` would
+fabricate the result behaviour 3 refuses to fabricate.
+
+⚠️ A step landing on a card already in the flow reports `Change::Updated`, never `Appended`.
+The view re-arms its scroll-follow on the latter, so reporting it wrongly would yank a
+reader to the bottom every time any subagent spoke.
+
+📌 **Two things a nested step deliberately does not carry.** A `Returned` keeps only
+`is_error`, not the tool's output: this is the one place the model declines content rather
+than truncating it, because the alternative is a tool's full output nested two frames deep,
+multiplied by every tool every subagent runs. And a subagent's own `result` / `system` lines
+are not folded into `SessionFacts` — a subagent's cost is not the turn's.
+
+🚨 **The fixture is hand-written and nobody has seen this on screen.** No capture on this
+machine contains a `Task` call at all, so `fixtures/claude_stream_subagent.jsonl` is a shape
+reasoned from the schema, not one observed. The correlation is sound (it is the decoder's
+own field, applied twice); whether a real subagent emits exactly these line kinds in this
+order is **unverified**. `fixtures/README.md` marks the split, and says to re-capture the
+first time a real fan-out runs through the console.
 
 **The process contract (§5.9.2, measured):** `-p --input-format stream-json
 --output-format stream-json --include-partial-messages --replay-user-messages --verbose`
@@ -1170,7 +1241,7 @@ integrated is not unsupported, it is supported the old way.
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
-| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. Then, in the order §5.9.3 holds them: subagent events rendered *inside* the tool card that spawned them; `tool_use_result` (the undocumented structured per-tool detail a rich card wants); then Pi as the second harness, mapped onto the same eight transcript events — never a second event vocabulary | Console Spike §5.9 |
+| Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**. Then, in the order §5.9.3 holds them: `tool_use_result` (the undocumented structured per-tool detail a rich card wants); then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; then the console's own verbs served as capability tools (needs a `CommandService` reachable from the serve thread — `NoDispatch` is the named seam), so a card can say *"organon · background"* instead of a shell command; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
@@ -1184,7 +1255,7 @@ path silently breaks the three-products-simultaneously guarantee that
 - 🚨 **The conversation view has never been run against a live agent by the session that
   wrote it.** Every rule in §1.1 is pinned by headless tests against committed captures —
   the per-block key, the replayed human turn, the recurring `init`, the per-turn `result`,
-  the dropped subagent scope, the card's clipping and the `Edit` diff — and that is
+  ✏️ the subagent scope, the card's clipping and the `Edit` diff — and that is
   **replay, not a conversation**. What no fixture can answer: whether the CLI stays alive
   when it is spawned with no prompt and nothing on stdin yet (it prints `Warning: no stdin
   data received in 3s…` and the pane logs it, but "proceeds without it" could mean it
@@ -1199,11 +1270,23 @@ path silently breaks the three-products-simultaneously guarantee that
   in any of Claude Code's programmatic surfaces, so the tab cannot mirror a session
   already running in a terminal. This is a product consequence wearing a protocol costume
   and is recorded as such (§5.9.1).
-- **Subagent output is dropped, and on a coordinator run that is most of the activity.**
-  Token deltas from subagents are never forwarded by the CLI at all, so even in milestone
-  2 a fan-out session arrives as complete-message bursts rather than live text. Milestone
-  1 drops those messages entirely (counted, not silent). A view of a coordinator will look
-  much quieter than the work actually is.
+- ✏️ **Subagent output is rendered now, but it is still not live, and that half is
+  permanent.** Milestone 1 dropped it entirely; it is now folded onto the tool card that
+  spawned it (§1.1, "A subagent is not a turn"), so a coordinator run shows what its agents
+  are doing instead of a spinner. 🚨 **What did not change is the measurement underneath:**
+  Claude Code never forwards token deltas from a subagent, so activity still arrives as
+  complete bursts minutes apart, and no amount of rendering can make it a live feed. The
+  card reports *counts and completed steps*, never liveness, because counts are what the
+  wire honestly carries. A view of a coordinator will still be quieter than the work is —
+  it is now quiet in a way that says what is happening.
+- 🚨 **Nobody has seen a subagent card on screen, and its fixture is a reconstruction.** No
+  capture on this machine contains a `Task` call at all, so the shape the whole path is
+  tested against was reasoned from the schema rather than observed
+  (`fixtures/claude_stream_subagent.jsonl`, declared as hand-written in
+  `fixtures/README.md`). The correlation is the decoder's own measured field applied twice
+  and is sound; the *line kinds and their order* are not verified, and neither is a single
+  pixel of the card. This is the same class of entry as the conversation view's own first
+  one above, and it is answered the same way: somebody runs a real fan-out and looks.
 - **The card's clipping is the VIEW's, and it says what it hid.** `conversation.rs` leaves
   per-element text unbounded on purpose — a tool result can be a whole file, and
   truncating it in the model would misrepresent the tool's output while looking like the

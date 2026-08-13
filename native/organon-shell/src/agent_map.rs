@@ -85,12 +85,30 @@
 //! same prose the `assistant` lines already delivered. Rendering both would double every
 //! final answer.
 //!
-//! # 5. Subagent-scoped events are dropped in milestone 1
+//! # 5. Subagent-scoped events go to the card that spawned them
 //!
-//! The decoder distinguishes them ([`AgentScope::Subagent`]). Rendered naively they
-//! appear as free-floating turns belonging to nobody; they belong *inside* the tool card
-//! that spawned them, which is milestone 2. Dropping is a choice with a cost, so it is
-//! counted ([`MapStats::subagent_dropped`]) rather than silent.
+//! The decoder distinguishes them ([`AgentScope::Subagent`], from `parent_tool_use_id`).
+//! Rendered naively they appear as free-floating turns belonging to nobody, so milestone 1
+//! dropped them outright and counted the loss. They are now routed instead: every
+//! subagent-scoped line becomes a
+//! [`SubagentActivity`](crate::conversation::AgentEvent::SubagentActivity) addressed to
+//! the tool call named by its scope, and the transcript folds it onto that card
+//! ([`crate::conversation`], behaviour 6).
+//!
+//! 🚨 **This changes what is rendered, not what arrives — and the difference is the whole
+//! honesty of the feature.** §5.9.1 measured that Claude Code **never forwards
+//! token-level deltas from a subagent**. So there is no live text here and there cannot
+//! be: activity lands as complete bursts, sometimes minutes apart, and everything this
+//! module emits for a subagent is a finished fact. Nothing may imply otherwise.
+//!
+//! ⚠️ **Rule 1 still holds and costs nothing to hold — for a measured reason, not a lucky
+//! one.** A subagent's blocks never touch [`EventMapper::settled_blocks`] and are never
+//! given a [`MessageId`](crate::conversation::MessageId) at all, so they cannot consume a
+//! main-conversation ordinal. The per-block key exists to keep streamed deltas attached to
+//! the settled text that replaces them; with no deltas forwarded there is nothing to
+//! attach and nothing to detach. If subagent deltas ever *do* start arriving, that
+//! reasoning collapses — which is why
+//! [`MapStats::subagent_stream_events`] counts the event that would prove it.
 //!
 //! # 6. Some lines carry facts about the session rather than content for the flow
 //!
@@ -174,8 +192,26 @@ use crate::conversation as cv;
 pub struct MapStats {
     /// Decoded lines seen, subagent lines included.
     pub events: u64,
-    /// Dropped for [`AgentScope::Subagent`](crate::agent_event::AgentScope::Subagent).
-    pub subagent_dropped: u64,
+    /// Subagent-scoped lines ([`AgentScope::Subagent`](crate::agent_event::AgentScope::Subagent))
+    /// that produced at least one activity for a card.
+    ///
+    /// ⚠️ **This replaced `subagent_dropped`, and is not a rename.** That counter meant
+    /// "how much we threw away"; this one means the opposite, so keeping the name while
+    /// reversing the sense would have left a number whose every reader was wrong. Rule 5
+    /// is the change.
+    pub subagent_routed: u64,
+    /// Subagent-scoped lines that produced nothing — a thinking block, an unknown shape,
+    /// a subagent's own `system`/`result` line. The honest remainder of the old
+    /// `subagent_dropped`, and the number that must be read next to
+    /// [`subagent_routed`](Self::subagent_routed) rather than instead of it.
+    pub subagent_unrendered: u64,
+    /// 🚨 **The canary on §5.9.1's measurement.** Claude Code was measured not to forward
+    /// `stream_event` lines from a subagent, and the whole design rests on it: no deltas
+    /// means no live text to render, and rule 1's per-block key has nothing to key. This
+    /// counts any that arrive anyway. **It should be zero forever**; if it is not, the
+    /// measurement has changed and the subagent path needs designing again rather than
+    /// patching.
+    pub subagent_stream_events: u64,
     /// A `system/init` after the first (rule 3).
     pub repeat_session_starts: u64,
     /// Known event kinds this milestone renders nothing for: notices, rate limits,
@@ -452,12 +488,18 @@ impl EventMapper {
     /// call, and one `user` line can carry several tool results).
     pub fn map(&mut self, event: &AgentEvent) -> Vec<cv::AgentEvent> {
         self.stats.events += 1;
-        // Rule 5. Before anything else: a subagent's line must not touch the block
-        // bookkeeping either, or its message ids would consume main-conversation
-        // ordinals.
-        if event.is_from_subagent() {
-            self.stats.subagent_dropped += 1;
-            return Vec::new();
+        // Rule 5. Before anything else, exactly as when this dropped the line: a
+        // subagent's line must not touch the main block bookkeeping, or its message ids
+        // would consume main-conversation ordinals.
+        if let Some(parent) = event.subagent_tool_use_id() {
+            let parent = cv::ToolId::from(parent);
+            let out = self.map_subagent(&parent, &event.kind);
+            if out.is_empty() {
+                self.stats.subagent_unrendered += 1;
+            } else {
+                self.stats.subagent_routed += 1;
+            }
+            return out;
         }
         match &event.kind {
             EventKind::SessionStarted(start) => {
@@ -566,6 +608,73 @@ impl EventMapper {
         events: impl IntoIterator<Item = &'a AgentEvent>,
     ) -> Vec<cv::AgentEvent> {
         events.into_iter().flat_map(|e| self.map(e)).collect()
+    }
+
+    /// Rule 5: one subagent-scoped line → activities for the card named by its scope.
+    ///
+    /// Deliberately a **separate, smaller** translation than the main-conversation path
+    /// rather than a flag threaded through it. Only three shapes on the wire mean anything
+    /// inside a card — the subagent said something, it ran a tool, a tool came back — and
+    /// the main path's other concerns (the per-block key, the streaming lanes, the session
+    /// facts, the generating bracket) are all either meaningless or actively wrong here.
+    /// A shared path with a boolean would have had to remember which.
+    ///
+    /// 📌 What is declined, and why none of it is a gap:
+    ///
+    /// * **`stream_event`** — §5.9.1 measured these are never forwarded for a subagent.
+    ///   Counted as the canary ([`MapStats::subagent_stream_events`]) rather than
+    ///   speculatively handled, because handling an event that does not arrive is how a
+    ///   view acquires a code path nobody has ever seen run.
+    /// * **`system`/`init` and `result`** — a subagent's session bookkeeping is not the
+    ///   console's session. Folding a subagent's `result` into
+    ///   [`SessionFacts`] would let a subagent's cost overwrite the turn's.
+    /// * **human text on a `user` line** — a subagent's prompt is the `Task` call's own
+    ///   arguments, which the card already shows in full. Rendering it again inside the
+    ///   card would be the same text twice.
+    fn map_subagent(&mut self, parent: &cv::ToolId, kind: &EventKind) -> Vec<cv::AgentEvent> {
+        use cv::Subagent;
+        let mut out = Vec::new();
+        match kind {
+            EventKind::Assistant(turn) => {
+                for block in &turn.content {
+                    match block {
+                        ContentBlock::Text(text) if !text.is_empty() => {
+                            out.push(cv::AgentEvent::SubagentActivity {
+                                parent: parent.clone(),
+                                activity: Subagent::Said(text.clone()),
+                            });
+                        }
+                        ContentBlock::ToolUse(call) => {
+                            out.push(cv::AgentEvent::SubagentActivity {
+                                parent: parent.clone(),
+                                activity: Subagent::Used {
+                                    id: cv::ToolId::from(call.id.as_str()),
+                                    name: call.name.clone(),
+                                },
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            EventKind::User(turn) => {
+                for result in &turn.tool_results {
+                    out.push(cv::AgentEvent::SubagentActivity {
+                        parent: parent.clone(),
+                        activity: Subagent::Returned {
+                            id: cv::ToolId::from(result.tool_use_id.as_str()),
+                            is_error: result.is_error,
+                        },
+                    });
+                }
+            }
+            // 🚨 The canary. If this ever fires, §5.9.1's measurement has changed.
+            EventKind::Stream(_) => {
+                self.stats.subagent_stream_events += 1;
+            }
+            _ => {}
+        }
+        out
     }
 
     /// One settled `assistant` line: one content block, in block order (rule 1).
@@ -689,11 +798,26 @@ fn block_key(message: &str, ordinal: usize) -> String {
 mod tests {
     use super::*;
     use crate::agent_event::{decode_all, decode_line};
-    use crate::conversation::{Body, ToolState, Transcript};
+    use crate::conversation::{Body, SubagentAct, SubagentLog, ToolState, Transcript};
 
     const TWO_TOOLS: &str = include_str!("../fixtures/claude_stream_two_tools.jsonl");
     const LIVE_SESSION: &str = include_str!("../fixtures/claude_stream_live_session.jsonl");
     const EDGES: &str = include_str!("../fixtures/claude_stream_edges.jsonl");
+    /// 🚨 Hand-written, not captured — no fan-out has ever been recorded on this machine.
+    /// `fixtures/README.md` states exactly which parts of it are reasoned rather than
+    /// observed.
+    const SUBAGENT: &str = include_str!("../fixtures/claude_stream_subagent.jsonl");
+
+    /// Just the text a subagent produced, in order.
+    fn said(log: &SubagentLog) -> Vec<String> {
+        log.steps
+            .iter()
+            .filter_map(|s| match &s.act {
+                SubagentAct::Said(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 
     /// Decode a fixture and fold it, exactly as the live pane does — the decode errors
     /// (the leading stdin warning, the `["not","an","object"]` line) are skipped here
@@ -854,17 +978,123 @@ mod tests {
         );
     }
 
-    /// Rule 5: the subagent-scoped assistant line in the edge fixture never reaches the
-    /// transcript, and is counted rather than silently gone.
+    /// 🚨 CONTRACT — rule 5's whole point, and the half that did not change. A subagent's
+    /// text must **never** become a top-level assistant block: that is the "turn belonging
+    /// to nobody" the milestone-1 drop was protecting against, and routing the line
+    /// somewhere better must not quietly reintroduce it.
+    ///
+    /// The edge fixture's subagent line names a parent that appears nowhere else in the
+    /// file, so this also pins the orphan path — see the transcript-side test for what the
+    /// card becomes.
     #[test]
-    fn subagent_lines_are_dropped_and_counted() {
+    fn a_subagent_line_never_becomes_a_top_level_turn() {
         let (t, m) = fold(EDGES);
-        assert_eq!(m.stats().subagent_dropped, 1);
         assert!(
             !texts(&t).iter().any(|s| s.contains("Searching the tree now")),
             "a subagent turn belonging to nobody must not appear: {:?}",
             texts(&t)
         );
+        assert_eq!(m.stats().subagent_routed, 1, "routed to a card, not dropped");
+        assert_eq!(m.stats().subagent_unrendered, 0);
+    }
+
+    /// 🚨 CONTRACT — the correlation the whole feature turns on. The subagent's activity
+    /// lands **inside** the `Task` card that spawned it, keyed by `parent_tool_use_id`, and
+    /// appends no element of its own.
+    #[test]
+    fn a_subagents_work_lands_inside_the_task_card_that_spawned_it() {
+        let (t, m) = fold(SUBAGENT);
+        let cards: Vec<_> = t.elements().iter().filter_map(|e| e.tool()).collect();
+        assert_eq!(
+            cards.len(),
+            1,
+            "one Task call is one card; the subagent's own tools are steps, not elements: {:?}",
+            cards.iter().map(|c| c.name.as_deref()).collect::<Vec<_>>()
+        );
+        let task = cards[0];
+        assert_eq!(task.name.as_deref(), Some("Task"));
+        assert!(!task.subagent.is_empty(), "the card carries the subagent's log");
+        assert!(
+            said(&task.subagent).iter().any(|s| s == "Searching the tree for ns_file."),
+            "the subagent's text is on the card: {:?}",
+            said(&task.subagent)
+        );
+        assert_eq!(m.stats().subagent_unrendered, 0, "{:?}", m.stats());
+    }
+
+    /// ⚠️ CONTRACT — the whole chain through the real decoder: a `Task` whose subagent
+    /// dispatches its own `Task`. Both levels land on the **one** card the human can see,
+    /// and the depth-2 work is labelled as such rather than passed off as direct.
+    ///
+    /// 📌 The fixture is hand-written — no fan-out has ever been captured on this machine
+    /// — so what this proves is that the decoder's `parent_tool_use_id`, applied twice,
+    /// resolves the way the model says. It does not prove a real subagent emits these
+    /// lines in this order. `fixtures/README.md` says which is which.
+    #[test]
+    fn a_nested_dispatch_flattens_onto_the_one_visible_card() {
+        let (t, _) = fold(SUBAGENT);
+        let task = t.tool(&"toolu_0000000000000000000401".into()).expect("the Task card");
+        assert_eq!(task.subagent.max_depth(), Some(2), "the inner dispatch was followed");
+        assert!(
+            said(&task.subagent).iter().any(|s| s == "Reading ipc.rs around line 41."),
+            "the depth-2 agent's text is on the top-level card: {:?}",
+            said(&task.subagent)
+        );
+        // The nested `Read` failed; its outcome survives two levels of flattening.
+        assert!(
+            task.subagent.steps.iter().any(|s| matches!(&s.act,
+                SubagentAct::Tool { name: Some(n), state, .. } if n == "Read" && state.is_error())),
+            "the depth-2 failure was lost: {:?}",
+            task.subagent.steps
+        );
+        assert_eq!(
+            t.elements().iter().filter_map(|e| e.tool()).count(),
+            1,
+            "four tool calls across two levels, one card"
+        );
+        assert_eq!(
+            task.state.output(),
+            Some("ns_file has three callers: ipc.rs:41, ipc.rs:88, mind_runtime.rs:12."),
+            "and the card still resolves from its own result, as it always did"
+        );
+    }
+
+    /// ⚠️ CONTRACT — §5.9.1's measurement, pinned as a *canary* rather than assumed.
+    /// Claude Code does not forward token deltas from a subagent, which is why nothing in
+    /// this path streams. The captures carry no such event, and if one ever appears the
+    /// counter is how anyone finds out.
+    #[test]
+    fn no_capture_carries_a_stream_event_from_a_subagent() {
+        for (name, text) in [
+            ("two_tools", TWO_TOOLS),
+            ("live_session", LIVE_SESSION),
+            ("edges", EDGES),
+            ("subagent", SUBAGENT),
+        ] {
+            let (_, m) = fold(text);
+            assert_eq!(
+                m.stats().subagent_stream_events,
+                0,
+                "{name}: §5.9.1 measured these are never forwarded — if this fires, the \
+                 subagent path needs redesigning, not patching"
+            );
+        }
+    }
+
+    /// A subagent-scoped line the mapper renders nothing for is counted as unrendered, not
+    /// as routed — the two numbers replaced one that said "dropped", and reading either
+    /// alone would restate the lie the old counter told.
+    #[test]
+    fn a_subagent_line_with_nothing_to_render_counts_as_unrendered() {
+        let thinking = concat!(
+            r#"{"type":"assistant","message":{"id":"msg_s","content":[{"type":"thinking","thinking":"hmm"}]},"#,
+            r#""parent_tool_use_id":"toolu_p"}"#,
+            "\n",
+        );
+        let (t, m) = fold(thinking);
+        assert!(t.elements().is_empty(), "nothing was drawn: {:?}", t.elements());
+        assert_eq!(m.stats().subagent_unrendered, 1);
+        assert_eq!(m.stats().subagent_routed, 0);
     }
 
     /// The edge fixture's harder `user` shapes: a bare-string message, a mixed line
@@ -880,7 +1110,11 @@ mod tests {
             vec!["just a plain string, the stream-json INPUT form", "and here is a human aside"]
         );
         let cards: Vec<_> = t.elements().iter().filter_map(|e| e.tool()).collect();
-        assert_eq!(cards.len(), 2, "two orphan results, kept rather than dropped");
+        // ⚠️ Three, not two: the fixture's subagent line names a parent that appears
+        // nowhere else in it, so rule 5's routing opens a third orphan card for it. The
+        // two this test is about are still the first two, in arrival order — the subagent
+        // line is line 12, well after both results.
+        assert_eq!(cards.len(), 3, "two orphan results and one orphan subagent parent");
         assert!(cards[0].name.is_none(), "an orphan card has no name to show");
         assert_eq!(cards[0].state.output(), Some("it worked"));
         assert!(cards[1].state.is_error(), "is_error must survive the mapping");
@@ -1569,6 +1803,6 @@ mod tests {
         let (_, m) = fold(LIVE_SESSION);
         assert_eq!(m.stats().unmapped, 3, "{:?}", m.stats());
         assert_eq!(m.stats().repeat_session_starts, 1);
-        assert_eq!(m.stats().subagent_dropped, 0);
+        assert_eq!(m.stats().subagent_routed, 0, "this capture has no subagent in it");
     }
 }

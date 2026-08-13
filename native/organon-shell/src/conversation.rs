@@ -21,11 +21,11 @@
 //! own one type, and a transcript that spoke the wire format fluently would have to change
 //! shape every time the wire did — on a CLI whose event set has already grown
 //! `rate_limit_event` and `system/post_turn_summary` without telling anyone. So the
-//! integrator writes a short mapping from the decoder's events onto these eight, and the
+//! integrator writes a short mapping from the decoder's events onto these nine, and the
 //! seam is where harness-specific knowledge stops. A second harness (Pi, §5.9.1) maps onto
-//! the same eight or the model is wrong.
+//! the same nine or the model is wrong.
 //!
-//! # The five behaviours that make this non-trivial
+//! # The six behaviours that make this non-trivial
 //!
 //! **1. "A tool is running" has no event.** Claude Code emits the model's *emission* of a
 //! tool call and, later, the result. There is no start-of-execution signal to listen for,
@@ -64,6 +64,28 @@
 //! not an error**, and must be indistinguishable from one that streamed. That is why
 //! [`AssistantBlock`] carries no "was streamed" flag: the property is enforced by there
 //! being nothing to differ.
+//!
+//! **6. A subagent is not a turn — it is something a tool call is doing.** Claude Code
+//! scopes a subagent's lines with `parent_tool_use_id`, naming the `Task` call that spawned
+//! it. Folded as ordinary events they become assistant turns belonging to nobody, which is
+//! why they were dropped outright at first (§5.9.3 rule 5). They are folded instead onto
+//! **the tool card that spawned them**, as a [`SubagentLog`] of [`SubagentStep`]s, and
+//! [`AgentEvent::SubagentActivity`] is the one event that addresses an existing element
+//! rather than appending one.
+//!
+//! 🚨 **Nothing about this is live text, and the model must not let a view pretend it is.**
+//! Behaviour 5 is the reason: no deltas ever arrive for a subagent, so a step is only ever
+//! a *complete* burst. [`Subagent::Said`] therefore carries a whole string with no
+//! completeness bit — there is no provisional state for it to be in — and there is no
+//! subagent equivalent of [`AgentEvent::AssistantDelta`] to append one.
+//!
+//! ⚠️ **Depth is flattened to one, deliberately, and recorded rather than discarded.** A
+//! subagent can dispatch its own subagent, and nesting cards inside cards inside a
+//! scrollback has no bottom. So every step — however deep the agent that produced it —
+//! lands on the **top-level** card, carrying the [`SubagentStep::depth`] it was produced
+//! at. One card, one flat log, and a view that can still say a step came from two levels
+//! down instead of implying it was direct. See [`Transcript::apply`]'s
+//! `SubagentActivity` arm for how the chain is resolved.
 //!
 //! # Ordering and identity
 //!
@@ -179,7 +201,7 @@ pub enum RunOutcome {
     Cancelled,
 }
 
-/// The eight events a transcript folds. See the module doc for why this is not the
+/// The nine events a transcript folds. See the module doc for why this is not the
 /// decoder's type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentEvent {
@@ -209,6 +231,152 @@ pub enum AgentEvent {
     ToolResult { id: ToolId, output: String, is_error: bool },
     /// The run reached its final result. Records an outcome; closes nothing (behaviour 3).
     RunFinished { outcome: RunOutcome, detail: Option<String> },
+    /// **A subagent reported something** (behaviour 6). The one event that addresses an
+    /// element already in the flow instead of appending a new one.
+    ///
+    /// `parent` is the tool call the subagent is running inside, exactly as the harness
+    /// spelled it — Claude Code's `parent_tool_use_id`. It may name a top-level card, or a
+    /// tool call made *by* a subagent (which is how depth 2+ arrives), or nothing we ever
+    /// saw. [`Transcript::apply`] resolves which, and the mapper does not have to know.
+    SubagentActivity { parent: ToolId, activity: Subagent },
+}
+
+/// One thing a subagent did, before it is placed on a card.
+///
+/// 🚨 **Every arm is a completed fact.** There is no fragment and no in-progress arm,
+/// because behaviour 5 measured that no deltas are forwarded for a subagent — an activity
+/// that could be half-arrived would be modelling something the wire cannot produce.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Subagent {
+    /// A complete text block the subagent produced.
+    Said(String),
+    /// The subagent called a tool of its own.
+    Used { id: ToolId, name: String },
+    /// One of the subagent's own tool calls came back.
+    ///
+    /// ⚠️ **The output is deliberately not carried, and this is the one place this module
+    /// declines content rather than truncating it.** Everywhere else per-element text is
+    /// unbounded on principle. Here the content would be a tool's full output, nested two
+    /// frames deep inside a card inside a scrollback, multiplied by every tool every
+    /// subagent runs — on the coordinator session this feature exists for, twelve agents
+    /// working for a quarter of an hour. What a progress line needs is that the step
+    /// *finished* and whether it failed; the parent `Task`'s own result is carried in full
+    /// by the card, as it always was.
+    Returned { id: ToolId, is_error: bool },
+}
+
+/// Whether one of a subagent's own tool steps came back.
+///
+/// A deliberately smaller [`ToolState`]: that type's `Complete` arm carries the tool's
+/// output, and [`Subagent::Returned`] argues why a nested step does not. Reusing it would
+/// have meant storing `output: String::new()` and having
+/// [`ToolState::output`] answer `Some("")` — a card claiming a tool returned nothing when
+/// what happened is that we declined to keep it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepState {
+    Running,
+    Done { is_error: bool },
+}
+
+impl StepState {
+    pub fn is_running(&self) -> bool {
+        matches!(self, StepState::Running)
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(self, StepState::Done { is_error: true })
+    }
+}
+
+/// What one retained step *is*, once it is on a card.
+///
+/// ⚠️ **Not the same shape as [`Subagent`], on the module's own precedent.** Three events
+/// fold into two stored arms because a tool's call and its return are one thing that
+/// changes, not two things that happened — exactly as [`AgentEvent::ToolCall`] and
+/// [`AgentEvent::ToolResult`] fold into one [`ToolCard`] that mutates in place
+/// (behaviour 1). A log that appended on return would spend half its retained steps
+/// restating ids it had already shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubagentAct {
+    /// A complete text block the subagent produced.
+    Said(String),
+    /// A tool the subagent ran. `name` is `None` when the return was seen without the call
+    /// — [`Stats::unmatched_subagent_returns`], the same keep-it-anyway rule an orphan
+    /// [`ToolCard`] follows.
+    Tool { id: ToolId, name: Option<String>, state: StepState },
+}
+
+/// One entry in a [`SubagentLog`] — what happened, and how far down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubagentStep {
+    pub act: SubagentAct,
+    /// `1` for the subagent the card itself spawned, `2` for one that subagent spawned,
+    /// and so on. Recorded rather than nested — see behaviour 6.
+    ///
+    /// Saturates at [`MAX_TRACKED_DEPTH`]: past that the number stops being a count and
+    /// starts being a claim about a chain this module stopped following.
+    pub depth: u8,
+}
+
+/// The deepest nesting [`SubagentStep::depth`] will report.
+///
+/// 🚨 **A ceiling on the number, not on the attribution, and the distinction is the bug
+/// this constant caused before it was written down.** Every step lands on the top-level
+/// card no matter how deep the chain — that is the whole point of flattening, and making
+/// the *ownership* conditional on this value instead had deep steps fall through to the
+/// orphan path and open new top-level cards, which is the nesting hazard again in a flat
+/// disguise. Past this depth the chain is still followed; the reported number simply stops
+/// counting, because a `depth: 200` badge is noise where "deeper than 8" is information.
+///
+/// ⚠️ What actually bounds the ownership map is **eviction**: an entry is swept when the
+/// card it points at leaves the retained window.
+pub const MAX_TRACKED_DEPTH: u8 = 8;
+
+/// What a subagent did, inside the tool card that spawned it.
+///
+/// Ordinary arrival order, oldest first, capped by [`Limits::max_subagent_steps`] and
+/// evicted from the front like the transcript itself — with the same rule about saying so:
+/// [`SubagentLog::dropped`] is on the log, where a view drawing the log will see it,
+/// because a trace that silently starts in the middle reads as the whole trace.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubagentLog {
+    pub steps: VecDeque<SubagentStep>,
+    /// Steps evicted from the front of this log. Also totalled in
+    /// [`Stats::dropped_subagent_steps`].
+    pub dropped: u64,
+}
+
+impl SubagentLog {
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// Steps still retained. **Not** the number that happened — add [`Self::dropped`] for
+    /// that, which is why the two are separate fields rather than one total.
+    pub fn len(&self) -> usize {
+        self.steps.len()
+    }
+
+    /// The deepest level any retained step came from. `None` for an empty log, `1` for a
+    /// log with no nesting in it — so a view can stay silent about depth in the ordinary
+    /// case instead of labelling every step.
+    pub fn max_depth(&self) -> Option<u8> {
+        self.steps.iter().map(|s| s.depth).max()
+    }
+
+    /// How many of this log's retained tool steps have not come back.
+    ///
+    /// ⚠️ **Not evidence the subagent is working**, and a view must not draw it as such.
+    /// The only thing that says the subagent is still going is the *parent card* being
+    /// unresolved (behaviour 1) — a subagent that died mid-tool leaves this above zero
+    /// forever, exactly as an abandoned tool call does in the main flow, and for the same
+    /// reason: nothing on the wire retracts it.
+    pub fn unreturned(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| matches!(&s.act, SubagentAct::Tool { state, .. } if state.is_running()))
+            .count()
+    }
 }
 
 /// A tool call's input, as text plus a completeness bit.
@@ -260,12 +428,18 @@ impl ToolState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCard {
     pub call_id: ToolId,
-    /// `None` only for an **orphan** card: a result arrived for an id whose call was never
-    /// seen (a compaction boundary, a resumed session). The output is real and is kept
-    /// rather than dropped; what is missing is the name.
+    /// `None` only for an **orphan** card: a result — or a subagent's activity — arrived
+    /// for an id whose call was never seen (a compaction boundary, a resumed session, a
+    /// parent evicted by the cap). The content is real and is kept rather than dropped;
+    /// what is missing is the name.
     pub name: Option<String>,
     pub arguments: Arguments,
     pub state: ToolState,
+    /// What a subagent running inside this call has reported (behaviour 6). Empty for the
+    /// overwhelming majority of cards — only a `Task` call ever gains one — and never
+    /// `Option`, because "no subagent" and "a subagent that has said nothing yet" are the
+    /// same thing to every reader of it.
+    pub subagent: SubagentLog,
 }
 
 /// One assistant text block.
@@ -585,14 +759,30 @@ pub struct Limits {
     /// Maximum retained elements; the oldest are evicted first. Treated as at least 1 —
     /// a transcript that cannot hold the element it was just given is not a transcript.
     pub max_elements: usize,
+    /// Maximum retained [`SubagentStep`]s **per card**, oldest evicted first.
+    ///
+    /// ⚠️ A second cap rather than a share of the first, because the two count different
+    /// things: `max_elements` bounds the flow a human scrolls, and this bounds a trace
+    /// that accumulates inside one element of it without ever appending to that flow. A
+    /// single `Task` can outrun any element budget on its own — the session that motivated
+    /// this dispatched twelve agents for a quarter of an hour each — and it must not be
+    /// able to evict the conversation around it to do so. Treated as at least 1.
+    pub max_subagent_steps: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        // The same order of magnitude as `term::SCROLLBACK_LINES`, and for the same
-        // reason: far past any session a human reads back through, near enough that
-        // memory stays bounded on a coordinator run that fans out for hours.
-        Limits { max_elements: 10_000 }
+        Limits {
+            // The same order of magnitude as `term::SCROLLBACK_LINES`, and for the same
+            // reason: far past any session a human reads back through, near enough that
+            // memory stays bounded on a coordinator run that fans out for hours.
+            max_elements: 10_000,
+            // Two orders smaller on purpose. This is the *inside* of one card, which a
+            // view shows the tail of; a hundred steps is already more trace than anyone
+            // reads, and the count that matters — how many there were — survives eviction
+            // in `SubagentLog::dropped`.
+            max_subagent_steps: 100,
+        }
     }
 }
 
@@ -606,6 +796,18 @@ pub struct Stats {
     pub dropped_unresolved_tools: u64,
     /// Results whose call was never seen; kept as an orphan card, not discarded.
     pub orphan_results: u64,
+    /// Subagent activity whose parent call was never seen — the same shape as
+    /// [`orphan_results`](Self::orphan_results) and handled the same way, by keeping the
+    /// content on a nameless card rather than discarding it. Counted separately because
+    /// the two arrive for different reasons and only one of them is evidence the parent
+    /// **finished**.
+    pub orphan_subagent_activity: u64,
+    /// A [`Subagent::Returned`] naming a step this card's log has no [`Subagent::Used`]
+    /// for. Recorded as its own step rather than dropped; counted so a correlation that
+    /// stops working cannot hide behind a log that still looks busy.
+    pub unmatched_subagent_returns: u64,
+    /// [`SubagentStep`]s evicted by [`Limits::max_subagent_steps`], across every card.
+    pub dropped_subagent_steps: u64,
     pub orphan_argument_fragments: u64,
     pub late_deltas: u64,
     pub duplicate_results: u64,
@@ -630,6 +832,17 @@ pub struct Transcript {
     turns: VecDeque<Turn>,
     by_message: HashMap<String, ElementId>,
     by_tool: HashMap<String, ElementId>,
+    /// Behaviour 6's chain. A tool id a *subagent* called → the top-level [`ToolId`] whose
+    /// card owns it, and the depth that subagent was running at. This is what turns a
+    /// depth-2 `parent_tool_use_id` — which names a call that is only ever a step inside
+    /// another card's log, never an element — into the one card a human can actually see.
+    ///
+    /// ⚠️ Keyed by the *nested* id and never removed on resolution: a subagent's tool that
+    /// has already returned can still be the parent named by a later line, and forgetting
+    /// it would turn a perfectly attributable step into an orphan. It is bounded instead by
+    /// the log cap that bounds everything else — an entry whose card is evicted is swept
+    /// with it.
+    subagent_owner: HashMap<String, (ToolId, u8)>,
     running: Vec<ElementId>,
     pending: Vec<ElementId>,
     session: Option<String>,
@@ -656,6 +869,7 @@ impl Transcript {
             turns: VecDeque::new(),
             by_message: HashMap::new(),
             by_tool: HashMap::new(),
+            subagent_owner: HashMap::new(),
             running: Vec::new(),
             pending: Vec::new(),
             session: None,
@@ -843,6 +1057,7 @@ impl Transcript {
                         None => Arguments::pending(),
                     },
                     state: ToolState::Running,
+                    subagent: SubagentLog::default(),
                 };
                 let eid = self.append(turn, Body::Tool(card));
                 self.by_tool.insert(id.0, eid);
@@ -892,6 +1107,7 @@ impl Transcript {
                     name: None,
                     arguments: Arguments::pending(),
                     state: ToolState::Complete { output, is_error },
+                    subagent: SubagentLog::default(),
                 };
                 let eid = self.append(turn, Body::Tool(card));
                 self.by_tool.insert(id.0, eid);
@@ -908,6 +1124,149 @@ impl Transcript {
                 }
                 Change::Appended(id)
             }
+
+            // Behaviour 6. The only arm that *addresses* an element instead of appending
+            // one: a subagent has no place of its own in the flow, and giving it one is
+            // precisely the "turns belonging to nobody" §5.9.3 rule 5 refused.
+            AgentEvent::SubagentActivity { parent, activity } => {
+                let (owner, depth) = self.resolve_subagent_parent(&parent);
+                let mut opened_card = false;
+                let index = match self.index_by_tool(&owner) {
+                    Some(index) => index,
+                    // An orphan, on `orphan_results`' precedent exactly: the activity is
+                    // real content, and the parent is missing for the same ordinary
+                    // reasons — a compaction boundary, a resumed session, or a card the
+                    // cap evicted out from under a subagent still working inside it.
+                    // Keeping it nameless beats dropping it.
+                    //
+                    // ⚠️ It opens `Running` and joins the running set, which is a claim.
+                    // The claim is the one behaviour 1 already licenses — running-ness is
+                    // *derived from an unresolved id* — and live activity from inside a
+                    // call is the strongest evidence available that the call has not
+                    // finished. The alternative, opening it `Complete`, would invent the
+                    // result behaviour 3 refuses to invent.
+                    None => {
+                        self.stats.orphan_subagent_activity += 1;
+                        opened_card = true;
+                        let turn = self.ensure_turn();
+                        let card = ToolCard {
+                            call_id: owner.clone(),
+                            name: None,
+                            arguments: Arguments::pending(),
+                            state: ToolState::Running,
+                            subagent: SubagentLog::default(),
+                        };
+                        let eid = self.append(turn, Body::Tool(card));
+                        self.by_tool.insert(owner.0.clone(), eid);
+                        self.running.push(eid);
+                        self.index_of(eid).expect("just appended")
+                    }
+                };
+
+                // Recorded before the borrow, because a nested call has to be attributable
+                // even if its own card is the thing that later goes away.
+                //
+                // 🚨 **Recorded at every depth, and the depth saturates instead.** Making
+                // this conditional on the depth was the first implementation and it was
+                // wrong in the exact way behaviour 6 exists to prevent: past the cutoff a
+                // step stopped resolving to its owner, fell through to the orphan path, and
+                // **opened a new top-level card** — so a deep chain grew a fresh card every
+                // few levels and the nesting hazard came back wearing a flat disguise. The
+                // depth bounds what is *reported*; nothing bounds what is attributed.
+                if let Subagent::Used { id, .. } = &activity {
+                    let nested = depth.saturating_add(1).min(MAX_TRACKED_DEPTH);
+                    self.subagent_owner.insert(id.0.clone(), (owner.clone(), nested));
+                }
+
+                let (eid, turn) = (self.elements[index].id, self.elements[index].turn);
+                let mut unmatched = false;
+                let mut dropped = 0u64;
+                if let Body::Tool(card) = &mut self.elements[index].body {
+                    match activity {
+                        Subagent::Said(text) => {
+                            card.subagent
+                                .steps
+                                .push_back(SubagentStep { act: SubagentAct::Said(text), depth });
+                        }
+                        Subagent::Used { id, name } => {
+                            card.subagent.steps.push_back(SubagentStep {
+                                act: SubagentAct::Tool {
+                                    id,
+                                    name: Some(name),
+                                    state: StepState::Running,
+                                },
+                                depth,
+                            });
+                        }
+                        // Resolves its step in place rather than appending — the same
+                        // shape `ToolResult` has against a `ToolCard`.
+                        Subagent::Returned { id, is_error } => {
+                            let found = card.subagent.steps.iter_mut().rev().find(|s| {
+                                matches!(&s.act, SubagentAct::Tool { id: sid, state, .. }
+                                    if *sid == id && state.is_running())
+                            });
+                            match found {
+                                Some(step) => {
+                                    if let SubagentAct::Tool { state, .. } = &mut step.act {
+                                        *state = StepState::Done { is_error };
+                                    }
+                                }
+                                // The call was never seen — evicted from this log, or
+                                // never sent. Kept as a nameless step for the same reason
+                                // an orphan card is kept.
+                                None => {
+                                    unmatched = true;
+                                    card.subagent.steps.push_back(SubagentStep {
+                                        act: SubagentAct::Tool {
+                                            id,
+                                            name: None,
+                                            state: StepState::Done { is_error },
+                                        },
+                                        depth,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    let cap = self.limits.max_subagent_steps.max(1);
+                    while card.subagent.steps.len() > cap {
+                        card.subagent.steps.pop_front();
+                        card.subagent.dropped += 1;
+                        dropped += 1;
+                    }
+                }
+                if unmatched {
+                    self.stats.unmatched_subagent_returns += 1;
+                }
+                self.stats.dropped_subagent_steps += dropped;
+                self.touch_turn(turn);
+                // ⚠️ The distinction is not cosmetic: the view re-arms its scroll-follow on
+                // `Appended` and merely repaints on `Updated`. A step landing inside a card
+                // already in the flow must **not** yank a reader who has scrolled up — the
+                // card is where it always was. An orphan, though, really did put a new
+                // element at the bottom, and reporting that as an update would leave it
+                // below the fold with nothing to say it had arrived.
+                if opened_card {
+                    Change::Appended(eid)
+                } else {
+                    Change::Updated(eid)
+                }
+            }
+        }
+    }
+
+    /// Behaviour 6's flattening, in one place: **which visible card does this belong to,
+    /// and how deep was the agent that produced it.**
+    ///
+    /// A `parent_tool_use_id` naming a top-level call is depth 1 and resolves to itself. One
+    /// naming a call a subagent made resolves to whatever *that* call was attributed to,
+    /// one level deeper — which is how a chain of any length collapses onto the single card
+    /// at the top of it. An id we know nothing about resolves to itself at depth 1 and
+    /// becomes an orphan, because a made-up owner would be worse than a missing one.
+    fn resolve_subagent_parent(&self, parent: &ToolId) -> (ToolId, u8) {
+        match self.subagent_owner.get(parent.as_str()) {
+            Some((owner, depth)) => (owner.clone(), (*depth).min(MAX_TRACKED_DEPTH)),
+            None => (parent.clone(), 1),
         }
     }
 
@@ -1104,6 +1463,16 @@ impl Transcript {
                     if c.state.is_running() {
                         self.running.retain(|x| *x != gone.id);
                         self.stats.dropped_unresolved_tools += 1;
+                    }
+                    // The chain has to go with the card it pointed at, or `subagent_owner`
+                    // is the one map here that grows for the life of the process — a
+                    // coordinator run makes an entry per tool per subagent and never stops.
+                    // ⚠️ Guarded on the log being non-empty, not merely tidy: this is a
+                    // scan of the whole map, and without the guard every ordinary `Read`
+                    // card leaving the window would pay for it.
+                    if !c.subagent.is_empty() {
+                        let owner = c.call_id.clone();
+                        self.subagent_owner.retain(|_, (o, _)| *o != owner);
                     }
                 }
                 // ⚠️ An evicted *pending* approval is the one eviction with a consequence
@@ -1437,7 +1806,7 @@ mod tests {
     /// eviction is front-only, so the retained ids are contiguous and ascending.
     #[test]
     fn element_ids_are_contiguous_over_the_retained_window() {
-        let mut t = Transcript::with_limits(Limits { max_elements: 4 });
+        let mut t = Transcript::with_limits(Limits { max_elements: 4, ..Limits::default() });
         for i in 0..20 {
             t.apply(complete(&format!("m{i}"), "x"));
             let seen = ids(&t);
@@ -1454,7 +1823,7 @@ mod tests {
     /// structure consistent with what is left.
     #[test]
     fn the_cap_evicts_the_oldest_and_reports_it() {
-        let mut t = Transcript::with_limits(Limits { max_elements: 3 });
+        let mut t = Transcript::with_limits(Limits { max_elements: 3, ..Limits::default() });
         assert_eq!(t.limits().max_elements, 3);
         feed(&mut t, vec![human("a"), complete("m1", "one"), call("t1", "Read", Some("{}"))]);
         assert_eq!(t.len(), 3);
@@ -1477,7 +1846,7 @@ mod tests {
 
     #[test]
     fn a_degenerate_cap_still_holds_the_newest_element() {
-        let mut t = Transcript::with_limits(Limits { max_elements: 0 });
+        let mut t = Transcript::with_limits(Limits { max_elements: 0, ..Limits::default() });
         feed(&mut t, vec![human("a"), human("b")]);
         assert_eq!(t.len(), 1);
         assert_eq!(t.elements()[0].human().unwrap().text, "b");
@@ -1554,7 +1923,7 @@ mod tests {
     /// the view's only truth source for dropping the widget state it kept under that id.
     #[test]
     fn an_artifact_evicts_like_anything_else_and_its_id_stops_resolving() {
-        let mut t = Transcript::with_limits(Limits { max_elements: 3 });
+        let mut t = Transcript::with_limits(Limits { max_elements: 3, ..Limits::default() });
         t.insert_artifact(panel("first"));
         let old = t.elements()[0].id;
         feed(&mut t, vec![human("a"), complete("m1", "b")]);
@@ -1652,7 +2021,7 @@ mod tests {
     /// that position. The view's only honest reading is "this panel drives nothing now".
     #[test]
     fn an_evicted_surface_leaves_its_panel_driving_nothing() {
-        let mut t = Transcript::with_limits(Limits { max_elements: 2 });
+        let mut t = Transcript::with_limits(Limits { max_elements: 2, ..Limits::default() });
         let Change::Appended(surface_id) = t.insert_artifact(surface("graphite")) else {
             panic!("an artifact must append");
         };
@@ -1819,7 +2188,7 @@ mod tests {
     /// leaving an agent blocked for the rest of the session.
     #[test]
     fn an_evicted_pending_approval_stops_being_pending_and_is_counted_on_its_own() {
-        let mut t = Transcript::with_limits(Limits { max_elements: 2 });
+        let mut t = Transcript::with_limits(Limits { max_elements: 2, ..Limits::default() });
         let Change::Appended(id) = t.insert_approval(pending_approval("Bash")) else {
             panic!("append");
         };
@@ -1835,7 +2204,7 @@ mod tests {
 
         // An *answered* approval evicts like anything else, with no special count — there
         // is nobody waiting on it.
-        let mut t = Transcript::with_limits(Limits { max_elements: 1 });
+        let mut t = Transcript::with_limits(Limits { max_elements: 1, ..Limits::default() });
         let Change::Appended(id) = t.insert_approval(pending_approval("Bash")) else {
             panic!("append");
         };
@@ -1868,7 +2237,7 @@ mod tests {
     fn interleaved_streams_keep_every_invariant() {
         for (seed, cap) in [(1u64, 8usize), (2, 64), (3, 10_000), (4, 3)] {
             let mut rng = Lcg::new(seed);
-            let mut t = Transcript::with_limits(Limits { max_elements: cap });
+            let mut t = Transcript::with_limits(Limits { max_elements: cap, ..Limits::default() });
             // Ids drawn from a small pool on purpose, so duplicates, orphans and
             // out-of-order correlations all actually happen.
             let pool = 6u64;
@@ -2116,5 +2485,309 @@ mod tests {
         assert!(!t.current_turn().unwrap().trailing);
         assert_eq!(t.stats().dropped_elements, 0);
         assert_eq!(t.stats().orphan_results, 0);
+    }
+
+    // -- behaviour 6: a subagent belongs to the card that spawned it --------------
+
+    fn said(parent: &str, text: &str) -> AgentEvent {
+        AgentEvent::SubagentActivity {
+            parent: parent.into(),
+            activity: Subagent::Said(text.to_string()),
+        }
+    }
+
+    fn used(parent: &str, id: &str, name: &str) -> AgentEvent {
+        AgentEvent::SubagentActivity {
+            parent: parent.into(),
+            activity: Subagent::Used { id: id.into(), name: name.to_string() },
+        }
+    }
+
+    fn returned(parent: &str, id: &str, is_error: bool) -> AgentEvent {
+        AgentEvent::SubagentActivity {
+            parent: parent.into(),
+            activity: Subagent::Returned { id: id.into(), is_error },
+        }
+    }
+
+    fn log_of(t: &Transcript, call: &str) -> SubagentLog {
+        t.tool(&call.into()).expect("a card for that call").subagent.clone()
+    }
+
+    /// 🚨 CONTRACT — the whole feature in one test. A subagent's work lands **inside** the
+    /// tool card that spawned it and appends **nothing** to the flow. Before this, a
+    /// coordinator that dispatched agents showed a spinner and then a wall of text; the
+    /// events existed all along and had nowhere to go that was not a turn belonging to
+    /// nobody (§5.9.3 rule 5).
+    #[test]
+    fn a_subagents_work_lands_inside_its_card_and_appends_no_element() {
+        let mut t = Transcript::new();
+        feed(&mut t, vec![human("find the callers"), call("tu_task", "Task", None)]);
+        let before = t.len();
+        feed(
+            &mut t,
+            vec![
+                said("tu_task", "Searching the tree."),
+                used("tu_task", "tu_grep", "Grep"),
+                returned("tu_task", "tu_grep", false),
+            ],
+        );
+        assert_eq!(t.len(), before, "a subagent must never append an element of its own");
+        let log = log_of(&t, "tu_task");
+        assert_eq!(log.len(), 2, "one `Said` and one tool, not one per event: {:?}", log.steps);
+        assert_eq!(log.steps[0].act, SubagentAct::Said("Searching the tree.".into()));
+        assert_eq!(
+            log.steps[1].act,
+            SubagentAct::Tool {
+                id: "tu_grep".into(),
+                name: Some("Grep".into()),
+                state: StepState::Done { is_error: false },
+            },
+            "the return resolved the call in place"
+        );
+        assert!(log.steps.iter().all(|s| s.depth == 1));
+    }
+
+    /// A step landing in a card already in the flow reports `Updated`, never `Appended` —
+    /// the view re-arms its scroll-follow on the latter, and a reader who has scrolled up
+    /// to read something must not be yanked to the bottom because a subagent spoke.
+    #[test]
+    fn a_step_on_an_existing_card_reports_updated_not_appended() {
+        let mut t = Transcript::new();
+        feed(&mut t, vec![call("tu_task", "Task", None)]);
+        let change = t.apply(said("tu_task", "still going"));
+        let card = t.tool(&"tu_task".into()).expect("the card");
+        assert!(
+            matches!(change, Change::Updated(_)),
+            "a subagent step is not new content in the flow: {change:?}"
+        );
+        assert_eq!(card.subagent.len(), 1);
+    }
+
+    /// ⚠️ CONTRACT — depth 2+ **flattens onto the top-level card**, carrying the depth it
+    /// was produced at. A subagent can dispatch its own, and nesting cards inside cards in
+    /// a scrollback has no bottom; recording the number instead keeps the fact without the
+    /// hazard, so a view can say a step came from two levels down rather than implying it
+    /// was direct.
+    #[test]
+    fn a_subagent_that_dispatches_its_own_still_reports_to_the_top_level_card() {
+        let mut t = Transcript::new();
+        feed(
+            &mut t,
+            vec![
+                call("tu_task", "Task", None),
+                // The depth-1 agent dispatches its own Task…
+                used("tu_task", "tu_inner_task", "Task"),
+                // …and the depth-2 agent's lines name *that* call as their parent.
+                said("tu_inner_task", "reading the file"),
+                used("tu_inner_task", "tu_read", "Read"),
+                returned("tu_inner_task", "tu_read", true),
+            ],
+        );
+        assert_eq!(t.len(), 1, "one card, however deep the chain: {:?}", t.elements());
+        let log = log_of(&t, "tu_task");
+        assert_eq!(log.max_depth(), Some(2), "the depth is recorded, not discarded");
+        let deep: Vec<u8> = log.steps.iter().map(|s| s.depth).collect();
+        assert_eq!(deep, vec![1, 2, 2], "the inner Task is depth 1; what it did is depth 2");
+        assert!(
+            matches!(
+                &log.steps[2].act,
+                SubagentAct::Tool { name: Some(n), state, .. }
+                    if n == "Read" && state.is_error()
+            ),
+            "the depth-2 tool resolved on the top-level card: {:?}",
+            log.steps[2]
+        );
+    }
+
+    /// ⚠️ The chain is followed but not indefinitely. Past [`MAX_TRACKED_DEPTH`] the
+    /// ownership map stops growing, so a pathological nest cannot expand it without end —
+    /// and the recorded depth saturates rather than overstating a chain that stopped being
+    /// followed. Everything still lands on the one visible card, which is the property that
+    /// must not degrade.
+    #[test]
+    fn a_chain_deeper_than_the_tracked_limit_still_lands_on_the_one_card() {
+        let mut t = Transcript::new();
+        feed(&mut t, vec![call("tu_task", "Task", None)]);
+        let mut parent = "tu_task".to_string();
+        for level in 0..(MAX_TRACKED_DEPTH as usize + 4) {
+            let child = format!("tu_nest_{level}");
+            t.apply(used(&parent, &child, "Task"));
+            parent = child;
+        }
+        assert_eq!(t.len(), 1, "still one card: {:?}", t.elements());
+        let log = log_of(&t, "tu_task");
+        assert!(
+            log.steps.iter().all(|s| s.depth <= MAX_TRACKED_DEPTH),
+            "a depth was recorded past what was actually followed: {:?}",
+            log.steps.iter().map(|s| s.depth).collect::<Vec<_>>()
+        );
+        assert_eq!(t.stats().orphan_subagent_activity, 0, "nothing fell off the chain");
+    }
+
+    /// 🚨 CONTRACT — an **orphan**: activity whose parent call we never saw. Follows
+    /// `orphan_results` exactly — the content is real, so it is kept on a nameless card
+    /// rather than dropped — and is counted separately, because only one of the two is
+    /// evidence the parent finished.
+    ///
+    /// ⚠️ It opens `Running` and joins the running set. That is behaviour 1's derivation,
+    /// not an invention: live activity from inside a call is the strongest available
+    /// evidence the call has not returned. Opening it `Complete` would fabricate the result
+    /// behaviour 3 refuses to fabricate.
+    #[test]
+    fn activity_for_a_call_we_never_saw_is_kept_on_a_nameless_card() {
+        let mut t = Transcript::new();
+        let change = t.apply(said("tu_ghost", "I am working"));
+        assert!(matches!(change, Change::Appended(_)), "it really is new content: {change:?}");
+        assert_eq!(t.stats().orphan_subagent_activity, 1, "counted, not silent");
+        let card = t.tool(&"tu_ghost".into()).expect("an orphan card");
+        assert!(card.name.is_none(), "there is no name to show — the call was never seen");
+        assert!(card.state.is_running());
+        assert_eq!(said_texts(&card.subagent), vec!["I am working"], "the content survived");
+        assert!(t.is_working(), "something inside it is demonstrably still going");
+    }
+
+    /// …and the orphan resolves normally when its parent's result finally arrives. The card
+    /// was nameless, not broken.
+    #[test]
+    fn an_orphaned_parent_still_resolves_when_its_result_arrives() {
+        let mut t = Transcript::new();
+        feed(&mut t, vec![said("tu_ghost", "working"), result("tu_ghost", "found three")]);
+        let card = t.tool(&"tu_ghost".into()).expect("the card");
+        assert_eq!(card.state.output(), Some("found three"));
+        assert!(!t.is_working(), "the running claim was retracted by evidence, as any card's is");
+        assert_eq!(t.len(), 1, "the result landed on the orphan card, not beside it");
+    }
+
+    /// 🚨 CONTRACT — the question "what if the parent card has scrolled away". Scrolling
+    /// alone changes nothing: the log is *inside* the element, so it scrolls with it and
+    /// there is no floating overlay to keep alive. **Eviction** is the real case, and it
+    /// degrades to the orphan path rather than losing the work — the subagent keeps
+    /// reporting and its activity opens a fresh nameless card at the bottom.
+    #[test]
+    fn a_subagent_whose_card_was_evicted_falls_back_to_an_orphan_card() {
+        let mut t = Transcript::with_limits(Limits { max_elements: 2, ..Limits::default() });
+        feed(&mut t, vec![call("tu_task", "Task", None), said("tu_task", "one")]);
+        assert_eq!(log_of(&t, "tu_task").len(), 1, "the log is on the card while it is here");
+        // Two more elements push the Task card out of the window.
+        feed(&mut t, vec![human("something else"), human("and again")]);
+        assert!(t.tool(&"tu_task".into()).is_none(), "the card is gone");
+        assert_eq!(t.stats().dropped_elements, 1, "the card itself, and nothing else yet");
+        // The subagent has not stopped working just because we stopped retaining its card.
+        t.apply(said("tu_task", "two"));
+        let card = t.tool(&"tu_task".into()).expect("a fresh orphan card");
+        assert!(card.name.is_none(), "the name went with the evicted card");
+        assert_eq!(said_texts(&card.subagent), vec!["two"], "later work is not lost");
+        assert_eq!(t.stats().orphan_subagent_activity, 1);
+    }
+
+    /// A return naming a step this log has no call for is kept as a nameless step and
+    /// counted — the same keep-it-anyway rule an orphan card follows, one level in. Its own
+    /// counter, so a correlation that quietly stops working cannot hide behind a log that
+    /// still looks busy.
+    #[test]
+    fn a_return_with_no_matching_call_is_kept_and_counted() {
+        let mut t = Transcript::new();
+        feed(&mut t, vec![call("tu_task", "Task", None), returned("tu_task", "tu_gone", true)]);
+        let log = log_of(&t, "tu_task");
+        assert_eq!(t.stats().unmatched_subagent_returns, 1);
+        assert_eq!(
+            log.steps[0].act,
+            SubagentAct::Tool {
+                id: "tu_gone".into(),
+                name: None,
+                state: StepState::Done { is_error: true },
+            },
+            "kept without a name rather than dropped"
+        );
+    }
+
+    /// ⚠️ A log is capped **per card** and evicts from the front, and says so on the log
+    /// itself — a trace that silently starts in the middle reads as the whole trace. The
+    /// cap is separate from `max_elements` because one `Task` must not be able to evict the
+    /// conversation around it by working hard.
+    #[test]
+    fn a_long_running_subagent_caps_its_log_and_reports_what_it_dropped() {
+        let mut t =
+            Transcript::with_limits(Limits { max_elements: 100, max_subagent_steps: 3 });
+        feed(&mut t, vec![call("tu_task", "Task", None)]);
+        for i in 0..10 {
+            t.apply(said("tu_task", &format!("step {i}")));
+        }
+        assert_eq!(t.len(), 1, "the flow did not grow — only the log inside one card did");
+        let log = log_of(&t, "tu_task");
+        assert_eq!(log.len(), 3, "capped");
+        assert_eq!(log.dropped, 7, "and it says how many it is not showing");
+        assert_eq!(
+            said_texts(&log),
+            vec!["step 7", "step 8", "step 9"],
+            "the tail is kept: the question a running card answers is what it is doing now"
+        );
+        assert_eq!(t.stats().dropped_subagent_steps, 7);
+    }
+
+    /// `unreturned` counts open tool steps and is **not** a liveness signal. A subagent
+    /// that stopped mid-tool leaves one standing forever, exactly as an abandoned call does
+    /// in the main flow — nothing on the wire ever retracts it, and only the parent card
+    /// being unresolved says the subagent is working.
+    #[test]
+    fn an_unreturned_step_survives_the_parent_finishing() {
+        let mut t = Transcript::new();
+        feed(
+            &mut t,
+            vec![
+                call("tu_task", "Task", None),
+                used("tu_task", "tu_a", "Read"),
+                used("tu_task", "tu_b", "Grep"),
+                returned("tu_task", "tu_a", false),
+                result("tu_task", "done, mostly"),
+            ],
+        );
+        let card = t.tool(&"tu_task".into()).expect("the card");
+        assert!(!card.state.is_running(), "the parent came back");
+        assert_eq!(card.subagent.unreturned(), 1, "and one of its steps never did");
+        assert!(!t.is_working(), "which is not the same as the transcript still working");
+    }
+
+    /// Two subagents under two different cards do not mix. Obvious, and the correlation is
+    /// the only thing keeping them apart, so it is pinned.
+    #[test]
+    fn two_dispatched_agents_keep_their_own_logs() {
+        let mut t = Transcript::new();
+        feed(
+            &mut t,
+            vec![
+                call("tu_one", "Task", None),
+                call("tu_two", "Task", None),
+                said("tu_one", "first agent"),
+                said("tu_two", "second agent"),
+                said("tu_one", "first again"),
+            ],
+        );
+        assert_eq!(said_texts(&log_of(&t, "tu_one")), vec!["first agent", "first again"]);
+        assert_eq!(said_texts(&log_of(&t, "tu_two")), vec!["second agent"]);
+    }
+
+    /// The ownership map must not outlive the card it points at, or it is the one map here
+    /// that grows for the life of the process — a coordinator run makes an entry per tool
+    /// per subagent and never stops.
+    #[test]
+    fn evicting_a_card_forgets_the_chain_that_pointed_at_it() {
+        let mut t = Transcript::with_limits(Limits { max_elements: 2, ..Limits::default() });
+        feed(&mut t, vec![call("tu_task", "Task", None), used("tu_task", "tu_inner", "Task")]);
+        assert_eq!(t.subagent_owner.len(), 1, "the chain was recorded");
+        feed(&mut t, vec![human("a"), human("b")]);
+        assert!(t.tool(&"tu_task".into()).is_none(), "the card is evicted");
+        assert!(t.subagent_owner.is_empty(), "and the chain went with it: {:?}", t.subagent_owner);
+    }
+
+    fn said_texts(log: &SubagentLog) -> Vec<String> {
+        log.steps
+            .iter()
+            .filter_map(|s| match &s.act {
+                SubagentAct::Said(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
     }
 }

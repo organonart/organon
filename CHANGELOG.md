@@ -11,6 +11,53 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — the twelve agents a coordinator dispatched stopped being eight minutes of silence
+
+- **A subagent's work now renders inside the tool card that spawned it.** A coordinator session
+  that fans out used to show a `Task` card on "running" for eight to sixteen minutes and then a
+  wall of text; the events were arriving the whole time and §5.9.3 rule 5 was dropping them,
+  because rendered as ordinary events they become assistant turns belonging to nobody. They are
+  folded onto the card named by their `parent_tool_use_id` instead —
+  `AgentEvent::SubagentActivity` is the one transcript event that **addresses an existing element
+  rather than appending one**, which is precisely what stops a subagent acquiring a place in the
+  flow of its own. 373 tests in the compositor lib, from 353.
+- 🚨 **This renders the activity; it does not make it live, and nothing here pretends otherwise.**
+  §5.9.1 measured that Claude Code **never forwards token-level deltas from a subagent** — that is
+  unchanged and cannot be worked around from this side. Activity arrives as complete bursts,
+  sometimes minutes apart. So `Subagent::Said` carries a whole string with **no completeness bit**
+  (there is no provisional state for it to be in), the card reports **counts and finished steps
+  rather than liveness**, and nothing streams a caret the way the agent's own prose does.
+  `MapStats::subagent_stream_events` is the canary on that measurement: zero forever, or the path
+  needs redesigning rather than patching.
+- ⚠️ **Depth is flattened to one and recorded, not nested** — a subagent can dispatch its own, and
+  cards inside cards inside a scrollback have no bottom. A chain of any length collapses onto the
+  one card a human can see, each step carrying the depth it happened at. 🚨 **The trap, found by a
+  test that failed:** capping *attribution* at a maximum depth instead of capping the reported
+  *number* makes deep steps fall through to the orphan path and open **new top-level cards** — the
+  nesting hazard again wearing a flat disguise. `MAX_TRACKED_DEPTH` now bounds the badge and never
+  the correlation; what bounds the ownership map is eviction.
+- **Orphans follow `orphan_results`' precedent rather than inventing one.** Activity naming a call
+  we never saw — a compaction boundary, a resumed session, a card the cap evicted out from under a
+  subagent still working inside it — is kept on a nameless card and counted
+  (`orphan_subagent_activity`). ⚠️ It opens **`Running`**, which is a claim: it is behaviour 1's
+  derivation, since live activity from inside a call is the strongest available evidence the call
+  has not returned, and opening it `Complete` would fabricate the result behaviour 3 refuses to
+  fabricate. A `Returned` with no matching `Used` is kept the same way, one level in.
+- ⚠️ **`MapStats::subagent_dropped` is removed, not renamed.** Its sense reversed, so keeping the
+  name would have left a counter whose every reader was wrong in the worst direction;
+  `subagent_routed` and `subagent_unrendered` replace it and must be read together. A step landing
+  on a card already in the flow reports `Change::Updated`, never `Appended` — the view re-arms its
+  scroll-follow on the latter, so getting that wrong would yank a reader to the bottom every time
+  any subagent spoke. A per-card `max_subagent_steps` cap evicts from the front and says how many
+  it dropped, because one `Task` must not be able to evict the conversation around it by working
+  hard.
+- 🚨 **Nobody has seen this on screen, and the fixture is a reconstruction.** No capture on this
+  machine contains a `Task` call **at all**, so `fixtures/claude_stream_subagent.jsonl` is a shape
+  reasoned from the schema rather than observed, and is declared as hand-written in that
+  directory's README. The correlation is sound — it is the decoder's own measured field applied
+  twice — but whether a real subagent emits exactly these line kinds in this order is unverified,
+  as is every pixel of the card. Re-capture at the first real fan-out.
+
 ### Console Spike — the two plates the strip only reported became the two controls that change them
 
 - **The model plate and a new permission-mode plate beside it are clickable.** `set_model` and

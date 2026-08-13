@@ -1,6 +1,6 @@
 # Fixtures — Claude Code's `stream-json` output
 
-What `src/agent_event.rs` is tested against. Two of these are real; one is not, and
+What `src/agent_event.rs` is tested against. Two of these are real; two are not, and
 the difference is the point.
 
 | File | Provenance |
@@ -8,6 +8,32 @@ the difference is the point.
 | `claude_stream_two_tools.jsonl` | **Captured.** `claude.exe` 2.1.228, one prompt that read two files, `--output-format stream-json --include-partial-messages --verbose`. |
 | `claude_stream_live_session.jsonl` | **Captured.** The same CLI in a persistent session — `-p --input-format stream-json --output-format stream-json --replay-user-messages` — with two human turns written to stdin 25 seconds apart. |
 | `claude_stream_edges.jsonl` | **Hand-written.** Shapes the schema permits, or a future CLI might send, that no capture on this machine happens to contain. |
+| `claude_stream_subagent.jsonl` | **Hand-written.** A `Task` call and the subagent inside it, including one that dispatches its own. See the warning below. |
+
+## 🚨 `claude_stream_subagent.jsonl` is a reconstruction, and nobody has checked it against a real fan-out
+
+It was written from the schema and from the one real subagent line in the tree —
+`claude_stream_edges.jsonl`'s, which is itself hand-written. **No capture on this
+machine contains a `Task` call at all**, so the thing the conversation view's whole
+subagent path is tested against is a shape we reasoned to, not one we observed.
+
+What that does and does not undermine:
+
+- **Sound.** The correlation itself. `parent_tool_use_id` naming the spawning
+  `tool_use.id` is decoded and asserted against the real CLI's own field, and the
+  depth-2 chain is just that field applied twice.
+- ⚠️ **Unverified.** Whether a real subagent emits exactly these line *kinds*, in this
+  order, and nothing else. In particular whether it ever emits a `result` or a
+  `system` line of its own, which this fixture does not contain and `agent_map.rs`
+  therefore declines by default.
+- 🚨 **Deliberately absent, because it was measured absent.** Any `stream_event` from a
+  subagent. §5.9.1 measured that token deltas are never forwarded, so the fixture has
+  none and `MapStats::subagent_stream_events` exists to catch the day that stops being
+  true. A fixture containing them would be inventing the very thing the design rests on
+  not existing.
+
+**Re-capture this one the first time a real fan-out runs through the console**, and if
+the shapes differ, the fixture is what is wrong.
 
 ## Sanitisation
 
