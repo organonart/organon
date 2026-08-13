@@ -58,6 +58,53 @@ From here on, this file gets an entry per meaningful change, newest first.
   twice — but whether a real subagent emits exactly these line kinds in this order is unverified,
   as is every pixel of the card. Re-capture at the first real fan-out.
 
+### The + menu drops because of its geometry, not because egui caught it
+
+- **The new-tab popup is anchored under the button instead of above it.** It was placed with
+  `plus.rect.left_top() - vec2(0, 8)` on a `LEFT_BOTTOM` pivot — the popup's bottom edge 8 px
+  *above* the button, so the list grew upward. That was right when the tab strip ran along the
+  bottom of the window. It has been a `TopBottomPanel::top("tab-strip")` for some time, which
+  put the anchor at roughly **y = −8**, off the top of the screen.
+- ⚠️ **It looked correct anyway, and that is the actual defect.** egui clamps an `Area` back
+  inside the screen rect, so the menu landed in approximately the right place *as a fallback*,
+  never as a placement — and a change to that clamping, or to the strip's 30 px height, would
+  have moved it with nothing to catch the move. The anchor is now `left_bottom() + vec2(0, 8)`
+  on `LEFT_TOP`, derived from the **button** rather than from the strip, so a future height
+  change cannot re-open it. The module doc's word "drops" is true by construction now.
+- 📌 Position is not testable here — it needs a GPU and a display, and no test covers it either
+  before or after. The 353 compositor-lib tests are unchanged and still pass; what changed is
+  that the correct position no longer depends on a library's error handling.
+
+### The organon-cli skill lives where the tool reads it, as a real directory (#19)
+
+- **`.claude/skills/organon-cli` was a git symlink (index mode `120000`) pointing at
+  `../../skills/organon-cli`.** On any checkout with `core.symlinks=false` — the default on
+  Windows without Developer Mode or admin — it materialises as a **24-byte plain text file
+  containing that path**. ✅ Verified in this checkout before the change: 24 bytes, exactly that
+  string. It is not a directory, nothing resolves it, and there is **no error and no warning** —
+  the skill simply is not loaded. Every `SKILL.md` update this week was written on the assumption
+  that agents were reading it; on this platform none of them could.
+- **`SKILL.md` now lives at `.claude/skills/organon-cli/SKILL.md` as an ordinary tracked file**
+  and the top-level `skills/` directory is gone. That is issue #19's option 1: one home, at the
+  path the tool actually reads. A fresh clone on any platform gets a real directory — no
+  `core.symlinks`, no Developer Mode, no per-machine junction, nothing to remember. `git ls-files`
+  now reports **zero** mode-`120000` entries in the whole tree, so the class of defect is closed
+  rather than this instance of it.
+- **What it costs, stated rather than buried:** the skill is no longer at a tool-neutral top-level
+  path, so its location is now coupled to Claude Code's convention. That is the honest trade and
+  the right one — Claude Code is the only consumer, and a vendor-neutral path that silently fails
+  to load is worth less than a vendor-specific one that works. The rejected alternatives:
+  `core.symlinks=true` needs admin (so it is not a fix a fresh clone can apply), and duplicating
+  the file in both locations is a second copy of a maintained thing, which this tree has paid for
+  repeatedly.
+- **Four consumers moved in the same change**, because a path fix that leaves references behind is
+  the same defect wearing a different hat: `.claude/hooks/doc-rules.sh`'s trigger row (the
+  `SKILL.md`-is-stale rule would otherwise have watched a file that no longer exists, silently),
+  `ci.yml`'s `paths-ignore` (the `skills/**` line folded into `.claude/**`, which already covered
+  it), and the repo maps in `ARCHITECTURE.md` and `CLAUDE.md`. The prose references in `doc/` moved
+  too; the execution plan's §5.9 finding is **kept as written** and annotated, because it records
+  what was true and how it was measured.
+
 ### Console Spike — the two plates the strip only reported became the two controls that change them
 
 - **The model plate and a new permission-mode plate beside it are clickable.** `set_model` and

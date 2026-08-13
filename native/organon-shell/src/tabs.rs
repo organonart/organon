@@ -170,10 +170,20 @@ pub fn tab_bar(
         // The + menu, Superconductor-exact in T1 form: numbered, installed
         // selectable, missing greyed with the install URL as hover text.
         if *plus_open {
-            let below = plus.rect.left_top() - egui::vec2(0.0, 8.0);
+            // Anchored to the button's BOTTOM edge, growing DOWN — the strip is a
+            // top panel (`TopBottomPanel::top("tab-strip")` in shell_main), so a
+            // menu belongs under it. It used to be `left_top() - 8` with a
+            // LEFT_BOTTOM pivot, which grew upward: correct when the strip ran
+            // along the bottom of the window, and after the move it put the anchor
+            // at roughly y = -8. It still looked right only because egui clamps an
+            // `Area` back inside the screen rect — so the position was a fallback,
+            // not a placement, and any change to that clamping or to the strip's
+            // height would have moved it. Deriving it from the button rather than
+            // from the strip keeps it true if the height changes again.
+            let below = plus.rect.left_bottom() + egui::vec2(0.0, 8.0);
             egui::Area::new(egui::Id::new("harness-menu"))
                 .fixed_pos(below)
-                .pivot(egui::Align2::LEFT_BOTTOM)
+                .pivot(egui::Align2::LEFT_TOP)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::menu(ui.style())
                         .fill(egui::Color32::from_rgb(0x10, 0x14, 0x10))

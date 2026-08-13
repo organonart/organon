@@ -78,7 +78,7 @@ agent's scarce resource is context, not round trips, and the CLI surfaces ~1,370
 **These are subcommands, not flags, and `describe` already exists.** The `organon` CLI is
 subcommand-styled throughout — `catalog`, `describe`, `status`, `get`, `set`, `snap`, `recipe`,
 `watch` — so a `--discover` flag would be foreign to it. More importantly,
-`skills/organon-cli/SKILL.md` already documents `organon describe <query>` returning *"its
+`.claude/skills/organon-cli/SKILL.md` already documents `organon describe <query>` returning *"its
 kind, range, current value, and what it does."* **That is the control descriptor, in prose.**
 
 ```
@@ -350,7 +350,7 @@ reason it matters on the strip.
 
 ## The skill moves with the CLI
 
-`skills/organon-cli/SKILL.md` is the agent-facing teaching document for this CLI, and it
+`.claude/skills/organon-cli/SKILL.md` is the agent-facing teaching document for this CLI, and it
 already makes the correct split: it teaches the loop and the grammar, and defers the surface
 to the live catalog — *"the live catalog is the authority … ask the tool, not your memory."*
 

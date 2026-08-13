@@ -29,7 +29,7 @@ doc/arch/topology.md|native/Cargo.toml native/organon-core/Cargo.toml native/org
 doc/arch/render.md|native/organon-render/src/*.rs native/organon-render/src/*.wgsl native/src/world.rs native/src/rt.rs native/src/bin/visual.rs native/src/*.wgsl
 MIND_ARCHITECTURE.md|native/organon-core/src/edition.rs native/organon-mind/src/*.rs native/organon-core/src/gguf*.rs native/src/mind_main.rs native/src/bin/mind_runtime.rs native/src/bin/mind_writer.rs
 SHELL_ARCHITECTURE.md|native/organon-shell/src/*.rs native/organon-shell/Cargo.toml
-skills/organon-cli/SKILL.md|native/src/bin/ctl.rs native/src/cli.rs
+.claude/skills/organon-cli/SKILL.md|native/src/bin/ctl.rs native/src/cli.rs
 web/ARCHITECTURE.md|web/src/contracts/sharedState.ts web/src/contracts/generatorOutput.ts web/src/contracts/renderer.ts web/src/contracts/stateSource.ts web/src/render/pbrRenderer.ts web/src/render/webgpuRenderer.ts web/src/state/store.ts native/organon-wasm/src/lib.rs native/organon-manifest/src/lib.rs
 "
 

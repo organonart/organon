@@ -668,6 +668,12 @@ silence, and the second one is not recoverable by the agent noticing. §10 alrea
 stale skill degrades worse than an absent one; a missing skill under this direction is worse
 still. The moment this direction is committed to, #19 is on the critical path.
 
+✅ **Fixed on `console/hygiene`, ahead of that moment.** The symlink is gone: `SKILL.md` now
+lives as an ordinary tracked file at `.claude/skills/organon-cli/SKILL.md`, the path the tool
+reads, and the top-level `skills/` directory no longer exists. A fresh clone on any platform
+gets a real directory with no configuration, no `core.symlinks`, and no per-machine junction.
+The finding above is kept as written because it records what was true and how it was measured.
+
 **Tonight's status strip is the test case, and it is encouraging.** An agent inside the console
 adding that strip would have needed three things: which file owns the bottom band, the
 🚨 `ScrollArea`-inside-`Layout::bottom_up` collapse, and the honesty rule about what may be
@@ -906,7 +912,7 @@ Per tier, in the tier's own change — never as a cleanup pass at the end:
 - **`doc/console_spike_execution_plan.md`** — this file, whenever Phase 0 or a tier proves part
   of it wrong. It is a plan, not a monument.
 
-### 🚨 Any tier that adds or changes a command updates `skills/organon-cli/SKILL.md`
+### 🚨 Any tier that adds or changes a command updates `.claude/skills/organon-cli/SKILL.md`
 
 That is **Tier 2** (`organon console background`), **Tier 3** (`organon discover`,
 `organon describe --json`) and **Tier 5** (the patch verbs) — not Tier 3 alone. The tier's own
