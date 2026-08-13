@@ -684,6 +684,45 @@ total and `num_turns` are each declined). None of that was written as preparatio
 useful inference: the eventual guide is more **assembling what already exists** than authoring
 something new.
 
+🚨 **A hole in the foundation this section calls already-built, found 2026-08-13: the agent
+was not in the repo.** Everything above argues the paradigm's ground exists — the docs are
+here, they are hook-enforced, the skill is a real directory since #27. All true, and all of
+it unreachable from a conversation tab, because **that tab did not run in any project.**
+`claude-chat` ships with no `cwd`, `AgentSession::spawn` reads `None` as *the app's own
+directory*, and a console started from a PATH shim is nowhere in particular. Measured: an
+agent in a conversation tab answered `Unknown skill: organon-cli`, and separately spent
+several approval cards running `ls` and `--help` to rediscover a CLI whose 18 KB guide was
+sitting in the checkout. It could not have read `SHELL_ARCHITECTURE.md` either — the very
+authority the paragraph above tells it to consult *before* the tree.
+
+Worth stating plainly because the section reads optimistically without it: **the two of three
+pieces that "already exist" existed only for an agent standing in the repo, and the console
+gave its own agent no way to stand there.** The severity argument made above for #19 applies
+unchanged here — a missing skill under this direction is not "the agent does not know a
+command", it is "the agent cannot extend the thing it lives in, and has no way to discover
+that." Same silence, reached by a different road, and it survived #27 closing the first one.
+
+✅ **Closed on `console/tab-cwd`.** `harness::conversation_cwd` decides in one pure place, in
+four rules — spec `cwd`, `$ORGANON_SHELL_PROJECT`, the nearest project root at or above the
+launch directory, then the launch directory — and `harness::cwd_notes` states the answer and
+the rule that produced it every single time, warning when the directory carries no `.claude/`,
+`CLAUDE.md` or `.git`. Rule 3 is the one that matters for this section: it makes *"`cd` into a
+checkout, start the console"* land in that checkout with no configuration, so the console's
+own repo is reachable for exactly the reason anyone else's is, and no path is named in product
+data. `SHELL_ARCHITECTURE.md` §1.1 owns the reasoning, including why terminal tabs are
+deliberately left alone and what the rejected alternatives cost.
+
+⚠️ **One half is measured and unexplained, and it bounds the claim.** `system/init` reports
+both a `slash_commands` list and a `skills` list; `organon-cli` is in the first from inside
+and outside the repo, and in **neither** copy of the second, while three neighbouring
+user-global skills are in both. So the skill is registered and the cwd is now right, and
+*whether the model is offered it* is still open — see the honesty ledger. **Do not record this
+direction as unblocked until that is answered.**
+
+⚠️ **`harnesses.json` is machine configuration and lives outside this repo**, so anything that
+needs a row there — a `claude-chat` row with a `cwd`, say — is a request to James, never a
+commit. That is exactly why the default had to get better rather than be documented around.
+
 **What is NOT decided, deliberately, by James, tonight:**
 
 - **How a change takes effect.** Hot load, rebuild-and-relaunch, or data-only. Open.

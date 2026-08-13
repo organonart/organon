@@ -850,7 +850,11 @@ impl ConversationPane {
         }
     }
 
-    fn note(&mut self, line: String) {
+    /// Add a line to the console's own remarks about this session — drawn at the head of
+    /// the scrollback by [`scrollback`]. Public because the tab's working directory is
+    /// decided by whoever opened the tab (`shell_main`), not in here, and it is exactly
+    /// the kind of thing this pane exists to say out loud.
+    pub fn note(&mut self, line: String) {
         if self.log.len() == LOG_LINES {
             self.log.pop_front();
         }
@@ -931,7 +935,7 @@ fn scrollback(
     // Destructured so the transcript can be read while the widget state is written: they
     // are disjoint fields, and keeping them disjoint is the whole point of the side map.
     let ConversationPane {
-        transcript, artifacts, pinned, sliders: defaults, waiting, memory, ..
+        transcript, artifacts, pinned, sliders: defaults, waiting, memory, log, ..
     } = pane;
     let out = egui::ScrollArea::vertical()
         .auto_shrink(false)
@@ -942,6 +946,18 @@ fn scrollback(
             // come to disagree about where the viewport is.
             let viewport = ui.clip_rect();
             ui.add_space(6.0);
+            // The console's own remarks about this session, above the first message: which
+            // directory the agent started in, whether approvals are wired. ⚠️ These were
+            // written to `log` from the day the pane was built and drawn NOWHERE, so
+            // "approvals are not wired — a tool that needs permission will fail instead of
+            // asking" has never once been visible. A log with no reader is the same defect
+            // as an inherited working directory: the console knows, and says it to nobody.
+            for line in log.iter() {
+                ui.label(RichText::new(line).color(DIM).italics());
+            }
+            if !log.is_empty() {
+                ui.add_space(6.0);
+            }
             if transcript.is_empty() {
                 ui.label(
                     RichText::new(

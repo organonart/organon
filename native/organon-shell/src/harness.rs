@@ -246,6 +246,164 @@ pub fn launch_argv(
     (argv, cwd)
 }
 
+/// The environment variable that names the project a console is about, for the whole
+/// launch. One of the `ORGANON_SHELL_*` family the launch shims already set.
+pub const PROJECT_ENV: &str = "ORGANON_SHELL_PROJECT";
+
+/// Which rule chose a conversation tab's working directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CwdSource {
+    /// [`HarnessSpec::cwd`] — the user said so, for this tab.
+    Spec,
+    /// [`PROJECT_ENV`] — the user said so, for this launch.
+    Env,
+    /// The nearest project root at or above the directory the console was launched in.
+    ProjectRoot,
+    /// The launch directory itself: nothing above it looked like a project.
+    LaunchDir,
+}
+
+impl CwdSource {
+    /// The half-sentence that goes after the directory in a log line.
+    pub fn why(self) -> &'static str {
+        match self {
+            CwdSource::Spec => "from this harness's \"cwd\"",
+            CwdSource::Env => "from $ORGANON_SHELL_PROJECT",
+            CwdSource::ProjectRoot => "the nearest project root above where the console started",
+            CwdSource::LaunchDir => "where the console started — nothing above it looks like a project",
+        }
+    }
+}
+
+/// Where a conversation tab will start, why, and whether that place has anything an
+/// agent reads as project context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversationCwd {
+    pub dir: String,
+    pub source: CwdSource,
+    /// `dir` satisfies no project test at all — see [`cwd_notes`], which turns this
+    /// into the warning.
+    pub bare: bool,
+}
+
+/// Where a **conversation** tab should start.
+///
+/// ⚠️ **This is the defect this function exists for: a conversation tab used to inherit
+/// the console's own working directory, silently.** `spec.cwd` was `None` for the
+/// built-in `claude-chat` row, `AgentSession::spawn` turns `None` into "wherever the app
+/// happens to be", and a console started from Explorer or from a PATH shim happens to be
+/// nowhere in particular. An agent there sees no repo-local `.claude/skills/`, no project
+/// `CLAUDE.md` — and nothing anywhere says so. Measured 2026-08-13: an agent in a
+/// conversation tab answered `Unknown skill: organon-cli` with the skill sitting correctly
+/// on disk.
+///
+/// **A conversation tab is not inherently about any one project, so the product must not
+/// name one.** What it can do is stop guessing in silence. Four rules, in order:
+///
+/// 1. **[`HarnessSpec::cwd`]** — the user's per-tab answer, from `harnesses.json`. Wins
+///    outright; the whole point of the registry seam is that a user row is the last word.
+/// 2. **[`PROJECT_ENV`]** — the user's per-launch answer, for a shim or a one-off shell.
+/// 3. **The nearest project root at or above the launch directory** — which is what makes
+///    "`cd` into a checkout, run the console" do the obvious thing with no configuration
+///    at all, for *any* checkout, without the product knowing a single path.
+/// 4. **The launch directory**, unchanged — today's behaviour, now stated rather than
+///    inherited.
+///
+/// 📌 **Rule 3 is deliberately NOT applied to terminal tabs.** A shell announces its
+/// directory in the prompt and `cd` is one keystroke, so starting in `native/` when that
+/// is where you were is right — ascending to the repo root would be an unasked-for
+/// correction. An agent's working directory is invisible *and* decides which instructions
+/// and skills exist at all, so the two cases genuinely differ.
+///
+/// `is_project` is the marker test, injected so every decision here is a unit test:
+/// [`is_project_dir`] in production.
+pub fn conversation_cwd(
+    spec: &HarnessSpec,
+    platform: Platform,
+    launch_dir: &Path,
+    env: impl Fn(&str) -> Option<String> + Copy,
+    is_project: impl Fn(&Path) -> bool,
+) -> ConversationCwd {
+    let home = platform::home_dir(platform, env);
+    let settle = |dir: String, source: CwdSource| ConversationCwd {
+        bare: !is_project(Path::new(&dir)),
+        dir,
+        source,
+    };
+    if let Some(c) = spec.cwd.as_deref() {
+        return settle(platform::expand_tilde(c, home.as_deref()), CwdSource::Spec);
+    }
+    if let Some(p) = env(PROJECT_ENV).map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        return settle(platform::expand_tilde(&p, home.as_deref()), CwdSource::Env);
+    }
+    let home_path = home.as_deref().map(Path::new);
+    match nearest_project_root(launch_dir, home_path, &is_project) {
+        Some(root) => settle(root, CwdSource::ProjectRoot),
+        None => settle(launch_dir.display().to_string(), CwdSource::LaunchDir),
+    }
+}
+
+/// Walk up from `from` looking for a project marker, stopping **at the home directory**.
+///
+/// ⚠️ **Home is never *discovered*, only inherited.** A `.claude` directory there is
+/// user-global configuration — every agent gets it wherever it starts — so treating it as
+/// a project root would quietly aim a console launched from `~/Documents` at the home
+/// directory, which on this machine is explicitly not a codebase. Launching *in* home
+/// still lands in home, via rule 4; the difference is that nothing ascends into it.
+///
+/// ⚠️ The stop test is `Path::starts_with`, which compares components **case-sensitively**.
+/// A Windows launch directory spelled with a different case than `%USERPROFILE%` would
+/// walk past home; the cost is one extra ancestor tested, not a wrong answer, since those
+/// ancestors have to carry a marker to be chosen.
+fn nearest_project_root(
+    from: &Path,
+    home: Option<&Path>,
+    is_project: &impl Fn(&Path) -> bool,
+) -> Option<String> {
+    for dir in from.ancestors() {
+        if home.is_some_and(|home| home.starts_with(dir)) {
+            return None;
+        }
+        if is_project(dir) {
+            return Some(dir.display().to_string());
+        }
+    }
+    None
+}
+
+/// The production marker test: does `dir` look like a project an agent can work in?
+///
+/// `.claude/` first because it is the literal thing that was missing — skills and project
+/// settings live there. `CLAUDE.md` because a project may carry instructions and no skills.
+/// `.git` last, as the general "this is a checkout" fallback; a git worktree's `.git` is a
+/// *file*, so this tests existence rather than directory-ness.
+pub fn is_project_dir(dir: &Path) -> bool {
+    dir.join(".claude").is_dir() || dir.join("CLAUDE.md").is_file() || dir.join(".git").exists()
+}
+
+/// What to say about where a conversation tab landed: one line always, and a second when
+/// it landed somewhere with no project context.
+///
+/// ⚠️ **The first line is unconditional on purpose.** The failure being closed here is a
+/// *silent* one, and a diagnostic that only appears when something is detectably wrong
+/// cannot cover the case where the resolution is wrong in a way this code cannot see — a
+/// project root found two levels above the one the user meant, say. Stating the answer
+/// every time is what makes that inspectable at all.
+pub fn cwd_notes(resolved: &ConversationCwd) -> Vec<String> {
+    let mut notes =
+        vec![format!("working directory {} ({})", resolved.dir, resolved.source.why())];
+    if resolved.bare {
+        notes.push(
+            "⚠ no .claude/, CLAUDE.md or .git here — this agent starts with no project \
+             skills and no project instructions. Start the console from inside the \
+             project, set $ORGANON_SHELL_PROJECT, or give this harness a \"cwd\" in \
+             harnesses.json."
+                .to_string(),
+        );
+    }
+    notes
+}
+
 /// Which registry ids are installed, per `lookup` (a PATH probe in production,
 /// anything in tests). Empty `detect` = always installed.
 pub fn detect_installed(
@@ -530,6 +688,170 @@ mod tests {
         assert!(!detect_installed(&reg, |_| false).contains("claude-chat"));
         let with_claude = detect_installed(&reg, |b| b == "claude");
         assert!(with_claude.contains("claude-chat") && with_claude.contains("claude"));
+    }
+
+    // ---- where a conversation tab starts (§5.9, the `Unknown skill` defect) ----------
+
+    /// A conversation spec as it ships: no `cwd`, which is what made the tab inherit
+    /// whatever directory the console happened to be in.
+    fn chat() -> HarnessSpec {
+        builtin_for(Platform::Windows).into_iter().find(|h| h.id == "claude-chat").unwrap()
+    }
+
+    /// The marker test as a set of directories, so the walk is pure.
+    fn projects(dirs: &'static [&'static str]) -> impl Fn(&Path) -> bool {
+        move |p: &Path| dirs.iter().any(|d| Path::new(d) == p)
+    }
+
+    fn none(_: &Path) -> bool {
+        false
+    }
+
+    /// CONTRACT: a `cwd` on the spec is the last word, and its `~` is resolved — the
+    /// registry is the user's seam, so nothing may second-guess a row they wrote.
+    #[test]
+    fn a_spec_cwd_wins_and_expands_its_tilde() {
+        let mut s = chat();
+        s.cwd = Some("~/Projects/demo".into());
+        let r = conversation_cwd(&s, Platform::Unix, Path::new("/tmp"), home_env, none);
+        assert_eq!(r.source, CwdSource::Spec, "an explicit row outranks every guess");
+        assert_eq!(r.dir, "/Users/example/Projects/demo");
+    }
+
+    /// CONTRACT: with no spec `cwd`, the per-launch variable decides — and its `~` too.
+    #[test]
+    fn the_project_variable_decides_when_the_spec_is_silent() {
+        let env = |k: &str| match k {
+            PROJECT_ENV => Some("~/code/thing".to_string()),
+            other => home_env(other),
+        };
+        let r = conversation_cwd(&chat(), Platform::Unix, Path::new("/tmp"), env, none);
+        assert_eq!(r.source, CwdSource::Env);
+        assert_eq!(r.dir, "/Users/example/code/thing");
+    }
+
+    /// CONTRACT: an empty or blank variable is not an answer. A shim that sets it from an
+    /// unset value would otherwise aim every tab at the filesystem root.
+    #[test]
+    fn a_blank_project_variable_is_no_answer() {
+        let env = |k: &str| (k == PROJECT_ENV).then(|| "   ".to_string());
+        let r = conversation_cwd(&chat(), Platform::Unix, Path::new("/tmp/here"), env, none);
+        assert_eq!(r.source, CwdSource::LaunchDir);
+        assert_eq!(r.dir, "/tmp/here");
+    }
+
+    /// CONTRACT: launched anywhere inside a checkout, the tab starts at the checkout's
+    /// root — the rule that makes `cd <project> && organon-console` need no configuration.
+    #[test]
+    fn the_launch_directory_ascends_to_the_nearest_project_root() {
+        let r = conversation_cwd(
+            &chat(),
+            Platform::Unix,
+            Path::new("/Users/example/code/organon/native/organon-shell"),
+            home_env,
+            projects(&["/Users/example/code/organon"]),
+        );
+        assert_eq!(r.source, CwdSource::ProjectRoot);
+        assert_eq!(r.dir, "/Users/example/code/organon", "the root, not the subdirectory");
+        assert!(!r.bare, "a project root is by definition not bare");
+    }
+
+    /// CONTRACT: *nearest* wins. A checkout inside a checkout gets the inner one.
+    #[test]
+    fn the_nearest_project_root_wins_over_an_outer_one() {
+        let r = conversation_cwd(
+            &chat(),
+            Platform::Unix,
+            Path::new("/Users/example/code/outer/inner/src"),
+            home_env,
+            projects(&["/Users/example/code/outer", "/Users/example/code/outer/inner"]),
+        );
+        assert_eq!(r.dir, "/Users/example/code/outer/inner");
+    }
+
+    /// CONTRACT: home is never *discovered*. A `~/.claude` is user-global configuration,
+    /// not a project, and ascending into it would aim a console launched from `~/Documents`
+    /// at the whole home directory.
+    #[test]
+    fn the_home_directory_is_never_discovered_as_a_project_root() {
+        let r = conversation_cwd(
+            &chat(),
+            Platform::Unix,
+            Path::new("/Users/example/Documents"),
+            home_env,
+            projects(&["/Users/example", "/Users"]),
+        );
+        assert_eq!(r.source, CwdSource::LaunchDir, "the walk stops before home");
+        assert_eq!(r.dir, "/Users/example/Documents");
+    }
+
+    /// CONTRACT: …but launching *in* home still lands in home. The stop rule removes the
+    /// ascent, not the fallback.
+    #[test]
+    fn launching_in_the_home_directory_still_starts_there() {
+        let r = conversation_cwd(
+            &chat(),
+            Platform::Unix,
+            Path::new("/Users/example"),
+            home_env,
+            projects(&["/Users/example"]),
+        );
+        assert_eq!(r.source, CwdSource::LaunchDir);
+        assert_eq!(r.dir, "/Users/example");
+    }
+
+    /// CONTRACT: with no home known, the walk still terminates and still answers.
+    #[test]
+    fn no_home_does_not_stop_the_walk_from_answering() {
+        let r = conversation_cwd(
+            &chat(),
+            Platform::Unix,
+            Path::new("/srv/build/checkout/crate"),
+            no_env,
+            projects(&["/srv/build/checkout"]),
+        );
+        assert_eq!(r.dir, "/srv/build/checkout");
+    }
+
+    /// CONTRACT: the resolution is always reported, and a directory with no project
+    /// context reports that too — the silence is the defect, so there is no quiet path.
+    #[test]
+    fn every_resolution_is_reported_and_a_bare_one_warns() {
+        let landed = conversation_cwd(
+            &chat(),
+            Platform::Unix,
+            Path::new("/Users/example/Documents"),
+            home_env,
+            none,
+        );
+        assert!(landed.bare, "no marker anywhere means no project context");
+        let notes = cwd_notes(&landed);
+        assert_eq!(notes.len(), 2, "the fact, then the warning");
+        assert!(notes[0].contains("/Users/example/Documents"), "the line names the directory");
+        assert!(notes[0].contains("where the console started"), "and which rule chose it");
+        assert!(notes[1].contains("no project"), "and the consequence, in the failure's words");
+
+        let inside = conversation_cwd(
+            &chat(),
+            Platform::Unix,
+            Path::new("/Users/example/code/thing"),
+            home_env,
+            projects(&["/Users/example/code/thing"]),
+        );
+        assert_eq!(cwd_notes(&inside).len(), 1, "nothing to warn about, so no warning");
+    }
+
+    /// CONTRACT: a user-written `cwd` pointing somewhere bare is still reported bare.
+    /// Being explicit is not evidence of being right — a typo'd path is the likeliest way
+    /// to reach a directory with nothing in it.
+    #[test]
+    fn an_explicit_cwd_is_still_checked_for_project_context() {
+        let mut s = chat();
+        s.cwd = Some("/Users/example/typo".into());
+        let r = conversation_cwd(&s, Platform::Unix, Path::new("/Users/example"), home_env, none);
+        assert_eq!(r.source, CwdSource::Spec);
+        assert!(r.bare);
+        assert_eq!(cwd_notes(&r).len(), 2);
     }
 
     /// A user file is how a personal project directory gets in — the shape quoted
