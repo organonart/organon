@@ -49,12 +49,24 @@
 //! and a card has to show what changed between them, so the line alignment lives in its
 //! own module with no egui in it and is tested with plain strings.
 //!
+//! [`prefs`] is the console's **first preference writer**. Everything a user could
+//! choose until now died with the process: the one user-config path in this crate is a
+//! *read* with no matching write (`harnesses.json`), and every other knob is an
+//! `ORGANON_SHELL_*` variable sampled at startup. `preferences.json` sits beside
+//! `harnesses.json` in the same store and is written atomically — its module doc owns the
+//! three properties that follow from making a durable promise.
+//!
 //! **Approvals** close the loop that front-end opened: [`mcp`] is the console's MCP server
 //! as a value, [`mcp_http`] serves it over loopback HTTP inside the console process so
 //! Claude Code's `--permission-prompt-tool` can reach it, and [`approval`] is the console's
 //! answer — the blocking hook, the decision memory that "allow and remember" is built from,
 //! and what a click means. `doc/console_approval_protocol.md` is the measured spec all
 //! three are written against.
+//!
+//! [`theme`] holds every colour the console paints. It is a plain struct with one owner in
+//! the app state and `&Theme` at every draw site — the roles were already named (`RUNNING`,
+//! `CONTEXT_ARC`, `COMPOSER_EDGE_DEAD`), and what they lacked was the ability to hold a
+//! second answer, which a `const` cannot.
 
 pub mod agent_event;
 pub mod agent_map;
@@ -73,10 +85,12 @@ pub mod mcp_http;
 pub mod mock_agent;
 pub mod platform;
 pub mod portal;
+pub mod prefs;
 pub mod scroll_anchor;
 pub mod session;
 pub mod tabs;
 pub mod term;
 pub mod term_view;
 pub mod text_diff;
+pub mod theme;
 pub mod timeline;

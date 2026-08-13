@@ -66,7 +66,7 @@ use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
 use organon_shell::block_anchor::Block;
-use organon_shell::block_panel::{self, BlockAction, BlockPanel, Patch};
+use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::camera;
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
@@ -80,6 +80,7 @@ use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::{self, TermSession};
 use organon_shell::term_view::{self, BandedBackdrop, PaneAnchor};
+use organon_shell::theme::Theme;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -425,6 +426,9 @@ const CMD_PITCH: &str = "pitch";
 const CMD_DISTANCE: &str = "distance";
 /// See [`CMD_YAW`].
 const CMD_RESET: &str = "reset";
+/// The **read**: where the viewer stands right now. Not in [`console_specs`] — see
+/// [`mcp_specs`] for why this one verb has no sidecar spelling.
+const CMD_CAMERA_READ: &str = "console.camera.read";
 
 /// The console's vocabulary, as [`CommandService`] catalog data.
 ///
@@ -554,6 +558,47 @@ fn console_specs() -> Vec<CommandSpec> {
             ],
         },
     ]
+}
+
+/// What a **conversation tab's agent** is served as MCP tools: every console verb, plus the one
+/// that only the in-process lane can answer.
+///
+/// 🚨 **Why the read is here and not in [`console_specs`].** `console_specs` is the *sidecar*
+/// vocabulary: every entry has a `cli::ConsoleOp`, a line `cli::parse_console_op` reads back, and
+/// a clap subcommand — that totality is what `op_from` and `every_op_round_trips_through_its_
+/// catalog_name` depend on. A read has none of those and cannot, because
+/// `organon console …` is fire-and-forget with **no return path** (`cli::console_cmd_path`'s
+/// doc): a line written there produces no answer for anyone to collect. The MCP server, by
+/// contrast, runs *inside this process* — [`ConsoleDispatch`] can simply hand back the console's
+/// own state.
+///
+/// So the two sets differ by exactly one verb, and the difference is a fact about transports
+/// rather than an oversight. Giving the CLI a read means building the request/reply sidecar
+/// SHELL_ARCHITECTURE.md §2 names; it is not in scope here and is not quietly half-done.
+///
+/// ⚠️ **A separate verb, not a zero-argument spelling of `console.camera`.** Every axis on that
+/// spec is already optional, so `{}` is a shape it can be called with — and it currently earns
+/// the message *"needs at least one of […] — a framing that names no axis would move nothing"*,
+/// which is the right answer to a model that forgot its arguments. Overloading it would turn
+/// that mistake into a silent success returning something the caller did not ask for. It would
+/// also give one tool two descriptions to be chosen by and one name for the approval layer to
+/// judge, when a read and a write plainly deserve different answers to "may I?".
+fn mcp_specs() -> Vec<CommandSpec> {
+    let mut specs = console_specs();
+    specs.push(CommandSpec {
+        name: CMD_CAMERA_READ.into(),
+        doc: "Where the viewer stands right now: the portal's yaw, pitch and distance as \
+              measured this frame, who moved them last, and whether anything on screen is \
+              showing them. Read this before framing a shot — `console.camera` is absolute, so \
+              a relative move has to be computed from here"
+            .into(),
+        target: TargetKind::Viewport,
+        // No arguments at all. The generated schema is `{"type":"object","properties":{},
+        // "additionalProperties":true}` — see `mcp::input_schema`, which omits `required`
+        // entirely rather than emitting an empty array.
+        args: Vec::new(),
+    });
+    specs
 }
 
 /// Catalog name ↔ sidecar op, both directions, in one place.
@@ -780,13 +825,40 @@ impl CommandTarget for ConsoleTarget {
 /// can read as a result is the honest cost of reusing the audited path; the alternative was
 /// blocking an MCP call on the UI thread's next frame.
 ///
-/// ⚠️ It is `Send` and holds nothing: it runs on the MCP transport's serve thread, and the
-/// sidecar's path is derived per call from the IPC namespace ([`cli::console_cmd_path`]) so
-/// two consoles in two namespaces cannot write to each other's.
-struct SidecarDispatch;
+/// ⚠️ It is `Send` and holds only the read cell: it runs on the MCP transport's serve thread,
+/// and the sidecar's path is derived per call from the IPC namespace ([`cli::console_cmd_path`])
+/// so two consoles in two namespaces cannot write to each other's.
+///
+/// # The two lanes, and why one of them is not the sidecar
+///
+/// **A write goes out** onto the sidecar as above. **A read is answered here**, from
+/// [`camera::ViewpointCell`] — the snapshot [`Shell::redraw`] publishes each frame. It cannot use
+/// the sidecar for the reason the whole read path exists: that transport has no return channel,
+/// so there is nowhere for an answer to come back to. Being *inside* the console process is the
+/// entire advantage this lane has over the CLI, and the read is what spends it.
+struct ConsoleDispatch {
+    /// The console's live viewpoint, published once per frame. Shared with [`Shell`], never
+    /// copied — a second copy is how a read comes to report something the camera never held.
+    viewpoint: camera::ViewpointCell,
+}
 
-impl organon_shell::mcp::ToolDispatch for SidecarDispatch {
+impl organon_shell::mcp::ToolDispatch for ConsoleDispatch {
     fn call(&mut self, command: &str, args: Value) -> Result<Value, String> {
+        // The read first, because it is the one verb with no `ConsoleOp` — `op_from` would
+        // refuse it, correctly, as a name the sidecar has no line for.
+        if command == CMD_CAMERA_READ {
+            // 🚨 `None` is answered as a *failure*, not as an empty object or a zeroed framing.
+            // The console has genuinely not measured anything yet (no frame has been drawn), and
+            // a caller that receives `{"yaw":0,…}` has no way to tell that apart from a camera
+            // at the origin. An omitted answer beats an invented one.
+            return match self.viewpoint.read() {
+                Some(v) => Ok(v.report(Instant::now())),
+                None => Err(format!(
+                    "{command}: the console has not drawn a frame yet, so no viewpoint has been \
+                     measured. Ask again once the window is up."
+                )),
+            };
+        }
         // The same conversion the sidecar drain performs, from the same one place — so a
         // tool call and a `organon console …` line cannot come to mean different things.
         // This is also where `block`'s row range is caught, since `ArgKind::Int` carries no
@@ -1296,6 +1368,32 @@ struct Shell {
     /// apart, so by the time either reaches the world the distinction is gone. Stamped where
     /// the *gesture* is drained (see `redraw`), read by `camera::arbitrate`.
     hand_camera_at: Option<Instant>,
+    /// When an **agent** framing was last *applied*, or `None` if none ever has.
+    ///
+    /// The twin of [`Shell::hand_camera_at`], and stamped for the opposite reason: that one
+    /// exists so an agent can be held off, this one so a reader can be told who moved the
+    /// camera. Stamped in [`Shell::frame_camera`] **after** the arbitration, never before — a
+    /// framing the hand held off moved nothing and must not claim to have.
+    agent_camera_at: Option<Instant>,
+    /// Where the viewer stands, published once per frame for the MCP read
+    /// ([`ConsoleDispatch`]).
+    ///
+    /// 🚨 **Published, not remembered.** It is filled from `World::camera_framing()` — the live
+    /// three fields, after every writer in the frame — rather than from the last command this
+    /// console applied. A hand outranks an agent here (`camera::arbitrate`), so the last thing
+    /// an agent set is routinely *not* where the camera is, and answering with it would be a
+    /// confident lie of exactly the kind this tree's honesty discipline exists to prevent.
+    viewpoint: camera::ViewpointCell,
+    /// Every colour the console paints — see [`organon_shell::theme`].
+    ///
+    /// 🚨 **The one owner, and this is the struct that owns it because it is the one thing in
+    /// the process that outlives a frame and contains every front-end.** A tab is a terminal
+    /// or a conversation and both draw inside one `egui_ctx.run`; the palette is neither
+    /// tab's, so putting it on a `Pane` would make "the same console in two colours" a state
+    /// nothing forbids. It is borrowed into the closure alongside `sessions` and `strip` and
+    /// reaches every draw site as `&Theme` — never cloned per frame, never a `static`, so a
+    /// later per-tab or preview palette is a second value rather than a rewrite.
+    theme: Theme,
 }
 
 /// Register the portal's interaction region and paint it.
@@ -1334,6 +1432,7 @@ fn paint_portal(
     rect: egui::Rect,
     image: Option<egui::TextureId>,
     input: &mut scene_input::SceneInput,
+    theme: &Theme,
 ) {
     let _resp = scene_input::scene_viewport(ui, rect, scene_input::SceneMode::Workstation, input);
     let painter = ui.painter();
@@ -1346,6 +1445,8 @@ fn paint_portal(
                 id,
                 rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                // The identity multiplier, not a colour — nothing the theme has any business
+                // tinting the engine's own render with.
                 egui::Color32::WHITE,
             );
         }
@@ -1355,7 +1456,7 @@ fn paint_portal(
         // scrollback reads as a rendering failure, which is the very confusion the surface
         // path's own "rendering…" placeholder was added to prevent.
         None => {
-            painter.rect_filled(rect, 0.0, block_panel::PANEL_FILL);
+            painter.rect_filled(rect, 0.0, theme.panel_fill);
         }
     }
     // The console's own edge, not a second visual language arrived at by copy-paste — the same
@@ -1364,7 +1465,7 @@ fn paint_portal(
     painter.rect_stroke(
         rect,
         0.0,
-        egui::Stroke::new(1.0_f32, block_panel::PANEL_EDGE),
+        egui::Stroke::new(1.0_f32, theme.panel_edge),
         egui::StrokeKind::Inside,
     );
 }
@@ -1486,6 +1587,11 @@ impl Shell {
             portal_input: scene_input::SceneInput::default(),
             portal_points: None,
             hand_camera_at: None,
+            agent_camera_at: None,
+            viewpoint: camera::ViewpointCell::new(),
+            // The only palette this build ships. A second one arrives as another
+            // constructor on `Theme`, not as a branch here.
+            theme: Theme::organon(),
         }
     }
 
@@ -1685,13 +1791,18 @@ impl Shell {
                 // compositor crate's. See `surface_slider_table`.
                 surface_slider_table(),
                 // The console's own vocabulary, served to this tab's agent as MCP tools —
-                // the **same** `console_specs()` the sidecar drain validates against and the
-                // CLI's `--help` is built from, so the three cannot come to know different
-                // verbs. `SidecarDispatch` carries what its schema accepts back onto the one
-                // transport that applies it.
+                // built from the **same** `console_specs()` the sidecar drain validates against
+                // and the CLI's `--help` is built from, so the three cannot come to know
+                // different verbs. `ConsoleDispatch` carries what its schema accepts back onto
+                // the one transport that applies it.
+                //
+                // `mcp_specs()` rather than `console_specs()`: this lane serves one extra verb,
+                // the camera read, which exists here and nowhere else because only a caller
+                // inside this process has somewhere for an answer to arrive. See `mcp_specs`.
+                // The cell is *cloned*, so every tab reads the one the frame path publishes.
                 conversation_view::Capabilities {
-                    specs: console_specs(),
-                    dispatch: Box::new(SidecarDispatch),
+                    specs: mcp_specs(),
+                    dispatch: Box::new(ConsoleDispatch { viewpoint: self.viewpoint.clone() }),
                 },
             );
             // Said twice on purpose, to two different readers: into the pane, where it
@@ -2018,6 +2129,10 @@ impl Shell {
             }
         };
         self.world.apply_camera_input(framing);
+        // After the apply and after the arbitration, so the stamp means "an agent moved this
+        // camera" rather than "an agent asked". The read reports it as `moved_by`; a framing the
+        // hand held off returned above and never reaches here.
+        self.agent_camera_at = Some(Instant::now());
         if !camera::viewpoint_is_visible(
             self.portal_state.is_open(),
             self.render_source() == BackdropSource::World,
@@ -3007,6 +3122,9 @@ impl Shell {
         // to be remembered for the next frame's `render_portal`.
         let portal_open = self.portal_state.is_open();
         let portal_input = &mut self.portal_input;
+        // The palette, split out of `self` exactly as everything else here is — one shared
+        // borrow that every draw call inside the closure passes down.
+        let theme = &self.theme;
         let mut portal_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
@@ -3025,14 +3143,16 @@ impl Shell {
             // form factor — along the top, + menu with the numbered registry.
             egui::TopBottomPanel::top("tab-strip")
                 .exact_height(30.0)
-                .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(0x07, 0x09, 0x07)))
+                .frame(egui::Frame::NONE.fill(theme.tab_strip_fill))
                 .show(ctx, |ui| {
-                    if let Some(a) = tabs::tab_bar(ui, strip, registry, installed, plus_open) {
+                    let bar =
+                        tabs::tab_bar(ui, strip, registry, installed, plus_open, theme);
+                    if let Some(a) = bar {
                         action = Some(a);
                     }
                 });
             egui::CentralPanel::default()
-                .frame(egui::Frame::NONE.fill(term_view::DEFAULT_BG))
+                .frame(egui::Frame::NONE.fill(theme.term_bg))
                 .show(ctx, |ui| {
                     // Before anything is allocated in it — `term_view::draw`'s own first act
                     // is this same call.
@@ -3074,6 +3194,7 @@ impl Shell {
                                 // test can, which is why `block_panel::pointer_inside` exists
                                 // and why this copies it.
                                 portal_rect,
+                                theme,
                             );
                         }
                         (Some(Pane::Conversation(chat)), _) => {
@@ -3082,7 +3203,7 @@ impl Shell {
                             // does nothing. An inline artifact needs none of that machinery —
                             // it is an element in a flow that draws itself — so what comes
                             // back is where its surfaces ended up, and nothing else.
-                            let out = conversation_view::draw(ui, chat, &surface_images);
+                            let out = conversation_view::draw(ui, chat, &surface_images, theme);
                             surface_requests = out.surfaces;
                         }
                         _ => {
@@ -3099,7 +3220,7 @@ impl Shell {
                     // "in workstation mode the pane registers after the scroll area, and egui
                     // breaks a tie by taking the topmost".
                     if let Some(rect) = portal_rect {
-                        paint_portal(ui, rect, portal_image, portal_input);
+                        paint_portal(ui, rect, portal_image, portal_input, theme);
                     }
                 });
         });
@@ -3143,6 +3264,30 @@ impl Shell {
         if moved_by_hand {
             self.hand_camera_at = Some(Instant::now());
         }
+        // 🚨 **The read's publication point, and the position is the whole of its correctness.**
+        // Both writers have now run: the agent's framing in `drain_console` at the top of this
+        // function, and the hand's gesture on the line above. Publishing anywhere earlier would
+        // hand an agent a value from halfway through the frame — most damagingly, one taken
+        // before the drag it is about to be told did not happen.
+        //
+        // It reads `World::camera_framing()` rather than anything this file remembers, so the
+        // three axes are the ones the world actually holds *after its own clamps*, and a hand's
+        // move is reported exactly as an agent's is. That is what makes this a measurement
+        // rather than an echo.
+        //
+        // Unconditional: a frame in which nothing moved still republishes, because `portal_open`
+        // and `backdrop_shows_world` can change without the camera doing so, and a cell that
+        // only updated on movement would report a stale visibility forever.
+        let (yaw, pitch, distance) = self.world.camera_framing();
+        self.viewpoint.publish(camera::Viewpoint {
+            yaw,
+            pitch,
+            distance,
+            portal_open: self.portal_state.is_open(),
+            backdrop_shows_world: self.render_source() == BackdropSource::World,
+            hand_last: self.hand_camera_at,
+            agent_last: self.agent_camera_at,
+        });
         if let Some(action) = action {
             self.apply(action);
         }
@@ -3753,7 +3898,7 @@ mod cli_tests {
     #[test]
     fn every_console_verb_is_served_as_a_tool_with_the_schema_its_spec_generates() {
         use organon_shell::mcp::{input_schema, tool_name_for, McpServer, PermissionDecision};
-        let specs = console_specs();
+        let specs = mcp_specs();
         let server = McpServer::new(
             &specs,
             Box::new(|_: &organon_shell::mcp::PermissionRequest| {
@@ -3790,14 +3935,64 @@ mod cli_tests {
         assert!(served.contains(&"mcp__organon__console_portal".to_string()), "{served:?}");
         assert!(!served.contains(&server.permission_tool_flag_value()));
         // ⚠️ Dotted verbs cannot be MCP tool names — the grammar is `[a-zA-Z0-9_-]` — so the
-        // dot becomes `_` and the mapping back is the server's, not a second table's.
+        // dot becomes `_` and the mapping back is the server's, not a second table's. The read
+        // verb has two dots, so it is the sharpest case this rule has.
         assert!(served.iter().all(|n| !n.contains('.')), "{served:?}");
+        assert!(
+            served.contains(&"mcp__organon__console_camera_read".to_string()),
+            "the read is what a conversation tab has that the CLI does not: {served:?}"
+        );
+    }
+
+    /// 🚨 **The MCP table is the sidecar table plus exactly one verb, and the extra one is a
+    /// read.** Both halves matter. If `mcp_specs` ever *dropped* a console verb an agent would
+    /// silently lose a capability the CLI still has; if it gained a second extra verb, that verb
+    /// would be one `op_from` refuses and [`ConsoleDispatch`] does not special-case, so every
+    /// call to it would fail with "no console op for …" — a tool served and unusable.
+    ///
+    /// ⚠️ The read is deliberately **absent** from `console_specs()`: it has no `ConsoleOp`, no
+    /// sidecar line and no clap subcommand, because that transport has no return path. See
+    /// [`mcp_specs`].
+    ///
+    /// ⚠️ `cargo check --profile test` only in this session; CI executes it.
+    #[test]
+    fn the_mcp_table_is_the_sidecar_table_plus_the_one_verb_only_this_process_can_answer() {
+        let sidecar: Vec<String> = console_specs().into_iter().map(|s| s.name).collect();
+        let served: Vec<String> = mcp_specs().into_iter().map(|s| s.name).collect();
+
+        for name in &sidecar {
+            assert!(served.contains(name), "`{name}` is reachable from the CLI but not from MCP");
+        }
+        let extra: Vec<&String> = served.iter().filter(|n| !sidecar.contains(n)).collect();
+        assert_eq!(extra, [&CMD_CAMERA_READ.to_string()], "one extra verb, and it is the read");
+
+        // …and the read really has no sidecar spelling, rather than merely being omitted from
+        // the list: `op_from` is what a call would fall through to, and it must refuse.
+        assert!(
+            op_from(CMD_CAMERA_READ, &json!({})).is_err(),
+            "a read must never convert into a line written onto a fire-and-forget channel"
+        );
+
+        // A read takes no arguments at all — the point of a separate verb rather than a
+        // zero-argument spelling of `console.camera`, whose axes are all optional and whose
+        // empty call therefore already means something else.
+        let read = mcp_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_CAMERA_READ)
+            .expect("console.camera.read is registered");
+        assert!(read.args.is_empty(), "a read has nothing to say");
+        assert_eq!(read.target, TargetKind::Viewport, "where the viewer stands is the viewport");
+
+        // The empty framing still earns its own message on the write verb — proof the two did
+        // not get conflated.
+        let e = op_from(CMD_CAMERA, &json!({})).expect_err("a framing that names no axis");
+        assert!(e.contains("at least one of"), "{e}");
     }
 
     /// 🚨 **A capability call becomes the line the CLI would have written — the same op,
     /// onto the same audited channel, with no process spawned.**
     ///
-    /// The whole point of Part 1. It pins the two halves of `SidecarDispatch`'s decision: a
+    /// The whole point of Part 1. It pins the two halves of [`ConsoleDispatch`]'s write lane: a
     /// valid call converts to the exact sidecar line (so a tool call and a
     /// `organon console …` line cannot come to mean different things), and an out-of-range
     /// `block` is refused *before* anything is written — the one gate `ArgKind::Int` cannot

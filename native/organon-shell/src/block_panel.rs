@@ -55,7 +55,7 @@
 
 use crate::block_anchor::{visible_blocks, Block};
 use crate::scroll_anchor::ViewState;
-use crate::term_view::DEFAULT_FG;
+use crate::theme::Theme;
 
 /// One claimed rectangle: the lines it is pinned to, and what the console draws in them.
 ///
@@ -243,19 +243,15 @@ pub fn pointer_inside(placements: &[Placement], pointer: Option<egui::Pos2>) -> 
     placements.iter().any(|pl| pl.band.contains(p))
 }
 
-/// The panel's own surface: dark enough to read widgets against, translucent enough that the
-/// scene behind the glass still shows. A rounded rect and a phosphor hairline, so the block
-/// announces itself as a thing rather than a smudge.
-///
-/// **Public because the console has two front-ends and only one panel look.**
-/// [`crate::conversation_view`] draws a panel as an element in a flow rather than at a
-/// claimed rectangle — different anchoring, same object — and a second set of constants
-/// there would be a second visual language arrived at by copy-paste.
-pub const PANEL_FILL: egui::Color32 =
-    egui::Color32::from_rgba_premultiplied(0x0b, 0x12, 0x0e, 0xe6);
-pub const PANEL_EDGE: egui::Color32 = egui::Color32::from_rgb(0x3e, 0x7a, 0x52);
-/// The title line's phosphor green.
-pub const PANEL_TITLE: egui::Color32 = egui::Color32::from_rgb(0x8f, 0xe0, 0xa8);
+// The panel's surface, hairline and title line are [`crate::theme::Theme`]'s
+// `panel_fill` / `panel_edge` / `panel_title`, and its body text is `panel_text`.
+//
+// **They are the theme's rather than this module's because the console has two front-ends
+// and only one panel look.** [`crate::conversation_view`] draws a panel as an element in a
+// flow rather than at a claimed rectangle — different anchoring, same object — and
+// `shell_main` wears the same hairline around the portal, so a second set of constants
+// anywhere would be a second visual language arrived at by copy-paste.
+
 /// Inset from the block's rows to the content, in points. One padding, used for both axes.
 pub const PAD: f32 = 8.0;
 /// How wide a panel's sliders are drawn, in points.
@@ -284,6 +280,7 @@ pub fn draw(
     state: ViewState,
     rect: egui::Rect,
     cell_h: f32,
+    theme: &Theme,
 ) -> Vec<BlockAction> {
     // Placed first, in full, so the immutable borrow of the ledger ends before the loop takes
     // a mutable one — and so the geometry every panel is drawn at came from a single pass.
@@ -299,11 +296,11 @@ pub fn draw(
         // The surface, clipped to the visible rows so the rounding does not draw a lid on a
         // panel whose top is off screen.
         let painter = ui.painter_at(pl.band);
-        painter.rect_filled(pl.full, 6.0, PANEL_FILL);
+        painter.rect_filled(pl.full, 6.0, theme.panel_fill);
         painter.rect_stroke(
             pl.full,
             6.0,
-            egui::Stroke::new(1.0_f32, PANEL_EDGE),
+            egui::Stroke::new(1.0_f32, theme.panel_edge),
             egui::StrokeKind::Inside,
         );
 
@@ -325,9 +322,11 @@ pub fn draw(
         child.set_clip_rect(pl.band.intersect(ui.clip_rect()));
         child.spacing_mut().slider_width = SLIDER_WIDTH;
         child.spacing_mut().item_spacing.y = 4.0;
-        child.visuals_mut().override_text_color = Some(DEFAULT_FG);
+        child.visuals_mut().override_text_color = Some(theme.panel_text);
 
-        child.label(egui::RichText::new(&panel.title).monospace().strong().color(PANEL_TITLE));
+        child.label(
+            egui::RichText::new(&panel.title).monospace().strong().color(theme.panel_title),
+        );
 
         child.horizontal_wrapped(|ui| {
             for label in &panel.buttons {

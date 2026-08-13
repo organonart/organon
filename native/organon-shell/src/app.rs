@@ -21,6 +21,7 @@ use organon_core::edition::Edition;
 
 use crate::mock_agent::MockAgent;
 use crate::session::{now_unix_ms, EventKind, SessionEvent, SessionLog, SCHEMA_VERSION};
+use crate::theme::Theme;
 use crate::timeline;
 
 /// The embedded live Organon viewport, as the UI sees it (Shell #6 T1).
@@ -149,8 +150,10 @@ fn palette_shortcut(i: &egui::InputState) -> bool {
 }
 
 /// Run one frame of the Shell UI. The caller owns the `egui::Context` and the frame
-/// loop (`src/main.rs` for the product; a bare context in tests).
-pub fn ui(ctx: &egui::Context, app: &mut ShellApp) {
+/// loop (`src/main.rs` for the product; a bare context in tests) — and the [`Theme`],
+/// which is borrowed here rather than held on [`ShellApp`] so that the palette has exactly
+/// one owner in a process however many front-ends are on screen.
+pub fn ui(ctx: &egui::Context, app: &mut ShellApp, theme: &Theme) {
     if ctx.input(palette_shortcut) {
         app.toggle_palette();
     }
@@ -224,8 +227,13 @@ pub fn ui(ctx: &egui::Context, app: &mut ShellApp) {
         if has_timeline {
             // T1: approval decisions are surfaced, not acted on — the bridge that
             // routes them back to an agent (and into the log) is a later #7 tier.
-            let _action =
-                timeline::show(ui, &app.timeline_events, &mut app.timeline, app.mock.is_some());
+            let _action = timeline::show(
+                ui,
+                &app.timeline_events,
+                &mut app.timeline,
+                app.mock.is_some(),
+                theme,
+            );
         } else if app.scene.is_none() {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.35);
@@ -281,6 +289,9 @@ fn scene_pane(ui: &mut egui::Ui, scene: &mut SceneView) {
             scene.texture,
             rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            // Not a colour and not themeable: `image`'s last argument is a per-channel
+            // MULTIPLIER, and white is the identity. A theme reaching in here would tint
+            // the engine's own output.
             egui::Color32::WHITE,
         );
     }
@@ -374,7 +385,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut app = ShellApp::new(edition);
             app.palette_open = true; // cover the palette path too
-            let _ = ctx.run(egui::RawInput::default(), |ctx| ui(ctx, &mut app));
+            let _ = ctx.run(egui::RawInput::default(), |ctx| ui(ctx, &mut app, &Theme::organon()));
         }
     }
 
@@ -393,7 +404,7 @@ mod tests {
         let mut input = egui::RawInput::default();
         input.screen_rect =
             Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0)));
-        let _ = ctx.run(input, |ctx| ui(ctx, &mut app));
+        let _ = ctx.run(input, |ctx| ui(ctx, &mut app, &Theme::organon()));
         let scene = app.scene.as_ref().expect("scene survives the frame");
         let desired = scene.desired.expect("the pane must report what it reserved");
         // The pane sits inside rails and bars, so the reserve is well below the window
@@ -407,7 +418,7 @@ mod tests {
     fn frame_at(app: &mut ShellApp, t: f64) {
         let ctx = egui::Context::default();
         let raw = egui::RawInput { time: Some(t), ..Default::default() };
-        let _ = ctx.run(raw, |ctx| ui(ctx, app));
+        let _ = ctx.run(raw, |ctx| ui(ctx, app, &Theme::organon()));
     }
 
     /// The demo timeline renders headless for every edition: start the mock, tick

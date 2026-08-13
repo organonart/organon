@@ -31,6 +31,96 @@ setting, and the skill's own name.
 why review could not see it. This is the third fix in the same place: the skill was a git
 symlink (unusable on Windows), then a real tracked file, which is what gave it a CRLF
 working copy. Each fix uncovered the next failure.
+### The portal recon lands, with the one claim the tree has since falsified marked as false
+
+- **`doc/console_portal_recon.md`.** The site-by-site investigation the portal was built from —
+  written before it existed, merged after it. `SHELL_ARCHITECTURE.md` has cited it by branch name
+  since §1.2 landed; that citation now points at a file in the tree instead of at a branch, which
+  is the whole reason to land a document nobody will change again.
+- 🚨 **"Immersive is landed" was the recon's first headline row and it is wrong, so it now says
+  so.** The backdrop's *rendering* really is already there; the inference — that immersive is
+  therefore nearly free — is not, because `paint_portal` paints the portal **over** the front-end
+  and immersive needs its texture **under** the glyphs with the scrim over it, through
+  `term_view::draw`'s `Some(bands)` seam that the portal does not touch. A merged investigation
+  asserting something false is worse than an unmerged one: it acquires the authority of the tree.
+  Corrected in the headline table and argued in §1.1, with the measurement kept — it was right,
+  and it is what immersive will be built out of.
+- **Amended in place, never overwritten**, on the execution-plan convention this repo already
+  uses. `render_source`'s quoted body is marked superseded by `engine_plan` (the third input §6
+  predicted, added where §6 said it belonged); `surface_budget_bytes should gain a portal term` is
+  marked solved differently, by `free_portal` reporting the two quantities separately; §4's
+  texture-churn finding is marked **confirmed live**, since `render_portal` carries the identical
+  free-and-realloc body and a window-resize drag now exercises it every frame.
+- **Which recommendations were taken is recorded at the top**, so the document can be read as
+  history rather than as a to-do list: §2, §3, §5, §6's risk 1, §8 and §9 were adopted as written;
+  immersive, full screen, the animated grow, `scene_viewport`'s `Sense` parameter and
+  state-conditional Escape remain the open work. §7's four states and five events shipped as two
+  and three, deliberately — *an event nothing can raise is an untested arm pretending to be a
+  design*.
+- **No source file changed, and no cargo run was needed.** The branch is documentation only.
+### Console — the first thing it remembers about you
+
+- 🚨 **The console persisted nothing a user chose.** Measured by reading the crate: the only
+  writer was the append-only session event log, which is evidence of what happened rather than
+  a statement of what is wanted; the only user-*configuration* path was a **read with no
+  matching write** (`harnesses.json`); everything else was an `ORGANON_SHELL_*` variable
+  sampled once at startup. A colour-theme picker on top of that could offer a choice and lose
+  it at exit, which makes the picker pointless.
+- **`prefs.rs` — `preferences.json`, at the store root beside `harnesses.json`.** A struct with
+  serde defaults, so adding a preference is one field and never a migration: an older file
+  missing a newer key still loads, and a newer file with an unknown key does not break an older
+  binary. It ships holding the theme **by name**, a plain `String`, so storage and the `Theme`
+  type being built separately stay independent.
+- **The store root is `SessionLog::store_root()`, called rather than re-derived.** Resolving it
+  again through `dirs` would satisfy the letter of the one-resolver rule and still be wrong —
+  two resolvers that can disagree eventually do, and the failure is preferences written beside
+  a `harnesses.json` the console reads from somewhere else.
+- ⚠️ **A write cannot destroy what is already stored**: temp file in the same directory, renamed
+  over the target. Same directory because a rename is only atomic within one volume. The reason
+  it is in version one rather than later is the read posture — a half-written file fails to
+  parse, and "malformed ⇒ no stored preferences" would then silently reset everything the user
+  had.
+- ⚠️ **Never written with a BOM**, because `serde_json` refuses one outright and the total read
+  posture turns that refusal into silence: a file that is present, looks right in an editor, and
+  does nothing. Both halves are pinned by test.
+- 📌 **No environment variable overrides the file, deliberately.** An override would defeat the
+  point: a pick stores correctly, then a variable baked into a launch shim wins silently next
+  launch — indistinguishable from the evaporation this exists to end.
+- Nothing reads it yet. This is the storage half; the picker is a separate change.
+### Organon Shell — an agent can ask where the camera is
+
+- 🚨 **`console.camera.read`: the console's first read verb.** The console gave an agent
+  camera *verbs* and no way to ask what the camera was doing, so framing an object cost five
+  round trips — set a distance blind, shell out to `organon snap`, read the PNG back off disk,
+  judge it, go round again — each with its own approval prompt. Measured live, 2026-08-13. The
+  framing verbs are absolute *because* nothing could read; a read is what makes a relative move
+  computable at all. One call now returns the three axes, whether anything on screen is showing
+  them, who moved them last, and whether a hand is holding them.
+- 🚨 **It reports the camera, never the last command.** A hand on the portal outranks an
+  agent, so the value an agent last set is routinely *not* where the camera is — echoing it
+  back would be a lie the console told confidently. `Shell::redraw` publishes from
+  `World::camera_framing()` (the world's own three fields, after its own clamps) at the one
+  point in the frame where both writers have run: the agent's drained framing and the hand's
+  drained gesture.
+- **A separate verb, not a zero-argument `console.camera`.** Every axis on the write is already
+  optional, so `{}` is a shape it can be called with — and it currently earns *"needs at least
+  one of […]"*, the right answer to a model that forgot its arguments. Overloading would turn
+  that mistake into a silent success, and would hand the approval layer one name for two acts
+  that deserve different answers to "may I?".
+- **MCP only, deliberately — the CLI still cannot read.** The MCP server runs inside the
+  console process, so it has somewhere for an answer to arrive; `organon console …` is
+  fire-and-forget with no return path and giving it one needs a request/reply sidecar that is
+  not built. So the served table is `mcp_specs()` = `console_specs()` + this one verb, and a
+  test pins that the difference is exactly that.
+- **Small honesty rules, each with a test.** `hand_holds` is settled at *read* time, not
+  publish time (the hold is two seconds; a snapshot can be older). The axes are widened
+  exactly rather than rounded, so a caller can write one straight back and land on the same
+  `f32`. A non-finite axis is omitted rather than serialised as `null`. And a cell nobody has
+  published to answers as a *failure* — before the first frame there is genuinely no
+  measurement, and `{"yaw":0,…}` is a viewpoint a caller would act on.
+- ⚠️ **Nothing here has been seen running.** `cargo test -p organon-shell --lib` (486) and
+  `cargo check --features shell-edition --bin organon-console` are green; that an agent's
+  reading matches the shot on screen is unverified, and is in the honesty ledger.
 
 ### The doc-coherence hook stops crying wolf, and starts watching the console's doc
 
@@ -53,6 +143,35 @@ working copy. Each fix uncovered the next failure.
   Shell's living-state doc had never been on the list at all.
 - Findings now carry their line numbers straight out of the awk pass rather than a second
   `grep` over the file, which is also what makes per-table line numbers possible.
+### Console — colour became a value the console owns, and nothing on screen moved
+
+- **`organon-shell/src/theme.rs`: one `Theme`, a plain struct of `Color32` fields.** The
+  console's palette was ~50 `const Color32` declarations across six files plus a handful of
+  literals written inline at the draw site. Most already carried a *semantic* name — `RUNNING`,
+  `CONTEXT_ARC`, `COMPOSER_EDGE_DEAD` — so the hard half of theming was done; what a `const`
+  cannot do is hold a second answer. `Theme::organon()` is the look that shipped and the only
+  palette this build has.
+- **One owner, no globals.** `Shell` holds it and every draw site gets `&Theme` as an argument
+  — no `static`, no `thread_local!`, no `OnceCell`. That is the point rather than an
+  aesthetic: a palette reachable from anywhere stops being state, and a per-tab theme or a
+  live preview then becomes a rewrite instead of a second value.
+- 🚨 **The pinning test is the whole safety net, and its values were read out of `main` before
+  a line was moved.** A wrong shade compiles and draws, so nothing else in the suite could
+  tell whether the extraction changed one. `theme_organon_is_the_look_that_shipped` asserts
+  every field, `ANSI16`'s sixteen entries and `PANEL_FILL`'s premultiplied alpha included.
+- 🚨 **Roles that share bytes today are kept as separate fields.** `term_fg`, `human_text`,
+  `tab_active`, `tab_menu_installed` and `panel_text` are one colour in five roles;
+  `context_arc_high` was written `= MODE_ALERT`; `timeline_status_denied` equals
+  `timeline_status_failed`. Deduplicating by value is exactly what would stop a second palette
+  diverging — a lighter one almost certainly wants a terminal foreground and a human's typed
+  line to part company. A second test asserts the coincidences *and* the separation.
+- **Four things stayed out of the theme because they are not taste**: the scrim's *alpha*
+  (PRD §4.6's floor is an instrument — only its three colour channels moved), the xterm
+  256-colour cube and greyscale ramp (indices 16..=255 are a standard, not a palette),
+  truecolor and OSC values a running program sent, and `Color32::WHITE` at the five
+  `painter.image` calls, where it is the identity multiplier rather than a colour.
+- ⚠️ Green and ready to deploy, **not** seen: no window has been opened on it. See
+  `SHELL_ARCHITECTURE.md` §1.4 and its honesty ledger.
 
 ### Console — one document that says what the console is, and what has not been looked at
 

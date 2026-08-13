@@ -40,7 +40,7 @@ use crate::approval::{
     approval_channel, decision_key, resolve_choice, resolve_recall, Choice, DecisionMemory,
     PendingApproval,
 };
-use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
+use crate::block_panel::{DEFAULT_SLIDERS, PAD, SLIDER_WIDTH};
 use crate::command::CommandSpec;
 use crate::conversation::{
     Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent,
@@ -51,22 +51,17 @@ use crate::conversation::{
 use crate::mcp::{ExposureAudit, McpServer, NoDispatch, ToolDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
 use crate::text_diff::{self, DiffRow, LineDiff};
+use crate::theme::Theme;
 use crate::timeline::pinned_after_scroll;
 
 /// The console's MCP `serverInfo.name`, and therefore the middle of every namespaced tool
 /// name Claude Code spells: `mcp__organon__…`.
 pub const SERVER_NAME: &str = "organon";
 
-const HUMAN: Color32 = Color32::from_rgb(0xc8, 0xe6, 0xc8);
-const PROSE: Color32 = Color32::from_rgb(0xd2, 0xd8, 0xd2);
-const DIM: Color32 = Color32::from_rgb(0x70, 0x7c, 0x70);
-const RUNNING: Color32 = Color32::from_rgb(0xe6, 0xc0, 0x4c);
-/// A question waiting on a human. Deliberately not [`RUNNING`]'s amber: "the agent is busy"
-/// and "the agent is blocked on you" must not read as the same state at a glance, which is
-/// the whole complaint against a tool that bounces silently.
-const ASKING: Color32 = Color32::from_rgb(0x7f, 0xb8, 0xe6);
-const OK: Color32 = Color32::from_rgb(0x6f, 0xc2, 0x76);
-const BAD: Color32 = Color32::from_rgb(0xe0, 0x6c, 0x5f);
+// The transcript's colours — `human_text`, `human_fill`, `prose`, `dim` — and the card
+// standings — `running`, `asking`, `ok`, `bad` — are [`Theme`]'s. Each argument that used to
+// sit beside a `const` here now sits beside the field, which is where a second palette will
+// read it.
 
 /// How much of a tool's output a card draws before it says how much it is not drawing.
 const OUTPUT_LINES: usize = 10;
@@ -96,10 +91,6 @@ const LOG_LINES: usize = 200;
 /// screen together at the default 1100×720 window. Both halves in one glance is the whole
 /// point of the element.
 const SURFACE_HEIGHT: f32 = 260.0;
-
-/// The plate a surface with no picture yet shows — the one frame before the console has
-/// rendered into it, and every frame where the cap has taken its texture away.
-const SURFACE_EMPTY: Color32 = Color32::from_rgb(0x0a, 0x0e, 0x0a);
 
 /// What the view needs the console to draw, for one surface element, this frame.
 ///
@@ -1053,16 +1044,17 @@ pub fn draw(
     ui: &mut egui::Ui,
     pane: &mut ConversationPane,
     images: &SurfaceImages,
+    theme: &Theme,
 ) -> ConversationOutput {
     let mut out = ConversationOutput::default();
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        status_strip(ui, pane);
+        status_strip(ui, pane, theme);
         ui.add_space(4.0);
-        composer(ui, pane);
+        composer(ui, pane, theme);
         ui.add_space(4.0);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            out = scrollback(ui, pane, images);
+            out = scrollback(ui, pane, images, theme);
         });
     });
     out
@@ -1087,6 +1079,7 @@ fn scrollback(
     ui: &mut egui::Ui,
     pane: &mut ConversationPane,
     images: &SurfaceImages,
+    theme: &Theme,
 ) -> ConversationOutput {
     // Collected during the walk and joined after it. A panel is *below* its surface in the
     // ordinary case, but nothing in the model requires that — the link is an id, not an
@@ -1120,7 +1113,7 @@ fn scrollback(
             // asking" has never once been visible. A log with no reader is the same defect
             // as an inherited working directory: the console knows, and says it to nobody.
             for line in log.iter() {
-                ui.label(RichText::new(line).color(DIM).italics());
+                ui.label(RichText::new(line).color(theme.dim).italics());
             }
             if !log.is_empty() {
                 ui.add_space(6.0);
@@ -1131,7 +1124,7 @@ fn scrollback(
                         "no messages yet — type below and press Enter, or `/surface` for a \
                          rendered surface with its own controls",
                     )
-                    .color(DIM)
+                    .color(theme.dim)
                     .italics(),
                 );
             }
@@ -1145,7 +1138,7 @@ fn scrollback(
                             // Empty on the first frame; `panel_body` syncs it to the
                             // description, which is where the starting values come from.
                             let state = artifacts.entry(element.id).or_default();
-                            panel_element(ui, element.id, artifact, spec, state, defaults);
+                            panel_element(ui, element.id, artifact, spec, state, defaults, theme);
                             // A press is consumed here: it changes the surface this panel
                             // names, and nothing else. That is the whole of what a panel
                             // can do now — the arm that also repainted the console's
@@ -1167,6 +1160,7 @@ fn scrollback(
                                 element.id,
                                 artifact,
                                 images.get(&element.id).copied(),
+                                theme,
                             );
                             if surface_visible(rect, viewport) {
                                 laid_out.push(LaidOutSurface {
@@ -1182,7 +1176,7 @@ fn scrollback(
                     // the pane is holding, which `draw_element` has no access to.
                     Body::Approval(block) => {
                         let live = waiting.contains_key(&element.id);
-                        match approval_card(ui, element.id, block, live) {
+                        match approval_card(ui, element.id, block, live, theme) {
                             Some(CardAct::Choose(choice)) => {
                                 // Removing it is what answers it — see `waiting`.
                                 if let Some(pending) = waiting.remove(&element.id) {
@@ -1196,7 +1190,7 @@ fn scrollback(
                             None => {}
                         }
                     }
-                    _ => draw_element(ui, element),
+                    _ => draw_element(ui, element, theme),
                 }
                 ui.add_space(8.0);
             }
@@ -1257,17 +1251,17 @@ fn join_drives(laid_out: Vec<LaidOutSurface>, drives: Vec<PanelDrive>) -> Vec<Su
     surfaces
 }
 
-fn draw_element(ui: &mut egui::Ui, element: &Element) {
+fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme) {
     match &element.body {
         Body::Human(h) => {
             Frame::new()
-                .fill(Color32::from_rgb(0x11, 0x18, 0x11))
+                .fill(theme.human_fill)
                 .corner_radius(CornerRadius::same(6))
                 .inner_margin(Margin::symmetric(10, 6))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("you").color(DIM).small());
-                    ui.label(RichText::new(&h.text).color(HUMAN));
+                    ui.label(RichText::new("you").color(theme.dim).small());
+                    ui.label(RichText::new(&h.text).color(theme.human_text));
                 });
         }
         Body::Assistant(a) => {
@@ -1280,9 +1274,9 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
             // the caret is concatenated into the prose, and the prose is proportional on
             // purpose. So the glyph changes instead of the face.
             let text = if a.complete { a.text.clone() } else { format!("{}|", a.text) };
-            ui.label(RichText::new(text).color(PROSE));
+            ui.label(RichText::new(text).color(theme.prose));
         }
-        Body::Tool(card) => tool_card(ui, card),
+        Body::Tool(card) => tool_card(ui, card, theme),
         // Drawn by `scrollback`, which holds the widget state a panel needs between
         // frames — and, for an approval, the question itself. Nothing to do here, and
         // nothing missing: an element is drawn exactly once, by whichever of the two has
@@ -1290,9 +1284,9 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
         Body::Artifact(_) | Body::Approval(_) => {}
         Body::RunEnd(end) => {
             let (label, color) = match end.outcome {
-                RunOutcome::Ok => ("turn complete", DIM),
-                RunOutcome::Error => ("turn failed", BAD),
-                RunOutcome::Cancelled => ("turn cancelled", RUNNING),
+                RunOutcome::Ok => ("turn complete", theme.dim),
+                RunOutcome::Error => ("turn failed", theme.bad),
+                RunOutcome::Cancelled => ("turn cancelled", theme.running),
             };
             let detail = end.detail.as_deref().unwrap_or("");
             ui.horizontal(|ui| {
@@ -1305,7 +1299,7 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
                 // typesetter would have reached for anyway.
                 ui.label(RichText::new(format!("— {label}")).color(color).small());
                 if !detail.is_empty() {
-                    ui.label(RichText::new(detail).color(DIM).small());
+                    ui.label(RichText::new(detail).color(theme.dim).small());
                 }
             });
         }
@@ -1323,11 +1317,11 @@ fn draw_element(ui: &mut egui::Ui, element: &Element) {
 /// patch someone has to parse back out of prose. And the result's own sibling object —
 /// `tool_use_result`, which a terminal never sees — becomes [`detail_rows`]: for a `Read`,
 /// how much of the file the call actually covered.
-fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
+fn tool_card(ui: &mut egui::Ui, card: &ToolCard, theme: &Theme) {
     let (state_text, accent) = match &card.state {
-        ToolState::Running => ("running", RUNNING),
-        ToolState::Complete { is_error: false, .. } => ("ok", OK),
-        ToolState::Complete { is_error: true, .. } => ("error", BAD),
+        ToolState::Running => ("running", theme.running),
+        ToolState::Complete { is_error: false, .. } => ("ok", theme.ok),
+        ToolState::Complete { is_error: true, .. } => ("error", theme.bad),
     };
     Frame::new()
         .fill(ui.visuals().extreme_bg_color)
@@ -1341,36 +1335,40 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard) {
                 ui.label(RichText::new(name).color(accent).strong().monospace());
                 ui.label(RichText::new(state_text).color(accent).small());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(card.call_id.as_str()).color(DIM).small().monospace());
+                    ui.label(
+                        RichText::new(card.call_id.as_str()).color(theme.dim).small().monospace(),
+                    );
                 });
             });
 
             match edit_diff(card.name.as_deref(), &card.arguments) {
-                Some(diff) => diff_body(ui, &diff),
-                None => arguments_body(ui, &card.arguments),
+                Some(diff) => diff_body(ui, &diff, theme),
+                None => arguments_body(ui, &card.arguments, theme),
             }
 
             for row in detail_rows(&card.detail, &card.arguments) {
-                ui.label(RichText::new(row).color(DIM).small().monospace());
+                ui.label(RichText::new(row).color(theme.dim).small().monospace());
             }
 
             // Above the step log on purpose: this describes the task, the log details it.
             if !card.progress.is_empty() {
-                progress_body(ui, &card.progress);
+                progress_body(ui, &card.progress, theme);
             }
 
             if !card.subagent.is_empty() {
-                subagent_body(ui, &card.subagent, card.state.is_running());
+                subagent_body(ui, &card.subagent, card.state.is_running(), theme);
             }
 
             if let Some(output) = card.state.output() {
                 ui.add_space(4.0);
                 let (shown, hidden) = clip_lines(output, OUTPUT_LINES);
                 for line in shown {
-                    ui.label(RichText::new(line).monospace().small().color(PROSE));
+                    ui.label(RichText::new(line).monospace().small().color(theme.prose));
                 }
                 if hidden > 0 {
-                    ui.label(RichText::new(format!("+{hidden} more lines")).color(DIM).small());
+                    ui.label(
+                        RichText::new(format!("+{hidden} more lines")).color(theme.dim).small(),
+                    );
                 }
             }
         });
@@ -1465,24 +1463,24 @@ fn grouped(n: u64) -> String {
 ///
 /// 🚨 Nothing here streams and nothing here ticks — [`progress_summary`] owns both
 /// refusals and this function must not grow past what it returns.
-fn progress_body(ui: &mut egui::Ui, progress: &SubagentProgress) {
+fn progress_body(ui: &mut egui::Ui, progress: &SubagentProgress, theme: &Theme) {
     let Some(summary) = progress_summary(progress) else { return };
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         // `task`, not `subagent`: the row below is what the agent *did*, this is what the
         // harness says about the task as a whole. Two labels because they are two claims
         // with two different sources.
-        ui.label(RichText::new("task").color(ASKING).small().monospace());
+        ui.label(RichText::new("task").color(theme.asking).small().monospace());
         if let Some(headline) = &summary.headline {
-            ui.label(RichText::new(headline).color(PROSE).small());
+            ui.label(RichText::new(headline).color(theme.prose).small());
         }
         if let Some(status) = &summary.status {
-            ui.label(RichText::new(status).color(DIM).small());
+            ui.label(RichText::new(status).color(theme.dim).small());
         }
     });
     if let Some(facts) = &summary.facts {
         // Monospace for the `→`, per `step_mark`'s glyph measurement.
-        ui.label(RichText::new(facts).color(DIM).small().monospace());
+        ui.label(RichText::new(facts).color(theme.dim).small().monospace());
     }
 }
 
@@ -1547,11 +1545,11 @@ pub fn subagent_summary(log: &SubagentLog, parent_running: bool) -> SubagentSumm
 ///   tick in the fonts available; green is what says the return was clean.
 /// * `×` U+00D7 — a step that returned an error. Also in both faces, and read as a
 ///   failure mark by everyone without needing to be a dingbat.
-fn step_mark(state: &StepState) -> (&'static str, Color32) {
+fn step_mark(state: &StepState, theme: &Theme) -> (&'static str, Color32) {
     match state {
-        StepState::Running => ("→", RUNNING),
-        StepState::Done { is_error: false } => ("•", OK),
-        StepState::Done { is_error: true } => ("×", BAD),
+        StepState::Running => ("→", theme.running),
+        StepState::Done { is_error: false } => ("•", theme.ok),
+        StepState::Done { is_error: true } => ("×", theme.bad),
     }
 }
 
@@ -1568,52 +1566,54 @@ fn step_mark(state: &StepState) -> (&'static str, Color32) {
 /// real and can be minutes long. That is why nothing here streams a caret the way
 /// [`draw_element`] does for the agent's own prose, and why the header says how long ago
 /// nothing — it reports *counts*, which are true, rather than liveness, which would not be.
-fn subagent_body(ui: &mut egui::Ui, log: &SubagentLog, running: bool) {
+fn subagent_body(ui: &mut egui::Ui, log: &SubagentLog, running: bool, theme: &Theme) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         // ⚠️ `·` is carried by the proportional face; the step marks below are drawn
         // monospace *and* chosen from what the mono face has — [`step_mark`] says which,
         // and why the pair of rules is not one rule. This comment used to claim `✓`/`✗`
         // were covered by that argument. They were not, and the band showed a box.
-        ui.label(RichText::new("subagent").color(ASKING).small().monospace());
+        ui.label(RichText::new("subagent").color(theme.asking).small().monospace());
         let summary = subagent_summary(log, running);
-        ui.label(RichText::new(summary.counts).color(DIM).small());
+        ui.label(RichText::new(summary.counts).color(theme.dim).small());
         if let Some(open) = summary.open {
-            let color = if running { RUNNING } else { DIM };
+            let color = if running { theme.running } else { theme.dim };
             ui.label(RichText::new(open).color(color).small());
         }
     });
     if log.dropped > 0 {
         ui.label(
-            RichText::new(format!("+{} earlier steps not kept", log.dropped)).color(DIM).small(),
+            RichText::new(format!("+{} earlier steps not kept", log.dropped))
+                .color(theme.dim)
+                .small(),
         );
     }
     let skip = log.len().saturating_sub(SUBAGENT_LINES);
     if skip > 0 {
-        ui.label(RichText::new(format!("+{skip} earlier steps")).color(DIM).small());
+        ui.label(RichText::new(format!("+{skip} earlier steps")).color(theme.dim).small());
     }
     for step in log.steps.iter().skip(skip) {
         let deeper = step.depth > 1;
         ui.horizontal(|ui| {
             if deeper {
                 ui.label(RichText::new(format!("{}·", "  ".repeat(step.depth as usize - 1)))
-                    .color(DIM)
+                    .color(theme.dim)
                     .small()
                     .monospace());
             }
             match &step.act {
                 SubagentAct::Said(text) => {
-                    ui.label(RichText::new(one_line(text)).color(PROSE).small());
+                    ui.label(RichText::new(one_line(text)).color(theme.prose).small());
                 }
                 SubagentAct::Tool { id, name, state } => {
-                    let (mark, color) = step_mark(state);
+                    let (mark, color) = step_mark(state, theme);
                     ui.label(RichText::new(mark).color(color).small().monospace());
                     // An unnamed step is a return whose call this log never saw — the same
                     // "(call not seen)" a card shows, for the same reason.
                     let label = name.as_deref().unwrap_or("(call not seen)");
-                    ui.label(RichText::new(label).color(PROSE).small().monospace());
+                    ui.label(RichText::new(label).color(theme.prose).small().monospace());
                     if name.is_none() {
-                        ui.label(RichText::new(id.as_str()).color(DIM).small().monospace());
+                        ui.label(RichText::new(id.as_str()).color(theme.dim).small().monospace());
                     }
                 }
             }
@@ -1647,17 +1647,18 @@ fn approval_card(
     id: ElementId,
     block: &ApprovalBlock,
     live: bool,
+    theme: &Theme,
 ) -> Option<CardAct> {
     let accent = match block.state {
-        ApprovalState::Pending => ASKING,
-        ApprovalState::Answered(a) if a.verdict == Verdict::Allow => OK,
-        ApprovalState::Answered(_) => BAD,
-        // Not `BAD`: nothing was refused. The card is spent, and reads that way.
-        ApprovalState::Abandoned => DIM,
+        ApprovalState::Pending => theme.asking,
+        ApprovalState::Answered(a) if a.verdict == Verdict::Allow => theme.ok,
+        ApprovalState::Answered(_) => theme.bad,
+        // Not `theme.bad`: nothing was refused. The card is spent, and reads that way.
+        ApprovalState::Abandoned => theme.dim,
     };
     ui.push_id(id.0, |ui| {
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(theme.panel_fill)
             .corner_radius(CornerRadius::same(6))
             .inner_margin(Margin::same(8))
             .stroke(egui::Stroke::new(1.0f32, accent))
@@ -1667,22 +1668,25 @@ fn approval_card(
                     ui.label(RichText::new("◈ may I").color(accent).strong().monospace());
                     ui.label(
                         RichText::new(capability_label(&block.tool_name))
-                            .color(PROSE)
+                            .color(theme.prose)
                             .strong()
                             .monospace(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(&block.tool_use_id).color(DIM).small().monospace());
+                        ui.label(
+                            RichText::new(&block.tool_use_id).color(theme.dim).small().monospace(),
+                        );
                     });
                 });
                 arguments_body(
                     ui,
                     &Arguments { text: block.input.clone(), complete: true },
+                    theme,
                 );
                 ui.add_space(4.0);
                 match block.state {
-                    ApprovalState::Pending => approval_buttons(ui, live),
-                    ApprovalState::Answered(answer) => approval_verdict(ui, answer),
+                    ApprovalState::Pending => approval_buttons(ui, live, theme),
+                    ApprovalState::Answered(answer) => approval_verdict(ui, answer, theme),
                     // No buttons and no verdict — the outcome, and nothing that looks
                     // like it could still change it.
                     ApprovalState::Abandoned => {
@@ -1691,7 +1695,7 @@ fn approval_card(
                                 "the agent stopped waiting — this call failed before it was \
                                  answered",
                             )
-                            .color(DIM)
+                            .color(theme.dim)
                             .small(),
                         );
                         None
@@ -1707,43 +1711,49 @@ fn approval_card(
 ///
 /// 🚨 **"allow everything" is amber, not green.** It is the only button here that decides
 /// more than the call in front of it, and the colour is the one thing a hand reads before
-/// the word. [`MODE_ALERT`] is reused rather than a fourth colour chosen: it is already what
+/// the word. [`Theme::mode_alert`] is reused rather than a fourth colour chosen: it is already what
 /// the band uses for *"the console may not be the one being asked"*, which is precisely what
 /// this button creates. The hover states the whole consequence, including where to revoke it
 /// — that revoke is on the band, not here, because this card will scroll away.
-fn approval_buttons(ui: &mut egui::Ui, live: bool) -> Option<CardAct> {
+fn approval_buttons(ui: &mut egui::Ui, live: bool, theme: &Theme) -> Option<CardAct> {
     let mut act = None;
     ui.horizontal_wrapped(|ui| {
         if !live {
             // The question is gone — evicted, or already answered elsewhere — so the
             // buttons would send a verdict nothing is waiting for. Say so instead.
-            ui.label(RichText::new("this question is no longer answerable").color(DIM).small());
+            ui.label(
+                RichText::new("this question is no longer answerable").color(theme.dim).small(),
+            );
             return;
         }
-        if ui.button(RichText::new("allow").color(OK).monospace()).clicked() {
+        if ui.button(RichText::new("allow").color(theme.ok).monospace()).clicked() {
             act = Some(CardAct::Choose(Choice::Allow));
         }
-        if ui.button(RichText::new("allow & remember").color(OK).monospace()).clicked() {
+        if ui.button(RichText::new("allow & remember").color(theme.ok).monospace()).clicked() {
             act = Some(CardAct::Choose(Choice::AllowAndRemember));
         }
         if ui
-            .button(RichText::new("allow everything this session").color(MODE_ALERT).monospace())
+            .button(
+                RichText::new("allow everything this session")
+                    .color(theme.mode_alert)
+                    .monospace(),
+            )
             .on_hover_text(SESSION_ALLOW_CONSEQUENCE)
             .clicked()
         {
             act = Some(CardAct::Choose(Choice::AllowEverythingThisSession));
         }
-        if ui.button(RichText::new("deny").color(BAD).monospace()).clicked() {
+        if ui.button(RichText::new("deny").color(theme.bad).monospace()).clicked() {
             act = Some(CardAct::Choose(Choice::Deny));
         }
     });
     act
 }
 
-fn approval_verdict(ui: &mut egui::Ui, answer: Answer) -> Option<CardAct> {
+fn approval_verdict(ui: &mut egui::Ui, answer: Answer, theme: &Theme) -> Option<CardAct> {
     let (word, color) = match answer.verdict {
-        Verdict::Allow => ("allowed", OK),
-        Verdict::Deny => ("denied", BAD),
+        Verdict::Allow => ("allowed", theme.ok),
+        Verdict::Deny => ("denied", theme.bad),
     };
     let mut act = None;
     ui.horizontal_wrapped(|ui| {
@@ -1756,12 +1766,14 @@ fn approval_verdict(ui: &mut egui::Ui, answer: Answer) -> Option<CardAct> {
         match answer.by {
             AnsweredBy::Click => {}
             AnsweredBy::ThisCall => {
-                ui.label(RichText::new("· from a decision you already made").color(DIM).small());
+                ui.label(
+                    RichText::new("· from a decision you already made").color(theme.dim).small(),
+                );
             }
             AnsweredBy::SessionAllow => {
                 ui.label(
                     RichText::new("· you allowed everything this session — revoke on the band")
-                        .color(MODE_ALERT)
+                        .color(theme.mode_alert)
                         .small(),
                 );
             }
@@ -1769,7 +1781,7 @@ fn approval_verdict(ui: &mut egui::Ui, answer: Answer) -> Option<CardAct> {
         if answer.remembered {
             ui.label(
                 RichText::new("· the console will answer this the same way again")
-                    .color(DIM)
+                    .color(theme.dim)
                     .small(),
             );
             // The revocation. It is on the card, not in a settings screen, because this is
@@ -1799,21 +1811,24 @@ fn panel_element(
     spec: &PanelSpec,
     state: &mut PanelState,
     defaults: &[(String, f32)],
+    theme: &Theme,
 ) {
     // Scoped by the element's own id: two panels in one transcript are two sets of widgets,
     // and egui's positional auto-ids would otherwise hand a slider its neighbour's drag
     // state the moment anything above them changes height.
     ui.push_id(id.0, |ui| {
         Frame::new()
-            .fill(PANEL_FILL)
-            .stroke(egui::Stroke::new(1.0f32, PANEL_EDGE))
+            .fill(theme.panel_fill)
+            .stroke(egui::Stroke::new(1.0f32, theme.panel_edge))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(Margin::same(PAD as i8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().slider_width = SLIDER_WIDTH;
-                ui.label(RichText::new(&artifact.title).monospace().strong().color(PANEL_TITLE));
-                panel_body(ui, spec, state, defaults);
+                ui.label(
+                    RichText::new(&artifact.title).monospace().strong().color(theme.panel_title),
+                );
+                panel_body(ui, spec, state, defaults, theme);
             });
     });
 }
@@ -1827,6 +1842,7 @@ fn panel_body(
     spec: &PanelSpec,
     state: &mut PanelState,
     defaults: &[(String, f32)],
+    theme: &Theme,
 ) {
     // The description is authoritative about *which* controls exist; the state is
     // authoritative about where they are. This is the only line where the two meet.
@@ -1838,7 +1854,7 @@ fn panel_body(
             // could, which is one more way that arm read as broken.
             let chosen = state.material.as_deref() == Some(label.as_str());
             let text = RichText::new(label).monospace();
-            let text = if chosen { text.color(PANEL_TITLE).strong() } else { text };
+            let text = if chosen { text.color(theme.panel_title).strong() } else { text };
             if ui.button(text).clicked() {
                 state.material = Some(label.clone());
             }
@@ -1870,16 +1886,19 @@ fn surface_element(
     id: ElementId,
     artifact: &ArtifactBlock,
     image: Option<egui::TextureId>,
+    theme: &Theme,
 ) -> egui::Rect {
     ui.push_id(id.0, |ui| {
         Frame::new()
-            .fill(PANEL_FILL)
-            .stroke(egui::Stroke::new(1.0f32, PANEL_EDGE))
+            .fill(theme.panel_fill)
+            .stroke(egui::Stroke::new(1.0f32, theme.panel_edge))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(Margin::same(PAD as i8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(&artifact.title).monospace().strong().color(PANEL_TITLE));
+                ui.label(
+                    RichText::new(&artifact.title).monospace().strong().color(theme.panel_title),
+                );
                 ui.add_space(4.0);
                 let width = ui.available_width();
                 let (rect, _) = ui.allocate_exact_size(
@@ -1892,17 +1911,19 @@ fn surface_element(
                             texture,
                             rect,
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            // The identity multiplier, not a colour — a theme tinting the
+                            // engine's own render would be overpainting the answer.
                             Color32::WHITE,
                         );
                     }
                     None => {
-                        ui.painter().rect_filled(rect, CornerRadius::same(4), SURFACE_EMPTY);
+                        ui.painter().rect_filled(rect, CornerRadius::same(4), theme.surface_empty);
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "rendering…",
                             egui::FontId::monospace(12.0),
-                            DIM,
+                            theme.dim,
                         );
                     }
                 }
@@ -1913,13 +1934,13 @@ fn surface_element(
     .inner
 }
 
-fn arguments_body(ui: &mut egui::Ui, args: &Arguments) {
+fn arguments_body(ui: &mut egui::Ui, args: &Arguments, theme: &Theme) {
     for (key, value) in argument_fields(args) {
         ui.horizontal_wrapped(|ui| {
             if !key.is_empty() {
-                ui.label(RichText::new(format!("{key}:")).color(DIM).small().monospace());
+                ui.label(RichText::new(format!("{key}:")).color(theme.dim).small().monospace());
             }
-            ui.label(RichText::new(value).color(PROSE).small().monospace());
+            ui.label(RichText::new(value).color(theme.prose).small().monospace());
         });
     }
 }
@@ -1930,20 +1951,20 @@ fn arguments_body(ui: &mut egui::Ui, args: &Arguments) {
 /// makes a diff scannable and they only line up in a fixed-pitch face — and a dim
 /// proportional summary row between two mono ones reads as a different kind of thing
 /// rather than as part of the same column.
-fn diff_body(ui: &mut egui::Ui, diff: &EditDiff) {
+fn diff_body(ui: &mut egui::Ui, diff: &EditDiff, theme: &Theme) {
     if !diff.path.is_empty() {
-        ui.label(RichText::new(&diff.path).color(DIM).small().monospace());
+        ui.label(RichText::new(&diff.path).color(theme.dim).small().monospace());
     }
     for note in diff_notes(&diff.diff) {
-        ui.label(RichText::new(note).color(DIM).small());
+        ui.label(RichText::new(note).color(theme.dim).small());
     }
     for row in &diff.diff.rows {
         let (text, color) = match row {
-            DiffRow::Context(line) => (format!("  {line}"), DIM),
-            DiffRow::Removed(line) => (format!("- {line}"), BAD),
-            DiffRow::Added(line) => (format!("+ {line}"), OK),
-            DiffRow::Elided(n) => (format!("  … {n} unchanged lines"), DIM),
-            DiffRow::Held(n) => (format!("  … {n} more lines"), DIM),
+            DiffRow::Context(line) => (format!("  {line}"), theme.dim),
+            DiffRow::Removed(line) => (format!("- {line}"), theme.bad),
+            DiffRow::Added(line) => (format!("+ {line}"), theme.ok),
+            DiffRow::Elided(n) => (format!("  … {n} unchanged lines"), theme.dim),
+            DiffRow::Held(n) => (format!("  … {n} more lines"), theme.dim),
         };
         ui.label(RichText::new(text).color(color).small().monospace());
     }
@@ -1981,54 +2002,11 @@ fn diff_body(ui: &mut egui::Ui, diff: &EditDiff) {
 // permission mode and the MCP roster are not on screen: they are identity, not status, and a
 // strip that grows a second row has stopped being a strip.
 
-/// The plate the strip sits on, and the plate the model sits on inside it.
-const STRIP_FILL: Color32 = Color32::from_rgb(0x0b, 0x11, 0x0b);
-const STRIP_EDGE: Color32 = Color32::from_rgb(0x22, 0x2c, 0x22);
-const MODEL_FILL: Color32 = Color32::from_rgb(0x15, 0x1e, 0x15);
-const MODEL_EDGE: Color32 = Color32::from_rgb(0x3a, 0x50, 0x3a);
-/// The model's own name — brighter than [`PROSE`], because it is the one thing on this band
-/// that is an *identity* rather than a reading.
-const MODEL_TEXT: Color32 = Color32::from_rgb(0xc6, 0xdf, 0xc6);
-/// The bracketed variant beside it (`1m` → `1M`): present, secondary, never mistaken for the
-/// name.
-const MODEL_BADGE: Color32 = Color32::from_rgb(0x8a, 0xb0, 0x8a);
-
-/// The permission plate's two voices.
-///
-/// ⚠️ **Neither is [`BAD`], and that is the decision.** The non-default marker is on the
-/// band for *hours*, not for a moment, and this is a band a working hand looks at
-/// constantly — a red klaxon that never goes away is a red klaxon the eye learns to skip,
-/// which would leave the console back where it started. Amber is legible against the dim
-/// half without competing with an actual failure.
-const MODE_ALERT: Color32 = Color32::from_rgb(0xd8, 0x9a, 0x5c);
-const MODE_NOTE: Color32 = Color32::from_rgb(0x8a, 0xa6, 0xc2);
-
-/// The context ring's unfilled circumference — present enough to say "this is a dial and
-/// it is not full", dim enough not to compete with the band's actual readings.
-const CONTEXT_TRACK: Color32 = Color32::from_rgb(0x2c, 0x38, 0x2c);
-/// …and the same circumference **before anything has been measured**.
-///
-/// 🚨 **The one visual difference between "no reading yet" and "a reading of 0 %".** Both
-/// draw a bare circle — a zero fill has no arc either — so if the two circles looked alike
-/// the ring would be making the exact false claim [`ContextSlot`]'s original
-/// draw-nothing rule existed to prevent. Sat roughly midway between [`STRIP_FILL`] and
-/// [`CONTEXT_TRACK`]: legible as a shape at arm's length, so it still reads as the
-/// container an answer will appear in, and unmistakably fainter beside a track that is
-/// holding a real one. The hover carries the same distinction in words
-/// ([`ring_hover_rows`]), because a colour difference alone is not an answer to "which is
-/// this?".
-const CONTEXT_TRACK_EMPTY: Color32 = Color32::from_rgb(0x1a, 0x22, 0x1a);
-/// The filled arc below [`CONTEXT_HIGH_PERCENT`].
-///
-/// Blue rather than a green off this band's own palette, and that is the point: every
-/// other colour here is a *standing* — [`RUNNING`] busy, [`ASKING`] blocked, [`BAD`]
-/// gone — and the ring is not a standing. It is a resource gauge, true continuously, and
-/// giving it a hue no reading uses is what keeps a half-full context from looking like a
-/// state the agent is in.
-const CONTEXT_ARC: Color32 = Color32::from_rgb(0x5f, 0x93, 0xcc);
-/// …and above it. [`MODE_ALERT`]'s exact amber, reused rather than re-chosen: it already
-/// means "worth acting on, not a failure" on this band, which is precisely the reading.
-const CONTEXT_ARC_HIGH: Color32 = MODE_ALERT;
+// The band's plates ([`Theme::strip_fill`] and its edge, the model plate), the model's two
+// type colours, the permission plate's two voices and the context ring's four are all
+// [`Theme`]'s. The argument for each — why the mode marker is amber and not [`Theme::bad`],
+// why an unmeasured ring is a different grey from an empty one, why the arc is blue — is
+// written beside the field it belongs to.
 const CONTEXT_RING_STROKE: f32 = 2.0;
 
 /// Where the ring turns amber — **a display decision, and the console's own.**
@@ -2119,8 +2097,8 @@ pub enum ModelSlot {
 /// known window builds a `Known` fill whose `fraction()` is `0.0`, which draws no arc
 /// either. Two states, one picture, is precisely the false claim the original design
 /// feared — so the *track itself* carries the difference: [`ring_track_color`] draws the
-/// unmeasured circle at [`CONTEXT_TRACK_EMPTY`], visibly fainter than the
-/// [`CONTEXT_TRACK`] a measured reading sits on, and [`ring_hover_rows`] answers "not
+/// unmeasured circle at [`Theme::context_track_empty`], visibly fainter than the
+/// [`Theme::context_track`] a measured reading sits on, and [`ring_hover_rows`] answers "not
 /// measured yet" where the other answers "0 % at the last request".
 ///
 /// ⚠️ A session's first turn still has no *arc*, and the arc appears at that turn's
@@ -2256,8 +2234,8 @@ pub struct ModeSlot {
 // authority is precisely what the mode marker exists to prevent, and a grant the human made
 // themselves earns no exemption from that.
 //
-// ⚠️ [`MODE_ALERT`]'s amber and not red, for the reason already argued for the mode marker:
-// this band is looked at for hours, and a permanent klaxon trains the eye to skip it.
+// ⚠️ [`Theme::mode_alert`]'s amber and not red, for the reason already argued for the mode
+// marker: this band is looked at for hours, and a permanent klaxon trains the eye to skip it.
 
 /// What the plate says, in one word.
 pub const SESSION_ALLOW_LABEL: &str = "allow all";
@@ -2748,16 +2726,16 @@ pub fn strip_content(
     }
 }
 
-fn standing_color(standing: Standing) -> Color32 {
+fn standing_color(standing: Standing, theme: &Theme) -> Color32 {
     match standing {
-        Standing::Dead => BAD,
-        Standing::Asking => ASKING,
+        Standing::Dead => theme.bad,
+        Standing::Asking => theme.asking,
         // One colour for both, deliberately. The distinction the palette has to carry is
-        // busy-versus-blocked ([`ASKING`]'s note); busy-with-tools and busy-writing are the
+        // busy-versus-blocked ([`Theme::asking`]'s note); busy-with-tools and busy-writing are the
         // same answer to "can I walk away", and giving them two amber-ish colours would spend
         // the band's whole colour budget on a difference the text already spells out.
-        Standing::Working | Standing::Generating => RUNNING,
-        Standing::Connecting | Standing::Ready => DIM,
+        Standing::Working | Standing::Generating => theme.running,
+        Standing::Connecting | Standing::Ready => theme.dim,
     }
 }
 
@@ -2781,7 +2759,7 @@ enum StripAct {
     RevokeSessionAllow,
 }
 
-fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane) {
+fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
     let content = strip_content(
         pane.failure.as_deref(),
         LiveCounts {
@@ -2801,7 +2779,7 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane) {
     )
     .switching_to(pane.pending_model.as_ref().map(|p| p.label.as_str()));
     let rows = model_rows(&pane.models, pane.mapper.facts().model.as_deref());
-    match strip_box(ui, &content, &rows) {
+    match strip_box(ui, &content, &rows, theme) {
         Some(StripAct::ChooseModel(row)) => pane.choose_model(&row),
         Some(StripAct::ChooseMode(mode)) => pane.choose_permission_mode(mode),
         Some(StripAct::RevokeSessionAllow) => pane.revoke_session_allow(),
@@ -2822,6 +2800,7 @@ fn strip_box(
     ui: &mut egui::Ui,
     content: &StripContent,
     models: &[ModelRow],
+    theme: &Theme,
 ) -> Option<StripAct> {
     // ⚠️ **The reserved row must cover the tallest face the band actually draws**, not one
     // of them. Two are in play and neither is decorative: the model name and the standing
@@ -2838,19 +2817,19 @@ fn strip_box(
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
             Frame::new()
-                .fill(STRIP_FILL)
-                .stroke(egui::Stroke::new(STRIP_STROKE, STRIP_EDGE))
+                .fill(theme.strip_fill)
+                .stroke(egui::Stroke::new(STRIP_STROKE, theme.strip_edge))
                 .corner_radius(CornerRadius::same(8))
                 .inner_margin(Margin::symmetric(STRIP_PAD_X, STRIP_PAD_Y))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        let mut act = model_plate(ui, content, models);
-                        act = act.or(mode_plate(ui, content));
+                        let mut act = model_plate(ui, content, models, theme);
+                        act = act.or(mode_plate(ui, content, theme));
                         // Immediately after the mode, because the two answer one question
                         // between them — "is the console still the authority?" — and reading
                         // them apart would be reading half the answer.
-                        act = act.or(session_allow_plate(ui, content));
+                        act = act.or(session_allow_plate(ui, content, theme));
                         let reading = &content.reading;
                         if !reading.text.is_empty() {
                             ui.add(
@@ -2872,7 +2851,7 @@ fn strip_box(
                                     // word in a band that is otherwise one size, which
                                     // reads as a mistake rather than as a hierarchy.
                                     RichText::new(&reading.text)
-                                        .color(standing_color(reading.standing))
+                                        .color(standing_color(reading.standing, theme))
                                         .monospace(),
                                 )
                                 .truncate(),
@@ -2899,15 +2878,15 @@ fn strip_box(
                                 // is the last thing on the band, which is where a gauge
                                 // that is true continuously belongs and where the eye
                                 // learns to find it without reading.
-                                context_ring(ui, &content.context);
+                                context_ring(ui, &content.context, theme);
                                 if !content.chips.is_empty() {
                                     ui.label(
-                                        RichText::new(content.chips.join(" · ")).color(DIM),
+                                        RichText::new(content.chips.join(" · ")).color(theme.dim),
                                     );
                                 }
                                 if let Some(log) = &content.log {
                                     ui.add(
-                                        egui::Label::new(RichText::new(log).color(DIM))
+                                        egui::Label::new(RichText::new(log).color(theme.dim))
                                             .truncate(),
                                     );
                                 }
@@ -2941,7 +2920,7 @@ fn strip_box(
 /// `convex_polygon` tessellation produces a folded-over shape for one — it would draw
 /// *wrongly* exactly as the reading became urgent. A thick stroked polyline has no such
 /// case and is what the indicator this copies looks like anyway.
-fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
+fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot, theme: &Theme) {
     // 🚨 **Allocated and drawn every frame, measured or not** — see [`ContextSlot`] for the
     // track/fill split and for the decision this reverses. The allocation is the half that
     // matters structurally: a child that appears at the first `result` is a band that
@@ -2959,7 +2938,7 @@ fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
     painter.circle_stroke(
         center,
         radius,
-        egui::Stroke::new(CONTEXT_RING_STROKE, ring_track_color(slot)),
+        egui::Stroke::new(CONTEXT_RING_STROKE, ring_track_color(slot, theme)),
     );
     let filled = match slot {
         ContextSlot::Unknown => 0.0,
@@ -2979,7 +2958,7 @@ fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
                 center + egui::vec2(radius * angle.cos(), radius * angle.sin())
             })
             .collect();
-        let color = if slot.is_high() { CONTEXT_ARC_HIGH } else { CONTEXT_ARC };
+        let color = if slot.is_high() { theme.context_arc_high } else { theme.context_arc };
         painter.add(egui::Shape::line(
             points,
             egui::Stroke::new(CONTEXT_RING_STROKE, color),
@@ -2990,8 +2969,8 @@ fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
     response.on_hover_ui(|ui| {
         for (label, value) in ring_hover_rows(slot) {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{label}:")).color(DIM).small().monospace());
-                ui.label(RichText::new(value).color(PROSE).small().monospace());
+                ui.label(RichText::new(format!("{label}:")).color(theme.dim).small().monospace());
+                ui.label(RichText::new(value).color(theme.prose).small().monospace());
             });
         }
     });
@@ -3004,10 +2983,10 @@ fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot) {
 /// `match`, because the property this has to hold — that the two are *not the same
 /// colour* — is a statement about the pair, and a test can only make it about the pair if
 /// there is one thing to ask twice.
-fn ring_track_color(slot: &ContextSlot) -> Color32 {
+fn ring_track_color(slot: &ContextSlot, theme: &Theme) -> Color32 {
     match slot {
-        ContextSlot::Unknown => CONTEXT_TRACK_EMPTY,
-        ContextSlot::Known(_) => CONTEXT_TRACK,
+        ContextSlot::Unknown => theme.context_track_empty,
+        ContextSlot::Known(_) => theme.context_track,
     }
 }
 
@@ -3089,10 +3068,11 @@ fn model_plate(
     ui: &mut egui::Ui,
     content: &StripContent,
     models: &[ModelRow],
+    theme: &Theme,
 ) -> Option<StripAct> {
     let plate = Frame::new()
-        .fill(MODEL_FILL)
-        .stroke(egui::Stroke::new(MODEL_STROKE, MODEL_EDGE))
+        .fill(theme.model_fill)
+        .stroke(egui::Stroke::new(MODEL_STROKE, theme.model_edge))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin::symmetric(MODEL_PAD_X, MODEL_PAD_Y))
         .show(ui, |ui| {
@@ -3101,29 +3081,31 @@ fn model_plate(
                 ModelSlot::Named(label) => {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(&label.name).color(MODEL_TEXT).strong().monospace(),
+                            RichText::new(&label.name).color(theme.model_text).strong().monospace(),
                         )
                         .truncate(),
                     );
                     if let Some(variant) = &label.variant {
-                        ui.label(RichText::new(variant).color(MODEL_BADGE).small().monospace());
+                        ui.label(
+                            RichText::new(variant).color(theme.model_badge).small().monospace(),
+                        );
                     }
                 }
                 // Never an empty box and never "None": a plate with nothing in it during
                 // connection reads as broken, which is worse than the strip being honest
                 // about not knowing yet.
                 ModelSlot::Connecting => {
-                    ui.label(RichText::new("no model yet").color(DIM).small().italics());
+                    ui.label(RichText::new("no model yet").color(theme.dim).small().italics());
                 }
                 ModelSlot::Absent => {
-                    ui.label(RichText::new("no model").color(DIM).small().italics());
+                    ui.label(RichText::new("no model").color(theme.dim).small().italics());
                 }
             }
             if let Some(pending) = &content.pending_model {
                 // Dim, italic and arrowed: it reads as a destination rather than as the
                 // identity beside it, which is exactly the distinction being kept.
                 ui.label(
-                    RichText::new(format!("→ {pending}")).color(DIM).small().italics(),
+                    RichText::new(format!("→ {pending}")).color(theme.dim).small().italics(),
                 );
             }
         });
@@ -3135,14 +3117,16 @@ fn model_plate(
         response.clone().on_hover_ui(|ui| {
             for (label, value) in &content.identity {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{label}:")).color(DIM).small().monospace());
-                    ui.label(RichText::new(value).color(PROSE).small().monospace());
+                    ui.label(
+                        RichText::new(format!("{label}:")).color(theme.dim).small().monospace(),
+                    );
+                    ui.label(RichText::new(value).color(theme.prose).small().monospace());
                 });
             }
         });
     }
     egui::Popup::menu(&response)
-        .show(|ui| model_picker(ui, models))
+        .show(|ui| model_picker(ui, models, theme))
         .and_then(|inner| inner.inner)
 }
 
@@ -3151,13 +3135,13 @@ fn model_plate(
 /// An empty list is the honest case, not a failure: `initialize` is asked once at spawn and
 /// its answer may not have arrived, or the session may not have answered it at all. The
 /// picker says so rather than offering a table this build invented — see [`model_rows`].
-fn model_picker(ui: &mut egui::Ui, models: &[ModelRow]) -> Option<StripAct> {
+fn model_picker(ui: &mut egui::Ui, models: &[ModelRow], theme: &Theme) -> Option<StripAct> {
     ui.set_min_width(240.0);
     if models.is_empty() {
         ui.label(
             RichText::new("the model list has not arrived — this session has not answered its \
                            `initialize` yet")
-                .color(DIM)
+                .color(theme.dim)
                 .small()
                 .italics(),
         );
@@ -3167,7 +3151,7 @@ fn model_picker(ui: &mut egui::Ui, models: &[ModelRow]) -> Option<StripAct> {
     for row in models {
         let mut text = RichText::new(&row.label).monospace();
         if row.current {
-            text = text.color(MODEL_TEXT).strong();
+            text = text.color(theme.model_text).strong();
         }
         let mut button = ui.add(egui::Button::new(text).frame(false));
         if let Some(detail) = &row.detail {
@@ -3178,12 +3162,12 @@ fn model_picker(ui: &mut egui::Ui, models: &[ModelRow]) -> Option<StripAct> {
             ui.close();
         }
         if row.current {
-            ui.label(RichText::new("in use").color(DIM).small());
+            ui.label(RichText::new("in use").color(theme.dim).small());
         }
     }
     ui.separator();
     // 📌 One dim line, not a dialog. See [`MODEL_SWITCH_COST`].
-    ui.label(RichText::new(MODEL_SWITCH_COST).color(DIM).small());
+    ui.label(RichText::new(MODEL_SWITCH_COST).color(theme.dim).small());
     act
 }
 
@@ -3195,7 +3179,7 @@ fn model_picker(ui: &mut egui::Ui, models: &[ModelRow]) -> Option<StripAct> {
 /// as that is true. That persistence is the design, not an oversight — the section note
 /// above [`ModeSeverity`] carries the argument, and it is the reason there is no
 /// confirmation dialog anywhere in this path.
-fn mode_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
+fn mode_plate(ui: &mut egui::Ui, content: &StripContent, theme: &Theme) -> Option<StripAct> {
     let Some(mode) = content.mode.mode.as_deref() else {
         // Before the first init the console does not know the mode, and a control that
         // offers to change something unknown is a control that can silently change it to
@@ -3204,12 +3188,12 @@ fn mode_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
     };
     let severity = content.mode.marker.as_ref().map(|m| m.severity);
     let accent = match severity {
-        Some(ModeSeverity::Alert) => MODE_ALERT,
-        Some(ModeSeverity::Note) => MODE_NOTE,
-        None => DIM,
+        Some(ModeSeverity::Alert) => theme.mode_alert,
+        Some(ModeSeverity::Note) => theme.mode_note,
+        None => theme.dim,
     };
     let plate = Frame::new()
-        .fill(MODEL_FILL)
+        .fill(theme.model_fill)
         .stroke(egui::Stroke::new(MODEL_STROKE, accent))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin::symmetric(MODEL_PAD_X, MODEL_PAD_Y))
@@ -3232,7 +3216,7 @@ fn mode_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
         );
     }
     egui::Popup::menu(&response)
-        .show(|ui| mode_picker(ui, mode))
+        .show(|ui| mode_picker(ui, mode, theme))
         .and_then(|inner| inner.inner)
 }
 
@@ -3247,15 +3231,21 @@ fn mode_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
 /// The revoke is here rather than on a card because there is no one card it belongs to: the
 /// grant covers every call, including ones that have not happened yet. A human who realises
 /// they granted too much must not have to go looking for the card they clicked.
-fn session_allow_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
+fn session_allow_plate(
+    ui: &mut egui::Ui,
+    content: &StripContent,
+    theme: &Theme,
+) -> Option<StripAct> {
     let slot = content.session_allow.as_ref()?;
     let plate = Frame::new()
-        .fill(MODEL_FILL)
-        .stroke(egui::Stroke::new(MODEL_STROKE, MODE_ALERT))
+        .fill(theme.model_fill)
+        .stroke(egui::Stroke::new(MODEL_STROKE, theme.mode_alert))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin::symmetric(MODEL_PAD_X, MODEL_PAD_Y))
         .show(ui, |ui| {
-            ui.label(RichText::new(SESSION_ALLOW_LABEL).color(MODE_ALERT).small().monospace());
+            ui.label(
+                RichText::new(SESSION_ALLOW_LABEL).color(theme.mode_alert).small().monospace(),
+            );
         });
     let clicked = plate
         .response
@@ -3265,7 +3255,10 @@ fn session_allow_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<Stri
         .clicked();
     // Truncated like every other label on the band; the whole sentence is on the hover.
     let marker = ui
-        .add(egui::Label::new(RichText::new(slot.marker).color(MODE_ALERT).small()).truncate())
+        .add(
+            egui::Label::new(RichText::new(slot.marker).color(theme.mode_alert).small())
+                .truncate(),
+        )
         .on_hover_text(format!("{SESSION_ALLOW_CONSEQUENCE}\n\nClick to revoke."));
     // The marker itself is clickable too, because it is the wider target and it is what the
     // eye actually lands on — the plate beside it is the label, not the button.
@@ -3274,13 +3267,13 @@ fn session_allow_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<Stri
 }
 
 /// The three modes, each labelled by what happens.
-fn mode_picker(ui: &mut egui::Ui, current: &str) -> Option<StripAct> {
+fn mode_picker(ui: &mut egui::Ui, current: &str, theme: &Theme) -> Option<StripAct> {
     ui.set_min_width(320.0);
     let mut act = None;
     for row in MODE_ROWS {
         let accent = match row.severity {
-            ModeSeverity::Alert => MODE_ALERT,
-            ModeSeverity::Note => PROSE,
+            ModeSeverity::Alert => theme.mode_alert,
+            ModeSeverity::Note => theme.prose,
         };
         let chosen = row.value == current;
         let mut name = RichText::new(row.value).monospace().color(accent);
@@ -3290,9 +3283,13 @@ fn mode_picker(ui: &mut egui::Ui, current: &str) -> Option<StripAct> {
         let clicked = ui.add(egui::Button::new(name).frame(false)).clicked();
         // The consequence is not a tooltip: it is the label. A hover would put the one
         // sentence that matters behind a gesture nobody makes while deciding.
-        ui.label(RichText::new(row.consequence).color(if chosen { PROSE } else { DIM }).small());
+        ui.label(
+            RichText::new(row.consequence)
+                .color(if chosen { theme.prose } else { theme.dim })
+                .small(),
+        );
         if chosen {
-            ui.label(RichText::new("in use").color(DIM).small());
+            ui.label(RichText::new("in use").color(theme.dim).small());
         }
         ui.add_space(4.0);
         if clicked && !chosen {
@@ -3369,11 +3366,8 @@ const COMPOSER_PAD_X: i8 = 10;
 const COMPOSER_PAD_Y: i8 = 8;
 const COMPOSER_STROKE: f32 = 1.0;
 
-/// The composer's plate, and its edge at rest, focused, and dead.
-const COMPOSER_FILL: Color32 = Color32::from_rgb(0x0e, 0x14, 0x0e);
-const COMPOSER_EDGE: Color32 = Color32::from_rgb(0x2b, 0x38, 0x2b);
-const COMPOSER_EDGE_FOCUS: Color32 = Color32::from_rgb(0x4c, 0x7a, 0x52);
-const COMPOSER_EDGE_DEAD: Color32 = Color32::from_rgb(0x3a, 0x2c, 0x2c);
+// The composer's plate and its three edges are [`Theme`]'s `composer_fill`,
+// `composer_edge`, `composer_edge_focus` and `composer_edge_dead`.
 
 /// What the hint teaches while the box is empty. The keystroke contract is written here
 /// rather than shown as a permanent caption, because a caption that is always on screen is
@@ -3382,7 +3376,7 @@ const COMPOSER_EDGE_DEAD: Color32 = Color32::from_rgb(0x3a, 0x2c, 0x2c);
 const COMPOSER_HINT: &str = "message the agent — Enter sends, Shift+Enter for a new line";
 const COMPOSER_HINT_DEAD: &str = "the agent is not running";
 
-fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane) {
+fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
     let live = pane.failure.is_none();
     // Three disjoint fields, borrowed separately, so the box can own the text while
     // `submit` still needs the whole pane afterwards.
@@ -3392,6 +3386,7 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane) {
         live,
         &mut pane.want_focus,
         &mut pane.composer_height,
+        theme,
     );
     if submit {
         pane.submit();
@@ -3430,6 +3425,7 @@ fn composer_box(
     live: bool,
     want_focus: &mut bool,
     measured: &mut f32,
+    theme: &Theme,
 ) -> bool {
     let row = ui.text_style_height(&egui::TextStyle::Monospace);
     // The floor is what makes the box big before anything is in it; the ceiling is what
@@ -3445,8 +3441,8 @@ fn composer_box(
             // that is only known once the widget inside has run. The frame shape is inserted
             // behind the content either way, so this costs nothing.
             let mut framed = Frame::new()
-                .fill(COMPOSER_FILL)
-                .stroke(egui::Stroke::new(COMPOSER_STROKE, COMPOSER_EDGE))
+                .fill(theme.composer_fill)
+                .stroke(egui::Stroke::new(COMPOSER_STROKE, theme.composer_edge))
                 .corner_radius(CornerRadius::same(8))
                 .inner_margin(Margin::symmetric(COMPOSER_PAD_X, COMPOSER_PAD_Y))
                 .begin(ui);
@@ -3470,7 +3466,7 @@ fn composer_box(
                             .frame(false)
                             .margin(Margin::ZERO)
                             .font(egui::TextStyle::Monospace)
-                            .text_color(if live { HUMAN } else { DIM })
+                            .text_color(if live { theme.human_text } else { theme.dim })
                             // 🚨 The inversion that makes the keystrokes work: declaring
                             // **Shift**+Enter as the return key sets `pattern.shift`, and a
                             // pattern that asks for shift is the one case
@@ -3511,9 +3507,9 @@ fn composer_box(
             framed.frame.stroke = egui::Stroke::new(
                 COMPOSER_STROKE,
                 match (live, focused) {
-                    (false, _) => COMPOSER_EDGE_DEAD,
-                    (true, true) => COMPOSER_EDGE_FOCUS,
-                    (true, false) => COMPOSER_EDGE,
+                    (false, _) => theme.composer_edge_dead,
+                    (true, true) => theme.composer_edge_focus,
+                    (true, false) => theme.composer_edge,
                 },
             );
             framed.end(ui);
@@ -4274,6 +4270,7 @@ mod tests {
                         pane.live,
                         &mut pane.want_focus,
                         &mut pane.measured,
+                        &Theme::organon(),
                     );
                     height = before - ui.available_height();
                 });
@@ -4453,6 +4450,7 @@ mod tests {
     /// zero prompt against a known window builds exactly this pair.
     #[test]
     fn an_unmeasured_ring_is_distinguishable_from_a_measured_nought() {
+        let theme = Theme::organon();
         let nought = ContextSlot::Known(ContextFill { prompt_tokens: 0, context_window: 1_000_000 });
         assert_eq!(nought.is_high(), false, "nought is not high, and draws no arc");
         assert_eq!(
@@ -4465,20 +4463,20 @@ mod tests {
         );
 
         assert_ne!(
-            ring_track_color(&ContextSlot::Unknown),
-            ring_track_color(&nought),
+            ring_track_color(&ContextSlot::Unknown, &theme),
+            ring_track_color(&nought, &theme),
             "two states drawing one picture is the false claim itself"
         );
         // The unmeasured track is the FAINTER of the two — it is a container, and the one
         // holding an answer should be the one that carries more presence.
-        let dim = ring_track_color(&ContextSlot::Unknown);
-        let lit = ring_track_color(&nought);
+        let dim = ring_track_color(&ContextSlot::Unknown, &theme);
+        let lit = ring_track_color(&nought, &theme);
         assert!(
             dim.r() < lit.r() && dim.g() < lit.g() && dim.b() < lit.b(),
             "the empty container must be the fainter circle: {dim:?} vs {lit:?}"
         );
         // …and it is still visible against the band it sits on, or it is not a container.
-        assert_ne!(dim, STRIP_FILL, "an invisible track is a ring that vanished");
+        assert_ne!(dim, theme.strip_fill, "an invisible track is a ring that vanished");
 
         // The glanceable half is a colour; the answerable half is words.
         let unmeasured = ring_hover_rows(&ContextSlot::Unknown);
@@ -4889,9 +4887,10 @@ mod tests {
     /// the text already spells out which.
     #[test]
     fn generating_and_working_read_as_the_same_kind_of_busy() {
-        assert_eq!(standing_color(Standing::Generating), standing_color(Standing::Working));
-        assert_ne!(standing_color(Standing::Generating), standing_color(Standing::Ready));
-        assert_ne!(standing_color(Standing::Generating), standing_color(Standing::Asking));
+        let t = Theme::organon();
+        assert_eq!(standing_color(Standing::Generating, &t), standing_color(Standing::Working, &t));
+        assert_ne!(standing_color(Standing::Generating, &t), standing_color(Standing::Ready, &t));
+        assert_ne!(standing_color(Standing::Generating, &t), standing_color(Standing::Asking, &t));
     }
 
     /// With nothing outstanding the band reports the turn the agent described, not a guess.
@@ -5462,7 +5461,7 @@ mod tests {
             StepState::Done { is_error: false },
             StepState::Done { is_error: true },
         ] {
-            let (mark, _) = step_mark(&state);
+            let (mark, _) = step_mark(&state, &Theme::organon());
             check("a subagent step marker", mark);
             // Belt and braces on the one that regressed: the dingbats are gone by name.
             assert!(!mark.contains('✓') && !mark.contains('✗'), "{state:?} is back on a dingbat");
@@ -5489,7 +5488,7 @@ mod tests {
                     let before = ui.available_height();
                     // No rows: the menu is only built while the popup is open, and a
                     // headless single frame never opens one.
-                    let _ = strip_box(ui, content, &[]);
+                    let _ = strip_box(ui, content, &[], &Theme::organon());
                     band = before - ui.available_height();
                     ui.add_space(4.0);
                     let _ = composer_box(
@@ -5498,6 +5497,7 @@ mod tests {
                         pane.live,
                         &mut pane.want_focus,
                         &mut pane.measured,
+                        &Theme::organon(),
                     );
                     left = ui.available_height();
                 });
@@ -5589,6 +5589,7 @@ mod tests {
     ///    one-line strip becomes two.
     #[test]
     fn the_cold_band_reports_a_cost_and_a_ring_and_does_not_grow() {
+        let theme = Theme::organon();
         let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
 
         // (1) There is something on the right from the first frame, and it is true.
@@ -5599,8 +5600,8 @@ mod tests {
         );
         assert_eq!(cold.context, ContextSlot::Unknown, "…and the ring has no reading yet");
         assert_eq!(
-            ring_track_color(&cold.context),
-            CONTEXT_TRACK_EMPTY,
+            ring_track_color(&cold.context, &theme),
+            theme.context_track_empty,
             "which draws the empty track — present, and not a claim of 0%"
         );
         assert!(

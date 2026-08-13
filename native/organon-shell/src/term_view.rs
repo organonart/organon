@@ -37,6 +37,7 @@ use crate::block_panel::{self, BlockAction, Patch};
 use crate::portal;
 use crate::scroll_anchor::{self, Snapshot, ViewState};
 use crate::term::{self, TermSession};
+use crate::theme::Theme;
 
 /// The grid's type size, in points. One definition, because [`cell_metrics`] and
 /// [`draw`] must not be able to disagree about what a cell is.
@@ -54,9 +55,12 @@ pub fn cell_metrics(ui: &mut egui::Ui) -> (f32, f32) {
     ui.fonts_mut(|f| (f.glyph_width(&font_id, 'M'), f.row_height(&font_id)))
 }
 
-/// The default screen: near-black with a whisper of green, phosphor foreground.
-pub const DEFAULT_BG: egui::Color32 = egui::Color32::from_rgb(0x0a, 0x0d, 0x0a);
-pub const DEFAULT_FG: egui::Color32 = egui::Color32::from_rgb(0xc8, 0xe6, 0xc8);
+// The default screen (near-black with a whisper of green, phosphor foreground), the 16
+// ANSI colours and the scrim's tint are [`crate::theme::Theme`]'s `term_bg` / `term_fg` /
+// `ansi16` / `term_scrim_tint`. A palette that could not reach the terminal would not be a
+// palette: a light console beside a black grid is two products in one window.
+//
+// ⚠️ The scrim's **alpha** is deliberately not the theme's — see `SCRIM_FLOOR` below.
 
 /// `ORGANON_SHELL_SCRIM`'s default and its structural floor, as an **alpha byte** —
 /// the scrim is an `egui::Color32` alpha, so the scale is 0–255, not 0–1.
@@ -69,7 +73,10 @@ pub const DEFAULT_FG: egui::Color32 = egui::Color32::from_rgb(0xc8, 0xe6, 0xc8);
 /// fix docs a stranger would follow. Formatting the help from the constants makes that class
 /// of drift impossible rather than merely fixed once.
 pub const SCRIM_DEFAULT: u8 = 185;
-/// The floor is the inviolable half of PRD §4.6: no setting may trade the glyphs away.
+/// The floor is the inviolable half of PRD §4.6: no setting may trade the glyphs away —
+/// **and no theme may either**, which is why only the scrim's three colour channels moved
+/// onto [`Theme`] and its alpha stayed here. A palette is taste; the floor is an
+/// instrument.
 pub const SCRIM_FLOOR: u8 = 96;
 
 /// The scrim's alpha for a given `ORGANON_SHELL_SCRIM` value — parse, default, **floor**.
@@ -88,50 +95,32 @@ pub fn scrim_alpha(env: Option<&str>) -> u8 {
     env.and_then(|v| v.parse::<u8>().ok()).unwrap_or(SCRIM_DEFAULT).max(SCRIM_FLOOR)
 }
 
-/// The 16 ANSI colors, phosphor-leaning but conventional enough that TUI color
-/// schemes read as intended.
-const ANSI16: [egui::Color32; 16] = [
-    egui::Color32::from_rgb(0x10, 0x14, 0x10), // black
-    egui::Color32::from_rgb(0xcc, 0x52, 0x4b), // red
-    egui::Color32::from_rgb(0x5c, 0xb8, 0x5c), // green
-    egui::Color32::from_rgb(0xc2, 0xb0, 0x4c), // yellow
-    egui::Color32::from_rgb(0x56, 0x92, 0xd8), // blue
-    egui::Color32::from_rgb(0xb0, 0x6c, 0xc0), // magenta
-    egui::Color32::from_rgb(0x4c, 0xb8, 0xb0), // cyan
-    egui::Color32::from_rgb(0xc8, 0xd2, 0xc8), // white
-    egui::Color32::from_rgb(0x50, 0x5a, 0x50), // bright black
-    egui::Color32::from_rgb(0xe8, 0x6a, 0x62), // bright red
-    egui::Color32::from_rgb(0x74, 0xd8, 0x74), // bright green
-    egui::Color32::from_rgb(0xdc, 0xcc, 0x66), // bright yellow
-    egui::Color32::from_rgb(0x74, 0xac, 0xec), // bright blue
-    egui::Color32::from_rgb(0xcc, 0x88, 0xdc), // bright magenta
-    egui::Color32::from_rgb(0x68, 0xd4, 0xcc), // bright cyan
-    egui::Color32::from_rgb(0xee, 0xf4, 0xee), // bright white
-];
-
 /// Resolve a cell color against overrides → named table → 256-cube → truecolor.
 fn resolve(
     color: AnsiColor,
     overrides: &alacritty_terminal::term::color::Colors,
     default_fg: bool,
+    theme: &Theme,
 ) -> egui::Color32 {
     match color {
+        // Truecolor and an OSC override are the running program's own values, not the
+        // console's — a theme that reached them would be overpainting what a program said.
         AnsiColor::Spec(rgb) => egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b),
         AnsiColor::Named(named) => {
             if let Some(rgb) = overrides[named as usize] {
                 return egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b);
             }
             match named {
-                NamedColor::Foreground => DEFAULT_FG,
-                NamedColor::Background => DEFAULT_BG,
+                NamedColor::Foreground => theme.term_fg,
+                NamedColor::Background => theme.term_bg,
                 n => {
                     let i = n as usize;
                     if i < 16 {
-                        ANSI16[i]
+                        theme.ansi16[i]
                     } else if default_fg {
-                        DEFAULT_FG
+                        theme.term_fg
                     } else {
-                        DEFAULT_BG
+                        theme.term_bg
                     }
                 }
             }
@@ -140,15 +129,19 @@ fn resolve(
             if let Some(rgb) = overrides[i as usize] {
                 return egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b);
             }
-            indexed_256(i)
+            indexed_256(i, theme)
         }
     }
 }
 
 /// The standard xterm 256-color table: 16 ANSI + 6×6×6 cube + 24 grays.
-fn indexed_256(i: u8) -> egui::Color32 {
+///
+/// Only the first 16 are the theme's. The cube and the greyscale ramp are a **standard**
+/// rather than a taste — a program asking for index 196 is asking for xterm's red, and a
+/// palette that re-answered it would be answering a different question.
+fn indexed_256(i: u8, theme: &Theme) -> egui::Color32 {
     match i {
-        0..=15 => ANSI16[i as usize],
+        0..=15 => theme.ansi16[i as usize],
         16..=231 => {
             let i = i as u16 - 16;
             let comp = |v: u16| -> u8 {
@@ -595,6 +588,7 @@ pub fn draw(
     patches: &mut [Patch],
     patch_image: Option<egui::TextureId>,
     portal: Option<egui::Rect>,
+    theme: &Theme,
 ) -> Vec<BlockAction> {
     let font_id = egui::FontId::monospace(FONT_PT);
     let (cell_w, cell_h) = cell_metrics(ui);
@@ -706,6 +700,8 @@ pub fn draw(
                 // background is showing through, which is what the backdrop looked like
                 // when those rows were written.
                 if let Some(texture) = quad.texture {
+                    // `WHITE` is the identity multiplier, not a colour — the theme has no
+                    // business tinting a picture of the engine's own output.
                     painter.image(texture, quad.rect, quad.uv, egui::Color32::WHITE);
                 }
             }
@@ -714,14 +710,18 @@ pub fn draw(
             // floor is structural, so no setting can trade the glyphs away
             // (PRD §4.6, the inviolable half). See [`scrim_alpha`], which owns the rule.
             let scrim = scrim_alpha(std::env::var("ORGANON_SHELL_SCRIM").ok().as_deref());
+            // The tint is the theme's, the alpha is the env var's, floored. Split that way
+            // round because the two answer different questions: what colour dims the world
+            // is taste, how far it may be dimmed is PRD §4.6.
+            let tint = theme.term_scrim_tint;
             painter.rect_filled(
                 rect,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(0x0a, 0x0d, 0x0a, scrim),
+                egui::Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), scrim),
             );
         }
         None => {
-            painter.rect_filled(rect, 0.0, DEFAULT_BG);
+            painter.rect_filled(rect, 0.0, theme.term_bg);
         }
     }
 
@@ -754,13 +754,14 @@ pub fn draw(
             // kind-blind so that its index means the ledger's index, and this is where the
             // kind is read for the first time.
             if patches.get(quad.block).is_some_and(Patch::is_scene) {
+                // Identity multiplier again — see the band quads above.
                 painter.image(image, quad.rect, quad.uv, egui::Color32::WHITE);
             }
         }
     }
     // `state`, not `pre_wheel`: the wheel has been applied by now, so a panel is drawn where
     // this same frame's glyphs are, not where they were before the scroll.
-    let actions = block_panel::draw(ui, patches, state, rect, cell_h);
+    let actions = block_panel::draw(ui, patches, state, rect, cell_h, theme);
 
     let content = session.term.renderable_content();
     let display_offset = content.display_offset as i32;
@@ -771,8 +772,8 @@ pub fn draw(
     // per run, instead of a call per cell.
     let mut run = String::new();
     let mut run_start: Option<(f32, f32)> = None;
-    let mut run_fg = DEFAULT_FG;
-    let mut run_bg = DEFAULT_BG;
+    let mut run_fg = theme.term_fg;
+    let mut run_bg = theme.term_bg;
     let mut last: Option<(i32, usize)> = None;
 
     let mut flush =
@@ -780,7 +781,7 @@ pub fn draw(
             if let Some((x, y)) = start.take() {
                 if !run.is_empty() {
                     let w = run.chars().count() as f32 * cell_w;
-                    if bg != DEFAULT_BG {
+                    if bg != theme.term_bg {
                         painter.rect_filled(
                             egui::Rect::from_min_size(
                                 egui::pos2(x, y),
@@ -817,8 +818,8 @@ pub fn draw(
         }
 
         let (mut fg, mut bg) = (
-            resolve(cell.fg, colors, true),
-            resolve(cell.bg, colors, false),
+            resolve(cell.fg, colors, true, theme),
+            resolve(cell.bg, colors, false, theme),
         );
         if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
@@ -850,7 +851,7 @@ pub fn draw(
         let x = rect.left() + cursor.point.column.0 as f32 * cell_w;
         let y = rect.top() + cur_row as f32 * cell_h;
         let r = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_w, cell_h));
-        painter.rect_filled(r, 0.0, DEFAULT_FG);
+        painter.rect_filled(r, 0.0, theme.term_fg);
         // Repaint the glyph under the cursor in inverse.
         let ch = session.term.grid()[cursor.point].c;
         if ch != ' ' && ch != '\0' {
@@ -859,7 +860,7 @@ pub fn draw(
                 egui::Align2::LEFT_TOP,
                 ch.to_string(),
                 font_id.clone(),
-                DEFAULT_BG,
+                theme.term_bg,
             );
         }
     }
@@ -870,7 +871,7 @@ pub fn draw(
             egui::Align2::CENTER_BOTTOM,
             "[process exited — close the window or open a new tab]",
             font_id,
-            egui::Color32::from_rgb(0x80, 0x8a, 0x80),
+            theme.term_exited_notice,
         );
     }
 
@@ -1236,12 +1237,26 @@ mod tests {
     }
 
     /// The 256-color cube math, pinned at its corners.
+    ///
+    /// The theme is an argument now and every assertion below is unchanged by it, which is
+    /// the point: indices 16..=255 are xterm's own table, so a palette cannot move them.
     #[test]
     fn xterm_256_table_corners() {
-        assert_eq!(indexed_256(16), egui::Color32::from_rgb(0, 0, 0));
-        assert_eq!(indexed_256(231), egui::Color32::from_rgb(255, 255, 255));
-        assert_eq!(indexed_256(196), egui::Color32::from_rgb(255, 0, 0)); // pure red
-        assert_eq!(indexed_256(232), egui::Color32::from_rgb(8, 8, 8)); // darkest gray
-        assert_eq!(indexed_256(255), egui::Color32::from_rgb(238, 238, 238)); // lightest
+        let theme = Theme::organon();
+        assert_eq!(indexed_256(16, &theme), egui::Color32::from_rgb(0, 0, 0));
+        assert_eq!(indexed_256(231, &theme), egui::Color32::from_rgb(255, 255, 255));
+        assert_eq!(indexed_256(196, &theme), egui::Color32::from_rgb(255, 0, 0)); // pure red
+        assert_eq!(indexed_256(232, &theme), egui::Color32::from_rgb(8, 8, 8)); // darkest gray
+        assert_eq!(indexed_256(255, &theme), egui::Color32::from_rgb(238, 238, 238)); // lightest
+    }
+
+    /// The first sixteen, by contrast, are the theme's — and `indexed_256` must read them
+    /// from it rather than from a table of its own.
+    #[test]
+    fn the_first_sixteen_indices_come_from_the_theme() {
+        let theme = Theme::organon();
+        for i in 0..16u8 {
+            assert_eq!(indexed_256(i, &theme), theme.ansi16[i as usize], "index {i}");
+        }
     }
 }

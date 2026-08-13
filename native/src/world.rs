@@ -10286,6 +10286,28 @@ impl World {
         }
     }
 
+    /// Where the viewer stands right now: the base orbit's `(yaw, pitch, distance)`.
+    ///
+    /// 🚨 **The read half of [`apply_camera_input`](World::apply_camera_input), and it must be
+    /// this rather than a copy the host keeps.** All four writers land on these three fields — a
+    /// drag, a wheel, `organon console camera`, and an MCP framing — and the world *clamps* on
+    /// the way in. A host that remembered what it last asked for would report a value the camera
+    /// may never have held, and would be blind to every move a hand made. The console serves this
+    /// to an agent (`organon-shell::camera::Viewpoint`), and an agent acting on a stale framing is
+    /// exactly the failure that read exists to end.
+    ///
+    /// ⚠️ **It is the base orbit, not the camera the frame is drawn with.** The finalization adds
+    /// `cam_path`'s auto-orbit offset on top, and an installed [`set_substrate_rig`] overrides all
+    /// six values wholesale — so this is what a framing command *writes*, which is the question a
+    /// caller computing a delta is actually asking. `camera::viewpoint_is_visible` is how the
+    /// console says whether anything on screen is showing it.
+    // Dead in `bin/visual.rs`, which `#[path]`-includes this file and calls none of the world's
+    // host-facing accessors — same reason `set_substrate_rig` and `queue()` carry the allow.
+    #[allow(dead_code)]
+    pub fn camera_framing(&self) -> (f32, f32, f32) {
+        (self.yaw, self.pitch, self.distance)
+    }
+
     /// Install (or clear) an **absolute** camera rig — Console Spike Tier 1, for Organon
     /// Shell's substrate backdrop.
     ///
