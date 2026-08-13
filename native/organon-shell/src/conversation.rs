@@ -74,10 +74,16 @@
 //! texture for an inline artifact) on it across frames.
 //!
 //! That is not hypothetical any more: [`Body::Artifact`] is an element the console puts in
-//! the flow itself, and a live control panel is the first thing drawn for one. The element
+//! the flow itself, and a live control panel was the first thing drawn for one. The element
 //! carries a **description** — a title, slider names, button names — and nothing else; every
 //! value a hand can move lives in the view, in a side map keyed by [`ElementId`]. This split
 //! is the reason ids have to be stable rather than a nice property of them being so.
+//!
+//! [`ArtifactContent::Surface`] is the second kind and the one that makes the id do real
+//! work: a rendered picture, whose **GPU texture** the view holds under that id and whose
+//! **look** a [`PanelSpec::drives`] panel changes from a few elements below it. Nothing about
+//! either the texture or the live look is in this module — which is exactly the test that the
+//! split holds.
 //!
 //! Ids are also **contiguous** over the retained window, because every id issued is
 //! immediately appended and eviction only ever happens at the front. That is what makes
@@ -288,13 +294,34 @@ pub struct ArtifactBlock {
     pub content: ArtifactContent,
 }
 
-/// What kind of artifact it is. One arm today; the shape is here so a second kind — an
-/// engine-rendered picture, which needs a render-to-texture path and an eviction cap — is a
+/// What kind of artifact it is. The second arm is the one the first was shaped for: an
+/// engine-rendered picture, which needs a render-to-texture path and an eviction cap, is a
 /// variant rather than a second [`Body`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArtifactContent {
     /// A control panel: named sliders and named buttons, in draw order.
     Panel(PanelSpec),
+    /// A rendered surface — a picture the engine draws, living in the flow.
+    Surface(SurfaceSpec),
+}
+
+/// A rendered surface, **described**: what it is a picture *of*, and nothing else.
+///
+/// 🚨 **No size, no rect, no `TextureId`, and no live look.** The rect is egui layout's — the
+/// simplification a conversation buys over a character grid, where a picture had to be
+/// arithmetic over reserved rows. The texture is the view's, keyed by [`ElementId`] and
+/// bounded by a cap the view states. And the look a hand is *currently* dragging is view
+/// state for [`PanelSpec`]'s reason: the transcript is folded from an event stream and its
+/// elements mutate as events arrive, so a value living here would be rewritten mid-drag.
+///
+/// What survives here is the **summoning** look — what the surface opened as. The view seeds
+/// from it once and owns it after, exactly as it owns a slider's starting value.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SurfaceSpec {
+    /// The look the surface opened at, by name. Meaningless to this crate — the console's
+    /// material table is in the binary — so it is carried, never interpreted, on
+    /// [`PanelSpec::buttons`]' contract exactly.
+    pub look: String,
 }
 
 /// A control panel's controls, **by name only**.
@@ -314,6 +341,20 @@ pub enum ArtifactContent {
 pub struct PanelSpec {
     pub sliders: Vec<String>,
     pub buttons: Vec<String>,
+    /// The element this panel's controls act on, or `None` for a panel that drives the
+    /// console itself.
+    ///
+    /// **This is the fix for the flaw beat 7 exposed.** A panel wired to the global backdrop
+    /// changes something you cannot see from where you clicked — the effect lands on another
+    /// tab, because a conversation has no scrollback for a backdrop to band across. Naming a
+    /// target here makes the consequence an element a few rows up, in the same view.
+    ///
+    /// An [`ElementId`] rather than an index, for the reason ids exist: the transcript's
+    /// indices shift as the cap evicts from the front, and a panel that silently started
+    /// driving its neighbour would be the worst possible failure of an instrument. A target
+    /// the cap has evicted simply stops resolving ([`Transcript::get`] answers `None`) and
+    /// the panel drives nothing — which the view says on screen rather than papering over.
+    pub drives: Option<ElementId>,
 }
 
 /// The end of a run, as an element so it keeps its place in the flow.
@@ -1221,6 +1262,7 @@ mod tests {
             content: ArtifactContent::Panel(PanelSpec {
                 sliders: vec!["depth".into(), "bloom".into()],
                 buttons: vec!["metal".into(), "glass".into()],
+                drives: None,
             }),
         }
     }
@@ -1310,6 +1352,84 @@ mod tests {
         assert_eq!(t.len(), 2, "identical descriptions are still two elements");
         assert_ne!(t.elements()[0].id, t.elements()[1].id);
         assert_eq!(t.stats().events, 0, "insertion is not an event and is not counted as one");
+    }
+
+    fn surface(look: &str) -> ArtifactBlock {
+        ArtifactBlock {
+            title: "◈ organon · surface".to_string(),
+            content: ArtifactContent::Surface(SurfaceSpec { look: look.to_string() }),
+        }
+    }
+
+    fn driver(target: ElementId) -> ArtifactBlock {
+        ArtifactBlock {
+            title: "◈ organon · console".to_string(),
+            content: ArtifactContent::Panel(PanelSpec {
+                sliders: vec!["light".into()],
+                buttons: vec!["metal".into()],
+                drives: Some(target),
+            }),
+        }
+    }
+
+    /// **The pairing the whole feature rests on**: a surface and the panel that drives it are
+    /// two elements, and the link between them is an id the transcript guarantees — not an
+    /// index, and not "the one above". The stream then moves around both, and the link still
+    /// resolves to the same element.
+    #[test]
+    fn a_panel_keeps_pointing_at_its_surface_while_the_stream_moves() {
+        let mut t = Transcript::new();
+        let Change::Appended(surface_id) = t.insert_artifact(surface("slate")) else {
+            panic!("an artifact must append");
+        };
+        t.insert_artifact(driver(surface_id));
+
+        feed(
+            &mut t,
+            vec![
+                human("go"),
+                delta("m1", "th"),
+                complete("m1", "thinking"),
+                call("t1", "Bash", Some("{}")),
+                result("t1", "done"),
+                finished(),
+            ],
+        );
+
+        let panel = t
+            .elements()
+            .iter()
+            .find_map(|e| match &e.body {
+                Body::Artifact(a) => match &a.content {
+                    ArtifactContent::Panel(p) => Some(p.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("the panel is still there");
+        assert_eq!(panel.drives, Some(surface_id));
+        let target = t.get(surface_id).expect("the target still resolves");
+        match &target.artifact().unwrap().content {
+            ArtifactContent::Surface(s) => assert_eq!(s.look, "slate"),
+            other => panic!("the id resolved to the wrong kind: {other:?}"),
+        }
+    }
+
+    /// The failure mode a bare index would hide: the cap evicts the surface, and the panel's
+    /// target stops resolving **to anything** rather than resolving to whatever slid into
+    /// that position. The view's only honest reading is "this panel drives nothing now".
+    #[test]
+    fn an_evicted_surface_leaves_its_panel_driving_nothing() {
+        let mut t = Transcript::with_limits(Limits { max_elements: 2 });
+        let Change::Appended(surface_id) = t.insert_artifact(surface("graphite")) else {
+            panic!("an artifact must append");
+        };
+        t.insert_artifact(driver(surface_id));
+        assert!(t.get(surface_id).is_some(), "still retained at the cap");
+
+        feed(&mut t, vec![human("one more")]);
+        assert_eq!(t.stats().dropped_elements, 1);
+        assert_eq!(t.get(surface_id), None, "the target is gone, not reassigned");
     }
 
     /// Deterministic, dependency-free — the `scroll_anchor` precedent; there is no new

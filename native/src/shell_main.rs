@@ -70,7 +70,10 @@ use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
 };
-use organon_shell::conversation_view::{self, ArtifactAction, ConversationPane};
+use organon_shell::conversation::ElementId;
+use organon_shell::conversation_view::{
+    self, ArtifactAction, ConversationPane, SurfaceImages, SurfaceRequest,
+};
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::session::{Issuer, SessionLog};
@@ -682,6 +685,205 @@ struct CachedEpoch {
     id: egui::TextureId,
 }
 
+// ---------------------------------------------------------------------------
+// Rendered surfaces in a conversation
+// ---------------------------------------------------------------------------
+
+/// The most surface textures that may exist at once, across every tab.
+///
+/// 🚨 **A cap from the first line of this feature, not a later hardening**, for
+/// `substrate_epochs`' reason: a transcript grows without bound, every `/surface` adds an
+/// element that keeps its id forever, and a texture per surface with nothing bounding it is a
+/// leak whose only symptom is the machine getting slower. Four, because that is what the
+/// screen can hold: a surface is [`conversation_view`]'s 260 pt tall plus its panel, so at the
+/// default 1100×720 window two are visible at a stretch and four covers "two on screen and
+/// two just scrolled past" — the case where evicting would be felt as a flicker.
+///
+/// The ceiling it buys is [`surface_budget_bytes`]. At the pane sizes this console actually
+/// runs (2475×1553 physical on ORGANON-ONE, a surface being roughly the full width by 260 pt
+/// ≈ 585 px) that is about **23 MB**, against the backdrop's own ~15 MB and the epoch cache's
+/// [`substrate_epochs::MAX_EPOCHS`] × pane. Every eviction prints one `[surface]` line naming
+/// what went and why — a silently dropped texture reads as "the picture is still there",
+/// which is exactly the failure this repo keeps paying for.
+const MAX_SURFACE_TEXTURES: usize = 4;
+
+/// How many surfaces the engine may be asked to draw in one frame.
+///
+/// ⚠️ **This is the double-step bound, and it is the reason the number is one.** Each surface
+/// render is a whole `World` frame — `render_to_texture` runs the same generators, passes and
+/// post chain as the backdrop — so N surfaces mean N extra frames of engine work *and* N
+/// extra advances of everything in the world that is per-frame rather than per-second.
+///
+/// What is genuinely at risk is narrower than "the world runs at N×", and worth stating
+/// exactly because the vague version invites the wrong fix: the beat clock, the camera and
+/// every sim in `frame_body` advance by a **wall-clock `dt`** (`world.rs`'s
+/// `now - self.last_frame`), so a second render microseconds after the first advances them by
+/// microseconds — invisible. What double-steps is what counts *frames*: `frame_index`, which
+/// drives the TAA jitter phase, and the temporal history that goes with it. Those are shared
+/// between the two targets, so a surface and the backdrop rendered in one frame trade jitter
+/// phases. On the still lit plane this feature draws, that is not visible. On a moving World
+/// it would be, intermittently — the worst kind — which is why the surface look is the
+/// substrate and not the World, and why this is a documented cut rather than a hidden one.
+///
+/// One render per frame also means a **dirty** surface repaints at full rate while a hand is
+/// on its slider, and a settled one costs nothing at all: the budget is only ever spent on a
+/// look that has actually changed.
+const SURFACE_RENDERS_PER_FRAME: usize = 1;
+
+/// The GPU ceiling [`MAX_SURFACE_TEXTURES`] buys, in bytes, for a given surface size —
+/// `substrate_epochs::worst_case_bytes`' arrangement, so the cap's cost is a number a test
+/// can quote rather than a claim in prose.
+const fn surface_budget_bytes(w: u32, h: u32) -> u64 {
+    (MAX_SURFACE_TEXTURES as u64) * (w as u64) * (h as u64) * 4
+}
+
+/// What a surface is a picture *of*: the console look, plus the knob positions on top of it.
+///
+/// Compared for equality to decide whether a surface needs redrawing, which is the whole
+/// reason it is a value rather than a pile of fields — a surface whose look has not changed
+/// is not re-rendered, and that is what makes an idle conversation cost zero engine frames.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct SurfaceLook {
+    look: ConsoleLook,
+    /// `(label, value)` exactly as the driving panel reported them. Carried rather than
+    /// resolved so the comparison happens on what the hand did, not on the floats it
+    /// happened to produce after a mapping that may change.
+    sliders: Vec<(String, f32)>,
+}
+
+/// One surface's render target and its egui registration.
+///
+/// The [`Backdrop`] triple with two additions: the look it currently *holds* (so a frame can
+/// tell a stale picture from a current one) and a stamp (so the cap can evict the
+/// least-recently-asked-for).
+struct SurfaceTexture {
+    #[allow(dead_code)] // the texture must outlive the view and the egui registration
+    texture: wgpu::Texture,
+    #[allow(dead_code)] // …and the view must outlive the registration
+    view: wgpu::TextureView,
+    id: egui::TextureId,
+    size: (u32, u32),
+    /// What is actually drawn in it. `None` on the frame it was created or resized, which is
+    /// what makes "needs a render" a single comparison rather than a flag plus a comparison.
+    holds: Option<SurfaceLook>,
+    /// The frame this texture was last asked for. The cap's eviction order and nothing else.
+    touched: u64,
+}
+
+/// A surface, identified across the whole console.
+///
+/// **Keyed by pane as well as element**, because an [`ElementId`] is only unique within one
+/// transcript: two conversation tabs both start at id 0, and a bare-id map would have them
+/// painting into each other's textures the moment both had a surface open.
+type SurfaceKey = (usize, ElementId);
+
+/// Which surfaces keep their textures when more are held than [`MAX_SURFACE_TEXTURES`]
+/// allows, and which go — **pure**, so the policy is a test rather than a claim.
+///
+/// Least-recently-**requested** goes first. Note "requested", not "rendered": a surface that
+/// is on screen and unchanged is being asked for every frame and must never be evicted in
+/// favour of one that merely re-rendered once. `wanted` is this frame's request list, in
+/// transcript order, and is what a tie falls back to — so a frame that asks for five surfaces
+/// at once evicts the ones furthest up the page rather than an arbitrary one.
+///
+/// Returns the keys to release, in eviction order.
+fn surfaces_to_evict(
+    held: &[(SurfaceKey, u64)],
+    wanted: &[SurfaceKey],
+    cap: usize,
+) -> Vec<SurfaceKey> {
+    if held.len() <= cap {
+        return Vec::new();
+    }
+    let mut order: Vec<(SurfaceKey, u64, usize)> = held
+        .iter()
+        .map(|(key, touched)| {
+            let rank = wanted.iter().position(|w| w == key).unwrap_or(usize::MAX);
+            (*key, *touched, rank)
+        })
+        .collect();
+    // Oldest touch first; among equal touches (everything wanted this frame shares one
+    // stamp) the one furthest down the request list goes first, so the top of the page —
+    // what the reader scrolled *to* — survives.
+    order.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
+    order.truncate(held.len() - cap);
+    order.into_iter().map(|(key, _, _)| key).collect()
+}
+
+/// One slider, applied to the snapshot a surface will be rendered from — **pure**, so the
+/// whole knob vocabulary is a test rather than something only a GPU can answer.
+///
+/// The three labels are chosen to be **orthogonal to the material buttons beside them**, and
+/// that is the property that makes the panel read as one instrument: `apply_material` writes
+/// `pbr[0..2]` and `lighting[7]`, so a knob on any of those would appear to do nothing the
+/// moment a button was pressed. These three are lanes no material touches (`substrate_scene`
+/// and `substrate_materials` own the manifests), so a button and a knob compose instead of
+/// fighting.
+///
+/// An unknown label writes nothing, on `console_step`'s forward-compatibility contract: a
+/// view naming a knob this build does not have must leave the picture exactly as it found it.
+fn apply_surface_slider(s: &mut ipc::Shared, label: &str, v: f32) {
+    let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { return };
+    match label {
+        // The key light swept all the way round, centred on the console's own azimuth — so
+        // mid-slider is the shipped look and either direction is a real departure from it.
+        // Wrapped rather than clamped, because a light at ±180° is a light, not an error, and
+        // `params.rs:8554` states the range as (−180..180].
+        "light" => s.lighting[4] = wrap_degrees(SUBSTRATE_KEY_AZIMUTH_DEG + (v - 0.5) * 360.0),
+        // Key elevation, horizon to overhead. At 0 the plane is grazed and the gradient is
+        // enormous; at 90 it is flat-lit. `substrate_scene`'s shipped 42° sits at v ≈ 0.467.
+        "elevation" => s.lighting[3] = v * 90.0,
+        // Exposure in EV stops, ±3 around the substrate's own 0. The most unmistakable knob
+        // on the panel, deliberately: one of the three has to be legible at a glance from
+        // across a room, and this is it.
+        "exposure" => s.pbr[2] = (v - 0.5) * 6.0,
+        _ => {}
+    }
+}
+
+/// Fold `d` into (−180, 180]. Written out rather than `rem_euclid`'d in place because the
+/// half-open end matters — `params.rs` states the range that way, and 180 and −180 are the
+/// same direction.
+fn wrap_degrees(d: f32) -> f32 {
+    let mut d = d % 360.0;
+    if d > 180.0 {
+        d -= 360.0;
+    }
+    if d <= -180.0 {
+        d += 360.0;
+    }
+    d
+}
+
+/// The knobs a conversation's panels offer, and where they start.
+///
+/// Handed down to [`ConversationPane`] for `conversation_view`'s reason — that crate cannot
+/// see `Shared` and a label it invented would be a knob that moves nothing. The starting
+/// values are the ones that reproduce `substrate_scene`'s shipped look exactly, so a summoned
+/// surface opens as the substrate and every drag is a departure from it rather than from an
+/// arbitrary midpoint.
+fn surface_slider_table() -> Vec<(String, f32)> {
+    vec![
+        ("light".to_string(), 0.5),
+        ("elevation".to_string(), substrate_scene::SUBSTRATE_KEY_ELEVATION_DEG / 90.0),
+        ("exposure".to_string(), 0.5),
+    ]
+}
+
+/// The `Shared` snapshot one surface is rendered from: [`look_shared`] at the substrate,
+/// with the panel's knobs applied last.
+///
+/// **Last, and total over the look**, for the reason `look_shared` gives about the key
+/// azimuth: the knobs are the *reader's* correction, not the material's, so they survive any
+/// material or rig that would otherwise write the same lane.
+fn surface_shared(look: &SurfaceLook) -> Box<ipc::Shared> {
+    let mut s = look_shared(BackdropSource::Substrate, &look.look);
+    for (label, value) in &look.sliders {
+        apply_surface_slider(&mut s, label, *value);
+    }
+    s
+}
+
 /// One tab's look history: where it sits in absolute lines, which looks its rows were
 /// written under, and the pictures of the closed ones.
 ///
@@ -830,6 +1032,21 @@ struct Shell {
     /// True while the surface acquires as `Occluded` — gates the redraw re-arm
     /// (the measured ~98%-CPU-drawing-nothing spin, fixed on the v2 branch).
     occluded: bool,
+    /// The render targets behind the conversation view's rendered surfaces, bounded by
+    /// [`MAX_SURFACE_TEXTURES`] and evicted with a log line. Keyed by [`SurfaceKey`].
+    surfaces: HashMap<SurfaceKey, SurfaceTexture>,
+    /// What the conversation view asked for on the **previous** frame, and which pane asked.
+    ///
+    /// ⚠️ **One frame behind by construction, exactly as `pane_points` is.** A surface's rect
+    /// is an output of egui layout, so its size cannot be known until the frame that laid it
+    /// out has finished — and the texture has to exist *before* the frame that paints it. The
+    /// visible consequence is one "rendering…" frame when a surface is summoned, and nothing
+    /// else: a look changed by a drag is rendered on the frame after the drag, which at 60 Hz
+    /// is not a thing a hand can perceive.
+    surface_requests: Vec<SurfaceRequest>,
+    surface_pane: usize,
+    /// Monotonic frame counter, used only as the cap's recency stamp.
+    surface_clock: u64,
 }
 
 impl Shell {
@@ -896,6 +1113,10 @@ impl Shell {
             shared_writer: None,
             shared,
             occluded: false,
+            surfaces: HashMap::new(),
+            surface_requests: Vec::new(),
+            surface_pane: 0,
+            surface_clock: 0,
         }
     }
 
@@ -1088,6 +1309,10 @@ impl Shell {
             let pane = ConversationPane::new(
                 cwd.as_deref(),
                 substrate_materials::MATERIAL_NAMES.iter().map(|s| (*s).to_string()).collect(),
+                // …and the knobs, for the same reason and from the same place: a slider label
+                // means a lane in `Shared`, which is this file's knowledge and not the
+                // compositor crate's. See `surface_slider_table`.
+                surface_slider_table(),
             );
             // The pane keeps its own failure and shows it; the log line is for whoever
             // started the console from a terminal and is watching stderr.
@@ -1170,6 +1395,13 @@ impl Shell {
                         self.free_cached(cached);
                     }
                 }
+                // ⚠️ **And every surface texture, because a `SurfaceKey`'s pane is an INDEX
+                // into `sessions`** — removing element `i` renumbers everything after it, so
+                // a surviving key would silently name a different tab's element. Freeing the
+                // lot is one wasted re-render per open surface on the next frame, against a
+                // class of bug that would show as one conversation painting into another's
+                // rectangle. Same reasoning as the look history above, one level louder.
+                self.free_all_surfaces("a tab closed and renumbered the panes");
                 if !self.strip.close(i) {
                     self.quit = true;
                 }
@@ -1866,6 +2098,204 @@ impl Shell {
         }
     }
 
+    /// Draw the conversation view's rendered surfaces, and hand back what to paint them with.
+    ///
+    /// # The seam this reuses
+    ///
+    /// [`Shell::render_source`] already separates *what the engine draws* from *what the
+    /// backdrop paints*, which is what lets a Tier 5 patch show a substrate while the terminal
+    /// behind it stays flat black. A surface is the same idea one step further: the engine
+    /// draws into a target **the conversation owns**, and the window behind it is not involved
+    /// at all. Nothing here touches `backdrop_source`, so James's rule holds unchanged — the
+    /// console still opens looking exactly like an ordinary terminal, and the material arrives
+    /// only where something asked for it.
+    ///
+    /// # One World, and what that costs
+    ///
+    /// There is no second [`World`]. A second one would recompile ~50 shaders and ~62
+    /// pipelines and duplicate every sim buffer, to draw the same plane. So the one World is
+    /// rendered into a different target, with the look published through the same `Shared`
+    /// channel the backdrop uses — see [`SURFACE_RENDERS_PER_FRAME`] for exactly what that
+    /// double render does and does not disturb.
+    ///
+    /// # Order inside, and why
+    ///
+    /// Recency stamps, then eviction, then allocation, then at most
+    /// [`SURFACE_RENDERS_PER_FRAME`] renders. Evicting *before* allocating is
+    /// `substrate_epochs`' rule and it is here for the same reason: it keeps the transient
+    /// peak at the cap rather than at cap-plus-this-frame's-new-ones.
+    fn render_surfaces(&mut self, published: &ipc::Shared) -> SurfaceImages {
+        self.surface_clock = self.surface_clock.wrapping_add(1);
+        let now = self.surface_clock;
+        let pane = self.surface_pane;
+        let mut images = SurfaceImages::new();
+
+        let mut requests = self.surface_requests.clone();
+        if requests.len() > MAX_SURFACE_TEXTURES {
+            let dropped = requests.split_off(MAX_SURFACE_TEXTURES);
+            // Truncated rather than allowed to allocate and be evicted the same frame, which
+            // would be a texture created and freed every frame for as long as the window
+            // stayed that way. Said out loud, because a surface that draws "rendering…"
+            // forever is otherwise indistinguishable from one that is broken.
+            eprintln!(
+                "[surface] {} visible surfaces exceeds the cap of {MAX_SURFACE_TEXTURES} — \
+                 {} left unrendered (scroll one out of view to free a slot)",
+                requests.len() + dropped.len(),
+                dropped.len()
+            );
+        }
+
+        let Some(device) = self.world.device().cloned() else { return images };
+        let Some(gpu) = self.gpu.as_ref() else { return images };
+        let swapchain = (gpu.config.width.max(1), gpu.config.height.max(1));
+        // No frame has been laid out yet, so there is no window to take a fraction of. One
+        // frame of "rendering…", which is the same one frame the first request costs anyway.
+        let Some(window_points) = self.window_points else { return images };
+
+        // 1. Everything asked for this frame is current, whether or not it gets redrawn.
+        let wanted: Vec<SurfaceKey> = requests.iter().map(|r| (pane, r.element)).collect();
+        for key in &wanted {
+            if let Some(held) = self.surfaces.get_mut(key) {
+                held.touched = now;
+            }
+        }
+
+        // 2. Make room *before* allocating, so the peak is the cap and not more.
+        let fresh = wanted.iter().filter(|k| !self.surfaces.contains_key(k)).count();
+        let room = MAX_SURFACE_TEXTURES.saturating_sub(fresh);
+        let held: Vec<(SurfaceKey, u64)> =
+            self.surfaces.iter().map(|(k, t)| (*k, t.touched)).collect();
+        for key in surfaces_to_evict(&held, &wanted, room) {
+            self.free_surface(key, "the cap");
+        }
+
+        // 3. Allocate or resize, then draw at most the budget.
+        let mut budget = SURFACE_RENDERS_PER_FRAME;
+        for request in &requests {
+            let key = (pane, request.element);
+            let size = scene_input::pane_pixels_in(swapchain, request.size_points, window_points);
+            if self.surfaces.get(&key).is_none_or(|t| t.size != size) {
+                self.free_surface(key, "the surface changed size");
+                let Some(made) = self.make_surface_texture(&device, size, now) else { continue };
+                self.surfaces.insert(key, made);
+            }
+            // The look this surface should be showing. `canonical` rather than the raw
+            // string, for `console_step`'s reason: a name this build does not have leaves the
+            // material unset — Tier 1's undressed substrate — instead of failing.
+            let desired = SurfaceLook {
+                look: ConsoleLook {
+                    material: canonical(&substrate_materials::MATERIAL_NAMES, &request.look)
+                        .map(str::to_string),
+                    // Not the console's rig, deliberately: a surface is meant to be
+                    // answerable to the controls *beside it*, and inheriting a value typed
+                    // into another tab is the very coupling this element exists to remove.
+                    rig: None,
+                },
+                sliders: request.sliders.clone(),
+            };
+            let (id, size_px, stale) = {
+                let Some(held) = self.surfaces.get_mut(&key) else { continue };
+                held.touched = now;
+                (held.id, held.size, held.holds.as_ref() != Some(&desired))
+            };
+            images.insert(request.element, id);
+            if !stale || budget == 0 {
+                continue;
+            }
+            budget -= 1;
+
+            // The World has exactly one way to learn what to draw: the snapshot. So the
+            // surface's look is published, the frame is taken, and the console's own snapshot
+            // goes back afterwards — see the restore below.
+            if let Some(writer) = self.shared_writer.as_mut() {
+                writer.write(*surface_shared(&desired));
+            }
+            // Re-framed per surface, for `render_backdrop`'s reason: the rig is computed for
+            // ONE aspect and the engine reads its own from the target, so a rig left set for
+            // the pane would frame a plane that does not cover this rectangle.
+            let aspect = size_px.0 as f32 / size_px.1.max(1) as f32;
+            let rig = SubstrateRig::frame_plane(SUBSTRATE_EXTENT, SUBSTRATE_FOV_DEG, aspect);
+            self.world.set_substrate_rig(Some(rig.camera_arm()));
+            self.world.render_to_texture(&self.surfaces[&key].texture, size_px, BACKDROP_FORMAT);
+            if let Some(held) = self.surfaces.get_mut(&key) {
+                held.holds = Some(desired);
+            }
+        }
+
+        // The snapshot at rest is the console's own. Without this the `organon` CLI's
+        // `status`/`get` would report whichever surface happened to render last — a lane
+        // nobody typed into, describing a picture that is not the window.
+        if budget < SURFACE_RENDERS_PER_FRAME {
+            if let Some(writer) = self.shared_writer.as_mut() {
+                writer.write(*published);
+            }
+        }
+        images
+    }
+
+    /// One surface's render target, created and registered with egui. `None` when the
+    /// renderer is not up yet, which is the same "one more frame" every other path here has.
+    fn make_surface_texture(
+        &mut self,
+        device: &wgpu::Device,
+        size: (u32, u32),
+        now: u64,
+    ) -> Option<SurfaceTexture> {
+        // The [`Backdrop`] pair exactly — `Rgba8UnormSrgb` storage with an `Rgba8Unorm`
+        // sample view — so a surface linearizes once, like everything else painted from the
+        // engine. No `COPY_SRC`: nothing ever snapshots a surface, because unlike a look
+        // epoch a surface has no history to keep.
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shell-conversation-surface"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: BACKDROP_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[BACKDROP_SAMPLE_FORMAT],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("shell-conversation-surface-sample"),
+            format: Some(BACKDROP_SAMPLE_FORMAT),
+            ..Default::default()
+        });
+        let renderer = self.renderer.as_mut()?;
+        let id = renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear);
+        Some(SurfaceTexture { texture, view, id, size, holds: None, touched: now })
+    }
+
+    /// Drop one surface's texture and its egui registration, saying why.
+    ///
+    /// Unconditional logging, on [`Shell::retire_epochs`]' rule: a cap that silently drops a
+    /// picture is indistinguishable from a renderer that failed to draw one. `[surface]` is
+    /// the tag to grep for.
+    fn free_surface(&mut self, key: SurfaceKey, why: &str) {
+        let Some(gone) = self.surfaces.remove(&key) else { return };
+        eprintln!(
+            "[surface] released the {}×{} texture for element {} (pane {}) — {why}; \
+             {} of {MAX_SURFACE_TEXTURES} live, budget {} bytes",
+            gone.size.0,
+            gone.size.1,
+            key.1 .0,
+            key.0,
+            self.surfaces.len(),
+            surface_budget_bytes(gone.size.0, gone.size.1),
+        );
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.free_texture(&gone.id);
+        }
+    }
+
+    /// Free every surface texture. Used where a `SurfaceKey`'s pane index stops meaning what
+    /// it meant — see the `Close` arm of [`Shell::apply`].
+    fn free_all_surfaces(&mut self, why: &str) {
+        for key in self.surfaces.keys().copied().collect::<Vec<_>>() {
+            self.free_surface(key, why);
+        }
+        self.surface_requests.clear();
+    }
+
     fn redraw(&mut self) {
         let frame = {
             let (Some(window), Some(gpu)) = (self.window.as_ref(), self.gpu.as_mut()) else {
@@ -1916,6 +2346,11 @@ impl Shell {
         // …and the epochs behind it: which cached pictures should still exist, now that the
         // pane's size for this frame is known.
         self.apply_epoch_plans();
+        // …and then the conversation view's own surfaces, from the rects it laid out last
+        // frame. After the backdrop, so that the substrate rig this leaves set is re-framed
+        // by the next frame's `render_backdrop` rather than the other way round, and so that
+        // a console with the backdrop on still gets the picture it published.
+        let surface_images = self.render_surfaces(&published);
 
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),
@@ -1988,6 +2423,9 @@ impl Shell {
         // transcript's `ElementId` — and collapsing them would need one of the two to lie.
         // They converge one screen down, at the `apply_console` both of them call.
         let mut artifact_actions: Vec<ArtifactAction> = Vec::new();
+        // …and where its rendered surfaces ended up, which is the NEXT frame's render list.
+        // Collected out of the closure for the same reason: acting on it needs `&mut self`.
+        let mut surface_requests: Vec<SurfaceRequest> = Vec::new();
         // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
         // (see `render_backdrop`). Taken from the same `ui` and by the same call
         // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
@@ -2056,8 +2494,10 @@ impl Shell {
                             // stays the empty `Vec` it was initialised to and the loop below
                             // does nothing. An inline artifact needs none of that machinery —
                             // it is an element in a flow that draws itself — so what comes
-                            // back is the buttons, and nothing about where they were.
-                            artifact_actions = conversation_view::draw(ui, chat);
+                            // back is the buttons, and where its surfaces ended up.
+                            let out = conversation_view::draw(ui, chat, &surface_images);
+                            artifact_actions = out.actions;
+                            surface_requests = out.surfaces;
                         }
                         _ => {
                             ui.centered_and_justified(|ui| {
@@ -2073,6 +2513,11 @@ impl Shell {
         // *ratio* of these two that survives a scale nobody has measured yet.
         self.pane_points = pane_rect.map(|r| (r.width(), r.height()));
         self.window_points = window_rect.map(|r| (r.width(), r.height()));
+        // What the next frame's `render_surfaces` draws, and which tab asked. Recorded here,
+        // beside the two point sizes, because it is the same one-frame-behind arrangement for
+        // the same reason — a rect is an output of the layout that produced it.
+        self.surface_requests = surface_requests;
+        self.surface_pane = active;
         if let Some(action) = action {
             self.apply(action);
         }
@@ -2089,10 +2534,12 @@ impl Shell {
         // …and the conversation view's inline panel arrives at the same call, which is the
         // point of routing it rather than giving the second front-end its own effects.
         //
-        // ⚠️ **The state changes; whether it is visible from here does not follow.** The
-        // backdrop is not drawn behind a conversation yet (the banding is scrollback
-        // arithmetic and there is no scrollback), so a material clicked in a chat tab is
-        // seen on a terminal tab, not under the transcript that requested it.
+        // ⚠️ **`/panel`'s buttons still land on a backdrop you cannot see from here**, and
+        // that is now a choice rather than the only option: the backdrop is not drawn behind
+        // a conversation (banding is scrollback arithmetic and there is no scrollback), so a
+        // material clicked in a `/panel` is seen on a terminal tab. `/surface` is the answer
+        // to that — its panel drives an element in this same transcript and its buttons never
+        // reach this loop at all, having been consumed by the surface they aim at.
         for act in artifact_actions {
             self.apply_console(&cli::ConsoleOp::Background(act.button));
         }
@@ -2259,6 +2706,11 @@ fn help_text() -> String {
          agent's event stream natively instead of its character grid:\n    \
              ORGANON_SHELL_TABS=claude-chat        one conversation tab\n    \
              ORGANON_SHELL_TABS=claude-chat,shell  a conversation beside a terminal\n\
+         \n\
+         In a conversation tab the composer takes two local commands, never sent to the\n\
+         agent:\n    \
+             /surface   a rendered surface, with the controls that drive it beneath it\n    \
+             /panel     a control panel that drives this console's backdrop instead\n\
          \n\
          Inside a tab the `organon` CLI addresses this process — the namespace is inherited:\n    \
              organon console background <{backgrounds}>\n    \
@@ -3062,6 +3514,150 @@ mod cli_tests {
         ] {
             assert!(h.contains(var), "help does not mention {var}");
         }
+    }
+
+    fn key(pane: usize, element: u64) -> SurfaceKey {
+        (pane, ElementId(element))
+    }
+
+    /// The cap, and the order it bites in. Nothing is evicted while the set fits, and what
+    /// goes first is what has been unwanted the longest — never what is on screen right now.
+    #[test]
+    fn the_surface_cap_evicts_the_least_recently_wanted() {
+        let held = vec![(key(0, 1), 10u64), (key(0, 2), 40), (key(0, 3), 20), (key(0, 4), 30)];
+        let wanted = vec![key(0, 2)];
+        assert!(
+            surfaces_to_evict(&held, &wanted, 4).is_empty(),
+            "a set at the cap evicts nothing"
+        );
+        assert!(surfaces_to_evict(&held, &wanted, 9).is_empty(), "…nor does one under it");
+
+        assert_eq!(surfaces_to_evict(&held, &wanted, 3), vec![key(0, 1)], "the oldest goes");
+        assert_eq!(
+            surfaces_to_evict(&held, &wanted, 2),
+            vec![key(0, 1), key(0, 3)],
+            "then the next oldest, in order"
+        );
+        assert!(
+            !surfaces_to_evict(&held, &wanted, 1).contains(&key(0, 2)),
+            "the one being looked at survives to the last slot"
+        );
+    }
+
+    /// The tie that a bare recency stamp cannot break: everything visible this frame was
+    /// touched on the same frame, so the request order decides — and it decides in favour of
+    /// the top of the page, which is what a reader scrolled *to*.
+    #[test]
+    fn a_tie_evicts_from_the_bottom_of_the_page_up() {
+        let held =
+            vec![(key(0, 1), 7u64), (key(0, 2), 7), (key(0, 3), 7), (key(0, 4), 7)];
+        let wanted = vec![key(0, 1), key(0, 2), key(0, 3), key(0, 4)];
+        assert_eq!(surfaces_to_evict(&held, &wanted, 2), vec![key(0, 4), key(0, 3)]);
+    }
+
+    /// Two conversation tabs both start at element 0. Keying on the id alone would have them
+    /// painting into each other's textures; the pane half of the key is what stops that, and
+    /// this is the test that fails if it is ever dropped.
+    #[test]
+    fn surfaces_in_two_panes_are_two_surfaces() {
+        let held = vec![(key(0, 0), 1u64), (key(1, 0), 2)];
+        assert_eq!(surfaces_to_evict(&held, &[key(1, 0)], 1), vec![key(0, 0)]);
+        assert_ne!(key(0, 0), key(1, 0));
+    }
+
+    /// The cap's cost, as a number rather than a claim. A surface at the size this console
+    /// actually draws one, times four, is the ceiling the eviction log quotes.
+    #[test]
+    fn the_surface_budget_is_four_textures_worth() {
+        assert_eq!(surface_budget_bytes(100, 100), 4 * 100 * 100 * 4);
+        // ORGANON-ONE's pane at 225 %: a full-width surface 260 pt tall.
+        let measured = surface_budget_bytes(2475, 585);
+        assert!(
+            (22_000_000..24_000_000).contains(&measured),
+            "the ~23 MB figure in MAX_SURFACE_TEXTURES' doc is now {measured}"
+        );
+    }
+
+    /// **The knobs start where the shipped substrate is.** A surface must open looking
+    /// exactly like `substrate_scene`'s plane, so that every drag reads as a departure from
+    /// the console's own look rather than from an arbitrary midpoint.
+    #[test]
+    fn the_starting_knobs_reproduce_the_shipped_substrate() {
+        let table = surface_slider_table();
+        let base = look_shared(BackdropSource::Substrate, &ConsoleLook::default());
+        let mut dressed = base.clone();
+        for (label, value) in &table {
+            apply_surface_slider(&mut dressed, label, *value);
+        }
+        // Approximately, not bit-for-bit: `elevation`'s starting value is a division the
+        // knob then multiplies back out, and demanding an exact round trip through f32 would
+        // be pinning the floating-point unit rather than the look.
+        let close = |got: f32, want: f32, what: &str| {
+            assert!((got - want).abs() < 1e-3, "{what}: {got} is not the shipped {want}");
+        };
+        close(dressed.lighting[4], base.lighting[4], "key azimuth");
+        close(dressed.lighting[3], base.lighting[3], "key elevation");
+        close(dressed.pbr[2], base.pbr[2], "exposure");
+    }
+
+    /// Each knob writes its own lane and nothing else, and an unknown label writes nothing —
+    /// `console_step`'s forward-compatibility contract, one level down.
+    #[test]
+    fn a_knob_writes_one_lane_and_an_unknown_one_writes_none() {
+        let base = look_shared(BackdropSource::Substrate, &ConsoleLook::default());
+
+        let mut s = base.clone();
+        apply_surface_slider(&mut s, "exposure", 1.0);
+        assert_eq!(s.pbr[2], 3.0);
+        assert_eq!(s.lighting[3], base.lighting[3], "exposure did not move the light");
+
+        let mut s = base.clone();
+        apply_surface_slider(&mut s, "elevation", 1.0);
+        assert_eq!(s.lighting[3], 90.0);
+
+        let mut s = base.clone();
+        apply_surface_slider(&mut s, "bloom", 1.0);
+        assert_eq!(bytemuck::bytes_of(&*s), bytemuck::bytes_of(&*base), "an unknown knob is inert");
+
+        let mut s = base.clone();
+        apply_surface_slider(&mut s, "exposure", f32::NAN);
+        assert_eq!(s.pbr[2], base.pbr[2], "a non-finite value is refused, not written");
+    }
+
+    /// The light sweeps all the way round without ever leaving `params.rs`'s stated
+    /// (−180, 180] — a wrap, not a clamp, because ±180 is a direction and not an error.
+    #[test]
+    fn the_light_knob_wraps_instead_of_piling_up_at_the_end() {
+        for step in 0..=100 {
+            let v = step as f32 / 100.0;
+            let mut s = look_shared(BackdropSource::Substrate, &ConsoleLook::default());
+            apply_surface_slider(&mut s, "light", v);
+            let a = s.lighting[4];
+            assert!(a > -180.0 && a <= 180.0, "azimuth {a} out of range at v={v}");
+        }
+        assert_eq!(wrap_degrees(SUBSTRATE_KEY_AZIMUTH_DEG), SUBSTRATE_KEY_AZIMUTH_DEG);
+        assert_eq!(wrap_degrees(180.0), 180.0);
+        assert_eq!(wrap_degrees(-180.0), 180.0, "the range is half-open at the bottom");
+        assert_eq!(wrap_degrees(270.0), -90.0);
+    }
+
+    /// A surface's look is built the same way the backdrop's is — through `look_shared` —
+    /// so a material button in a conversation and `organon console background <name>` cannot
+    /// come to mean different pictures.
+    #[test]
+    fn a_surfaces_look_is_the_consoles_look_with_the_knobs_on_top() {
+        let look = SurfaceLook {
+            look: ConsoleLook { material: Some("metal".into()), rig: None },
+            sliders: vec![("exposure".to_string(), 1.0)],
+        };
+        let s = surface_shared(&look);
+        let console = look_shared(
+            BackdropSource::Substrate,
+            &ConsoleLook { material: Some("metal".into()), rig: None },
+        );
+        assert_eq!(s.pbr[0], console.pbr[0], "the material's metallic survives");
+        assert_eq!(s.pbr[1], console.pbr[1], "…and its roughness");
+        assert_eq!(s.pbr[2], 3.0, "…and the knob is applied over the top");
     }
 
     /// §5.9's second front-end is reached by a harness id, so `--help` has to name the
