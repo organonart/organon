@@ -13,6 +13,7 @@
 //! they belong.
 
 use crate::harness::HarnessSpec;
+use crate::theme::Theme;
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -128,6 +129,7 @@ pub fn tab_bar(
     registry: &[HarnessSpec],
     installed: &HashSet<String>,
     plus_open: &mut bool,
+    theme: &Theme,
 ) -> Option<TabAction> {
     let mut action = None;
     let font = egui::FontId::monospace(12.0);
@@ -142,11 +144,7 @@ pub fn tab_bar(
                 .unwrap_or("❯");
             let text = egui::RichText::new(format!("{glyph} {}", tab.title))
                 .font(font.clone())
-                .color(if active {
-                    egui::Color32::from_rgb(0xc8, 0xe6, 0xc8)
-                } else {
-                    egui::Color32::from_rgb(0x60, 0x6c, 0x60)
-                });
+                .color(if active { theme.tab_active } else { theme.tab_inactive });
             let resp = ui.selectable_label(active, text);
             if resp.clicked() && !active {
                 action = Some(TabAction::Switch(i));
@@ -159,7 +157,7 @@ pub fn tab_bar(
             egui::Button::new(
                 egui::RichText::new("+")
                     .font(font.clone())
-                    .color(egui::Color32::from_rgb(0x8a, 0x96, 0x8a)),
+                    .color(theme.tab_plus),
             )
             .frame(false),
         );
@@ -186,7 +184,7 @@ pub fn tab_bar(
                 .pivot(egui::Align2::LEFT_TOP)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::menu(ui.style())
-                        .fill(egui::Color32::from_rgb(0x10, 0x14, 0x10))
+                        .fill(theme.tab_menu_fill)
                         .show(ui, |ui| {
                             for (n, h) in registry.iter().enumerate() {
                                 let is_installed = installed.contains(&h.id);
@@ -198,9 +196,9 @@ pub fn tab_bar(
                                 ))
                                 .font(font.clone())
                                 .color(if is_installed {
-                                    egui::Color32::from_rgb(0xc8, 0xe6, 0xc8)
+                                    theme.tab_menu_installed
                                 } else {
-                                    egui::Color32::from_rgb(0x50, 0x5a, 0x50)
+                                    theme.tab_menu_missing
                                 });
                                 let resp = ui.add_enabled(
                                     is_installed,

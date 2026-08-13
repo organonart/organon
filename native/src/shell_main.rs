@@ -66,7 +66,7 @@ use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
 use organon_shell::block_anchor::Block;
-use organon_shell::block_panel::{self, BlockAction, BlockPanel, Patch};
+use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::camera;
 use organon_shell::command::{
     ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
@@ -80,6 +80,7 @@ use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::{self, TermSession};
 use organon_shell::term_view::{self, BandedBackdrop, PaneAnchor};
+use organon_shell::theme::Theme;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -1296,6 +1297,16 @@ struct Shell {
     /// apart, so by the time either reaches the world the distinction is gone. Stamped where
     /// the *gesture* is drained (see `redraw`), read by `camera::arbitrate`.
     hand_camera_at: Option<Instant>,
+    /// Every colour the console paints — see [`organon_shell::theme`].
+    ///
+    /// 🚨 **The one owner, and this is the struct that owns it because it is the one thing in
+    /// the process that outlives a frame and contains every front-end.** A tab is a terminal
+    /// or a conversation and both draw inside one `egui_ctx.run`; the palette is neither
+    /// tab's, so putting it on a `Pane` would make "the same console in two colours" a state
+    /// nothing forbids. It is borrowed into the closure alongside `sessions` and `strip` and
+    /// reaches every draw site as `&Theme` — never cloned per frame, never a `static`, so a
+    /// later per-tab or preview palette is a second value rather than a rewrite.
+    theme: Theme,
 }
 
 /// Register the portal's interaction region and paint it.
@@ -1334,6 +1345,7 @@ fn paint_portal(
     rect: egui::Rect,
     image: Option<egui::TextureId>,
     input: &mut scene_input::SceneInput,
+    theme: &Theme,
 ) {
     let _resp = scene_input::scene_viewport(ui, rect, scene_input::SceneMode::Workstation, input);
     let painter = ui.painter();
@@ -1346,6 +1358,8 @@ fn paint_portal(
                 id,
                 rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                // The identity multiplier, not a colour — nothing the theme has any business
+                // tinting the engine's own render with.
                 egui::Color32::WHITE,
             );
         }
@@ -1355,7 +1369,7 @@ fn paint_portal(
         // scrollback reads as a rendering failure, which is the very confusion the surface
         // path's own "rendering…" placeholder was added to prevent.
         None => {
-            painter.rect_filled(rect, 0.0, block_panel::PANEL_FILL);
+            painter.rect_filled(rect, 0.0, theme.panel_fill);
         }
     }
     // The console's own edge, not a second visual language arrived at by copy-paste — the same
@@ -1364,7 +1378,7 @@ fn paint_portal(
     painter.rect_stroke(
         rect,
         0.0,
-        egui::Stroke::new(1.0_f32, block_panel::PANEL_EDGE),
+        egui::Stroke::new(1.0_f32, theme.panel_edge),
         egui::StrokeKind::Inside,
     );
 }
@@ -1486,6 +1500,9 @@ impl Shell {
             portal_input: scene_input::SceneInput::default(),
             portal_points: None,
             hand_camera_at: None,
+            // The only palette this build ships. A second one arrives as another
+            // constructor on `Theme`, not as a branch here.
+            theme: Theme::organon(),
         }
     }
 
@@ -3007,6 +3024,9 @@ impl Shell {
         // to be remembered for the next frame's `render_portal`.
         let portal_open = self.portal_state.is_open();
         let portal_input = &mut self.portal_input;
+        // The palette, split out of `self` exactly as everything else here is — one shared
+        // borrow that every draw call inside the closure passes down.
+        let theme = &self.theme;
         let mut portal_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
@@ -3025,14 +3045,16 @@ impl Shell {
             // form factor — along the top, + menu with the numbered registry.
             egui::TopBottomPanel::top("tab-strip")
                 .exact_height(30.0)
-                .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(0x07, 0x09, 0x07)))
+                .frame(egui::Frame::NONE.fill(theme.tab_strip_fill))
                 .show(ctx, |ui| {
-                    if let Some(a) = tabs::tab_bar(ui, strip, registry, installed, plus_open) {
+                    let bar =
+                        tabs::tab_bar(ui, strip, registry, installed, plus_open, theme);
+                    if let Some(a) = bar {
                         action = Some(a);
                     }
                 });
             egui::CentralPanel::default()
-                .frame(egui::Frame::NONE.fill(term_view::DEFAULT_BG))
+                .frame(egui::Frame::NONE.fill(theme.term_bg))
                 .show(ctx, |ui| {
                     // Before anything is allocated in it — `term_view::draw`'s own first act
                     // is this same call.
@@ -3074,6 +3096,7 @@ impl Shell {
                                 // test can, which is why `block_panel::pointer_inside` exists
                                 // and why this copies it.
                                 portal_rect,
+                                theme,
                             );
                         }
                         (Some(Pane::Conversation(chat)), _) => {
@@ -3082,7 +3105,7 @@ impl Shell {
                             // does nothing. An inline artifact needs none of that machinery —
                             // it is an element in a flow that draws itself — so what comes
                             // back is where its surfaces ended up, and nothing else.
-                            let out = conversation_view::draw(ui, chat, &surface_images);
+                            let out = conversation_view::draw(ui, chat, &surface_images, theme);
                             surface_requests = out.surfaces;
                         }
                         _ => {
@@ -3099,7 +3122,7 @@ impl Shell {
                     // "in workstation mode the pane registers after the scroll area, and egui
                     // breaks a tie by taking the topmost".
                     if let Some(rect) = portal_rect {
-                        paint_portal(ui, rect, portal_image, portal_input);
+                        paint_portal(ui, rect, portal_image, portal_input, theme);
                     }
                 });
         });
