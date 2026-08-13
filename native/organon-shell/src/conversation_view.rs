@@ -1743,16 +1743,23 @@ pub enum ContextSlot {
 impl ContextSlot {
     /// Whether the reading has crossed [`CONTEXT_HIGH_PERCENT`].
     ///
-    /// Integer arithmetic on purpose: a threshold compared as a float is a threshold that
-    /// can fall on either side of its own boundary depending on the window, and this one
-    /// is pinned at exactly 75 % by a test.
+    /// 🚨 **Derived from [`ContextFill::percent`] — the same number the hover prints — and
+    /// that identity is the correctness, not a convenience.** This test used to do the
+    /// threshold arithmetic a second time, in its own integer form, and two arithmetics
+    /// for one decision is exactly how they came to disagree: at `7 495 / 10 000` the
+    /// rounding `percent()` said **75** while this comparison said `749 500 < 750 000` and
+    /// stayed **false**, so the hover read "75 % at the last request" beside a ring that
+    /// was still blue. Reading the displayed number makes that contradiction
+    /// *unrepresentable* rather than merely absent at today's inputs — the colour is a
+    /// statement about the printed figure, so it must be computed from it.
+    ///
+    /// The threshold is compared in whole percent because that is the resolution the
+    /// reader is given: a ring whose colour turned on a difference the hover cannot
+    /// express would be unanswerable from the interface.
     pub fn is_high(&self) -> bool {
         match self {
             ContextSlot::Unknown => false,
-            ContextSlot::Known(fill) => {
-                fill.prompt_tokens.saturating_mul(100)
-                    >= fill.context_window.saturating_mul(CONTEXT_HIGH_PERCENT)
-            }
+            ContextSlot::Known(fill) => fill.percent() >= CONTEXT_HIGH_PERCENT,
         }
     }
 }
@@ -3608,16 +3615,126 @@ mod tests {
         assert_eq!(fill.percent(), 5);
     }
 
-    /// CONTRACT: amber at exactly [`CONTEXT_HIGH_PERCENT`], not a token before it. The
-    /// threshold is the console's own judgement and is therefore the one number here a
-    /// reader could reasonably argue with — so it is pinned rather than approximated.
+    /// The percentage the reader is **actually shown**, read back out of the ring's hover.
+    ///
+    /// Parsed from the rendered string rather than recomputed, so a test comparing the
+    /// ring's colour against it is comparing against the display and not against a third
+    /// copy of the same arithmetic — which is the mistake this helper exists to stop
+    /// repeating.
+    fn shown_percent(slot: ContextSlot) -> u64 {
+        let ContextSlot::Known(fill) = slot else {
+            panic!("no reading to display: {slot:?}")
+        };
+        let (_, value) = context_rows(&fill).remove(0);
+        value
+            .split('%')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no percentage in {value:?}"))
+    }
+
+    /// CONTRACT: amber at exactly [`CONTEXT_HIGH_PERCENT`], not a token before it — and the
+    /// colour is checked **against the number the hover prints**, never against
+    /// [`ContextSlot::is_high`] alone. The threshold is the console's own judgement and is
+    /// therefore the one number here a reader could reasonably argue with, so it is pinned
+    /// rather than approximated.
+    ///
+    /// ⚠️ The shape of this test is the finding it came from. It used to assert `is_high()`
+    /// in isolation, which pins *where* the ring turns amber and says nothing about whether
+    /// the ring and its own hover agree — and they did not. See
+    /// `the_ring_cannot_contradict_the_percentage_it_prints` for the case that got through.
     #[test]
     fn the_ring_turns_amber_at_three_quarters_and_not_before() {
         let at = |prompt| strip_content(None, live(0, 0), &filled(prompt, 1_000), None, None).context;
+
+        for prompt in [0, 1, 500, 748, 749, 750, 751, 999, 1_000] {
+            let slot = at(prompt);
+            let shown = shown_percent(slot);
+            assert_eq!(
+                slot.is_high(),
+                shown >= CONTEXT_HIGH_PERCENT,
+                "{prompt}/1000: the ring's colour disagrees with the {shown}% it prints"
+            );
+        }
+
+        assert_eq!(shown_percent(at(749)), 74, "74.9% has not reached 75");
         assert!(!at(749).is_high(), "74.9% is still blue");
+        assert_eq!(shown_percent(at(750)), 75, "the exact boundary reads as the boundary");
         assert!(at(750).is_high(), "75.0% is the boundary and it counts as high");
         assert!(at(1_000).is_high());
         assert!(!ContextSlot::Unknown.is_high(), "no reading is not a high reading");
+    }
+
+    /// ⚠️ REGRESSION — the review's own case, which is why the pair is so specific:
+    /// `prompt_tokens = 7 495` over a `context_window = 10 000`.
+    ///
+    /// Two arithmetics decided one thing. `percent()` rounded `74.95` to **75** while
+    /// `is_high()` computed `749 500 >= 750 000` and said **false**, so the hover read
+    /// "75 % at the last request" beside a ring that was still blue. Both halves of the fix
+    /// are pinned here: the reading **floors**, so it says 74 rather than claiming a
+    /// threshold it has not reached, and the colour is *derived* from that reading, so the
+    /// two cannot part company again.
+    #[test]
+    fn the_ring_cannot_contradict_the_percentage_it_prints() {
+        let slot = strip_content(None, live(0, 0), &filled(7_495, 10_000), None, None).context;
+        assert_eq!(shown_percent(slot), 74, "74.95% has not reached 75 and must not claim it");
+        assert!(!slot.is_high(), "and a ring below the threshold is not amber");
+    }
+
+    /// CONTRACT: the reading **floors**. A fill gauge that rounds *overstates*, and this
+    /// readout exists precisely because its obvious numerator overstated by 1.97× — so it
+    /// may never report a fill the conversation has not reached.
+    #[test]
+    fn the_percentage_floors_and_never_claims_a_fill_it_has_not_reached() {
+        let pct = |prompt, window| ContextFill { prompt_tokens: prompt, context_window: window }.percent();
+        assert_eq!(pct(1, 10_000), 0, "a hundredth of a percent is 0, not 1");
+        assert_eq!(pct(7_499, 10_000), 74, "74.99% is not 75%");
+        assert_eq!(pct(7_500, 10_000), 75, "exactly 75% is 75%");
+        assert_eq!(pct(9_999, 10_000), 99, "99.99% is not a full window");
+        assert_eq!(pct(10_000, 10_000), 100);
+        assert_eq!(pct(20_000, 10_000), 100, "mispaired halves clamp, as the arc does");
+    }
+
+    /// ⚠️ CONTRACT: an **exact** three quarters reads as 75 whatever the window, and is
+    /// amber — flooring must not push the true boundary off by one.
+    ///
+    /// This is the thing flooring could most plausibly get wrong, so it is swept rather
+    /// than sampled: 50 000 windows, each with a prompt at exactly three quarters of it.
+    ///
+    /// 📌 Honest about what this does *not* show. Flooring [`ContextFill::fraction`] as an
+    /// `f32` passes this sweep too — measured, 0 misreads across every window tried, and
+    /// the same at 12 M. At realistic window sizes both spellings are exact, because both
+    /// counts are well under `2^24` and convert to `f32` losslessly. The argument for
+    /// integer division is therefore *not* that the float is wrong here; it is that the
+    /// float is only right **contingently**, and
+    /// `a_window_past_the_f32_integer_limit_still_reads_its_exact_percentage` pins the
+    /// range where that contingency runs out.
+    #[test]
+    fn an_exact_three_quarters_reads_as_seventy_five_whatever_the_window() {
+        for window in (1..=50_000u64).map(|n| n * 4) {
+            let fill = ContextFill { prompt_tokens: window / 4 * 3, context_window: window };
+            assert_eq!(fill.percent(), 75, "exactly 75% of a {window}-token window");
+            assert!(ContextSlot::Known(fill).is_high(), "…and that is amber");
+        }
+    }
+
+    /// ⚠️ REGRESSION against reimplementing [`ContextFill::percent`] over
+    /// [`ContextFill::fraction`] — which is why this pair is so specific:
+    /// `16 777 233 / 16 946 700` is exactly **99 %**, and an `f32` reads it as **98**.
+    ///
+    /// Both counts are past `2^24 = 16 777 216`, the last integer an `f32` represents
+    /// exactly, so the conversion loses the numerator *before* any division happens and no
+    /// amount of care downstream recovers it. Today's windows are a million tokens and
+    /// nowhere near this, which is exactly why it is worth a test: the float spelling is
+    /// correct only while windows stay small, that has been the direction of travel in one
+    /// direction only, and the failure is a silently understated fill — the same direction
+    /// of error, again, that this whole readout was built to remove.
+    #[test]
+    fn a_window_past_the_f32_integer_limit_still_reads_its_exact_percentage() {
+        let fill = ContextFill { prompt_tokens: 16_777_233, context_window: 16_946_700 };
+        assert_eq!(fill.prompt_tokens * 100, fill.context_window * 99, "exactly 99%, by construction");
+        assert_eq!(fill.percent(), 99, "and it must read 99, not the f32's 98");
+        assert!(ContextSlot::Known(fill).is_high());
     }
 
     /// CONTRACT: the ring is a proportion of the window and nothing else — it does not

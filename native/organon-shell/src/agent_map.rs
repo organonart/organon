@@ -523,9 +523,39 @@ impl ContextFill {
         (self.prompt_tokens as f32 / self.context_window as f32).clamp(0.0, 1.0)
     }
 
-    /// Whole percent, rounded to nearest, for a reading a person can say out loud.
+    /// Whole percent, **floored**, for a reading a person can say out loud.
+    ///
+    /// 🚨 **Floored rather than rounded, and that is the honesty rule rather than a
+    /// tiebreak: never report a fill that has not been reached.** A gauge that rounds
+    /// *overstates* — at 74.6 % it would say 75, claiming a threshold the conversation
+    /// has not crossed. This whole readout exists because the obvious numerator
+    /// (`result.usage`) overstated the prompt by **1.97×**; a display that rounded its own
+    /// answer up would reintroduce that same species of error at a tenth the scale.
+    ///
+    /// **Integer arithmetic, not [`fraction`](Self::fraction) floored** — and the reason is
+    /// narrower than it looks, so it is stated rather than implied. Flooring the `f32` is
+    /// *also* exact at every window worth having: both counts sit far below `2^24`, convert
+    /// losslessly, and a sweep of 50 000 windows at an exact 75 % finds zero disagreement.
+    /// The float is not wrong here; it is right **contingently**, on an input range nothing
+    /// enforces. Past `2^24` the numerator stops being representable at all and an exact
+    /// 99 % reads as 98 — understating the fill, which is the one direction this readout is
+    /// not allowed to err in. Integer division is the floor by construction, so its
+    /// correctness needs no argument about magnitudes; that matters more than usual now
+    /// that [`ContextSlot::is_high`] takes the ring's colour from this number.
+    /// [`fraction`](Self::fraction) stays `f32` because it draws an arc, where a fraction of
+    /// a percent is a fraction of a pixel.
+    ///
+    /// The `min` mirrors that clamp for the same reason it exists there: a reading over
+    /// 100 would mean the two halves had been mispaired. A zero window is absence, not a
+    /// reading — [`SessionFacts::context_fill`] refuses to build one — and the guard is
+    /// here so a hand-built `ContextFill` divides by zero nowhere.
+    ///
+    /// [`ContextSlot::is_high`]: crate::conversation_view::ContextSlot::is_high
     pub fn percent(&self) -> u64 {
-        (self.fraction() * 100.0).round() as u64
+        if self.context_window == 0 {
+            return 0;
+        }
+        (self.prompt_tokens.saturating_mul(100) / self.context_window).min(100)
     }
 }
 

@@ -980,6 +980,20 @@ trips; a quarter of the window leaves room to finish the thought. Pinned at exac
 `the_ring_turns_amber_at_three_quarters_and_not_before`, with integer arithmetic so the
 boundary cannot drift with the window size.
 
+⚠️ **The colour is a statement about the printed figure, so it is computed from it.**
+`ContextSlot::is_high` reads `ContextFill::percent` rather than comparing the two counts
+again, and the reading **floors** rather than rounds. Both halves came out of one defect:
+with a rounding `percent()` and a second, independent threshold comparison, `7 495 / 10 000`
+printed "75 % at the last request" under a ring that was still blue — `74.95` rounded up to
+the threshold while the comparison saw `749 500 < 750 000`. Rounding was the deeper of the
+two, because a fill gauge that rounds *overstates*: it claims a threshold the conversation
+has not reached, which is the same species of error as the `result.usage` numerator this
+readout exists to avoid, at a tenth the scale. **Never report a fill you have not reached.**
+`the_ring_cannot_contradict_the_percentage_it_prints` holds the review's case, and the
+amber test now asserts the colour against the number parsed back out of the hover — it
+previously checked `is_high()` alone, which is why a ring disagreeing with its own hover
+was not something it could have caught.
+
 ⚠️ **The diameter is exactly one `TextStyle::Body` row**, which is the only reason the ring
 is free. The band reserves `row + STRIP_CHROME` *before* laying anything out, so the ring is
 the one child of that horizontal layout that could have been taller than the reservation and
