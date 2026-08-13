@@ -510,13 +510,16 @@ epoch boundary) goes through `Pane::term_mut()` and skips it by construction.
   — two modules cannot own one type, and a transcript fluent in the wire format would
   change shape every time the wire did. No egui, no clock, no I/O.
 - **`agent_map.rs` — the seam, and the only file in the tree that knows both types.** A
-  second harness (Pi, §5.9.1) is written here or the model is wrong.
+  second harness (Pi, §5.9.1) is written here or the model is wrong. It carries two
+  read-only summaries beside the mapping: `stats() -> MapStats`, what it chose not to
+  render, and `facts() -> &SessionFacts`, what the session said about itself.
 - **`agent_session.rs` — one live child.** The same shape as `term.rs`: a reader thread
   that only moves bytes, a channel, a pull drained once per frame. Pipes, not a PTY.
-- **`conversation_view.rs` — the drawing.** Scrollback above, composer below. Returns a
-  `ConversationOutput`: the buttons pressed, and the **rects its rendered surfaces landed
-  in** — in points, never pixels, which is the whole of what the console needs to size a
-  render target for one.
+- **`conversation_view.rs` — the drawing.** Scrollback above, then the composer, then the
+  status strip along the bottom. Returns a `ConversationOutput`, which since `/panel`'s
+  removal carries exactly one field: the **rects its rendered surfaces landed in** — in
+  points, never pixels, which is the whole of what the console needs to size a render
+  target for one.
 
 **The mapping's five load-bearing rules**, each from a measurement, each producing a view
 that looks *nearly* right if got wrong:
@@ -539,6 +542,41 @@ that looks *nearly* right if got wrong:
    `assistant` lines already delivered.
 5. **Subagent-scoped events are dropped in milestone 1**, and counted
    (`MapStats::subagent_dropped`). They belong *inside* the tool card that spawned them.
+6. **Some lines carry facts about the session, not content for the flow** — which model,
+   which cwd, what the turn cost, what the standing is. None of that is an `Element`, so
+   it accumulates in `SessionFacts` and the status strip reads it from `facts()`.
+
+**`SessionFacts` — three retention rules, and one list of refusals.** Each field has
+exactly one rule, and the rule *is* the correctness:
+
+| Source | Rule | Carried |
+|---|---|---|
+| `system/init` | **first init wins** (rule 3) | `model` (verbatim, `[1m]` suffix intact — trimming it editorialises a measurement), `cwd`, `permission_mode`, `cli_version`, `tools` count, `mcp_servers` as `(name, status)` |
+| `result` | **latest wins, never summed** | `cost_usd`, `last_turn_usage`, `last_turn_duration_ms` |
+| `system/post_turn_summary` | **latest wins**, all three replaced as a unit | `last_status_detail`, `needs_action`, `status_category` |
+| `rate_limit_event` | **latest wins** | `rate_limit_status`, `rate_limit_type`, `rate_limit_resets_at` |
+
+🚨 **`total_cost_usd` is already cumulative across the session while its sibling `usage`
+is per turn.** Adding two results counts the whole session so far twice — on the live
+capture, turn two's `0.0202` is exactly turn one's `0.0101` plus its own. The field names
+say which is which (`cost_usd` vs `last_turn_usage`) so a reader cannot mistake one for
+the other. Replacing the summary fields as a unit is the same kind of care: a later turn
+that needs nothing must *clear* an earlier turn's demand, or the strip says "waiting on
+you" about a question already answered.
+
+⚠️ **What is deliberately absent, because the stream does not honestly carry it:** a
+context-window percentage (the denominator lives only in the unmodelled `modelUsage`
+block and the numerator lives nowhere), a quota percentage (`rate_limit_event` has a
+status and a reset time, no numbers), and any session token total (only cost accumulates
+on the wire; summing per-turn usage double-counts every cache read). `num_turns` is
+declined for a third reason — it counts *that run's* turns and does not accumulate, so it
+read `1` on both results of the two-turn capture; the view counts `Transcript::turns()`,
+which it measured itself.
+
+⚠️ Reading a fact off a `Notice` or a `RateLimit` does **not** make it mapped. Neither
+renders anything into the flow, so both stay counted in `MapStats::unmapped` exactly as
+before — pinned by a test, because silently changing what a counter means is its own
+class of bug.
 
 **The process contract (§5.9.2, measured):** `-p --input-format stream-json
 --output-format stream-json --include-partial-messages --replay-user-messages --verbose`
@@ -547,6 +585,104 @@ Spawn once per tab and never let the process go. Resume is the recovery path, no
 interaction model. There is **no attach**: every programmatic surface is a child process
 you spawn, so a conversation tab cannot mirror a Claude Code session running elsewhere —
 it must *be* the session.
+
+#### The two bands under the scrollback — the composer, and the strip beneath it
+
+`draw` is one `bottom_up` column, and **the order of its calls is the visual order upside
+down**: `status_strip` is added first and therefore sits lowest, the composer above it, a
+rule, and the scrollback takes whatever is left. The status used to be added *between* the
+composer and the rule, which put it **above** the composer — where a one-line band with a
+rule under it reads as a divider rather than as a readout. It belongs with the composer at
+the bottom, which is where Claude Desktop puts the model affordance and where a hand
+looking for it goes.
+
+Three things in these two bands are not the obvious spelling, and each cost real time.
+
+🚨 **egui's modifier matching is SHIFT-PERMISSIVE, so the obvious composer eats
+Shift+Enter.** `Modifiers::matches_logically` returns true for a press *with* shift when
+the pattern does not ask for shift. `TextEdit`'s default `return_key` therefore cannot tell
+Enter from Shift+Enter, and `consume_key(Modifiers::NONE, Key::Enter)` swallows both. The
+way out is an **inversion**: **Shift+Enter is declared as the `return_key`**, because a
+pattern that *asks* for shift is the one case the match is strict about. The widget then
+takes Shift+Enter and inserts the line break itself, a bare Enter falls through it
+untouched, and the view reads that Enter out of `ui.input` with
+`Modifiers::matches_exact(NONE)` — read, never consumed, since consuming would take
+Shift+Enter with it. Ctrl+Enter and Alt+Enter are deliberately **neither** send nor
+newline: each is "send" in some chat client and "newline" in another, and a wrong guess
+sends a half-written message. None of this is visible in a green build, which is why the
+contract is pinned by driving real key events through a real frame
+(`enter_submits_and_shift_enter_types_a_newline`) and not only by testing the predicate —
+the same reason `native/tests/egui_popup_contract.rs` exists after a 0.31→0.33 change of
+exactly this kind killed a keypress here once.
+
+⚠️ **`Response::lost_focus()` stopped being a valid submit trigger the moment the box
+became multiline.** The only `surrender_focus` on Enter is in `TextEdit`'s *singleline*
+branch, so the old `lost_focus() && key_pressed(Enter)` idiom would simply never fire
+again — silently, with everything still compiling. The guard is `has_focus()`, and keeping
+focus across a send costs nothing because nothing takes it away.
+
+🚨 **A vertical `ScrollArea` cannot be dropped straight into a `bottom_up` column.** It
+places itself at `available_rect_before_wrap().min` — the *top* of the space that is left —
+while the bottom-up cursor sits at the bottom, so allocating it eats everything between:
+**measured at 684 pt of a 684 pt pane, for one row of text, with `max_height` set to 100**.
+`ui.vertical`, `ui.scope` and an enclosing `Frame` all inherit the failure; `ui.horizontal`
+places correctly and then pins the area to one row. Both bands therefore **reserve their
+height first** with `allocate_ui_with_layout`, which does go through the placer, and lay
+out top-down inside the reservation. For the strip that height is a constant — one text row
+plus `STRIP_CHROME`, *derived* from both plates' padding and strokes rather than rounded
+off, so a reserved band cannot disagree with its own chrome. For the composer it is the
+text's own height, which is why `ConversationPane::composer_height` is carried state: it is
+fed from `ScrollAreaOutput::content_size`, the **unclipped** content size and deliberately
+not `Response::rect`, so the measurement cannot feed back on the band that clips it. Growth
+lands one frame late — the same trade egui's own panels make.
+
+**The composer** opens at a three-row floor whether or not anything is in it (a one-line
+field is what makes an input read as an afterthought), grows a row at a time to a
+twelve-row ceiling and then scrolls inside itself, and sits on a framed plate whose edge
+says which state it is in: grey at rest, green while focused, red-brown when the agent is
+gone. The keystroke contract lives in the hint text rather than in a permanent caption,
+because a caption is a row of chrome paid for on every frame and stops being news after the
+first message.
+
+**The strip** is decided by one pure function, `strip_content`, so the interesting part —
+the priority ordering — is testable without spawning an agent to find out what a band says:
+
+| Rank | Standing | Reads |
+|---|---|---|
+| 1 | `Dead` | the failure. Outranks everything: no other reading describes a process that exists |
+| 2 | `Asking` | `◈ N permission requests — waiting on you`. The agent is *halted* on a human |
+| 3 | `Working` | `● N tools running` |
+| 4 | `Asking` | `needs_action` verbatim — the agent's own sentence about what it wants |
+| 5 | `Connecting` | nothing, deliberately: the model plate already says "no model yet" |
+| 6 | `Ready` | `last_status_detail`, else a bare `ready` |
+
+⚠️ **Rank 3 above rank 4 is the one place "waiting outranks working" is deliberately not
+applied**, and the reason is that `needs_action` describes a turn that has *ended*: the
+mapper only clears it when the next `post_turn_summary` arrives, so a demand the human
+already answered stays set for the whole of the turn that answers it. Showing it over live
+work would be a stale "waiting on you" — the failure the unit-replacement rule above exists
+to avoid.
+
+Beside the standing: a **model plate**, which is the headline affordance and the first
+thing a hand looks for — the reported identifier with any trailing bracketed suffix
+relocated into a badge (`claude-opus-5[1m]` → `claude-opus-5` · `1M`) and **nothing else
+changed**. It is not prettified to "Opus 5": the field is whatever the CLI reported, and a
+table of nice names would silently mangle the first identifier not on it (an alias, a
+snapshot date, a gateway's fully-qualified id), which is a strip lying about which model
+you are talking to. Everything else the session said about itself — the verbatim model
+string, permission mode, CLI version, cwd, tool count, MCP roster, rate limit, session id —
+is on that plate's **hover**, because it is identity rather than status and a strip that
+grows a second row has stopped being a strip. Then, dim and right-aligned, at most three
+chips (session cost, remembered decisions, last turn's wall time) and the most recent
+diagnostic line off the child, truncated rather than wrapped.
+
+⚠️ **Two omissions are the view's own judgement, on top of `SessionFacts`' refusals above.**
+The running-tools reading says **tools, not "thinking"** — it is derived from unresolved
+tool calls only, so a model writing prose with nothing in flight is not working by that
+test and a "thinking" label would be false exactly when it was most reassuring. And the
+cost chip is labelled **`session`** while per-turn tokens are not shown at all: `cost_usd`
+accumulates on the wire and `last_turn_usage` does not, so one band carrying both would
+invite a reader to add them up.
 
 **The inline artifact, and why it is the milestone.** A terminal receives a tool call as
 whatever text the harness chose to print. The event stream carries it structured — name,
@@ -793,7 +929,12 @@ path silently breaks the three-products-simultaneously guarantee that
   when it is spawned with no prompt and nothing on stdin yet (it prints `Warning: no stdin
   data received in 3s…` and the pane logs it, but "proceeds without it" could mean it
   exits), whether stdin's line write reaches it promptly enough to feel live, and what the
-  layout looks like at real width. A person on the machine is the first to know.
+  layout looks like at real width. A person on the machine is the first to know. ✏️ **All
+  three of those have since been answered on screen** (demo script beat 7, 2026-08-12): a
+  real two-turn conversation with a tool card in it, and the composer re-checked by James
+  after it was rebuilt. The entry stays because what it describes is a *method* — the
+  fixtures are still replay, and everything added to this view since is unseen until
+  somebody looks — which is what the composer and status-strip entries below record.
 - **A conversation tab REPLACES an invocation; it never observes one.** There is no attach
   in any of Claude Code's programmatic surfaces, so the tab cannot mirror a session
   already running in a terminal. This is a product consequence wearing a protocol costume
@@ -842,6 +983,23 @@ path silently breaks the three-products-simultaneously guarantee that
   because over-recognising swallows a real message while the composer clears either way.
   `/panel`, which was the other one, is **removed** — see the summoning seam above for why
   and for what came out with it.
+- ✅ **The composer has been driven by a human, and the keystroke contract holds on real
+  hardware.** Checked 2026-08-12 on organon-one by James at the keyboard, in a live
+  conversation tab: three rows at rest, the hint carrying the contract, and **Enter sends
+  while Shift+Enter inserts a newline, confirmed by keypress** — the one thing a green
+  build could not have told anyone, because egui's shift-permissive matching fails
+  silently. His words were *"it's all working beautifully."*
+- 🚨 **The status strip has never been seen on screen by anyone.** It landed *after* the
+  binary James checked was linked, so what sat under the composer in that session was still
+  the old one-line session id. Every decision in it is pinned headless — the priority
+  ordering, the model split, the chip labels, the band's height with everything in it and
+  with nothing in it — and 302 green tests in the compositor lib are not a substitute for
+  having looked at it once. What nobody can answer yet: whether the model plate reads as an
+  identity rather than as a debug field, whether the hover is discoverable at all when
+  nothing on screen suggests hovering, and whether a truncated diagnostic line beside three
+  chips is legible at real width. ⚠️ And the coordinator cannot find out — its synthetic
+  clicks do not reach this app and its synthetic keystrokes leak into another window (demo
+  script beat 7), so this needs a person at the keyboard exactly as the surface does.
 - 🚨 **The rendered surface has never been drawn on screen by the session that wrote it.**
   The model link, the visibility test, the panel→surface join, the cap's eviction order and
   every knob's lane are pinned headless. Nothing headless can answer the questions that

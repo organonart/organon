@@ -2699,10 +2699,9 @@ fn help_text() -> String {
              ORGANON_SHELL_TABS=claude-chat        one conversation tab\n    \
              ORGANON_SHELL_TABS=claude-chat,shell  a conversation beside a terminal\n\
          \n\
-         In a conversation tab the composer takes two local commands, never sent to the\n\
+         In a conversation tab the composer takes one local command, never sent to the\n\
          agent:\n    \
-             /surface   a rendered surface, with the controls that drive it beneath it\n    \
-             /panel     a control panel that drives this console's backdrop instead\n\
+             /surface   a rendered surface, with the controls that drive it beneath it\n\
          \n\
          Inside a tab the `organon` CLI addresses this process — the namespace is inherited:\n    \
              organon console background <{backgrounds}>\n    \

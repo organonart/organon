@@ -181,7 +181,7 @@ also scroll the transcript underneath it.
 
 ---
 
-### 7 — "That was never a terminal." · the conversation view · **landed**
+### 7 — "That was never a terminal." · the conversation view · **landed — with one element in the frame nobody has seen, see the strip note**
 
 Open a conversation tab (`ORGANON_SHELL_TABS=claude-chat`, or the **+** menu → *◈ Claude Code
 (conversation)*). Type into the composer. The agent answers, calls a tool, and the tool call
@@ -208,9 +208,36 @@ one — which is a better check than the one that was planned.
 
 ⚠️ **Known and stated rather than hidden:** the `Edit` diff has no alignment (a one-character
 change in a ten-line block shows as ten removals and ten additions); thinking blocks, notices,
-rate limits and `tool_use_result` render nothing yet; the composer is single-line; and there is
-no backdrop behind a conversation — banding is scrollback arithmetic and a conversation has no
-scrollback to anchor to.
+rate limits and `tool_use_result` render nothing **in the flow** (notices and rate limits now
+leave a *fact* behind for the status strip on the way past, which is a different question from
+whether anything was drawn); and there is no backdrop behind a conversation — banding is
+scrollback arithmetic and a conversation has no scrollback to anchor to.
+
+*Composer rebuilt and checked 2026-08-12 on organon-one, by James at the keyboard, in a live
+conversation tab:* three rows at rest in a framed plate, the new hint reading *"message the
+agent — Enter sends, Shift+Enter for a new line"*, and the `›` prompt glyph gone. **Enter
+sends and Shift+Enter inserts a newline, confirmed by keypress** — the half a green build
+could never have shown, because egui's modifier matching is shift-permissive and the obvious
+spelling of that contract compiles, passes, and silently eats Shift+Enter. His words: *"It's
+all working beautifully."* The single-line composer that used to be on the list above is gone
+with it.
+
+🚨 **The STATUS STRIP was not in the binary he checked.** It landed after that build was
+linked, so the band under the composer in that session was still the old one-line session id —
+what is on screen in any screenshot from that check is **not** the strip. The strip is green in
+tests (302 in the compositor lib, pinning the priority ordering, the model split, the chip
+labels and the band's height) and **has been seen on screen by nobody**. Do not demo it as
+checked. What a first look has to answer: whether the model plate reads as an identity rather
+than as a debug field, whether its hover is discoverable when nothing suggests hovering, and
+whether a truncated diagnostic line beside three chips is legible at real width.
+
+📌 **Two measurement notes worth keeping, both about who can check what.** The coordinator
+**cannot verify interaction in this app at all** — synthetic clicks never reach it and synthetic
+keystrokes leaked into another window (the same two failures recorded further down this beat) —
+so the keypress check had to be James's, not a claim assembled from a capture. And **a green
+build was not evidence for either half**: it could not show the Enter contract, because the
+failure mode is a silent match; and it could not show the strip, because compiling a band is
+not drawing one.
 
 *Panel half checked 2026-08-12, by James at the keyboard:* `/panel` puts a live control panel
 **in the conversation flow** — framed, titled, four material buttons and three labelled sliders.
@@ -223,6 +250,11 @@ band across. A control whose consequence you cannot see from where you are sitti
 instrument, and no amount of wiring fixes it. **That is the argument for the next step:** the
 panel should drive an artifact *in its own view* — a rendered surface a few elements up,
 changing as you drag. Control and consequence in one glance.
+
+📌 **`/panel` was removed in the change that answered that**, so the check above is a record
+and not an instruction: typing it now sends an ordinary message to the agent. **`/surface` is
+the command to perform** — it summons the surface *and* the panel that drives it, in the same
+view. The composer's local commands are down to that one, and `organon-console --help` says so.
 
 ⚠️ **Two measurement failures, both mine, both worth more than the bugs they impersonated.**
 The coordinator's synthetic mouse input **never reaches this app** — a click on a tab did not

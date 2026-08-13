@@ -11,6 +11,77 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — a composer you can write in, and a band that says who you are talking to
+
+- **The composer is multiline.** Three rows at rest, growing a row at a time to a twelve-row
+  ceiling and then scrolling inside itself, on a framed plate whose edge is grey at rest,
+  green while focused and red-brown when the agent is gone; the `›` glyph is gone and the
+  keystroke contract lives in the hint. **Enter sends, Shift+Enter breaks the line** —
+  checked by keypress on organon-one, because a green build could not have shown it.
+  🚨 `egui::Modifiers::matches_logically` is **shift-permissive**: a pattern that does not
+  ask for shift still matches a press *with* shift, so `TextEdit`'s default `return_key`
+  cannot tell the two apart and `consume_key(NONE, Enter)` eats both. The fix is an
+  inversion — **Shift+Enter is declared as the return key**, since a pattern that asks for
+  shift is the one case the match is strict about, leaving a bare Enter to fall through the
+  widget and be read with `matches_exact`. Ctrl+Enter and Alt+Enter are deliberately neither
+  send nor newline: each is "send" in some client, and guessing wrong sends a half-written
+  message. 🚨 A second trap in the same box: `Response::lost_focus()` **stops working the
+  moment a `TextEdit` is multiline** (only the singleline branch surrenders focus on Enter),
+  so the old submit idiom would have gone silently dead; the guard is `has_focus()`.
+- **The one-line status line became a status strip, below the composer rather than above
+  it.** A model plate is the headline — the reported identifier with a trailing bracketed
+  suffix relocated into a badge (`claude-opus-5[1m]` → `claude-opus-5` · `1M`) and nothing
+  else changed, because prettifying it to "Opus 5" would mangle the first alias, snapshot
+  date or gateway id not on the nice-names table. Everything else `system/init` said —
+  permission mode, CLI version, cwd, tool count, MCP roster, rate limit, session id — is on
+  that plate's hover, so the band stays one line no matter what arrives. Beside it: a
+  priority-ordered standing (dead ▸ waiting on a human ▸ tools running ▸ a finished turn's
+  `needs_action` ▸ connecting ▸ the last turn's own summary) and at most three dim chips —
+  session cost, remembered decisions, last turn's wall time.
+- 🚨 **`ScrollArea::max_height` inside `Layout::bottom_up` collapses the entire column**, and
+  both bands are shaped around it. The area places itself at the *top* of the space that is
+  left while the bottom-up cursor sits at the bottom, so it eats everything between —
+  measured at **684 pt of a 684 pt pane, for one row of text**. `ui.vertical`, `ui.scope` and
+  an enclosing `Frame` inherit the failure; `ui.horizontal` places correctly and then pins
+  the area to one row. So each band reserves its height first with `allocate_ui_with_layout`,
+  which does go through the placer. The composer's reservation is the text's height from the
+  previous frame, read from `ScrollAreaOutput::content_size` — the *unclipped* size,
+  deliberately not `Response::rect`, so the measurement cannot feed back on the band that
+  clips it.
+- **What the strip does not show is the point of it.** No context-window percentage, no quota
+  percentage, no session token total — each was investigated and none has an honest source
+  (the context denominator lives only in the unmodelled `modelUsage` block, `rate_limit_event`
+  carries neither numerator nor denominator, and summing per-turn usage double-counts every
+  cache read). The running-tools reading says **tools, not "thinking"**, because it is derived
+  from unresolved tool calls and a model writing prose with nothing in flight is not working
+  by that test. Cost is labelled `session` because it accumulates on the wire while the token
+  counts beside it do not. ⚠️ **The strip has been seen on screen by nobody** — it landed after
+  the binary James checked was linked, and green tests are not a look; the honesty ledger and
+  demo script beat 7 both say so.
+- `organon-console --help` no longer advertises `/panel`, which was removed a change ago, and
+  now reads "one local command". `tabs.rs`'s module doc no longer says the tab strip runs
+  along the bottom; it is a top panel.
+
+### Console Spike — the session's own facts, kept instead of discarded
+
+- **`EventMapper` now carries `SessionFacts`, read through `facts()`.** The decoder had
+  been parsing `system/init` in full and the mapper was binding the whole payload to `_`:
+  the model, the cwd, the permission mode, the CLI version, the tool count and the MCP
+  servers were all decoded and then dropped on the floor, and `result`, `post_turn_summary`
+  and `rate_limit_event` went past untouched. Everything a status strip needs was already
+  arriving; nothing was keeping it. Each field has one retention rule — **first init wins**
+  for identity (a `system/init` recurs mid-stream and must not overwrite what the first
+  established), **latest wins** for everything describing the most recent turn — and
+  nothing is summed. 🚨 `total_cost_usd` is already cumulative across the session while its
+  sibling `usage` is per turn, so adding two results double-counts everything so far; the
+  field names (`cost_usd` vs `last_turn_usage`) exist so a reader cannot confuse them.
+  Three numbers a strip would obviously want are **deliberately absent**, because the
+  stream does not honestly carry them: a context-window percentage, a quota percentage,
+  and any session token total. `num_turns` is declined too — it counts *that run's* turns
+  and does not accumulate, so it read `1` on both results of the two-turn capture. Reading
+  a fact off a notice does not make it mapped: `MapStats::unmapped` is unchanged and
+  pinned by a test.
+
 ### Console Spike — an approval card waits for you, and closes itself when it can't
 
 - **The approval hook was designed on the belief that the client waits indefinitely; it

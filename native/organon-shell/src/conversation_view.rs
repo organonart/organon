@@ -32,7 +32,7 @@ use std::sync::mpsc::Receiver;
 
 use egui::{Color32, CornerRadius, Frame, Margin, RichText};
 
-use crate::agent_map::EventMapper;
+use crate::agent_map::{EventMapper, SessionFacts};
 use crate::agent_session::{AgentSession, McpWiring, StreamItem};
 use crate::approval::{
     approval_channel, decision_for, decision_key, resolve_choice, Choice, DecisionMemory,
@@ -301,6 +301,16 @@ pub struct ConversationPane {
     pinned: bool,
     /// Focus the composer on the first frame this pane is drawn.
     want_focus: bool,
+    /// How tall the composer's text was when it was last laid out, in points.
+    ///
+    /// ⚠️ **This is deliberate carried state, and it is here because the obvious version
+    /// does not work** — see [`composer_box`]. A vertical [`egui::ScrollArea`] placed
+    /// directly in a [`egui::Layout::bottom_up`] column anchors itself at the *top* of the
+    /// remaining space, which collapses the column and leaves the scrollback nothing. The
+    /// composer therefore reserves its band explicitly, and the only honest source for that
+    /// band's height is what the text measured last frame. Growth lands one frame late,
+    /// which is the same trade egui's own panels make.
+    composer_height: f32,
     /// Live widget state for the artifacts on screen, keyed by [`ElementId`]. Never in the
     /// transcript — see [`PanelState`]. Pruned against the transcript every frame, so an
     /// element the cap evicted takes its state with it.
@@ -373,6 +383,7 @@ impl ConversationPane {
             log,
             pinned: true,
             want_focus: true,
+            composer_height: 0.0,
             artifacts: HashMap::new(),
             buttons,
             sliders,
@@ -650,8 +661,16 @@ impl ConversationPane {
 /// the whole backdrop this way for the same reason, and the visible consequence is one blank
 /// frame when a surface is summoned.
 ///
-/// Bottom-up, because the composer's height is known and the scrollback's is whatever is
-/// left — the layout every chat client resolves in that order.
+/// Bottom-up, because the composer's and the strip's heights are known and the scrollback's
+/// is whatever is left — the layout every chat client resolves in that order.
+///
+/// ⚠️ **The order of these four calls is the visual order, upside down.** In a bottom-up
+/// column the *first* thing added sits lowest, so this reads: strip at the very bottom,
+/// composer above it, a rule, and the scrollback taking everything that is left. The status
+/// used to be added between the composer and the rule, which put it *above* the composer —
+/// where a one-line band with a rule under it reads as a divider rather than as the thing it
+/// is. [`status_strip`] belongs with the composer, at the bottom, which is where Claude
+/// Desktop puts the model affordance and where a hand looking for it goes.
 pub fn draw(
     ui: &mut egui::Ui,
     pane: &mut ConversationPane,
@@ -659,9 +678,10 @@ pub fn draw(
 ) -> ConversationOutput {
     let mut out = ConversationOutput::default();
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        status_strip(ui, pane);
+        ui.add_space(4.0);
         composer(ui, pane);
         ui.add_space(4.0);
-        status_line(ui, pane);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
             out = scrollback(ui, pane, images);
@@ -1230,64 +1250,681 @@ fn diff_body(ui: &mut egui::Ui, diff: &EditDiff) {
     }
 }
 
-fn status_line(ui: &mut egui::Ui, pane: &ConversationPane) {
-    ui.horizontal(|ui| {
-        if let Some(failure) = &pane.failure {
-            ui.label(RichText::new(failure).color(BAD).small());
-            return;
-        }
-        // Waiting on a human outranks working: one of them the agent can finish on its own.
-        if pane.transcript.is_waiting() {
-            let n = pane.transcript.pending_approvals().len();
-            let plural = if n == 1 { "request" } else { "requests" };
-            ui.label(
-                RichText::new(format!("◈ {n} permission {plural} — waiting on you"))
-                    .color(ASKING)
-                    .small(),
-            );
-        } else if pane.transcript.is_working() {
-            let n = pane.transcript.running_tools().len();
-            let plural = if n == 1 { "tool" } else { "tools" };
-            ui.label(RichText::new(format!("● {n} {plural} running")).color(RUNNING).small());
-        } else {
-            let session = pane.transcript.session_id().unwrap_or("connecting…");
-            ui.label(RichText::new(session).color(DIM).small().monospace());
-        }
-        // The standing count, so a memory built up over a session is never invisible; each
-        // entry's own card carries the button that revokes it.
-        if !pane.memory.is_empty() {
-            let n = pane.memory.len();
-            let plural = if n == 1 { "decision" } else { "decisions" };
-            ui.label(RichText::new(format!("· {n} remembered {plural}")).color(DIM).small());
-        }
-        if let Some(last) = pane.log.back() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(last).color(DIM).small());
-            });
-        }
-    });
+// ---------------------------------------------------------------------------
+// The status strip
+// ---------------------------------------------------------------------------
+//
+// **One band under the composer, and the model is its headline.** Claude Desktop's strip is
+// the base: the thing you look at to answer "who am I talking to, and what is it doing right
+// now", sitting with the composer rather than fenced off above it.
+//
+// 🚨 **Everything here is reported or measured, and the omissions are deliberate.**
+// `SessionFacts`' own doc lists what the event stream does not honestly carry — a
+// context-window percentage, a quota percentage, a session token total — and none of them are
+// reconstructed here. Two more judgements are this file's rather than the mapper's:
+//
+// * **"● N tools running" says tools, not "thinking".** `Transcript::is_working` is derived
+//   from unresolved tool calls only, so a model writing prose with nothing in flight is *not*
+//   working by that test. A label reading "thinking" would therefore be false exactly when it
+//   was most reassuring.
+// * **Cost is labelled `session`, and per-turn tokens are not shown at all.** `cost_usd` is
+//   cumulative on the wire and `last_turn_usage` is not, so one band carrying both invites the
+//   reader to add them up. Cost answers "what has this conversation cost" in four characters;
+//   the tokens are one hover away from being needed and were cut rather than qualified.
+//
+// The band is **one line, always**. Anything that would make it two goes into the model
+// plate's hover instead ([`identity_rows`]), which is why the session id, the cwd, the
+// permission mode and the MCP roster are not on screen: they are identity, not status, and a
+// strip that grows a second row has stopped being a strip.
+
+/// The plate the strip sits on, and the plate the model sits on inside it.
+const STRIP_FILL: Color32 = Color32::from_rgb(0x0b, 0x11, 0x0b);
+const STRIP_EDGE: Color32 = Color32::from_rgb(0x22, 0x2c, 0x22);
+const MODEL_FILL: Color32 = Color32::from_rgb(0x15, 0x1e, 0x15);
+const MODEL_EDGE: Color32 = Color32::from_rgb(0x3a, 0x50, 0x3a);
+/// The model's own name — brighter than [`PROSE`], because it is the one thing on this band
+/// that is an *identity* rather than a reading.
+const MODEL_TEXT: Color32 = Color32::from_rgb(0xc6, 0xdf, 0xc6);
+/// The bracketed variant beside it (`1m` → `1M`): present, secondary, never mistaken for the
+/// name.
+const MODEL_BADGE: Color32 = Color32::from_rgb(0x8a, 0xb0, 0x8a);
+
+const STRIP_PAD_X: i8 = 10;
+const STRIP_PAD_Y: i8 = 5;
+const STRIP_STROKE: f32 = 1.0;
+const MODEL_PAD_X: i8 = 7;
+const MODEL_PAD_Y: i8 = 2;
+const MODEL_STROKE: f32 = 1.0;
+
+/// Everything the band costs on top of one row of text: both plates' padding and both edges.
+///
+/// Named and derived rather than a round number, because the band is **reserved before the
+/// content is laid out** — the same discipline [`composer_box`] documents — and a reserved
+/// band that disagrees with its own chrome is how a one-line strip quietly becomes two.
+const STRIP_CHROME: f32 = 2.0 * STRIP_PAD_Y as f32
+    + 2.0 * STRIP_STROKE
+    + 2.0 * MODEL_PAD_Y as f32
+    + 2.0 * MODEL_STROKE;
+
+/// What the strip's status half is reporting, in priority order — highest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// The process could not start, or has ended. Outranks everything: nothing else on the
+    /// band means anything once there is nobody behind it.
+    Dead,
+    /// Blocked on a human — a pending permission request, or a finished turn that asked for
+    /// something. Outranks [`Standing::Working`] because the agent can finish work on its own
+    /// and cannot finish this.
+    Asking,
+    /// Tool calls in flight. **Not "thinking"** — see this section's note.
+    Working,
+    /// Alive, but nothing has arrived yet. The cold start every session opens in.
+    Connecting,
+    /// Alive, nothing outstanding.
+    Ready,
 }
+
+/// The model half of the band. Three states, because "no model" before `system/init` and "no
+/// model, ever" after a spawn failure are different sentences, and an empty box is neither.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelSlot {
+    Named(ModelLabel),
+    /// No `system/init` yet, and the agent is alive — it is coming.
+    Connecting,
+    /// …and it is not, because the agent is gone.
+    Absent,
+}
+
+/// A model identifier, split for display.
+///
+/// See [`model_label`] for exactly what that split does and does not do to the string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelLabel {
+    /// The identifier with any trailing bracketed suffix removed: `claude-opus-5`.
+    pub name: String,
+    /// That suffix's contents, upper-cased for a badge: `1m` → `1M`. `None` when there was
+    /// no suffix.
+    pub variant: Option<String>,
+}
+
+/// What the status half says this frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatusReading {
+    pub standing: Standing,
+    /// Empty is legal and means "draw nothing" — the model plate is already saying it.
+    pub text: String,
+}
+
+/// Everything one frame of the strip draws, decided before anything is laid out.
+///
+/// Split from the drawing for the same reason [`composer_box`] is split from
+/// [`ConversationPane`]: the interesting part is the *priority ordering*, and testing it
+/// through a real pane would mean spawning an agent process to find out what a band says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StripContent {
+    pub model: ModelSlot,
+    /// `(label, value)` rows for the model plate's hover — the identity that does not fit,
+    /// and must not be allowed to try.
+    pub identity: Vec<(String, String)>,
+    pub reading: StatusReading,
+    /// Dim, right-aligned, joined with `·`. Bounded by construction: at most three.
+    pub chips: Vec<String>,
+    /// The most recent diagnostic line off the child, if any. Drawn truncated.
+    pub log: Option<String>,
+}
+
+/// The transcript-side inputs the strip reads, gathered so the decision below can be a pure
+/// function of plain numbers rather than of a live [`Transcript`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiveCounts {
+    pub pending_approvals: usize,
+    pub running_tools: usize,
+    /// How many decisions the console has been asked to remember this session.
+    pub remembered: usize,
+    /// Whether a `system/init` has been seen — the cold-start discriminator.
+    pub has_session: bool,
+}
+
+/// **The priority ordering, and the whole of it.**
+///
+/// 1. **Dead outranks everything.** A tab whose agent is gone must say so before it says
+///    anything else; every other reading on the band describes a process that exists.
+/// 2. **A pending approval outranks running tools.** The agent is *halted* on a human, and
+///    only one of the two states it can get out of by itself. This is the ordering the first
+///    status line had, and it is kept for the reason it had it.
+/// 3. **Running tools outrank a finished turn's `needs_action`.** ⚠️ This is the one place
+///    the "waiting outranks working" rule is deliberately not applied, and the reason is that
+///    `needs_action` describes a turn that has *ended*: the mapper only clears it when the
+///    next `post_turn_summary` arrives, so a demand answered by a reply the agent is already
+///    acting on stays set for the length of that turn. Showing it over live work would be a
+///    stale "waiting on you" — the failure `SessionFacts::record_notice` exists to avoid.
+/// 4. **`needs_action` then, verbatim.** It is the agent's own sentence about what it wants.
+/// 5. **Cold start**, when no init has been seen.
+/// 6. **`last_status_detail`**, else a bare "ready".
+pub fn status_reading(
+    failure: Option<&str>,
+    live: LiveCounts,
+    facts: &SessionFacts,
+) -> StatusReading {
+    let say = |standing, text: String| StatusReading { standing, text };
+    if let Some(failure) = failure {
+        return say(Standing::Dead, failure.to_string());
+    }
+    if live.pending_approvals > 0 {
+        let n = live.pending_approvals;
+        let plural = if n == 1 { "request" } else { "requests" };
+        return say(Standing::Asking, format!("◈ {n} permission {plural} — waiting on you"));
+    }
+    if live.running_tools > 0 {
+        let n = live.running_tools;
+        let plural = if n == 1 { "tool" } else { "tools" };
+        return say(Standing::Working, format!("● {n} {plural} running"));
+    }
+    if let Some(action) = &facts.needs_action {
+        return say(Standing::Asking, format!("◈ {action}"));
+    }
+    if !live.has_session {
+        // Empty on purpose: the model plate already reads "no model yet", and a band that
+        // says "connecting…" twice reads as a bug rather than as one state.
+        return say(Standing::Connecting, String::new());
+    }
+    match &facts.last_status_detail {
+        Some(detail) => say(Standing::Ready, detail.clone()),
+        None => say(Standing::Ready, "ready".to_string()),
+    }
+}
+
+/// Split a reported model identifier into a name and a badge.
+///
+/// ⚠️ **Nothing is dropped.** The only two transformations are structural: a *trailing*
+/// bracketed suffix is moved out of the name into [`ModelLabel::variant`], and that suffix's
+/// contents are upper-cased so `1m` reads as the megatoken window it is rather than as a
+/// typo. `claude-opus-5[1m]` is therefore recoverable from the pair, and the **verbatim**
+/// string is on the plate's hover either way ([`identity_rows`]).
+///
+/// **What this deliberately does not do is prettify.** `claude-opus-5` is not rewritten to
+/// "Opus 5", tempting as that is next to Claude Desktop: the field is whatever the CLI
+/// reported, and a table of nice names would silently mangle the first identifier that is not
+/// on it — an alias, a snapshot date, a gateway's fully-qualified id. A strip that renames a
+/// model it does not recognise is a strip that lies about which model you are talking to.
+pub fn model_label(raw: &str) -> ModelLabel {
+    let trimmed = raw.trim();
+    if let Some(open) = trimmed.rfind('[') {
+        if trimmed.ends_with(']') {
+            let inner = &trimmed[open + 1..trimmed.len() - 1];
+            let name = trimmed[..open].trim_end();
+            // An empty pair of brackets is punctuation, not a variant, and a name that is
+            // *only* a suffix is not a name — both fall through to the verbatim spelling.
+            if !inner.is_empty() && !name.is_empty() {
+                return ModelLabel {
+                    name: name.to_string(),
+                    variant: Some(inner.to_uppercase()),
+                };
+            }
+        }
+    }
+    ModelLabel { name: trimmed.to_string(), variant: None }
+}
+
+/// The identity that does not fit on the band, for the model plate's hover.
+///
+/// Everything here is verbatim from the stream, `model` above all: whatever [`model_label`]
+/// rearranged on screen, this row is the string the CLI actually reported.
+fn identity_rows(facts: &SessionFacts, session: Option<&str>) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    let mut row = |label: &str, value: String| rows.push((label.to_string(), value));
+    if let Some(model) = &facts.model {
+        row("model", model.clone());
+    }
+    if let Some(mode) = &facts.permission_mode {
+        row("permissions", mode.clone());
+    }
+    if let Some(version) = &facts.cli_version {
+        row("cli", version.clone());
+    }
+    if let Some(cwd) = &facts.cwd {
+        row("cwd", cwd.clone());
+    }
+    if facts.tools > 0 {
+        row("tools", facts.tools.to_string());
+    }
+    if !facts.mcp_servers.is_empty() {
+        let servers = facts
+            .mcp_servers
+            .iter()
+            .map(|(name, status)| format!("{name} ({status})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        row("mcp", servers);
+    }
+    // Reported as given. ⚠️ `rate_limit_resets_at` is a unix timestamp and is **not** shown:
+    // rendering it needs a clock and a timezone, and an unexplained ten-digit number is a
+    // debug field wearing a label.
+    match (&facts.rate_limit_type, &facts.rate_limit_status) {
+        (Some(kind), Some(status)) => row("limit", format!("{kind} — {status}")),
+        (Some(kind), None) => row("limit", kind.clone()),
+        (None, Some(status)) => row("limit", status.clone()),
+        (None, None) => {}
+    }
+    if let Some(session) = session {
+        row("session", session.to_string());
+    }
+    rows
+}
+
+/// Session-cumulative cost. Four decimals under a dollar, two over it — a turn of a
+/// conversation costs cents, and `$0.00` for eight minutes' work reads as "free".
+fn cost_label(cost: f64) -> String {
+    if cost >= 1.0 {
+        format!("${cost:.2}")
+    } else {
+        format!("${cost:.4}")
+    }
+}
+
+/// A turn's wall time, in the unit a human would have used for it.
+fn duration_label(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
+    }
+    if ms < 60_000 {
+        return format!("{:.1}s", ms as f64 / 1_000.0);
+    }
+    format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1_000)
+}
+
+/// Decide the whole band. Pure, and the only place the strip's content is chosen.
+pub fn strip_content(
+    failure: Option<&str>,
+    live: LiveCounts,
+    facts: &SessionFacts,
+    session: Option<&str>,
+    log: Option<&str>,
+) -> StripContent {
+    let model = match (&facts.model, failure.is_some()) {
+        (Some(raw), _) => ModelSlot::Named(model_label(raw)),
+        (None, false) => ModelSlot::Connecting,
+        (None, true) => ModelSlot::Absent,
+    };
+    // Three at most, in reading order. Each is either a measurement or absent — there is no
+    // arm here that computes one number out of two.
+    let mut chips: Vec<String> = Vec::new();
+    if let Some(cost) = facts.cost_usd {
+        // "session" is not decoration: `cost_usd` accumulates on the wire and the sibling
+        // token counts do not, so the one number on the band says which kind it is.
+        chips.push(format!("session {}", cost_label(cost)));
+    }
+    if live.remembered > 0 {
+        let n = live.remembered;
+        let plural = if n == 1 { "decision" } else { "decisions" };
+        chips.push(format!("{n} remembered {plural}"));
+    }
+    if let Some(ms) = facts.last_turn_duration_ms {
+        chips.push(format!("last turn {}", duration_label(ms)));
+    }
+    StripContent {
+        model,
+        identity: identity_rows(facts, session),
+        reading: status_reading(failure, live, facts),
+        chips,
+        log: log.map(str::to_string),
+    }
+}
+
+fn standing_color(standing: Standing) -> Color32 {
+    match standing {
+        Standing::Dead => BAD,
+        Standing::Asking => ASKING,
+        Standing::Working => RUNNING,
+        Standing::Connecting | Standing::Ready => DIM,
+    }
+}
+
+fn status_strip(ui: &mut egui::Ui, pane: &ConversationPane) {
+    let content = strip_content(
+        pane.failure.as_deref(),
+        LiveCounts {
+            pending_approvals: pane.transcript.pending_approvals().len(),
+            running_tools: pane.transcript.running_tools().len(),
+            remembered: pane.memory.len(),
+            has_session: pane.transcript.session_id().is_some(),
+        },
+        pane.mapper.facts(),
+        pane.transcript.session_id(),
+        pane.log.back().map(String::as_str),
+    );
+    strip_box(ui, &content);
+}
+
+/// Draw the band.
+///
+/// 🚨 **The band is reserved, not discovered** — `allocate_ui_with_layout`, exactly as
+/// [`composer_box`] does and for the same measured reason: this is a bottom-up column, and a
+/// child that places itself at `available_rect_before_wrap().min` eats everything between the
+/// top of the remaining space and the cursor at its bottom. Reserving one row plus
+/// [`STRIP_CHROME`] is also what holds the strip to a single line no matter what arrives —
+/// every label that could be long is [`egui::Label::truncate`]d rather than wrapped.
+fn strip_box(ui: &mut egui::Ui, content: &StripContent) {
+    let row = ui.text_style_height(&egui::TextStyle::Body);
+    let band = row + STRIP_CHROME;
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), band),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            Frame::new()
+                .fill(STRIP_FILL)
+                .stroke(egui::Stroke::new(STRIP_STROKE, STRIP_EDGE))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(STRIP_PAD_X, STRIP_PAD_Y))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        model_plate(ui, content);
+                        let reading = &content.reading;
+                        if !reading.text.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&reading.text)
+                                        .color(standing_color(reading.standing))
+                                        .small(),
+                                )
+                                .truncate(),
+                            );
+                        }
+                        // The dim half. Right-aligned so the eye lands on the model and the
+                        // standing first; the log is added last and is therefore leftmost,
+                        // which is what gives it the slack and lets it truncate into it.
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if !content.chips.is_empty() {
+                                    ui.label(
+                                        RichText::new(content.chips.join(" · "))
+                                            .color(DIM)
+                                            .small(),
+                                    );
+                                }
+                                if let Some(log) = &content.log {
+                                    ui.add(
+                                        egui::Label::new(RichText::new(log).color(DIM).small())
+                                            .truncate(),
+                                    );
+                                }
+                            },
+                        );
+                    });
+                });
+        },
+    );
+}
+
+/// **The headline affordance**: which model is behind this tab, on its own plate.
+///
+/// A plate rather than a label because that is the difference between an identity and a debug
+/// field — it is the one thing on the band that answers "who", and it is the first thing a
+/// hand goes looking for. The rest of what the session said about itself is on its hover,
+/// where it costs no vertical space and cannot push the band to two lines.
+fn model_plate(ui: &mut egui::Ui, content: &StripContent) {
+    let plate = Frame::new()
+        .fill(MODEL_FILL)
+        .stroke(egui::Stroke::new(MODEL_STROKE, MODEL_EDGE))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(MODEL_PAD_X, MODEL_PAD_Y))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            match &content.model {
+                ModelSlot::Named(label) => {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&label.name).color(MODEL_TEXT).strong().monospace(),
+                        )
+                        .truncate(),
+                    );
+                    if let Some(variant) = &label.variant {
+                        ui.label(RichText::new(variant).color(MODEL_BADGE).small().monospace());
+                    }
+                }
+                // Never an empty box and never "None": a plate with nothing in it during
+                // connection reads as broken, which is worse than the strip being honest
+                // about not knowing yet.
+                ModelSlot::Connecting => {
+                    ui.label(RichText::new("no model yet").color(DIM).small().italics());
+                }
+                ModelSlot::Absent => {
+                    ui.label(RichText::new("no model").color(DIM).small().italics());
+                }
+            }
+        });
+    if !content.identity.is_empty() {
+        plate.response.on_hover_ui(|ui| {
+            for (label, value) in &content.identity {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{label}:")).color(DIM).small().monospace());
+                    ui.label(RichText::new(value).color(PROSE).small().monospace());
+                });
+            }
+        });
+    }
+}
+
+/// What the composer does with one key press.
+///
+/// The decision is a free function so it can be tested with literal values, the way
+/// [`crate::term::encode_key`] is: the whole hazard here is egui's *shift-permissive*
+/// modifier matching, and a table of plain values is the only place that is legible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerKey {
+    /// Send what is in the box.
+    Send,
+    /// Insert a line break. **Performed by the widget, not by us** — this arm mirrors the
+    /// predicate `TextEdit::return_key` will apply, so the two can be read side by side.
+    Newline,
+    /// Neither. Falls through to whatever else wants it.
+    Ignore,
+}
+
+/// Enter sends; Shift+Enter breaks the line; every other Enter does nothing.
+///
+/// ⚠️ **The obvious spellings of this are all wrong**, because
+/// [`egui::Modifiers::matches_logically`] is *permissive about shift*: if the pattern does
+/// not ask for shift, a press **with** shift still matches it. So `consume_key(NONE, Enter)`
+/// eats Shift+Enter as well, and `key_pressed(Enter)` ignores modifiers outright. The way
+/// out is to be exact where it matters: [`egui::Modifiers::matches_exact`] against `NONE` is
+/// true for a bare Enter and for nothing else.
+///
+/// **Ctrl+Enter and Alt+Enter are deliberately [`ComposerKey::Ignore`], not
+/// [`ComposerKey::Send`].** Both are send-shortcuts in *some* chat client, and guessing
+/// wrong sends a half-written message — the one failure this box must not have. Ignoring
+/// them leaves the modified press free to mean something later without breaking anyone's
+/// muscle memory in the meantime.
+///
+/// The [`ComposerKey::Newline`] arm reproduces the widget's own test
+/// (`modifiers.matches_logically(SHIFT)`), which — via
+/// [`egui::Modifiers::cmd_ctrl_matches`] — rejects Ctrl+Shift+Enter while accepting bare
+/// Shift+Enter. That is why it is a separate arm from `Ignore` even though nothing in this
+/// file acts on it: it is the contract the tests pin.
+pub fn composer_key(key: egui::Key, mods: egui::Modifiers) -> ComposerKey {
+    if key != egui::Key::Enter {
+        return ComposerKey::Ignore;
+    }
+    if mods.matches_exact(egui::Modifiers::NONE) {
+        return ComposerKey::Send;
+    }
+    if mods.matches_logically(egui::Modifiers::SHIFT) {
+        return ComposerKey::Newline;
+    }
+    ComposerKey::Ignore
+}
+
+/// The composer's floor, in rows. **This is "big by default"** — the box opens at three
+/// rows whether or not there is anything in it, because a one-line field is what makes an
+/// input read as an afterthought.
+const COMPOSER_ROWS: usize = 3;
+/// …and its ceiling, in the same rows. Past this the box stops growing and starts
+/// scrolling: the scrollback is the other half of a bottom-up layout, and a pasted essay
+/// must not be able to eat it. [`egui::TextEdit`] has no maximum-height knob of its own
+/// (`clip_text` is a no-op on multiline), so the cap is the band [`composer_box`] reserves,
+/// with an [`egui::ScrollArea`] inside it to make the overflow reachable.
+const COMPOSER_MAX_ROWS: f32 = 12.0;
+
+/// The plate's padding and edge width, in points. Named because the band the composer
+/// reserves is `text height + this chrome`, and the two must not drift apart.
+const COMPOSER_PAD_X: i8 = 10;
+const COMPOSER_PAD_Y: i8 = 8;
+const COMPOSER_STROKE: f32 = 1.0;
+
+/// The composer's plate, and its edge at rest, focused, and dead.
+const COMPOSER_FILL: Color32 = Color32::from_rgb(0x0e, 0x14, 0x0e);
+const COMPOSER_EDGE: Color32 = Color32::from_rgb(0x2b, 0x38, 0x2b);
+const COMPOSER_EDGE_FOCUS: Color32 = Color32::from_rgb(0x4c, 0x7a, 0x52);
+const COMPOSER_EDGE_DEAD: Color32 = Color32::from_rgb(0x3a, 0x2c, 0x2c);
+
+/// What the hint teaches while the box is empty. The keystroke contract is written here
+/// rather than shown as a permanent caption, because a caption that is always on screen is
+/// a row of chrome the box pays for on every frame — and this one stops being news after
+/// the first message.
+const COMPOSER_HINT: &str = "message the agent — Enter sends, Shift+Enter for a new line";
+const COMPOSER_HINT_DEAD: &str = "the agent is not running";
 
 fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane) {
     let live = pane.failure.is_none();
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("›").color(if live { HUMAN } else { DIM }).monospace());
-        let edit = egui::TextEdit::singleline(&mut pane.composer)
-            .desired_width(ui.available_width())
-            .font(egui::TextStyle::Monospace)
-            .hint_text(if live { "message the agent" } else { "the agent is not running" });
-        let response = ui.add_enabled(live, edit);
-        if pane.want_focus && live {
-            response.request_focus();
-            pane.want_focus = false;
-        }
-        // Enter submits and keeps focus — the composer is where the next message is
-        // going, so handing focus back to nothing would cost a click per turn.
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            pane.submit();
-            pane.want_focus = true;
-        }
-    });
+    // Three disjoint fields, borrowed separately, so the box can own the text while
+    // `submit` still needs the whole pane afterwards.
+    let submit = composer_box(
+        ui,
+        &mut pane.composer,
+        live,
+        &mut pane.want_focus,
+        &mut pane.composer_height,
+    );
+    if submit {
+        pane.submit();
+    }
+}
+
+/// Draw the composer and report whether this frame asked for it to be sent.
+///
+/// Split out from [`composer`] with nothing but a `&mut String` because the Enter contract
+/// has to be driven headless, and a [`ConversationPane`] would mean spawning a real agent
+/// process to test a keystroke.
+///
+/// # Two things here are not the obvious spelling, and both were measured
+///
+/// ⚠️ **[`egui::Response::lost_focus`] cannot be the submit trigger.** The only
+/// `surrender_focus` on Enter is in `TextEdit`'s *singleline* branch; a multiline box keeps
+/// focus straight through, so the old `lost_focus() && key_pressed(Enter)` test would never
+/// fire again — silently, with a green build. The guard is [`egui::Response::has_focus`]
+/// instead, and keeping focus across a send then costs nothing, since nothing takes it away.
+///
+/// 🚨 **A vertical [`egui::ScrollArea`] cannot be dropped straight into a
+/// [`egui::Layout::bottom_up`] column.** It places itself at `available_rect_before_wrap()
+/// .min` — the *top* of the remaining space — while a bottom-up cursor sits at the bottom,
+/// so allocating it collapses the whole column: measured at **684 pt of a 684 pt pane, for
+/// one row of text, with `max_height` set to 100**. `ui.vertical`, `ui.scope` and an
+/// enclosing `Frame` all inherit the same failure; `ui.horizontal` places correctly but
+/// then pins the area to one row. So the composer **reserves its band first**
+/// (`allocate_ui_with_layout`, which does go through the placer and therefore lands on the
+/// cursor) and lays out top-down inside it. The band's height is the text's height from the
+/// previous frame — read from [`egui::scroll_area::ScrollAreaOutput::content_size`], which
+/// is the *unclipped* content and so cannot feed back on the band that clips it. Growth
+/// therefore lands one frame late, which is the same trade egui's own panels make.
+fn composer_box(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    live: bool,
+    want_focus: &mut bool,
+    measured: &mut f32,
+) -> bool {
+    let row = ui.text_style_height(&egui::TextStyle::Monospace);
+    // The floor is what makes the box big before anything is in it; the ceiling is what
+    // stops a pasted essay from eating the scrollback.
+    let inner = measured.clamp(row * COMPOSER_ROWS as f32, row * COMPOSER_MAX_ROWS);
+    let band = inner + 2.0 * COMPOSER_PAD_Y as f32 + 2.0 * COMPOSER_STROKE;
+
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), band),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            // `begin`/`end` rather than `show`, so the edge can be coloured by a focus state
+            // that is only known once the widget inside has run. The frame shape is inserted
+            // behind the content either way, so this costs nothing.
+            let mut framed = Frame::new()
+                .fill(COMPOSER_FILL)
+                .stroke(egui::Stroke::new(COMPOSER_STROKE, COMPOSER_EDGE))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(COMPOSER_PAD_X, COMPOSER_PAD_Y))
+                .begin(ui);
+
+            let (submit, focused) = {
+                let ui = &mut framed.content_ui;
+                ui.set_width(ui.available_width());
+                // Fill the reserved band even when the text has just shrunk, so the plate
+                // never leaves a one-frame gap under itself while the band catches up.
+                ui.set_min_height(inner);
+                let scrolled = egui::ScrollArea::vertical()
+                    // Named, because a scroll offset that lives on a positional auto-id is
+                    // one sibling away from belonging to something else.
+                    .id_salt("composer")
+                    .show(ui, |ui| {
+                        let edit = egui::TextEdit::multiline(text)
+                            .desired_rows(COMPOSER_ROWS)
+                            .desired_width(f32::INFINITY)
+                            // The enclosing `Frame` is the look; the widget's own would be a
+                            // second border inside the first.
+                            .frame(false)
+                            .margin(Margin::ZERO)
+                            .font(egui::TextStyle::Monospace)
+                            .text_color(if live { HUMAN } else { DIM })
+                            // 🚨 The inversion that makes the keystrokes work: declaring
+                            // **Shift**+Enter as the return key sets `pattern.shift`, and a
+                            // pattern that asks for shift is the one case
+                            // `matches_logically` is strict about — so a bare Enter no
+                            // longer matches, and falls through the widget untouched for
+                            // `composer_key` to read below.
+                            .return_key(egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            ))
+                            .hint_text(if live { COMPOSER_HINT } else { COMPOSER_HINT_DEAD });
+                        let response = ui.add_enabled(live, edit);
+                        if *want_focus && live {
+                            response.request_focus();
+                            *want_focus = false;
+                        }
+                        let focused = response.has_focus();
+                        // Read, never consumed: egui hands widgets a *clone* of the event
+                        // list, so the Enter the `TextEdit` declined is still here — and
+                        // consuming it through `consume_key` would take Shift+Enter with it,
+                        // for the reason `composer_key` documents.
+                        let submit = focused
+                            && ui.input(|i| {
+                                i.events.iter().any(|event| {
+                                    matches!(
+                                        event,
+                                        egui::Event::Key { key, pressed: true, modifiers, .. }
+                                            if composer_key(*key, *modifiers) == ComposerKey::Send
+                                    )
+                                })
+                            });
+                        (submit, focused)
+                    });
+                *measured = scrolled.content_size.y;
+                scrolled.inner
+            };
+
+            framed.frame.stroke = egui::Stroke::new(
+                COMPOSER_STROKE,
+                match (live, focused) {
+                    (false, _) => COMPOSER_EDGE_DEAD,
+                    (true, true) => COMPOSER_EDGE_FOCUS,
+                    (true, false) => COMPOSER_EDGE,
+                },
+            );
+            framed.end(ui);
+            submit
+        },
+    )
+    .inner
 }
 
 // ---------------------------------------------------------------------------
@@ -1651,5 +2288,502 @@ mod tests {
         let (all, none) = clip_lines("one\ntwo", 10);
         assert_eq!(all, vec!["one", "two"]);
         assert_eq!(none, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // The composer
+    // -----------------------------------------------------------------------
+
+    /// The whole keystroke contract, as literal values.
+    ///
+    /// Enter sends and Shift+Enter breaks the line — the shape Claude Desktop, Slack and
+    /// every other composer worth copying uses. Ctrl+Enter and Alt+Enter do **neither**:
+    /// each is "send" in some client and "newline" in another, and a wrong guess sends a
+    /// half-written message, so they are left free rather than assigned.
+    #[test]
+    fn enter_sends_and_shift_enter_breaks_the_line() {
+        use egui::{Key, Modifiers};
+        assert_eq!(composer_key(Key::Enter, Modifiers::NONE), ComposerKey::Send);
+        assert_eq!(composer_key(Key::Enter, Modifiers::SHIFT), ComposerKey::Newline);
+        assert_eq!(
+            composer_key(Key::Enter, Modifiers::CTRL),
+            ComposerKey::Ignore,
+            "Ctrl+Enter must not send — the cost of guessing wrong is a half-written message"
+        );
+        assert_eq!(composer_key(Key::Enter, Modifiers::ALT), ComposerKey::Ignore);
+        assert_eq!(
+            composer_key(Key::Enter, Modifiers::CTRL | Modifiers::SHIFT),
+            ComposerKey::Ignore,
+            "and the widget will not insert a newline for it either"
+        );
+    }
+
+    /// Nothing that is not Enter is the composer's business.
+    #[test]
+    fn any_other_key_falls_through() {
+        use egui::{Key, Modifiers};
+        for key in [Key::A, Key::Tab, Key::Escape, Key::ArrowDown, Key::Space] {
+            assert_eq!(composer_key(key, Modifiers::NONE), ComposerKey::Ignore, "{key:?}");
+            assert_eq!(composer_key(key, Modifiers::SHIFT), ComposerKey::Ignore, "{key:?}");
+        }
+    }
+
+    /// One frame of the composer, headless. Returns whether it asked to send, the text
+    /// after the frame, and how much vertical space the box took.
+    ///
+    /// `egui::RawInput::default()` carries `focused: true`, which is what makes
+    /// `Response::has_focus` mean anything with no window in sight.
+    fn composer_frame(
+        ctx: &egui::Context,
+        pane: &mut FakePane,
+        events: Vec<egui::Event>,
+    ) -> (bool, f32) {
+        let mut submitted = false;
+        let mut height = 0.0;
+        let input = egui::RawInput {
+            events,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // The real layout: the composer sits at the bottom of a bottom-up column,
+                // which is the arrangement the height assertions below are about.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    // Measured as the room the composer took *away from what follows it*,
+                    // which is the question a bottom-up column actually asks — and unlike
+                    // `min_rect`, it means the same thing in either layout direction.
+                    let before = ui.available_height();
+                    submitted = composer_box(
+                        ui,
+                        &mut pane.text,
+                        pane.live,
+                        &mut pane.want_focus,
+                        &mut pane.measured,
+                    );
+                    height = before - ui.available_height();
+                });
+            });
+        });
+        (submitted, height)
+    }
+
+    /// The three pieces of a [`ConversationPane`] the composer actually touches — a real
+    /// one would spawn an agent process to test a keystroke.
+    struct FakePane {
+        text: String,
+        live: bool,
+        want_focus: bool,
+        measured: f32,
+    }
+
+    impl FakePane {
+        fn new(text: &str) -> Self {
+            Self { text: text.to_string(), live: true, want_focus: true, measured: 0.0 }
+        }
+    }
+
+    fn enter(modifiers: egui::Modifiers) -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }]
+    }
+
+    /// 🚨 **The contract a version bump can silently break.**
+    ///
+    /// `Modifiers::matches_logically` is shift-permissive, so the default `return_key`
+    /// cannot tell Enter from Shift+Enter and neither can `consume_key`. The composer works
+    /// around that by *inverting* the shortcut — Shift+Enter is declared as the return key,
+    /// leaving a bare Enter to fall through for `composer_key` to read. That is a behaviour
+    /// of egui, not of this file, and `native/tests/egui_popup_contract.rs` exists because a
+    /// 0.31→0.33 change of exactly this kind already killed a keypress here once. So it is
+    /// pinned by driving real events through a real frame.
+    #[test]
+    fn enter_submits_and_shift_enter_types_a_newline() {
+        let ctx = egui::Context::default();
+        let mut pane = FakePane::new("hello");
+        // One frame to take focus; the request only lands for the frame after it.
+        for _ in 0..2 {
+            let (idle, _) = composer_frame(&ctx, &mut pane, Vec::new());
+            assert!(!idle, "an empty frame sends nothing");
+        }
+
+        let (sent, _) = composer_frame(&ctx, &mut pane, enter(egui::Modifiers::NONE));
+        assert!(sent, "a bare Enter must reach the caller as a send");
+        assert_eq!(pane.text, "hello", "and must NOT have been typed into the box");
+
+        let (sent, _) = composer_frame(&ctx, &mut pane, enter(egui::Modifiers::SHIFT));
+        assert!(!sent, "Shift+Enter must not send");
+        assert_eq!(pane.text, "hello\n", "Shift+Enter is the newline");
+    }
+
+    /// A dead agent's composer is disabled, so nothing it is typed at can be sent.
+    #[test]
+    fn a_dead_composer_never_submits() {
+        let ctx = egui::Context::default();
+        let mut pane = FakePane::new("hello");
+        pane.live = false;
+        let mut submitted = false;
+        for events in [Vec::new(), enter(egui::Modifiers::NONE), enter(egui::Modifiers::NONE)] {
+            let (sent, _) = composer_frame(&ctx, &mut pane, events);
+            submitted |= sent;
+        }
+        assert!(!submitted, "a disabled composer cannot take focus, so it cannot send");
+        assert_eq!(pane.text, "hello", "nor can it be typed into");
+    }
+
+    /// **The layout contract, which the egui source could not answer and a probe had to.**
+    ///
+    /// The box grows from a three-row floor and stops at a twelve-row ceiling, and — the
+    /// part that matters for the pane as a whole — the space it takes out of the bottom-up
+    /// column is that height and not the whole column. The naive spelling of this (a
+    /// `ScrollArea` with `max_height`, dropped into the bottom-up layout) measured **684 pt
+    /// of a 684 pt pane at every content size**, i.e. a scrollback with nothing left; see
+    /// [`composer_box`] for why and for what replaced it.
+    #[test]
+    fn the_box_grows_from_three_rows_and_stops_at_the_ceiling() {
+        let mut heights = Vec::new();
+        // 8 sits between the floor and the ceiling; 40 and 200 are both past it.
+        for rows in [1usize, 3, 8, 40, 200] {
+            let ctx = egui::Context::default();
+            let mut pane = FakePane::new(&vec!["x"; rows].join("\n"));
+            pane.want_focus = false;
+            // Three frames: the band follows the text by one, deliberately.
+            let mut height = 0.0;
+            for _ in 0..3 {
+                height = composer_frame(&ctx, &mut pane, Vec::new()).1;
+            }
+            heights.push(height);
+        }
+        let [one, three, eight, forty, lots] = heights[..] else { unreachable!() };
+        assert!(one > 0.0, "the box must occupy real space with one row in it: {one}");
+        assert!(one < 250.0, "and must not swallow the 700 pt pane it sits in: {one}");
+        assert_eq!(
+            one, three,
+            "one row and three rows must be the same height — three is the FLOOR, not a fit"
+        );
+        assert!(eight > three, "eight rows must have grown past the floor: {three} -> {eight}");
+        assert!(forty > eight, "and kept growing towards the ceiling: {eight} -> {forty}");
+        assert_eq!(
+            forty, lots,
+            "past the ceiling it must stop growing and scroll instead: {forty} vs {lots}"
+        );
+        // The ceiling is a stated number of rows, not whatever fell out of the layout.
+        assert!(
+            forty < 4.0 * three,
+            "twelve rows must be near four times the three-row floor: {three} -> {forty}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The status strip
+    // -----------------------------------------------------------------------
+
+    /// A session that has said `system/init` and nothing else.
+    fn started(model: &str) -> SessionFacts {
+        SessionFacts {
+            model: Some(model.to_string()),
+            cwd: Some("C:/work".into()),
+            permission_mode: Some("default".into()),
+            cli_version: Some("2.1.228".into()),
+            tools: 17,
+            ..Default::default()
+        }
+    }
+
+    fn live(pending: usize, running: usize) -> LiveCounts {
+        LiveCounts {
+            pending_approvals: pending,
+            running_tools: running,
+            remembered: 0,
+            has_session: true,
+        }
+    }
+
+    /// **The cold start, which every session opens in.** Before `system/init` there is no
+    /// model, no session id and no facts at all — and a band that answers that with an empty
+    /// plate or the word "None" is worse than one that says it is connecting.
+    #[test]
+    fn before_the_first_line_the_strip_says_it_is_connecting() {
+        let content = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        assert_eq!(content.model, ModelSlot::Connecting, "the plate says it is coming");
+        assert_eq!(content.reading.standing, Standing::Connecting);
+        assert_eq!(
+            content.reading.text, "",
+            "and the status half stays silent rather than saying it a second time"
+        );
+        assert!(content.identity.is_empty(), "nothing is known, so the hover claims nothing");
+        assert!(content.chips.is_empty(), "no cost, no memory, no turn — no chips");
+    }
+
+    /// Once init arrives the model is the headline, and everything else it said is on the
+    /// hover rather than on the band.
+    #[test]
+    fn the_model_becomes_the_headline_once_init_arrives() {
+        let content =
+            strip_content(None, live(0, 0), &started("claude-opus-5[1m]"), Some("abc-123"), None);
+        let ModelSlot::Named(label) = &content.model else { panic!("{:?}", content.model) };
+        assert_eq!(label.name, "claude-opus-5");
+        assert_eq!(label.variant.as_deref(), Some("1M"));
+        assert_eq!(content.reading.standing, Standing::Ready);
+        assert_eq!(content.reading.text, "ready");
+        // The identity is real and complete, and none of it is on the band itself.
+        let rows: Vec<&str> = content.identity.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(rows, vec!["model", "permissions", "cli", "cwd", "tools", "session"]);
+        assert_eq!(
+            content.identity[0].1, "claude-opus-5[1m]",
+            "the hover carries the string the CLI actually reported, suffix and all"
+        );
+    }
+
+    /// A dead agent outranks everything: nothing else on the band describes a process that
+    /// still exists.
+    #[test]
+    fn a_dead_agent_outranks_everything() {
+        let mut facts = started("claude-opus-5");
+        facts.needs_action = Some("answer the question".into());
+        let content = strip_content(
+            Some("the agent stopped listening: broken pipe"),
+            LiveCounts { pending_approvals: 2, running_tools: 3, remembered: 1, has_session: true },
+            &facts,
+            Some("abc-123"),
+            None,
+        );
+        assert_eq!(content.reading.standing, Standing::Dead);
+        assert_eq!(content.reading.text, "the agent stopped listening: broken pipe");
+    }
+
+    /// Waiting on a human outranks working, because only one of the two the agent can finish
+    /// on its own. This is the ordering the first status line had; it is kept, not rederived.
+    #[test]
+    fn waiting_on_a_human_outranks_working() {
+        let facts = started("claude-opus-5");
+        let both = strip_content(None, live(1, 4), &facts, Some("abc"), None);
+        assert_eq!(both.reading.standing, Standing::Asking);
+        assert_eq!(both.reading.text, "◈ 1 permission request — waiting on you");
+
+        let working = strip_content(None, live(0, 4), &facts, Some("abc"), None);
+        assert_eq!(working.reading.standing, Standing::Working);
+        assert_eq!(
+            working.reading.text, "● 4 tools running",
+            "and it says TOOLS — `is_working` is tool-derived, so calling it thinking would be \
+             false exactly when a model is writing prose with nothing in flight"
+        );
+    }
+
+    /// `needs_action` is the agent's own sentence about what it wants, and it is surfaced —
+    /// but it describes a turn that has **ended**, so live work supersedes it. The mapper only
+    /// clears the field on the next `post_turn_summary`, so without this a demand the human
+    /// already answered would sit on the band for the whole of the next turn.
+    #[test]
+    fn a_finished_turns_demand_is_surfaced_and_yields_to_live_work() {
+        let mut facts = started("claude-opus-5");
+        facts.needs_action = Some("pick one of the three options".into());
+        facts.last_status_detail = Some("asked a question".into());
+
+        let idle = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        assert_eq!(idle.reading.standing, Standing::Asking);
+        assert_eq!(idle.reading.text, "◈ pick one of the three options");
+
+        let resumed = strip_content(None, live(0, 1), &facts, Some("abc"), None);
+        assert_eq!(resumed.reading.standing, Standing::Working);
+        assert_eq!(resumed.reading.text, "● 1 tool running");
+    }
+
+    /// With nothing outstanding the band reports the turn the agent described, not a guess.
+    #[test]
+    fn a_quiet_session_reports_what_the_last_turn_said() {
+        let mut facts = started("claude-opus-5");
+        facts.last_status_detail = Some("wrote the strip and ran the tests".into());
+        let content = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        assert_eq!(content.reading.standing, Standing::Ready);
+        assert_eq!(content.reading.text, "wrote the strip and ran the tests");
+    }
+
+    /// 🚨 **The labelling rule, pinned.** `cost_usd` is cumulative on the wire and the token
+    /// counts beside it are not, so the one money figure on the band says which kind it is —
+    /// and no token total appears, because summing per-turn usage double-counts cache reads
+    /// and there is no other source for one.
+    #[test]
+    fn the_chips_say_what_kind_of_number_they_are() {
+        let mut facts = started("claude-opus-5");
+        facts.cost_usd = Some(0.1234);
+        facts.last_turn_duration_ms = Some(7_389);
+        facts.last_turn_usage = Some(crate::agent_event::Usage {
+            input_tokens: 12_000,
+            output_tokens: 400,
+            cache_creation_input_tokens: 900,
+            cache_read_input_tokens: 50_000,
+        });
+        let counts = LiveCounts { remembered: 2, ..live(0, 0) };
+        let content = strip_content(None, counts, &facts, Some("abc"), None);
+        assert_eq!(
+            content.chips,
+            vec!["session $0.1234", "2 remembered decisions", "last turn 7.4s"]
+        );
+        let band = content.chips.join(" · ");
+        assert!(!band.contains("token"), "no token figure is shown at all: {band}");
+        for figure in ["12000", "12,000", "12.0k", "400", "50000", "62900"] {
+            assert!(!band.contains(figure), "nor anything derived from one ({figure}): {band}");
+        }
+    }
+
+    /// The two number formats, at the boundaries that decide them.
+    #[test]
+    fn costs_and_durations_read_the_way_a_human_would_say_them() {
+        assert_eq!(cost_label(0.0), "$0.0000", "cents matter, so a turn never reads as free");
+        assert_eq!(cost_label(0.1234), "$0.1234");
+        assert_eq!(cost_label(12.5), "$12.50", "past a dollar the four decimals are noise");
+        assert_eq!(duration_label(0), "0ms");
+        assert_eq!(duration_label(999), "999ms");
+        assert_eq!(duration_label(7_389), "7.4s");
+        assert_eq!(duration_label(59_999), "60.0s");
+        assert_eq!(duration_label(125_000), "2m05s");
+    }
+
+    /// ⚠️ **What the model transform drops, which is nothing.**
+    ///
+    /// The suffix is *relocated* into a badge and upper-cased, so the reported string is
+    /// recoverable from the pair — and the verbatim spelling is on the hover regardless. What
+    /// this test really pins is the refusal: an identifier the console does not recognise is
+    /// passed through untouched rather than prettified into a name that would be wrong.
+    #[test]
+    fn the_model_suffix_is_relocated_not_dropped() {
+        let one_m = model_label("claude-opus-5[1m]");
+        assert_eq!(one_m.name, "claude-opus-5");
+        assert_eq!(one_m.variant.as_deref(), Some("1M"), "upper-cased, and that is the only edit");
+        assert_eq!(
+            format!("{}[{}]", one_m.name, one_m.variant.unwrap().to_lowercase()),
+            "claude-opus-5[1m]",
+            "the reported string is recoverable from what is drawn"
+        );
+
+        // No suffix, and nothing invented.
+        assert_eq!(model_label("claude-opus-5"), ModelLabel {
+            name: "claude-opus-5".into(),
+            variant: None
+        });
+        // A dated snapshot keeps its date: it is part of *which model*, not decoration.
+        assert_eq!(model_label("claude-3-5-sonnet-20241022").name, "claude-3-5-sonnet-20241022");
+        // A gateway's fully-qualified id survives intact — this is the case a nice-names
+        // table would have mangled.
+        assert_eq!(
+            model_label("us.anthropic.claude-opus-5-v1:0").name,
+            "us.anthropic.claude-opus-5-v1:0"
+        );
+        // Degenerate brackets are punctuation, not a variant.
+        assert_eq!(model_label("weird[]").name, "weird[]");
+        assert_eq!(model_label("[1m]").name, "[1m]");
+        assert_eq!(model_label("").name, "");
+    }
+
+    /// One frame of the strip, headless — the same shape [`composer_frame`] uses, measuring
+    /// the room the band took *away from what follows it*.
+    fn strip_frame(ctx: &egui::Context, content: &StripContent, pane: &mut FakePane) -> (f32, f32) {
+        let mut band = 0.0;
+        let mut left = 0.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // The real arrangement: strip lowest, composer above it, scrollback the rest.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    let before = ui.available_height();
+                    strip_box(ui, content);
+                    band = before - ui.available_height();
+                    ui.add_space(4.0);
+                    let _ = composer_box(
+                        ui,
+                        &mut pane.text,
+                        pane.live,
+                        &mut pane.want_focus,
+                        &mut pane.measured,
+                    );
+                    left = ui.available_height();
+                });
+            });
+        });
+        (band, left)
+    }
+
+    /// 🚨 **The strip must not swallow the pane, and must stay one line.**
+    ///
+    /// This is the failure mode that already bit this file once: a child dropped into a
+    /// bottom-up column that places itself at the top of the remaining space measured 684 pt
+    /// of a 684 pt pane. So the assertion is not "it looks right", it is that the scrollback
+    /// still gets the remainder — with the busiest band that can occur, including a log line
+    /// far too long for the width, which must truncate rather than wrap into a second row.
+    #[test]
+    fn the_strip_is_one_band_and_leaves_the_scrollback_the_rest() {
+        let ctx = egui::Context::default();
+        let mut pane = FakePane::new("x");
+        pane.want_focus = false;
+
+        let mut facts = started("claude-opus-5[1m]");
+        facts.cost_usd = Some(1.2345);
+        facts.last_turn_duration_ms = Some(7_389);
+        let busy = strip_content(
+            None,
+            LiveCounts { pending_approvals: 2, running_tools: 0, remembered: 9, has_session: true },
+            &facts,
+            Some("11111111-2222-3333-4444-555555555555"),
+            Some(&"a diagnostic line off the child that is far too long for the band ".repeat(8)),
+        );
+        let empty = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+
+        let mut busy_band = 0.0;
+        let mut left = 0.0;
+        for _ in 0..3 {
+            let (band, remaining) = strip_frame(&ctx, &busy, &mut pane);
+            busy_band = band;
+            left = remaining;
+        }
+        let (cold_band, _) = strip_frame(&ctx, &empty, &mut pane);
+
+        assert!(busy_band > 0.0, "the strip must occupy real space: {busy_band}");
+        assert!(
+            busy_band < 44.0,
+            "one band, not two — an overlong log line must truncate, not wrap: {busy_band}"
+        );
+        assert!(
+            (busy_band - cold_band).abs() < 0.5,
+            "and the band is the same height with everything in it as with nothing: \
+             {cold_band} vs {busy_band}"
+        );
+        assert!(
+            left > 400.0,
+            "the scrollback must keep the remainder of the 700 pt pane, not a sliver: {left}"
+        );
+    }
+
+    /// The band follows the text rather than a guess: the same three-row floor, one extra
+    /// row at a time, must move the height exactly once per row until the ceiling.
+    #[test]
+    fn the_band_tracks_the_text_row_by_row() {
+        let ctx = egui::Context::default();
+        let mut pane = FakePane::new("x");
+        pane.want_focus = false;
+        let mut last = 0.0;
+        for rows in 4..=9 {
+            pane.text = vec!["x"; rows].join("\n");
+            let mut height = 0.0;
+            for _ in 0..3 {
+                height = composer_frame(&ctx, &mut pane, Vec::new()).1;
+            }
+            assert!(height > last, "row {rows} did not grow the box: {last} -> {height}");
+            last = height;
+        }
     }
 }
