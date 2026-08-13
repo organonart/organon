@@ -11,6 +11,49 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console Spike — a conversation tab now runs in a project, and says which one
+
+- 🚨 **An agent in a conversation tab was standing in no project at all, silently.** The
+  built-in `claude-chat` row carries no `cwd`, `AgentSession::spawn` reads `None` as *the
+  app's own directory*, and a console started from a PATH shim is nowhere in particular — so
+  the agent saw no repo-local `.claude/skills/`, no project `CLAUDE.md`, no
+  `SHELL_ARCHITECTURE.md`. Measured: it answered `Unknown skill: organon-cli` with the skill
+  correctly on disk, and separately spent several approval cards running `ls` and `--help` to
+  rediscover a CLI with an 18 KB guide in the checkout. The only symptom is an agent that
+  seems oddly ignorant. It also failed execution plan §5.9.26 at its first step: an agent that
+  cannot see the repo cannot extend the console from inside the console.
+- **Four rules in one pure place, and the product still names no project.**
+  `harness::conversation_cwd` resolves, in order: the harness's own `cwd`,
+  `$ORGANON_SHELL_PROJECT`, **the nearest project root at or above the launch directory**,
+  then the launch directory. Rule 3 is the one that does the work — *`cd` into a checkout and
+  start the console* lands in that checkout's root with no configuration whatsoever, for any
+  checkout, so Organon's own repo is reachable for exactly the reason everybody else's is and
+  no path ships in product data. The marker is `.claude/`, then `CLAUDE.md`, then `.git`.
+- ⚠️ **Home is never discovered, only inherited.** The walk stops at the home directory,
+  because a `~/.claude` is user-global configuration rather than a project — otherwise a
+  console launched from `~/Documents` would quietly aim at the whole home directory. Launching
+  *in* home still lands there.
+- 📌 **Terminal tabs are deliberately unchanged.** A shell announces its directory and `cd` is
+  one keystroke, so starting in `native/` because that is where you were is right; ascending
+  would be an unasked-for correction. An agent's directory is invisible *and* decides which
+  instructions exist at all.
+- ⚠️ **Nothing is silent now, including success.** `harness::cwd_notes` states the directory
+  and *which rule chose it* every time — not only on failure, because a resolution can be
+  wrong in a way the code cannot detect — plus a warning when the directory satisfies no
+  marker at all. Said to `stderr` for whoever launched from a terminal and into the pane for
+  whoever is looking at the console.
+- ⚠️ **`ConversationPane`'s log had never been drawn anywhere.** `pub fn log()` had no caller,
+  so *"approvals are not wired — a tool that needs permission will fail instead of asking"*
+  has been written to nobody for the pane's whole life. The scrollback now draws it, dimmed,
+  above the first message.
+- 🚨 **Half-verified, and the half that is open is named.** Against the real `claude.exe`,
+  `system/init` lists `organon-cli` in `slash_commands` from inside *and* outside the repo,
+  but in **neither** case in its `skills` array, while three neighbouring user-global skills
+  appear in both. Duplicate copies, description length, file size and frontmatter shape are
+  each ruled out by measurement. So the cwd is right and the skill is registered; whether the
+  model is *offered* it is unanswered, and the honesty ledger carries the remaining hypothesis
+  and the one cheap test for it. 443 tests in the compositor lib, from 433.
+
 ### Console Spike — the canary on `tool_use_result` fired, on its first real chance
 
 - 🚨 **A third `tool_use_result` shape exists, and the counter built to notice one noticed

@@ -1592,6 +1592,91 @@ harness-agnostic in full; the conversation view is harness-specific and says whi
 harness; and **degrading to a terminal tab is always available** — a harness we have not
 integrated is not unsupported, it is supported the old way.
 
+#### 🚨 Where the agent works — four rules, stated out loud, never inherited
+
+**The defect, measured 2026-08-13.** An agent in a conversation tab was asked to use the
+`organon-cli` skill and answered `Unknown skill: organon-cli`. Before that, asked to show
+something in the portal, it spent several approval cards running `ls` and `--help` to
+rediscover a CLI with an 18 KB guide sitting in the repo. The built-in `claude-chat` row
+carries no `cwd`, `AgentSession::spawn` turns `None` into *the app's own directory*, and a
+console launched from Explorer or from a PATH shim is in no project at all. So the agent saw
+no repo-local `.claude/skills/`, no project `CLAUDE.md`, no `SHELL_ARCHITECTURE.md` — and
+**nothing anywhere said so.** The only symptom is an agent that seems oddly ignorant.
+
+**Why it is worth more than one broken lookup.** Execution plan §5.9.26 records James's
+direction: the console is to be extensible from inside itself, on the Pi paradigm — the agent
+gets its own docs plus a skill teaching it to change the thing it lives in. An agent that
+cannot see the repo cannot do any of that, and §5.9.26 names this file as the authority it
+should consult *before* the tree. The paradigm was failing at its first step, silently.
+
+`harness::conversation_cwd` is the one place that decides, and it is pure — a function of
+(spec, platform, launch directory, environment, a marker test), so every rule below is a unit
+test rather than a thing you find out by launching:
+
+| # | Rule | `CwdSource` |
+|---|---|---|
+| 1 | `HarnessSpec::cwd`, tilde-expanded — the user's per-**tab** answer | `Spec` |
+| 2 | `$ORGANON_SHELL_PROJECT`, tilde-expanded — the user's per-**launch** answer | `Env` |
+| 3 | the nearest project root **at or above** the launch directory | `ProjectRoot` |
+| 4 | the launch directory itself — today's behaviour, now *stated* | `LaunchDir` |
+
+📌 **The product must not name a project, and rule 3 is how it avoids having to.** A
+conversation tab is not inherently about this repo — someone may want an agent about their own
+work, and an explicit `cwd` on the built-in spec would be wrong for them and unmaintainable
+for us. But *"`cd` into a checkout and start the console"* is the ordinary way anyone reaches
+any project, and rule 3 makes that land in the checkout's root with **no configuration at
+all**, for any checkout, without a single path in the source. The console's own repo therefore
+works for the same reason everybody else's does. `is_project_dir` is the marker: `.claude/`
+first (the literal thing that was missing), then `CLAUDE.md`, then `.git` — existence, not
+directory-ness, because a git worktree's `.git` is a file.
+
+⚠️ **Home is never *discovered*, only inherited.** The walk stops at the home directory: a
+`~/.claude` is user-global configuration that every agent gets wherever it starts, so treating
+it as a project root would quietly aim a console launched from `~/Documents` at the whole home
+directory — which on this machine is explicitly not a codebase. Launching *in* home still
+lands there, via rule 4. The stop test is `Path::starts_with`, component-wise and
+case-sensitive; a Windows launch path cased differently from `%USERPROFILE%` walks one or two
+ancestors further, which costs an extra marker test and cannot produce a wrong answer.
+
+📌 **Rule 3 is deliberately NOT applied to terminal tabs, and rules 1–2 already were.** A
+shell announces its directory in the prompt and `cd` is one keystroke, so a tab that started
+in `native/` because that is where you were is right — ascending to the repo root would be an
+unasked-for correction, and running `cargo` is the commonest reason to be in a subdirectory.
+An agent's working directory is invisible *and* decides which instructions and skills exist at
+all. The two cases genuinely differ, so the resolution is conversation-only and terminal-tab
+behaviour is byte-for-byte unchanged.
+
+⚠️ **The alternatives, and what they cost.** *An explicit `cwd` on the built-in spec* — names
+Organon's checkout in product data, wrong for every other user, and stale the moment the repo
+moves. *The launch directory alone* — that is rule 4, i.e. today, and it does not survive
+being started from a shim or from Explorer, which is exactly how the defect was reached.
+*Per-tab only, via `harnesses.json`* — correct but not sufficient on its own: that file is
+**machine configuration outside this repo**, so it cannot be shipped, cannot be tested here,
+and a fresh clone gets nothing. It stays rule 1 because a user's explicit row must win; it is
+not the default because a default that requires hand-editing JSON on every machine is not a
+default. Rule 2 exists because the launch shims on this machine already set `ORGANON_SHELL_*`
+and one more line there is cheaper than editing a JSON file in the app's store root.
+
+**Nothing is silent any more, and that was the point.** `harness::cwd_notes` produces the
+lines — the directory and *which rule chose it*, **always**, plus a warning when the resolved
+directory satisfies no marker at all (*"no `.claude/`, `CLAUDE.md` or `.git` here — this agent
+starts with no project skills and no project instructions"*, naming all three ways to fix it).
+⚠️ The first line is unconditional on purpose: a diagnostic that only fires when something is
+*detectably* wrong cannot cover a resolution that is wrong in a way this code cannot see — a
+root found two levels above the one you meant — and stating the answer every time is what
+makes that inspectable at all. `shell_main` says it twice, to two different readers: `stderr`
+for whoever started the console from a terminal, and `ConversationPane::note` for whoever is
+looking at the console. The agent's *own* report of its cwd is on the model plate's hover
+(`SessionFacts::cwd`, from `system/init`) — that is the independent confirmation, since it
+comes from the process rather than from the code that spawned it.
+
+⚠️ **`ConversationPane`'s log had never been drawn anywhere**, from the day the pane was
+built. `pub fn log()` existed and no caller used it, so *"approvals are not wired — a tool
+that needs permission will fail instead of asking"* has been written to a reader that does not
+exist for its whole life. `scrollback` now draws those lines dimmed at the head of the
+transcript. Same defect as an inherited working directory, one layer over: the console knows,
+and says it to nobody.
+
 ### 1.2 The portal — a screen-anchored, live, orbitable window onto the world
 
 `organon console portal open`, typed at a prompt **inside the console**, floats a rendered
@@ -1723,6 +1808,31 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **The working-directory fix is necessary and I could not prove it sufficient — there is
+  a second, independent reason `organon-cli` may not reach the model, and it is not in this
+  code.** Measured against the real `claude.exe` (2026-08-13, two headless invocations, the
+  second killed at the `system/init` line so no turn ran): `system/init` carries **both** a
+  `slash_commands` array and a `skills` array. `organon-cli` is in `slash_commands` from a
+  cwd inside the repo *and* from a scratch directory outside it — so the CLI does discover
+  it, by both routes. It is **absent from `skills` in both**, while three neighbouring
+  user-global skills (`comfyui-video`, `hip-reduction`, `organon-mind-social`) are in both.
+  Ruled out by measurement: it is not the duplicate (project-local *and* user-global) copies,
+  since it is missing from the scratch cwd where only one copy exists; not description length
+  (582 bytes, against 607 for one that appears); not file size (18 KB, against 23 KB for one
+  that appears); not a frontmatter difference — both carry exactly `name` and `description`.
+  **The remaining hypothesis, untested:** `~/.claude/skills/organon-cli` is a *junction* whose
+  real path is inside another repo's `.claude/skills/`, and the loader may register the slash
+  command while declining to offer the model a skill it resolves outside the session's scope.
+  The cheap test is a machine change and needs James: replace the junction with a real copy,
+  relaunch, and re-read `skills` in `system/init`. Until then, **do not read this change as
+  "the agent can now use the skill"** — read it as "the agent is now in the repo, is told so,
+  and the skill is at least registered by name."
+- ⚠️ **Nothing in this change has been seen running.** No GPU here, and the console was
+  deliberately not launched. The four resolution rules, the home stop, the notes and the
+  bare-directory warning are pinned by ten headless tests; `cargo check --features
+  shell-edition --bin organon-console` is green. That the notes actually *appear* at the head
+  of a live conversation tab's scrollback — the right colour, the right place, not colliding
+  with the empty-transcript placeholder — is unverified.
 - 🚨 **Nobody has seen the portal. Not one pixel of it, and not one interaction.** It was
   built in a cloud session with no GPU: the state machine, the rect arithmetic, the wheel
   claim, the CLI round trip and the one-render-per-frame invariant are pinned by headless
