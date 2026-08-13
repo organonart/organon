@@ -58,6 +58,23 @@ From here on, this file gets an entry per meaningful change, newest first.
   twice — but whether a real subagent emits exactly these line kinds in this order is unverified,
   as is every pixel of the card. Re-capture at the first real fan-out.
 
+### The + menu drops because of its geometry, not because egui caught it
+
+- **The new-tab popup is anchored under the button instead of above it.** It was placed with
+  `plus.rect.left_top() - vec2(0, 8)` on a `LEFT_BOTTOM` pivot — the popup's bottom edge 8 px
+  *above* the button, so the list grew upward. That was right when the tab strip ran along the
+  bottom of the window. It has been a `TopBottomPanel::top("tab-strip")` for some time, which
+  put the anchor at roughly **y = −8**, off the top of the screen.
+- ⚠️ **It looked correct anyway, and that is the actual defect.** egui clamps an `Area` back
+  inside the screen rect, so the menu landed in approximately the right place *as a fallback*,
+  never as a placement — and a change to that clamping, or to the strip's 30 px height, would
+  have moved it with nothing to catch the move. The anchor is now `left_bottom() + vec2(0, 8)`
+  on `LEFT_TOP`, derived from the **button** rather than from the strip, so a future height
+  change cannot re-open it. The module doc's word "drops" is true by construction now.
+- 📌 Position is not testable here — it needs a GPU and a display, and no test covers it either
+  before or after. The 353 compositor-lib tests are unchanged and still pass; what changed is
+  that the correct position no longer depends on a library's error handling.
+
 ### The organon-cli skill lives where the tool reads it, as a real directory (#19)
 
 - **`.claude/skills/organon-cli` was a git symlink (index mode `120000`) pointing at
