@@ -37,16 +37,18 @@ use crate::agent_event::{EventKind, ModelChoice};
 use crate::agent_map::{ContextFill, EventMapper, SessionFacts};
 use crate::agent_session::{AgentSession, Control, McpWiring, StreamItem};
 use crate::approval::{
-    approval_channel, decision_for, decision_key, resolve_choice, Choice, DecisionMemory,
+    approval_channel, decision_key, resolve_choice, resolve_recall, Choice, DecisionMemory,
     PendingApproval,
 };
 use crate::block_panel::{DEFAULT_SLIDERS, PAD, PANEL_EDGE, PANEL_FILL, PANEL_TITLE, SLIDER_WIDTH};
+use crate::command::CommandSpec;
 use crate::conversation::{
-    Answer, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent, Body, Change,
-    Element, ElementId, Ignored, PanelSpec, ResultDetail, RunOutcome, StepState, SubagentAct,
-    SubagentLog, SubagentProgress, SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
+    Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent,
+    Body, Change, Element, ElementId, Ignored, PanelSpec, ResultDetail, RunOutcome, StepState,
+    SubagentAct, SubagentLog, SubagentProgress, SurfaceSpec, ToolCard, ToolState, Transcript,
+    Verdict,
 };
-use crate::mcp::{McpServer, NoDispatch};
+use crate::mcp::{ExposureAudit, McpServer, NoDispatch, ToolDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
 use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::timeline::pinned_after_scroll;
@@ -257,41 +259,146 @@ pub fn default_slider_table() -> Vec<(String, f32)> {
     DEFAULT_SLIDERS.iter().map(|(l, v)| ((*l).to_string(), *v)).collect()
 }
 
-/// What one pane keeps alive so its agent can ask it for permission.
+/// **What this tab's agent may ask the console to do** — the console's own verbs, as MCP
+/// tools it can call from inside the process it is already living in.
 ///
-/// Both fields are held for the pane's lifetime and read by nobody: dropping the server
-/// stops it, and dropping the config deletes the file the agent was started with. That is
-/// the entire contract, which is why they are underscored — a tab closing must take its
-/// loopback port and its temp file with it.
+/// 🚨 **Both halves are handed down, and neither can be built here.** The vocabulary is
+/// `shell_main`'s `console_specs()` (it is built from the substrate's material and rig
+/// tables, which this crate cannot see and must not learn to), and the dispatch is
+/// `shell_main`'s too, because applying a console verb needs the `Shell` that owns the
+/// backdrop. What this crate does is serve them and generate their schemas from the same
+/// [`CommandSpec`] the CLI is generated from — one vocabulary, many renderings, never a
+/// hand-written second copy.
+///
+/// ⚠️ The dispatch is `Send` because it runs on [`McpHttp`]'s serve thread, never on the
+/// UI thread — see [`crate::mcp`]'s module doc.
+pub struct Capabilities {
+    pub specs: Vec<CommandSpec>,
+    pub dispatch: Box<dyn ToolDispatch + Send>,
+}
+
+impl Capabilities {
+    /// A pane that offers the model nothing: the permission handler alone.
+    ///
+    /// The safe shape, and still a real one — `doc/console_approval_protocol.md` §9 point 5
+    /// records that a server whose `tools/list` returns only the handler reports
+    /// `status: connected` and the model simply sees no tools from it. It is what every
+    /// test in this file uses, and what a caller with no verbs to offer should pass.
+    pub fn none() -> Self {
+        Self { specs: Vec::new(), dispatch: Box::new(NoDispatch) }
+    }
+}
+
+impl std::fmt::Debug for Capabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Capabilities")
+            .field("specs", &self.specs.iter().map(|s| &s.name).collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What one pane keeps alive so its agent can ask it for permission — and what that agent
+/// was told it may call.
+///
+/// The first two fields are held for the pane's lifetime and read by nobody: dropping the
+/// server stops it, and dropping the config deletes the file the agent was started with.
+/// That is why they are underscored — a tab closing must take its loopback port and its
+/// temp file with it. The last two are read once per `system/init`, for the exposure audit.
 struct ApprovalWiring {
     _server: McpHttp,
     _config: ConfigFile,
+    /// Every capability tool this pane serves, namespaced as the client spells it.
+    served: Vec<String>,
+    /// The handler's namespaced name — the one that must **not** reach the model (§7).
+    handler: String,
+}
+
+/// **A verb the console means to serve, and does not.**
+///
+/// Two spec names that sanitise to one MCP tool name leave the later one unserved: the
+/// agent is simply never told that verb exists, and everything else works. That is a naming
+/// bug in the table rather than a runtime condition, so it is said rather than returned as a
+/// failure — but it has to be said somewhere a human will see it.
+///
+/// Pure, and separate from the saying, for the reason [`audit_line`] is: the live path is
+/// dead by construction — `shell_main`'s own test asserts the real table has no collisions —
+/// so the sentence would otherwise be verified only by reading it. This is the safety net
+/// for the *next* verb somebody adds, and a safety net nobody has pulled is worth exactly as
+/// much as its test.
+fn collision_note(collisions: &[String]) -> Option<String> {
+    if collisions.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "these verbs collide as MCP tool names and are NOT served: {}",
+        collisions.join(", ")
+    ))
 }
 
 /// Start the console's MCP server and write the config the agent will be spawned with.
 ///
-/// Returns what to hold, what to pass to the agent, and where the questions will arrive.
-/// Fails as a string rather than an error type because there is exactly one caller and one
-/// thing it does with a failure: say so, and run the agent unwired.
+/// Returns what to hold, what to pass to the agent, where the questions will arrive — and
+/// **anything the pane should say out loud about the wiring it just got**. That last one is
+/// a return value rather than a `eprintln!` in here because this function runs before the
+/// pane exists and therefore cannot reach [`ConversationPane::note`]; the caller seeds the
+/// log with it. Fails as a string rather than an error type because there is exactly one
+/// caller and one thing it does with a failure: say so, and run the agent unwired.
+///
+/// 🚨 **This used to pass an empty spec table**, so the console answered permissions for
+/// everything the agent did and exposed **zero** capability tools — and an agent that wanted
+/// to open the portal had to shell out to `organon.exe console portal open`, spawning a
+/// process to send a message to the process it was already inside, and raising a card that
+/// asked *"may I run this shell command"* instead of one naming a capability. Everything
+/// needed was already here; the two ends were never joined.
 fn start_approvals(
-) -> Result<(ApprovalWiring, McpWiring, Receiver<PendingApproval>), String> {
+    capabilities: Capabilities,
+) -> Result<(ApprovalWiring, McpWiring, Receiver<PendingApproval>, Vec<String>), String> {
     let (gate, inbox) = approval_channel();
-    // 🚨 **An empty spec table on purpose.** With no capability tools this server offers
-    // exactly one tool, the permission handler — and Claude Code withholds *that* from the
-    // model because `--permission-prompt-tool` names it (§7). So the model sees a connected
-    // server with nothing it can call, which is the safe shape for an approvals tier.
-    // Serving the console's verbs needs a `CommandService`, which borrows the session log
-    // on the UI thread; that is a wiring, and it is not this one.
-    let server = McpServer::new(&[], Box::new(gate)).with_server_name(SERVER_NAME);
+    let Capabilities { specs, dispatch } = capabilities;
+    let server = McpServer::new(&specs, Box::new(gate)).with_server_name(SERVER_NAME);
     let permission_tool = server.permission_tool_flag_value();
-    let http = McpHttp::start(server, Box::new(NoDispatch))
+    let served = server.namespaced_tool_names();
+    let mut notes = Vec::new();
+    if let Some(note) = collision_note(server.name_collisions()) {
+        // Both, and for the reason the exposure audit already gives a few dozen lines down:
+        // stderr is empty unless the console was started from a terminal, and the band's log
+        // slot holds one truncated line that the next diagnostic replaces. The pane's own log
+        // is the copy that survives — drawn at the head of the scrollback, where the human
+        // looking at the console is.
+        eprintln!("organon-console: {note}");
+        notes.push(note);
+    }
+    let http = McpHttp::start(server, dispatch)
         .map_err(|e| format!("could not bind a loopback port: {e}"))?;
     let json = mcp_config_json(SERVER_NAME, &http.url());
     let config =
         ConfigFile::write(&std::env::temp_dir(), &ConfigFile::stem_for(http.port()), &json)
             .map_err(|e| format!("could not write the MCP config: {e}"))?;
-    let wiring = McpWiring { config: config.path().to_path_buf(), permission_tool };
-    Ok((ApprovalWiring { _server: http, _config: config }, wiring, inbox))
+    let wiring =
+        McpWiring { config: config.path().to_path_buf(), permission_tool: permission_tool.clone() };
+    Ok((
+        ApprovalWiring { _server: http, _config: config, served, handler: permission_tool },
+        wiring,
+        inbox,
+        notes,
+    ))
+}
+
+/// **§7's security property, checked against this session's own report.**
+///
+/// `offered` is `system/init`'s `tools` array verbatim. Pure so the three states it has to
+/// tell apart can be pinned with literal values; [`crate::mcp::ExposureAudit`] carries the
+/// argument for why each is a different fact.
+///
+/// This is deliberately the *whole* of the check the console can make by itself: it reads
+/// what the CLI reports, and a CLI that reported the list wrongly would fool it. That is
+/// still strictly more than a measurement nobody re-runs.
+fn audit_line(wiring: Option<&ApprovalWiring>, offered: &[String]) -> String {
+    let Some(wiring) = wiring else {
+        return "approvals are not wired — nothing was served and nothing could be checked"
+            .to_string();
+    };
+    ExposureAudit::of(&wiring.handler, &wiring.served, offered).summary()
 }
 
 /// One conversation tab: a live agent, the transcript it is writing, and the composer.
@@ -335,12 +442,15 @@ pub struct ConversationPane {
     /// snapshot and nothing at all here, and a label this crate invented would be a knob
     /// that moves and changes no pixel — a worse instrument than no knob.
     sliders: Vec<(String, f32)>,
-    /// The MCP server this pane's agent asks for permission, and the config it was started
-    /// with. Held, never read — see [`ApprovalWiring`]. `None` means the server could not
-    /// start; the agent then runs unwired and the log says so.
-    _approvals: Option<ApprovalWiring>,
+    /// The MCP server this pane's agent asks for permission and calls the console's verbs
+    /// on, plus the config it was started with. See [`ApprovalWiring`]. `None` means the
+    /// server could not start; the agent then runs unwired and the log says so.
+    approvals: Option<ApprovalWiring>,
     /// Where permission requests arrive from the serve thread.
     inbox: Receiver<PendingApproval>,
+    /// The last exposure-audit sentence reported, so a repeat `system/init` that changes
+    /// nothing says nothing. See where it is set — an init recurs by design.
+    last_audit: Option<String>,
     /// The questions a human has not answered yet, by the element that draws them.
     ///
     /// ⚠️ **Removing an entry without answering it denies that call**, because the reply
@@ -409,10 +519,26 @@ impl ConversationPane {
     /// config file naming a port that has to exist first. A server that will not start is
     /// not fatal — the tab opens, the agent runs, and the log says that a tool needing
     /// permission will fail rather than ask.
-    pub fn new(cwd: Option<&str>, buttons: Vec<String>, sliders: Vec<(String, f32)>) -> Self {
+    ///
+    /// `capabilities` is what this tab's agent may ask the console to do, handed down for
+    /// the same reason `buttons` and `sliders` are — see [`Capabilities`].
+    /// [`Capabilities::none`] is the caller with nothing to offer.
+    pub fn new(
+        cwd: Option<&str>,
+        buttons: Vec<String>,
+        sliders: Vec<(String, f32)>,
+        capabilities: Capabilities,
+    ) -> Self {
         let mut log = VecDeque::new();
-        let (approvals, wiring, inbox) = match start_approvals() {
-            Ok((held, wiring, inbox)) => (Some(held), Some(wiring), inbox),
+        let (approvals, wiring, inbox) = match start_approvals(capabilities) {
+            Ok((held, wiring, inbox, notes)) => {
+                // Whatever the wiring had to say about itself, in the pane rather than only
+                // on a stderr nobody is reading. `push_back` rather than `note` because the
+                // pane does not exist yet; the log is capped far above the handful of lines
+                // this can produce.
+                log.extend(notes);
+                (Some(held), Some(wiring), inbox)
+            }
             Err(error) => {
                 log.push_back(format!(
                     "approvals are not wired ({error}) — a tool that needs permission will \
@@ -442,8 +568,9 @@ impl ConversationPane {
             artifacts: HashMap::new(),
             buttons,
             sliders,
-            _approvals: approvals,
+            approvals,
             inbox,
+            last_audit: None,
             waiting: HashMap::new(),
             memory: DecisionMemory::new(),
             models: Vec::new(),
@@ -454,6 +581,18 @@ impl ConversationPane {
     /// What the console has been asked to remember, for whoever wants to show or audit it.
     pub fn memory(&self) -> &DecisionMemory {
         &self.memory
+    }
+
+    /// Start asking again. The band's marker goes with it, on the next frame, because the
+    /// marker is derived from this flag rather than stored beside it.
+    ///
+    /// Says so in the log: revoking is the one gesture here whose *effect* is that nothing
+    /// visible happens until the next tool call, and a click with no acknowledgement reads
+    /// as a click that missed.
+    fn revoke_session_allow(&mut self) {
+        if self.memory.revoke_session_allow() {
+            self.note("the console is asking again — everything-for-this-session revoked".into());
+        }
     }
 
     pub fn transcript(&self) -> &Transcript {
@@ -486,11 +625,22 @@ impl ConversationPane {
         // one needs the session, and the fold needs `note`, which is `&mut self`. Same
         // frame either way — the strip is drawn once, after all of this.
         let mut acks = Vec::new();
+        // The same arrangement, and the same reason: the audit's line goes through `note`.
+        let mut audits: Vec<Vec<String>> = Vec::new();
         for item in items {
             match item {
                 StreamItem::Event(event) => {
                     if let EventKind::ControlResponse(response) = &event.kind {
                         acks.push(response.clone());
+                    }
+                    // 🚨 **§7's security property, re-measured against this server, every
+                    // init.** The doc says the guarantee is tied to the flag and must be
+                    // checked per server; serving real capability tools is exactly the
+                    // change that could disturb it. The init event already carries the
+                    // model's whole tool list, so the console can answer the question about
+                    // itself instead of a person remembering to run a probe.
+                    if let EventKind::SessionStarted(start) = &event.kind {
+                        audits.push(start.tools.clone());
                     }
                     for mapped in self.mapper.map(&event) {
                         match self.transcript.apply(mapped) {
@@ -521,6 +671,25 @@ impl ConversationPane {
         }
         for response in acks {
             changed |= self.receive_control(&response);
+        }
+        for offered in audits {
+            let line = audit_line(self.approvals.as_ref(), &offered);
+            // ⚠️ **Only when the verdict changes, and an init recurs.** `system/init` is
+            // re-sent as deferred MCP tools finish loading — measured going 33 → 128 tools
+            // between two inits with nothing asked to change — so an unconditional line
+            // would repeat itself all session, and the one line that can say the approval
+            // system has stopped meaning anything would be the one nobody reads. A change
+            // *is* the news: `0 of 5 visible` becoming `5 of 5` is our tools arriving, and
+            // anything becoming 🚨 is the only alarm this console has.
+            if self.last_audit.as_deref() == Some(line.as_str()) {
+                continue;
+            }
+            // On stderr as well as in the band's log, because the log slot holds one
+            // truncated line and the next diagnostic replaces it.
+            eprintln!("organon-console: {line}");
+            self.last_audit = Some(line.clone());
+            self.note(line);
+            changed = true;
         }
         // The model plate's confirmation, and the only one there is: a repeat
         // `system/init` has restated the model and the mapper has taken it (rule 3's
@@ -719,28 +888,26 @@ impl ConversationPane {
         changed
     }
 
-    /// One question: answered from memory if it has been decided before, otherwise a card.
+    /// One question: answered from memory if the console already has an answer for it,
+    /// otherwise a card.
     ///
-    /// **A remembered decision still renders.** It would be cheaper to answer it silently
+    /// **An answer the console gave still renders.** It would be cheaper to answer silently
     /// and say nothing, and that is exactly the failure the memory has to avoid: an
     /// authority the human granted once and can no longer see is worse than being asked
-    /// every time.
+    /// every time. That holds harder for the session-wide allow than for a per-call one —
+    /// it is the grant with the widest reach and the fewest clicks behind it.
     fn receive_approval(&mut self, pending: PendingApproval) {
         let tool_name = pending.request().tool_name.clone();
         let tool_use_id = pending.request().tool_use_id.clone();
         let input = pending.request().input.to_string();
 
-        if let Some(verdict) = self.memory.lookup(&tool_name, &input) {
-            let decision = decision_for(verdict, pending.request());
+        if let Some(recall) = self.memory.recall(&tool_name, &input) {
+            let (decision, answer) = resolve_recall(recall, pending.request());
             self.transcript.insert_approval(ApprovalBlock {
                 tool_name,
                 input,
                 tool_use_id,
-                state: ApprovalState::Answered(Answer {
-                    verdict,
-                    from_memory: true,
-                    remembered: true,
-                }),
+                state: ApprovalState::Answered(answer),
             });
             pending.answer(decision);
         } else {
@@ -1536,6 +1703,14 @@ fn approval_card(
     .inner
 }
 
+/// The four buttons, widening left to right — and the widest one is marked.
+///
+/// 🚨 **"allow everything" is amber, not green.** It is the only button here that decides
+/// more than the call in front of it, and the colour is the one thing a hand reads before
+/// the word. [`MODE_ALERT`] is reused rather than a fourth colour chosen: it is already what
+/// the band uses for *"the console may not be the one being asked"*, which is precisely what
+/// this button creates. The hover states the whole consequence, including where to revoke it
+/// — that revoke is on the band, not here, because this card will scroll away.
 fn approval_buttons(ui: &mut egui::Ui, live: bool) -> Option<CardAct> {
     let mut act = None;
     ui.horizontal_wrapped(|ui| {
@@ -1550,6 +1725,13 @@ fn approval_buttons(ui: &mut egui::Ui, live: bool) -> Option<CardAct> {
         }
         if ui.button(RichText::new("allow & remember").color(OK).monospace()).clicked() {
             act = Some(CardAct::Choose(Choice::AllowAndRemember));
+        }
+        if ui
+            .button(RichText::new("allow everything this session").color(MODE_ALERT).monospace())
+            .on_hover_text(SESSION_ALLOW_CONSEQUENCE)
+            .clicked()
+        {
+            act = Some(CardAct::Choose(Choice::AllowEverythingThisSession));
         }
         if ui.button(RichText::new("deny").color(BAD).monospace()).clicked() {
             act = Some(CardAct::Choose(Choice::Deny));
@@ -1566,8 +1748,23 @@ fn approval_verdict(ui: &mut egui::Ui, answer: Answer) -> Option<CardAct> {
     let mut act = None;
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(word).color(color).small().strong());
-        if answer.from_memory {
-            ui.label(RichText::new("· from a decision you already made").color(DIM).small());
+        // ⚠️ **The two standing sources say different things, because they are undone in
+        // different places.** "a decision you already made" sends a reader to this card's
+        // own `forget`; a session-wide allow has no per-call entry to forget and is revoked
+        // from the band, so a card that said the same sentence would send them looking for
+        // a button that is not there.
+        match answer.by {
+            AnsweredBy::Click => {}
+            AnsweredBy::ThisCall => {
+                ui.label(RichText::new("· from a decision you already made").color(DIM).small());
+            }
+            AnsweredBy::SessionAllow => {
+                ui.label(
+                    RichText::new("· you allowed everything this session — revoke on the band")
+                        .color(MODE_ALERT)
+                        .small(),
+                );
+            }
         }
         if answer.remembered {
             ui.label(
@@ -2035,6 +2232,55 @@ pub struct ModeSlot {
     pub marker: Option<ModeMarker>,
 }
 
+// ---------------------------------------------------------------------------
+// The console's own standing allow
+// ---------------------------------------------------------------------------
+//
+// 🚨 **This is the console's own memory widened, and it must never be confused with a
+// permission mode — in the code or on the screen.** The two above it are upstream:
+// `bypassPermissions` is unreachable (the CLI refuses it without a launch flag the console
+// does not pass) and `dontAsk` **refuses** rather than allows. This one is ours: the handler
+// still runs, the card is still drawn, the transcript still records every call — the console
+// simply answers *yes* on the human's behalf.
+//
+// The band therefore has to distinguish **two different facts with two different remedies**:
+//
+// * *a mode is silencing approvals* — [`ModeSlot::marker`], fixed by changing the mode; and
+// * *you allowed everything* — [`SessionAllowSlot`], fixed by revoking it, which is what
+//   clicking the plate does.
+//
+// Both can be true at once, and the band says both rather than picking one. The marker is
+// **derived in [`strip_content`] from the memory's own flag**, exactly as the mode's is
+// derived from the reported mode: true for as long as the condition holds, and impossible to
+// dismiss or to leave stuck. A console that has stopped asking while still looking like the
+// authority is precisely what the mode marker exists to prevent, and a grant the human made
+// themselves earns no exemption from that.
+//
+// ⚠️ [`MODE_ALERT`]'s amber and not red, for the reason already argued for the mode marker:
+// this band is looked at for hours, and a permanent klaxon trains the eye to skip it.
+
+/// What the plate says, in one word.
+pub const SESSION_ALLOW_LABEL: &str = "allow all";
+
+/// The standing marker's sentence — **what is happening**, on the band's one line.
+pub const SESSION_ALLOW_MARKER: &str = "you allowed everything — the console is not asking";
+
+/// The whole consequence, for the button's hover and the plate's.
+pub const SESSION_ALLOW_CONSEQUENCE: &str =
+    "every tool this agent calls is allowed without asking, until you revoke it or close \
+     this tab. Nothing is written to disk. The band carries a marker for as long as it is \
+     on, and clicking that marker revokes it. Decisions you denied and remembered still \
+     apply.";
+
+/// The band's half of the standing allow: present exactly while it is on.
+///
+/// A struct of one field rather than a bare `bool` so the plate draws from the same shape
+/// the mode's does, and so the sentence has one home.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionAllowSlot {
+    pub marker: &'static str,
+}
+
 /// The wire spelling of the mode in which the console is the approval authority.
 ///
 /// ⚠️ Not `manual`. `--help` spells the flag-side choice `manual` and the wire enum has
@@ -2183,6 +2429,11 @@ pub struct StripContent {
     pub model: ModelSlot,
     /// The permission mode, and the persistent marker that goes with a non-default one.
     pub mode: ModeSlot,
+    /// **Present exactly while the console's own session-wide allow is active** — a
+    /// different fact from [`mode`](Self::mode) with a different remedy, so it is a
+    /// different slot rather than a second value in that one. See the section above
+    /// [`SessionAllowSlot`].
+    pub session_allow: Option<SessionAllowSlot>,
     /// A model change that has been asked for and not confirmed — the row's label, not a
     /// model id. Drawn *beside* [`model`](Self::model), never in place of it: see
     /// [`PendingModel`].
@@ -2226,6 +2477,13 @@ pub struct LiveCounts {
     pub running_tools: usize,
     /// How many decisions the console has been asked to remember this session.
     pub remembered: usize,
+    /// Whether the console is allowing everything for the rest of this session
+    /// ([`crate::approval::DecisionMemory::session_allow`]).
+    ///
+    /// A live reading rather than a [`SessionFacts`] field, on this struct's own rule: it is
+    /// the console's own state, it is true or false right now, and it goes away with the
+    /// tab. Nothing on the wire ever states it — no upstream mode means this.
+    pub session_allow: bool,
     /// Whether a `system/init` has been seen — the cold-start discriminator.
     pub has_session: bool,
     /// [`EventMapper::is_generating`]: an assistant message is open and tokens are arriving.
@@ -2466,6 +2724,11 @@ pub fn strip_content(
         mode: facts.permission_mode.clone(),
         marker: facts.permission_mode.as_deref().and_then(mode_marker),
     };
+    // Derived on the same rule and for a sharper version of the same reason: the console
+    // granting itself the authority to stop asking must be visible for exactly as long as
+    // that is true, and neither stick nor be dismissible.
+    let session_allow =
+        live.session_allow.then_some(SessionAllowSlot { marker: SESSION_ALLOW_MARKER });
     // Two measurements or nothing. `context_fill` refuses when either half is missing,
     // and there is no arm here that supplies one — see [`ContextSlot`].
     let context = match facts.context_fill() {
@@ -2475,6 +2738,7 @@ pub fn strip_content(
     StripContent {
         model,
         mode,
+        session_allow,
         pending_model: None,
         identity: identity_rows(facts, session),
         reading: status_reading(failure, live, facts),
@@ -2508,6 +2772,13 @@ enum StripAct {
     ChooseModel(ModelRow),
     /// A permission mode was clicked. `&'static str` because the shortlist is this file's.
     ChooseMode(&'static str),
+    /// The standing-allow marker was clicked: start asking again.
+    ///
+    /// ⚠️ **No confirmation, deliberately.** It revokes an authority rather than granting
+    /// one, so the worst a stray click can do is make the console ask a question — and a
+    /// confirm dialog in front of the *safe* direction would be the one place in this path
+    /// where friction sits on the wrong side.
+    RevokeSessionAllow,
 }
 
 fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane) {
@@ -2517,6 +2788,7 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane) {
             pending_approvals: pane.transcript.pending_approvals().len(),
             running_tools: pane.transcript.running_tools().len(),
             remembered: pane.memory.len(),
+            session_allow: pane.memory.session_allow(),
             has_session: pane.transcript.session_id().is_some(),
             // The one reading that comes off the mapper rather than the transcript: the
             // bracket is a stream fact, and the transcript is an ordered list of what was
@@ -2532,6 +2804,7 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane) {
     match strip_box(ui, &content, &rows) {
         Some(StripAct::ChooseModel(row)) => pane.choose_model(&row),
         Some(StripAct::ChooseMode(mode)) => pane.choose_permission_mode(mode),
+        Some(StripAct::RevokeSessionAllow) => pane.revoke_session_allow(),
         None => {}
     }
 }
@@ -2574,6 +2847,10 @@ fn strip_box(
                     ui.horizontal(|ui| {
                         let mut act = model_plate(ui, content, models);
                         act = act.or(mode_plate(ui, content));
+                        // Immediately after the mode, because the two answer one question
+                        // between them — "is the console still the authority?" — and reading
+                        // them apart would be reading half the answer.
+                        act = act.or(session_allow_plate(ui, content));
                         let reading = &content.reading;
                         if !reading.text.is_empty() {
                             ui.add(
@@ -2957,6 +3234,43 @@ fn mode_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
     egui::Popup::menu(&response)
         .show(|ui| mode_picker(ui, mode))
         .and_then(|inner| inner.inner)
+}
+
+/// **The standing allow, on the band, for as long as it is on** — and the place it is
+/// revoked from.
+///
+/// 🚨 Nothing at all when there is no standing allow, which is the normal case: this is the
+/// one plate on the band that is *absent* rather than empty, because its whole job is to be
+/// noticed. The band's height does not move either way — [`strip_box`] reserves one row
+/// before anything lays itself out.
+///
+/// The revoke is here rather than on a card because there is no one card it belongs to: the
+/// grant covers every call, including ones that have not happened yet. A human who realises
+/// they granted too much must not have to go looking for the card they clicked.
+fn session_allow_plate(ui: &mut egui::Ui, content: &StripContent) -> Option<StripAct> {
+    let slot = content.session_allow.as_ref()?;
+    let plate = Frame::new()
+        .fill(MODEL_FILL)
+        .stroke(egui::Stroke::new(MODEL_STROKE, MODE_ALERT))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(MODEL_PAD_X, MODEL_PAD_Y))
+        .show(ui, |ui| {
+            ui.label(RichText::new(SESSION_ALLOW_LABEL).color(MODE_ALERT).small().monospace());
+        });
+    let clicked = plate
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("{SESSION_ALLOW_CONSEQUENCE}\n\nClick to revoke."))
+        .clicked();
+    // Truncated like every other label on the band; the whole sentence is on the hover.
+    let marker = ui
+        .add(egui::Label::new(RichText::new(slot.marker).color(MODE_ALERT).small()).truncate())
+        .on_hover_text(format!("{SESSION_ALLOW_CONSEQUENCE}\n\nClick to revoke."));
+    // The marker itself is clickable too, because it is the wider target and it is what the
+    // eye actually lands on — the plate beside it is the label, not the button.
+    (clicked || marker.interact(egui::Sense::click()).clicked())
+        .then_some(StripAct::RevokeSessionAllow)
 }
 
 /// The three modes, each labelled by what happens.
@@ -4365,6 +4679,7 @@ mod tests {
             pending_approvals: pending,
             running_tools: running,
             remembered: 0,
+            session_allow: false,
             has_session: true,
             generating: false,
         }
@@ -4435,6 +4750,7 @@ mod tests {
                 pending_approvals: 2,
                 running_tools: 3,
                 remembered: 1,
+                session_allow: false,
                 has_session: true,
                 generating: true,
             },
@@ -4817,6 +5133,206 @@ mod tests {
         assert_eq!(cold.mode, ModeSlot::default());
     }
 
+    /// 🚨 CONTRACT: **the capability tools a caller hands down are the ones served, and the
+    /// permission handler is never one of them.**
+    ///
+    /// This is the connection Part 1 was missing: the server was built with an empty spec
+    /// table, so the console answered permissions for everything and exposed nothing, and an
+    /// agent wanting a console verb had to shell out to `organon.exe` — a separate process,
+    /// to talk to the process it was already inside.
+    ///
+    /// It starts a real loopback server, because that is the wiring under test; the port is
+    /// ephemeral and the config file deletes itself with the wiring.
+    #[test]
+    fn the_verbs_handed_down_are_the_verbs_served() {
+        let specs = vec![
+            CommandSpec {
+                name: "console.portal".into(),
+                doc: "Open or close the portal".into(),
+                target: crate::command::TargetKind::Viewport,
+                args: vec![crate::command::ArgSpec {
+                    name: "state".into(),
+                    kind: crate::command::ArgKind::Choice(vec!["open".into(), "close".into()]),
+                    required: true,
+                }],
+            },
+            CommandSpec {
+                name: "console.background".into(),
+                doc: "What sits behind the glyphs".into(),
+                target: crate::command::TargetKind::Viewport,
+                args: Vec::new(),
+            },
+        ];
+        let (wiring, mcp, _inbox, notes) =
+            start_approvals(Capabilities { specs, dispatch: Box::new(NoDispatch) })
+                .expect("a loopback port and a temp config");
+        assert!(notes.is_empty(), "a table with no collisions has nothing to report: {notes:?}");
+
+        assert_eq!(
+            wiring.served,
+            ["mcp__organon__console_portal", "mcp__organon__console_background"],
+            "dotted names are sanitised, and the mapping is the server's — not a second table"
+        );
+        assert_eq!(wiring.handler, "mcp__organon__approve_tool");
+        assert_eq!(mcp.permission_tool, wiring.handler, "the flag names the same handler");
+        assert!(
+            !wiring.served.contains(&wiring.handler),
+            "the handler is the console's own gate, never a capability the model may call"
+        );
+
+        // And the empty case is still reachable and still honest: a caller with nothing to
+        // offer serves the handler alone (§9 point 5's safest shape).
+        let (bare, _, _, _) = start_approvals(Capabilities::none()).expect("wiring");
+        assert!(bare.served.is_empty());
+    }
+
+    /// 🚨 CONTRACT: **a verb that is not served says so where a human is, not only on
+    /// stderr.** A console started from a PATH shim has no terminal attached, so an
+    /// `eprintln!` about a silently-missing capability is written to nobody — the same defect
+    /// the pane's log itself had until the scrollback started drawing it. The note comes back
+    /// from `start_approvals` so [`ConversationPane::new`] can seed the log with it, which is
+    /// what puts it at the head of the scrollback and in the band's slot.
+    ///
+    /// ⚠️ This is the *only* path here that can go quiet: the exposure audit already says
+    /// both, and a server that will not start is reported by the `Err` arm. Do not add a
+    /// third.
+    #[test]
+    fn a_colliding_verb_is_reported_to_the_pane_and_not_only_to_stderr() {
+        // Nothing pure to construct here, so the collision is stated directly: two names that
+        // sanitise to one tool name. `mcp.rs` owns the transform and pins it.
+        let note = collision_note(&["console.portal".to_string()])
+            .expect("a collision has something to say");
+        assert!(note.contains("console.portal"), "it names the verb that was lost: {note}");
+        assert!(note.contains("NOT served"), "and says what happened to it: {note}");
+        assert!(
+            collision_note(&[]).is_none(),
+            "and a clean table adds no line to a log a human reads every session"
+        );
+
+        // And the wiring really carries it out to the caller — the half an `eprintln!` inside
+        // `start_approvals` could not do.
+        let colliding = vec![
+            CommandSpec {
+                name: "console.portal".into(),
+                doc: "Open or close the portal".into(),
+                target: crate::command::TargetKind::Viewport,
+                args: Vec::new(),
+            },
+            CommandSpec {
+                name: "console/portal".into(),
+                doc: "The same tool name, spelled differently".into(),
+                target: crate::command::TargetKind::Viewport,
+                args: Vec::new(),
+            },
+        ];
+        let (wiring, _, _, notes) =
+            start_approvals(Capabilities { specs: colliding, dispatch: Box::new(NoDispatch) })
+                .expect("a loopback port and a temp config");
+        assert_eq!(notes.len(), 1, "one line, naming the loss: {notes:?}");
+        assert!(notes[0].contains("console/portal"), "{:?}", notes[0]);
+        assert_eq!(
+            wiring.served,
+            ["mcp__organon__console_portal"],
+            "and the first spelling is still served — a collision is not a failure"
+        );
+    }
+
+    /// ⚠️ CONTRACT: with no wiring there is nothing to audit, and the line says so rather
+    /// than reading as a pass. The arithmetic itself is pinned in [`crate::mcp`]; this is the
+    /// adapter, and the only thing it can get wrong is claiming to have checked.
+    #[test]
+    fn an_unwired_pane_reports_that_nothing_was_checked() {
+        let line = audit_line(None, &["Bash".to_string()]);
+        assert!(line.contains("not wired"), "{line}");
+        assert!(!line.contains("withheld"), "silence must not read as a clean bill: {line}");
+    }
+
+    /// 🚨 CONTRACT: **the standing-allow marker is on the band for exactly as long as the
+    /// allow is, and it is DERIVED rather than stored.** Same rule as the mode marker above,
+    /// for the same reason: a console that has stopped asking while still looking like the
+    /// authority is the failure both markers exist to prevent — and a flag somebody has to
+    /// remember to clear is how a marker gets stuck on, or worse, stuck off.
+    #[test]
+    fn the_session_allow_marker_is_present_exactly_while_it_is_active() {
+        let facts = started("claude-opus-5");
+        let band = |on: bool| {
+            let counts = LiveCounts { session_allow: on, ..live(0, 0) };
+            strip_content(None, counts, &facts, Some("abc"), None)
+        };
+
+        assert_eq!(band(false).session_allow, None, "the console asking is not news");
+        let marked = band(true).session_allow.expect("a console that has stopped asking must say so");
+        assert_eq!(marked.marker, SESSION_ALLOW_MARKER);
+        assert!(
+            marked.marker.contains("not asking"),
+            "the marker says what is happening, not what it is called: {}",
+            marked.marker
+        );
+
+        // Derived: the same inputs give the same band, and turning the allow off takes the
+        // marker with it in the very next frame. There is nowhere for it to be latched.
+        assert_eq!(band(true), band(true));
+        assert_eq!(band(false).session_allow, None);
+    }
+
+    /// 🚨 CONTRACT: **"you allowed everything" and "a mode is silencing approvals" are
+    /// different facts with different remedies, and the band says which.** Both can be true
+    /// at once. The mode marker is fixed by changing the mode; this one is fixed by revoking
+    /// the grant, on this band. A single merged warning would name the wrong cure half the
+    /// time.
+    #[test]
+    fn the_band_tells_a_standing_allow_apart_from_a_mode_that_silences_approvals() {
+        let mut facts = started("claude-opus-5");
+        facts.permission_mode = Some("dontAsk".into());
+        let both = strip_content(
+            None,
+            LiveCounts { session_allow: true, ..live(0, 0) },
+            &facts,
+            Some("abc"),
+            None,
+        );
+        let mode = both.mode.marker.expect("the mode still speaks for itself");
+        let ours = both.session_allow.expect("and so does ours");
+        assert_ne!(mode.text, ours.marker, "two facts, two sentences");
+        assert!(mode.text.contains("refused"), "upstream refuses: {}", mode.text);
+        assert!(ours.marker.contains("allowed"), "ours allows: {}", ours.marker);
+        // ⚠️ The console's own grant is NOT a permission mode and must never be reported as
+        // one — `dontAsk` and `bypassPermissions` are upstream and mean something else.
+        assert_eq!(both.mode.mode.as_deref(), Some("dontAsk"), "the plate reports the wire's mode");
+        for row in MODE_ROWS {
+            assert!(!row.value.contains("session"), "the picker offers no such mode: {}", row.value);
+        }
+        assert!(!SESSION_ALLOW_CONSEQUENCE.contains("bypass"));
+
+        // …and with the mode back to default, ours is the only marker left standing.
+        facts.permission_mode = Some(MODE_DEFAULT.into());
+        let ours_only = strip_content(
+            None,
+            LiveCounts { session_allow: true, ..live(0, 0) },
+            &facts,
+            Some("abc"),
+            None,
+        );
+        assert!(ours_only.mode.marker.is_none());
+        assert!(ours_only.session_allow.is_some());
+    }
+
+    /// 📌 CONTRACT: the standing allow is **not** counted among the remembered decisions.
+    /// It has no card, no key and no `forget`; folding it into that tally would make one
+    /// number mean two things and hide the wider grant inside the narrower count.
+    #[test]
+    fn a_standing_allow_is_not_one_of_the_remembered_decisions() {
+        let facts = started("claude-opus-5");
+        let counts = LiveCounts { session_allow: true, remembered: 0, ..live(0, 0) };
+        let content = strip_content(None, counts, &facts, Some("abc"), None);
+        assert!(
+            !content.chips.iter().any(|c| c.contains("remembered")),
+            "no entries, so no chip: {:?}",
+            content.chips
+        );
+        assert!(content.session_allow.is_some(), "the grant is carried as a marker instead");
+    }
+
     /// 🚨 CONTRACT: **exactly three modes are offered, each labelled by what happens.**
     /// `bypassPermissions` is refused by a session the console did not launch with
     /// `--dangerously-skip-permissions`, so the row would be a dead button; `plan` and
@@ -5020,6 +5536,7 @@ mod tests {
                 pending_approvals: 2,
                 running_tools: 0,
                 remembered: 9,
+                session_allow: true,
                 has_session: true,
                 generating: true,
             },

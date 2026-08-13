@@ -634,6 +634,48 @@ impl CommandTarget for ConsoleTarget {
     }
 }
 
+/// **The console's verbs, reachable from inside the process the agent is already living
+/// in** — the [`ToolDispatch`] behind every capability tool a conversation tab serves.
+///
+/// 🚨 **The bug this closes.** Until this existed the console's MCP server was built with an
+/// empty spec table, so an agent that wanted to open the portal had to run
+/// `./organon.exe console portal open` through `Bash` — spawning a whole second process to
+/// send a message to the one it was inside — and the approval card asked *"may I run this
+/// shell command"* instead of naming a capability. Everything else was already here.
+///
+/// ⚠️ **It writes onto the console's own sidecar rather than applying anything**, and that
+/// is the point rather than a shortcut. `Shell::drain_console` already reads that file every
+/// frame, routes each line through the real [`CommandService`] — which validates against the
+/// same [`CommandSpec`] this tool's schema was generated from, and leaves a `CommandRun`
+/// record either way — and then applies it. Anything else would be a second apply path
+/// beside the audited one. The CLI and the tool now converge on one transport; what the tool
+/// removes is the process, not the discipline.
+///
+/// ⚠️ **So the tool returns "accepted", not "applied".** The op lands on the next frame
+/// (~16 ms), and a failure *after* validation here — a name this build cannot paint — is
+/// reported on stderr by the drain rather than to the model. Returning a promise the caller
+/// can read as a result is the honest cost of reusing the audited path; the alternative was
+/// blocking an MCP call on the UI thread's next frame.
+///
+/// ⚠️ It is `Send` and holds nothing: it runs on the MCP transport's serve thread, and the
+/// sidecar's path is derived per call from the IPC namespace ([`cli::console_cmd_path`]) so
+/// two consoles in two namespaces cannot write to each other's.
+struct SidecarDispatch;
+
+impl organon_shell::mcp::ToolDispatch for SidecarDispatch {
+    fn call(&mut self, command: &str, args: Value) -> Result<Value, String> {
+        // The same conversion the sidecar drain performs, from the same one place — so a
+        // tool call and a `organon console …` line cannot come to mean different things.
+        // This is also where `block`'s row range is caught, since `ArgKind::Int` carries no
+        // bounds and the generated schema therefore cannot state it.
+        let op = op_from(command, &args)?;
+        let line = cli::console_op_to_line(&op);
+        cli::append_console_ops(std::slice::from_ref(&op))
+            .map_err(|e| format!("{command}: could not reach the console's command channel: {e}"))?;
+        Ok(json!({ "accepted": line }))
+    }
+}
+
 /// One console op applied to the `(source, look)` pair — **pure**, so the entire command
 /// vocabulary is a test rather than a claim about a `Shell` that needs a window server.
 ///
@@ -1505,6 +1547,15 @@ impl Shell {
                 // means a lane in `Shared`, which is this file's knowledge and not the
                 // compositor crate's. See `surface_slider_table`.
                 surface_slider_table(),
+                // The console's own vocabulary, served to this tab's agent as MCP tools —
+                // the **same** `console_specs()` the sidecar drain validates against and the
+                // CLI's `--help` is built from, so the three cannot come to know different
+                // verbs. `SidecarDispatch` carries what its schema accepts back onto the one
+                // transport that applies it.
+                conversation_view::Capabilities {
+                    specs: console_specs(),
+                    dispatch: Box::new(SidecarDispatch),
+                },
             );
             // Said twice on purpose, to two different readers: into the pane, where it
             // appears at the head of the scrollback for whoever is looking at the console,
@@ -3467,6 +3518,117 @@ mod cli_tests {
                 "`{r}` leaked into the background vocabulary — the two lists are separate"
             );
         }
+    }
+
+    /// 🚨 **The MCP half of the same drift guard: every console verb is served as a tool,
+    /// with a schema GENERATED from its spec.**
+    ///
+    /// The tool table and the sidecar's validation are now two renderings of one
+    /// `console_specs()`, exactly as the CLI's `--help` is a third. This pins that the set is
+    /// complete (a verb added to the table is served without an edit here), that no name is
+    /// lost to MCP's tool-name grammar, and that the schema each tool carries is the one its
+    /// spec generates — the thing a hand-written second table cannot promise, and which this
+    /// tree has already paid for at nine wrong ranges out of forty-five.
+    ///
+    /// ⚠️ **Runs under `cargo check --profile test` only in this session** — it lives behind
+    /// `shell-edition` in `shell_main.rs`, so CI is what actually executes it.
+    #[test]
+    fn every_console_verb_is_served_as_a_tool_with_the_schema_its_spec_generates() {
+        use organon_shell::mcp::{input_schema, tool_name_for, McpServer, PermissionDecision};
+        let specs = console_specs();
+        let server = McpServer::new(
+            &specs,
+            Box::new(|_: &organon_shell::mcp::PermissionRequest| {
+                PermissionDecision::deny("not this test's business")
+            }),
+        )
+        .with_server_name(conversation_view::SERVER_NAME);
+
+        assert!(
+            server.name_collisions().is_empty(),
+            "a verb whose sanitised tool name collides is silently NOT served: {:?}",
+            server.name_collisions()
+        );
+        assert_eq!(server.tools().len(), specs.len(), "every verb, and nothing hand-added");
+
+        for spec in &specs {
+            let entry = server
+                .tools()
+                .iter()
+                .find(|t| t.command_name == spec.name)
+                .unwrap_or_else(|| panic!("`{}` is in the table but is not served", spec.name));
+            assert_eq!(entry.tool_name, tool_name_for(&spec.name));
+            assert_eq!(
+                entry.input_schema,
+                input_schema(spec),
+                "`{}` would be served a schema its spec did not generate",
+                spec.name
+            );
+            assert_eq!(entry.description, spec.doc, "the palette's line is the tool's");
+        }
+
+        // The names the agent actually types, and the one that must never be among them.
+        let served = server.namespaced_tool_names();
+        assert!(served.contains(&"mcp__organon__console_portal".to_string()), "{served:?}");
+        assert!(!served.contains(&server.permission_tool_flag_value()));
+        // ⚠️ Dotted verbs cannot be MCP tool names — the grammar is `[a-zA-Z0-9_-]` — so the
+        // dot becomes `_` and the mapping back is the server's, not a second table's.
+        assert!(served.iter().all(|n| !n.contains('.')), "{served:?}");
+    }
+
+    /// 🚨 **A capability call becomes the line the CLI would have written — the same op,
+    /// onto the same audited channel, with no process spawned.**
+    ///
+    /// The whole point of Part 1. It pins the two halves of `SidecarDispatch`'s decision: a
+    /// valid call converts to the exact sidecar line (so a tool call and a
+    /// `organon console …` line cannot come to mean different things), and an out-of-range
+    /// `block` is refused *before* anything is written — the one gate `ArgKind::Int` cannot
+    /// express in the generated schema, and therefore the one failure this dispatch reports
+    /// to the model itself rather than leaving to the drain.
+    ///
+    /// ⚠️ **It deliberately does NOT call the dispatch, because calling it would write to the
+    /// live sidecar** — `console_cmd_path()` is namespace-derived, not test-scoped, so a
+    /// console running beside the test suite would drain the line and open a portal. What is
+    /// therefore uncovered here is the append itself, which is `cli::append_console_ops` —
+    /// one line, already exercised by the CLI path that has always used it.
+    ///
+    /// ⚠️ `cargo check --profile test` only in this session; CI executes it.
+    #[test]
+    fn a_capability_call_becomes_the_sidecar_line_the_cli_would_have_written() {
+        let line = |name: &str, args: Value| -> Result<String, String> {
+            op_from(name, &args).map(|op| cli::console_op_to_line(&op))
+        };
+        assert_eq!(line(CMD_PORTAL, json!({ CMD_STATE: "open" })), Ok("portal open".into()));
+        assert_eq!(
+            line(CMD_BACKGROUND, json!({ CMD_ARG: "graphite" })),
+            Ok("background graphite".into())
+        );
+        assert_eq!(line(CMD_BLOCK, json!({ CMD_ROWS: 12 })), Ok("block 12".into()));
+
+        // Every line this produces must be one the drain can read back, or the tool would
+        // write something the console silently skips.
+        for spec in console_specs() {
+            let args = match spec.name.as_str() {
+                CMD_BACKGROUND | CMD_RIG => json!({ CMD_ARG: match spec.args[0].kind {
+                    ArgKind::Choice(ref v) => v[0].clone(),
+                    _ => panic!("{}: expected a Choice", spec.name),
+                } }),
+                CMD_BLOCK => json!({ CMD_ROWS: 3 }),
+                CMD_PATCH => json!({ CMD_UP: 1, CMD_ROWS: 2, CMD_KIND: cli::PATCH_KIND_WORDS[0] }),
+                CMD_PORTAL => json!({ CMD_STATE: cli::PORTAL_WORDS[0] }),
+                other => panic!("{other}: this test has no arguments for a new verb"),
+            };
+            let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
+            assert!(
+                cli::parse_console_op(&written).is_some(),
+                "`{}` writes `{written}`, which the drain cannot read back",
+                spec.name
+            );
+        }
+
+        // The row range: a real gate, and the model is told why.
+        let refused = line(CMD_BLOCK, json!({ CMD_ROWS: 9000 })).expect_err("out of range");
+        assert!(refused.contains("must be 1..="), "{refused}");
     }
 
     /// **The block verb's row range is a gate on both sides of the sidecar, and this is the

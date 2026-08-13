@@ -1525,8 +1525,10 @@ permission hook is a direct call into the state the UI is already drawing.
 | The transport | An accept thread, a connection thread each, one `Mutex` around the endpoint. `POST /mcp`; a **permission call is answered as `text/event-stream`** so it can be written to while it waits; the optional `GET` push stream is still **`405`**, measured fine | `mcp_http.rs` |
 | The hook | `ApprovalGate` — posts the question to the UI over a channel and waits on the reply in `HEARTBEAT` steps | `approval.rs` |
 | The element | `Body::Approval(ApprovalBlock)` — tool, arguments as text, `tool_use_id`, pending / answered / **abandoned** | `conversation.rs` |
-| The card | allow · allow & remember · deny, with the arguments shown as fields | `conversation_view.rs` |
-| The memory | `DecisionMemory`, keyed on tool **plus canonicalised arguments** | `approval.rs` |
+| The card | allow · allow & remember · **allow everything this session** · deny, with the arguments shown as fields | `conversation_view.rs` |
+| The memory | `DecisionMemory` — per-call entries keyed on tool **plus canonicalised arguments**, and one session-wide allow | `approval.rs` |
+| The capability tools | every `CommandSpec` in `console_specs()`, schema generated from the spec; dispatch is `SidecarDispatch` | `mcp.rs` · `shell_main.rs` |
+| The exposure audit | `ExposureAudit` — §7's withholding property, re-checked at every `system/init` from the reported tool list | `mcp.rs` |
 
 🚨 **The serve loop must not be the UI thread, and that is the whole shape.** The hook is
 synchronous and blocks for as long as a human takes. The pending question therefore holds
@@ -1585,6 +1587,43 @@ that card carries a `forget` button. An authority granted once and thereafter in
 worse than being asked every time. **Scope is the session** — the memory lives in the pane
 and dies with the tab; nothing is written to disk.
 
+##### Allow everything for the rest of this session
+
+The same memory widened, not a second mechanism: `DecisionMemory` holds one extra flag, the
+card offers a fourth button, and `recall` answers from it when no per-call decision covers
+the call. The handler still runs, the card is still drawn, the transcript still records
+every call — the console simply answers *yes* on the human's behalf.
+
+🚨 **It is not, and must never be presented as, a permission mode.** `bypassPermissions` is
+unreachable (the CLI refuses it without a launch flag the console does not pass) and
+`dontAsk` **refuses** rather than allows — both measured, both in the protocol doc. Nothing
+in this feature touches either.
+
+Four properties, each a decision:
+
+- **The band carries a standing marker for exactly as long as it is on**, derived in
+  `strip_content` from the memory's own flag — the same rule as the mode marker, which
+  exists because the hazard is not the click, it is the hours afterwards when the band still
+  looks like the authority. It cannot stick and cannot be dismissed. [`MODE_ALERT`]'s amber,
+  not red: this band is read for hours and a permanent klaxon trains the eye past it.
+- **It says which of the two facts it is.** *"you allowed everything — the console is not
+  asking"* is a different fact from *"you are not being asked — anything needing permission
+  is refused"*, with a different remedy, and both can be true at once. The band shows both,
+  as two plates; a merged warning would name the wrong cure half the time.
+- **Revoked from the band, by clicking that marker** — there is no one card the grant
+  belongs to, since it covers calls that have not happened yet. No confirmation: the click
+  revokes an authority rather than granting one, and friction belongs on the other side.
+- ⚠️ **A per-call decision outranks it.** A call denied-and-remembered stays denied under a
+  standing allow; the wide grant is the default for calls nobody has decided, never an
+  overrule of a specific refusal. `revoke_session_allow` leaves the entries alone, and
+  `clear` takes both.
+
+The card records **who** answered — `AnsweredBy::{Click, ThisCall, SessionAllow}` — because
+the two standing sources are undone in different places, and a card that could only say "from
+a decision you already made" would send a reader looking for a `forget` button that is not
+there. The grant is also **not** counted in the "N remembered decisions" chip: it has no key,
+no card and no entry, and folding it in would hide the wider grant inside the narrower count.
+
 ⚠️ **`updatedInput` is mandatory on an allow** and is re-validated against the called tool's
 schema. `resolve_choice` echoes the input back, which is the degenerate case of a capability
 worth keeping: the field is where a card could offer *"allow, but not that path"*. It is not
@@ -1598,17 +1637,81 @@ test has to aim at.
 
 🚨 **Never serve a second approval-shaped tool.** Claude Code removes the handler from the
 model's own tool set *because* `--permission-prompt-tool` names it — so the model cannot
-hand itself `{"behavior":"allow"}`. Verified live against this server: `system/init` reported
-`[{"name":"organon","status":"connected"}]` with **zero** of its 36 model-visible tools
-mentioning `organon`. Any other approval-ish tool would be an ordinary model-callable one
-with no such protection.
+hand itself `{"behavior":"allow"}`. Verified live against this server when it served nothing
+else: `system/init` reported `[{"name":"organon","status":"connected"}]` with **zero** of its
+36 model-visible tools mentioning `organon`. Any other approval-ish tool would be an ordinary
+model-callable one with no such protection.
 
-**The server serves the handler and nothing else, for now.** `McpServer` generates capability
-tools from the same `CommandSpec` table the CLI is generated from, but the console constructs
-it with an **empty** table: routing a console verb needs a `CommandService`, which borrows the
-session log on the UI thread and cannot be moved onto a serve thread. So the model sees a
-connected server with nothing it can call — the safe shape for an approvals tier, and the
-seam is `NoDispatch`, named rather than implied.
+##### The console's own verbs, served as capability tools
+
+**The server now serves both halves the protocol doc always said it would.** `McpServer`
+generated capability tools from the same `CommandSpec` table the CLI is generated from —
+`ToolEntry::from_spec`, `input_schema`, `set_tools`, argument checking against that same
+spec — and the console constructed it with an **empty** table anyway. So it answered
+permissions for everything the agent did and exposed nothing, and an agent that wanted the
+portal open ran `./organon.exe console portal open` through `Bash`: a second process, to
+talk to the one it was already inside, raising a card that asked *"may I run this shell
+command"*. Nobody had joined the two ends.
+
+`ConversationPane::new` now takes a `Capabilities { specs, dispatch }`, handed down by
+`shell_main` for the reason the button and slider tables are: the vocabulary is built from
+the substrate's material and rig tables, which the compositor crate cannot see, and applying
+a verb needs the `Shell` that owns the backdrop. `Capabilities::none()` is the caller with
+nothing to offer, and `NoDispatch` stays as its honest dispatch.
+
+⚠️ **`SidecarDispatch` writes onto the console's own command channel rather than applying
+anything, and that is the design.** `Shell::drain_console` already reads that file every
+frame, routes each line through the real `CommandService` — validating against the same
+`CommandSpec` the tool's schema was generated from, and leaving a `CommandRun` record either
+way — and applies it. A second apply path beside the audited one is exactly what §5.9.25's
+"one vocabulary, many renderings, never a hand-written second copy" forbids. The CLI and the
+tool converge on one transport; what the tool removes is the process, not the discipline.
+
+⚠️ **The tool therefore returns `{"accepted": "portal open"}`, not "applied".** The op lands
+on the next frame (~16 ms), and a failure *after* validation — a name this build cannot paint
+— reaches stderr via the drain rather than the model. That is the honest cost of reusing the
+audited path; the alternative was blocking an MCP call on the UI thread's next frame.
+⚠️ Verbs are **window**-scoped exactly as the CLI's are: `background` and `rig` dress the
+window, `block` and `patch` land on the active pane, whichever tab called the tool.
+
+⚠️ **A verb that collides is announced in the pane, not only on stderr.** Two spec names that
+sanitise to one tool name leave the later one unserved — the agent is simply never told it
+exists, everything else works, and the only trace was an `eprintln!` that a console started
+from a PATH shim writes to nobody. `start_approvals` now hands the sentence back for
+`ConversationPane::new` to seed the log with, so it lands at the head of the scrollback (the
+route §1.1 made real by drawing that log at all) as well as on stderr — the same rule the
+exposure audit sets, for the same reason: the band's slot holds one truncated line and the
+next diagnostic replaces it. `shell_main`'s table is asserted collision-free, so this path is
+dead today; `collision_note` is pure and pinned by test precisely because a safety net nobody
+has pulled is worth exactly as much as its test.
+
+##### 🚨 §7's withholding property is now re-measured every session, by the console
+
+`doc/console_approval_protocol.md` §9 point 4: the guarantee that Claude Code withholds the
+handler from the model is **tied to the flag** and must be re-measured **per server** —
+and serving real capability tools from the same server is precisely the change that could
+disturb it. `system/init` already carries the model's whole tool list, so the console checks
+itself: `ExposureAudit` compares that list against the handler's namespaced name and its own
+served names, and the result goes to the band's log **and** to stderr at every init.
+
+It distinguishes three states, not two, and the third is why it exists:
+
+| State | Line |
+|---|---|
+| handler absent, our tools visible | `approvals: handler withheld from the model as measured, N of M console tools visible` |
+| handler **present** in the model's list | `🚨 the approval handler is in the model's own tool list … do not trust this session's cards` |
+| the session reported **no** tools | `the session reported no tools — the approval handler's exposure could not be checked this init` |
+
+⚠️ A pass read off an empty list would be the false negative the whole arrangement exists to
+avoid, so silence is never reported as a clean bill. ⚠️ A served tool missing from the
+model's list is reported and is **not** a fault by itself: MCP tools arrive deferred, so a
+name can be reachable without being preloaded — but "the agent could not find our tool" and
+"we never served it" are otherwise indistinguishable from outside.
+
+⚠️ **This is the console auditing what the CLI reports, not an independent measurement.** A
+CLI that reported its tool list wrongly would fool it. That is still strictly more than a
+measurement nobody re-runs — and see the honesty ledger: the live check on *this* build has
+not been performed yet.
 
 **How a tab opens one.** `HarnessSpec::conversation` — the registry is data, so the
 front-end is a field. `claude-chat` is the one built-in row that sets it, on every
@@ -1833,7 +1936,7 @@ PTY stream.
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
-| Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; then the console's own verbs served as capability tools (needs a `CommandService` reachable from the serve thread — `NoDispatch` is the named seam), so a card can say *"organon · background"* instead of a shell command; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
+| Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `SidecarDispatch` onto the audited drain) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
 | The portal's other states | §1.2 landed the portal itself: the pure state machine, the screen anchor, the World render, the orbit, and `console.portal`. Next, in James's own order: **immersive** (the frame grows to fill the shell and becomes the backdrop, the overlay floating over it with the scrim) — nearly free, since `render_backdrop` already renders a pane-sized World, scrims it with an inviolable floor and switches source at runtime; then **full screen**, which is genuinely new (no path suppresses the tab strip, the glyph grid or the scrim, and `render_source` has no third axis for *overlay paints*); then the **animated grow** between the three rects. Two things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect), and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md`, on branch `console/portal-recon` — the site-by-site investigation these follow from, not yet merged |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
@@ -2010,11 +2113,30 @@ path silently breaks the three-products-simultaneously guarantee that
   and closing a tab silently forgets everything it was told. That is the honest trade for
   this tier (a remembered decision that outlives the window it was made in is one the human
   cannot find again), but "the console remembered" currently means "until you close it".
-- **The console serves no capability tools over MCP.** `McpServer` generates them from the
-  command table and the console passes an empty one, because dispatch needs a
-  `CommandService` bound to the UI thread. So the legibility argument for MCP — an approval
-  card naming *"organon · background"* instead of a shell command — is **built but unused**:
-  `capability_label` renders the name, and nothing yet produces one.
+  **The session-wide allow inherits every word of that**, deliberately: it is the same
+  memory widened, and a blanket allow that survived a restart is the one grant that must
+  not be quietly inherited by a session nobody was watching.
+- 🚨 **The §7 re-measurement has NOT been performed against the server as it now stands, and
+  that is the one thing in this section that is asserted rather than measured.** The console
+  now serves capability tools from the same server as the permission handler, and §9 point 4
+  is explicit that the withholding guarantee must be re-checked per server. The session that
+  built this could not launch the console or produce a release binary, so no `system/init`
+  from this build has been read. What exists instead is the machinery to answer it in one
+  glance: `ExposureAudit` prints its verdict to stderr and to the band at every init. **The
+  first person to run this build should read that line before trusting a card.** It is one
+  line, it names all three states, and if it opens with 🚨 the model can answer its own
+  approvals and the console's authority is decorative.
+- ⚠️ **Nothing has driven a capability tool end to end.** The dispatch is unit-tested
+  (the tool call becomes the line the CLI would have written, on the same sidecar, and an
+  out-of-range `block` is refused before anything is written), and the drain that consumes
+  that line was already tested — but no agent has yet called `mcp__organon__console_portal`,
+  so the card naming a capability instead of a shell command has been *built* and not *seen*.
+  `capability_label` renders the name; whether the resulting card reads better than the Bash
+  one it replaces is still a claim.
+- 📌 **A capability tool costs the agent a `ToolSearch` before it can be called** — MCP tools
+  arrive deferred in the measured build. So the first use of a console verb in a session is
+  slower than the `Bash` call it replaces, and only the second onwards is cheaper. Measured
+  in the protocol doc, not by this change.
 - ✏️ **The `Edit` diff is an alignment now, and what is left unverified is the *look*.** This
   entry used to read *"a field render, not a diff algorithm — no alignment, so an edit that
   changes one character in the middle of a ten-line block shows ten removals and ten

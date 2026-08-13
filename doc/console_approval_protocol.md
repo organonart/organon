@@ -117,6 +117,19 @@ does not exist upstream; it is ours to build.** The console keeps its own decisi
 auto-answers from it. That is a feature, not a workaround — it means the remembering happens
 where the human made the decision, and can be shown and revoked in the same interface.
 
+✅ **Built, and since widened.** The memory now holds per-call entries *and* one session-wide
+allow — *"allow everything for the rest of this session"*, the fourth button on the card. It
+is the same memory, not a second mechanism, and it is emphatically **not** a permission mode:
+§9 makes `bypassPermissions` unreachable and `dontAsk` a refusal, whereas this is the console
+answering *yes* to a question it is still being asked. The handler still runs, the card is
+still drawn, every call is still recorded.
+
+⚠️ **Two properties this document should be read as constraining.** A per-call decision
+outranks the blanket one, so a remembered **deny** survives an "allow everything" — the wide
+grant is the default for calls nobody decided, never an overrule of a specific refusal. And
+scope is unchanged: it dies with the tab, nothing is written to disk. A blanket allow that
+survived a restart would be inherited by a session nobody was watching.
+
 ### 6. `--allowedTools` works and **short-circuits the handler**
 
 Exact spelling, literal namespaced name: `--allowedTools "mcp__probe__echo_probe"`. An
@@ -156,6 +169,37 @@ place to close it.
 set *because* `--permission-prompt-tool` names it. **An approval-shaped tool that is not the
 designated permission tool would be an ordinary model-callable tool with no such protection.**
 Never serve a second one.
+
+#### 🚨 7a. The re-measurement is now the console's own job — and it is OUTSTANDING for the server that serves capability tools
+
+Added 2026-08-13, with the change that made §9 point 4 bite. The console's server used to
+serve **only** the handler; it now serves the console's verbs alongside it, which is exactly
+the change §9 point 4 says to re-measure against.
+
+⚠️ **It has not been measured.** The session that made the change could not launch the console
+or build a release binary, and a live check needs a real `claude.exe` session against a
+running console. Nothing here should be read as saying the property still holds — it is
+*expected* to (the filter keys on the flag, and the flag is unchanged), and expectation is not
+measurement.
+
+✅ **What was built instead is the check itself, per session.** `system/init` already reports
+the model's whole tool list, so `McpServer::audit_exposure` compares it against the handler's
+namespaced name and the console's own served names, and the verdict goes to the band's log and
+to stderr at every init. Three states, because two would hide the dangerous one:
+
+| State | The line |
+|---|---|
+| handler absent, our tools visible | `approvals: handler withheld from the model as measured, N of M console tools visible (K offered)` |
+| handler **present** | `🚨 the approval handler is in the model's own tool list … do not trust this session's cards` |
+| no tools reported at all | `the session reported no tools — the approval handler's exposure could not be checked this init` |
+
+**To close this out**: run the console, open a conversation tab, read that one line off stderr
+or the band, and record the result here. If it opens with 🚨, the model can answer its own
+approvals and the console's cards mean nothing.
+
+⚠️ Note what the audit is and is not: it is the console checking **what the CLI reports**. A
+CLI that reported its tool list wrongly would fool it. It is strictly more than a measurement
+nobody re-runs, and strictly less than an independent one.
 
 📌 Defence in depth, **plausible but unverified**: a client-initiated request carries a `_meta`
 block the model has no way to author — `{"claudecode/toolUseId":…,"progressToken":…}` — so a
@@ -236,6 +280,11 @@ argument for exposing our verbs as MCP tools is that an approval card can then n
 **capability** — *"show a control panel"* — instead of displaying a shell command the human has
 to parse. That is a genuine UX difference and it is the honest reason to do it.
 
+✅ **Both are now served** (2026-08-13). The console builds its server from `console_specs()`
+and answers permissions from the same one. ⚠️ Two things this document should not be read as
+claiming: no agent has yet *called* a capability tool, so the better card is built and unseen;
+and §7a's re-measurement against this shape is outstanding.
+
 ---
 
 ## Implementation notes, measured
@@ -279,13 +328,27 @@ exactly as quoted. These are gaps, and each cost time or would have.
    belongs directly **beneath it**. Had it arrived first, "appearing where the agent is working"
    would have needed an entirely different mechanism.
 4. **§7's withholding guarantee was measured against a *probe* server; re-measure it per
-   server.** Done for ours: `tools mentioning 'organon' = []` out of 36 offered. It is the
-   security property, it is one line of output, and it is cheap enough to check every time.
+   server.** Done for ours *when it served nothing else*: `tools mentioning 'organon' = []`
+   out of 36 offered. It is the security property, it is one line of output, and it is cheap
+   enough to check every time. ⚠️ **That measurement no longer describes the current server**
+   — it now serves the console's verbs too, and §7a is the outstanding re-check plus the
+   machinery that performs it automatically from here.
 5. **The empty-capability-table case is not discussed and is what an approvals tier actually
    wants.** A server whose `tools/list` returns **only the handler** still reports
    `status: connected`, and the model simply sees no tools from it. That is the *safest* shape —
    answer for everything, expose nothing — and §"What this decides" wrongly implies both must be
-   served together.
+   served together. ✅ Still reachable and still honest: `Capabilities::none()` is that shape,
+   and it is what every test and every caller with no verbs to offer passes.
+6. 🚨 **"Serve the capability tools" reads like one line and is not.** The tool table was
+   generated, the schemas were generated, the argument checking was generated — and the
+   console still constructed its server with an empty slice for weeks, because *connecting*
+   them needs a dispatch that can act on a console verb from the **serve thread**, and the
+   `CommandService` that validates one borrows the session log on the **UI thread**. The
+   answer is neither a channel nor a second service: the dispatch writes the op onto the
+   console's own command sidecar, which the frame loop already drains through that very
+   service. One transport, one audited apply path, no process spawned. ⚠️ The consequence to
+   state out loud is that the tool returns **accepted**, not **applied** — the op lands on the
+   next frame.
 
 📌 **One API consequence, forced by §8's own conclusion.** The serve loop must not be the UI
 thread, so the responder crosses one: `PermissionResponder` is now `+ Send` and `McpServer` is
