@@ -56,6 +56,7 @@ use std::sync::Arc;
 
 use organic_math_native::agent;
 use organic_math_native::cli;
+use organic_math_native::console_icon;
 use organic_math_native::params::OrganicMathParams;
 use organic_math_native::scene_input;
 use organic_math_native::substrate_camera::SubstrateRig;
@@ -3644,9 +3645,14 @@ impl ApplicationHandler for Console {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
-            .with_title(PRODUCT_NAME)
-            .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
+        // The icon is hung on by `console_icon::apply` rather than inline, because the
+        // title-bar icon and the taskbar icon are two different slots set by two
+        // different APIs — only one of which is portable. See that module.
+        let attrs = console_icon::apply(
+            Window::default_attributes()
+                .with_title(PRODUCT_NAME)
+                .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0)),
+        );
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.init_gpu(window);
     }
