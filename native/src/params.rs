@@ -10,7 +10,20 @@ use nih_plug::prelude::*;
 /// here so `crate::params::FuncName` (world.rs, and math.rs before it moved) still
 /// resolves, and resolves to the **semantic** type rather than the host adapter.
 /// `HostFuncName` below is the nih-plug-facing mirror; see its doc comment.
-pub use organon_core::params::{FuncName, ParamValues};
+///
+/// **organon#49 T1 adds `GeneratorMode`, `BoidsForm` and `OscDivision` to that list.**
+/// They are the remaining three types `world.rs` reaches for through `crate::params`,
+/// and `world.rs` has to become reachable from a crate without nih-plug so that the
+/// Organon Console binary can leave `organic-math-native` (and stop inheriting GPL from
+/// a VST3 binding it never calls). Same split as `FuncName`, same reason, same pinning
+/// tests: core owns the semantic enum, `Host*` below carries nih-plug's derive.
+///
+/// ⚠️ **Re-exported under their original names on purpose.** ~330 references across
+/// `world.rs`, `preset.rs`, `cli.rs`, `agent.rs`, `controller.rs`, `recipe.rs`,
+/// `param_table.rs` and `lib.rs` keep resolving verbatim; only the ~12 sites that touch
+/// an `EnumParam` had to change, because those are the ones that genuinely handle the
+/// host adapter rather than the semantic value.
+pub use organon_core::params::{BoidsForm, FuncName, GeneratorMode, OscDivision, ParamValues};
 use nih_plug_egui::EguiState;
 use std::sync::Arc;
 
@@ -313,12 +326,17 @@ impl BarPeriod {
     }
 }
 
-/// Musical note-division for the Maxwell dipole's tempo-synced oscillation. The
-/// field's E vectors swing out and back once per selected division (an LFO period),
-/// phase-locked to the beat clock. Sub-beat divisions are fixed fractions of a beat;
-/// Bar / 2-Bar scale with the session's beats-per-bar.
+/// **Host-facing mirror of [`organon_core::params::OscDivision`]** (organon#49 T1).
+///
+/// Exists for the same single reason [`HostFuncName`] does: `EnumParam<T>` requires
+/// `T: nih_plug::Enum`, and the **orphan rule** forbids `organic-math-native` from
+/// implementing that foreign trait for core's foreign type.
+///
+/// ⚠️ **This list and core's MUST stay identical, in order** — the index is the wire
+/// format. `host_osc_division_mirrors_core` pins them element-wise, by name, in both
+/// directions; if you add a variant, add it to BOTH and at the tail.
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum OscDivision {
+pub enum HostOscDivision {
     #[name = "1/16"]
     Sixteenth,
     #[name = "1/8"]
@@ -333,38 +351,32 @@ pub enum OscDivision {
     TwoBar,
 }
 
-impl OscDivision {
-    /// One full oscillation cycle's length in **beats**. Bar / 2-Bar scale with
-    /// `beats_per_bar` (the session time signature); the rest are fixed.
-    pub fn beats(self, beats_per_bar: f32) -> f32 {
-        match self {
-            OscDivision::Sixteenth => 0.25,
-            OscDivision::Eighth => 0.5,
-            OscDivision::Quarter => 1.0,
-            OscDivision::Half => 2.0,
-            OscDivision::Bar => beats_per_bar,
-            OscDivision::TwoBar => 2.0 * beats_per_bar,
-        }
-    }
+impl HostOscDivision {
     pub fn to_u32(self) -> u32 {
         match self {
-            OscDivision::Sixteenth => 0,
-            OscDivision::Eighth => 1,
-            OscDivision::Quarter => 2,
-            OscDivision::Half => 3,
-            OscDivision::Bar => 4,
-            OscDivision::TwoBar => 5,
+            HostOscDivision::Sixteenth => 0,
+            HostOscDivision::Eighth => 1,
+            HostOscDivision::Quarter => 2,
+            HostOscDivision::Half => 3,
+            HostOscDivision::Bar => 4,
+            HostOscDivision::TwoBar => 5,
         }
     }
-    pub fn from_u32(v: u32) -> OscDivision {
+    pub fn from_u32(v: u32) -> HostOscDivision {
         match v {
-            0 => OscDivision::Sixteenth,
-            1 => OscDivision::Eighth,
-            3 => OscDivision::Half,
-            4 => OscDivision::Bar,
-            5 => OscDivision::TwoBar,
-            _ => OscDivision::Quarter, // 2 and fallback
+            0 => HostOscDivision::Sixteenth,
+            1 => HostOscDivision::Eighth,
+            3 => HostOscDivision::Half,
+            4 => HostOscDivision::Bar,
+            5 => HostOscDivision::TwoBar,
+            _ => HostOscDivision::Quarter, // 2 and fallback
         }
+    }
+    /// The semantic value this adapter stands for. The conversion goes through the
+    /// shared index, which is the thing the pinning test guarantees agrees.
+    #[inline]
+    pub fn core(self) -> OscDivision {
+        OscDivision::from_u32(self.to_u32())
     }
 }
 
@@ -1968,7 +1980,23 @@ impl HudDock {
     }
 }
 
-/// Which *generative algorithm* builds the node field. `Original` is the classic
+/// **Host-facing mirror of [`organon_core::params::GeneratorMode`]** (organon#49 T1).
+///
+/// Exists for the same single reason [`HostFuncName`] does: `EnumParam<T>` requires
+/// `T: nih_plug::Enum`, and the **orphan rule** forbids `organic-math-native` from
+/// implementing that foreign trait for core's foreign type. The per-variant prose below
+/// is kept HERE rather than moved to core: these are the strings a DAW shows in the
+/// generator dropdown, so they belong on the host adapter.
+///
+/// ⚠️ **This list and core's MUST stay identical, in order** — the index is the wire
+/// format, and 27 variants of saved presets and automation lanes ride on it.
+/// `host_generator_mode_mirrors_core` pins them element-wise, by name, in both
+/// directions; if you add a variant, add it to BOTH and at the tail.
+///
+/// ---
+///
+/// **What the generator is.** Which *generative algorithm* builds the node field.
+/// `Original` is the classic
 /// Organic Math cube-field (rotate-then-translate screw motion + the accumulating
 /// q-strand). Future variants (Frenet–Serret synthesis, strange attractors,
 /// L-systems, …) emit the same strand-bundle the renderer consumes, so they reuse
@@ -1978,7 +2006,7 @@ impl HudDock {
 /// generator column and *how the node positions are produced*; everything
 /// downstream (surface mode, materials, lighting, post) is generator-agnostic.
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum GeneratorMode {
+pub enum HostGeneratorMode {
     #[name = "Organic Math (cube field)"]
     Original,
     /// Frenet–Serret synthesis: integrate a moving frame from curvature κ(s) and
@@ -2174,73 +2202,31 @@ pub enum GeneratorMode {
     Creature,
 }
 
-impl GeneratorMode {
+impl HostGeneratorMode {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> GeneratorMode {
-        match v {
-            1 => GeneratorMode::Frenet,
-            2 => GeneratorMode::Dna,
-            3 => GeneratorMode::Attractor,
-            4 => GeneratorMode::Harmonic,
-            5 => GeneratorMode::LSystem,
-            6 => GeneratorMode::CurlNoise,
-            7 => GeneratorMode::Polarization,
-            8 => GeneratorMode::MaxwellField,
-            9 => GeneratorMode::Phyllotaxis,
-            10 => GeneratorMode::Mandelbulb,
-            11 => GeneratorMode::Kaleidoscope,
-            12 => GeneratorMode::Boids,
-            13 => GeneratorMode::Tessellation,
-            14 => GeneratorMode::MinimalSurface,
-            15 => GeneratorMode::Synchrotron,
-            16 => GeneratorMode::VectorField,
-            17 => GeneratorMode::None, // was Rails — retired into SceneryMode (#187 pivot)
-            18 => GeneratorMode::AxonWaveguide,
-            19 => GeneratorMode::NeuralField, // #200 Tier 1 (re-seated to 19; Axon took 18 on main)
-            20 => GeneratorMode::NeuralNetwork, // #226 Tier 1 (graph of nodes + tract edges)
-            21 => GeneratorMode::Lens, // #258 Tier 3 (raymarched analytic lens SDF)
-            22 => GeneratorMode::Demo, // #288 (scene bench for the RT stack)
-            23 => GeneratorMode::Acoustic, // #325 (acoustic Duo-Field: pressure + velocity)
-            24 => GeneratorMode::FieldEngine, // #381 Tier 1 (arbitrary closed-form field equations)
-            25 => GeneratorMode::MapAttractor, // #380 Tier 1 (discrete density-map attractor)
-            26 => GeneratorMode::Creature, // #476 Tier 1 (raymarched SDF sea creatures)
-            // Unknown ids fall back to Original.
-            _ => GeneratorMode::Original,
+
+    /// Unknown ids fall back to `Original`, matching core — the visual reads these out
+    /// of a shared-memory block a differently-versioned writer may have filled.
+    ///
+    /// Built on the derived `Enum::from_index` rather than a second 27-arm match, which
+    /// is `enum_from_u32_via_index!`'s idiom at the top of this file. The bounds check is
+    /// not optional: `from_index` indexes the variant table, and the whole point of this
+    /// function is that out-of-range input is expected rather than exceptional.
+    pub fn from_u32(v: u32) -> HostGeneratorMode {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostGeneratorMode::Original
         }
     }
-    /// Human-readable label (matches the `#[name]`s).
-    pub fn to_label(self) -> &'static str {
-        match self {
-            GeneratorMode::Original => "Organic Math (cube field)",
-            GeneratorMode::Frenet => "Frenet–Serret",
-            GeneratorMode::Dna => "DNA double helix",
-            GeneratorMode::Attractor => "Strange attractor",
-            GeneratorMode::Harmonic => "Spherical harmonics",
-            GeneratorMode::LSystem => "L-system (plant)",
-            GeneratorMode::CurlNoise => "Curl-noise flow",
-            GeneratorMode::Polarization => "Circular polarization",
-            GeneratorMode::MaxwellField => "Maxwell field",
-            GeneratorMode::Phyllotaxis => "Phyllotaxis",
-            GeneratorMode::Mandelbulb => "Mandelbulb",
-            GeneratorMode::Kaleidoscope => "Kaleidoscopic Fractal",
-            GeneratorMode::Boids => "Boids (flocking)",
-            GeneratorMode::Tessellation => "Tessellation (tilings)",
-            GeneratorMode::MinimalSurface => "Minimal surfaces",
-            GeneratorMode::Synchrotron => "Synchrotron radiation",
-            GeneratorMode::VectorField => "Vector field",
-            GeneratorMode::None => "None (off)",
-            GeneratorMode::AxonWaveguide => "Axon Waveguide",
-            GeneratorMode::NeuralField => "Neural field",
-            GeneratorMode::NeuralNetwork => "Neural Network",
-            GeneratorMode::Lens => "Lens",
-            GeneratorMode::Demo => "Demo (scene bench)",
-            GeneratorMode::Acoustic => "Acoustic field",
-            GeneratorMode::FieldEngine => "Field Engine",
-            GeneratorMode::MapAttractor => "Density-Map Attractor",
-            GeneratorMode::Creature => "Creature Engine",
-        }
+
+    /// The semantic value this adapter stands for.
+    #[inline]
+    pub fn core(self) -> GeneratorMode {
+        GeneratorMode::from_u32(self.to_u32())
     }
 }
 
@@ -2761,12 +2747,14 @@ impl MinimalFamily {
     }
 }
 
-/// Boids creature form (#52): how each flocking agent is drawn. `Surface` keeps
-/// the normal surface mode (cubes / tubes / metaball …); every other variant
-/// overrides it with a per-agent creature mesh oriented by velocity. The
-/// non-`Surface` indices map to `render::creature_mesh` kinds (Fish = 0, …).
+/// **Host-facing mirror of [`organon_core::params::BoidsForm`]** (organon#49 T1).
+///
+/// Same orphan-rule split as [`HostFuncName`]; `creature_kind` and the semantics live on
+/// core's type. ⚠️ This list and core's MUST stay identical, in order — the index is the
+/// wire format, and `render::creature_mesh` indexes its mesh table by it.
+/// `host_boids_form_mirrors_core` pins them.
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum BoidsForm {
+pub enum HostBoidsForm {
     #[name = "Surface (normal)"]
     Surface,
     #[name = "Fish"]
@@ -2779,28 +2767,23 @@ pub enum BoidsForm {
     Dart,
 }
 
-impl BoidsForm {
+impl HostBoidsForm {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> BoidsForm {
+    pub fn from_u32(v: u32) -> HostBoidsForm {
         match v {
-            1 => BoidsForm::Fish,
-            2 => BoidsForm::Bird,
-            3 => BoidsForm::Manta,
-            4 => BoidsForm::Dart,
-            _ => BoidsForm::Surface,
+            1 => HostBoidsForm::Fish,
+            2 => HostBoidsForm::Bird,
+            3 => HostBoidsForm::Manta,
+            4 => HostBoidsForm::Dart,
+            _ => HostBoidsForm::Surface,
         }
     }
-    /// Creature-mesh kind (`render::creature_mesh`), or `None` for `Surface`.
-    pub fn creature_kind(self) -> Option<u32> {
-        match self {
-            BoidsForm::Surface => None,
-            BoidsForm::Fish => Some(0),
-            BoidsForm::Bird => Some(1),
-            BoidsForm::Manta => Some(2),
-            BoidsForm::Dart => Some(3),
-        }
+    /// The semantic value this adapter stands for.
+    #[inline]
+    pub fn core(self) -> BoidsForm {
+        BoidsForm::from_u32(self.to_u32())
     }
 }
 
@@ -3991,7 +3974,7 @@ pub struct OrganicMathParams {
     /// The generative algorithm. `Original` = the classic cube-field. The editor's
     /// generator column shows only the active generator's controls; everything
     /// downstream (surface/material/look) is shared. See `GeneratorMode`.
-    #[id = "gen"] pub generator: EnumParam<GeneratorMode>,
+    #[id = "gen"] pub generator: EnumParam<HostGeneratorMode>,
 
     // --- Loop geometry (Original generator) ---
     #[id = "lcx"] pub loop_count_x: IntParam,
@@ -4140,7 +4123,7 @@ pub struct OrganicMathParams {
     /// Display scale multiplier (sim units → world).
     #[id = "bdds"] pub boids_scale: FloatParam,
     /// Creature form — overrides the surface mode with a fish/bird/… mesh per agent.
-    #[id = "bdfm"] pub boids_form: EnumParam<BoidsForm>,
+    #[id = "bdfm"] pub boids_form: EnumParam<HostBoidsForm>,
     /// Creature world size (length).
     #[id = "bdsz"] pub boids_size: FloatParam,
     /// Banking: how hard creatures roll into their turns (0 = upright).
@@ -4309,7 +4292,7 @@ pub struct OrganicMathParams {
     #[id = "mxos"] pub mx_osc_sync: BoolParam,
     /// The tempo-synced oscillation period (note division), used only when
     /// `mx_osc_sync` is on. Shared by Maxwell + Acoustic.
-    #[id = "mxod"] pub mx_osc_div: EnumParam<OscDivision>,
+    #[id = "mxod"] pub mx_osc_div: EnumParam<HostOscDivision>,
     /// **E↔B phase** (near↔far induction dial), degrees. Offsets the tempo-locked
     /// **B-swirl** reversal relative to the E oscillation: `osc = cos(ωt − φ)`. **0° =
     /// far-field** (radiation zone — E and B in phase, the E↔B-lock default); **90° =
@@ -7570,7 +7553,7 @@ impl Default for OrganicMathParams {
         Self {
             editor_state: EguiState::from_size(EDITOR_DEFAULT_W, EDITOR_DEFAULT_H),
 
-            generator: EnumParam::new("Generator", GeneratorMode::Original),
+            generator: EnumParam::new("Generator", HostGeneratorMode::Original),
 
             // Defaults are the "no modifiers" state: equal counts + every
             // deformation amp at 0 → reset renders a clean cube of cubes on a
@@ -7662,7 +7645,7 @@ impl Default for OrganicMathParams {
             boids_seed: ilin("Boids Seed", 1, 0, 65535),
             boids_speed: flin("Boids Sim Speed", 1.0, 0.0, 8.0),
             boids_scale: flin("Boids Scale", 30.0, 1.0, 200.0),
-            boids_form: EnumParam::new("Boids Form", BoidsForm::Fish),
+            boids_form: EnumParam::new("Boids Form", HostBoidsForm::Fish),
             boids_size: flin("Boids Creature Size", 14.0, 1.0, 80.0),
             boids_bank: flin("Boids Banking", 0.6, 0.0, 3.0),
 
@@ -7751,7 +7734,7 @@ impl Default for OrganicMathParams {
             // Tempo sync off by default (free-running Speed clock = the historical look);
             // when on, one full oscillation per quarter note.
             mx_osc_sync: BoolParam::new("Mx Osc Tempo Sync", false),
-            mx_osc_div: EnumParam::new("Mx Osc Division", OscDivision::Quarter),
+            mx_osc_div: EnumParam::new("Mx Osc Division", HostOscDivision::Quarter),
             // E↔B phase: 0° = far-field / in-phase (today's lock); dial toward 90° for
             // the near-field induction look (B swirl in quadrature with the E wave).
             mx_eb_phase: flin("Mx E↔B Phase (°)", 0.0, 0.0, 90.0),
@@ -9619,6 +9602,87 @@ mod host_mirror_tests {
         for (i, c) in FuncName::ALL.iter().enumerate() {
             let h = HostFuncName::from_u32(i as u32);
             assert_eq!(h.to_u32(), c.to_u32(), "wire value differs at index {i}");
+        }
+    }
+
+    // ── organon#49 T1: the same pin, for the three enums that moved to core ──────
+    //
+    // One helper rather than three copies of the body. It takes the host variant
+    // NAMES and core's `(as_str, to_u32)` pairs, and asserts the same four things
+    // `host_func_name_mirrors_core` does above — element-wise by name, both
+    // directions, and the wire value at every index. A length check alone would pass
+    // a same-length reordering, which is the failure that silently corrupts saved
+    // presets and automation lanes.
+    fn assert_mirrors(what: &str, host: &[&str], core: &[(&'static str, u32)]) {
+        assert_eq!(
+            host.len(),
+            core.len(),
+            "{what}: host has {} variants, core has {} — add to BOTH, at the tail",
+            host.len(),
+            core.len(),
+        );
+        for (i, (h, (name, wire))) in host.iter().zip(core.iter()).enumerate() {
+            assert_eq!(
+                h, name,
+                "{what} index {i}: host says {h:?}, core says {name:?} — the lists have \
+                 DRIFTED, and index is the wire format",
+            );
+            assert_eq!(
+                *wire, i as u32,
+                "{what}: core {name:?} is not at its declared index {i}",
+            );
+        }
+    }
+
+    /// **The pin that matters most in this file.** 27 generators, every saved preset
+    /// and every automation lane keyed by their index.
+    #[test]
+    fn host_generator_mode_mirrors_core() {
+        assert_mirrors(
+            "GeneratorMode",
+            HostGeneratorMode::variants(),
+            &GeneratorMode::ALL.map(|g| (g.as_str(), g.to_u32())),
+        );
+        // Both directions: the adapter round-trips through the shared index, and
+        // `core()` lands on the variant with the same wire value.
+        for (i, c) in GeneratorMode::ALL.iter().enumerate() {
+            let h = HostGeneratorMode::from_u32(i as u32);
+            assert_eq!(h.to_u32(), i as u32, "host index {i} does not round-trip");
+            assert_eq!(h.core(), *c, "host {i}.core() is not core's variant");
+        }
+    }
+
+    /// Out-of-range must agree too: both sides fall back to `Original` rather than
+    /// panicking, because the visual reads indices a differently-versioned writer
+    /// may have put in `Shared`.
+    #[test]
+    fn host_generator_mode_agrees_on_the_fallback() {
+        assert_eq!(HostGeneratorMode::from_u32(9999), HostGeneratorMode::Original);
+        assert_eq!(HostGeneratorMode::from_u32(27), HostGeneratorMode::Original);
+        assert_eq!(HostGeneratorMode::from_u32(9999).core(), GeneratorMode::Original);
+    }
+
+    #[test]
+    fn host_boids_form_mirrors_core() {
+        assert_mirrors(
+            "BoidsForm",
+            HostBoidsForm::variants(),
+            &BoidsForm::ALL.map(|b| (b.as_str(), b.to_u32())),
+        );
+        for (i, c) in BoidsForm::ALL.iter().enumerate() {
+            assert_eq!(HostBoidsForm::from_u32(i as u32).core(), *c);
+        }
+    }
+
+    #[test]
+    fn host_osc_division_mirrors_core() {
+        assert_mirrors(
+            "OscDivision",
+            HostOscDivision::variants(),
+            &OscDivision::ALL.map(|d| (d.as_str(), d.to_u32())),
+        );
+        for (i, c) in OscDivision::ALL.iter().enumerate() {
+            assert_eq!(HostOscDivision::from_u32(i as u32).core(), *c);
         }
     }
 }

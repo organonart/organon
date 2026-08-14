@@ -11,6 +11,33 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The three enums standing between `world.rs` and a Console that isn't a plugin binary
+
+`GeneratorMode`, `BoidsForm` and `OscDivision` move to `organon-core::params`, joining
+`FuncName` and `ParamValues`. Each keeps a `Host*` mirror in `params.rs` carrying
+nih-plug's `#[derive(Enum)]`, because the orphan rule forbids the native crate from
+implementing a foreign trait for a foreign type — the `HostFuncName` split from #626 T3,
+applied three more times.
+
+The reason is organon#49: **Organon Console is currently a GPL-3.0-or-later binary of the
+VST3 crate.** `shell_main.rs` lives in `organic-math-native`, so the Console links
+nih-plug and inherits its licence from a plugin binding it never calls. `world.rs` is what
+has to move below the plugin crate for that to change, and these were the last three
+things it reached for through `crate::params` — the other two were already in core.
+
+⚠️ **Nothing about the built product changes.** The variant lists, their order, their
+display names and their wire indices are identical; the plugin's automation lanes and
+every saved preset are untouched. Each pair is pinned by a `host_*_mirrors_core` test
+comparing the two lists element-wise by name in both directions, because the index **is**
+the wire format and a same-length reordering is the failure that silently recalls the
+wrong generator. `GeneratorMode`'s once-re-seated ordinals (`None` = 17, `AxonWaveguide`
+= 18, `NeuralField` = 19) get a test of their own that asserts by name, not by position.
+
+`organon-core/src/params.rs`'s "what deliberately did NOT move" note said `GeneratorMode`
+stays, and it was right on the reason it gave — `math.rs` only needed it in a test. That
+note is now rewritten rather than deleted: the reason was about `math.rs`, and `math.rs`
+was simply never the only caller that mattered.
+
 ### A CRLF checkout silently un-installs the `organon-cli` skill
 
 `SKILL.md` is now pinned to LF in `.gitattributes`. Claude Code reads a skill's YAML

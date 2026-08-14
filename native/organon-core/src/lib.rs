@@ -34,11 +34,16 @@
 //! `preset.rs` keeps its `ParamSetter` logic (it is the host-automation path and is
 //! nih-plug's by nature), and only the two tab *taxonomy* enums were lifted out of it.
 //!
-//! **`params.rs` keeps ~101 of its ~102 `#[derive(Enum)]` types** — including all 27
-//! variants of `GeneratorMode`. Only `FuncName` has a counterpart here, and even that is
-//! a *split* rather than a move: core owns the plain semantic enum, `params.rs` owns
-//! `HostFuncName` carrying nih-plug's derive, because the **orphan rule** forbids the
-//! native crate from implementing a foreign trait for a foreign type. See [`params`].
+//! **`params.rs` keeps ~98 of its ~102 `#[derive(Enum)]` types.** Four have a
+//! counterpart here, and each is a *split* rather than a move: core owns the plain
+//! semantic enum, `params.rs` owns a `Host*` mirror carrying nih-plug's derive, because
+//! the **orphan rule** forbids the native crate from implementing a foreign trait for a
+//! foreign type. `FuncName` was the first (#626 T3); `GeneratorMode`, `BoidsForm` and
+//! `OscDivision` followed in organon#49 T1, because they are what `world.rs` reaches for
+//! and `world.rs` has to become reachable from a crate without nih-plug. See [`params`].
+//!
+//! ⚠️ The derive count in `params.rs` is unchanged by that — a mirror carries a derive
+//! too. What changed is that four of them are now adapters rather than declarations.
 //!
 //! ## ⚠️ `ipc.rs` MOVED HERE IN TIER 4 — and Tier 3's note below is now history
 //!

@@ -35,7 +35,7 @@
 //! the agent hold is released.
 
 use crate::ipc::Shared;
-use crate::params::{GeneratorMode, MaterialType, SurfaceMode};
+use crate::params::{GeneratorMode, HostGeneratorMode, MaterialType, SurfaceMode};
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -469,8 +469,8 @@ fn capability_catalog() -> String {
     use nih_plug::prelude::Enum;
     let mut s = String::new();
     s.push_str("GENERATORS — the geometry engine (select_generator index):\n");
-    for (i, name) in <GeneratorMode as Enum>::variants().iter().enumerate() {
-        let g = <GeneratorMode as Enum>::from_index(i);
+    for (i, name) in <HostGeneratorMode as Enum>::variants().iter().enumerate() {
+        let g = <HostGeneratorMode as Enum>::from_index(i).core();
         s.push_str(&format!("  {i} = {name}: {}\n", generator_desc(g)));
     }
     s.push_str("\nSURFACES — how nodes are drawn, works across generators (select_surface index):\n");
@@ -1470,7 +1470,7 @@ pub fn scene_features(v: &crate::preset::PresetValues, scope: crate::preset::Pre
 
     // Generator + surface FORM (the geometry engine + how nodes are drawn).
     if want(EditorTab::Generator) {
-        f.push(format!("Generator: {}", enum_name::<GeneratorMode>(v.generator)));
+        f.push(format!("Generator: {}", enum_name::<HostGeneratorMode>(v.generator)));
         f.push(format!("Surface form: {}", enum_name::<SurfaceMode>(v.surface_mode)));
     }
 
@@ -2296,8 +2296,8 @@ mod tests {
         // Every generator/surface/material variant has a non-empty, length-bounded
         // description (the exhaustive match already forces coverage at compile time; this
         // guards against a stub "" or accidental bloat, and keeps them single-line).
-        for i in 0..<GeneratorMode as Enum>::variants().len() {
-            let d = generator_desc(<GeneratorMode as Enum>::from_index(i));
+        for (i, g) in GeneratorMode::ALL.iter().enumerate() {
+            let d = generator_desc(*g);
             assert!(!d.is_empty() && d.len() <= 500, "generator {i} desc len {}", d.len());
             assert!(!d.contains('\n'));
         }

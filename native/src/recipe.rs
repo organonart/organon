@@ -194,7 +194,7 @@ static RECIPES: &[Recipe] = &[
 mod tests {
     use super::*;
     use crate::agent;
-    use crate::params::{GeneratorMode, MaterialType, SurfaceMode};
+    use crate::params::{HostGeneratorMode, MaterialType, SurfaceMode};
     use nih_plug::prelude::Enum;
 
     fn resolves<E: Enum>(which: &str) -> bool {
@@ -215,7 +215,7 @@ mod tests {
             assert_eq!(r.name, r.name.to_lowercase(), "{} slug must be lowercase", r.name);
             assert!(!r.intent.trim().is_empty(), "{} has no intent", r.name);
             if let Some(g) = r.generator {
-                assert!(resolves::<GeneratorMode>(g), "{}: generator '{g}' does not resolve", r.name);
+                assert!(resolves::<HostGeneratorMode>(g), "{}: generator '{g}' does not resolve", r.name);
             }
             if let Some(s) = r.surface {
                 assert!(resolves::<SurfaceMode>(s), "{}: surface '{s}' does not resolve", r.name);

@@ -4,7 +4,7 @@
 
 use crate::params::{
     AcousticModel, AcousticSource, AnalyticalMode, AoSource,
-    AttractorField, AxonMode, BarPeriod, BoidsForm, CalColourSource, CalLut, CamOrder, CamPath, CamTransition, ColourMode, DemoScene, DnaForm, DollyWave, FieldKind, FieldPreset, FdtdSource, FieldVolSource, FluxAxis, GeneratorMode, HudDock, KifsPalette, KifsPattern, KifsSpace,
+    AttractorField, AxonMode, BarPeriod, CalColourSource, CalLut, CamOrder, CamPath, CamTransition, ColourMode, DemoScene, DnaForm, DollyWave, FieldKind, FieldPreset, FdtdSource, FieldVolSource, FluxAxis, GeneratorMode, HudDock, KifsPalette, KifsPattern, KifsSpace,
     AnimMode, BakeRes, BlendMode, KaleidoMode, KifsView, LiqMaterial, LiqRender, LiqShape, LSystem, MatChannel, MaterialType, MatNoise, MatProjection, MembraneArmBuild, MembraneWeave, MinimalFamily, ModTarget, NeuralFireMode, NeuralTopology, NeuronType, OriginMode, OrganicMathParams, OscDivision, Palette,
     PanelStyle, ParticleMaterial, ParticleShape, ParticleTier, PhylSurface, PtComposite, PulseSource, RailArchetype, RailCellLen, RailChangeEvery, ReflectionSource, RenderStyle, RippleGeom, SceneryMode, ScenerySurface, SurfaceMode, TerraForm,
     SynthMode, SynthPlayMode, SynthQuantize, TuningLayout,
@@ -14,7 +14,7 @@ use crate::params::{
     VecFieldOp, VecFieldView, VecLineColor, VecMagMap, VecSeedMode, VecTermFunc, VecTint,
 };
 use nih_plug::prelude::*;
-use crate::params::HostFuncName;
+use crate::params::{HostBoidsForm, HostFuncName, HostGeneratorMode, HostOscDivision};
 
 /// #626 Tier 3 — the tab taxonomy now lives in `organon-core`; re-exported here so
 /// every existing `crate::preset::{UiTab, EditorTab}` path keeps resolving.
@@ -3365,7 +3365,7 @@ fn def_tint_hue() -> f32 { 40.0 }
 macro_rules! for_each_tab_field {
     ($op:ident) => {
         // ---- Generator (321) ----
-        $op!(Generator, generator, enum, GeneratorMode);
+        $op!(Generator, generator, enum, HostGeneratorMode);
         $op!(Generator, loop_count_x, scalar);
         $op!(Generator, loop_count_y, scalar);
         $op!(Generator, loop_count_z, scalar);
@@ -3436,7 +3436,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, boids_seed, scalar);
         $op!(Generator, boids_speed, scalar);
         $op!(Generator, boids_scale, scalar);
-        $op!(Generator, boids_form, enum, BoidsForm);
+        $op!(Generator, boids_form, enum, HostBoidsForm);
         $op!(Generator, boids_size, scalar);
         $op!(Generator, boids_bank, scalar);
         $op!(Generator, harm_mode0, scalar);
@@ -3510,7 +3510,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, mx_bound, scalar);
         $op!(Generator, mx_norm_field, scalar);
         $op!(Generator, mx_osc_sync, scalar);
-        $op!(Generator, mx_osc_div, enum, OscDivision);
+        $op!(Generator, mx_osc_div, enum, HostOscDivision);
         $op!(Generator, mx_eb_phase, scalar);
         // #412 Tier 3 Phase 0 FDTD solver (captured Generator). Bool uses `scalar`.
         $op!(Generator, fdtd_on, scalar);
