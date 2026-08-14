@@ -1,0 +1,135 @@
+name: Research dispatch
+
+# Deep-research evals — `doc/research/README.md` owns the why.
+#
+# Two things happen here, and they are deliberately different jobs with different
+# permissions:
+#
+#   validate   every PR that touches the research directory. Read-only. Checks the
+#              mechanical contracts — briefs parse, reports declare their provenance and
+#              name a brief that exists, the fact-pack parsers still find something.
+#   dispatch   on demand, and on every published release. Builds the dispatch prompts
+#              (brief + measured repo state) and attaches them to the run, so a round can
+#              be started by copying one out of the job summary. On a release it also
+#              uploads them as release assets, because a release is the moment the
+#              question "what was true of this tree" has a durable answer.
+#
+# ⚠️ This workflow does NOT call any model. That is a decision with reasons, and
+# `doc/research/README.md` §"Why a human is still in the loop" carries them: the eval
+# premise needs several labs, deep research is mostly not an API, and adjudication —
+# the step that produces the value — is judgement. Automating dispatch alone would fill
+# `doc/research/reports/` with unreviewed essays, which is exactly what the `status`
+# field exists to make visible.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brief:
+        description: 'Brief id, or "all" (see doc/research/briefs/)'
+        required: false
+        default: all
+        # Deliberately a free-text input rather than a `choice`. A choice list would be a
+        # second copy of the brief list, maintained by hand, rotting the first time
+        # someone adds a brief and forgets this file. The script validates the id and
+        # prints the real list on a miss, which is the same answer one hop later.
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - 'doc/research/**'
+      - 'native/tools/research-brief.py'
+      - '.github/workflows/research.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the research contracts
+        run: python3 native/tools/research-brief.py --validate
+
+      # A report that merges without provenance is the failure this whole directory is
+      # designed against, so name the rule in the log rather than only in a doc.
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo '## Research contracts'
+            echo
+            echo '```'
+            python3 native/tools/research-brief.py --list || true
+            echo '```'
+            echo
+            echo 'Every checked-in report needs front matter (`brief`, `model`, `run_date`,'
+            echo '`commit`, `status`) and a `## Claims` section. A report without them cannot'
+            echo 'be adjudicated, and an unadjudicated report next to `ARCHITECTURE.md` is'
+            echo 'the hazard `doc/research/README.md` opens with.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dispatch:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # only to attach assets to the release below
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the fact pack reports commit count and per-doc last-touched dates
+
+      - name: Build the dispatch prompts
+        env:
+          BRIEF: ${{ github.event.inputs.brief || 'all' }}
+        run: |
+          mkdir -p dispatch
+          if [ "$BRIEF" = "all" ] || [ -z "$BRIEF" ]; then
+            python3 native/tools/research-brief.py --all --out dispatch
+          else
+            python3 native/tools/research-brief.py --brief "$BRIEF" --out dispatch
+          fi
+
+      - name: Put the prompts in the job summary
+        run: |
+          {
+            echo '# Deep-research dispatch'
+            echo
+            echo "Built from \`$GITHUB_SHA\`. Copy a prompt below into each model's deep-research"
+            echo 'mode — **at least three, from different labs**, or the cross-model signal that'
+            echo 'makes the scoreable briefs worth running is lost. File what comes back under'
+            echo '`doc/research/reports/` with front matter and `status: unreviewed`.'
+            echo
+            for f in dispatch/*.md; do
+              echo "<details><summary><code>$(basename "$f")</code> — $(wc -c < "$f") bytes</summary>"
+              echo
+              # FOUR backticks, not three: a dispatch prompt contains fenced blocks of its
+              # own (the commit log in the fact pack, the trace table in one brief), and a
+              # three-backtick wrapper would close on the first of them and spill the rest
+              # of the prompt into the page as rendered Markdown.
+              echo '````markdown'
+              cat "$f"
+              echo '````'
+              echo
+              echo '</details>'
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-dispatch-${{ github.sha }}
+          path: dispatch/
+          retention-days: 90
+
+      # A release is the natural pin for a round: the prompts that shipped with a version
+      # stay fetchable next to it, so a report filed later can be checked against the
+      # exact question that produced it.
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dispatch/*.md --clobber
