@@ -4,9 +4,9 @@
 
 use crate::params::{
     AcousticModel, AcousticSource, AnalyticalMode, AoSource,
-    AttractorField, AxonMode, BarPeriod, CalColourSource, CalLut, CamOrder, CamPath, CamTransition, ColourMode, DemoScene, DnaForm, DollyWave, FieldKind, FieldPreset, FdtdSource, FieldVolSource, FluxAxis, GeneratorMode, HudDock, KifsPalette, KifsPattern, KifsSpace,
-    AnimMode, BakeRes, BlendMode, KaleidoMode, KifsView, LiqMaterial, LiqRender, LiqShape, LSystem, MatChannel, MaterialType, MatNoise, MatProjection, MembraneArmBuild, MembraneWeave, MinimalFamily, ModTarget, NeuralFireMode, NeuralTopology, NeuronType, OriginMode, OrganicMathParams, OscDivision, Palette,
-    PanelStyle, ParticleMaterial, ParticleShape, ParticleTier, PhylSurface, PtComposite, PulseSource, RailArchetype, RailCellLen, RailChangeEvery, ReflectionSource, RenderStyle, RippleGeom, SceneryMode, ScenerySurface, SurfaceMode, TerraForm,
+    AttractorField, AxonMode, BarPeriod, CalColourSource, CalLut, CamOrder, CamTransition, ColourMode, DemoScene, DnaForm, DollyWave, FieldKind, FieldPreset, FdtdSource, FieldVolSource, FluxAxis, GeneratorMode, HudDock, KifsPalette, KifsPattern, KifsSpace,
+    AnimMode, BakeRes, BlendMode, KaleidoMode, KifsView, LiqMaterial, LiqRender, LiqShape, LSystem, MatChannel, MatNoise, MatProjection, MembraneArmBuild, MembraneWeave, MinimalFamily, ModTarget, NeuralFireMode, NeuralTopology, NeuronType, OriginMode, OrganicMathParams, OscDivision,
+    PanelStyle, ParticleMaterial, ParticleShape, ParticleTier, PhylSurface, PtComposite, PulseSource, RailArchetype, RailCellLen, RailChangeEvery, ReflectionSource, RenderStyle, RippleGeom, SceneryMode, ScenerySurface, TerraForm,
     SynthMode, SynthPlayMode, SynthQuantize, TuningLayout,
     SplatMode, MapKindParam, MapOrbitModeParam, MapColorParam, PdePreset,
     AspectPreset, Msaa, MeterAveraging, MeterWeighting, SpectrumMode, TerrainNoise, TerrainPalette, TerrainRes,
@@ -14,7 +14,10 @@ use crate::params::{
     VecFieldOp, VecFieldView, VecLineColor, VecMagMap, VecSeedMode, VecTermFunc, VecTint,
 };
 use nih_plug::prelude::*;
-use crate::params::{HostBoidsForm, HostFuncName, HostGeneratorMode, HostOscDivision};
+use crate::params::{
+    HostBoidsForm, HostCamPath, HostFuncName, HostGeneratorMode, HostMaterialType,
+    HostOscDivision, HostPalette, HostSurfaceMode,
+};
 
 /// #626 Tier 3 — the tab taxonomy now lives in `organon-core`; re-exported here so
 /// every existing `crate::preset::{UiTab, EditorTab}` path keeps resolving.
@@ -3567,7 +3570,7 @@ macro_rules! for_each_tab_field {
         $op!(Look, panel_scope_amp, scalar);
         $op!(Look, panel_db_floor, scalar);
         $op!(Look, panel_db_top, scalar);
-        $op!(Look, panel_material, enum, MaterialType);
+        $op!(Look, panel_material, enum, HostMaterialType);
         $op!(Look, panel_metallic, scalar);
         $op!(Look, panel_roughness, scalar);
         $op!(Look, panel_emissive, scalar);
@@ -3870,14 +3873,14 @@ macro_rules! for_each_tab_field {
         $op!(Generator, rl_evolve, scalar);
         $op!(Generator, sc_mode, enum, SceneryMode);
         $op!(Generator, sc_surface, enum, ScenerySurface);
-        $op!(Generator, sc_mat, enum, MaterialType);
+        $op!(Generator, sc_mat, enum, HostMaterialType);
         $op!(Generator, sc_metallic, scalar);
         $op!(Generator, sc_roughness, scalar);
         $op!(Generator, sc_glow, scalar);
         $op!(Generator, sc_emissive, scalar);
         $op!(Generator, sc_opacity, scalar);
         $op!(Generator, sc_ior, scalar);
-        $op!(Generator, sc_palette, enum, Palette);
+        $op!(Generator, sc_palette, enum, HostPalette);
         $op!(Generator, sc_sss, scalar);
         $op!(Generator, sc_sss_dist, scalar);
         $op!(Generator, sc_sss_pow, scalar);
@@ -3896,7 +3899,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, terra_water_on, scalar);
         $op!(Generator, terra_clearance, scalar);
         $op!(Generator, terra_noise_freq, scalar);
-        $op!(Generator, wt_mat, enum, MaterialType);
+        $op!(Generator, wt_mat, enum, HostMaterialType);
         $op!(Generator, wt_roughness, scalar);
         $op!(Generator, wt_ior, scalar);
         $op!(Generator, wt_opacity, scalar);
@@ -4007,7 +4010,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, kf_relief_elev, scalar);
         $op!(Generator, kf_relief_steps, scalar);
         $op!(Generator, kf_relief_shine, scalar);
-        $op!(Generator, surface_mode, enum, SurfaceMode);
+        $op!(Generator, surface_mode, enum, HostSurfaceMode);
         $op!(Generator, plexus_radius, scalar);
         $op!(Generator, plexus_links, scalar);
         $op!(Generator, plexus_strut, scalar);
@@ -4016,7 +4019,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, plexus_edges, scalar);
         $op!(Generator, plexus_node_radius, scalar);
         $op!(Generator, plexus_edge_radius, scalar);
-        $op!(Generator, plexus_node_type, enum, MaterialType);
+        $op!(Generator, plexus_node_type, enum, HostMaterialType);
         $op!(Generator, plexus_node_metallic, scalar);
         $op!(Generator, plexus_node_rough, scalar);
         $op!(Generator, plexus_node_ior, scalar);
@@ -4024,7 +4027,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, plexus_node_sat, scalar);
         $op!(Generator, plexus_node_val, scalar);
         $op!(Generator, plexus_node_emissive, scalar);
-        $op!(Generator, plexus_edge_type, enum, MaterialType);
+        $op!(Generator, plexus_edge_type, enum, HostMaterialType);
         $op!(Generator, plexus_edge_metallic, scalar);
         $op!(Generator, plexus_edge_rough, scalar);
         $op!(Generator, plexus_edge_ior, scalar);
@@ -4111,7 +4114,7 @@ macro_rules! for_each_tab_field {
         $op!(Look, mat_flow_x, scalar);
         $op!(Look, mat_flow_y, scalar);
         $op!(Look, mat_displace, scalar);
-        $op!(Generator, palette, enum, Palette);
+        $op!(Generator, palette, enum, HostPalette);
         $op!(Generator, metaball_radius, scalar);
         $op!(Generator, metaball_threshold, scalar);
         $op!(Generator, metaball_smooth, scalar);
@@ -4195,7 +4198,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, ad_stereo, scalar);
         $op!(Generator, ad_pitch, scalar);
         $op!(Generator, ad_wave, scalar);
-        $op!(Motion, cam_path, enum, CamPath);
+        $op!(Motion, cam_path, enum, HostCamPath);
         $op!(Motion, cam_speed, scalar);
         $op!(Motion, cam_kick, scalar);
         $op!(Motion, cam_damping, scalar);
@@ -4221,16 +4224,16 @@ macro_rules! for_each_tab_field {
         $op!(Motion, cam_story_count, scalar);
         $op!(Motion, cam_story_mode, enum, CamOrder);
         $op!(Motion, cam_story_seed, scalar);
-        $op!(Motion, cam_shot0_path, enum, CamPath);
+        $op!(Motion, cam_shot0_path, enum, HostCamPath);
         $op!(Motion, cam_shot0_bars, enum, BarPeriod);
         $op!(Motion, cam_shot0_radius, scalar);
-        $op!(Motion, cam_shot1_path, enum, CamPath);
+        $op!(Motion, cam_shot1_path, enum, HostCamPath);
         $op!(Motion, cam_shot1_bars, enum, BarPeriod);
         $op!(Motion, cam_shot1_radius, scalar);
-        $op!(Motion, cam_shot2_path, enum, CamPath);
+        $op!(Motion, cam_shot2_path, enum, HostCamPath);
         $op!(Motion, cam_shot2_bars, enum, BarPeriod);
         $op!(Motion, cam_shot2_radius, scalar);
-        $op!(Motion, cam_shot3_path, enum, CamPath);
+        $op!(Motion, cam_shot3_path, enum, HostCamPath);
         $op!(Motion, cam_shot3_bars, enum, BarPeriod);
         $op!(Motion, cam_shot3_radius, scalar);
         $op!(Audio, mod_a_target, enum, ModTarget);
@@ -4288,7 +4291,7 @@ macro_rules! for_each_tab_field {
         $op!(Look, instr_panel_bevel, scalar);
         $op!(Look, instr_hud_scale, scalar);
         $op!(Look, instr_hud_dock, enum, HudDock);
-        $op!(Look, mat_type, enum, MaterialType);
+        $op!(Look, mat_type, enum, HostMaterialType);
         $op!(Look, ior, scalar);
         $op!(Look, mat_absorb, scalar);
         $op!(Look, refr_overlay, scalar);

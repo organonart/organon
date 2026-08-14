@@ -4906,8 +4906,8 @@ pub(crate) fn editor_ui(
                     // to a full sphere. Only these two modes draw cubes.
                     if matches!(
                         params.surface_mode.value(),
-                        crate::params::SurfaceMode::Original
-                            | crate::params::SurfaceMode::FlowAligned
+                        crate::params::HostSurfaceMode::Original
+                            | crate::params::HostSurfaceMode::FlowAligned
                     ) {
                         srow(ui, w2, "node bevel", &params.bevel, setter);
                         help(ui, "Rounds the cubes: 0 = sharp cube, 0.5 = wide \
@@ -5100,7 +5100,7 @@ pub(crate) fn editor_ui(
                     // Metaball-only: wrap the node set in one smooth skin.
                     // Shown only in Metaball mode (was always visible).
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::Metaball
+                        == crate::params::HostSurfaceMode::Metaball
                     {
                         srow(ui, w2, "blob radius", &params.metaball_radius, setter);
                         srow(ui, w2, "blob threshold", &params.metaball_threshold, setter);
@@ -5111,7 +5111,7 @@ pub(crate) fn editor_ui(
                     // Splat-only: render the node set as anisotropic 3-D
                     // Gaussians (the 3DGS primitive, synthesized directly).
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::Splat
+                        == crate::params::HostSurfaceMode::Splat
                     {
                         param_combo_sized(ui, w2, "tier", &params.splat_mode, setter, 2.0 * COMBO_W);
                         srow(ui, w2, "splat radius", &params.splat_radius, setter);
@@ -5135,7 +5135,7 @@ pub(crate) fn editor_ui(
                     // Swept-Tubes-only: weld the per-segment cylinders into
                     // one smooth continuous tube per strand, with a shaped cap.
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::SweptTubes
+                        == crate::params::HostSurfaceMode::SweptTubes
                     {
                         crow(ui, "contiguous tube", &params.tube_weld, setter);
                         srow(ui, w2, "tube profile", &params.tube_profile, setter);
@@ -5151,7 +5151,7 @@ pub(crate) fn editor_ui(
                     // Voxel-only: splat the node field into a lattice and
                     // DDA-raymarch crisp grid-snapped cubes.
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::Voxel
+                        == crate::params::HostSurfaceMode::Voxel
                     {
                         srow(ui, w2, "voxel grid", &params.voxel_res, setter);
                         srow(ui, w2, "voxel threshold", &params.voxel_threshold, setter);
@@ -5179,7 +5179,7 @@ pub(crate) fn editor_ui(
                     // Volume-only (#152): raymarch the metaball field as
                     // a glowing participating medium (nebula/fog).
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::Volume
+                        == crate::params::HostSurfaceMode::Volume
                     {
                         srow(ui, w2, "volume radius", &params.volume_radius, setter);
                         srow(ui, w2, "density", &params.volume_density, setter);
@@ -5212,7 +5212,7 @@ pub(crate) fn editor_ui(
                     }
                     // Membrane-only: loft sheets between adjacent strands.
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::Membrane
+                        == crate::params::HostSurfaceMode::Membrane
                     {
                         param_combo_sized(ui, w2, "membrane weave", &params.membrane_weave, setter, 2.0 * COMBO_W);
                         crow(ui, "membrane: show strands", &params.membrane_show_strands, setter);
@@ -5238,7 +5238,7 @@ pub(crate) fn editor_ui(
                     // Neural Network generator. Grouped by tier — soma/
                     // membrane, dendritic arbor, myelin, synapse/context.
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::NeuralTissue
+                        == crate::params::HostSurfaceMode::NeuralTissue
                     {
                         help(ui, "Living neural tissue: soma cell bodies, capped-capsule \
                                  tracts + synaptic boutons. Pair with Generator = Neural \
@@ -5298,7 +5298,7 @@ pub(crate) fn editor_ui(
                         ui.separator();
                     }
                     if params.surface_mode.value()
-                        == crate::params::SurfaceMode::Plexus
+                        == crate::params::HostSurfaceMode::Plexus
                         || params.plexus_overlay_on.value()
                     {
                         srow(ui, w2, "link radius", &params.plexus_radius, setter);
@@ -7596,7 +7596,7 @@ fn step_component_division(params: &OrganicMathParams, setter: &ParamSetter, del
 /// `agent::actuate`). Unknown ids are ignored.
 fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &agent::ApplyOp) {
     use agent::ApplyOp;
-    use crate::params::{CamPath, HostGeneratorMode, MaterialType, SurfaceMode};
+    use crate::params::{HostCamPath, HostGeneratorMode, HostMaterialType, HostSurfaceMode};
     use nih_plug::prelude::Enum;
     macro_rules! set {
         ($p:expr, $v:expr) => {{
@@ -7610,8 +7610,8 @@ fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &age
         ApplyOp::Generator(i) => {
             set!(&params.generator, HostGeneratorMode::from_index(*i as usize))
         }
-        ApplyOp::Surface(i) => set!(&params.surface_mode, SurfaceMode::from_index(*i as usize)),
-        ApplyOp::Material(i) => set!(&params.mat_type, MaterialType::from_index(*i as usize)),
+        ApplyOp::Surface(i) => set!(&params.surface_mode, HostSurfaceMode::from_index(*i as usize)),
+        ApplyOp::Material(i) => set!(&params.mat_type, HostMaterialType::from_index(*i as usize)),
         ApplyOp::Release => {} // values stay put; the editor's own button clears holds
         ApplyOp::Set(id, v) => {
             let v = *v;
@@ -7662,7 +7662,7 @@ fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &age
                 "tempo" => set!(&params.tempo, v),
                 // #317 levers: the camera-orbit path (enum), a colour hue, and the Harmonic
                 // soft-body bell (a bool set from 0/1).
-                "cam_path" => set!(&params.cam_path, CamPath::from_index(v as usize)),
+                "cam_path" => set!(&params.cam_path, HostCamPath::from_index(v as usize)),
                 "mat_hue" => set!(&params.mat_hue, v),
                 "bell_physical" => set!(&params.bell_physical, v > 0.5),
                 _ => {}
