@@ -3051,11 +3051,97 @@ never asks you to remember — it shows you, and once you know, the showing cost
 because you are already past it. James's own framing, 2026-08-14: *"when I type slash, I want
 to see something pop up… a pop-up full-width display that lists all my choices."*
 
-`/` shows every verb. `/s` leaves `surface`, so the line reads `/surface` and Enter runs it.
-`/c` leaves `camera` and `camera.read` — type the next letter to narrow. `/theme ` shows the
-palettes, and `/theme ch` leaves `chocolate`. **Values complete exactly like verbs**, which is
-what makes the surface feel finished, and it is free: an `ArgKind::Choice` already *is* the
-list, built from `Theme::NAMES` and `substrate_materials`' tables rather than restated.
+`/` shows every verb. `/c` leaves `camera` and `camera.read` — type the next letter to
+narrow. `/theme ` shows the palettes. **Values complete exactly like verbs**, which is what
+makes the surface feel finished, and it is free: an `ArgKind::Choice` already *is* the list,
+built from `Theme::NAMES` and `substrate_materials`' tables rather than restated.
+
+#### The panel is one row. The list is a mode.
+
+**The primary panel is a single full-width row of words**, and that is what a `/` opens:
+
+```
+[background] | rig | theme | posture | block | patch | portal | camera | camera.read | surface | help
+```
+
+James, 2026-08-14, having used the first version: *"when the commands pop up, it is not what
+I had in mind, but I'm glad you did it this way because I think it is good for it to start
+this way. This should be available as a verbose mode, But I want the primary mode to be more
+compact and I want it to be simply a list of the available terms."* He wrote the row out
+himself, pipes and all.
+
+🚨 **The words are `Registry::candidates`' own and nothing restates them**, which is why the
+row narrows as letters are typed for free and why it gained `block`, `camera.read` and `help`
+— three verbs James's sketch omitted — without anybody deciding to add them. Curating that
+list is exactly the second vocabulary §1.8 exists to prevent, reached from the friendliest
+possible direction. The brackets mark the word Tab would take; a bracket rather than a colour
+alone, because colour is a weak signal in a row of same-sized words and dies in a screenshot,
+and rather than the verbose list's `>`, which reads as a bullet when there is only one row.
+`conversation_view::compact_line` is that row as a plain string, so it can be read in a test
+rather than looked at.
+
+⚠️ **Where the row would list options and there are none, it reads the hint instead** —
+`rows: a whole number` for `/block `, `distance: a number from 5 to 4000` for `/camera
+distance `. `Palette::hint` was written for exactly the kinds with no closed value space
+(`Float`, `Int`, `Text`) and the compact row is the first surface to draw it.
+
+⚠️ **The row counts what it could not fit rather than truncating it** (`… | +9`).
+`compact_fit` measures in **characters**, which is exact because the row is drawn entirely in
+the mono face, and it is a count rather than an ellipsis because egui's own truncation
+appends `…` — U+2026, in none of its four bundled fonts, the very defect the glyph allowlist
+exists to catch.
+
+**The verbose list is the old panel, whole**, behind `ORGANON_PALETTE_VERBOSE=1`, read once at
+tab construction the same way `ORGANON_PALETTE_AUTORUN` is. ⚠️ **An env var rather than a
+key.** James asked for the list to *"be available as a verbose mode"* and said nothing about
+how to reach it; a keybinding invented on his behalf is a standing claim on a key in a box
+that is also where he talks to an agent. Which key it eventually gets is his.
+
+#### A lone candidate completes itself
+
+🚨 **One continuation left is not a choice, it is an answer already given.** James:
+*"when I type slash p [Tab] d so that it narrows down to just one choice, 'desktop', Do not
+show me the single choice like you currently do. Simply complete the completion because it's
+the only option."* `Palette::sole_completion` is that rule, and `palette_complete` is the
+loop; the panel additionally declines to draw a one-item list whose candidate is already the
+whole line, which is the same statement seen from the drawing side.
+
+🚨 **Completing is not running, and they have separate switches.** Completion is **on by
+default** and only ever rewrites the composer — a line in the box is not an action.
+`Palette::autorun` **submits**, is **off by default**, and additionally requires
+`Candidate::completes`. That a completion may hand autorun a line it then runs is a *chain*,
+not a merge: with autorun off, which is the default, nothing runs. Both rules are pinned in
+`registry.rs` and again through real frames in `conversation_view.rs`.
+
+⚠️ **`completion != line` is what makes it terminate**, not the loop bound. `/surface` is
+already its own sole completion, so a rule that counted candidates alone would rewrite the
+line to itself on every frame for ever. The bound (`PALETTE_COMPLETE_STEPS`, four) is there
+for a cycle the registry has no way to produce today and a future `Choice` table has no way
+to be trusted not to.
+
+⚠️ **`/camera` must not complete**, because `camera` and `camera.read` both match it — a
+prefix that is also a whole verb is two candidates, and a count is the whole trigger.
+
+⚠️ **What this buys beyond the keystroke, and it is the larger half.** `candidates` reads a
+line with no trailing whitespace as *"still typing this word"*, so `/portal` put `portal` in
+the **verb** slot and offered the verb back; only `/portal ` reached the value slot.
+A command whose arguments are its entire point therefore appeared to offer no argument
+completions at all, which is what James reported. `verb_candidate` gives a verb-with-arguments
+a trailing space in its completion, so taking the lone candidate is what opens the ring:
+typing exactly `/portal` now leaves `/portal ` in the box with `[open] | close | toggle`
+above it.
+
+⚠️ **Escape suppresses it, for free and correctly.** `ConversationPane::palette` answers
+`None` while the panel is dismissed, so a human who has shut the panel is not having their
+line rewritten behind it.
+
+⚠️ **One frame of exposure, stated rather than papered over.** The completion runs *after*
+the `TextEdit` has taken this frame's keystroke, so the caret is put back at the end of the
+line on the following frame. A keystroke arriving inside that window — under ~16 ms at 60 fps,
+faster than any measured human burst — lands at the old caret index, mid-word. Closing it
+entirely would mean setting egui's cursor state *before* the widget runs, which needs the
+`TextEdit`'s id outside `composer_box` and entangles the box with the registry it was
+deliberately split from.
 
 #### The candidate model, and the three renderers of it
 
@@ -3111,7 +3197,64 @@ name (*"`/theme` needs `name`"*) and **does not clear the composer**, so the wor
 there and Tab is one key away. That is §1.8's rule unchanged, and it is what makes "Enter
 never accepts" affordable.
 
-Arrows move the highlight, wrapping; Escape shuts the panel until the line changes.
+Arrows move the highlight, wrapping — but see the history below, which is the other claimant
+on that key.
+
+🚨 **Escape's dismissal is a fact about an EDIT, and getting that wrong shipped a bug.** It
+was the composer's *text* at the moment Escape was pressed, compared for equality on every
+frame — and content equality cannot express "has changed since", because a line becomes equal
+to a dismissed string again by ordinary retyping. Press Escape once at `/p` and every future
+`/p` was silently refused a panel for the life of the tab, with nothing on screen to explain
+it; James hit exactly that (*"Now my tab completion broke. When I type slash p, nothing comes
+up"*). `ConversationPane::notice_edit` now watches the composer change against a shadow copy
+of the previous frame's text, once per frame, before anything asks whether the panel is open.
+⚠️ The rule lives there rather than in `palette()` deliberately: `palette` is the *question*,
+and a `&self` read that quietly rewrote state to answer itself would put the rule in the place
+that is asked rather than the place that knows. ⚠️ The one case it does not catch is a line
+replaced by an identical line *within a single frame* — select-all then paste the same text,
+both landing on one pass. Every ordinary route to retyping a string passes through a frame in
+which it is shorter.
+
+#### Up walks the commands you have already sent
+
+James asked for it in one line: *"Add a slash command scroll back buffer on the up key."* Up
+recalls the previous slash command into the composer, Down comes back forward, and stepping
+forward past the newest returns to the empty box the walk started in. **It does not wrap**,
+where the panel's highlight does: a ring of eleven verbs has no end worth feeling, and a
+history that silently rolled from the oldest to the newest would be indistinguishable from
+having lost your place.
+
+🚨 **Up already meant two other things, and the rule that picks one is a pure function** —
+`conversation_view::arrow_owner`, three booleans in, one owner out — because the wrong pick
+costs a message somebody was writing:
+
+1. **A walk in progress keeps them.** Recalling `/theme dark` puts a command line in the box,
+   which opens a panel; without this the second Up would move a highlight and the walk would
+   be one step deep for ever. A walk ends by *editing* the recalled line, which is asked of
+   the composer (`walking()`) rather than tracked, so there is no second flag to keep in step.
+2. **An open panel takes them next**, unchanged.
+3. **An empty box hands them to history**, because an empty text box has no caret motion to
+   perform: Up there can only mean "what did I type before".
+4. **Otherwise the text box keeps them.** Prose, a half-written paragraph, and a command line
+   whose panel was dismissed with Escape are all this case. ⚠️ A multiline `TextEdit` gives Up
+   a real meaning — moving the caret between lines — and taking it unconditionally would break
+   ordinary typing in the box a human talks to an agent in, which is the same constraint that
+   made Tab and Enter separate keys. Escape means "stop showing me this", not "hand my arrow
+   keys to something else".
+
+⚠️ **The raw key is carried alongside the act through the consumption pass**, because
+`palette_key` maps **Shift+Tab** to `Prev` — the same act ArrowUp produces — so routing on the
+act alone would hand Shift+Tab to the history.
+
+**What earns a place**: `Resolved::Run` and `Resolved::Refused`, most recent first, no
+consecutive duplicates. ⚠️ **A refusal is remembered and that is the case the buffer is most
+for** — a command that ran is one you no longer need back, while one the registry refused is a
+line with a typo in it you want in front of you again to fix. Prose is not remembered (he
+asked for a *command* buffer, and a walk that stepped over three paragraphs would not be a
+recall surface), and `Resolved::Escaped` is not a command at all. ⚠️ **In memory, for the life
+of the tab**: the session log already records every command that ran, so a durable recall
+surface would be a second record of the same fact and the two would disagree the first time
+one was pruned. Reading back the session log is the honest way to make it survive a restart.
 
 🚨 **`lock_focus(true)` on the composer is load-bearing, not a preference.** egui's focus
 manager reads Tab out of the **raw input** in `Focus::begin_pass`, before any console code
@@ -3153,11 +3296,39 @@ slash and answers `None`. ⚠️ A bare `/` answers `Some` with the whole table 
 `resolve` calls it a message — those are not in conflict: showing the choices is what `/` is
 *for*, and nothing runs until the line is a command.
 
-⚠️ **The list is capped at eight rows with a count of the remainder, rather than scrolled.**
-`console.background` offers more materials than fit, so it genuinely overflows — but a
-vertical `ScrollArea` dropped into this bottom-up column takes the whole pane (684 pt of a
-684 pt pane, measured; see §1.1's composer). "Type another letter to narrow" is also the
-faster route to the one you want.
+⚠️ **The verbose list is capped at eight rows with a count of the remainder, rather than
+scrolled.** `console.background` offers more materials than fit, so it genuinely overflows —
+but a vertical `ScrollArea` dropped into this bottom-up column takes the whole pane (684 pt of
+a 684 pt pane, measured; see §1.1's composer). "Type another letter to narrow" is also the
+faster route to the one you want. The compact row has no such cap: it is one row and it
+counts what did not fit along the width.
+
+#### The panel's bottom edge, and why it was on top of the text
+
+🚨 **The panel painted over the composer, and the cause was `ui.horizontal`.** James: *"Line
+the bottom of it up so it sits just atop the top line of the text box. Your current box
+extends lower than that and covers a bit of the text."* `Ui::horizontal` seeds its child with
+`spacing().interact_size.y` — 18 pt on egui's default style, on the assumption that a
+horizontal row holds something interactive — and `allocate_ui_with_layout_dyn` then advances
+by `frame_rect.union(final_child_rect)`, so a row of 15.125 pt text still costs the whole 18.
+The band was arithmetic over *text* heights. **Measured at 2.875 pt of overflow per row**, by
+putting `ui.horizontal` back and reading `plate`'s own return.
+
+⚠️ **And the overflow goes downward, which is why it was visible rather than merely wrong.**
+`plate` reserves its band in a bottom-up column but lays out top-down inside it, so rows that
+outgrow the reservation are painted past its *lower* edge — over the composer, which was
+placed there first, rather than pushing the scrollback up. Ten rows (a head, eight verbs and a
+`+N` line, which is what a bare `/` drew against the real table) put ~29 pt of panel across
+the top line of the text box.
+
+`palette_row` allocates each row explicitly at `palette_row_height`, so the arithmetic and the
+drawing are one statement. ⚠️ **Posture is in that height and it is not decoration**: `body`
+applies `Form::body_line_height`, which at the desktop end is strictly greater than the text's
+own height, so a band measured from `text_style_height` alone is short at every posture but
+the terminal one. `plate` returns how far it outgrew its reservation — **zero by
+construction** — and the test harness asserts that on *every* frame it runs rather than in one
+test of its own, because the failure reappears whenever a row is added, a font changes or a
+posture widens the line.
 
 #### The same region is where a command answers
 
@@ -3182,7 +3353,13 @@ line, and is already where the eye is.
   candidates. `receipt_holds` is that rule as a pure function.
 - `registry::Receipt { ok, text }` is the structured value; `registry::receipt` formats the
   log's line **from it**, so the band and the log cannot come to disagree about what happened.
-  The marker is a word rather than a glyph because `✓`/`✗` are in none of egui's four fonts.
+  The marker is the word `ok` rather than a glyph — 🚨 **and the log shipped with `✓` anyway,
+  for four hours, photographed on a running console drawing `☐ /rig daylight` in the pane log
+  and again in the status band.** The glyph allowlist guard existed and did not catch it: it
+  walks an enumerated list of *draw sites*, and a string built in `registry.rs` and drawn in
+  `conversation_view.rs` fell straight between them. That is the fourth time this exact defect
+  has shipped and every earlier fix was site-local, so the guard now checks
+  `registry::receipt`'s **output** from the file that draws it.
 
 ⚠️ **`/help` is now the third-best way to find a verb**, behind typing `/` and behind the pie
 menu that will read the same table. Its body still lands at the head of the scrollback, which
@@ -3191,10 +3368,11 @@ for *output*, because a twenty-line help text in a band above the composer is a 
 thing from a one-line answer.
 
 ⚠️ **ASCII throughout the panel**, deliberately. The obvious characters — `▸`/`▾` for the
-highlight, `…` for a `Float`'s band — are in none of egui's bundled fonts and would ship as
-boxes, which is exactly how `✓`/`✗` reached a third draw site. The glyph allowlist test in
-`conversation_view` now walks every string the panel can draw, **including the ones derived
-from a schema**, since a range or an option list is where a stray glyph would hide.
+highlight, `…` for a `Float`'s band or for a row that overran its width — are in none of
+egui's bundled fonts and would ship as boxes, which is exactly how `✓` reached a fourth draw
+site. The glyph allowlist test in `conversation_view` walks every string the panel can draw,
+**including the ones derived from a schema** and the compact row as a whole assembled line at
+three widths, since a range, an option list or a separator is where a stray glyph hides.
 
 ## 2. Seams the next tiers consume
 
@@ -3219,25 +3397,34 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
-- 🚨 **Nobody has seen the command panel, so whether it *feels* fast is unverified — and
-  "fast" is the entire claim being made for it.** Everything §1.9 asserts is a claim about
-  code: `cargo test -p organon-console --lib` is **604 green** (583 before, plus eleven in
-  `registry` and ten in `conversation_view`), `cargo check --features console-edition --bin
+- 🚨 **Nobody has seen the compact command panel, so whether it *feels* fast is unverified —
+  and "fast" is the entire claim being made for it.** ✏️ **The verbose panel HAS now been
+  seen**, which is where the compact one came from and what the six defects §1.9 records were
+  found by: James used it on 2026-08-14, and the panel he used painted over the composer,
+  refused to reappear after an Escape, offered no arguments for `/portal`, and wrote a check
+  mark that drew as an empty box. Those are fixed and each is pinned; the row that replaced it
+  has still only been read as a string in a test. Everything §1.9 asserts is a claim about
+  code: `cargo test -p organon-console --lib` is **613 green** (604 before), `cargo test -p
+  organon-core` is **556 green**, `cargo check --features console-edition --bin
   organon-console` is clean, and `cargo check --tests -p organic-math-native --features
   console-edition` is clean. **That is the whole claim: it compiles and the tests pass.** What
-  it does not establish, in order of how much it matters: (1) that a panel appearing on the
-  first `/` reads as *help* rather than as an interruption — which-key is fast because the
-  panel is glanced at and then outrun, and whether this one can be outrun is a question about
-  a running window; (2) that the region above the composer is the right place for it at all,
-  since it pushes the scrollback up by a band whose height changes with the list, and a
-  transcript that jumps every time a letter narrows the list would be worse than no panel;
-  (3) that eight rows is the right cap — `console.background` overflows it and nobody has seen
-  what "+N more" looks like against a real material table; (4) that the `>` marker and colour
-  are enough to tell the highlighted row from the others without a painted highlight, which
-  was chosen to avoid a second way for a band's height to be wrong. ⚠️ **Auto-execute has
-  never been used by a human.** The guard is pinned by test in two places and the switch is
-  off, but "a command fires as you type" is a feeling as much as a rule, and the first honest
-  test of it is James setting `ORGANON_PALETTE_AUTORUN=1` and typing `/s`.
+  it does not establish, in order of how much it matters: (1) that eleven verbs in one row is
+  legible at a glance rather than a wall of words — which-key is fast because the panel is
+  glanced at and then outrun, and a row that has to be *read* is slower than the list it
+  replaced; (2) that the brackets read as a selection rather than as punctuation, which
+  matters because Tab still takes what they mark; (3) that a line completing itself under the
+  hand feels like help rather than like interference — the one-frame caret window §1.9 states
+  is arithmetic, but "the box moved while I was typing" is a feeling; (4) whether `+9` at a
+  narrow width is useful or merely honest, since nobody has seen the row at a width that
+  cannot hold it. ✏️ The old ledger's second worry — a band whose height changes with the list,
+  jumping the transcript on every keystroke — is **closed by construction**: the compact row is
+  one row whatever it holds, and a test pins that. ⚠️ **Auto-execute has still never been used
+  by a human**, and it is now the *second* switch in this area: completion is on by default and
+  autorun is off, and the first honest test of the pair is James setting
+  `ORGANON_PALETTE_AUTORUN=1` and typing `/s`. ⚠️ **The command history has never been walked
+  by a hand either** — `arrow_owner`'s four cases are pinned as a pure function and driven
+  through real frames, but "Up did what I expected" is exactly the kind of claim a test cannot
+  make.
 - 🚨 **Nobody has seen a collapsed transcript, so whether it actually *reads* better is
   unverified — and that is the entire point of the change.** Card density was designed against
   a screenshot and a sentence, and everything claimed for it here is a claim about code:

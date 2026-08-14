@@ -11,6 +11,64 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The command panel becomes one row, and the line finishes itself
+
+James used the panel the day it landed and asked for it a tenth the height: *"I want the
+primary mode to be more compact and I want it to be simply a list of the available terms."*
+So `/` now opens a **single full-width row of words** —
+`[background] | rig | theme | posture | block | patch | portal | camera | camera.read |
+surface | help` — with brackets on the one Tab would take. The verbose list is kept whole
+behind `ORGANON_PALETTE_VERBOSE=1`.
+
+🚨 **The words are `Registry::candidates`' own and nothing restates them.** James's sketch of
+the row named eight verbs; the panel shows the true eleven, because curating the list would be
+a second vocabulary in the one place built to prevent one. Where a slot has no closed value
+space the row reads the hint instead (`rows: a whole number`), and where the words outrun the
+pane it counts them (`+9`) rather than truncating — egui's own truncation appends `…`, which
+is in none of its bundled fonts.
+
+📌 **A lone candidate completes itself instead of being shown as a one-item list**, and
+**completing is not running**. Completion is on by default and only rewrites the composer;
+`Palette::autorun` submits, is off by default, and additionally requires a *complete* command.
+`completion != line` is what terminates it, not the loop bound — `/surface` is already its own
+sole completion. `/camera` deliberately does not complete, since `camera.read` matches too.
+This also fixes a design hole James hit from the other side: `/portal` offered no argument
+completions at all, because a line with no trailing space is still naming its verb; taking the
+lone candidate is what opens the ring, so typing exactly `/portal` now shows
+`[open] | close | toggle`.
+
+📌 **Up walks the slash commands you have already sent**, Down comes back, and it does not
+wrap. Ownership of the arrow keys is a pure function (`arrow_owner`): a walk in progress, then
+an open panel, then an empty composer, then the text box keeps them — because a multiline
+`TextEdit` gives Up a real meaning and this is the box a human talks to an agent in. Refusals
+are remembered (that is the line you most want back); prose is not. In memory, for the life of
+the tab.
+
+**Three defects from the panel that shipped four hours earlier, each found on a running
+console:**
+
+- 🚨 **The panel painted over the composer.** `ui.horizontal` seeds its child with
+  `spacing().interact_size.y` (18 pt) while the band was arithmetic over text heights
+  (15.125 pt) — **2.875 pt of overflow per row, measured** — and in a bottom-up column that
+  spills *downward*, over the text box rather than pushing the scrollback up. Ten rows put
+  ~29 pt of panel across the top line of the composer. Rows are allocated explicitly now, and
+  `plate` returns its own overflow so every panel test asserts it is zero.
+- 🚨 **Escape poisoned a line for the life of the tab.** The dismissal was keyed on the
+  composer's *text*, and content equality cannot say "has changed since" — so once `/p` had
+  been dismissed, every future `/p` was silently refused a panel with nothing to explain it.
+  It is now a fact about an edit, watched rather than compared.
+- 🚨 **The log's receipt marker was tofu.** `registry::receipt` opened with `✓` (U+2713),
+  photographed drawing as `☐ /rig daylight` in the pane log and again in the status band. It
+  is the word `ok` now, matching the band above the composer. **The glyph allowlist guard
+  existed and did not catch it** — it walks an enumerated list of draw sites, and a string
+  built in `registry.rs` and drawn in `conversation_view.rs` fell between them. Fourth
+  occurrence of this defect, and every earlier fix was site-local; the guard now checks
+  `registry::receipt`'s output from the file that draws it.
+
+`cargo test -p organon-console --lib` 613 green; `cargo test -p organon-core` 556 green; both
+`--features console-edition` checks clean. ⚠️ **Nobody has seen the compact row** — see
+`CONSOLE_ARCHITECTURE.md` §3 for what that does and does not establish.
+
 ### A command palette above the composer — see your choices while you type
 
 `/` now opens a full-width panel listing every verb with its description; a keystroke narrows

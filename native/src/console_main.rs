@@ -4565,6 +4565,9 @@ mod cli_tests {
     /// shows the **true** list, which is eleven: `block`, `camera.read` and `help` are
     /// typeable, so hiding them would be the surface disagreeing with the registry — a
     /// second vocabulary, in the one place that exists to prevent one.
+    ///
+    /// ⚠️ `cargo check --tests --features console-edition` only in this session; CI executes
+    /// it — the same standing caveat the sibling test above carries.
     #[test]
     fn the_compact_panel_shows_the_real_table() {
         use organon_console::conversation_view::compact_line;
