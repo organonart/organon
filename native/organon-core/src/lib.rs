@@ -18,8 +18,9 @@
 //! | [`gguf_data`] | tensor payload reads; depends only on [`gguf`]. |
 //! | [`edition`] | resolves #536 T4 **reference #4** — `ipc.rs → crate::edition`, ×6. |
 //! | [`ipc`] | **T4** — `Shared`, the plugin↔visual wire format. See the ⚠️ below. |
+//! | [`kind`] | #48 T1 — the console's **kind** vocabulary. It is here because the two front-ends that had a copy each live in *different* crates (`cli.rs` in the root crate, `conversation.rs` in `organon-shell`), so this is the only crate both can see — and a closed set of words needs no host, GPU or UI. |
 //! | [`math`] | **PR B** — the algorithm itself (31.5k lines). Pure; no host, no GPU. |
-//! | [`params`] | **PR B** — `FuncName` + `ParamValues`, #536 T4 reference #2. |
+//! | [`params`] | **PR B** — `ParamValues` + the semantic enums, #536 T4 reference #2; plus `IndexedEnum` (organon#49 T2), core's counterpart to nih-plug's `Enum`. |
 //! | [`tabs`] | resolves #536 T4 **reference #5** — `edition.rs → preset::UiTab`. |
 //!
 //! ⚠️ **`gguf`/`gguf_data` are here provisionally.** #536 T4 reference #1 —
@@ -34,16 +35,25 @@
 //! `preset.rs` keeps its `ParamSetter` logic (it is the host-automation path and is
 //! nih-plug's by nature), and only the two tab *taxonomy* enums were lifted out of it.
 //!
-//! **`params.rs` keeps ~98 of its ~102 `#[derive(Enum)]` types.** Four have a
+//! **`params.rs` keeps ~94 of its ~102 `#[derive(Enum)]` types.** Eight have a
 //! counterpart here, and each is a *split* rather than a move: core owns the plain
 //! semantic enum, `params.rs` owns a `Host*` mirror carrying nih-plug's derive, because
 //! the **orphan rule** forbids the native crate from implementing a foreign trait for a
-//! foreign type. `FuncName` was the first (#626 T3); `GeneratorMode`, `BoidsForm` and
-//! `OscDivision` followed in organon#49 T1, because they are what `world.rs` reaches for
-//! and `world.rs` has to become reachable from a crate without nih-plug. See [`params`].
+//! foreign type. See [`params`], and `ARCHITECTURE.md` §7 for the contract.
 //!
-//! ⚠️ The derive count in `params.rs` is unchanged by that — a mirror carries a derive
-//! too. What changed is that four of them are now adapters rather than declarations.
+//! | Moved in | Types | Because |
+//! |---|---|---|
+//! | #626 T3 | `FuncName` | `math.rs` needs it |
+//! | organon#49 T1 | `GeneratorMode`, `BoidsForm`, `OscDivision` | what `world.rs` reaches for |
+//! | organon#49 T2 | `SurfaceMode`, `MaterialType`, `CamPath`, `Palette` | what `cli.rs` + `agent.rs` reach for |
+//!
+//! Each wave had the same shape and a different consumer, and the third is the one worth
+//! remembering: `cli.rs` and `agent.rs` are on `world.rs`'s dependency path, so they must
+//! lose nih-plug too — which means every enum *they* name has to be here. [`params`]'s
+//! `IndexedEnum` is what replaced nih-plug's `Enum` for them.
+//!
+//! ⚠️ The derive count in `params.rs` is unchanged by all this — a mirror carries a derive
+//! too. What changed is that eight of them are now adapters rather than declarations.
 //!
 //! ## ⚠️ `ipc.rs` MOVED HERE IN TIER 4 — and Tier 3's note below is now history
 //!
@@ -75,6 +85,7 @@ pub mod edition;
 pub mod gguf;
 pub mod ipc;
 pub mod gguf_data;
+pub mod kind;
 pub mod math;
 pub mod params;
 pub mod tabs;

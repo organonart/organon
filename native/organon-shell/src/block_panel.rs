@@ -56,6 +56,7 @@
 use crate::block_anchor::{visible_blocks, Block};
 use crate::scroll_anchor::ViewState;
 use crate::theme::Theme;
+use organon_core::kind::Kind;
 
 /// One claimed rectangle: the lines it is pinned to, and what the console draws in them.
 ///
@@ -69,11 +70,19 @@ pub struct Patch {
     pub content: PatchContent,
 }
 
-/// The kinds a claim can name, as the console's side of them.
+/// The kinds a claim can name, **with what the console needs to paint each one**.
 ///
-/// The **wire** side is `cli::PatchKind`, in the other crate: this is a paint target, that is
-/// a word a writer types, and keeping them apart is what stops `organon-shell` from acquiring
-/// an opinion about a command-line vocabulary it cannot see.
+/// The vocabulary itself is [`organon_core::kind::Kind`], shared with the other front-end
+/// since #48 Tier 1: this is a paint target, that is the word a writer types, and keeping
+/// them apart is what stops `organon-shell` from acquiring an opinion about a command-line
+/// vocabulary it cannot see. What ties them is [`Self::kind`] and the test beside it, so the
+/// two cannot come to know different kinds while both compile.
+///
+/// ⚠️ **This is the terminal front-end's payload carrier, and
+/// [`crate::conversation::ArtifactContent`] is the conversation's.** Same relationship to the
+/// same vocabulary, different payloads because the placements genuinely differ — a patch's
+/// panel owns live widget state pinned to scrollback lines, an artifact's is a description the
+/// view keys state off. They are two placements of one kind, not two kinds.
 #[derive(Clone, Debug)]
 pub enum PatchContent {
     /// The rendered scene, sampled through the rows. Carries no state of its own — the
@@ -81,6 +90,16 @@ pub enum PatchContent {
     Scene,
     /// A live control panel, with its own widget state.
     Panel(BlockPanel),
+}
+
+impl PatchContent {
+    /// The shared kind this is the **inline-in-a-terminal** placement of.
+    pub fn kind(&self) -> Kind {
+        match self {
+            PatchContent::Scene => Kind::Scene,
+            PatchContent::Panel(_) => Kind::Panel,
+        }
+    }
 }
 
 impl Patch {
@@ -446,5 +465,40 @@ mod tests {
             panel_placements(&[Patch::scene(blk(505, 4))], state, r, 20.0).is_empty(),
             "a ledger of scenes claims nothing"
         );
+    }
+
+    /// 🚨 **The terminal front-end's paint targets are one per shared kind, and this is what
+    /// keeps them one per shared kind.** The twin of
+    /// `conversation::every_shared_kind_has_exactly_one_artifact_arm`, for the other placement:
+    /// an arm here with no kind is a rectangle the console paints and `--help` cannot ask for,
+    /// and a kind with no arm is a word the CLI accepts and this front-end silently ignores.
+    /// Neither reports itself — the second in particular dispatches, records a success, and
+    /// paints nothing, which is the exact failure the one-table rule exists to prevent.
+    #[test]
+    fn every_shared_kind_has_exactly_one_patch_arm() {
+        let arms = [
+            PatchContent::Scene,
+            PatchContent::Panel(BlockPanel::new("t", vec!["metal".into()])),
+        ];
+        let mut covered: Vec<Kind> = arms.iter().map(PatchContent::kind).collect();
+        covered.sort_by_key(|k| k.as_word());
+        covered.dedup();
+        assert_eq!(covered.len(), arms.len(), "two arms answering one kind");
+        for k in organon_core::kind::ALL {
+            assert!(
+                covered.contains(k),
+                "`{}` is a kind the CLI offers and this front-end cannot paint",
+                k.as_word()
+            );
+        }
+        assert_eq!(covered.len(), organon_core::kind::ALL.len());
+        // `is_scene` is the console's own hot-path question — it decides whether the engine is
+        // asked for a picture at all — so pin that it agrees with the shared vocabulary rather
+        // than being a second opinion about the same arm.
+        assert!(Patch::scene(blk(0, 1)).is_scene());
+        assert_eq!(Patch::scene(blk(0, 1)).content.kind(), Kind::Scene);
+        let p = Patch::panel(blk(0, 1), BlockPanel::new("t", vec![]));
+        assert!(!p.is_scene());
+        assert_eq!(p.content.kind(), Kind::Panel);
     }
 }

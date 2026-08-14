@@ -68,6 +68,156 @@ wrong generator. `GeneratorMode`'s once-re-seated ordinals (`None` = 17, `AxonWa
 stays, and it was right on the reason it gave — `math.rs` only needed it in a test. That
 note is now rewritten rather than deleted: the reason was about `math.rs`, and `math.rs`
 was simply never the only caller that mattered.
+### Three palettes beside `organon` — `light`, `dark` and `chocolate`
+
+`Theme` gains three constructors and a `Theme::by_name` resolver. `organon` stays the
+default and is byte-unchanged. Nothing selects a palette yet: no picker, no CLI verb, no
+startup read — `by_name` is the seam a picker and `prefs.rs`'s stored `theme` name will
+share, and an unknown name is `None` rather than a panic or a substitution.
+
+Two things had to move first, because a palette alone could not have reached either.
+
+**The legibility scrim's floor is the palette's, not one constant.** `SCRIM_FLOOR = 96` is a
+mandatory near-black wash over the whole rect whenever a backdrop is live, so a light theme
+was not reachable by swapping colours — it would have sat under a compulsory dark veil
+however its fields were set. The floor is now `Theme::scrim_floor`, and `term_view` carries
+two: `SCRIM_FLOOR = 96` for a dark page, `SCRIM_FLOOR_LIGHT = 192` for a light one. ⚠️ PRD
+§4.6's rule was always *the glyphs stay legible*; what is dropped is the assumption that
+legibility means darkness. **No setting can still cross a floor** — `ORGANON_SHELL_SCRIM` is
+clamped up to the active palette's, and the exhaustive test now runs over every palette's own
+answer rather than one constant.
+
+**egui's own chrome is derived from the palette.** `set_visuals(egui::Visuals::dark())` was
+one hardcoded call colouring sliders, popup frames, the `TextEdit` selection wash and
+scrollbars — roughly half the pixels, which would have left `light` reading as broken rather
+than as light. `Theme::visuals()` derives them; ⚠️ for `organon` it returns `Visuals::dark()`
+byte-for-byte, pinned by test, so adding palettes cannot restyle the console that ships. It
+writes colours only — corner radii, widget expansion, stroke widths and shadows come from the
+egui base untouched.
+
+Each spec names about ten roles and `Theme` has about fifty fields; every derived field
+carries its rule at the site. ⚠️ Notably **none of the three has an amber** (no spec names
+one, so "a tool is running" is primary text), and `ansi16` is **chosen, not specified**, for
+all three and marked so — the specs were written against the conversation view and say nothing
+about a terminal.
+
+⚠️ **Nobody has seen any of them.** 508 tests green, `cargo check --features shell-edition`
+clean — that is the whole claim. A palette that passes its hex test can still look wrong.
+### Posture — terminal ⟷ desktop as a second axis, orthogonal to the palette
+
+Organon Shell gains `posture.rs`: a scalar `t ∈ [0,1]` and the fourteen form tokens
+resolved at it. The theme is what the console is *made of*; posture is *how it holds
+itself* — flush and tight and square like a terminal, or inset and open and ruled like a
+desktop document. The two are independent on purpose, so `organon` at desktop posture and a
+light palette at terminal posture are both real consoles.
+
+It is implementable rather than merely appealing because **every form token is a scalar,
+and scalars lerp**: the desktop state is not a second renderer, it is the same draw code
+reading different numbers. `Form::at(t)` interpolates the gutter, the corner radii, the
+paddings, the line height, the card gap, the label tracking and three alphas; `Shell` holds
+the `Posture` beside its `Theme` and `redraw` resolves one `&Form` per frame.
+
+- 🚨 **Nothing on screen changes.** The console ships at `Posture::TERMINAL`, and every
+  terminal-end value was read out of the code before it moved — pinned by
+  `form_at_terminal_is_the_form_that_shipped`, with the source of each in its assertion.
+  The two `Option` returns (`gutter_margin`, `body_line_height`) make that structural: at
+  `t = 0` the scrollback wraps in nothing and the text is laid out by the font, exactly as
+  before, rather than by a number that ought to agree.
+- 🚨 **Posture owns the scalars; the palette owns whether a card has a visible edge.** The
+  four-sided border fades out and a left rule fades in over one shared lerp, with no
+  per-theme branch at any draw site — a palette that separates surfaces by fill alone gives
+  the new `Theme::card_left_rule` zero alpha. The rejected alternative, a
+  `Box | LeftRule | None` enum per theme, puts a branch in every card draw and makes the
+  tween discontinuous where the enum flips.
+- ⚠️ **One token's terminal end disagrees with the spec, and is recorded rather than
+  reconciled.** The design gives square corners at terminal posture; the console has drawn
+  `CornerRadius::same(6)` since its cards were written, so squaring them would be a visible
+  change at the posture that is supposed to *be* today's console — and this tier had no
+  window to check it in. The shipped terminal end is `6`; flipping it is one number and a
+  matching one in the test.
+- ⚠️ **Font family and label case are left out rather than faked.** There is no half-mono
+  face and no half-capital letter, so neither is a field: an interpolation that claimed
+  otherwise would be a lie that compiles.
+- No animation (that is a later tier — `t` is set once and held), no new palette, no
+  ordinals in the gutter, and the terminal host is untouched: a character grid's form is
+  the font's, with no padding or corner for a scalar to move.
+### One kind registry, where the console had two (#48 Tier 1)
+
+The console has two front-ends, and the same two-item taxonomy had been written **three**
+times: `cli::PatchKind` (`Scene`/`Panel`) on the wire, `block_panel::PatchContent`
+(`Scene`/`Panel`) as the terminal's paint target, and `conversation::ArtifactContent`
+(`Surface`/`Panel`) in the conversation. Reached independently, in different crates, and
+**already diverged in spelling** — the shape this repo keeps recording as "two resolvers that
+can disagree eventually do". Adding a media kind would have made it four.
+
+`organon_core::kind::Kind` is now the one vocabulary, in the spine because that is the only
+crate all three copies can see (`cli.rs` is the root crate, the other two are `organon-shell`)
+and because a closed set of words needs no host, GPU or UI.
+
+**One vocabulary, two payload carriers — one per placement.** A patch is inline-in-a-terminal
+and an artifact is inline-in-a-conversation; `PatchContent` and `ArtifactContent` each answer
+`kind()`, and each has a test that fails on an arm with no kind or a kind with no arm. They
+are deliberately **not** merged: a patch's panel owns live widget state pinned to scrollback
+lines, an artifact's is a description the view keys state off, and the `Kind` on the wire must
+be able to carry neither — `doc/console_patch_protocol.md`'s whole point is that a program
+which can print cannot drive the machine. The kind is the half that is genuinely shared; the
+description is the half that genuinely differs.
+
+⚠️ The design doc this came from (`doc/console_view_paradigm.md` §5) counted **two** copies.
+The third turned up while unifying them, and it is the one that settled the shape — a two-way
+merge of a bare enum and a payload-carrying one would have had no obvious answer to "where do
+the payloads go", while three copies made the placement/vocabulary split read off the tree.
+
+Inert by contract: `scene` and `panel` behave exactly as before, and `--kind scene` is
+unchanged in `--help`, in the `organon-cli` skill and on the sidecar wire.
+
+- **An unknown kind is refused with the known list.** `Kind::resolve` returns
+  `` `hologram` is not a kind — known kinds: scene, panel `` — no nearest match, no case
+  folding, no prefix rule. The three arrival paths now give three deliberate answers: clap
+  refuses at the CLI boundary, the command service refuses with that sentence (an agent there
+  has no other way to ask what the build can draw), and the sidecar skips the line in silence,
+  because nobody is listening and a guess would paint the wrong object into a rectangle
+  someone else's output is holding open.
+- ⚠️ **The two *words* were deliberately not unified.** `scene` is public CLI surface and
+  `/surface` is a composer command a human already types, so an inert tier could break
+  neither. `ArtifactContent::Surface` answers `Kind::Scene` through one documented, tested
+  crossing; `SHELL_ARCHITECTURE.md` §1.1 states what unifying the spellings would cost, so the
+  next tier decides rather than rediscovers.
+- **`Kind` has no `Default`.** The "a `patch` line with no third word means `scene`" rule is a
+  wire-compatibility fact about that one verb, not a claim that `scene` is the natural kind, so
+  it stayed behind as `cli::PATCH_DEFAULT_KIND` — the conversation front-end must not inherit
+  an answer to a question it never asked.
+### The re-wrap cost is measured: 6–9× per frame, and nothing culls
+
+`doc/console_rewrap_measurement.md`, with the instrument that produced it at
+`native/organon-shell/src/conversation_view/rewrap_bench.rs`. Posture's tween (issue #38)
+and pane splitting both change the conversation transcript's available width, and both were
+scoped without knowing what that costs; `console_view_paradigm.md` §9 had said in as many
+words that nobody had taken the measurement.
+
+**egui's galley cache is keyed on the wrap width** (`epaint-0.33.3/src/text/fonts.rs:884` →
+`text_layout_types.rs:439`), so a width that moves by a whole point is a *total* miss across
+the entire retained scrollback — and nothing culls, because `egui::Label::ui` builds its
+galley before it tests `is_rect_visible`. Measured through the real `scrollback` draw path,
+headless, release, on `ORGANON-ONE`: **≈ 7 µs to lay out a wrapped galley against ≈ 0.9 µs to
+reuse one.** Per frame that is 2.4 ms at a 100-element session, 9.1 ms at 400, 50.5 ms at
+2 000 and 308.6 ms at the 10 000-element cap. A *single* change — pane splitting, or snapping
+a tween at its end — costs exactly one such frame and nothing after it.
+
+📌 **The larger finding is the steady-state column.** The transcript is not virtualised, so
+its layout cost is linear in scrollback length with nothing animating at all: 8.1 ms per frame
+at 2 000 elements, 51.6 ms at the cap. The tween does not create that; it multiplies it by
+eight. Window-resize drags already pay the animating figure today.
+
+Five options are priced — tween as designed, animate the chrome only, snap once, quantise the
+tween, virtualise the scrollback — and **none is chosen**; that is downstream of the number,
+not contained in it. §8 lists what was not measured, including anything on a GPU, the
+`Edit`-card diff that recomputes every frame, and posture itself, which does not exist yet.
+
+Two tests hold the parts that can rot in silence and run in the default suite: one pins
+epaint's cache keying against a version bump, one pins that the whole scrollback is laid out
+rather than the visible slice. The benchmark is `#[ignore]`d —
+`cargo test --release -p organon-shell --lib -- --ignored --nocapture rewrap`.
 
 ### A CRLF checkout silently un-installs the `organon-cli` skill
 

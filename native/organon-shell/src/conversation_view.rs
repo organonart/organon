@@ -40,7 +40,7 @@ use crate::approval::{
     approval_channel, decision_key, resolve_choice, resolve_recall, Choice, DecisionMemory,
     PendingApproval,
 };
-use crate::block_panel::{DEFAULT_SLIDERS, PAD, SLIDER_WIDTH};
+use crate::block_panel::{DEFAULT_SLIDERS, SLIDER_WIDTH};
 use crate::command::CommandSpec;
 use crate::conversation::{
     Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent,
@@ -50,9 +50,19 @@ use crate::conversation::{
 };
 use crate::mcp::{ExposureAudit, McpServer, NoDispatch, ToolDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
+use crate::posture::Form;
 use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::theme::Theme;
 use crate::timeline::pinned_after_scroll;
+
+/// The re-wrap measurement — what a width change costs this file, per frame.
+///
+/// Test-only, and a *sibling* of the tests below rather than part of them: it drives
+/// [`scrollback`] over transcripts of up to ten thousand elements, which is a benchmark
+/// and not a correctness check. Its findings are `doc/console_rewrap_measurement.md`; the
+/// module doc says what it measures and, more importantly, what it does not.
+#[cfg(test)]
+mod rewrap_bench;
 
 /// The console's MCP `serverInfo.name`, and therefore the middle of every namespaced tool
 /// name Claude Code spells: `mcp__organon__…`.
@@ -1045,8 +1055,13 @@ pub fn draw(
     pane: &mut ConversationPane,
     images: &SurfaceImages,
     theme: &Theme,
+    form: &Form,
 ) -> ConversationOutput {
     let mut out = ConversationOutput::default();
+    // Taken before anything is allocated in the pane, so the ticks mark the *conversation
+    // area* — the whole of what this front-end was given — rather than whatever the
+    // bottom-up column happened to leave over.
+    let area = ui.max_rect();
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         status_strip(ui, pane, theme);
         ui.add_space(4.0);
@@ -1054,11 +1069,83 @@ pub fn draw(
         ui.add_space(4.0);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            out = scrollback(ui, pane, images, theme);
+            out = scrollback(ui, pane, images, theme, form);
         });
     });
+    // Last, so nothing the flow draws can cover them — the same call-order enforcement the
+    // patch paints rely on, one layer up. At terminal posture this returns without touching
+    // the painter.
+    registration_ticks(ui, area, theme, form);
     out
 }
+
+/// **The four corner marks that say where the page is** — a printer's registration mark, and
+/// the one thing in the desktop form that is not part of any element.
+///
+/// They arrive with posture and nothing else: at the terminal end
+/// [`Form::tick_color`] answers `None` and this function returns before it has asked the
+/// painter for anything, which is why the tier can claim it draws nothing new.
+///
+/// Colour is [`Theme::dim`] — "present, but not being read" is exactly what a registration
+/// mark is, and it is the one role on the palette that already means it. Giving them a field
+/// of their own would have added a colour every future palette has to answer for, to say
+/// something `dim` already says.
+fn registration_ticks(ui: &egui::Ui, area: egui::Rect, theme: &Theme, form: &Form) {
+    let Some(color) = form.tick_color(theme.dim) else { return };
+    let len = form.tick_len;
+    let stroke = egui::Stroke::new(1.0f32, color);
+    let painter = ui.painter();
+    // (corner, which way its arms point) — the signs are what turn one loop into four
+    // corners rather than four copies of the same two lines.
+    for (corner, dx, dy) in [
+        (area.left_top(), 1.0, 1.0),
+        (area.right_top(), -1.0, 1.0),
+        (area.left_bottom(), 1.0, -1.0),
+        (area.right_bottom(), -1.0, -1.0),
+    ] {
+        painter.line_segment([corner, corner + egui::vec2(dx * len, 0.0)], stroke);
+        painter.line_segment([corner, corner + egui::vec2(0.0, dy * len)], stroke);
+    }
+}
+
+/// A small caption in the flow — a word that *names* a thing rather than being read.
+///
+/// Posture's letter-spacing lands here and nowhere else, so "a label" has one spelling and a
+/// site that forgets it is a site that does not go through this function. The size is
+/// resolved from the live style rather than assumed, because the tracking is specified in
+/// **em**: a console at a larger text size must open its labels by the same proportion, not
+/// by the same number of points.
+fn label(ui: &egui::Ui, text: impl Into<String>, color: Color32, form: &Form) -> RichText {
+    let size = egui::TextStyle::Small.resolve(ui.style()).size;
+    RichText::new(text).color(color).small().extra_letter_spacing(form.tracking(size))
+}
+
+/// Body text at posture's line height.
+///
+/// ⚠️ At the terminal end this passes `None`, which is not the same as passing the number
+/// egui would have computed: `None` *is* what the console does today, so the layout is
+/// unchanged by construction rather than by arithmetic that ought to agree.
+fn body(ui: &egui::Ui, text: impl Into<String>, color: Color32, form: &Form) -> RichText {
+    let row = ui.text_style_height(&egui::TextStyle::Body);
+    RichText::new(text).color(color).line_height(form.body_line_height(row))
+}
+
+/// The rule down a card's left edge — the other half of the border's exchange.
+///
+/// Drawn *after* the frame it belongs to, from the rect the frame reports, because the
+/// height of a card is an output of laying its contents out and nothing knows it earlier.
+/// Two independent ways for this to draw nothing, and both are meant: posture at the
+/// terminal end, and a palette whose [`Theme::card_left_rule`] is transparent — which
+/// `organon`'s is.
+fn card_left_rule(ui: &egui::Ui, rect: egui::Rect, theme: &Theme, form: &Form) {
+    let Some(color) = form.left_rule_color(theme.card_left_rule) else { return };
+    ui.painter().vline(rect.left(), rect.y_range(), egui::Stroke::new(LEFT_RULE_WIDTH, color));
+}
+
+/// The left rule's width in points. Not a posture token: what changes between the two
+/// postures is whether the rule is there, and a rule that also thickened would be two
+/// statements in one lerp.
+const LEFT_RULE_WIDTH: f32 = 2.0;
 
 /// One surface as this frame laid it out: enough to build a [`SurfaceRequest`] once the panel
 /// that drives it has also been drawn.
@@ -1080,6 +1167,7 @@ fn scrollback(
     pane: &mut ConversationPane,
     images: &SurfaceImages,
     theme: &Theme,
+    form: &Form,
 ) -> ConversationOutput {
     // Collected during the walk and joined after it. A panel is *below* its surface in the
     // ordinary case, but nothing in the model requires that — the link is an id, not an
@@ -1104,95 +1192,120 @@ fn scrollback(
             // The visible slice of the scrollback, read once for the whole walk. Every
             // surface's visibility is decided against this one rect, so two surfaces cannot
             // come to disagree about where the viewport is.
+            //
+            // ⚠️ Read from the scroll area's own `Ui`, i.e. **before** the gutter is claimed
+            // below. That is deliberate: a surface is visible or not according to where the
+            // *viewport* is, and the gutter narrows the content, not the window.
             let viewport = ui.clip_rect();
-            ui.add_space(6.0);
-            // The console's own remarks about this session, above the first message: which
-            // directory the agent started in, whether approvals are wired. ⚠️ These were
-            // written to `log` from the day the pane was built and drawn NOWHERE, so
-            // "approvals are not wired — a tool that needs permission will fail instead of
-            // asking" has never once been visible. A log with no reader is the same defect
-            // as an inherited working directory: the console knows, and says it to nobody.
-            for line in log.iter() {
-                ui.label(RichText::new(line).color(theme.dim).italics());
-            }
-            if !log.is_empty() {
+            // 🚨 **The walk is a closure so the gutter can wrap it or not.** At terminal
+            // posture `gutter_margin` is `None` and the body runs directly in the scroll
+            // area's `Ui`, exactly as it did before this tier — no wrapping `Frame`, nothing
+            // that could move a row by a point. Tier D fills that column; this tier only
+            // opens it, so at desktop posture there is 90 points of nothing on the left and
+            // that is the whole visible change.
+            let mut walk = |ui: &mut egui::Ui| {
                 ui.add_space(6.0);
-            }
-            if transcript.is_empty() {
-                ui.label(
-                    RichText::new(
-                        "no messages yet — type below and press Enter, or `/surface` for a \
-                         rendered surface with its own controls",
-                    )
-                    .color(theme.dim)
-                    .italics(),
-                );
-            }
-            for element in transcript.elements() {
-                match &element.body {
-                    // The one body drawn here rather than in `draw_element`: it is the only
-                    // one that needs state to survive between frames, and `draw_element`
-                    // has nowhere to keep it.
-                    Body::Artifact(artifact) => match &artifact.content {
-                        ArtifactContent::Panel(spec) => {
-                            // Empty on the first frame; `panel_body` syncs it to the
-                            // description, which is where the starting values come from.
-                            let state = artifacts.entry(element.id).or_default();
-                            panel_element(ui, element.id, artifact, spec, state, defaults, theme);
-                            // A press is consumed here: it changes the surface this panel
-                            // names, and nothing else. That is the whole of what a panel
-                            // can do now — the arm that also repainted the console's
-                            // backdrop went with `/panel`.
-                            drives.push(PanelDrive {
-                                target: spec.drives,
-                                material: state.material.clone(),
-                                sliders: spec
-                                    .sliders
-                                    .iter()
-                                    .cloned()
-                                    .zip(state.sliders.iter().copied())
-                                    .collect(),
-                            });
-                        }
-                        ArtifactContent::Surface(spec) => {
-                            let rect = surface_element(
-                                ui,
-                                element.id,
-                                artifact,
-                                images.get(&element.id).copied(),
-                                theme,
-                            );
-                            if surface_visible(rect, viewport) {
-                                laid_out.push(LaidOutSurface {
-                                    element: element.id,
-                                    look: spec.look.clone(),
-                                    size_points: (rect.width(), rect.height()),
+                // The console's own remarks about this session, above the first message: which
+                // directory the agent started in, whether approvals are wired. ⚠️ These were
+                // written to `log` from the day the pane was built and drawn NOWHERE, so
+                // "approvals are not wired — a tool that needs permission will fail instead of
+                // asking" has never once been visible. A log with no reader is the same defect
+                // as an inherited working directory: the console knows, and says it to nobody.
+                for line in log.iter() {
+                    ui.label(RichText::new(line).color(theme.dim).italics());
+                }
+                if !log.is_empty() {
+                    ui.add_space(6.0);
+                }
+                if transcript.is_empty() {
+                    ui.label(
+                        RichText::new(
+                            "no messages yet — type below and press Enter, or `/surface` for a \
+                             rendered surface with its own controls",
+                        )
+                        .color(theme.dim)
+                        .italics(),
+                    );
+                }
+                for element in transcript.elements() {
+                    match &element.body {
+                        // The one body drawn here rather than in `draw_element`: it is the only
+                        // one that needs state to survive between frames, and `draw_element`
+                        // has nowhere to keep it.
+                        Body::Artifact(artifact) => match &artifact.content {
+                            ArtifactContent::Panel(spec) => {
+                                // Empty on the first frame; `panel_body` syncs it to the
+                                // description, which is where the starting values come from.
+                                let state = artifacts.entry(element.id).or_default();
+                                panel_element(
+                                    ui, element.id, artifact, spec, state, defaults, theme, form,
+                                );
+                                // A press is consumed here: it changes the surface this panel
+                                // names, and nothing else. That is the whole of what a panel
+                                // can do now — the arm that also repainted the console's
+                                // backdrop went with `/panel`.
+                                drives.push(PanelDrive {
+                                    target: spec.drives,
+                                    material: state.material.clone(),
+                                    sliders: spec
+                                        .sliders
+                                        .iter()
+                                        .cloned()
+                                        .zip(state.sliders.iter().copied())
+                                        .collect(),
                                 });
                             }
-                        }
-                    },
-                    // The second body drawn here rather than in `draw_element`, and for a
-                    // sharper version of the same reason: answering one needs the question
-                    // the pane is holding, which `draw_element` has no access to.
-                    Body::Approval(block) => {
-                        let live = waiting.contains_key(&element.id);
-                        match approval_card(ui, element.id, block, live, theme) {
-                            Some(CardAct::Choose(choice)) => {
-                                // Removing it is what answers it — see `waiting`.
-                                if let Some(pending) = waiting.remove(&element.id) {
-                                    let (decision, answer) =
-                                        resolve_choice(choice, pending.request(), memory);
-                                    answered.push((element.id, answer));
-                                    pending.answer(decision);
+                            ArtifactContent::Surface(spec) => {
+                                let rect = surface_element(
+                                    ui,
+                                    element.id,
+                                    artifact,
+                                    images.get(&element.id).copied(),
+                                    theme,
+                                    form,
+                                );
+                                if surface_visible(rect, viewport) {
+                                    laid_out.push(LaidOutSurface {
+                                        element: element.id,
+                                        look: spec.look.clone(),
+                                        size_points: (rect.width(), rect.height()),
+                                    });
                                 }
                             }
-                            Some(CardAct::Forget) => revoked.push(element.id),
-                            None => {}
+                        },
+                        // The second body drawn here rather than in `draw_element`, and for a
+                        // sharper version of the same reason: answering one needs the question
+                        // the pane is holding, which `draw_element` has no access to.
+                        Body::Approval(block) => {
+                            let live = waiting.contains_key(&element.id);
+                            match approval_card(ui, element.id, block, live, theme, form) {
+                                Some(CardAct::Choose(choice)) => {
+                                    // Removing it is what answers it — see `waiting`.
+                                    if let Some(pending) = waiting.remove(&element.id) {
+                                        let (decision, answer) =
+                                            resolve_choice(choice, pending.request(), memory);
+                                        answered.push((element.id, answer));
+                                        pending.answer(decision);
+                                    }
+                                }
+                                Some(CardAct::Forget) => revoked.push(element.id),
+                                None => {}
+                            }
                         }
+                        _ => draw_element(ui, element, theme, form),
                     }
-                    _ => draw_element(ui, element, theme),
+                    ui.add_space(form.card_gap);
                 }
-                ui.add_space(8.0);
+            };
+            match form.gutter_margin() {
+                // A `Frame` with no fill and no stroke is nothing but its margin, which is
+                // exactly what a gutter is: the content is inset and everything below it —
+                // wrapping, the scroll extent, a surface's laid-out rect — follows from the
+                // narrower width without a single call site knowing about it.
+                Some(gutter) => {
+                    Frame::new().inner_margin(gutter).show(ui, walk);
+                }
+                None => walk(ui),
             }
         });
     *pinned = pinned_after_scroll(out.state.offset.y, out.content_size.y, out.inner_rect.height());
@@ -1251,18 +1364,19 @@ fn join_drives(laid_out: Vec<LaidOutSurface>, drives: Vec<PanelDrive>) -> Vec<Su
     surfaces
 }
 
-fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme) {
+fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme, form: &Form) {
     match &element.body {
         Body::Human(h) => {
-            Frame::new()
+            let framed = Frame::new()
                 .fill(theme.human_fill)
-                .corner_radius(CornerRadius::same(6))
-                .inner_margin(Margin::symmetric(10, 6))
+                .corner_radius(form.card_corner())
+                .inner_margin(form.human_margin())
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("you").color(theme.dim).small());
-                    ui.label(RichText::new(&h.text).color(theme.human_text));
+                    ui.label(label(ui, "you", theme.dim, form));
+                    ui.label(body(ui, &h.text, theme.human_text, form));
                 });
+            card_left_rule(ui, framed.response.rect, theme, form);
         }
         Body::Assistant(a) => {
             // No frame: the agent's prose is the page, not a card on it.
@@ -1274,16 +1388,19 @@ fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme) {
             // the caret is concatenated into the prose, and the prose is proportional on
             // purpose. So the glyph changes instead of the face.
             let text = if a.complete { a.text.clone() } else { format!("{}|", a.text) };
-            ui.label(RichText::new(text).color(theme.prose));
+            ui.label(body(ui, text, theme.prose, form));
         }
-        Body::Tool(card) => tool_card(ui, card, theme),
+        Body::Tool(card) => tool_card(ui, card, theme, form),
         // Drawn by `scrollback`, which holds the widget state a panel needs between
         // frames — and, for an approval, the question itself. Nothing to do here, and
         // nothing missing: an element is drawn exactly once, by whichever of the two has
         // what it needs.
         Body::Artifact(_) | Body::Approval(_) => {}
         Body::RunEnd(end) => {
-            let (label, color) = match end.outcome {
+            // Named `outcome` rather than `label`, which is now a function in this module:
+            // a local of that name would shadow it and the two calls below would stop
+            // compiling — a rename is cheaper than a second spelling of "a small caption".
+            let (outcome, color) = match end.outcome {
                 RunOutcome::Ok => ("turn complete", theme.dim),
                 RunOutcome::Error => ("turn failed", theme.bad),
                 RunOutcome::Cancelled => ("turn cancelled", theme.running),
@@ -1297,9 +1414,9 @@ fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme) {
                 // does not want to be monospace — so this one takes a glyph the
                 // proportional font actually has. An em dash is the same mark a
                 // typesetter would have reached for anyway.
-                ui.label(RichText::new(format!("— {label}")).color(color).small());
+                ui.label(label(ui, format!("— {outcome}"), color, form));
                 if !detail.is_empty() {
-                    ui.label(RichText::new(detail).color(theme.dim).small());
+                    ui.label(label(ui, detail, theme.dim, form));
                 }
             });
         }
@@ -1317,23 +1434,33 @@ fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme) {
 /// patch someone has to parse back out of prose. And the result's own sibling object —
 /// `tool_use_result`, which a terminal never sees — becomes [`detail_rows`]: for a `Read`,
 /// how much of the file the call actually covered.
-fn tool_card(ui: &mut egui::Ui, card: &ToolCard, theme: &Theme) {
+fn tool_card(ui: &mut egui::Ui, card: &ToolCard, theme: &Theme, form: &Form) {
     let (state_text, accent) = match &card.state {
         ToolState::Running => ("running", theme.running),
         ToolState::Complete { is_error: false, .. } => ("ok", theme.ok),
         ToolState::Complete { is_error: true, .. } => ("error", theme.bad),
     };
-    Frame::new()
+    // ⚠️ **The accent is on the border, and the border is what posture takes away.** At the
+    // desktop end this card is separated by fill and by the rule the palette may or may not
+    // give it, so the state stops being readable from the edge — which is why the state
+    // *word* beside the name is not optional and never becomes a colour alone. Whether the
+    // rule should instead be drawn in this accent is a real question and a one-line change;
+    // it needs somebody who can look at a window, and is named in `SHELL_ARCHITECTURE.md`
+    // §1.6 rather than guessed at here.
+    let mut framed = Frame::new()
         .fill(ui.visuals().extreme_bg_color)
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::same(8))
-        .stroke(egui::Stroke::new(1.0f32, accent))
+        .corner_radius(form.card_corner())
+        .inner_margin(form.card_margin());
+    if let Some(stroke) = form.card_stroke(accent) {
+        framed = framed.stroke(stroke);
+    }
+    let framed = framed
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let name = card.name.as_deref().unwrap_or("(call not seen)");
                 ui.label(RichText::new(name).color(accent).strong().monospace());
-                ui.label(RichText::new(state_text).color(accent).small());
+                ui.label(label(ui, state_text, accent, form));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new(card.call_id.as_str()).color(theme.dim).small().monospace(),
@@ -1372,6 +1499,7 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard, theme: &Theme) {
                 }
             }
         });
+    card_left_rule(ui, framed.response.rect, theme, form);
 }
 
 /// What a dispatch card's progress row says, as text — the judgment, without the egui.
@@ -1648,6 +1776,7 @@ fn approval_card(
     block: &ApprovalBlock,
     live: bool,
     theme: &Theme,
+    form: &Form,
 ) -> Option<CardAct> {
     let accent = match block.state {
         ApprovalState::Pending => theme.asking,
@@ -1657,11 +1786,14 @@ fn approval_card(
         ApprovalState::Abandoned => theme.dim,
     };
     ui.push_id(id.0, |ui| {
-        Frame::new()
+        let mut framed = Frame::new()
             .fill(theme.panel_fill)
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(Margin::same(8))
-            .stroke(egui::Stroke::new(1.0f32, accent))
+            .corner_radius(form.card_corner())
+            .inner_margin(form.card_margin());
+        if let Some(stroke) = form.card_stroke(accent) {
+            framed = framed.stroke(stroke);
+        }
+        let framed = framed
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -1701,8 +1833,9 @@ fn approval_card(
                         None
                     }
                 }
-            })
-            .inner
+            });
+        card_left_rule(ui, framed.response.rect, theme, form);
+        framed.inner
     })
     .inner
 }
@@ -1804,6 +1937,7 @@ fn approval_verdict(ui: &mut egui::Ui, answer: Answer, theme: &Theme) -> Option<
 /// rather than re-chosen); no anchoring at all, because a flow does not have any.
 ///
 /// Returns the label pressed this frame, if one was.
+#[allow(clippy::too_many_arguments)]
 fn panel_element(
     ui: &mut egui::Ui,
     id: ElementId,
@@ -1812,24 +1946,26 @@ fn panel_element(
     state: &mut PanelState,
     defaults: &[(String, f32)],
     theme: &Theme,
+    form: &Form,
 ) {
     // Scoped by the element's own id: two panels in one transcript are two sets of widgets,
     // and egui's positional auto-ids would otherwise hand a slider its neighbour's drag
     // state the moment anything above them changes height.
     ui.push_id(id.0, |ui| {
-        Frame::new()
+        let mut framed = Frame::new()
             .fill(theme.panel_fill)
-            .stroke(egui::Stroke::new(1.0f32, theme.panel_edge))
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(Margin::same(PAD as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().slider_width = SLIDER_WIDTH;
-                ui.label(
-                    RichText::new(&artifact.title).monospace().strong().color(theme.panel_title),
-                );
-                panel_body(ui, spec, state, defaults, theme);
-            });
+            .corner_radius(form.card_corner())
+            .inner_margin(form.card_margin());
+        if let Some(stroke) = form.card_stroke(theme.panel_edge) {
+            framed = framed.stroke(stroke);
+        }
+        let framed = framed.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().slider_width = SLIDER_WIDTH;
+            ui.label(RichText::new(&artifact.title).monospace().strong().color(theme.panel_title));
+            panel_body(ui, spec, state, defaults, theme);
+        });
+        card_left_rule(ui, framed.response.rect, theme, form);
     });
 }
 
@@ -1887,13 +2023,17 @@ fn surface_element(
     artifact: &ArtifactBlock,
     image: Option<egui::TextureId>,
     theme: &Theme,
+    form: &Form,
 ) -> egui::Rect {
     ui.push_id(id.0, |ui| {
-        Frame::new()
+        let mut framed = Frame::new()
             .fill(theme.panel_fill)
-            .stroke(egui::Stroke::new(1.0f32, theme.panel_edge))
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(Margin::same(PAD as i8))
+            .corner_radius(form.card_corner())
+            .inner_margin(form.card_margin());
+        if let Some(stroke) = form.card_stroke(theme.panel_edge) {
+            framed = framed.stroke(stroke);
+        }
+        let framed = framed
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
@@ -1917,7 +2057,9 @@ fn surface_element(
                         );
                     }
                     None => {
-                        ui.painter().rect_filled(rect, CornerRadius::same(4), theme.surface_empty);
+                        // The one block nested *inside* a card today, and the only reader of
+                        // `nested_radius`.
+                        ui.painter().rect_filled(rect, form.nested_corner(), theme.surface_empty);
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -1928,8 +2070,9 @@ fn surface_element(
                     }
                 }
                 rect
-            })
-            .inner
+            });
+        card_left_rule(ui, framed.response.rect, theme, form);
+        framed.inner
     })
     .inner
 }

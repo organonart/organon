@@ -65,6 +65,7 @@ use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
+use organon_core::kind;
 use organon_shell::block_anchor::Block;
 use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::camera;
@@ -76,6 +77,7 @@ use organon_shell::conversation_view::{self, ConversationPane, SurfaceImages, Su
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::portal::{self, PortalState};
+use organon_shell::posture::Posture;
 use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::{self, TermSession};
@@ -401,7 +403,7 @@ const CMD_ROWS: &str = "rows";
 /// [`CMD_PATCH`]'s other argument: how many lines above the current line the rectangle starts.
 const CMD_UP: &str = "up";
 /// [`CMD_PATCH`]'s third argument: what the console should draw in the rectangle. A `Choice`
-/// rather than an `Int` or a free word, over `cli::PATCH_KIND_WORDS` — the same
+/// rather than an `Int` or a free word, over `organon_core::kind::KIND_WORDS` — the same
 /// table-not-a-restatement arrangement `background`'s materials use, so the palette, the
 /// CLI's `--help` and this schema cannot come to know different kinds.
 const CMD_KIND: &str = "kind";
@@ -493,7 +495,7 @@ fn console_specs() -> Vec<CommandSpec> {
                 ArgSpec {
                     name: CMD_KIND.into(),
                     kind: ArgKind::Choice(
-                        cli::PATCH_KIND_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                        kind::KIND_WORDS.iter().map(|s| (*s).to_string()).collect(),
                     ),
                     required: true,
                 },
@@ -658,12 +660,18 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             // membership was already settled by `validate_args`. What this adds is the
             // conversion — a word the schema accepts must still resolve to something this
             // build can paint, and the two lists are the same list.
+            //
+            // `Kind::resolve` rather than `from_word`, because there is a human (or an agent
+            // reading an error) on this end: the refusal it returns carries the known list,
+            // which is the difference between "no" and "no, and here is what would work". The
+            // sidecar drain uses `from_word` for the opposite reason — nobody is listening
+            // there, so an unknown kind skips the line in silence.
             let kind = args
                 .get(CMD_KIND)
                 .and_then(Value::as_str)
-                .and_then(cli::PatchKind::from_word)
-                .ok_or_else(|| {
-                    format!("{name}: `{CMD_KIND}` must be one of {:?}", cli::PATCH_KIND_WORDS)
+                .ok_or_else(|| format!("{name}: `{CMD_KIND}` is missing or is not a string"))
+                .and_then(|word| {
+                    kind::Kind::resolve(word).map_err(|e| format!("{name}: `{CMD_KIND}` — {e}"))
                 })?;
             match (u16::try_from(up), u16::try_from(rows)) {
                 (Ok(up), Ok(rows))
@@ -1394,6 +1402,21 @@ struct Shell {
     /// reaches every draw site as `&Theme` — never cloned per frame, never a `static`, so a
     /// later per-tab or preview palette is a second value rather than a rewrite.
     theme: Theme,
+    /// **How the console holds itself** — see [`organon_shell::posture`]. The second axis,
+    /// and orthogonal to the palette above it: `theme` is what the console is made of,
+    /// `posture` is whether it stands terminal-tight or desktop-open, and every combination
+    /// of the two is a real console.
+    ///
+    /// One owner for the same reason `theme` has one, and it is a `Posture` rather than a
+    /// resolved `Form` because the scalar is what a later tier *animates*: a `Form` on the
+    /// struct would make the tween a question of which of fourteen fields somebody
+    /// remembered to move. `redraw` resolves it once per frame and passes `&Form` down.
+    ///
+    /// ⚠️ **Set once and held.** There is no animation here and no timer: this tier wires the
+    /// tokens and ships at the terminal end, so the console draws exactly what it drew
+    /// before. Tier C owns the tween, its `request_repaint` discipline and what a moving
+    /// layout does to the scroll anchor.
+    posture: Posture,
 }
 
 /// Register the portal's interaction region and paint it.
@@ -1512,7 +1535,17 @@ fn engine_plan(
 impl Shell {
     fn new() -> Self {
         let egui_ctx = egui::Context::default();
-        egui_ctx.set_visuals(egui::Visuals::dark());
+        // The palette this process paints. Chosen here and nowhere else — `organon` is still
+        // the default and nothing selects another yet (`Theme::by_name` is the seam a picker
+        // and `prefs.rs` will share).
+        let theme = Theme::organon();
+        // egui's own chrome — sliders, popup frames, the `TextEdit` selection wash, scrollbars
+        // — comes from the palette rather than from a hardcoded `Visuals::dark()`. This call
+        // *was* that hardcoded line, and it is why a light palette could not have worked from
+        // `Theme`'s fields alone: roughly half the window would have stayed dark. For
+        // `Theme::organon` the derivation returns `Visuals::dark()` byte-for-byte, so this
+        // console is unchanged — see `Theme::visuals` and the test that pins it.
+        egui_ctx.set_visuals(theme.visuals());
         let source =
             parse_backdrop_source(std::env::var("ORGANON_SHELL_BACKDROP").ok().as_deref());
         let shared = initial_shared(source);
@@ -1589,9 +1622,13 @@ impl Shell {
             hand_camera_at: None,
             agent_camera_at: None,
             viewpoint: camera::ViewpointCell::new(),
-            // The only palette this build ships. A second one arrives as another
-            // constructor on `Theme`, not as a branch here.
-            theme: Theme::organon(),
+            // Built above, because `set_visuals` needs it too — one palette per process, and
+            // the chrome and the fields must come from the same one.
+            theme,
+            // The terminal end: today's console, to the point. Nothing sets this to anything
+            // else yet — a picker, a preference and a tween are all later tiers, and each
+            // wants a window to be looked at.
+            posture: Posture::TERMINAL,
         }
     }
 
@@ -2227,12 +2264,12 @@ impl Shell {
     /// rectangle — so they get one implementation and one set of tests. The kind is read for
     /// the first time when the rows are painted, where a mistake is a thing you can see.
     ///
-    /// [`cli::PatchKind::Panel`] is the one arm that carries state, and it is built here
+    /// [`kind::Kind::Panel`] is the one arm that carries state, and it is built here
     /// because the button labels are handed **down**: `organon-shell` cannot see
     /// `substrate_materials` and must not learn to. It draws the labels and reports which one
     /// was pressed; this file is the only place that knows a `metal` button and
     /// `organon console background metal` are the same act.
-    fn claim_patch(&mut self, up: u16, rows: u16, kind: cli::PatchKind) {
+    fn claim_patch(&mut self, up: u16, rows: u16, kind: kind::Kind) {
         let pane = self.strip.active;
         // Terminal-only, for [`Shell::open_block`]'s reason.
         let (Some(Some(session)), Some(looks)) = (
@@ -2251,8 +2288,8 @@ impl Shell {
         let first_abs = cursor_abs.saturating_sub(u64::from(up));
         let block = Block { first_abs, rows };
         looks.blocks.push(match kind {
-            cli::PatchKind::Scene => Patch::scene(block),
-            cli::PatchKind::Panel => Patch::panel(
+            kind::Kind::Scene => Patch::scene(block),
+            kind::Kind::Panel => Patch::panel(
                 block,
                 BlockPanel::new(
                     format!("◈ organon · patch @ line {first_abs} · {rows} rows"),
@@ -3125,6 +3162,11 @@ impl Shell {
         // The palette, split out of `self` exactly as everything else here is — one shared
         // borrow that every draw call inside the closure passes down.
         let theme = &self.theme;
+        // The form tokens at this frame's posture, resolved **once** and borrowed exactly as
+        // the palette is. Resolving per draw call would be cheap and wrong for a reason that
+        // outlives this tier: two calls in one frame could then disagree, which is precisely
+        // the tearing a tween would make visible.
+        let form = &self.posture.form();
         let mut portal_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
@@ -3203,7 +3245,8 @@ impl Shell {
                             // does nothing. An inline artifact needs none of that machinery —
                             // it is an element in a flow that draws itself — so what comes
                             // back is where its surfaces ended up, and nothing else.
-                            let out = conversation_view::draw(ui, chat, &surface_images, theme);
+                            let out =
+                                conversation_view::draw(ui, chat, &surface_images, theme, form);
                             surface_requests = out.surfaces;
                         }
                         _ => {
@@ -4027,7 +4070,7 @@ mod cli_tests {
                     _ => panic!("{}: expected a Choice", spec.name),
                 } }),
                 CMD_BLOCK => json!({ CMD_ROWS: 3 }),
-                CMD_PATCH => json!({ CMD_UP: 1, CMD_ROWS: 2, CMD_KIND: cli::PATCH_KIND_WORDS[0] }),
+                CMD_PATCH => json!({ CMD_UP: 1, CMD_ROWS: 2, CMD_KIND: kind::KIND_WORDS[0] }),
                 CMD_PORTAL => json!({ CMD_STATE: cli::PORTAL_WORDS[0] }),
                 // The partial form on purpose: the flagship framing is one axis, and the
                 // three nulls are what a partial call actually serializes to.
@@ -4098,7 +4141,7 @@ mod cli_tests {
         // a dressing. The panel kind is the one that could plausibly drift here, since its
         // buttons change the look: they do it by re-entering `apply_console` as a `Background`
         // op, never by the claim itself meaning something.
-        for kind in [cli::PatchKind::Scene, cli::PatchKind::Panel] {
+        for kind in [kind::Kind::Scene, kind::Kind::Panel] {
             assert_eq!(
                 console_step(
                     BackdropSource::Substrate,
@@ -4129,11 +4172,11 @@ mod cli_tests {
         };
         assert_eq!(
             offered.as_slice(),
-            cli::PATCH_KIND_WORDS,
+            kind::KIND_WORDS,
             "the catalog and the CLI are built from one table"
         );
         for word in offered {
-            let kind = cli::PatchKind::from_word(word)
+            let kind = kind::Kind::from_word(word)
                 .unwrap_or_else(|| panic!("the catalog offers `{word}` and nothing resolves it"));
             assert_eq!(
                 op_from(CMD_PATCH, &json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: word })),
@@ -4143,6 +4186,17 @@ mod cli_tests {
         for bad in [json!({ CMD_UP: 12, CMD_ROWS: 12 }), json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: "hologram" })] {
             let e = op_from(CMD_PATCH, &bad).expect_err("no kind this console can paint");
             assert!(e.contains(CMD_KIND), "the message must name the slot: {e}");
+        }
+        // 🚨 **The refusal carries the known list**, which is the whole difference between a
+        // usable error and a dead end: an agent that named a kind this build cannot draw has
+        // no other way to ask what it *can* draw — `organon console` is fire-and-forget and
+        // returns nothing. Asserted word by word rather than against a fixed sentence, so a
+        // kind added later has to appear here without this test being edited.
+        let e = op_from(CMD_PATCH, &json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: "hologram" }))
+            .expect_err("`hologram` is not a kind");
+        assert!(e.contains("hologram"), "it quotes back what was asked for: {e}");
+        for word in kind::KIND_WORDS {
+            assert!(e.contains(word), "the refusal must offer `{word}`: {e}");
         }
     }
 
@@ -4503,8 +4557,8 @@ mod cli_tests {
             bg("off"),
             rig_op("daylight"),
             cli::ConsoleOp::Block(7),
-            cli::ConsoleOp::Patch { up: 0, rows: 7, kind: cli::PatchKind::Scene },
-            cli::ConsoleOp::Patch { up: 12, rows: 12, kind: cli::PatchKind::Panel },
+            cli::ConsoleOp::Patch { up: 0, rows: 7, kind: kind::Kind::Scene },
+            cli::ConsoleOp::Patch { up: 12, rows: 12, kind: kind::Kind::Panel },
             cli::ConsoleOp::Portal(cli::PortalCmd::Open),
             cli::ConsoleOp::Portal(cli::PortalCmd::Close),
             cli::ConsoleOp::Portal(cli::PortalCmd::Toggle),

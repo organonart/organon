@@ -19,6 +19,7 @@
 
 use clap::{CommandFactory, Parser, Subcommand};
 use organic_math_native::{agent, cli, ipc, scene_input};
+use organon_core::kind;
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -75,12 +76,12 @@ fn rig_names() -> clap::builder::PossibleValuesParser {
 
 /// Possible-values parser for `console patch --kind <KIND>`.
 ///
-/// Unlike the two lists above this one is **built from the library's own table**
-/// (`cli::PATCH_KIND_WORDS`) rather than restated here, so it cannot drift: the kinds are
-/// `cli::PatchKind`'s value space, and `cli.rs` is where both ends of the sidecar already
-/// speak one vocabulary from one place.
+/// Unlike the two lists above this one is **built from the shared table**
+/// (`organon_core::kind::KIND_WORDS`) rather than restated here, so it cannot drift: the
+/// kinds are `Kind`'s value space, and since #48 T1 that value space is the *console's*, not
+/// the patch lane's — the conversation front-end resolves from the same one.
 fn patch_kinds() -> clap::builder::PossibleValuesParser {
-    clap::builder::PossibleValuesParser::new(cli::PATCH_KIND_WORDS.iter().copied())
+    clap::builder::PossibleValuesParser::new(kind::KIND_WORDS.iter().copied())
 }
 
 /// Possible-values parser for `console portal <STATE>`. Built from `cli::PORTAL_WORDS`, on
@@ -580,18 +581,20 @@ fn run_console(action: ConsoleAction) -> ! {
         ConsoleAction::Background { name } => cli::ConsoleOp::Background(name),
         ConsoleAction::Rig { name } => cli::ConsoleOp::Rig(name),
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
-        // clap has already restricted `kind` to `cli::PATCH_KIND_WORDS`, so `from_word`
-        // cannot miss here; `unwrap_or_default` rather than an `expect` because the fallback
-        // is not a guess — it is the same default a kindless sidecar line resolves to, so
-        // both spellings of "no kind stated" land on one answer.
+        // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
+        // here; the fallback rather than an `expect` because it is not a guess — it is the
+        // same default a kindless sidecar line resolves to, so both spellings of "no kind
+        // stated" land on one answer. It names `cli::PATCH_DEFAULT_KIND` explicitly because
+        // that default is this lane's, not the vocabulary's: `Kind` has no `Default` to reach
+        // for, which is what stops the patch wire's history leaking into the other front-end.
         ConsoleAction::Patch { up, rows, kind } => cli::ConsoleOp::Patch {
             up,
             rows,
-            kind: cli::PatchKind::from_word(&kind).unwrap_or_default(),
+            kind: kind::Kind::from_word(&kind).unwrap_or(cli::PATCH_DEFAULT_KIND),
         },
-        // 🚨 No `unwrap_or_default` twin of the line above, and the asymmetry is the point:
-        // `PatchKind` has a default because a kindless line is an older spelling of `scene`,
-        // whereas there is no state a portal command silently means. clap has already
+        // 🚨 No fallback twin of the line above, and the asymmetry is the point: a patch has a
+        // default because a kindless line is an older spelling of `scene`, whereas there is
+        // no state a portal command silently means. clap has already
         // restricted the word to `cli::PORTAL_WORDS`, so this cannot miss — and if it somehow
         // did, refusing beats toggling a window off because of a typo.
         ConsoleAction::Portal { state } => match cli::PortalCmd::from_word(&state) {
@@ -1017,11 +1020,11 @@ mod tests {
         match c.cmd {
             Cmd::Console { action: ConsoleAction::Patch { up, rows, kind } } => {
                 assert_eq!((up, rows), (12, 12));
-                assert_eq!(cli::PatchKind::from_word(&kind), Some(cli::PatchKind::default()));
+                assert_eq!(kind::Kind::from_word(&kind), Some(cli::PATCH_DEFAULT_KIND));
             }
             _ => panic!("`console patch` parsed as something else"),
         }
-        for word in cli::PATCH_KIND_WORDS {
+        for word in kind::KIND_WORDS {
             let c =
                 parse(&["console", "patch", "--up", "0", "--rows", "8", "--kind", word]).unwrap();
             match c.cmd {

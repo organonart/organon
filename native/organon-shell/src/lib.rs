@@ -67,6 +67,12 @@
 //! the app state and `&Theme` at every draw site — the roles were already named (`RUNNING`,
 //! `CONTEXT_ARC`, `COMPOSER_EDGE_DEAD`), and what they lacked was the ability to hold a
 //! second answer, which a `const` cannot.
+//!
+//! [`posture`] is the **second** axis, orthogonal to that one: the theme is what the console
+//! is made of, posture is how it holds itself — terminal-tight or desktop-open. Every form
+//! token in it is a scalar, so the desktop state is the same draw code reading different
+//! numbers rather than a second renderer, and one `t ∈ [0,1]` reaches every draw site as a
+//! resolved `&Form` beside the `&Theme`.
 
 pub mod agent_event;
 pub mod agent_map;
@@ -85,6 +91,7 @@ pub mod mcp_http;
 pub mod mock_agent;
 pub mod platform;
 pub mod portal;
+pub mod posture;
 pub mod prefs;
 pub mod scroll_anchor;
 pub mod session;
