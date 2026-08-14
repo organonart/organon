@@ -4,10 +4,10 @@
 //! this module is the instrument that produced its numbers, kept in the tree so the numbers
 //! can be re-taken on another machine or after an egui bump rather than believed.
 //!
-//! Two roadmaps are downstream of the answer. Posture's tween animates a gutter token
-//! 0 → 90 pt, which changes the transcript's available width on **every frame of the
-//! tween**; splitting a pane changes it the same way in one step. Both are "the whole
-//! scrollback re-wraps", differing only in how many times.
+//! Two roadmaps are downstream of the answer. Posture's tween animates a margin token
+//! 0 → 90 pt on **each** side, which changes the transcript's available width on **every
+//! frame of the tween**; splitting a pane changes it the same way in one step. Both are
+//! "the whole scrollback re-wraps", differing only in how many times.
 //!
 //! # What is real here, and what is not
 //!
@@ -67,9 +67,15 @@ use std::collections::{HashMap, VecDeque};
 const PANE_W: f32 = 1100.0;
 const PANE_H: f32 = 720.0;
 
-/// The gutter posture's `Form` tweens to (issue #38). The transcript's available width
-/// therefore travels `PANE_W` → `PANE_W - GUTTER` and back.
-const GUTTER: f32 = 90.0;
+/// The width this bench sweeps, in points: `PANE_W` → `PANE_W - SWEEP` and back.
+///
+/// ⚠️ **It is posture's desktop margin on ONE side, and posture claims that margin on both**
+/// — so the real travel between the two ends is `2 × 90`, not this. The sweep is kept at the
+/// range the figures in `doc/console_rewrap_measurement.md` were taken over, deliberately,
+/// because **the finding is per-*change*, not per-magnitude**: egui's galley cache is keyed
+/// on the wrap width, so a width that moves by one point is as total a miss as one that moves
+/// by a hundred. Doubling this would lengthen the triangle and change nothing worth knowing.
+const SWEEP: f32 = 90.0;
 
 /// Frames run and thrown away before any timing is kept.
 ///
@@ -199,7 +205,7 @@ fn closing_text(turn: usize) -> String {
 /// measuring a pane that is not the pane.
 ///
 /// ⚠️ The two `frame` drivers are deliberately **not** shared. They vary different things —
-/// this module's takes a width and imposes a gutter, `edit_diff_bench`'s takes a
+/// this module's takes a width and imposes an inset, `edit_diff_bench`'s takes a
 /// `Cache` and imposes nothing — and folding them would give each measurement a parameter
 /// it does not use and must remember to hold still.
 pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
@@ -252,16 +258,16 @@ fn frame(
     let start = Instant::now();
     let out = ctx.run(input, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The gutter, as posture will impose it: the transcript is given a column
+            // The inset, as posture will impose it: the transcript is given a column
             // narrower than the pane, and everything inside it wraps to that column.
             let size = egui::vec2(width, ui.available_height());
             ui.allocate_ui(size, |ui| {
                 ui.set_width(width);
-                // 🚨 **The TERMINAL form, and it must be.** This harness imposes the gutter
+                // 🚨 **The TERMINAL form, and it must be.** This harness imposes the inset
                 // itself, by narrowing the column above — so a desktop `Form` would apply it a
-                // second time through `gutter_margin` and every measurement would be taken at a
-                // width neither the caller nor the table names. Posture is not what this bench
-                // varies; width is.
+                // second time through `content_margin` and every measurement would be taken at
+                // a width neither the caller nor the table names. Posture is not what this
+                // bench varies; width is.
                 let _ = scrollback(ui, pane, images, theme, &Form::TERMINAL);
             });
         });
@@ -347,7 +353,7 @@ fn steady(elements: usize, samples: usize) -> Reading {
     measure(elements, "steady", samples, |_| PANE_W)
 }
 
-/// The tween: one point of gutter per frame, 0 → 90 and back, forever.
+/// The tween: one point of inset per frame, 0 → 90 and back, forever.
 ///
 /// A triangle rather than a ramp because a tween that only ever narrows would run out of
 /// widths; and because the return leg is the honest test of whether the cache remembers a
@@ -355,10 +361,10 @@ fn steady(elements: usize, samples: usize) -> Reading {
 /// used (`epaint-0.33.3/src/text/fonts.rs:1067`).
 fn animating(elements: usize, samples: usize) -> Reading {
     measure(elements, "animating", samples, |i| {
-        let period = (GUTTER as usize) * 2;
+        let period = (SWEEP as usize) * 2;
         let phase = i % period;
-        let gutter = if phase <= GUTTER as usize { phase } else { period - phase };
-        PANE_W - gutter as f32
+        let inset = if phase <= SWEEP as usize { phase } else { period - phase };
+        PANE_W - inset as f32
     })
 }
 
@@ -383,9 +389,9 @@ fn one_step(elements: usize, repeats: usize) -> (Duration, Duration) {
         for _ in 0..WARMUP {
             frame(&ctx, &mut pane, &images, &theme, PANE_W);
         }
-        moves.push(frame(&ctx, &mut pane, &images, &theme, PANE_W - GUTTER).0);
+        moves.push(frame(&ctx, &mut pane, &images, &theme, PANE_W - SWEEP).0);
         let mut after: Vec<Duration> = (0..10)
-            .map(|_| frame(&ctx, &mut pane, &images, &theme, PANE_W - GUTTER).0)
+            .map(|_| frame(&ctx, &mut pane, &images, &theme, PANE_W - SWEEP).0)
             .collect();
         after.sort_unstable();
         afters.push(after[after.len() / 2]);

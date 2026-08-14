@@ -108,7 +108,7 @@ large, this is the cost. Supply your own `n`.
 📌 **Re-taken after the rebase onto `main`'s posture work**, which put a `Form` through
 `scrollback` and therefore through this bench's draw path. Every figure reproduced inside the
 variance §3 and §5.4 already state. The bench passes `Form::TERMINAL` for the reason
-`rewrap_bench` does — a desktop `Form` insets the column through `gutter_margin`, and posture
+`rewrap_bench` does — a desktop `Form` insets the column through `content_margin`, and posture
 is not what either bench varies.
 
 | shape | args bytes | rows drawn | total µs | of which parse | of which diff | fit in one 60 Hz frame |

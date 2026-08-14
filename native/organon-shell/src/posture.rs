@@ -101,13 +101,29 @@ impl Default for Posture {
 /// interpolated in eight steps would stutter where a float does not.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Form {
-    /// The empty column down the left of the conversation, in points.
+    /// The empty column down **each** side of the conversation, in points. The same number
+    /// left and right, so the transcript sits centred in the pane.
     ///
-    /// ⚠️ **The gutter, not its contents.** Tier D fills it with turn ordinals; this tier
-    /// only claims the width, so at desktop posture there is 90 points of nothing on the
-    /// left. That is deliberate — the reflow is the part that can be wrong, and it is worth
+    /// 🚨 **Symmetric, and the left-only version it replaces was a misreading rather than a
+    /// design.** The token began as a `gutter` applied on the left alone, from a written
+    /// specification that said "add a narrow empty left margin column, about 90px wide" — but
+    /// that sentence was written to prompt an *image generator* into restyling a screenshot,
+    /// so it was describing a picture, not specifying a layout. Rendered, it read as a window
+    /// pushed off its own left edge. What was actually wanted is Claude Desktop's shape:
+    /// content centred, ~90 points clear on both sides.
+    ///
+    /// ⚠️ **A margin, not a measure.** This is an *inset*, so the text column is whatever the
+    /// pane has left over — on a very wide window the margins stay 90 and the measure grows
+    /// with the window. A maximum content width (Claude Desktop's real rule) was considered
+    /// and deliberately not taken; `SHELL_ARCHITECTURE.md` §1.6 records the argument and the
+    /// finding that makes it a bigger change than it looks — "uncapped" is not a width, so a
+    /// cap cannot be one more scalar lerping between the two ends.
+    ///
+    /// ⚠️ **The margin, not its contents.** Tier D fills the left one with turn ordinals; this
+    /// tier only claims the width, so at desktop posture there is 90 points of nothing on each
+    /// side. That is deliberate — the reflow is the part that can be wrong, and it is worth
     /// seeing on its own before anything is drawn into it.
-    pub gutter: f32,
+    pub margin: f32,
     /// A card's corner radius: the human bubble, a tool card, an approval, an artifact.
     pub card_radius: f32,
     /// A block nested *inside* a card — today, the plate a surface shows before its picture
@@ -166,7 +182,7 @@ impl Form {
     /// window. Resolved in favour of "change nothing on screen". Flipping it is this number
     /// and the matching one in the test; see `SHELL_ARCHITECTURE.md` §1.6.
     pub const TERMINAL: Self = Self {
-        gutter: 0.0,
+        margin: 0.0,
         card_radius: 6.0,
         nested_radius: 4.0,
         card_pad_x: 8.0,
@@ -192,7 +208,7 @@ impl Form {
     ///   terminal end's pair is `6` and `4`, i.e. the same two-point step, which is what
     ///   makes the two ends a translation rather than a re-proportioning.
     pub const DESKTOP: Self = Self {
-        gutter: 90.0,
+        margin: 90.0,
         card_radius: 8.0,
         nested_radius: 6.0,
         card_pad_x: 18.0,
@@ -215,7 +231,7 @@ impl Form {
         let a = Self::TERMINAL;
         let b = Self::DESKTOP;
         Self {
-            gutter: lerp(a.gutter, b.gutter, t),
+            margin: lerp(a.margin, b.margin, t),
             card_radius: lerp(a.card_radius, b.card_radius, t),
             nested_radius: lerp(a.nested_radius, b.nested_radius, t),
             card_pad_x: lerp(a.card_pad_x, b.card_pad_x, t),
@@ -258,26 +274,25 @@ impl Form {
         Margin::symmetric(round_i8(self.human_pad_x), round_i8(self.human_pad_y))
     }
 
-    /// The left gutter as a margin, or `None` when there is not one.
+    /// The conversation's margin — **the same on the left and the right**, which is what
+    /// centres the content — or `None` when there is not one.
+    ///
+    /// Horizontal only: nothing about posture wants the scrollback pushed down from the top
+    /// of its own scroll area, and the flow's vertical rhythm is [`Form::card_gap`]'s job.
     ///
     /// ⚠️ **`None` is not an optimisation, it is the no-change guarantee.** At terminal
     /// posture the scrollback's walk runs directly in the scroll area's own `Ui`, exactly as
     /// it did before this tier — no wrapping frame, no extra allocation, nothing that could
     /// shift a row by a point. A zero-width margin would *probably* be identical; `None` is
     /// identical by construction.
-    pub fn gutter_margin(&self) -> Option<Margin> {
-        (self.gutter >= 0.5).then(|| Margin {
-            left: round_i8(self.gutter),
-            right: 0,
-            top: 0,
-            bottom: 0,
-        })
+    pub fn content_margin(&self) -> Option<Margin> {
+        (self.margin >= 0.5).then(|| Margin::symmetric(round_i8(self.margin), 0))
     }
 
     /// An explicit line height in points for body text whose font rows are `row` points
     /// tall, or `None` to leave it to the font.
     ///
-    /// Same guarantee as [`Form::gutter_margin`]: at `1.0` the console passes `None` and
+    /// Same guarantee as [`Form::content_margin`]: at `1.0` the console passes `None` and
     /// egui lays the text out exactly as it always has, rather than being handed a number
     /// that ought to be the same one.
     pub fn body_line_height(&self, row: f32) -> Option<f32> {
@@ -379,9 +394,9 @@ mod tests {
     fn form_at_terminal_is_the_form_that_shipped() {
         let f = Form::at(0.0);
 
-        // There is no gutter today: the scrollback's content starts at the scroll area's
-        // own left edge.
-        assert_eq!(f.gutter, 0.0, "the left gutter");
+        // There is no margin today: the scrollback's content runs from the scroll area's own
+        // left edge to its own right edge.
+        assert_eq!(f.margin, 0.0, "the symmetric content margin");
         // `CornerRadius::same(6)` — conversation_view.rs, at all five card frames: the human
         // bubble, `tool_card`, `approval_card`, `panel_element`, `surface_element`.
         //
@@ -417,7 +432,7 @@ mod tests {
     #[test]
     fn form_at_desktop_is_the_specification() {
         let f = Form::at(1.0);
-        assert_eq!(f.gutter, 90.0, "a 90-point left margin column");
+        assert_eq!(f.margin, 90.0, "90 points clear on each side");
         assert_eq!(f.card_radius, 8.0, "8px corners");
         assert_eq!(f.nested_radius, 6.0, "6px on a nested block");
         assert_eq!(f.card_pad_x, 18.0, "~18px of internal padding");
@@ -443,7 +458,7 @@ mod tests {
     #[test]
     fn form_at_the_midpoint_is_halfway_between_the_two_ends() {
         let f = Form::at(0.5);
-        assert_eq!(f.gutter, 45.0);
+        assert_eq!(f.margin, 45.0);
         assert_eq!(f.card_radius, 7.0);
         assert_eq!(f.nested_radius, 5.0);
         assert_eq!(f.card_pad_x, 13.0);
@@ -464,7 +479,7 @@ mod tests {
     #[test]
     fn a_quarter_of_the_way_is_a_quarter_of_the_way() {
         let f = Form::at(0.25);
-        assert_eq!(f.gutter, 22.5);
+        assert_eq!(f.margin, 22.5);
         assert_eq!(f.card_pad_x, 10.5);
         assert_eq!(f.human_pad_y, 9.0);
     }
@@ -511,15 +526,45 @@ mod tests {
     #[test]
     fn nothing_is_wrapped_or_overridden_at_the_terminal_end() {
         let t = Form::at(0.0);
-        assert!(t.gutter_margin().is_none(), "no wrapping frame around the walk");
+        assert!(t.content_margin().is_none(), "no wrapping frame around the walk");
         assert!(t.body_line_height(17.0).is_none(), "no explicit line height");
         assert!(t.left_rule_color(Color32::GREEN).is_none(), "no left rule");
         assert!(t.tick_color(Color32::GREEN).is_none(), "no registration ticks");
 
         let d = Form::at(1.0);
-        assert_eq!(d.gutter_margin(), Some(Margin { left: 90, right: 0, top: 0, bottom: 0 }));
+        assert_eq!(d.content_margin(), Some(Margin { left: 90, right: 90, top: 0, bottom: 0 }));
         assert_eq!(d.left_rule_color(Color32::GREEN), Some(Color32::GREEN));
         assert_eq!(d.tick_color(Color32::GREEN), Some(Color32::GREEN));
+    }
+
+    /// 🚨 **The bug this token was renamed for: the margin is the SAME on both sides.** The
+    /// first cut applied it on the left alone, which read on screen as a window shoved off its
+    /// own left edge rather than as a centred document — and every test then passing was
+    /// perfectly happy, because they all checked the *scalar* and none of them checked the
+    /// `Margin` it became. So this walks the axis and asserts the shape at each step, not just
+    /// the two ends: `left == right`, no vertical inset, and the content therefore centred.
+    #[test]
+    fn the_content_margin_is_symmetric_at_every_posture() {
+        for step in 0..=10 {
+            let t = step as f32 / 10.0;
+            let f = Form::at(t);
+            match f.content_margin() {
+                // Only the bottom of the range: 90 · t clears the half-point threshold from
+                // t ≈ 0.0056 upward, so every step above zero has a margin.
+                None => assert_eq!(step, 0, "a margin went missing at t={t}"),
+                Some(m) => {
+                    assert_eq!(m.left, m.right, "asymmetric at t={t}: {m:?}");
+                    assert_eq!((m.top, m.bottom), (0, 0), "vertical inset at t={t}: {m:?}");
+                    assert_eq!(m.left as f32, f.margin.round(), "not the token at t={t}");
+                }
+            }
+        }
+        // The three postures the tests above pin as scalars, spelled as the egui value the
+        // draw site actually receives — ends and midpoint, so a `content_margin` that ignored
+        // `t` cannot pass either.
+        assert_eq!(Form::at(0.0).content_margin(), None);
+        assert_eq!(Form::at(0.5).content_margin(), Some(Margin::symmetric(45, 0)));
+        assert_eq!(Form::at(1.0).content_margin(), Some(Margin::symmetric(90, 0)));
     }
 
     /// The border and the rule are **one shared lerp** — the sum of their presences is 1 at
