@@ -83,6 +83,65 @@ impl Posture {
     pub fn form(self) -> Form {
         Form::at(self.0)
     }
+
+    /// A **typed** posture: refused if it is not finite or not in `[0,1]`.
+    ///
+    /// 🚨 **The asymmetry with [`Posture::new`] is deliberate, and it is
+    /// `CameraFraming::in_range`'s exactly.** `new` clamps because it is fed by code — a tween
+    /// that overshoots by a rounding error should land at the end, not blow up. A number
+    /// somebody *typed* is different: `posture 90` is not an overshoot, it is degrees where
+    /// the axis wanted a fraction, and answering `1.0` would let the mistake look like it
+    /// worked. The clamp stays as the belt; this is the brace.
+    pub fn from_scalar(t: f32) -> Option<Self> {
+        (t.is_finite() && (0.0..=1.0).contains(&t)).then_some(Self(t))
+    }
+
+    /// The posture a **word or a number** names, or a refusal carrying what would have worked.
+    ///
+    /// The two words are the ends anybody actually asks for; the bare scalar is the axis
+    /// itself, and it is accepted because [`Posture`] *is* a scalar — refusing `0.5` would
+    /// mean the CLI could not say a thing the type can represent and `Form::at` can draw.
+    ///
+    /// ⚠️ **No case folding and no prefixes** — `Theme::resolve`'s rule and
+    /// `organon_core::kind::Kind::resolve`'s before it. An approximation here would move a
+    /// layout somebody is looking at, to a place they did not name.
+    pub fn resolve(word: &str) -> Result<Self, UnknownPosture> {
+        match word {
+            "terminal" => return Ok(Self::TERMINAL),
+            "desktop" => return Ok(Self::DESKTOP),
+            _ => {}
+        }
+        word.parse::<f32>()
+            .ok()
+            .and_then(Self::from_scalar)
+            .ok_or_else(|| UnknownPosture { word: word.to_string() })
+    }
+}
+
+/// The posture words, in the order `--help` should list them.
+///
+/// One table, read by `bin/ctl.rs`, by the console's command schema and by
+/// [`Posture::resolve`]'s refusal — `cli::PORTAL_WORDS`' arrangement, for its reason: a second
+/// hand-maintained copy is how a CLI comes to accept a word nothing can act on.
+pub const POSTURE_WORDS: &[&str] = &["terminal", "desktop"];
+
+/// A word no posture answers to, carrying the words — and the band — that do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownPosture {
+    /// Exactly what was asked for, unmodified.
+    pub word: String,
+}
+
+impl std::fmt::Display for UnknownPosture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` is not a posture — known postures: {}, or a number from 0 (terminal) to 1 \
+             (desktop)",
+            self.word,
+            POSTURE_WORDS.join(", ")
+        )
+    }
 }
 
 impl Default for Posture {

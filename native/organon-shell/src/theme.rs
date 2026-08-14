@@ -754,9 +754,8 @@ impl Theme {
     /// which is `unwrap_or_default()` at the call site. Answering with the default here would
     /// take the first of those away.
     ///
-    /// 📌 **Nothing calls this yet.** `organon` is still the default and no picker, CLI verb or
-    /// startup read selects anything — this is the seam those need, built with them, not for
-    /// them.
+    /// The seam every selector lands on: [`select`] at startup, `console.theme` while the
+    /// window is open, and [`Theme::resolve`] wherever a refusal has to be readable.
     pub fn by_name(name: &str) -> Option<Self> {
         match name {
             "organon" => Some(Self::organon()),
@@ -765,6 +764,31 @@ impl Theme {
             "chocolate" => Some(Self::chocolate()),
             _ => None,
         }
+    }
+
+    /// A palette **and the canonical name it answers to**, from [`Theme::NAMES`].
+    ///
+    /// The name matters as much as the palette wherever a choice is going to be *written
+    /// down*: [`crate::prefs::Preferences::theme`] stores a `String`, and storing the caller's
+    /// spelling rather than the table's would make the file a record of what someone typed
+    /// instead of a record of which palette is selected. Today the two are identical because
+    /// resolution is exact; that is precisely why binding them now costs nothing and why a
+    /// later alias or case rule cannot quietly put an unresolvable name in the store.
+    pub fn named(name: &str) -> Option<(Self, &'static str)> {
+        let canonical = Self::NAMES.iter().find(|n| **n == name)?;
+        Self::by_name(canonical).map(|t| (t, *canonical))
+    }
+
+    /// [`Theme::named`], with a refusal **carrying the list that would have worked**.
+    ///
+    /// 🚨 **Refused, never approximated** — `organon_core::kind::Kind::resolve`'s rule, for its
+    /// reason. There is no nearest-match and no case folding: a palette silently substituted
+    /// for the one asked for is indistinguishable from success, and the whole point of a theme
+    /// verb is that you can tell which one you are looking at. Use this wherever somebody is
+    /// reading the answer; use [`Theme::by_name`] where nobody is (`prefs.rs`'s
+    /// `unwrap_or_default()` posture).
+    pub fn resolve(name: &str) -> Result<(Self, &'static str), UnknownTheme> {
+        Self::named(name).ok_or_else(|| UnknownTheme { word: name.to_string() })
     }
 
     /// egui's own chrome, derived from this palette.
@@ -849,6 +873,151 @@ impl Default for Theme {
         Self::organon()
     }
 }
+
+/// A name no palette answers to, carrying the names that do.
+///
+/// A type rather than a formatted `String`, on `organon_core::kind::UnknownKind`'s rule: the
+/// startup resolution, the `console.theme` dispatch and the CLI all refuse an unknown name,
+/// and three hand-written messages would eventually name three different sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownTheme {
+    /// Exactly what was asked for, unmodified — quoting it back is how a caller sees the
+    /// stray quote or trailing space it did not know it had sent.
+    pub word: String,
+}
+
+impl std::fmt::Display for UnknownTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "`{}` is not a theme — known themes: {}", self.word, Theme::NAMES.join(", "))
+    }
+}
+
+/// The one-launch palette override.
+///
+/// # 🚨 Why `ORGANON_SHELL_THEME` and not `#38`'s `ORGANON_CONSOLE_THEME`
+///
+/// The issue that specified this tier spells it `ORGANON_CONSOLE_THEME`, and it is spelled
+/// the other way here **deliberately**. The console reads six variables today —
+/// `ORGANON_SHELL_BACKDROP`, `_SCRIM`, `_TABS`, `_DEFAULT`, `_CMD`, `_PTY_DEBUG` — and
+/// `SHELL_ARCHITECTURE.md`'s header already records the naming gap as a *managed* one: the
+/// artifact is `organon-console`, the crate, the feature, the IPC namespace and the variable
+/// family are still `shell`, "because each is read by something else", and **issue #3 owns
+/// closing the gap with deprecation aliases rather than find-and-replace**. Adding the first
+/// `ORGANON_CONSOLE_*` variable would not close that gap; it would make the console read from
+/// *two* prefixes at once, and #3's rename would then have to carry an exception for the one
+/// variable that had already jumped. The trade being made is explicit: this file disagrees
+/// with #38's literal text in order to agree with the six variables a person's launch shims
+/// already set, and the rename gets one flag surface to move rather than one-and-a-bit.
+pub const THEME_ENV: &str = "ORGANON_SHELL_THEME";
+
+/// Where a resolved palette came from — the precedence order, as a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeSource {
+    /// [`THEME_ENV`], for this launch only. Never written back.
+    Environment,
+    /// `preferences.json` — what the person last chose with `organon console theme`.
+    Stored,
+    /// Nobody has ever said: [`Theme::default`].
+    Default,
+}
+
+/// What [`select`] decided, and what the console should say about it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    /// The palette to paint with.
+    pub theme: Theme,
+    /// Its canonical name, always one of [`Theme::NAMES`].
+    pub name: &'static str,
+    /// Which source won.
+    pub source: ThemeSource,
+    /// Lines the console prints on its own stderr, in order. **Empty is the normal case** —
+    /// a stored palette that resolves and a fresh install both say nothing.
+    pub notes: Vec<String>,
+}
+
+/// Resolve the palette this launch paints with: **environment, then stored preference, then
+/// [`Theme::default`]**.
+///
+/// Pure — the caller reads the variable and the file and hands both in — so the precedence
+/// order is testable without a process environment or a store on disk, which is the whole
+/// reason it lives here rather than inline in `shell_main.rs`.
+///
+/// # 📌 The environment DOES outrank the stored preference, amending `prefs.rs`'s decision
+///
+/// `prefs.rs` was written with the standing rule *"no environment variable overrides a stored
+/// preference"*, and its reasoning is worth restating because it is still correct: a variable
+/// baked into a launch shim wins **silently**, which is indistinguishable from the evaporation
+/// the preferences file exists to end — and `organon-console.cmd` on this machine already
+/// demonstrates the failure with `ORGANON_SHELL_TABS`. That decision was taken when *nothing*
+/// could select a theme; the same paragraph names its own escape hatch, "a one-launch override
+/// … belongs in a CLI flag that can say so in the console's own output".
+///
+/// The objection is to **silence**, not to precedence, and the console binary takes no flags —
+/// it is launched by shims, and an environment variable *is* its argument surface. So the
+/// override is granted and the objection is answered directly:
+///
+/// 1. **It announces itself, every launch**, naming the variable, the palette, and the stored
+///    palette it is standing in front of ([`Selection::notes`]).
+/// 2. **It never writes.** Only `organon console theme` stores anything, so an override cannot
+///    destroy the choice underneath it — unset the variable and the stored palette is back.
+///
+/// Together those make it a *loan*, not a takeover: it can only win while it is set, and it
+/// cannot win quietly. `SHELL_ARCHITECTURE.md` §1.5 carries the amendment.
+///
+/// # The failure posture
+///
+/// An unknown name at either level is **reported and skipped**, never fatal and never silently
+/// defaulted: resolution falls through to the next source, so a typo in a shim leaves the
+/// stored palette working rather than dropping the console back to `organon` as though nothing
+/// had been chosen. An empty or whitespace-only variable is "unset" — that is the shim idiom
+/// for clearing one, and treating it as a name would refuse a blank string at every launch.
+pub fn select(env: Option<&str>, stored: Option<&str>) -> Selection {
+    let mut notes = Vec::new();
+
+    let env = env.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(word) = env {
+        match Theme::resolve(word) {
+            Ok((theme, name)) => {
+                notes.push(match stored {
+                    Some(had) if had != name => format!(
+                        "theme `{name}` from {THEME_ENV}, overriding the stored `{had}` — this \
+                         launch only, nothing is saved (`organon console theme <name>` is what \
+                         stores a choice)"
+                    ),
+                    _ => format!(
+                        "theme `{name}` from {THEME_ENV} — this launch only, nothing is saved"
+                    ),
+                });
+                return Selection { theme, name, source: ThemeSource::Environment, notes };
+            }
+            Err(e) => notes.push(format!("{THEME_ENV}: {e} — ignored")),
+        }
+    }
+
+    if let Some(word) = stored {
+        match Theme::resolve(word) {
+            Ok((theme, name)) => {
+                return Selection { theme, name, source: ThemeSource::Stored, notes }
+            }
+            Err(e) => notes.push(format!(
+                "the stored theme preference is unusable: {e} — using `{}`",
+                DEFAULT_THEME_NAME
+            )),
+        }
+    }
+
+    Selection {
+        theme: Theme::default(),
+        name: DEFAULT_THEME_NAME,
+        source: ThemeSource::Default,
+        notes,
+    }
+}
+
+/// The palette a console with nothing to go on paints with — [`Theme::NAMES`]'s first entry,
+/// read from the table rather than restated, so "the default is listed first" stays a fact
+/// about the list rather than a coincidence between two places.
+pub const DEFAULT_THEME_NAME: &str = Theme::NAMES[0];
 
 #[cfg(test)]
 mod tests {
@@ -1325,5 +1494,156 @@ mod tests {
         assert_eq!(t.scrim_floor, 96, "…and it is still literally 96");
         assert_eq!(t.chrome, ChromeSource::EguiDark);
         assert_eq!(Theme::default(), t);
+    }
+
+    // ── Selection: who decides which palette a launch paints with ──────────────
+
+    /// CONTRACT: **the precedence order**, stated once as a test rather than as prose.
+    /// Environment beats the stored preference beats the default, and each rung is exercised
+    /// with the ones above it absent.
+    #[test]
+    fn the_environment_beats_the_store_beats_the_default() {
+        let env_wins = select(Some("light"), Some("dark"));
+        assert_eq!(env_wins.name, "light");
+        assert_eq!(env_wins.source, ThemeSource::Environment);
+        assert_eq!(env_wins.theme, Theme::light());
+
+        let stored_wins = select(None, Some("dark"));
+        assert_eq!(stored_wins.name, "dark");
+        assert_eq!(stored_wins.source, ThemeSource::Stored);
+        assert_eq!(stored_wins.theme, Theme::dark());
+
+        let nothing = select(None, None);
+        assert_eq!(nothing.name, DEFAULT_THEME_NAME);
+        assert_eq!(nothing.source, ThemeSource::Default);
+        assert_eq!(nothing.theme, Theme::organon());
+    }
+
+    /// CONTRACT: **`organon` is still the answer when nothing is set** — including for the two
+    /// shapes of "set to nothing" a launch shim actually produces. `set VAR=` on Windows and
+    /// `VAR=` in a POSIX shell differ, and neither is a request for a palette named "".
+    #[test]
+    fn organon_remains_the_answer_when_nothing_is_chosen() {
+        for env in [None, Some(""), Some("   "), Some("\t")] {
+            let s = select(env, None);
+            assert_eq!(s.name, "organon", "{env:?}");
+            assert_eq!(s.theme, Theme::organon(), "{env:?}");
+            assert_eq!(s.source, ThemeSource::Default, "{env:?}");
+            assert!(s.notes.is_empty(), "{env:?}: an unset variable says nothing");
+        }
+        // …and an empty variable does not blank out a stored choice either.
+        assert_eq!(select(Some(""), Some("dark")).name, "dark");
+    }
+
+    /// CONTRACT: **every palette in the table is reachable by name**, from either source.
+    /// This is the test that fails if a fifth palette is added without a `by_name` arm — the
+    /// exact shape of "the picker offers a name nothing can paint".
+    #[test]
+    fn every_name_is_selectable_from_either_source() {
+        for name in Theme::NAMES {
+            let by_env = select(Some(name), None);
+            assert_eq!(by_env.name, name);
+            assert_eq!(by_env.theme, Theme::by_name(name).expect("NAMES resolves"));
+            assert_eq!(by_env.source, ThemeSource::Environment);
+
+            let by_store = select(None, Some(name));
+            assert_eq!(by_store.name, name);
+            assert_eq!(by_store.theme, Theme::by_name(name).expect("NAMES resolves"));
+            assert_eq!(by_store.source, ThemeSource::Stored);
+            assert!(by_store.notes.is_empty(), "{name}: a stored palette that works is silent");
+        }
+    }
+
+    /// CONTRACT: **an unknown name falls through, and the complaint names the known set.**
+    /// Both halves matter. Falling through rather than resetting is what keeps a typo in a
+    /// launch shim from silently discarding a stored choice; naming the set is what makes the
+    /// message actionable, and it is quoted from [`Theme::NAMES`] so it cannot offer a palette
+    /// this build has no way to paint.
+    #[test]
+    fn an_unknown_name_falls_through_and_names_the_known_set() {
+        let s = select(Some("phosphor"), Some("dark"));
+        assert_eq!(s.name, "dark", "the stored choice survives a bad override");
+        assert_eq!(s.source, ThemeSource::Stored);
+        let note = s.notes.join("\n");
+        assert!(note.contains(THEME_ENV), "{note:?} must name the variable at fault");
+        assert!(note.contains("phosphor"), "{note:?} must quote what was asked for");
+        for name in Theme::NAMES {
+            assert!(note.contains(name), "{note:?} must offer `{name}`");
+        }
+
+        // Both unusable ⇒ the default, and both complaints are reported rather than the
+        // first one swallowing the second.
+        let s = select(Some("Light"), Some("nonsense"));
+        assert_eq!(s.name, DEFAULT_THEME_NAME, "case is not folded — resolution is exact");
+        assert_eq!(s.source, ThemeSource::Default);
+        assert_eq!(s.notes.len(), 2, "{:?}", s.notes);
+
+        // A stored name a *newer* console wrote is the same case, and must not be fatal.
+        let s = select(None, Some("solarized"));
+        assert_eq!(s.name, DEFAULT_THEME_NAME);
+        assert!(s.notes[0].contains("solarized"), "{:?}", s.notes);
+    }
+
+    /// CONTRACT: **an override says so, every launch, and says what it is standing in front
+    /// of.** This is the whole amendment to `prefs.rs`'s "no variable overrides a stored
+    /// preference" — the objection there is to a shim winning *silently*, and this is the line
+    /// that answers it. A message that did not name the stored palette would leave a person
+    /// unable to tell an override from a lost preference, which is the failure being avoided.
+    #[test]
+    fn an_override_announces_itself_and_names_what_it_shadows() {
+        let s = select(Some("chocolate"), Some("light"));
+        assert_eq!(s.source, ThemeSource::Environment);
+        assert_eq!(s.notes.len(), 1);
+        let note = &s.notes[0];
+        assert!(note.contains(THEME_ENV), "{note:?}");
+        assert!(note.contains("chocolate") && note.contains("light"), "{note:?}");
+        assert!(note.contains("nothing is saved"), "{note:?}: the loan has to be visible");
+
+        // Overriding with the *same* palette that is stored is not shadowing anything, so the
+        // line does not claim it is. It still announces, because the variable is still what
+        // decided this launch.
+        let same = select(Some("light"), Some("light"));
+        assert_eq!(same.source, ThemeSource::Environment);
+        assert_eq!(same.notes.len(), 1);
+        assert!(!same.notes[0].contains("overriding"), "{:?}", same.notes);
+    }
+
+    /// CONTRACT: the canonical name travels with the palette, because it is what gets
+    /// **written down**. A selection that resolved must always report a name the store can
+    /// read back — i.e. one of [`Theme::NAMES`], never the caller's spelling.
+    #[test]
+    fn a_selection_always_reports_a_storable_name() {
+        for (env, stored) in [
+            (Some("light"), None),
+            (None, Some("chocolate")),
+            (Some("nope"), Some("dark")),
+            (Some("nope"), Some("nope")),
+            (None, None),
+        ] {
+            let s = select(env, stored);
+            assert!(Theme::NAMES.contains(&s.name), "{s:?}");
+            assert_eq!(Theme::by_name(s.name).as_ref(), Some(&s.theme), "{s:?}");
+        }
+    }
+
+    /// CONTRACT: the refusal type is the one message everybody prints. Pinned so the three
+    /// call sites cannot drift into three different sentences.
+    #[test]
+    fn an_unknown_theme_prints_the_table() {
+        let e = Theme::resolve("phosphor").unwrap_err();
+        assert_eq!(e.word, "phosphor");
+        assert_eq!(
+            e.to_string(),
+            "`phosphor` is not a theme — known themes: organon, light, dark, chocolate"
+        );
+        assert_eq!(Theme::resolve("organon").unwrap().1, "organon");
+    }
+
+    /// CONTRACT: **the default name is read off the table**, not restated. If someone reorders
+    /// `NAMES` this test is the one that notices the default moved with it.
+    #[test]
+    fn the_default_name_is_the_first_row_of_the_table() {
+        assert_eq!(DEFAULT_THEME_NAME, Theme::NAMES[0]);
+        assert_eq!(Theme::by_name(DEFAULT_THEME_NAME), Some(Theme::default()));
     }
 }
