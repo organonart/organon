@@ -126,7 +126,7 @@ loop, forward. Two rules make that work and are easy to break:
   finalization changed.
   ⚠️ **Its clamps are now named constants — `scene_input::{PITCH_LIMIT, DISTANCE_MIN,
   DISTANCE_MAX}` — read by the Orbit and Zoom arms, by the finalization's pitch clamp, and by
-  Organon Shell's command schema.** Four readers, one number: a hand and an agent must not
+  Organon Console's command schema.** Four readers, one number: a hand and an agent must not
   disagree about where the instrument ends. `World::new`'s three initial values are likewise
   `scene_input::DEFAULT_*`, which is what makes the console's `camera --reset` provably the
   framing the window opened with.
@@ -136,14 +136,14 @@ loop, forward. Two rules make that work and are easy to break:
   📌 **And the read half: `camera_framing() -> (yaw, pitch, distance)`.** All four writers land
   on those three fields and the world *clamps* on the way in, so a host that remembered what it
   last asked for would report a value the camera may never have held — and would be blind to
-  every move a hand made. Nothing in the render path reads it; Organon Shell publishes it once
-  per frame and serves it to an agent (`SHELL_ARCHITECTURE.md` §1.3). ⚠️ It is the **base
+  every move a hand made. Nothing in the render path reads it; Organon Console publishes it once
+  per frame and serves it to an agent (`CONSOLE_ARCHITECTURE.md` §1.3). ⚠️ It is the **base
   orbit**, not the camera the frame is drawn with: `cam_path`'s offset is added downstream and
   an installed substrate rig (below) overrides all six wholesale. That is the right answer for a
   caller computing a delta to write back, and the wrong one for anybody asking what the pixels
   were rendered from.
 - **A fourth camera entry point, and it is absolute in a much stronger sense** (Console Spike
-  Tier 1, for Organon Shell's substrate backdrop). `set_substrate_rig(Option<(center, yaw,
+  Tier 1, for Organon Console's substrate backdrop). `set_substrate_rig(Option<(center, yaw,
   pitch, distance, roll, fov_deg)>)` installs the whole tuple; the camera finalization then
   selects it as a **third arm** on the same `if` the rails branch already overrode all six
   from, and latches off the `cam_center` auto-follow (the 5 %/frame lerp toward the generator

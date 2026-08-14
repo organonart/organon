@@ -36,7 +36,7 @@ Worth knowing before you go looking:
   and the most welcome.
 - **Presets, galleries and material folders are parsed from disk** (JSON and PNG, via
   `preset.rs`). Same category, smaller surface.
-- **Organon Shell runs a terminal.** It spawns your shell in a PTY and executes what you
+- **Organon Console runs a terminal.** It spawns your shell in a PTY and executes what you
   type — that is the product. Command execution through it is not a vulnerability. Escapes
   from what the *rendered* grid is supposed to be able to do — a control sequence that
   reaches beyond the terminal emulation — would be.

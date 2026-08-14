@@ -4,7 +4,7 @@
 
 use crate::params::{
     AcousticModel, AcousticSource, AnalyticalMode, AoSource,
-    AttractorField, AxonMode, BarPeriod, CalColourSource, CalLut, CamOrder, CamTransition, ColourMode, DemoScene, DnaForm, DollyWave, FieldKind, FieldPreset, FdtdSource, FieldVolSource, FluxAxis, GeneratorMode, HudDock, KifsPalette, KifsPattern, KifsSpace,
+    AttractorField, AxonMode, BarPeriod, CalLut, CamOrder, CamTransition, DemoScene, DnaForm, DollyWave, FieldPreset, GeneratorMode, HudDock, KifsPalette, KifsPattern, KifsSpace,
     AnimMode, BakeRes, BlendMode, KaleidoMode, KifsView, LiqMaterial, LiqRender, LiqShape, LSystem, MatChannel, MatNoise, MatProjection, MembraneArmBuild, MembraneWeave, MinimalFamily, ModTarget, NeuralFireMode, NeuralTopology, NeuronType, OriginMode, OrganicMathParams, OscDivision,
     PanelStyle, ParticleMaterial, ParticleShape, ParticleTier, PhylSurface, PtComposite, PulseSource, RailArchetype, RailCellLen, RailChangeEvery, ReflectionSource, RenderStyle, RippleGeom, SceneryMode, ScenerySurface, TerraForm,
     SynthMode, SynthPlayMode, SynthQuantize, TuningLayout,
@@ -15,8 +15,9 @@ use crate::params::{
 };
 use nih_plug::prelude::*;
 use crate::params::{
-    HostBoidsForm, HostCamPath, HostFuncName, HostGeneratorMode, HostMaterialType,
-    HostOscDivision, HostPalette, HostSurfaceMode,
+    HostBoidsForm, HostCalColourSource, HostCamPath, HostColourMode, HostFdtdSource,
+    HostFieldKind, HostFieldVolSource, HostFluxAxis, HostFuncName, HostGeneratorMode,
+    HostMaterialType, HostOscDivision, HostPalette, HostSurfaceMode,
 };
 
 /// #626 Tier 3 — the tab taxonomy now lives in `organon-core`; re-exported here so
@@ -3518,7 +3519,7 @@ macro_rules! for_each_tab_field {
         // #412 Tier 3 Phase 0 FDTD solver (captured Generator). Bool uses `scalar`.
         $op!(Generator, fdtd_on, scalar);
         $op!(Generator, fdtd_res, scalar);
-        $op!(Generator, fdtd_source, enum, FdtdSource);
+        $op!(Generator, fdtd_source, enum, HostFdtdSource);
         $op!(Generator, fdtd_freq, scalar);
         $op!(Generator, fdtd_drive, scalar);
         $op!(Generator, fdtd_substeps, scalar);
@@ -3542,7 +3543,7 @@ macro_rules! for_each_tab_field {
         $op!(Generator, ac_beat_pump, scalar);
         // #381 Tier 1 Field Engine (the program text rides the sidecar, like the
         // connectome; only the live coefficients are preset-captured).
-        $op!(Generator, field_kind, enum, FieldKind);
+        $op!(Generator, field_kind, enum, HostFieldKind);
         $op!(Generator, field_preset, enum, FieldPreset);
         $op!(Generator, field_scale, scalar);
         $op!(Generator, field_extent, scalar);
@@ -3636,7 +3637,7 @@ macro_rules! for_each_tab_field {
         $op!(Audio, an_corr_alarm, scalar);
         $op!(Audio, an_reference_hud, scalar);
         // #348 Field Volume + #349 calibrated colour (both cross-cutting Looks).
-        $op!(Look, fv_source, enum, FieldVolSource);
+        $op!(Look, fv_source, enum, HostFieldVolSource);
         $op!(Look, fv_smooth, scalar);
         $op!(Look, fv_exposure_db, scalar);
         $op!(Look, fv_calibrate, scalar);
@@ -3644,11 +3645,11 @@ macro_rules! for_each_tab_field {
         $op!(Look, fv_lines, scalar);
         $op!(Look, fv_line_density, scalar);
         $op!(Look, fv_line_thickness, scalar);
-        $op!(Look, col_mode, enum, ColourMode);
+        $op!(Look, col_mode, enum, HostColourMode);
         $op!(Look, col_lo_db, scalar);
         $op!(Look, col_hi_db, scalar);
         $op!(Look, col_lut, enum, CalLut);
-        $op!(Look, col_source, enum, CalColourSource);
+        $op!(Look, col_source, enum, HostCalColourSource);
         $op!(Look, col_amount, scalar);
         $op!(Generator, ax_count, scalar);
         $op!(Generator, ax_length, scalar);
@@ -4284,7 +4285,7 @@ macro_rules! for_each_tab_field {
         $op!(Look, instr_flux_y, scalar);
         $op!(Look, instr_flux_z, scalar);
         $op!(Look, instr_flux_size, scalar);
-        $op!(Look, instr_flux_axis, enum, FluxAxis);
+        $op!(Look, instr_flux_axis, enum, HostFluxAxis);
         $op!(Look, instr_flux_res, scalar);
         $op!(Look, instr_csv_log, scalar);
         $op!(Look, instr_panel_opacity, scalar);

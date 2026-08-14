@@ -15,7 +15,7 @@ determine" is written where that is the honest answer.
 ## Tier 0 — verified on this machine, 2026-08-10
 
 Both binaries built release on organon-one (cold tree, 7m07s total; warnings only).
-`organon-shell --help` prints the flag surface without starting the event loop. The console
+`organon-console --help` prints the flag surface without starting the event loop. The console
 was launched under `ORGANON_SHELL_BACKDROP=1`, `ORGANON_SHELL_SCRIM=96`,
 `ORGANON_SHELL_TABS=pi-wsl,shell-wsl,shell`, `ORGANON_SHELL_PTY_DEBUG=1`, and — load-bearing,
 see below — `ORGANON_IPC_NS=organon-t0`. Verified with eyes and screenshots:
@@ -66,17 +66,17 @@ see below — `ORGANON_IPC_NS=organon-t0`. Verified with eyes and screenshots:
 
 ## R1 — The compositing seam
 
-**Answer.** The `World` is rendered once per frame in `Shell::render_backdrop(&mut self) ->
-Option<egui::TextureId>` (`native/src/shell_main.rs:344`), called from `redraw` at `:431`
+**Answer.** The `World` is rendered once per frame in `Console::render_backdrop(&mut self) ->
+Option<egui::TextureId>` (`native/src/console_main.rs:344`), called from `redraw` at `:431`
 **before** `egui_ctx.run` (`:459`): gate on `backdrop_on`; size to the swapchain; recreate
 texture+views on size change; `world.render_to_texture(&pane.texture, pane.size,
 BACKDROP_FORMAT)` (`:375`); register-or-rebind the egui id. It is painted in
-`term_view::draw(ui, session, backdrop)` (`term_view.rs:127`, called at `shell_main.rs:485`)
+`term_view::draw(ui, session, backdrop)` (`term_view.rs:127`, called at `console_main.rs:485`)
 as an **ordinary egui textured quad** — `painter.image(texture, rect, UV 0..1, WHITE)`
 (`term_view.rs:200`); no `PaintCallback` anywhere. Z-order is emission order: image → scrim
 → per-run bg rects → glyphs → cursor.
 
-**The measured gamma pair, concretely** (`shell_main.rs:41-46, 354-369`): one texture, two
+**The measured gamma pair, concretely** (`console_main.rs:41-46, 354-369`): one texture, two
 views. `BACKDROP_FORMAT = Rgba8UnormSrgb` — the World renders through the default (sRGB)
 view, so the composite writes linear and the hardware encodes once. `BACKDROP_SAMPLE_FORMAT
 = Rgba8Unorm` — a second, explicitly-formatted view in `view_formats` that egui samples, so
@@ -90,14 +90,14 @@ swapchain in physical pixels (`:349`), recreated on change (`:351`); `World::on_
 a documented no-op (`world.rs:9581-9589`). **Same-id rebinds:** first frame
 `register_native_texture` (`:394`), thereafter `update_egui_texture_from_wgpu_texture`
 (`:383-388`) against the carried `Backdrop.id` (`:54`, kept across recreation at `:370`) —
-`ui_layer::register_scene_texture`'s discipline (`ui_layer.rs:154-193`) open-coded; Shell
+`ui_layer::register_scene_texture`'s discipline (`ui_layer.rs:154-193`) open-coded; the Console
 has no `UiLayer`. **Scrim:** `term_view.rs:210-219`, a pure function of
 `backdrop.is_some()`: env alpha clamped `.max(SCRIM_FLOOR=96)`, default 185, painted over
 the whole grid rect. **Features:** the bin *requests* full engine features but intersects
-with `adapter.features()` (`shell_main.rs:132-173`) — RT and timestamps are probed, never
+with `adapter.features()` (`console_main.rs:132-173`) — RT and timestamps are probed, never
 guaranteed. **Submission order** is sufficient: the World submits internally
 (`organon-render/src/render.rs:5792`), the egui pass submits later on the same queue
-(`shell_main.rs:515-548`).
+(`console_main.rs:515-548`).
 
 **What a second background source must satisfy** — the seam's currency is
 `Option<egui::TextureId>`; nothing downstream knows what a `World` is:
@@ -106,7 +106,7 @@ guaranteed. **Submission order** is sufficient: the World submits internally
    TEXTURE_BINDING`, `view_formats: [Rgba8Unorm]`) at exactly the claimed size, writing
    **linear** color.
 2. Borrow device/queue as arguments (`world.device()` / `world.queue()`,
-   `world.rs:10238-10255`) — Shell owns no device.
+   `world.rs:10238-10255`) — the Console owns no device.
 3. Submit before `render_backdrop` returns (or hand back an encoder to submit ahead of
    egui's).
 4. Preserve the egui `TextureId` across recreation exactly as `:380-398` does.
@@ -119,7 +119,7 @@ guaranteed. **Submission order** is sufficient: the World submits internally
 Minimal drop-in: `fn render(&mut self, device, queue, texture: &wgpu::Texture, size)`
 into the **existing** `Backdrop.texture` — then `term_view.rs`, the rebind logic and the
 scrim need no change at all. The only per-frame source-choice point is `render_backdrop`'s
-body (`:344-375`), driven by a new field on `Shell`; today `backdrop_on` is read once at
+body (`:344-375`), driven by a new field on `Console`; today `backdrop_on` is read once at
 startup (`:113`).
 
 **Consequences for the plan** — see *Corrections* #1–#4: the seam is confirmed and the
@@ -128,7 +128,7 @@ window-sized texture, UV 0..1, into a CentralPanel 30 logical points shorter (th
 strip), invisible on a generative world and glaring on a flat plane; fix at the seam by
 sizing the texture to the panel rect (precedent: `wgpu_editor::render_scene_pane`,
 `wgpu_editor.rs:565-625`); (b) the scrim clamp has **no test** (only the help-text test at
-`shell_main.rs:713`), and making "assert `SCRIM_FLOOR` holds" mechanical means a
+`console_main.rs:713`), and making "assert `SCRIM_FLOOR` holds" mechanical means a
 `term_view.rs` edit that needs an owner; (c) **if the substrate replaces the World rather
 than sitting beside it, `organon set/generator/recipe` stops changing the backdrop** — the
 override lane drains inside `World::frame_body` (`world.rs:2215-2223`). Keep the World
@@ -160,7 +160,7 @@ floor 10°→~4° in **both** places — `:6489-6490` and `:10597`; moving one i
 `:5270` auto-follow; (3) let near/far follow the rig (at 10° FOV the framing distance is
 ~2460 for what 45°/520 frames; `near=0.1` at that distance wastes depth precision —
 `Depth32Float`, non-reversed, `render.rs:318`; arithmetic estimate, not measured). A
-zero-edit hack exists (Shell writes `Shared` wholesale each frame, so
+zero-edit hack exists (the Console writes `Shared` wholesale each frame, so
 `shared.cam_frame[1]=10.0` works today) but framing off ratcheted `Zoom` deltas is not a
 rig.
 
@@ -173,7 +173,7 @@ in the render crate.
 **Integration point, exactly:** the tuple `(cam_center, yaw, pitch, distance, cam_roll,
 fov_deg)` finalized at `world.rs:6480-6524` — the rails branch (`:6497-6511`) is the
 precedent that overrides all six; a substrate rig is a **third arm on that same `if`**,
-gated on a `World` flag set by a new public setter that `shell_main.rs` calls. It must land
+gated on a `World` flag set by a new public setter that `console_main.rs` calls. It must land
 there and not later: TAA post-multiplies `view_proj` at `:7924-7942`, so anything injected
 downstream fights the jitter.
 
@@ -191,8 +191,8 @@ off.
 ## R3 — The command surface
 
 **Answer, part 1 — `command.rs::register_spec` is seeded by nobody.** `CommandService` is
-constructed only in its own unit tests; `organon-shell/src/lib.rs:29` is the sole reference
-to the module outside itself; `shell_main.rs` never mentions it. The catalog is data
+constructed only in its own unit tests; `organon-console/src/lib.rs:29` is the sole reference
+to the module outside itself; `console_main.rs` never mentions it. The catalog is data
 (`Vec<CommandSpec>`, name-sorted; `register_spec` replaces on collision — idempotent,
 `command.rs:252-257`). `CommandSpec = {name, doc, target: TargetKind, args: Vec<ArgSpec>}`;
 args are **named**, validated from a JSON object (`validate_args`, `:419-472`; `ArgKind` =
@@ -218,15 +218,15 @@ record completions docs`. Logic lives in `cli.rs` (pure, tested); `ctl.rs` maps 
 Organon). **Three transports:** the fire-and-forget override lane (`ops_for` → `CliOp`
 lines → append to `ns_file("cli.txt")`, drained by the **World** each frame by file-length
 growth, `world.rs:9694-9733`); the eyes request/reply sidecar for `snap`/`record`
-(`ctl.rs:339-370, 387-413` — bypasses `to_ctl`; **the Shell does not answer it**, so those
+(`ctl.rs:339-370, 387-413` — bypasses `to_ctl`; **the the Console does not answer it**, so those
 two hang/timeout in-console today); and direct `Shared` reads.
 
 **Where `console` attaches:** five files in order — `ctl.rs:43` (a `Console` variant + a
 `ConsoleAction` enum beside `RecordAction`), `to_ctl` (`:206`), `cli.rs:22` (`CtlCmd`),
 `cli.rs:119` (`ops_for`), `agent.rs:767-828` (`CliOp`) — *if* routed over the existing
 lane. See *Corrections* #7 for why Tier 2 should instead use a new `ns_file("console.txt")`
-sidecar drained in `shell_main.rs`: **there is no transport from the CLI to Shell state
-today** — `cli.txt` is drained by the World, and a background swap is `Shell` state, not
+sidecar drained in `console_main.rs`: **there is no transport from the CLI to the Console state
+today** — `cli.txt` is drained by the World, and a background swap is `Console` state, not
 `World` state.
 
 **Where discovery attaches — superseded mid-Phase-0, in the right direction.** R3 mapped
@@ -242,12 +242,12 @@ implementation branches beside the existing early exits (`:375-413`), and the
 `discover`/`describe --json` path must skip the unconditional ~150 ms `is_live` probe at
 `ctl.rs:452` — the strip must never block on liveness theatre.
 
-**The `is_live()` story — SHELL_ARCHITECTURE.md §3 had the wrong channel, and the recon
+**The `is_live()` story — CONSOLE_ARCHITECTURE.md §3 had the wrong channel, and the recon
 initially had the wrong writer.** `is_live` (`organon-core/src/ipc.rs:3446-3460`) probes
 the **`Shared` mmap's `seq` counter for motion** (up to ~150 ms) — it never reads the
 `Feedback` mmap (`:3483-3544`), so the ledger's "silence it by writing Feedback" remedy
 could never work (corrected in this change). The recon agent then concluded nothing writes
-`Shared` in the Shell namespace — **wrong**: `shell_main.rs:425-427` publishes it every
+`Shared` in the the Console namespace — **wrong**: `console_main.rs:425-427` publishes it every
 redraw (its comment says exactly why), James's in-console `organon status` works, and Tier
 0 re-verified both. Reconciled: liveness in-console depends on the *redraw cadence* — a
 continuously-repainting console (backdrop on) reads live; the warning can fire when redraws
@@ -275,7 +275,7 @@ block on ~150 ms of liveness theatre.
    grids — alt screen included, one path, no special case).
 5. Painting culls `vrow >= rows` (`:270-271`) and the cursor uses the same bound (`:309-313`).
 
-**The pattern Tier 3 copies is already on screen:** `shell_main.rs:473-491` declares
+**The pattern Tier 3 copies is already on screen:** `console_main.rs:473-491` declares
 `TopBottomPanel::top("tab-strip").exact_height(30.0)` *then* `CentralPanel` — egui
 subtracts panels from `ctx.available_rect()` in declaration order, so the grid is already
 window-minus-30pt and nothing but `term_view.rs:133-134` ever knew. **A
@@ -289,7 +289,7 @@ change.** (In-repo precedent: `app.rs:172-178`; the repo's own statement of the 
 
 **The integrator's real checklist** (full detail in the R4 report; the load-bearing rows):
 
-- Declare the bottom panel before the CentralPanel (`shell_main.rs:459-492`); height =
+- Declare the bottom panel before the CentralPanel (`console_main.rs:459-492`); height =
   `strip_rows × cell_h` from the pure module — **never a magic constant**.
 - **`cell_h` must escape `term_view::draw`** — the panel is sized before the CentralPanel
   exists, so metrics need a public `term_view::cell_metrics(...)` (or `FONT_ID` const).
@@ -314,13 +314,13 @@ change.** (In-repo precedent: `app.rs:172-178`; the repo's own statement of the 
   fail invisibly. The failure is asymmetric; that is why it looks like a rendering bug.
 
 **Also found:** no mouse hit-testing or click-to-cell mapping exists anywhere (`term_view`
-senses nothing); initial PTY size is hard-coded `80,24` (`shell_main.rs:305`) and corrected
+senses nothing); initial PTY size is hard-coded `80,24` (`console_main.rs:305`) and corrected
 on the first frame; `GridSize`'s `Dimensions` impl lies about `total_lines`/`history_size`
 (inert today — alacritty reads only cols/screen_lines; do not consult it for history);
 `tabs.rs:5` says the strip is "along the bottom" while it is at the top, and the `+` menu
 anchors upward (`tabs.rs:173-176`) — Leaf D fixes both while extracting the widget.
-`doc-rules.sh` does **not** trigger on `native/src/shell_main.rs`, so a tier done wholly
-there would dodge the SHELL_ARCHITECTURE.md reminder — the discipline is on us, not the
+`doc-rules.sh` does **not** trigger on `native/src/console_main.rs`, so a tier done wholly
+there would dodge the CONSOLE_ARCHITECTURE.md reminder — the discipline is on us, not the
 hook.
 
 ---
@@ -338,7 +338,7 @@ lights, shadow map, and the whole HDR→bloom→exposure→tonemap→dither post
 **A flat plane is reachable from `Shared` bytes alone, today:** `math::draw_membrane` with
 `loop_count_q=0`, `rot_amp=0`, `loop_count=(nx,1,nz)` degenerates to one tessellated flat
 quad in the world x–z plane (`math.rs:11833-11836, 11884-11893`; gates `world.rs:2334`,
-`:2656-2657`) — which is precisely `mat_uv`'s world-planar-XZ projection. The Shell already
+`:2656-2657`) — which is precisely `mat_uv`'s world-planar-XZ projection. The the Console already
 owns and republishes a full `Shared` every frame, so Tier 1's "scene" is substantially a
 **params builder, not a renderer feature**.
 
@@ -494,12 +494,12 @@ no gloss, no CLI id and no actuation route.
 
 ## Contradictions and surprises
 
-1. **R3 vs R1/R2 on who writes `Shared` in the Shell** — R3 claimed nobody does and built
+1. **R3 vs R1/R2 on who writes `Shared` in the Console** — R3 claimed nobody does and built
    two conclusions on it (descriptor `value: null` in-console; the warning's cause).
-   **Resolved against R3** by code (`shell_main.rs:425-427`), by James's live `organon
+   **Resolved against R3** by code (`console_main.rs:425-427`), by James's live `organon
    status`, and by Tier 0 (namespaced `status` + a recipe landing). What survives from R3:
    `is_live()` probes `Shared` seq motion and never reads `Feedback`, so
-   SHELL_ARCHITECTURE.md §3's "write Feedback" remedy was wrong — corrected in this change.
+   CONSOLE_ARCHITECTURE.md §3's "write Feedback" remedy was wrong — corrected in this change.
    Descriptor `value` in-console is therefore **available**, not null, whenever the console
    is redrawing.
 2. **R1 and R4 found the same latent defect from two directions:** the backdrop texture is
@@ -511,10 +511,10 @@ no gloss, no CLI id and no actuation route.
    surfaces tiers will contend for. §6 amended; per-tier ownership declared in §5.
 4. **Tier 2's output line conflated two registries, one of which is constructed nowhere.**
    clap gives `--help`; `CommandService` gives specs — and no `CommandService` exists in
-   the product. Tier 2 must stand one up (owned by `shell_main.rs`) or its "registered
+   the product. Tier 2 must stand one up (owned by `console_main.rs`) or its "registered
    spec" is dead code that looks green.
 5. **`snap`/`record` cannot work in-console** (the eyes sidecar has no reply side in
-   Shell) — known seam (SHELL_ARCHITECTURE §2), now stated where tier planners will read
+   the Console) — known seam (CONSOLE_ARCHITECTURE §2), now stated where tier planners will read
    it, so nobody demos it by accident.
 6. **The default look is not demo-grade at rest** (Tier 0 §3 above): the opening beat needs
    a recipe applied or the transport running. A mechanism being proven and a frame being
@@ -533,24 +533,24 @@ no gloss, no CLI id and no actuation route.
    narrow FOV carry the read" (R5).
 2. **Tier 1 ownership** — integrator additionally owns `world.rs` (camera arm + FOV clamps
    ×2 + auto-follow latch; R2) and `term_view.rs` (extract a testable `scrim_alpha`; R1);
-   `doc/arch/render.md` joins `SHELL_ARCHITECTURE.md` in the integrator's doc duty when
+   `doc/arch/render.md` joins `CONSOLE_ARCHITECTURE.md` in the integrator's doc duty when
    `world.rs`/`render.rs`/shaders move (hook `doc-rules.sh:29,31`).
 3. **Tier 1 keeps the World selectable** as a backdrop source beside the substrate —
    otherwise `organon set/generator/recipe` visibly dies (R1). The source switch is a field
-   on `Shell`, decided per frame in `render_backdrop`.
+   on `Console`, decided per frame in `render_backdrop`.
 4. **Leaf A's deviation bound is a function of aspect** (vertical FOV is what the engine
    takes), and its test takes aspect as an input (R2).
 5. **Tier 2 transport decided:** a new `ns_file("console.txt")` sidecar drained in
-   `shell_main.rs` — not a `CliOp` through `world.rs` (R3). Tier 2 also stands up the
+   `console_main.rs` — not a `CliOp` through `world.rs` (R3). Tier 2 also stands up the
    product's first `CommandService` instance, owned by the integrator.
-6. **Tier 3 Leaf B relocated and split:** it cannot live in `organon-shell` (nih-plug
+6. **Tier 3 Leaf B relocated and split:** it cannot live in `organon-console` (nih-plug
    firewall; `Cargo.toml` header + `cargo tree` acceptance) — it is a new **root-crate**
-   module called from `shell_main.rs`, budgeted as two pieces: the field-name↔wire-id
+   module called from `console_main.rs`, budgeted as two pieces: the field-name↔wire-id
    **namespace bridge** (generated from the slot lists), then the adapter. Its `pub mod`
    line in `lib.rs` is the integrator's, added up front (R6).
 7. **Tier 3 integrator brief corrected:** the strip is a bottom `TopBottomPanel` declared
    before the CentralPanel — `term_view.rs` and `term.rs` need **no arithmetic change**;
-   the centre of gravity is `shell_main.rs`; the one forced structural change is `cell_h`
+   the centre of gravity is `console_main.rs`; the one forced structural change is `cell_h`
    escaping `term_view::draw` (assigned to the integrator); Leaf C owns rows↔points **both
    directions** plus the empty-payload→0-rows rule; auto-hide is suppressed while scrolled
    into history (R4).

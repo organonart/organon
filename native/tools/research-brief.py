@@ -229,7 +229,12 @@ def durable_docs():
         if not p.exists():
             continue
         lines = sum(1 for _ in p.open(encoding="utf-8", errors="replace"))
-        when = git("log", "-1", "--format=%as", "--", doc, default="?")
+        # `or "?"` and not just the default: git SUCCEEDS with empty output for a file that
+        # exists in the working tree but not yet in HEAD's history — a file added by an
+        # uncommitted merge, which is exactly when someone runs this to check their work.
+        # The `default=` only covers git failing, so without this the cell renders blank
+        # and a blank cell in a table of measurements reads as "never touched".
+        when = git("log", "-1", "--format=%as", "--", doc, default="?") or "?"
         out.append((doc, lines, when))
     return out
 

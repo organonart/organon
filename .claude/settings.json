@@ -42,7 +42,7 @@
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/doc-coherence.sh\" \"$CLAUDE_PROJECT_DIR/ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/MIND_ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/SHELL_ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/CONSOLE_ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/web/ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/doc/arch/render.md\" \"$CLAUDE_PROJECT_DIR/CLAUDE.md\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/doc-coherence.sh\" \"$CLAUDE_PROJECT_DIR/ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/MIND_ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/CONSOLE_ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/web/ARCHITECTURE.md\" \"$CLAUDE_PROJECT_DIR/doc/arch/render.md\" \"$CLAUDE_PROJECT_DIR/CLAUDE.md\"",
             "timeout": 15,
             "statusMessage": "Checking the durable docs agree with themselves\u2026"
           },

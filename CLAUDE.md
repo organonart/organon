@@ -11,9 +11,9 @@
    `.gguf` and it draws the model's true wiring, read from the file, then lights it up
    while it runs. Not a feature of Organon and not a fork of it: **its own crate**
    (`native/organon-mind`, nih-plug-free) over a shared engine.
-3. **Organon Shell** — an **agent-operating workstation**: a native GPU-composited
+3. **Organon Console** — an **agent-operating workstation**: a native GPU-composited
    workspace for working with AI agents. Its own crate
-   (`native/organon-shell`, nih_plug-free, standalone-only permanently — no plugin
+   (`native/organon-console`, nih_plug-free, standalone-only permanently — no plugin
    identity, ever) + a third `Edition`.
 
 **Naming convention.** *Organon* = the visualizer product (host plugin name, window
@@ -45,8 +45,8 @@ this list.
 > open-sourced, and they are **not resolvable here**. They are kept rather than stripped
 > because they are load-bearing provenance: a comment saying "measured in #658, the
 > shebang pin does not fire under MSYS" records *that someone checked*, which is the
-> part worth keeping even when the ticket is gone. `Shell #N` is the same thing for
-> Organon Shell, which was planned in a tracker of its own. New work cites issues in
+> part worth keeping even when the ticket is gone. `Console #N` is the same thing for
+> Organon Console, which was planned in a tracker of its own. New work cites issues in
 > this repo normally.
 
 ---
@@ -64,7 +64,7 @@ already.
 | **`doc/arch/render.md`** | the **render pipeline in depth** — passes, `RenderFrame`/`RenderPath`, hardware RT, IBL, shaders. A *child* of `ARCHITECTURE.md`; **not** auto-injected | same, whenever a render-side file moves |
 | **`doc/arch/topology.md`** | the crate graph and what may depend on what | same |
 | **`MIND_ARCHITECTURE.md`** | **Organon Mind**'s living state — what exists *right now* (not a spec, not a roadmap), plus the honesty ledger | update in the **same change** as every Mind PR |
-| **`SHELL_ARCHITECTURE.md`** | **Organon Shell**'s living state | update in the **same change** as every Shell PR |
+| **`CONSOLE_ARCHITECTURE.md`** | **Organon Console**'s living state | update in the **same change** as every Console PR |
 | **`doc/guide/`** | **the user documentation** — installing into a DAW, the generator/surface/material model, playing it from clips and controllers, presets, output. Narrative and hand-written; describes *mechanisms*, never counts | update when a user-visible behaviour changes |
 | **`doc/reference/`** | every generator / surface / material / parameter / recipe. **GENERATED** by `organon docs` from the prose in `agent.rs` + `recipe.rs`; never hand-edit — a test (`generated_reference_is_current`) fails the build on drift | regenerate in the **same commit** as any description change |
 | **`doc/research/`** | the **deep-research evals** — briefs (the questions), reports (raw model output, kept as evidence) and `FINDINGS.md` (claims adjudicated against the tree). ⚠️ A report is the **least** trustworthy document here; cite `FINDINGS.md`, never a report | file a report per round; adjudicate before citing anything from it |
@@ -97,7 +97,7 @@ authority; re-count with
 | `params.rs`, `ipc.rs`, `param_table.rs` | `ARCHITECTURE.md` |
 | `render.rs`, `world.rs`, `post.rs`, `env.rs`, **`rt*.rs`**, `gi.rs`, `shadow.rs`, `temporal.rs`, `fx.rs`, `vxgi.rs`, `bin/visual.rs`, **`*.wgsl`** | `doc/arch/render.md` |
 | `edition.rs`, `mind_*.rs`, `gguf*.rs`, `bin/{mind_runtime,mind_writer}.rs` | `MIND_ARCHITECTURE.md` |
-| `organon-shell/src/*.rs`, `organon-shell/Cargo.toml` | `SHELL_ARCHITECTURE.md` |
+| `organon-console/src/*.rs`, `organon-console/Cargo.toml` | `CONSOLE_ARCHITECTURE.md` |
 
 A trigger may be a literal path **or a glob** (`*` within one path segment) — the RT
 subsystem is seven `rt*.rs` files and the render doc covers 50+ shaders, so enumerating
@@ -115,7 +115,7 @@ trains everyone to dismiss the reminder. The session boundary comes from the std
 `transcript_path`; that file has the measurements and the fallback behaviour.
 
 **Exactly ONE doc is SessionStart-injected: the root `ARCHITECTURE.md`.** Everything
-else — `doc/arch/render.md`, `MIND_ARCHITECTURE.md`, `SHELL_ARCHITECTURE.md` — is **read
+else — `doc/arch/render.md`, `MIND_ARCHITECTURE.md`, `CONSOLE_ARCHITECTURE.md` — is **read
 on demand**, which is the whole point: the injected core stays small and the depth is
 one `Read` away. Don't trust this sentence for the count; ask the file that decides it:
 
@@ -157,7 +157,7 @@ put it there.
 
 1. **Never touch the VST3 class ID / CLAP ID.** It orphans the device in every saved DAW
    session — the single most destructive possible edit. Equally: never *add* a second
-   one. Organon Mind and Organon Shell are standalone-only on purpose.
+   one. Organon Mind and Organon Console are standalone-only on purpose.
 2. **`Shared` (the IPC snapshot) is append-only.** Never reorder or insert fields;
    existing byte offsets are load-bearing across the plugin↔visual boundary. Append at
    the tail (or into a documented spare slot), bump `LAYOUT_VERSION`, re-pin the
@@ -183,19 +183,19 @@ put it there.
 
 ## Three products, one workspace
 
-Organon, Organon Mind, and Organon Shell are the **same engine with a different
-front-of-house**. Mind and Shell each have their own crate; what stays shared is the
+Organon, Organon Mind, and Organon Console are the **same engine with a different
+front-of-house**. Mind and the Console each have their own crate; what stays shared is the
 engine beneath them. This is an **edition, not a fork**: the algorithm (`math.rs`),
 every shader, the `Shared` layout, and the preset store are identical across them.
 
 ```bash
 cargo build --release                                              # Organon (default)
 cargo build --release --features mind-edition --bin organon-mind   # Organon Mind
-cargo build --release --features shell-edition --bin organon-console # Organon Shell
+cargo build --release --features console-edition --bin organon-console # Organon Console
 ```
 
 `organon-core/src/edition.rs` holds a compile-time `Edition` (`Full` | `Mind` |
-`Shell`), chosen by the `mind-edition` / `shell-edition` cargo features (**both
+`Console`), chosen by the `mind-edition` / `console-edition` cargo features (**both
 default OFF**, so a plain `cargo build` / `cargo test` / `bundle.sh` keeps producing
 exactly today's Organon; both at once is a `compile_error!`). An edition drives **six
 behaviors** — `edition.rs`'s module doc is the authority and `ARCHITECTURE.md` §4.1 owns
@@ -204,7 +204,7 @@ before.)
 
 Things that are easy to get wrong:
 
-- **Mind and Shell are standalone-only, and must stay that way.** No VST3/CLAP export —
+- **Mind and the Console are standalone-only, and must stay that way.** No VST3/CLAP export —
   which means **no second plugin class ID**, and none of the host audio-thread
   constraints. Adding a plugin identity is not a feature, it's a new lifetime
   commitment.
@@ -226,7 +226,7 @@ Things that are easy to get wrong:
   `required-features = ["embedded-llm"]`, installed by `./deploy.sh --with-llm`).
 
 ⚠️ **Default-off features mean the default build does not compile them.** `cargo build`
-and `cargo test` skip `mind_main.rs`, `shell_main.rs` and `bin/mind_runtime.rs`
+and `cargo test` skip `mind_main.rs`, `console_main.rs` and `bin/mind_runtime.rs`
 entirely, so you can break an edition and see a green suite. If your change touches
 anything shared — `lib.rs`, `params.rs`, `preset.rs`, `ipc.rs`, `world.rs`, the `mind_*`
 modules — build the other editions too before calling it green.
@@ -294,8 +294,8 @@ native/organon-render/ the RENDERER: `render` + 36 surface submodules, `axes`,
               state and stays in the root crate.    → doc/arch/render.md
 native/organon-mind/   Organon Mind's own code (activation ring, Mind UI,
               model shell). No nih_plug.            → MIND_ARCHITECTURE.md
-native/organon-shell/  Organon Shell's compositor lib. No nih_plug, ever.
-                                                    → SHELL_ARCHITECTURE.md
+native/organon-console/  Organon Console's compositor lib. No nih_plug, ever.
+                                                    → CONSOLE_ARCHITECTURE.md
 doc/arch/     the architecture child docs (render, topology)
 doc/          Organon Mind's public doc set (PRD, build plan, the honesty essay)
 .claude/skills/  organon-cli — driving the running app via the `organon` command.
@@ -344,10 +344,10 @@ cargo test --workspace          # math, params, IPC goldens + offline WGSL valid
 
 # The other editions — the default build does NOT cover them
 cargo build --release --features mind-edition  --bin organon-mind
-cargo build --release --features shell-edition --bin organon-console
+cargo build --release --features console-edition --bin organon-console
 cargo test  --workspace --features mind-edition
-cargo test  --workspace --features shell-edition
-cargo test  -p organon-shell    # the compositor lib alone — the tight loop
+cargo test  --workspace --features console-edition
+cargo test  -p organon-console    # the compositor lib alone — the tight loop
 
 # organon-core — the host-free spine. Seconds, not minutes: it pulls no
 # nih_plug/wgpu/egui, so this is the tight loop for gguf/edition/tabs work.

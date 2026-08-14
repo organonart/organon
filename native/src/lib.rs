@@ -153,11 +153,11 @@ pub mod theme_config;
 // changes size for no user-visible reason is exactly what "full Organon is untouched" rules out.
 // Organon Mind ships no VST3 (#483), so under `mind-edition` the growth costs nothing.
 //
-// Shell #6 T1 widened the gate to `shell-edition` — Shell's embedded viewport is a
+// Console #6 T1 widened the gate to `console-edition` — the Console's embedded viewport is a
 // third consumer of the world, and like Mind it ships no plugin, so the cdylib measurement
 // above still holds for the only build that has one (the default, where both features are
 // off and this module still does not exist).
-#[cfg(any(feature = "mind-edition", feature = "shell-edition"))]
+#[cfg(any(feature = "mind-edition", feature = "console-edition"))]
 pub mod world;
 /// #520 Tier 2 — making the **standalone**'s window resizable. baseview opens it
 /// with no `Resizable` style bit and offers no API to change that, so this reaches

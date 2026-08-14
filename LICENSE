@@ -5,7 +5,7 @@ a tool, a sidebar badge, or a person in a hurry — can conclude otherwise.
     native/organon-core                      (licensee's choice of either)
     native/organon-render
     native/organon-mind
-    native/organon-shell
+    native/organon-console
     native/xtask
 
   The root crate                             GPL-3.0-or-later

@@ -43,12 +43,12 @@ repository = "https://github.com/organonart/organon"
 # still resolves EDITION to `Edition::Full`.
 mind-edition = []
 
-# Same mechanism, third product (Shell #3 T1): selects `EDITION =
-# Edition::Shell`. Forwarded from the native crate's `shell-edition` and from
-# `organon-shell`'s own feature — every switch lands here, where EDITION lives.
+# Same mechanism, third product (Console #3 T1): selects `EDITION =
+# Edition::Console`. Forwarded from the native crate's `console-edition` and from
+# `organon-console`'s own feature — every switch lands here, where EDITION lives.
 # Mutually exclusive with `mind-edition` (compile_error! in src/edition.rs).
 # OFF by default: the default-inert contract is unchanged.
-shell-edition = []
+console-edition = []
 
 # 🚨 BLOCKS `cargo publish` UNTIL TIER 5 DEALS WITH IT (#626 §2.5).
 #

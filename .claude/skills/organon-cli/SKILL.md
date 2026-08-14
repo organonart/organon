@@ -78,6 +78,8 @@ world in front of it:
 ```
 organon console background <name>    # the surface behind the glyphs
 organon console rig <name>           # how that surface is lit
+organon console theme <name>         # every colour the console paints — live, and remembered
+organon console posture <word>       # how it holds itself: terminal-tight or desktop-open
 organon console block <rows>         # reserve blank rows in the transcript
 organon console patch --up N --rows M --kind <kind>   # claim a gap you already printed
 organon console portal <state>       # float a live window onto the world over the transcript
@@ -90,6 +92,19 @@ ask is about *what Organon is rendering*. It only means anything while an Organo
 Console is running, and it changes nothing a `snap` would show. `--help` lists the
 accepted names and the row bound — ask it rather than guessing, exactly as with
 parameters.
+
+`theme` and `posture` are the two that change **the console itself** rather than the
+surface behind it — `background` and `rig` say what is *behind* the glyphs, these say what
+the glyphs and their chrome are made of and how they are arranged. Both take effect on the
+next frame; ask `--help` for the palettes and the posture words this build has, and expect
+an unknown name to be refused with the known set rather than approximated.
+
+Two differences between them are worth knowing before you use either. **`theme` is
+remembered** — it is written to the console's preferences file, so it is still there at the
+next launch, which makes it a *choice on the user's behalf*: change it when asked, not to
+suit yourself. **`posture` is not remembered and it snaps** — no animation, and closing the
+console puts it back at `terminal`. `posture` also takes a bare number from 0 to 1 if you
+want somewhere between the two ends; the two words are what you want almost always.
 
 `block` opens its rows in the **active tab**, just below the cursor, and the next
 prompt lands underneath them. They are ordinary scrollback rows, so they scroll away
@@ -139,6 +154,31 @@ Three things about how to use it, all of which follow from the lane having **no 
 And one thing that is not about the lane: a camera command with **no portal open and no
 `background world`** moves the viewpoint somewhere nothing is drawing it. It succeeds and
 changes no pixel. Open the portal first.
+
+### 🚨 If a human asks for one of these, tell them to type it — do not run it for them
+
+Every `organon console` verb above is also a **slash command in the console's own composer**:
+`/background slate`, `/rig daylight`, `/block 12`, `/portal open`, `/camera reset distance 40`,
+`/camera.read`. Same verbs, same table, same op — the composer's list is *generated* from the
+one the tools you hold are generated from, so it cannot fall behind. `/help` lists it.
+
+**Typed by the person, it runs at once**: no message to you, no inference, no tool call, no
+approval card. Routed through you instead, the same command costs a turn, a tool search and a
+click — measured at about thirteen seconds for `organon console posture desktop`, which is why
+this surface exists at all.
+
+So when James says "make the background slate" in a console tab, the useful answer is
+**`/background slate`** — the words to type — not a tool call on his behalf. Reach for the tool
+yourself when *you* want the console to do something as part of your own work (framing a shot
+you are about to snap, opening a gap you are about to print into). The rule is who wanted it,
+not who is nearer the keyboard.
+
+⚠️ Two grammar notes, because the slash form is not the flag form. The verb loses its
+`organon console` prefix and its dashes: required arguments are positional and optional ones
+are keyword-tagged, so `--distance 40` is typed `distance 40`. That is not a third spelling to
+memorise — **the typed line minus its slash is exactly the sidecar line** the CLI prints as
+`queued: …`. And `//` at the start of a line sends it to the agent unchanged, for the rare
+message that really does begin with a slash.
 
 Your changes ride an **override lane**. Two rules follow from that:
 
@@ -196,14 +236,14 @@ the settings that let it show, and to look honestly at what comes back.
 
 Everything above is **operating** Organon. This is the other mode: you are running in a
 tab of an Organon Console and the ask is to change *the console you are running in*. That
-is not a new tool. It is this repository — `native/organon-shell`, plus `shell_main.rs`
+is not a new tool. It is this repository — `native/organon-console`, plus `console_main.rs`
 and `cli.rs` in the root crate — and the ordinary workflow in `CONTRIBUTING.md` applies
 unchanged: branch off `main`, PR it, close a review cycle. What follows is only the part
 that is **not** discoverable by reading the code.
 
-**Read the doc before you read the tree.** `SHELL_ARCHITECTURE.md` is the console's living
+**Read the doc before you read the tree.** `CONSOLE_ARCHITECTURE.md` is the console's living
 state, and it is hook-enforced rather than hopeful: `.claude/hooks/doc-rules.sh` makes it
-accountable for `native/organon-shell/src/*.rs`, so the code cannot move without the doc
+accountable for `native/organon-console/src/*.rs`, so the code cannot move without the doc
 being called for. §1 is the terminal host, §1.1 the conversation view, §2 the seams
 already claimed by coming work, §3 the honesty ledger — what is known to be *unverified*,
 which is the section that tells you whether a thing you are about to trust has ever been
@@ -220,7 +260,7 @@ These are the doors, not a map — the doc has the map:
 | what a transcript *is* | `conversation.rs` — §1.1 |
 | what gets rendered from what arrived | `agent_map.rs`, the only file that knows both — §1.1 |
 | the scrollback, the composer, the status strip | `conversation_view.rs` — §1.1, "The two bands under the scrollback" |
-| the lit backdrop and the `organon console` verbs | `shell_main.rs` + `cli.rs` — §1 |
+| the lit backdrop and the `organon console` verbs | `console_main.rs` + `cli.rs` — §1 |
 
 **Data or code — ask that before you write anything.** The console has exactly one seam
 that extends it with no rebuild: `harness::load` seeds from the built-in registry, reads
@@ -243,8 +283,8 @@ first mistake §5.9.26 exists to prevent.
 
 ```bash
 cd native
-cargo test -p organon-shell --lib                          # the compositor lib — the tight loop
-cargo check --features shell-edition --bin organon-console # the bin the lib is compiled into
+cargo test -p organon-console --lib                          # the compositor lib — the tight loop
+cargo check --features console-edition --bin organon-console # the bin the lib is compiled into
 ```
 
 Run both, in the foreground, and read them — a build you launched in the background and
@@ -283,8 +323,8 @@ readout is a normal outcome, and so is reversing a refusal on new measurement.**
 one, say what measured it; if you decline one, write down why, and put anything you have not
 actually seen on screen in §3's ledger.
 
-**And the doc moves in the same change as the code.** `SHELL_ARCHITECTURE.md` for anything
-under `organon-shell/`, `CHANGELOG.md` for anything meaningful, and this file if you add or
+**And the doc moves in the same change as the code.** `CONSOLE_ARCHITECTURE.md` for anything
+under `organon-console/`, `CHANGELOG.md` for anything meaningful, and this file if you add or
 change a command. The Stop hook is the safety net, not the instruction — it fires after the
 fact, and a sub-agent may never see it.
 
@@ -292,7 +332,7 @@ fact, and a sub-agent may never see it.
 
 - `organon status` / `organon get` / `organon watch` returning an error → **nothing is
   writing the snapshot.** Those three READ `Shared`, and only an editor writes it — the
-  standalone, the plugin in a host, or Organon Shell. A visual on its own will never
+  standalone, the plugin in a host, or Organon Console. A visual on its own will never
   satisfy them, no matter how long you wait, so this failure is structural and permanent
   rather than a timing problem. Say so plainly.
 - `snap` timing out → **different failure, do not confuse the two.** `snap` needs no
@@ -308,7 +348,7 @@ fact, and a sub-agent may never see it.
   `azimuth` and the six `rot_mod_*` / `trans_mod_*` axes.
 - Talking to the **wrong** Organon → the CLI resolves `$ORGANON_IPC_NS` from its own
   environment and addresses whatever it names (default `organic-math`). Organon Mind and
-  Organon Shell each use their own, which is what lets them run beside a plain Organon.
+  Organon Console each use their own, which is what lets them run beside a plain Organon.
   Export the same value the app was launched with, or you will read one product's state
   while trying to steer another's.
 - A control you set does not seem to take → confirm it is the right generator's

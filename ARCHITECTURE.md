@@ -2,9 +2,9 @@
 
 > **Naming.** Three products, one engine: **Organon** (the visualizer — plugin name in
 > the host, window titles, bundle `Organon.vst3`/`.clap`), **Organon Mind** (the
-> standalone analysis instrument) and **Organon Shell** (the agent-operating
+> standalone analysis instrument) and **Organon Console** (the agent-operating
 > workstation) — the latter two standalone-only, each with its own name, window title
-> and IPC namespace, and no bundle; §4.1 owns the mechanism. Mind and Shell are
+> and IPC namespace, and no bundle; §4.1 owns the mechanism. Mind and the Console are
 > **spin-outs of capabilities that live primarily in Organon**, not peers of it.
 > **"Organic Math"** is the *original cube-field generator*
 > (`GeneratorMode::Original`) and its algorithm/papers — the seed they all grew from.
@@ -25,7 +25,7 @@
 > - `MIND_ARCHITECTURE.md` — **Organon Mind's living state** (what exists right now)
 >   and its honesty ledger. This file owns everything Mind *reuses*; that one owns what
 >   is Mind-specific. **Not auto-injected.**
-> - `SHELL_ARCHITECTURE.md` — the same, for **Organon Shell**. Same split: the engine
+> - `CONSOLE_ARCHITECTURE.md` — the same, for **Organon Console**. Same split: the engine
 >   it reuses is documented here, the compositor and terminal there. **Not
 >   auto-injected.**
 > - `doc/guide/` + `doc/reference/` — **the user documentation**: how to *operate*
@@ -105,7 +105,7 @@ doc/arch/               render.md · topology.md (children of this file)
 doc/                    Organon Mind's public doc set (PRD, build plan, the essay)
 .claude/skills/         organon-cli — driving the running app via the CLI
 
-ARCHITECTURE.md (this file)  ·  MIND_ARCHITECTURE.md  ·  SHELL_ARCHITECTURE.md
+ARCHITECTURE.md (this file)  ·  MIND_ARCHITECTURE.md  ·  CONSOLE_ARCHITECTURE.md
 CLAUDE.md  ·  CONTRIBUTING.md  ·  CHANGELOG.md
 ```
 
@@ -163,7 +163,7 @@ byte-identical to the historical layout.
 | **`organic-math-mind-writer`** | bin | #367 Tier 2 — synthetic activation-ring writer (fake per-token frames, zero inference; the model-free proof) |
 | **`organic-math-mind-runtime`** | bin | #367 Tier 2b — the **real** activation-ring writer: an embedded llama.cpp runtime that loads the `.gguf`, runs live inference on a typed prompt, and taps per-token activations into the ring. **`required-features = ["embedded-llm"]`** — the default build never compiles it (no llama.cpp/C++ dep) |
 | **`organon-mind`** | bin | #483 Tier 1 — **Organon Mind**, the standalone LLM-analysis instrument: the same editor, Mind-only front-of-house. **`required-features = ["mind-edition"]`** — the default build never compiles it. See §4.1 |
-| **`organon-console`** | bin | Shell #3 T1 — **Organon Shell**, the agent-operating workstation: a winit/wgpu/egui window (`src/shell_main.rs`) over the compositor lib in `native/organon-shell` (which is nih_plug-free by rule: `cargo tree -p organon-shell | grep nih_plug` must stay empty). The bin sits in this crate, like `organon-mind`'s, because the embedded viewport (Shell #6) renders `World`. **`required-features = ["shell-edition"]`** — the default build never compiles it. ⚠️ **The bin is `organon-console`, the crate is `organon-shell`** — the artifact carries the public name, the crate keeps the working one (issue #3 owns closing that gap). `--bin organon-console`, `-p organon-shell`. See §4.1 + `SHELL_ARCHITECTURE.md` |
+| **`organon-console`** | bin | Console #3 T1 — **Organon Console**, the agent-operating workstation: a winit/wgpu/egui window (`src/console_main.rs`) over the compositor lib in `native/organon-console` (which is nih_plug-free by rule: `cargo tree -p organon-console | grep nih_plug` must stay empty). The bin sits in this crate, like `organon-mind`'s, because the embedded viewport (Console #6) renders `World`. **`required-features = ["console-edition"]`** — the default build never compiles it. ⚠️ **The bin and the package now share a spelling but are not the same thing**: `--bin organon-console` builds from the ROOT package, `-p organon-console` selects the compositor lib and produces no binary. See §4.1 + `CONSOLE_ARCHITECTURE.md` |
 
 `nih-plug` is a **git dependency** (not crates.io) — a remote/Linux session may be
 unable to fetch it, in which case the compile gate must be cleared on the Mac.
@@ -180,19 +180,19 @@ critically — the **visual binary** are byte-identical between them.
 ```
 cargo build --release                                      # Organon (default; unchanged)
 cargo build --release --features mind-edition --bin organon-mind   # Organon Mind
-cargo build --release --features shell-edition --bin organon-console # Organon Shell
+cargo build --release --features console-edition --bin organon-console # Organon Console
 ```
 
 `organon-core/src/edition.rs` holds a compile-time `Edition` (`Full` | `Mind` |
-`Shell`) and the const `EDITION`, selected by the `mind-edition` / `shell-edition`
+`Console`) and the const `EDITION`, selected by the `mind-edition` / `console-edition`
 cargo features (**both default OFF**, so `cargo build` / `cargo test` / `bundle.sh` /
 `deploy.sh` keep producing exactly today's Organon; enabling both at once is a
-`compile_error!`). **Shell** is the third product (Shell #3 T1): the
+`compile_error!`). **The Console** is the third product (Console #3 T1): the
 agent-operating workstation, defined in `doc/organon_shell_prd.md` (private annex),
-living state in `SHELL_ARCHITECTURE.md`; its code is the `native/organon-shell`
+living state in `CONSOLE_ARCHITECTURE.md`; its code is the `native/organon-console`
 workspace crate (nih_plug-free, the organon-mind pattern) and its **binary** is
-`src/shell_main.rs` in **this** crate, `organon-mind`-style — the window renders
-`World` (Shell #6 T1), which lives here until #618 extracts it.
+`src/console_main.rs` in **this** crate, `organon-mind`-style — the window renders
+`World` (Console #6 T1), which lives here until #618 extracts it.
 
 ⚠️ **An edition drives SIX behaviors now, not the original three** — this section
 said "three things and nothing else" long after #554 T4/#572 made it six, and
@@ -200,11 +200,18 @@ said "three things and nothing else" long after #554 T4/#572 made it six, and
 instrument-window vs projector-feed, UI-layer start visibility, and the gated
 `pub mod world`). The front-of-house three:
 
-| What | Full | Mind | Shell |
+| What | Full | Mind | Console |
 |---|---|---|---|
-| `product_name()` — `Plugin::NAME`, window title, editor heading | `Organon` | `Organon Mind` | `Organon Shell` |
-| `ipc_namespace()` — the `$TMPDIR` filename prefix (§6) | `organic-math` | `organon-mind` | `organon-shell` |
-| `visible_tabs()` / `shows_tab()` / `default_tab()` — the `UiTab` set **and its order** | all 8, its own order | `Mind · Look · Motion · Environment · Settings` | `Look · Motion · Environment · Settings` (provisional — no Shell binary draws a tab bar yet) |
+| `product_name()` — `Plugin::NAME`, window title, editor heading | `Organon` | `Organon Mind` | `Organon Console` |
+| `ipc_namespace()` — the `$TMPDIR` filename prefix (§6) | `organic-math` | `organon-mind` | `organon-shell` ⚠️ |
+| `visible_tabs()` / `shows_tab()` / `default_tab()` — the `UiTab` set **and its order** | all 8, its own order | `Mind · Look · Motion · Environment · Settings` | `Look · Motion · Environment · Settings` (provisional — no Console binary draws a tab bar yet) |
+
+⚠️ **`Edition::Console`'s IPC namespace is deliberately still `organon-shell`.** It is a
+**wire identifier**, not a name: the `organon` CLI joins on that exact string to find a
+running console, and the workstation's launch shims set `ORGANON_IPC_NS=organon-shell`.
+The crate, the feature, the binary module and the `Edition` variant all renamed around it
+because nothing outside this repo reads *them*. `edition.rs` carries the argument and a
+test pins the string.
 
 Every one of those is a pure function of the `Edition` **value**, so every product's
 behaviour is unit-tested from a default (feature-off) build — the fork is verified
@@ -485,9 +492,11 @@ both binaries together. After any layout growth, **close and reopen the visual w
 
 ## 7. Parameters (`params.rs`)
 
-> ⚠️ **Eight enum params are SPLIT across two crates, and the split has a rule.**
-> `FuncName` (#626 T3); `GeneratorMode`, `BoidsForm`, `OscDivision` (organon#49 T1); and
-> `SurfaceMode`, `MaterialType`, `CamPath`, `Palette` (organon#49 T2) are declared
+> ⚠️ **Fourteen enum params are SPLIT across two crates, and the split has a rule.**
+> `FuncName` (#626 T3); `GeneratorMode`, `BoidsForm`, `OscDivision` (organon#49 T1);
+> `SurfaceMode`, `MaterialType`, `CamPath`, `Palette` (organon#49 T2); and `FdtdSource`,
+> `FieldVolSource`, `ColourMode`, `CalColourSource`, `FieldKind`, `FluxAxis`
+> (organon#49 T4a) are declared
 > **plain** in `organon-core::params` and mirrored in `params.rs` as `Host<Name>`, which
 > carries nih-plug's `#[derive(Enum)]`. The **orphan rule** makes this unavoidable rather
 > than merely preferable: `organic-math-native` cannot
@@ -513,10 +522,15 @@ both binaries together. After any layout growth, **close and reopen the visual w
 > automation lanes, so a reorder silently recalls the wrong generator rather than failing
 > loudly. Add a variant to **both**, at the tail.
 >
+> 📌 **After T4a, nothing `world.rs` names in `crate::params` requires nih-plug.** That
+> was the point of the third wave: `world.rs` pulled 26 references from `params.rs`, all
+> of them *value* types, and the six above were the ones not yet in core. The blocker to
+> moving `World` below the plugin crate is now the modules it imports, not the params.
+>
 > 📌 **`cli.rs` and `agent.rs` are nih-plug-free outside their test blocks, and a test
 > keeps them that way** (`cli_and_agent_are_free_of_nih_plug_outside_tests`). That is not
 > tidiness: both sit on `world.rs`'s dependency path — `world.rs` imports `agent`, and
-> `shell_main.rs` imports both — so they must travel to a lower crate when §19's Tier 4
+> `console_main.rs` imports both — so they must travel to a lower crate when §19's Tier 4
 > moves `World`. `cli.rs`'s test block is exempt on purpose; it walks the plugin's own
 > `Params` tree, which is host-side by nature, and test code does not travel.
 
@@ -1866,9 +1880,9 @@ guard fails the run outright rather than shipping the broken manifest.
 | `ipc.rs` | `Shared` Pod + mmap Writer/Reader + Feedback channel + mind-ring path + the **edition-namespaced** `$TMPDIR` path builders (`namespace`/`ns_file`, §4.1) |
 | `organon-core/src/edition.rs` | #483 Tier 1 — build-time product editions: `Edition` (`Full`/`Mind`) + `EDITION`, driving product name / IPC namespace / visible `UiTab`s. Pure + unit-tested for both editions from a default build (§4.1). **#626 T3: moved to `organon-core`**; re-exported as `crate::edition` |
 | `organon-core/src/tabs.rs` | #626 T3 — the editor's **tab taxonomy**: `UiTab` (the tab bar) + `EditorTab` (the 7-way preset partition). Lifted out of `preset.rs`, which keeps its nih-plug `ParamSetter` logic. Re-exported as `crate::preset::{UiTab, EditorTab}` (§19.0) |
-| `organon-core/src/kind.rs` | #48 T1 — the console's **kind** vocabulary: `Kind` (`scene`/`panel`), `KIND_WORDS`, and `resolve`, whose refusal carries the known list. Here because the two front-ends that had a copy each are in *different* crates (`cli.rs`, `organon-shell/conversation.rs`) and this is the only one both can see; a closed set of words needs no host, GPU or UI. ⚠️ No `Default` — the "a kindless `patch` line means `scene`" rule is that lane's and lives in `cli::PATCH_DEFAULT_KIND` |
+| `organon-core/src/kind.rs` | #48 T1 — the console's **kind** vocabulary: `Kind` (`scene`/`panel`), `KIND_WORDS`, and `resolve`, whose refusal carries the known list. Here because the two front-ends that had a copy each are in *different* crates (`cli.rs`, `organon-console/conversation.rs`) and this is the only one both can see; a closed set of words needs no host, GPU or UI. ⚠️ No `Default` — the "a kindless `patch` line means `scene`" rule is that lane's and lives in `cli::PATCH_DEFAULT_KIND` |
 | `organon-core/src/lib.rs` | #626 T3 — the core crate root. Its header records what may and may not enter core |
-| `organon-core/src/params.rs` | #626 T3 / organon#49 T1+T2 — the param types with **no host concern**: `ParamValues` (the algorithm's numeric block), the `IndexedEnum` trait (core's counterpart to nih-plug's `Enum`), and **eight** semantic enums — `FuncName`, `GeneratorMode`, `BoidsForm`, `OscDivision`, `SurfaceMode`, `MaterialType`, `CamPath`, `Palette`. Each is mirrored in `params.rs` by a `Host*` adapter carrying nih-plug's derive (the orphan rule; §7 owns the contract) and pinned to it by a `host_*_mirrors_core` test. Re-exported, so `crate::params::GeneratorMode` still resolves |
+| `organon-core/src/params.rs` | #626 T3 / organon#49 T1+T2+T4a — the param types with **no host concern**: `ParamValues` (the algorithm's numeric block), the `IndexedEnum` trait (core's counterpart to nih-plug's `Enum`), and **fourteen** semantic enums — `FuncName`, `GeneratorMode`, `BoidsForm`, `OscDivision`, `SurfaceMode`, `MaterialType`, `CamPath`, `Palette`, `FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`, `FieldKind`, `FluxAxis`. Each is mirrored in `params.rs` by a `Host*` adapter carrying nih-plug's derive (the orphan rule; §7 owns the contract) and pinned to it by a `host_*_mirrors_core` test. Re-exported, so `crate::params::GeneratorMode` still resolves |
 | `mind_ui.rs` | #483 Tier 1 — the shared Mind-UI chrome: edition-filtered tab bar, active-tab clamp, product heading (+ tests). Tier 2 factors the Mind card body in here |
 | `mind_main.rs` | #483 Tier 1 — the `organon-mind` standalone entry point (`required-features = ["mind-edition"]`) |
 | `mind_ring.rs` | #367 Tier 2 activation-ring mmap: `MindRing`/`MindFrame` + `MindRingWriter`/`MindRingReader` (separate channel from `Shared`; per-token model activations → node-glow). Carries the Phase-B three-way append (#507 trajectory+lens / #505 sparse experts / #409 SAE features), its **pinned-offset** test, and the `frame_bytes` layout guard (+ tests) |
@@ -1905,7 +1919,7 @@ guard fails the run outright rather than shipping the broken manifest.
 | `theme_config.rs` | #551 T1 the UI theme as **runtime state**: `ThemeConfig` (`Palette` + `Material` + `Depth`, all serde-defaulted), a process-global `ArcSwap` for wait-free per-widget reads, its own `ui_theme.json` store, and the `UI` panel that edits it live. **Not** nih-plug params — a Scene recall must never restyle the editor (+ tests) |
 | `theme.rs` | #542 T1 the house style: design tokens (the warm palette from `doc/organon_mind_visual_reference.md` §1), `install` (Inter type ramp — once per context — + the full `Visuals` pass), `card_frame`/`card_title`/`hairline`, and the pure `row_grid`/`combo_grid` control-row partition (+ tests). Everything that decides how the editor *looks* resolves here. #542 T2 added `theme::paint` (gradient meshes, baked grain/mottling tiles, bevels, ambient key — all `epaint`, no shader); #551 T1 turned its colour tokens into accessors over the live `theme_config`. **#593 T4 added `workspace_frame(scene_behind)`** — the one place that decides whether the editor's central region is an opaque faceplate (`None` → `CentralPanel::default()`, every host that owns all its own pixels) or a transparent one the 3-D world shows through (Mind's wgpu editor). Same geometry either way, asserted against egui's own `Frame::central_panel` |
 | `bin/visual.rs` | the visual **process**, ~625 lines after the #572 world hoist: it owns the **window and the swapchain** (`WindowSurface`) — create the window, pick its launch display (`launch_display`/`pick_launch_monitor`), build the wgpu device + surface, acquire→`render_into`→present each frame, apply the frame's `FrameRequests`, drive HDR format swaps + EDR, and run winit's event loop. `impl ApplicationHandler` sits on a `VisualApp { world }` wrapper because `World` is a library type (orphan rule). Keeps a load-bearing `use organic_math_native::math` so `render.rs`'s `crate::math::…` resolves in this host. `main` comes up **without activating** (`with_activate_ignoring_other_apps(false)`) so the host's floating plugin editor doesn't vanish, and therefore arms the #588 launch watchdog — see `launch_macos.rs` |
-| `world.rs` | #572 route C, the **world hoist** — the renderer *and everything that drives it* as a library module tree, so the editor can reach it (a binary's modules are unreachable from the library it depends on). **Stages 1–3 done:** `World` (was `bin/visual.rs`'s `App`) plus its `#[path]` tree — `axes`/`chamber`/`render`/`capture`/`overlay`/`hdr_macos`/`rt`/`metal_island`/`gpu_timer`/`recorder`/`snap`/`ui_layer`/`winit_platform`. It owns **no window, surface or swapchain** since stage 3 — the host hands in a `FrameTarget` and applies the returned `FrameRequests` — and since **#593 T3 it does not name `winit::window::Window` at all**: the frame states `ui_scale_factor` instead of lending a window, and the host builds the `UiLayer` it hands to `attach_gpu`. The seam is `EventResponse` + `attach_gpu`/`on_window_event`/`render_into`/`present`, forced by the orphan rule. **Gated on `any(mind-edition, shell-edition)`** (Shell #6 T1 widened it from `mind-edition` — Shell's embedded viewport is the third consumer), chosen by measurement: ungated it grows the plugin cdylib 12 749 728 → 13 250 704 bytes, gated it measures 12 749 528 (unchanged; re-measured byte-count-identical at the #6 T1 widening), and a shipping VST3 must not change for no user-visible reason — both features are off in the default build, so the gate still excludes it there. Compiled **twice** in a mind-edition build (library module + the binary's `#[path]`) so there is one source of truth; that is why `render.rs`/`rt.rs` spell their siblings `super::` — the one form resolving in both hosts, which keeps `render.rs` byte-identical rather than forked. **#593 T4** gated the `Mirror` block (`mirror`/`mirror_want`/`mirror_tick`, `pump_mirror`, `MIRROR_*`, `drop_mapped`) on `not(mind-edition)` — so the library's `World`, the one Mind's editor drives, has no mirror at all, and `bin/visual.rs`'s copy keeps it in the default build that produces the projector both products install |
+| `world.rs` | #572 route C, the **world hoist** — the renderer *and everything that drives it* as a library module tree, so the editor can reach it (a binary's modules are unreachable from the library it depends on). **Stages 1–3 done:** `World` (was `bin/visual.rs`'s `App`) plus its `#[path]` tree — `axes`/`chamber`/`render`/`capture`/`overlay`/`hdr_macos`/`rt`/`metal_island`/`gpu_timer`/`recorder`/`snap`/`ui_layer`/`winit_platform`. It owns **no window, surface or swapchain** since stage 3 — the host hands in a `FrameTarget` and applies the returned `FrameRequests` — and since **#593 T3 it does not name `winit::window::Window` at all**: the frame states `ui_scale_factor` instead of lending a window, and the host builds the `UiLayer` it hands to `attach_gpu`. The seam is `EventResponse` + `attach_gpu`/`on_window_event`/`render_into`/`present`, forced by the orphan rule. **Gated on `any(mind-edition, console-edition)`** (Console #6 T1 widened it from `mind-edition` — the Console's embedded viewport is the third consumer), chosen by measurement: ungated it grows the plugin cdylib 12 749 728 → 13 250 704 bytes, gated it measures 12 749 528 (unchanged; re-measured byte-count-identical at the #6 T1 widening), and a shipping VST3 must not change for no user-visible reason — both features are off in the default build, so the gate still excludes it there. Compiled **twice** in a mind-edition build (library module + the binary's `#[path]`) so there is one source of truth; that is why `render.rs`/`rt.rs` spell their siblings `super::` — the one form resolving in both hosts, which keeps `render.rs` byte-identical rather than forked. **#593 T4** gated the `Mirror` block (`mirror`/`mirror_want`/`mirror_tick`, `pump_mirror`, `MIRROR_*`, `drop_mapped`) on `not(mind-edition)` — so the library's `World`, the one Mind's editor drives, has no mirror at all, and `bin/visual.rs`'s copy keeps it in the default build that produces the projector both products install |
 | `render.rs` | `Renderer` + `RenderFrame`/`RenderPath` + passes |
 | `post.rs` | bloom + composite + SSAO/SSR |
 | `env.rs` | IBL split-sum precompute + skybox |

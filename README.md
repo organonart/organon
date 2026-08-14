@@ -11,9 +11,9 @@ Two instruments are built on its engine:
 | | What it is | |
 |---|---|---|
 | **Organon Mind** | A standalone instrument for **watching a language model think**. Load a `.gguf` and it draws the model's true wiring, read from the file, then lights it up while it runs. | [organonmind.org](https://organonmind.org) |
-| **Organon Shell** | An agent-operating workstation: a GPU-composited terminal for working with AI agents. | |
+| **Organon Console** | An agent-operating workstation: a GPU-composited terminal for working with AI agents. | |
 
-The direction is one-way: Mind and Shell are spin-outs of capabilities that live primarily
+The direction is one-way: Mind and the Console are spin-outs of capabilities that live primarily
 in Organon, drawing on its engine, algorithm, shaders and preset store.
 
 They are **editions, not forks**. The algorithm (`math.rs`), every shader, the IPC snapshot
@@ -24,7 +24,7 @@ the product name, the IPC namespace and the visible surface.
 cd native
 cargo build --release                                              # Organon
 cargo build --release --features mind-edition  --bin organon-mind  # Organon Mind
-cargo build --release --features shell-edition --bin organon-console # Organon Shell
+cargo build --release --features console-edition --bin organon-console # Organon Console
 ```
 
 ## Build
@@ -92,7 +92,7 @@ trampling each other. The CLI reads it too — export it in the same shell.
 
 ```bash
 cargo run --release --features mind-edition  --bin organon-mind    # load a .gguf
-cargo run --release --features shell-edition --bin organon-console # a terminal; --help works
+cargo run --release --features console-edition --bin organon-console # a terminal; --help works
 ```
 
 **As a plugin:** `./bundle.sh` writes `target/bundled/Organon.{vst3,clap}` with the visual
@@ -114,7 +114,7 @@ native/src              the plugin, the standalone, the visual, the `organon` CL
 native/organon-core     the host-free spine: math, IPC, params, GGUF, editions
 native/organon-render   the renderer — 36 surface modules, 50 shaders
 native/organon-mind     Organon Mind's own code
-native/organon-shell    Organon Shell's compositor and terminal
+native/organon-console    Organon Console's compositor and terminal
 ```
 
 That is the whole repository: Rust, and the documentation for it. No npm, no
@@ -132,7 +132,7 @@ explains why and how they attach.
 | [`doc/arch/render.md`](doc/arch/render.md) | The render pipeline in depth: passes, hardware RT, IBL, shaders. |
 | [`doc/arch/topology.md`](doc/arch/topology.md) | The crate graph, and what may depend on what. |
 | [`MIND_ARCHITECTURE.md`](MIND_ARCHITECTURE.md) | What exists **right now** in Organon Mind, plus its honesty ledger. |
-| [`SHELL_ARCHITECTURE.md`](SHELL_ARCHITECTURE.md) | The same, for Organon Shell. |
+| [`CONSOLE_ARCHITECTURE.md`](CONSOLE_ARCHITECTURE.md) | The same, for Organon Console. |
 | [`doc/research/`](doc/research/README.md) | **Deep research evals** — the same brief sent to several models, their reports kept as evidence, and the claims that survived checking against the tree. Read [`FINDINGS.md`](doc/research/FINDINGS.md), not the reports. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How changes get made here — start here before writing code. |
 | [`SECURITY.md`](SECURITY.md) | How to report privately, and what the real attack surface is. |
@@ -142,7 +142,7 @@ explains why and how they attach.
 
 Split, and the split is deliberate — see [`LICENSING.md`](LICENSING.md).
 
-- **The engine** (`organon-core`, `organon-render`, `organon-mind`, `organon-shell`, and the
+- **The engine** (`organon-core`, `organon-render`, `organon-mind`, `organon-console`, and the
   WASM/codegen/build tools): **MIT OR Apache-2.0**, your choice. This is the part worth
   reusing, and it is unencumbered.
 - **The root crate** — the plugin, standalone, visual and CLI: **GPL-3.0-or-later**, forced by

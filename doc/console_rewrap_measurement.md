@@ -8,7 +8,7 @@ measurement posture's tween needs, and nobody has taken it"* — and this is the
 options in §7 are laid out with their costs and none of them is chosen; that is James's call and
 it is downstream of these figures rather than contained in them.
 
-**The instrument is in the tree**, at `native/organon-shell/src/conversation_view/rewrap_bench.rs`,
+**The instrument is in the tree**, at `native/organon-console/src/conversation_view/rewrap_bench.rs`,
 so these numbers can be re-taken on another machine or after an egui bump rather than believed.
 Its module doc is the authority on method; §3 below is the summary.
 
@@ -32,8 +32,16 @@ Nothing culls. Every element in the transcript pays, on screen or not (§4).
 Two roadmaps change the transcript's available width, and both were scoped without knowing what
 that costs.
 
-1. **Posture's tween.** The `Form` animates a `gutter` token 0 → 90 pt. Available width moves on
+1. **Posture's tween.** The `Form` animates a `margin` token 0 → 90 pt. Available width moves on
    *every frame of the tween*, so the whole scrollback re-wraps on every frame, for the duration.
+   ⚠️ **The token was called `gutter` and applied on the left alone when this was measured; it
+   is now `margin` and is applied on both sides**, so the true travel between the two ends is
+   `2 × 90` rather than 90 and the tween has at most 181 distinct wrap widths rather than 91.
+   **Every figure below stands**, because the finding is per-*change*, not per-magnitude — a
+   width that moves by one point is as total a cache miss as one that moves by a hundred. What
+   doubles is the *length* of a one-point-per-frame triangle, not the cost of a frame in it.
+   `rewrap_bench`'s `SWEEP` const is deliberately still 90, so the numbers here can be re-taken
+   over the range they were taken over.
 2. **Pane splitting** (`console_view_paradigm.md` §2, issue #48 Tier 4). Same change of width,
    once rather than sixty times.
 
@@ -41,13 +49,13 @@ A third consumer was not in the brief and is **live today**: dragging the consol
 changes the pane's width every frame, through exactly the same path. Whatever the tween would
 cost, the console is already paying it during a resize drag — see §6.
 
-⚠️ **Correction to the brief that commissioned this.** It cites `SHELL_ARCHITECTURE.md` §1.6
-(posture) and `native/organon-shell/src/posture.rs`. **Neither exists on `main` at `d09e7c1`.**
-`SHELL_ARCHITECTURE.md` §1 ends at §1.5 (Preferences), and there is no posture module in the
+⚠️ **Correction to the brief that commissioned this.** It cites `CONSOLE_ARCHITECTURE.md` §1.6
+(posture) and `native/organon-console/src/posture.rs`. **Neither exists on `main` at `d09e7c1`.**
+`CONSOLE_ARCHITECTURE.md` §1 ends at §1.5 (Preferences), and there is no posture module in the
 crate — posture is designed (issue #38) and unbuilt. That does not weaken the question; it
 sharpens who this is for. The number arrives **before** the code it constrains, which is the
 order this repo prefers and the reverse of how the portal's "immersive is nearly free" claim
-went. The `SHELL_ARCHITECTURE.md` pointer this document is referenced from therefore sits in §2
+went. The `CONSOLE_ARCHITECTURE.md` pointer this document is referenced from therefore sits in §2
 ("Seams the next tiers consume"), where unbuilt work lives, and **not** in §1, which is
 "what exists right now".
 
@@ -73,7 +81,7 @@ Three consequences, in the order they matter:
   together.
 - **A sub-point wobble is free.** The rounding at `:879` exists precisely to stop egui's own
   layout feedback loop from thrashing the cache, and it means a tween finer than one point per
-  frame costs nothing extra. It also means a 0 → 90 pt gutter has **at most 91 distinct wrap
+  frame costs nothing extra. It also means a 0 → 90 pt inset has **at most 91 distinct wrap
   widths**, which is what makes §7's quantisation option available at all.
 - **The cache cannot remember the width it came from.** `flush_cache` retains an entry only if
   `last_used == current_generation`, so a tween's return leg misses exactly as hard as its
@@ -109,7 +117,7 @@ samples, and the reported min/max show the tail.
 | Condition | What the width does |
 |---|---|
 | **steady** | constant at 1100 pt — every galley was in the cache from the frame before |
-| **animating** | one point of gutter per frame, triangle 0 → 90 → 0, forever |
+| **animating** | one point of inset per frame, triangle 0 → 90 → 0, forever |
 | **one step** | steady, then a single 90 pt change, then steady at the new width |
 
 **Passes are counted, not assumed.** `egui::Context::run` re-runs the whole ui when something
@@ -128,13 +136,13 @@ rather than layout. A test asserts the prose is all distinct.
 
 ```bash
 cd native
-cargo test --release -p organon-shell --lib -- --ignored --nocapture rewrap
+cargo test --release -p organon-console --lib -- --ignored --nocapture rewrap
 ```
 
 ⚠️ **`--release` is load-bearing.** The workspace sets `[profile.dev] opt-level = 1`, which the
 test profile inherits, and it reports figures about 25 % high (§5.3). The console ships release.
 
-The default suite is unaffected: `cargo test -p organon-shell --lib` is **503 passed, 1 ignored**
+The default suite is unaffected: `cargo test -p organon-console --lib` is **503 passed, 1 ignored**
 in 0.17 s, the ignored one being this benchmark.
 
 ---
@@ -289,7 +297,7 @@ Two live consequences, neither hypothetical:
 Stated with prices, **not ranked, and not chosen.** The 60 fps budget is 16.7 ms for
 *everything*, so read "fits" as "fits with nothing else in the frame".
 
-### A — Tween the gutter as designed, one point per frame
+### A — Tween the margin as designed, one point per frame
 
 **Cost:** the animating column, on every frame of the tween.
 
@@ -306,13 +314,13 @@ smooth for ten cards, janky after an hour of work, and it degrades gradually so 
 
 ### B — Animate the chrome only; hold the wrap width fixed
 
-**Cost:** the steady column throughout — **zero re-wrap.** The gutter appears by moving or
+**Cost:** the steady column throughout — **zero re-wrap.** The margin appears by moving or
 painting chrome beside a transcript whose column never changes.
 
 **What it costs elsewhere:** the transcript must be laid out at a width that is not its
 container's, i.e. an explicit width threaded through `scrollback` instead of `ui.available_width()`.
 There are **10 sites** in `conversation_view.rs` reading `available_width`, though not all are in
-the scrollback path. And the text does not reflow into the space the gutter opened, ever or until
+the scrollback path. And the text does not reflow into the space the margin opened, ever or until
 the tween ends — which may be the correct *look* (a page whose margin changes without its
 measure changing is how print behaves) or may be exactly the thing posture is for. That is a
 design question this number cannot answer.
@@ -333,9 +341,9 @@ pane on a 10 000-element transcript is a 340 ms freeze on this machine, and this
 
 ### D — Quantise the tween
 
-Follows from the rounding at `fonts.rs:879`: a gutter that only ever takes N distinct integer
+Follows from the rounding at `fonts.rs:879`: a margin that only ever takes N distinct integer
 values is N option-C events, with the steady figure on every frame between them. A six-step
-gutter across a fifteen-frame tween, at 400 elements:
+margin across a fifteen-frame tween, at 400 elements:
 
 - continuous: 15 × 9.100 = **136.5 ms** total, worst frame **9.1 ms**
 - six steps: 6 × 7.599 + 9 × 1.180 = **56.2 ms** total, worst frame **7.6 ms**
@@ -375,7 +383,7 @@ about the figures that *are* here.
   move it.
 - **A captured long transcript.** The corpus's *shapes* are the real ones (`Transcript::apply`,
   the real bodies, the real card) but the *words* are written here. The captured fixtures in
-  `native/organon-shell/fixtures/` are 11–77 lines; a four-hundred-element session has never
+  `native/organon-console/fixtures/` are 11–77 lines; a four-hundred-element session has never
   been captured on this machine.
 - **Three element kinds.** No approval card, no artifact panel, no rendered surface is in the
   corpus — `scrollback` draws those from pane state and the harness builds a pane with both side

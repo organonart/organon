@@ -18,7 +18,7 @@
 
 # Per-product front-of-house.
 /native/organon-mind/       @james-andrew-walsh
-/native/organon-shell/      @james-andrew-walsh
+/native/organon-console/      @james-andrew-walsh
 
 # 🔒 Plugin identity and the parameter chain. `lib.rs` carries the VST3 class ID and the
 # CLAP ID; changing either orphans the plugin in every saved DAW session.

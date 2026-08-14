@@ -43,7 +43,7 @@ Then, three forward questions:
 Inside the repository. `ARCHITECTURE.md` is the entry point and is large — read its file
 map and its extension-point sections rather than the whole thing, then go to the code.
 `doc/arch/topology.md` owns the crate graph, `doc/arch/render.md` the render pipeline,
-`MIND_ARCHITECTURE.md` and `SHELL_ARCHITECTURE.md` their products' living state.
+`MIND_ARCHITECTURE.md` and `CONSOLE_ARCHITECTURE.md` their products' living state.
 
 `native/tools/crate-churn.py` measures how often a commit crosses crate boundaries and
 exists precisely to settle one of these arguments with a number rather than an opinion.
