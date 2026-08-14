@@ -11,6 +11,63 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### An `Edit` card stops re-deriving its diff sixty times a second
+
+`tool_card` called `edit_diff` from inside its own body, so **every frame, for every `Edit`
+card in the transcript**, `serde_json::from_str` walked the whole arguments blob and
+`text_diff::line_diff` re-ran the alignment — and threw both away. The scrollback is not
+virtualised, so a card two thousand lines off screen paid in full.
+
+Found while taking the re-wrap measurement, which named it and deliberately excluded it (its
+corpus is `Read` cards). So the first job was to measure it, and the result decided the shape
+of the fix rather than the other way round.
+
+Measured two ways that share no code — `edit_diff` called directly with no egui, and whole
+frames of the real `scrollback` differenced against the same corpus with the cache cleared
+each frame. They land within a few percent on all five shapes:
+
+| one `Edit` card | per call | 400 cards, per frame |
+|---|---:|---:|
+| an ordinary one-line edit | 1.5 µs | 0.12 ms — below the noise |
+| a function-sized hunk | 5.6 µs | 0.52 ms |
+| the largest `MAX_CELLS` allows | 43.9 µs | 3.9 ms |
+| a 400-line common prefix | 78.2 µs | 6.2 ms |
+| *a stated one large edit in ten* | — | **2.4 ms**, 15 % of a 60 Hz budget |
+
+🚨 **The common case was never the problem, and that is the finding.** On ordinary edits the
+honest answer would have been to leave it alone. The tail is what justified a field: a session
+of large edits cost **61 ms per frame — 16 fps sitting still**, and afterwards the mixed
+corpus is indistinguishable from a `Read`-only control.
+
+`ConversationPane::diffs` now holds the result, in the idiom the pane already had for
+`artifacts`: computed in `scrollback`'s walk, read by `tool_card` (which takes the diff rather
+than deriving it), pruned against the transcript beside the artifacts `retain`. `Body::Tool`
+moved out of `draw_element` into `scrollback`'s match for the reason `Body::Artifact` was
+already there. `edit_diff` itself is unchanged and still uncached — the cache is at the call
+site so the pure function stays pure, and a test fails if anyone memoises it as well.
+
+🚨 **Invalidation is by eviction on `Change::Updated`, because `Arguments::complete` is not a
+promise of immutability.** A second `ToolCall` for an id that is not yet *resolved* replaces
+the arguments text wholesale, so a cache keyed on "complete" would have shown the first
+arguments' diff forever under a card displaying the second arguments' path. A fingerprint
+cheap enough to take every frame can collide; hashing 58 KB per card per frame costs a large
+fraction of a 78 µs saving. The fold already names the element it changed.
+
+⚠️ **One measurement gap is now recorded rather than closed**, in `text_diff`'s own doc and in
+§4 of the finding: `MAX_CELLS` is checked *after* the common prefix is trimmed, so a 400-line
+prefix costs zero cells, passes the budget meant to stop large inputs, and then allocates an
+owned `String` per prefix line before `elide` discards them. It is the most expensive shape
+measured and the one that draws the fewest rows. The cache makes it happen once per card
+instead of once per frame; it does not make it cheap.
+
+Also corrected in place: `text_diff`'s module doc and `SHELL_ARCHITECTURE.md` both asserted
+the alignment "is recomputed every frame" and offered that as what `MAX_CELLS` was sized
+against. Both are now false and both are rewritten — the claim was defensible about one card
+and never survived being multiplied by a session.
+
+The instrument stays in the tree (`conversation_view/edit_diff_bench.rs`), including a
+`Cache::Off` mode that reproduces the old code exactly, so the before-and-after can be
+re-taken rather than believed. Full write-up: `doc/console_edit_diff_cost.md`.
 ### `cli.rs` and `agent.rs` stop needing a plugin host
 
 organon#49 Tier 2. Both files reached `nih_plug::prelude::Enum` to do three things: list

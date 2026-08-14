@@ -189,7 +189,20 @@ fn closing_text(turn: usize) -> String {
 /// [`scrollback`] does not read for a Human/Assistant/Tool/RunEnd body: no artifact and no
 /// approval is in the corpus, so the two side maps stay empty and the two bodies drawn from
 /// pane state are never reached.
-fn bench_pane(transcript: Transcript) -> ConversationPane {
+///
+/// 🚨 **`pub(super)`, and it is the one piece of bench scaffolding that is genuinely shared
+/// rather than merely similar.** [`super::edit_diff_bench`] and [`super::tests`]'s diff-cache
+/// contracts both build their panes here. That is deliberate: this function enumerates
+/// **every field of [`ConversationPane`]**, so it stops compiling the day the struct gains
+/// one — which is exactly what happened when `diffs` landed. A second copy would have to be
+/// found and fixed separately every time, and the failure of *not* fixing it is a bench
+/// measuring a pane that is not the pane.
+///
+/// ⚠️ The two `frame` drivers are deliberately **not** shared. They vary different things —
+/// this module's takes a width and imposes a gutter, `edit_diff_bench`'s takes a
+/// `Cache` and imposes nothing — and folding them would give each measurement a parameter
+/// it does not use and must remember to hold still.
+pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
     let (_gate, inbox) = approval_channel();
     ConversationPane {
         session: None,
@@ -202,6 +215,7 @@ fn bench_pane(transcript: Transcript) -> ConversationPane {
         want_focus: false,
         composer_height: 0.0,
         artifacts: HashMap::new(),
+        diffs: HashMap::new(),
         buttons: Vec::new(),
         sliders: Vec::new(),
         approvals: None,
