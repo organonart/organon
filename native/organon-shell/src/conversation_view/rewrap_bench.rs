@@ -58,6 +58,7 @@ use crate::approval::{approval_channel, DecisionMemory};
 use crate::conversation::{
     AgentEvent, MessageId, ResultDetail, RunOutcome, ToolId, Transcript,
 };
+use crate::posture::Form;
 use crate::theme::Theme;
 use std::collections::{HashMap, VecDeque};
 
@@ -242,7 +243,12 @@ fn frame(
             let size = egui::vec2(width, ui.available_height());
             ui.allocate_ui(size, |ui| {
                 ui.set_width(width);
-                let _ = scrollback(ui, pane, images, theme);
+                // 🚨 **The TERMINAL form, and it must be.** This harness imposes the gutter
+                // itself, by narrowing the column above — so a desktop `Form` would apply it a
+                // second time through `gutter_margin` and every measurement would be taken at a
+                // width neither the caller nor the table names. Posture is not what this bench
+                // varies; width is.
+                let _ = scrollback(ui, pane, images, theme, &Form::TERMINAL);
             });
         });
     });
