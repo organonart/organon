@@ -66,7 +66,7 @@ use std::collections::BTreeMap;
 use egui::ecolor::Hsva;
 use egui::Color32;
 
-use crate::theme::Theme;
+use crate::theme::{Theme, ANSI16_NAMES};
 
 /// The words `/theme` accepts that are **not** palette names — they open this editor instead.
 ///
@@ -309,8 +309,17 @@ impl ThemeEditor {
     /// is the point of holding it: dragging hue across a fully-desaturated colour changes no
     /// byte at all, and an editor that only recorded byte changes would snap the hue back to
     /// where it started on the next frame. `false` for a name no field answers to.
+    /// ⚠️ The name is interned to `'static` against [`Theme::SCALAR_FIELDS`] and
+    /// [`ANSI16_NAMES`] — the two `&'static` tables — rather than by building a palette and
+    /// asking it for its fields. Both answer the same question, and this one runs on **every
+    /// frame of a live drag**: the palette version allocated a fresh `Theme` and a 68-entry
+    /// `Vec` per tick to learn a fact that is a compile-time constant.
     pub fn set_hsva(&mut self, field: &str, hsva: Hsva) -> bool {
-        let Some(name) = Theme::organon().fields().into_iter().map(|(n, _)| n).find(|n| *n == field)
+        let Some(name) = Theme::SCALAR_FIELDS
+            .iter()
+            .chain(ANSI16_NAMES.iter())
+            .find(|n| **n == field)
+            .copied()
         else {
             return false;
         };

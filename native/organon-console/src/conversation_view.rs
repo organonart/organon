@@ -1354,11 +1354,15 @@ impl ConversationPane {
     /// tests need it. It is not dead code pretending to be a feature — nothing claims the
     /// command exists.
     ///
-    /// The name is asked of [`Theme`] rather than handed in, because this crate is given the
-    /// palette's *values* and not its label — and filing an override under the wrong name is
-    /// the one mistake that would apply a light-theme correction to a dark palette. An
-    /// unrecognised palette (one carrying overrides already, so not equal to any compiled one)
-    /// falls back to the stored name, which is what `console_main` passes down.
+    /// 🚨 **`name` is handed in and cannot be recovered here, which is exactly why it is a
+    /// parameter.** This crate is given the palette's *values* and not its label, and the
+    /// obvious recovery — match the `Theme` against the four compiled ones — is wrong precisely
+    /// in the case that matters: a palette carrying stored overrides equals none of them, so a
+    /// tuned `light` would fail to identify as `light` and its next save would be filed
+    /// somewhere else or nowhere. So the label travels down from `console_main`, which is the
+    /// only place that knows it (`Console::theme_name`, set by `theme::select`), through
+    /// [`draw`]'s `theme_name`. The invariant "an override is filed under the palette it was
+    /// tuned against" is maintained by that thread being correct, and by nothing cleverer.
     fn open_theme_editor(&mut self, theme: &Theme, name: &str, focus: Option<&str>) {
         self.theme_edit = Some(ThemeEditor::open(theme, name, focus));
     }
