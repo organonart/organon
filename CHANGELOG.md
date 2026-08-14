@@ -11,6 +11,45 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### `build (console-edition)` is green again — two guards the six-branch land left broken
+
+`main` shipped red. [#68](https://github.com/organonart/organon/pull/68) was merged with
+`build (console-edition)` failing, and every branch cut afterwards inherited a red leg it
+had not caused — which is the expensive part, because a check that is red for someone
+else's reason stops being read at all.
+
+**Two failures, both in `console_main.rs`, neither of them a code defect:**
+
+🚨 **The rename inverted a regression guard and made it unsatisfiable.** Console #3's
+blanket `s/Organon Shell/Organon Console/` rewrote the one string whose *job* was to be
+the **previous** name, so `the_console_does_not_introduce_itself_as_the_shell` came to
+assert that `help_text()` both starts with `PRODUCT_NAME` and does not contain it — and
+`PRODUCT_NAME` is exactly `"Organon Console"`. The two cannot hold at once. Confirmed
+against the pre-rename commit (`567b306`), where the forbidden string reads
+`"Organon Shell"`; restored. ⚠️ **A rename must not touch a string that exists to be the
+old name** — those are precisely the references that were still true, and this is the
+same class as a blanket `s/organon-one/workshop-machines/` corrupting the host that was
+never renamed.
+
+The same replace falsified `PRODUCT_NAME`'s own doc, which still claimed the constant is
+"deliberately *not* `EDITION.product_name()`, which still answers …" — the two now return
+**the same string**, so the tension that justified the constant is gone. Rewritten to say
+so, and to record that collapsing it into `EDITION.product_name()` is now a live option
+for issue #3 rather than the forced seam the comment described.
+
+**Two new verbs arrived without closing the test that demands they be closed.**
+`console.theme` and `console.posture` were added to `console_specs()` while
+`a_capability_call_becomes_the_sidecar_line_the_cli_would_have_written` kept a
+verb→arguments match ending in `other => panic!("this test has no arguments for a new
+verb")`. Both now join `CMD_BACKGROUND | CMD_RIG`, whose shape they share exactly (one
+required `CMD_ARG` that is a `Choice`).
+
+📌 **The panic reports only the FIRST missing verb**, because the loop panics rather than
+collecting — so CI named `console.theme` and said nothing whatever about
+`console.posture` until that one was fixed. Anyone acting on this check has to re-run
+until it is silent instead of trusting the single name it offered; the test now says so
+where the arm is.
+
 ### The last six params between `world.rs` and the plugin crate
 
 organon#49 Tier 4a. `FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`,

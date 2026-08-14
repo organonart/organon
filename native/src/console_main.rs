@@ -126,17 +126,24 @@ enum BackdropSource {
 const BACKDROP_SUBSTRATE: &str = "substrate";
 
 /// **How this binary introduces itself**: the window title, the `--help` header, `--version`,
-/// and the startup banner. Deliberately *not* `EDITION.product_name()`, which still answers
-/// "Organon Console".
+/// and the startup banner.
 ///
 /// The artifact is `organon-console` and the public name is **Organon Console**, so a console
-/// whose title bar and `--help` said "Organon Console" would introduce itself as a product that
-/// is not what you launched. Everything the rename does *not* touch is what something else
-/// reads: `EDITION` is `organon-core`'s shared spine (the compositor lib's heading and the
-/// edition tests quote it too), the crate is `organon-console`, the feature is `console-edition`,
-/// the variables below are a shipped flag surface, and `organon-shell` is a *wire* identifier
-/// — the IPC namespace the `organon` CLI joins on. Issue #3 owns collapsing the two names;
-/// this constant is the honest seam until then, not a half-done rename.
+/// whose title bar and `--help` said "Organon Shell" would introduce itself as a product that
+/// is not what you launched. [`the_console_does_not_introduce_itself_as_the_shell`] is the
+/// guard.
+///
+/// 📌 **This constant now AGREES with `EDITION.product_name()`, which also answers "Organon
+/// Console".** It was written when the two differed and the difference was the point ("
+/// deliberately *not* `EDITION.product_name()`"); the Console #3 rename removed that
+/// tension, so the note claiming they disagree was left describing a state that no longer
+/// exists. Collapsing this into `EDITION.product_name()` is now a real option and belongs
+/// to issue #3 along with the rest of the name question — but it is a live choice, not the
+/// forced seam this comment used to describe.
+///
+/// What the rename deliberately did **not** touch is whatever something *else* reads: the
+/// variables below are a shipped flag surface, and `organon-shell` is a **wire** identifier
+/// — the IPC namespace the `organon` CLI joins on.
 const PRODUCT_NAME: &str = "Organon Console";
 
 /// What a user types. Kept beside [`PRODUCT_NAME`] because `--help`'s usage line is the one
@@ -3943,11 +3950,18 @@ mod cli_tests {
     }
 
     /// **The binary introduces itself as what you launched.** `--help`'s header and usage line
-    /// are the console's front door, and they are the one place the rename is *visible*: the
-    /// artifact is `organon-console`, so a header reading "Organon Console" would name a product
-    /// that is not what ran. This is a real regression risk rather than a hypothetical —
-    /// [`PRODUCT_NAME`] deliberately shadows `EDITION.product_name()`, which still answers
-    /// "Organon Console" and will keep tempting a future tidy-up back onto it.
+    /// are the console's front door: the artifact is `organon-console`, so a header reading
+    /// "Organon Shell" would name a product that is not what ran. The forbidden string is the
+    /// **old** name — that is the whole point of a regression guard, and the test's own name
+    /// says so.
+    ///
+    /// 🚨 **This assertion was inverted by the Console #3 rename and made the test
+    /// impossible.** A blanket `s/Organon Shell/Organon Console/` rewrote the forbidden
+    /// string, leaving the test asserting that `help_text()` both starts with
+    /// [`PRODUCT_NAME`] *and* does not contain it — the two cannot hold at once, and
+    /// `build (console-edition)` went red on `main` and stayed there. A rename must not
+    /// touch a string whose job is to be the *previous* name; those are exactly the
+    /// references that were still true.
     ///
     /// ⚠️ The **variable names** below are the opposite case: `ORGANON_SHELL_*` is a shipped
     /// flag surface and stays. Presentation renames, identifiers do not — that split is the
@@ -3960,7 +3974,7 @@ mod cli_tests {
             h.contains(&format!("Usage: {INVOCATION_NAME}")),
             "usage line names the wrong command"
         );
-        assert!(!h.contains("Organon Console"), "the console must not present as Organon Console");
+        assert!(!h.contains("Organon Shell"), "the console must not present as Organon Shell");
         assert!(!h.contains("organon-shell "), "the usage line still names the old binary");
         // …and the environment variables are untouched by all of the above.
         assert!(h.contains("ORGANON_SHELL_BACKDROP"), "the flag surface is NOT renamed");
@@ -4346,7 +4360,18 @@ mod cli_tests {
         // write something the console silently skips.
         for spec in console_specs() {
             let args = match spec.name.as_str() {
-                CMD_BACKGROUND | CMD_RIG => json!({ CMD_ARG: match spec.args[0].kind {
+                // `console.theme` and `console.posture` joined this arm rather than getting
+                // one each: all four specs are the same shape — a single required `CMD_ARG`
+                // that is a `Choice` (over `Theme::NAMES` and `POSTURE_WORDS` respectively).
+                //
+                // 🚨 Both arrived in the six-branch land (#68) *without* this arm, and the
+                // `other =>` panic below is what caught them — the check working exactly as
+                // designed. ⚠️ It reports only the FIRST verb it meets, because the loop
+                // panics rather than collecting: CI named `console.theme` and went quiet
+                // about `console.posture` until that one was fixed. If you add a verb, add
+                // it here in the same change; if you are fixing a report from this panic,
+                // re-run until it is silent rather than trusting the one name it gave you.
+                CMD_BACKGROUND | CMD_RIG | CMD_THEME | CMD_POSTURE => json!({ CMD_ARG: match spec.args[0].kind {
                     ArgKind::Choice(ref v) => v[0].clone(),
                     _ => panic!("{}: expected a Choice", spec.name),
                 } }),
