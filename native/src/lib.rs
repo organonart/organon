@@ -75,7 +75,31 @@ pub use organon_scene::{
 /// has to answer them rather than widen the crate to swallow them.
 ///
 /// **Named, never glob**, for the reason core's re-export gives above.
-pub use organon_world::{audio_ring, egui_platform, frame_ring, scene_input};
+pub use organon_world::{audio_ring, egui_platform, scene_input};
+
+/// #554 Tier 1 — the **frame mirror**: the visual's rendered frames carried to the editor
+/// over their own mmap, so the editor can draw a live viewport inside its own window.
+/// Separate from `Shared` (high-rate payload); see the module docs for why the boundary is
+/// CPU memory rather than a shared GPU texture.
+///
+/// **#593 Tier 4 gated it out of Organon Mind, and gating is all it did.** The mirror is full
+/// Organon's *only* viewport path — inside Ableton the editor does not own its window and a GPU
+/// device must not enter the host's process — so deleting it, which #593's original text asked
+/// for, would delete the shipping plugin's viewport. In Mind the wgpu editor renders the world
+/// into the editor's own surface instead, and this whole subsystem has nothing left to do; the
+/// mind-edition build **not compiling** if anything on that path still names it is the tier's
+/// completion test. `MIND_ARCHITECTURE.md` §2.5 carries the per-item verdict.
+///
+/// ⚠️ **The gate is on the RE-EXPORT, and it has to be** (organon#49 T4b). `frame_ring`
+/// moved to `organon-world`, and a name inside a braced `pub use` list cannot be
+/// cfg'd — so it gets its own statement. Dropping the gate would silently hand Mind back
+/// a subsystem #593 T4 removed from it, and #593's completion test is precisely that a
+/// mind-edition build fails to compile if anything on that path still *names* it. That
+/// property is preserved: `crate::frame_ring` does not resolve under `mind-edition`.
+/// (`organon-world` still compiles the module itself either way — it is mmap plumbing
+/// with no side effects — but nothing on Mind's path can name it.)
+#[cfg(not(feature = "mind-edition"))]
+pub use organon_world::frame_ring;
 /// #593 Tier 3 — **the baseview arm** of the `EguiPlatform` seam, the counterpart to
 /// `winit_platform.rs`.
 ///
@@ -110,19 +134,6 @@ pub mod baseview_input;
 /// module docs for what only the Mac can settle.
 #[cfg(feature = "mind-edition")]
 pub mod wgpu_editor;
-/// #554 Tier 1 — the **frame mirror**: the visual's rendered frames carried to the editor
-/// over their own mmap, so the editor can draw a live viewport inside its own window.
-/// Separate from `Shared` (high-rate payload); see the module docs for why the boundary is
-/// CPU memory rather than a shared GPU texture.
-///
-/// **#593 Tier 4 gated it out of Organon Mind, and gating is all it did.** The mirror is full
-/// Organon's *only* viewport path — inside Ableton the editor does not own its window and a GPU
-/// device must not enter the host's process — so deleting it, which #593's original text asked
-/// for, would delete the shipping plugin's viewport. In Mind the wgpu editor renders the world
-/// into the editor's own surface instead, and this whole subsystem has nothing left to do; the
-/// mind-edition build **not compiling** if anything on that path still names it is the tier's
-/// completion test. `MIND_ARCHITECTURE.md` §2.5 carries the per-item verdict.
-#[cfg(not(feature = "mind-edition"))]
 mod keymap;
 pub mod material_graph;
 
