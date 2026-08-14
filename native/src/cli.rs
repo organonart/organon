@@ -275,6 +275,33 @@ pub enum ConsoleOp {
     Background(String),
     /// The substrate's lighting rig.
     Rig(String),
+    /// The **palette the console paints with** — one of `organon_shell::theme::Theme::NAMES`.
+    ///
+    /// 📌 **Live, and that is the whole reason it is a verb on this lane rather than only a
+    /// preference.** Four palettes compared by relaunching four times is not a comparison:
+    /// the thing being judged is a wash of colour across a window full of real text, and the
+    /// judgement is made by looking back and forth. A relaunch destroys the "back".
+    ///
+    /// The payload is unvalidated here for [`ConsoleOp::Background`]'s reason — a palette
+    /// *name* is only meaningful to the console's own table, and this crate has no business
+    /// holding a second copy of it. `bin/ctl.rs` restricts it at the clap boundary from
+    /// `Theme::NAMES` itself, and the console refuses an unknown name again on arrival.
+    Theme(String),
+    /// **How the console holds itself** — `terminal`, `desktop`, or a bare `0`–`1` scalar on
+    /// the axis between them (`organon_shell::posture::Posture`).
+    ///
+    /// ⚠️ **This SNAPS, and the snap is deliberate rather than a stage on the way to a
+    /// tween.** The posture axis exists so a later tier *can* animate it, but a layout change
+    /// costs one frame to re-wrap (~7.6 ms at 400 transcript elements —
+    /// `doc/console_rewrap_measurement.md`), and a single such frame is not something a person
+    /// perceives as a jump. What they would perceive is a half-second of text re-flowing under
+    /// their eyes, which is the tween's problem to earn, not this verb's to approximate.
+    ///
+    /// A `String` rather than a parsed scalar because the value space is a word **or** a
+    /// number, and `Posture::resolve` — which owns both spellings and the refusal that names
+    /// them — lives in the console's crate. Parsing here would put half of that knowledge on
+    /// the wire side of the lane.
+    Posture(String),
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -516,6 +543,8 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
     match op {
         ConsoleOp::Background(name) => format!("background {name}"),
         ConsoleOp::Rig(name) => format!("rig {name}"),
+        ConsoleOp::Theme(name) => format!("theme {name}"),
+        ConsoleOp::Posture(word) => format!("posture {word}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
@@ -537,11 +566,18 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
     match it.next()? {
         "background" => Some(ConsoleOp::Background(it.next()?.to_string())),
         "rig" => Some(ConsoleOp::Rig(it.next()?.to_string())),
+        // Unvalidated for the same reason the two above are: a palette name resolves against
+        // `Theme::NAMES` and a posture word against `Posture::resolve`, both of which live in
+        // the console's own crate. Refusing here would need a second copy of each table, and
+        // this lane's whole forward-compatibility story is that a name this build cannot use
+        // is the *console's* to refuse out loud, not the wire's to drop in silence.
+        "theme" => Some(ConsoleOp::Theme(it.next()?.to_string())),
+        "posture" => Some(ConsoleOp::Posture(it.next()?.to_string())),
         // A row count that does not parse — or does not fit — is a malformed line, and a
-        // malformed line is skipped exactly like an unknown verb. The two `Background`/`Rig`
-        // arms take their payload unvalidated because a *name* is only meaningful to the
-        // console's own tables; a count is meaningful right here, and `u16` is the type the
-        // whole lane carries.
+        // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/
+        // `Theme`/`Posture` arms take their payload unvalidated because a *name* is only
+        // meaningful to the console's own tables; a count is meaningful right here, and `u16`
+        // is the type the whole lane carries.
         "block" => it.next()?.parse::<u16>().ok().map(ConsoleOp::Block),
         // Two counts, both required: a claim with a missing half is malformed, not a claim
         // with a default. Defaulting `up` would silently anchor the rectangle at the cursor —
@@ -1721,6 +1757,18 @@ mod tests {
             ConsoleOp::Background("substrate".into()),
             ConsoleOp::Rig("studio".into()),
             ConsoleOp::Rig("daylight".into()),
+            // #38: the console's own dressing rather than the substrate's. Every palette
+            // rides the round trip for `Patch`'s reason — a name that survived one direction
+            // only would be a verb that reports `queued` and repaints nothing.
+            ConsoleOp::Theme("organon".into()),
+            ConsoleOp::Theme("light".into()),
+            ConsoleOp::Theme("dark".into()),
+            ConsoleOp::Theme("chocolate".into()),
+            ConsoleOp::Posture("terminal".into()),
+            ConsoleOp::Posture("desktop".into()),
+            // The scalar spelling, which is the one that could have been lost: it is the
+            // only payload on this lane that is a number carried as a word.
+            ConsoleOp::Posture("0.5".into()),
             // Tier 5: the payload is a count, not a name — the first op on this lane whose
             // argument is not a word.
             ConsoleOp::Block(1),
@@ -1754,6 +1802,11 @@ mod tests {
             "background slate"
         );
         assert_eq!(console_op_to_line(&ConsoleOp::Rig("studio".into())), "rig studio");
+        assert_eq!(console_op_to_line(&ConsoleOp::Theme("light".into())), "theme light");
+        assert_eq!(
+            console_op_to_line(&ConsoleOp::Posture("desktop".into())),
+            "posture desktop"
+        );
         assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
         assert_eq!(
             console_op_to_line(&ConsoleOp::Patch { up: 12, rows: 12, kind: Kind::Panel }),
@@ -1811,6 +1864,22 @@ mod tests {
         // A known verb with no argument is malformed, not a different command.
         assert_eq!(parse_console_op("background"), None);
         assert_eq!(parse_console_op("rig"), None);
+        assert_eq!(parse_console_op("theme"), None);
+        assert_eq!(parse_console_op("posture"), None);
+        // ⚠️ An unknown palette or posture is NOT skipped here, and that is the one place
+        // this lane deliberately parses something it cannot use. `theme phosphor` is a
+        // well-formed line naming a palette this build has no way to paint, and the console
+        // is the only end that can say so — dropping it at the wire would make a typo
+        // indistinguishable from a console that was not running.
+        assert_eq!(
+            parse_console_op("theme phosphor"),
+            Some(ConsoleOp::Theme("phosphor".into())),
+            "the console refuses this out loud; the wire must not swallow it"
+        );
+        assert_eq!(
+            parse_console_op("posture sideways"),
+            Some(ConsoleOp::Posture("sideways".into()))
+        );
         // `CliOp`'s vocabulary is a DIFFERENT lane's — a `cli.txt` line landing here (a
         // mis-wired drain) must be skipped rather than half-understood.
         assert_eq!(parse_console_op("set metallic 0.9"), None);

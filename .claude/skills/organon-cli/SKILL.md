@@ -78,6 +78,8 @@ world in front of it:
 ```
 organon console background <name>    # the surface behind the glyphs
 organon console rig <name>           # how that surface is lit
+organon console theme <name>         # every colour the console paints — live, and remembered
+organon console posture <word>       # how it holds itself: terminal-tight or desktop-open
 organon console block <rows>         # reserve blank rows in the transcript
 organon console patch --up N --rows M --kind <kind>   # claim a gap you already printed
 organon console portal <state>       # float a live window onto the world over the transcript
@@ -90,6 +92,19 @@ ask is about *what Organon is rendering*. It only means anything while an Organo
 Console is running, and it changes nothing a `snap` would show. `--help` lists the
 accepted names and the row bound — ask it rather than guessing, exactly as with
 parameters.
+
+`theme` and `posture` are the two that change **the console itself** rather than the
+surface behind it — `background` and `rig` say what is *behind* the glyphs, these say what
+the glyphs and their chrome are made of and how they are arranged. Both take effect on the
+next frame; ask `--help` for the palettes and the posture words this build has, and expect
+an unknown name to be refused with the known set rather than approximated.
+
+Two differences between them are worth knowing before you use either. **`theme` is
+remembered** — it is written to the console's preferences file, so it is still there at the
+next launch, which makes it a *choice on the user's behalf*: change it when asked, not to
+suit yourself. **`posture` is not remembered and it snaps** — no animation, and closing the
+console puts it back at `terminal`. `posture` also takes a bare number from 0 to 1 if you
+want somewhere between the two ends; the two words are what you want almost always.
 
 `block` opens its rows in the **active tab**, just below the cursor, and the next
 prompt lands underneath them. They are ordinary scrollback rows, so they scroll away

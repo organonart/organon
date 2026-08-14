@@ -78,11 +78,12 @@ use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::portal::{self, PortalState};
 use organon_shell::posture::Posture;
+use organon_shell::prefs;
 use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::{self, TermSession};
 use organon_shell::term_view::{self, BandedBackdrop, PaneAnchor};
-use organon_shell::theme::Theme;
+use organon_shell::theme::{self, Theme};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -382,6 +383,10 @@ fn initial_shared(source: BackdropSource) -> Box<ipc::Shared> {
 const CMD_BACKGROUND: &str = "console.background";
 /// See [`CMD_BACKGROUND`].
 const CMD_RIG: &str = "console.rig";
+/// See [`CMD_BACKGROUND`]. #38: the console's own palette, not the substrate's dressing.
+const CMD_THEME: &str = "console.theme";
+/// See [`CMD_BACKGROUND`]. #38: how the console holds itself, on the terminal↔desktop axis.
+const CMD_POSTURE: &str = "console.posture";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
@@ -470,6 +475,39 @@ fn console_specs() -> Vec<CommandSpec> {
             args: vec![ArgSpec {
                 name: CMD_ARG.into(),
                 kind: ArgKind::Choice(rigs),
+                required: true,
+            }],
+        },
+        // The palette's vocabulary is `Theme::NAMES` itself, on `console.patch`'s rule and for
+        // its reason: it is the same table `Theme::resolve` refuses against and the same one
+        // `bin/ctl.rs` builds its `--help` list from, so a fifth palette reaches all three
+        // surfaces in the commit that adds it.
+        CommandSpec {
+            name: CMD_THEME.into(),
+            doc: "Every colour the console paints. Live, and stored as a preference".into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: CMD_ARG.into(),
+                kind: ArgKind::Choice(Theme::NAMES.iter().map(|s| (*s).to_string()).collect()),
+                required: true,
+            }],
+        },
+        // ⚠️ **`ArgKind::Choice` and NOT the scalar, which is the one place this schema is
+        // deliberately narrower than the CLI.** `Posture::resolve` also accepts a bare
+        // `0.0`–`1.0`, and there is no `ArgKind` that says "one of these words, or a float in
+        // this band" — `Choice` and `Float` are separate kinds. Offering `Float` instead would
+        // lose the two words an agent actually wants; offering both slots would invent a
+        // second spelling for one argument. The words are what a caller reaching for a posture
+        // means, the scalar is for a hand exploring the axis, and the hand has a terminal.
+        CommandSpec {
+            name: CMD_POSTURE.into(),
+            doc: "How the console holds itself: terminal-tight or desktop-open. Snaps".into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: CMD_ARG.into(),
+                kind: ArgKind::Choice(
+                    organon_shell::posture::POSTURE_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                ),
                 required: true,
             }],
         },
@@ -608,6 +646,8 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
     match op {
         cli::ConsoleOp::Background(_) => CMD_BACKGROUND,
         cli::ConsoleOp::Rig(_) => CMD_RIG,
+        cli::ConsoleOp::Theme(_) => CMD_THEME,
+        cli::ConsoleOp::Posture(_) => CMD_POSTURE,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -632,6 +672,22 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
     match name {
         CMD_BACKGROUND => Ok(cli::ConsoleOp::Background(word(CMD_ARG)?)),
         CMD_RIG => Ok(cli::ConsoleOp::Rig(word(CMD_ARG)?)),
+        // `resolve` rather than a bare pass-through, and the refusal is thrown away: what is
+        // wanted here is the *check*, so a dispatch that names a palette this build cannot
+        // paint fails with a record instead of succeeding and repainting nothing. Membership
+        // was already settled by `validate_args` against the `Choice` above, so this is
+        // `patch`'s belt — but it is the belt that catches a line reaching the service by any
+        // route that skipped the schema.
+        CMD_THEME => {
+            let w = word(CMD_ARG)?;
+            Theme::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Theme(w))
+        }
+        CMD_POSTURE => {
+            let w = word(CMD_ARG)?;
+            organon_shell::posture::Posture::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Posture(w))
+        }
         CMD_BLOCK => {
             let n = args
                 .get(CMD_ROWS)
@@ -744,7 +800,10 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
 /// it would simply fail validation, one lane's type error reported as another's.
 fn op_args(op: &cli::ConsoleOp) -> Value {
     match op {
-        cli::ConsoleOp::Background(n) | cli::ConsoleOp::Rig(n) => json!({ CMD_ARG: n }),
+        cli::ConsoleOp::Background(n)
+        | cli::ConsoleOp::Rig(n)
+        | cli::ConsoleOp::Theme(n)
+        | cli::ConsoleOp::Posture(n) => json!({ CMD_ARG: n }),
         cli::ConsoleOp::Block(rows) => json!({ CMD_ROWS: rows }),
         cli::ConsoleOp::Patch { up, rows, kind } => {
             json!({ CMD_UP: up, CMD_ROWS: rows, CMD_KIND: kind.as_word() })
@@ -935,10 +994,20 @@ fn console_step(
         // **A camera move is not a look at all.** It writes host state on the `World` — the
         // same three fields a drag writes — which travels in no snapshot, is saved in no
         // preset, and is not the console's dressing in any sense. It never reaches here either.
+        //
+        // **A palette and a posture are the console's own dressing, not the substrate's**, and
+        // this is the distinction the two verbs exist to make: `background` and `rig` say what
+        // is *behind* the glyphs, these two say what the glyphs and their chrome are made of
+        // and how they are arranged. Neither writes `backdrop_source`, neither changes a pixel
+        // of the substrate, and neither belongs in the Tier-4 epoch ledger this function's
+        // caller feeds — a band of scrollback records what was behind it, and nothing behind
+        // it moved. `Shell::apply_console` routes both first, for that reason in full.
         cli::ConsoleOp::Block(_)
         | cli::ConsoleOp::Patch { .. }
         | cli::ConsoleOp::Portal(_)
-        | cli::ConsoleOp::Camera(_) => return None,
+        | cli::ConsoleOp::Camera(_)
+        | cli::ConsoleOp::Theme(_)
+        | cli::ConsoleOp::Posture(_) => return None,
     }
     Some((source, look))
 }
@@ -1402,6 +1471,17 @@ struct Shell {
     /// reaches every draw site as `&Theme` — never cloned per frame, never a `static`, so a
     /// later per-tab or preview palette is a second value rather than a rewrite.
     theme: Theme,
+    /// The name [`Shell::theme`] answers to, always one of `Theme::NAMES`.
+    ///
+    /// **Carried rather than searched for**, because the two questions a name answers are both
+    /// asked at moments where a reverse lookup would be wrong. `preferences.json` stores a
+    /// *name*, so a save needs one; and a `Theme` is a fifty-field struct whose fields
+    /// deliberately share values across palettes (§1.4), so "which palette is this?" is not a
+    /// question the value can be trusted to answer if two of them ever coincide.
+    ///
+    /// `&'static str` rather than `String`: it is only ever `Theme::NAMES`' own entry, which is
+    /// what stops the store recording a spelling nothing can resolve.
+    theme_name: &'static str,
     /// **How the console holds itself** — see [`organon_shell::posture`]. The second axis,
     /// and orthogonal to the palette above it: `theme` is what the console is made of,
     /// `posture` is whether it stands terminal-tight or desktop-open, and every combination
@@ -1535,10 +1615,24 @@ fn engine_plan(
 impl Shell {
     fn new() -> Self {
         let egui_ctx = egui::Context::default();
-        // The palette this process paints. Chosen here and nowhere else — `organon` is still
-        // the default and nothing selects another yet (`Theme::by_name` is the seam a picker
-        // and `prefs.rs` will share).
-        let theme = Theme::organon();
+        // The palette this process opens on. Chosen here and nowhere else, by `theme::select`
+        // — `ORGANON_SHELL_THEME`, then `preferences.json`, then `organon`. The precedence
+        // lives in that function rather than inline here so it can be tested without a process
+        // environment or a store on disk; this end reads the two sources and reports.
+        let stored = prefs::Preferences::load_default();
+        let selection = theme::select(
+            std::env::var(theme::THEME_ENV).ok().as_deref(),
+            stored.theme.as_deref(),
+        );
+        // 🚨 **The notes are printed, never swallowed.** An unknown palette name — in a launch
+        // shim or in the stored file — falls through to the next source, which means the
+        // console still opens and looks fine. That is the right behaviour and it is also
+        // exactly how a typo becomes permanent, so the one thing this must not do is be quiet
+        // about it. Empty is the normal case: a stored palette that resolves says nothing.
+        for note in &selection.notes {
+            eprintln!("organon-console: {note}");
+        }
+        let theme = selection.theme;
         // egui's own chrome — sliders, popup frames, the `TextEdit` selection wash, scrollbars
         // — comes from the palette rather than from a hardcoded `Visuals::dark()`. This call
         // *was* that hardcoded line, and it is why a light palette could not have worked from
@@ -1625,9 +1719,14 @@ impl Shell {
             // Built above, because `set_visuals` needs it too — one palette per process, and
             // the chrome and the fields must come from the same one.
             theme,
-            // The terminal end: today's console, to the point. Nothing sets this to anything
-            // else yet — a picker, a preference and a tween are all later tiers, and each
-            // wants a window to be looked at.
+            theme_name: selection.name,
+            // 🚨 **The terminal end, unconditionally — posture is NOT read from the store and
+            // has no variable, deliberately.** `organon console posture` can move it while the
+            // window is open and every console opens back here. The reasoning is in
+            // [`Shell::set_posture`]; the short form is that a palette is what the console is
+            // made of and a posture is a view you take to look at something, and this axis has
+            // never been drawn on a real screen, so "closing it puts it back" is the undo an
+            // unaudited layout should still have.
             posture: Posture::TERMINAL,
         }
     }
@@ -2094,6 +2193,23 @@ impl Shell {
             self.frame_camera(*framing);
             return;
         }
+        // 🚨 **The palette and the posture are routed here, BEFORE `console_step`, and that is
+        // a correctness rule rather than an arrangement.** Everything below this line ends in
+        // [`Shell::record_look_change`], which snapshots the backdrop into the Tier-4 epoch
+        // ledger — the record of what the *substrate* looked like when a band of scrollback
+        // was written. A palette is not a substrate look and a posture is not one either:
+        // neither touches `backdrop_source`, neither changes a pixel of what is behind the
+        // glyphs, and folding one into the ledger would band the transcript at a moment
+        // nothing behind it moved. `Block`, `Patch`, `Portal` and `Camera` are all above for
+        // this same reason.
+        if let cli::ConsoleOp::Theme(name) = op {
+            self.set_theme(name);
+            return;
+        }
+        if let cli::ConsoleOp::Posture(word) = op {
+            self.set_posture(word);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -2112,6 +2228,107 @@ impl Shell {
         self.backdrop_source = source;
         self.console_look = look;
         *self.shared = *look_shared(self.backdrop_source, &self.console_look);
+    }
+
+    /// Repaint in a named palette, **and remember it**.
+    ///
+    /// Two effects, and they are deliberately not gated on each other:
+    ///
+    /// 1. **The window**, on the next frame. `redraw` borrows `&self.theme` afresh every
+    ///    frame, so the fields need nothing but the assignment; `egui`'s own chrome does not
+    ///    work that way — `Visuals` is set on the context and held — so `set_visuals` has to
+    ///    be re-issued or roughly half the window (sliders, popups, the selection wash,
+    ///    scrollbars) would keep the outgoing palette's colours. That asymmetry is the entire
+    ///    reason `Theme::visuals` exists; §1.4 has the measurement.
+    /// 2. **`preferences.json`**, so the next console opens here. This is the console's first
+    ///    write of a user's choice, and it is what makes the verb a *pick* rather than a
+    ///    gesture.
+    ///
+    /// ⚠️ **No early return when the palette asked for is the one already painted, and the
+    /// hole that would open is not hypothetical.** Launch under `ORGANON_SHELL_THEME=chocolate`
+    /// over a stored `light`, then type `organon console theme chocolate` — meaning "yes, keep
+    /// this one". An early-out on the painted palette would repaint nothing (correct) and
+    /// store nothing (wrong), and the choice would evaporate at exit exactly as it did before
+    /// any of this existed. The store, not the screen, is what decides whether there is work
+    /// to do, and the redundant `set_visuals` costs one frame's worth of nothing.
+    ///
+    /// ⚠️ **Load, modify, save — never `Preferences { theme }`.** That struct will grow fields,
+    /// and constructing a fresh one here would silently discard every preference this call did
+    /// not know about. The failure would arrive later, in someone else's tier, looking like
+    /// their bug.
+    fn set_theme(&mut self, name: &str) {
+        // Derived before the move: `Theme` is not `Copy`, and the chrome must come from the
+        // same value the fields do — deriving it from `self.theme` afterwards would work today
+        // and would be one refactor away from two palettes in one window.
+        let (theme, canonical) = match Theme::resolve(name) {
+            Ok(v) => v,
+            // Refused out loud, never approximated — `Theme::resolve`'s rule. This is the
+            // second gate: `bin/ctl.rs` restricts the word at the clap boundary, but a line
+            // written straight onto the sidecar reaches here unfiltered, and a console that
+            // silently painted its default would make a typo look like a palette nobody likes.
+            Err(e) => {
+                eprintln!("organon-console: {e} — ignored");
+                return;
+            }
+        };
+        let visuals = theme.visuals();
+        self.theme = theme;
+        self.theme_name = canonical;
+        self.egui_ctx.set_visuals(visuals);
+
+        let mut prefs = prefs::Preferences::load_default();
+        if prefs.theme.as_deref() == Some(canonical) {
+            return;
+        }
+        prefs.theme = Some(canonical.to_string());
+        match prefs.save_default() {
+            // The window changing colour is the feedback for the *repaint*; nothing on screen
+            // reports the write, so the write is what gets the line. `Preferences::save`
+            // returns a result precisely so this can be said rather than swallowed — "I set
+            // this and it did not stick" has to be diagnosable.
+            Ok(()) => eprintln!(
+                "organon-console: theme `{canonical}` — stored, and it will be here next launch"
+            ),
+            Err(e) => eprintln!(
+                "organon-console: painted `{canonical}`, but could not store it ({e}) — it will \
+                 be gone at exit"
+            ),
+        }
+    }
+
+    /// Stand the console differently — **snapping, on the next frame**.
+    ///
+    /// 🚨 **This does not animate, and the absence is a decision rather than a stub.** The
+    /// posture axis exists so a later tier *can* tween it (§1.6: every token is a scalar and
+    /// `Form::at` lerps componentwise), but a tween is a much larger question than a verb —
+    /// it moves the transcript's wrap width continuously, and `doc/console_rewrap_measurement.md`
+    /// prices that at ~7.6 ms per width change at 400 elements with five options and no
+    /// decision taken. A snap pays that cost **once**, in a frame nobody perceives as a jump;
+    /// an unconsidered tween would pay it every frame of the motion and reflow a wall of text
+    /// under someone's eyes to do it.
+    ///
+    /// ⚠️ **Nothing is stored, and that is the other half of the decision — a posture is not a
+    /// preference.** §1.4's palette answers *what the console is made of*, and a person who
+    /// picks one means it: it should be there tomorrow. A posture answers *how it stands right
+    /// now*, and at this tier that is a view you take to look at something — the desktop end
+    /// has never been drawn on a real screen (§3), so a stored `desktop` would mean every
+    /// console from then on opens into an unaudited layout, recoverable only by typing the
+    /// verb back or editing JSON. Closing the window is a free undo, and it is worth keeping
+    /// while the axis is still being auditioned. **Revisit when the tween lands**: an animated
+    /// posture that somebody has actually lived in is a preference, and it is one field on
+    /// `Preferences` away.
+    ///
+    /// No `request_repaint` here or in [`Shell::set_theme`]: `redraw` ends in
+    /// `window.request_redraw()`, so this console is already drawing continuously — which is
+    /// also the only reason `drain_console` sees a sidecar line at all.
+    fn set_posture(&mut self, word: &str) {
+        match Posture::resolve(word) {
+            // Refused, not clamped, for `CameraFraming::in_range`'s reason, restated in
+            // `Posture::from_scalar`: a typed `90` is degrees where the axis wanted a
+            // fraction, and answering `desktop` would let the mistake look like it worked.
+            Err(e) => eprintln!("organon-console: {e} — ignored"),
+            Ok(p) => self.posture = p,
+        }
     }
 
     /// Move the viewer's viewpoint — **unless a hand is on it**.
@@ -3500,7 +3717,10 @@ fn help_text() -> String {
          Environment:\n    \
              ORGANON_SHELL_BACKDROP=<src> behind the glyphs: 0/unset off, 1 the world,\n                                 \
              {substrate} the lit substrate plane\n    \
-             ORGANON_SHELL_SCRIM=<0..255> legibility scrim alpha (default {scrim_default}, floor {scrim_floor})\n    \
+             ORGANON_SHELL_SCRIM=<0..255> legibility scrim alpha (default {scrim_default}; the\n                                 \
+             floor is the PALETTE's — {scrim_floor} on a dark page, {scrim_floor_light} on {light_theme})\n    \
+             ORGANON_SHELL_THEME=<name>   palette for THIS launch only: {themes}\n                                 \
+             (overrides a stored choice, never writes one)\n    \
              ORGANON_SHELL_TABS=a,b,c     open these harness ids at start\n    \
              ORGANON_SHELL_DEFAULT=<id>   harness for the first tab (else Pi if installed)\n    \
              ORGANON_SHELL_CMD=<cmd>      one plain-command tab, for headless checks\n    \
@@ -3520,12 +3740,32 @@ fn help_text() -> String {
          \n\
          Inside a tab the `organon` CLI addresses this process — the namespace is inherited:\n    \
              organon console background <{backgrounds}>\n    \
-             organon console rig <{rigs}>\n\
+             organon console rig <{rigs}>\n    \
+             organon console theme <{themes}>       live, and stored as a preference\n    \
+             organon console posture <{postures}|0.0-1.0>  snaps; not remembered\n\
          \n\
          Docs: SHELL_ARCHITECTURE.md\n",
         substrate = BACKDROP_SUBSTRATE,
         scrim_default = term_view::SCRIM_DEFAULT,
         scrim_floor = term_view::SCRIM_FLOOR,
+        // ⚠️ The floor is the *palette's* since #38, so quoting one number would be a lie the
+        // moment `light` became selectable — which is exactly what `organon console theme`,
+        // listed further down this same text, made possible. Both floors are quoted, and the
+        // light one names the palettes it belongs to.
+        scrim_floor_light = term_view::SCRIM_FLOOR_LIGHT,
+        // Derived, not named: *which* palettes carry the light floor is a fact about
+        // `Theme::scrim_floor`, and a hardcoded "light" would go stale the day a fifth
+        // palette wants a light page.
+        light_theme = Theme::NAMES
+            .iter()
+            .filter(|n| {
+                Theme::by_name(n).is_some_and(|t| t.scrim_floor == term_view::SCRIM_FLOOR_LIGHT)
+            })
+            .copied()
+            .collect::<Vec<_>>()
+            .join("|"),
+        themes = Theme::NAMES.join("|"),
+        postures = organon_shell::posture::POSTURE_WORDS.join("|"),
         // Quoted from the tables the drain resolves against, never restated — the discipline
         // the scrim line already earned here, and the reason `--help` cannot advertise a
         // material this build cannot draw.
@@ -3590,6 +3830,11 @@ mod cli_tests {
     /// and silently falls back. This pins both halves: the byte scale in the notation, and
     /// the actual numbers. Change `SCRIM_DEFAULT`/`SCRIM_FLOOR` and the help follows; write a
     /// literal back into the help and this fails.
+    ///
+    /// ⚠️ **BOTH floors, since #38.** The floor became the palette's when `light` was added,
+    /// and quoting only `SCRIM_FLOOR` was true exactly as long as no palette could be
+    /// selected — `organon console theme light` ended that, so a single number in `--help`
+    /// would now be a confident lie about the console the reader is looking at.
     #[test]
     fn the_scrim_line_matches_the_code_it_documents() {
         let h = help_text();
@@ -3599,10 +3844,33 @@ mod cli_tests {
             h.contains(&format!("default {}", organon_shell::term_view::SCRIM_DEFAULT)),
             "help does not quote SCRIM_DEFAULT"
         );
-        assert!(
-            h.contains(&format!("floor {}", organon_shell::term_view::SCRIM_FLOOR)),
-            "help does not quote SCRIM_FLOOR"
-        );
+        for floor in
+            [organon_shell::term_view::SCRIM_FLOOR, organon_shell::term_view::SCRIM_FLOOR_LIGHT]
+        {
+            assert!(h.contains(&floor.to_string()), "help does not quote the floor {floor}");
+        }
+        // …and it names which palette the light floor belongs to, so the two numbers are
+        // usable rather than merely present.
+        assert!(h.contains("light"), "help does not say whose floor {} is",
+            organon_shell::term_view::SCRIM_FLOOR_LIGHT);
+    }
+
+    /// CONTRACT: **`--help` offers every palette and posture the console can actually
+    /// reach**, quoted from `Theme::NAMES` and `POSTURE_WORDS` rather than restated — the
+    /// discipline the background/rig lines already earned here, for its reason: a `--help`
+    /// that advertises a palette this build cannot paint is worse than one that lists none.
+    #[test]
+    fn the_help_offers_the_palettes_and_postures_that_exist() {
+        let h = help_text();
+        assert!(h.contains("organon console theme"), "the theme verb is unlisted");
+        assert!(h.contains("organon console posture"), "the posture verb is unlisted");
+        assert!(h.contains(theme::THEME_ENV), "the one-launch override is undocumented");
+        for name in Theme::NAMES {
+            assert!(h.contains(name), "`{name}` is a palette `--help` never mentions");
+        }
+        for word in organon_shell::posture::POSTURE_WORDS {
+            assert!(h.contains(word), "`{word}` is a posture `--help` never mentions");
+        }
     }
 
     /// The backdrop's value space, both halves: the new spelling reaches the substrate, and
