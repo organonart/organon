@@ -8,7 +8,7 @@ measurement posture's tween needs, and nobody has taken it"* — and this is the
 options in §7 are laid out with their costs and none of them is chosen; that is James's call and
 it is downstream of these figures rather than contained in them.
 
-**The instrument is in the tree**, at `native/organon-shell/src/conversation_view/rewrap_bench.rs`,
+**The instrument is in the tree**, at `native/organon-console/src/conversation_view/rewrap_bench.rs`,
 so these numbers can be re-taken on another machine or after an egui bump rather than believed.
 Its module doc is the authority on method; §3 below is the summary.
 
@@ -49,13 +49,13 @@ A third consumer was not in the brief and is **live today**: dragging the consol
 changes the pane's width every frame, through exactly the same path. Whatever the tween would
 cost, the console is already paying it during a resize drag — see §6.
 
-⚠️ **Correction to the brief that commissioned this.** It cites `SHELL_ARCHITECTURE.md` §1.6
-(posture) and `native/organon-shell/src/posture.rs`. **Neither exists on `main` at `d09e7c1`.**
-`SHELL_ARCHITECTURE.md` §1 ends at §1.5 (Preferences), and there is no posture module in the
+⚠️ **Correction to the brief that commissioned this.** It cites `CONSOLE_ARCHITECTURE.md` §1.6
+(posture) and `native/organon-console/src/posture.rs`. **Neither exists on `main` at `d09e7c1`.**
+`CONSOLE_ARCHITECTURE.md` §1 ends at §1.5 (Preferences), and there is no posture module in the
 crate — posture is designed (issue #38) and unbuilt. That does not weaken the question; it
 sharpens who this is for. The number arrives **before** the code it constrains, which is the
 order this repo prefers and the reverse of how the portal's "immersive is nearly free" claim
-went. The `SHELL_ARCHITECTURE.md` pointer this document is referenced from therefore sits in §2
+went. The `CONSOLE_ARCHITECTURE.md` pointer this document is referenced from therefore sits in §2
 ("Seams the next tiers consume"), where unbuilt work lives, and **not** in §1, which is
 "what exists right now".
 
@@ -136,13 +136,13 @@ rather than layout. A test asserts the prose is all distinct.
 
 ```bash
 cd native
-cargo test --release -p organon-shell --lib -- --ignored --nocapture rewrap
+cargo test --release -p organon-console --lib -- --ignored --nocapture rewrap
 ```
 
 ⚠️ **`--release` is load-bearing.** The workspace sets `[profile.dev] opt-level = 1`, which the
 test profile inherits, and it reports figures about 25 % high (§5.3). The console ships release.
 
-The default suite is unaffected: `cargo test -p organon-shell --lib` is **503 passed, 1 ignored**
+The default suite is unaffected: `cargo test -p organon-console --lib` is **503 passed, 1 ignored**
 in 0.17 s, the ignored one being this benchmark.
 
 ---
@@ -383,7 +383,7 @@ about the figures that *are* here.
   move it.
 - **A captured long transcript.** The corpus's *shapes* are the real ones (`Transcript::apply`,
   the real bodies, the real card) but the *words* are written here. The captured fixtures in
-  `native/organon-shell/fixtures/` are 11–77 lines; a four-hundred-element session has never
+  `native/organon-console/fixtures/` are 11–77 lines; a four-hundred-element session has never
   been captured on this machine.
 - **Three element kinds.** No approval card, no artifact panel, no rendered surface is in the
   corpus — `scrollback` draws those from pane state and the harness builds a pane with both side

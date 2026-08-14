@@ -16,7 +16,7 @@
 //! | a picture the engine draws | `cli::PatchKind::Scene` | `block_panel::PatchContent::Scene` | `conversation::ArtifactContent::Surface` |
 //!
 //! Those live in **different crates** — `cli.rs` in the root crate, the other two in
-//! `organon-shell` — so the wire copy and the paint copies could not import each other, and
+//! `organon-console` — so the wire copy and the paint copies could not import each other, and
 //! the only crate all of them can see is this one. That is not merely where it *fits*:
 //! `organon-core` is host-free by construction (no `nih_plug`, no `wgpu`, no `egui`), and a
 //! closed set of words plus the functions that resolve them needs none of those. `tabs.rs` is
@@ -44,7 +44,7 @@
 //! command is `/surface`, which is a word a human's fingers already know. Unifying *those*
 //! would be a deliberate, documented break of one of them, and this change is inert by
 //! contract, so it unifies the **set of kinds** and leaves the two spellings where they are.
-//! `SHELL_ARCHITECTURE.md` records the residual so the next tier decides rather than
+//! `CONSOLE_ARCHITECTURE.md` records the residual so the next tier decides rather than
 //! rediscovers.
 //!
 //! ## No default here

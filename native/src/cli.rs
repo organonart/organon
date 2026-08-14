@@ -246,7 +246,7 @@ pub fn find_eyes_reply(body: &str, nonce: &str) -> Option<Result<String, String>
 // a third destination (brief R3). `CliOp` lines on `ipc::cli_cmd_path()` are
 // drained by the **World**, inside `World::frame_body`; the eyes channel is
 // answered by the **visual**. A backdrop or a lighting rig is neither: it is
-// `Shell` state, owned by `shell_main.rs`, and nothing in the World can reach it.
+// `Console` state, owned by `console_main.rs`, and nothing in the World can reach it.
 // Routing a console verb over `cli.txt` would put it in a queue read by a process
 // that cannot act on it — green, silent, and wrong. So: its own sidecar,
 // [`console_cmd_path`], drained in the console's frame path.
@@ -271,11 +271,11 @@ pub fn find_eyes_reply(body: &str, nonce: &str) -> Option<Result<String, String>
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConsoleOp {
     /// What sits behind the glyphs: a substrate material, or a backdrop *source*
-    /// (`world` / `off` / `substrate` — `shell_main.rs`'s `BackdropSource` value space).
+    /// (`world` / `off` / `substrate` — `console_main.rs`'s `BackdropSource` value space).
     Background(String),
     /// The substrate's lighting rig.
     Rig(String),
-    /// The **palette the console paints with** — one of `organon_shell::theme::Theme::NAMES`.
+    /// The **palette the console paints with** — one of `organon_console::theme::Theme::NAMES`.
     ///
     /// 📌 **Live, and that is the whole reason it is a verb on this lane rather than only a
     /// preference.** Four palettes compared by relaunching four times is not a comparison:
@@ -288,7 +288,7 @@ pub enum ConsoleOp {
     /// `Theme::NAMES` itself, and the console refuses an unknown name again on arrival.
     Theme(String),
     /// **How the console holds itself** — `terminal`, `desktop`, or a bare `0`–`1` scalar on
-    /// the axis between them (`organon_shell::posture::Posture`).
+    /// the axis between them (`organon_console::posture::Posture`).
     ///
     /// ⚠️ **This SNAPS, and the snap is deliberate rather than a stage on the way to a
     /// tween.** The posture axis exists so a later tier *can* animate it, but a layout change

@@ -37,8 +37,8 @@ printf 'It is the CORE, not the whole reference. Three child docs are deliberate
 printf 'NOT injected and are read on demand:\n'
 printf '  * doc/arch/render.md    — the render pipeline in depth (the old §9)\n'
 printf '  * MIND_ARCHITECTURE.md  — Organon Mind'"'"'s living state\n'
-printf '  * SHELL_ARCHITECTURE.md — Organon Shell'"'"'s living state\n'
-printf 'Open the relevant one before renderer, Mind or Shell work; §19'"'"'s file map\n'
+printf '  * CONSOLE_ARCHITECTURE.md — Organon Console'"'"'s living state\n'
+printf 'Open the relevant one before renderer, Mind or Console work; §19'"'"'s file map\n'
 printf 'says which module lives where.\n\n'
 printf '%s\n' "$content"
 printf '\n===== END ARCHITECTURE.md =====\n'

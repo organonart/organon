@@ -38,12 +38,12 @@ mind:
           - 'native/organon-core/src/gguf*.rs'
           - 'MIND_ARCHITECTURE.md'
 
-shell:
+console:
   - changed-files:
       - any-glob-to-any-file:
-          - 'native/organon-shell/**'
-          - 'native/src/shell_main.rs'
-          - 'SHELL_ARCHITECTURE.md'
+          - 'native/organon-console/**'
+          - 'native/src/console_main.rs'
+          - 'CONSOLE_ARCHITECTURE.md'
 
 plugin:
   - changed-files:

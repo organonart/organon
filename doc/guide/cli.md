@@ -90,7 +90,7 @@ This trips people up, and the two failure modes look similar but are not:
 
 | Commands | Need |
 |---|---|
-| `status`, `get`, `watch` | something **writing** the snapshot — the standalone, the plugin in a host, or Shell |
+| `status`, `get`, `watch` | something **writing** the snapshot — the standalone, the plugin in a host, or the Console |
 | `snap`, `record`, `set`, `generator`, `surface`, `material`, `release` | the **visual window** |
 | `catalog`, `describe`, `recipes`, `docs` | nothing at all |
 
@@ -101,7 +101,7 @@ Retry that one.
 
 ## Talking to the right instance
 
-Organon, Organon Mind and Organon Shell each use their own IPC namespace, which is what
+Organon, Organon Mind and Organon Console each use their own IPC namespace, which is what
 lets them run side by side without trampling each other. `ORGANON_IPC_NS` selects it, and
 the CLI reads it from **its own** environment:
 

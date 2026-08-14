@@ -789,7 +789,7 @@ mod materials {
         }
     }
 
-    /// Case-insensitive, per `shell_main.rs:96`'s precedent for the backdrop selector.
+    /// Case-insensitive, per `console_main.rs:96`'s precedent for the backdrop selector.
     #[test]
     fn names_match_case_insensitively() {
         for name in MATERIAL_NAMES {
