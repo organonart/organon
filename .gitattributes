@@ -137,3 +137,33 @@ native/organon-render/src/BSC5 binary
 # then became a real tracked file, which is what gave it a CRLF working copy. Each fix
 # uncovered the next failure.
 .claude/skills/**/SKILL.md text eol=lf
+
+# ─── CHANGELOG.md: every branch adds to the same line, so let git keep both ─────────────
+#
+# The file has one shared insertion point — a `## Unreleased` block that every PR adds a
+# section to the top of — so any two open branches conflict there by construction, whether or
+# not they touch a single common concern. Measured on 2026-08-13: four PRs open at once, four
+# hand-resolutions, each on a tree nobody had compiled, and the resolution was "keep both
+# sides" every single time. A conflict whose answer is always the same is a merge driver's
+# job, not a person's.
+#
+# `union` takes both sides of a conflicting hunk in order and emits no markers. It is built
+# into git, needs no `merge.*.driver` registration in anyone's config, and therefore works for
+# a fresh clone and for CI without a setup step — which a custom driver would not.
+#
+# ⚠️ **It is right for THIS file because of how this file is written, not in general.** Union
+# is correct when both sides *add* distinct blocks. If two branches edit the *same existing
+# line* — rewording one entry two ways — union silently keeps **both copies**, with no
+# conflict to warn anyone. That is a worse failure than a conflict, and it is why this is
+# scoped to one path rather than applied to Markdown at large. Keep adding new sections at the
+# top; do not reword a landed entry on a branch.
+#
+# ⚠️ It does not make a conflicted PR mergeable on its own. The rebase that prompted this
+# conflicted in *two* files, and resolving the changelog half would not have unblocked it.
+# This removes a recurring tax, not the need to read a merge.
+#
+# If this stops being enough, the next step is `changelog.d/` fragments — one file per change,
+# concatenated at release — which removes the shared insertion point entirely. An Action that
+# auto-resolves and pushes to PR branches is the wrong answer with many agent worktrees live
+# at once: it would race them.
+CHANGELOG.md merge=union

@@ -31,12 +31,24 @@
 //! replaced. Capping each same-kind run first is what guarantees both sides of every
 //! change are on screen.
 //!
-//! 📌 **This is recomputed every frame**, like the `serde_json` parse of the same argument
-//! text beside it in `conversation_view::edit_diff`. That is what [`MAX_CELLS`] is sized
-//! against — 20 000 cells is ~80 KB of scratch and 20 000 comparisons, which is small
-//! beside parsing the JSON the strings came out of. It is *not* sized against "how large
-//! an edit could be"; past the budget the diff degrades to a block replacement and says
-//! so.
+//! 📌 **This runs once per card, not once per frame — and it used to be the other way.**
+//! [`line_diff`] and the `serde_json` parse beside it in `conversation_view::edit_diff` were
+//! both inside the draw call, so every `Edit` card in an unvirtualised scrollback repeated
+//! them at 60 Hz. `conversation_view::ConversationPane::diffs` now keeps the result. That is
+//! what [`MAX_CELLS`] was originally sized against — 20 000 cells is ~80 KB of scratch and
+//! 20 000 comparisons, small beside parsing the JSON the strings came out of — and the
+//! budget is left where it is, because the argument for it never depended on the repetition:
+//! it is *not* sized against "how large an edit could be", and past it the diff degrades to
+//! a block replacement and says so.
+//!
+//! ⚠️ **One shape is past every bound here and none of the three can see it**, which matters
+//! more now that a card pays it once and visibly rather than continuously. [`MAX_CELLS`] is
+//! checked **after** the common prefix and suffix are trimmed, so a change with a 400-line
+//! common prefix costs *zero* cells, sails past the budget meant to stop large inputs, and
+//! then allocates a [`DiffRow::Context`] with an owned `String` for every one of those lines
+//! before [`elide`] throws them away. Measured at **78 µs**, nearly twice the largest input
+//! the budgets believe is possible. Not fixed here; recorded, with the measurement, in
+//! `doc/console_edit_diff_cost.md` §4.
 
 /// Unchanged lines kept either side of a change before the rest are elided.
 ///

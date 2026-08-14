@@ -1381,9 +1381,14 @@ the block it sits in.**
 
 📌 **No diff crate.** This crate's `Cargo.toml` header requires every dependency edge to earn
 its line, and after the trim the changed region is small enough that a plain LCS is the whole
-algorithm. The alignment is also **recomputed every frame**, exactly like the `serde_json`
-parse of the same argument text beside it in `edit_diff` — which is what `MAX_CELLS` is sized
-against rather than against "how large an edit could be".
+algorithm. `MAX_CELLS` is sized against what one alignment costs rather than against "how
+large an edit could be".
+
+⚠️ **The alignment used to be recomputed every frame, and is not any more** — see
+§"An `Edit` card's diff is computed once, not once per frame" below for what that cost and
+what replaced it. The paragraph that used to stand here said the repetition was what
+`MAX_CELLS` was sized against; that was a defensible claim about *one* card and it never
+survived being multiplied by a session.
 
 | Bound | The failure it answers | What it leaves on screen |
 |---|---|---|
@@ -1406,6 +1411,60 @@ reads the card as broken. 🚨 The predicate is computed **on the whole strings,
 which is also what catches a **trailing-newline** difference: `str::lines` cannot see one, so
 there is no row for it, and a per-row test would have had the card claim the two were
 identical when they differ by a byte.
+
+##### ✏️ An `Edit` card's diff is computed once, not once per frame
+
+`tool_card` used to call `edit_diff` from inside its own body, so **every frame, for every
+`Edit` card in the transcript**, `serde_json::from_str` walked the whole arguments blob and
+`line_diff` re-ran the alignment — and threw both away. Three facts made that linear in the
+session rather than warm-in-cache: the scrollback is **not virtualised** (`ScrollArea::show`
+lays out every element, and `egui::Label` builds its galley *before* the visibility check, so
+a card two thousand lines off screen paid in full), `Limits::max_elements` is 10 000, and the
+result is a pure function of arguments that do not change once a card has settled.
+
+Measured — `doc/console_edit_diff_cost.md`, instrument at
+`conversation_view/edit_diff_bench.rs`, two instruments agreeing within a few percent:
+
+| One `Edit` card | per call | 400 cards, per frame |
+|---|---:|---:|
+| an ordinary one-line edit | 1.5 µs | 0.12 ms — below the noise |
+| a function-sized hunk | 5.6 µs | 0.52 ms |
+| the largest `MAX_CELLS` allows | 43.9 µs | 3.9 ms |
+| a 400-line common prefix | 78.2 µs | 6.2 ms |
+| *a stated one large edit in ten* | — | **2.4 ms**, 15 % of a 60 Hz budget |
+
+🚨 **The common case was never the problem, and that is the finding.** Had sessions been only
+ordinary edits the honest answer would have been to leave it alone. The tail is what justified
+a field: a session of large edits cost **61 ms per frame — 16 fps sitting still** — and after
+the cache the mixed corpus is indistinguishable from a `Read`-only control.
+
+`ConversationPane::diffs: HashMap<ElementId, Option<EditDiff>>` holds it, in the idiom the
+pane already had for `artifacts`: computed in `scrollback`'s walk, *read* by `tool_card`
+(which now takes the diff rather than deriving it), pruned against the transcript by a
+`retain` beside the artifacts one. `Body::Tool` moved out of `draw_element` into `scrollback`'s
+match for the reason `Body::Artifact` is already there — it needs state that survives between
+frames. **`edit_diff` itself is unchanged and still uncached**; the cache is at the call site
+so the pure function stays pure, and a test fails if anyone memoises it as well.
+
+🚨 **Invalidation is by eviction on `Change::Updated`, and it had to be, because
+`Arguments::complete` is not a promise of immutability.** A second `ToolCall` for an id that is
+not yet *resolved* replaces the arguments text wholesale, so a cache keyed on "complete" would
+have shown the first arguments' diff forever under a card displaying the second arguments'
+path — silently, and only on a card the harness happened to re-emit. A fingerprint cheap
+enough to take every frame must be shorter than the text and can collide; hashing 58 KB per
+card per frame costs a large fraction of a 78 µs saving. The fold already names the element it
+changed, so the exact answer is also the cheap one. It lives in `ConversationPane::absorb`,
+which exists as a method rather than four lines inside the drain loop **so that the rule is
+reachable by a test** — the drain loop needs a live agent process.
+
+⚠️ **Every update evicts, not only an argument one** — a `ToolResult` drops a still-good diff.
+One recomputation per card per result, accepted: narrowing it would mean the pane reasoning
+about which *field* the fold touched, which is the fold's knowledge and would rot the day a new
+event arm is added.
+
+⚠️ **This does not make the transcript cheap.** `doc/console_rewrap_measurement.md` §6 stands
+unchanged: layout is still O(scrollback) in every condition, and at 2 000 elements that alone
+is half a frame. This removed a *second*, independent O(scrollback) cost sitting on top of it.
 
 ##### ✏️ `tool_use_result` — the sibling object a terminal never sees
 
