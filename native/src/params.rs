@@ -24,8 +24,9 @@ use nih_plug::prelude::*;
 /// an `EnumParam` had to change, because those are the ones that genuinely handle the
 /// host adapter rather than the semantic value.
 pub use organon_core::params::{
-    BoidsForm, CamPath, FuncName, GeneratorMode, IndexedEnum, MaterialType, OscDivision,
-    Palette, ParamValues, SurfaceMode,
+    BoidsForm, CalColourSource, CamPath, ColourMode, FdtdSource, FieldKind, FieldVolSource,
+    FluxAxis, FuncName, GeneratorMode, IndexedEnum, MaterialType, OscDivision, Palette,
+    ParamValues, SurfaceMode,
 };
 use nih_plug_egui::EguiState;
 use std::sync::Arc;
@@ -388,23 +389,36 @@ impl HostOscDivision {
 /// FDTD Maxwell solver (#412 Tier 3) source waveform. **Pulse** = a one-shot
 /// Gaussian wavelet (the "watch it launch and travel" transient); **CW** = a
 /// continuous sinusoid at the source frequency (steady radiation / resonance).
+/// **Host-facing mirror of [`organon_core::params::FdtdSource`]** (organon#49 T4a).
+///
+/// Same orphan-rule split as [`HostFuncName`]. ⚠️ This list and core's MUST stay
+/// identical, in order — the index is the wire format. `host_fdtd_source_mirrors_core` pins them
+/// element-wise, by name, in both directions.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum FdtdSource {
+pub enum HostFdtdSource {
     #[name = "Pulse"]
     Pulse,
     #[name = "CW (continuous)"]
     Cw,
 }
 
-impl FdtdSource {
+impl HostFdtdSource {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> FdtdSource {
-        match v {
-            1 => FdtdSource::Cw,
-            _ => FdtdSource::Pulse,
+    pub fn from_u32(v: u32) -> HostFdtdSource {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostFdtdSource::Pulse
         }
+    }
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> FdtdSource {
+        FdtdSource::from_u32(self.to_u32())
     }
 }
 
@@ -549,8 +563,14 @@ impl AnalyticalMode {
 /// density field. **Legacy** (default) is today's node point-set metaball bake →
 /// byte-identical; the others render density instead of nodes (killing the
 /// scraggle). Ordinals packed into `Shared.fieldvol[0]`; **append-only**.
+/// **Host-facing mirror of [`organon_core::params::FieldVolSource`]** (organon#49 T4a).
+///
+/// Same orphan-rule split as [`HostFuncName`]. ⚠️ This list and core's MUST stay
+/// identical, in order — the index is the wire format. `host_field_vol_source_mirrors_core` pins them
+/// element-wise, by name, in both directions.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum FieldVolSource {
+pub enum HostFieldVolSource {
     #[name = "Legacy (node metaball)"]
     Legacy,
     #[name = "Auto (field / smoothed)"]
@@ -560,22 +580,23 @@ pub enum FieldVolSource {
     #[name = "Smoothed node"]
     SmoothedNode,
 }
-impl FieldVolSource {
+
+impl HostFieldVolSource {
     pub fn to_u32(self) -> u32 {
-        match self {
-            FieldVolSource::Legacy => 0,
-            FieldVolSource::Auto => 1,
-            FieldVolSource::FieldBaked => 2,
-            FieldVolSource::SmoothedNode => 3,
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> HostFieldVolSource {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostFieldVolSource::Legacy
         }
     }
-    pub fn from_u32(v: u32) -> FieldVolSource {
-        match v {
-            1 => FieldVolSource::Auto,
-            2 => FieldVolSource::FieldBaked,
-            3 => FieldVolSource::SmoothedNode,
-            _ => FieldVolSource::Legacy,
-        }
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> FieldVolSource {
+        FieldVolSource::from_u32(self.to_u32())
     }
 }
 
@@ -583,25 +604,36 @@ impl FieldVolSource {
 /// (HSV/palette/RGB-cube) → byte-identical. **Calibrated** = colour that means a
 /// measured dB level, sampled from a legend-backed perceptual LUT. Packed into
 /// `Shared.colour[0]`; **append-only**.
+/// **Host-facing mirror of [`organon_core::params::ColourMode`]** (organon#49 T4a).
+///
+/// Same orphan-rule split as [`HostFuncName`]. ⚠️ This list and core's MUST stay
+/// identical, in order — the index is the wire format. `host_colour_mode_mirrors_core` pins them
+/// element-wise, by name, in both directions.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum ColourMode {
+pub enum HostColourMode {
     #[name = "Aesthetic"]
     Aesthetic,
     #[name = "Calibrated (dB)"]
     Calibrated,
 }
-impl ColourMode {
+
+impl HostColourMode {
     pub fn to_u32(self) -> u32 {
-        match self {
-            ColourMode::Aesthetic => 0,
-            ColourMode::Calibrated => 1,
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> HostColourMode {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostColourMode::Aesthetic
         }
     }
-    pub fn from_u32(v: u32) -> ColourMode {
-        match v {
-            1 => ColourMode::Calibrated,
-            _ => ColourMode::Aesthetic,
-        }
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> ColourMode {
+        ColourMode::from_u32(self.to_u32())
     }
 }
 
@@ -638,28 +670,37 @@ impl CalLut {
 /// field generators (Maxwell/Acoustic) colour by their band's dBFS
 /// (`audiospectrum`), every other generator by momentary LUFS (`audiometer[0]`).
 /// Packed into `Shared.colour[4]`; **append-only**.
+/// **Host-facing mirror of [`organon_core::params::CalColourSource`]** (organon#49 T4a).
+///
+/// Same orphan-rule split as [`HostFuncName`]. ⚠️ This list and core's MUST stay
+/// identical, in order — the index is the wire format. `host_cal_colour_source_mirrors_core` pins them
+/// element-wise, by name, in both directions.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum CalColourSource {
+pub enum HostCalColourSource {
     Auto,
     #[name = "Band (dBFS)"]
     Band,
     #[name = "Loudness (LUFS)"]
     Lufs,
 }
-impl CalColourSource {
+
+impl HostCalColourSource {
     pub fn to_u32(self) -> u32 {
-        match self {
-            CalColourSource::Auto => 0,
-            CalColourSource::Band => 1,
-            CalColourSource::Lufs => 2,
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> HostCalColourSource {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostCalColourSource::Auto
         }
     }
-    pub fn from_u32(v: u32) -> CalColourSource {
-        match v {
-            1 => CalColourSource::Band,
-            2 => CalColourSource::Lufs,
-            _ => CalColourSource::Auto,
-        }
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> CalColourSource {
+        CalColourSource::from_u32(self.to_u32())
     }
 }
 
@@ -1924,8 +1965,14 @@ impl KaleidoMode {
 
 /// Orientation of the #391 Tier 1 Poynting-flux measurement patch — the surface the
 /// instrument integrates energy flux through. Packs into `Shared.instrument[13]`.
+/// **Host-facing mirror of [`organon_core::params::FluxAxis`]** (organon#49 T4a).
+///
+/// Same orphan-rule split as [`HostFuncName`]. ⚠️ This list and core's MUST stay
+/// identical, in order — the index is the wire format. `host_flux_axis_mirrors_core` pins them
+/// element-wise, by name, in both directions.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum FluxAxis {
+pub enum HostFluxAxis {
     /// Patch faces +X.
     #[name = "X"]
     X,
@@ -1941,34 +1988,22 @@ pub enum FluxAxis {
     Radial,
 }
 
-impl FluxAxis {
+impl HostFluxAxis {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> FluxAxis {
-        match v {
-            1 => FluxAxis::Y,
-            2 => FluxAxis::Z,
-            3 => FluxAxis::Radial,
-            _ => FluxAxis::X,
+    pub fn from_u32(v: u32) -> HostFluxAxis {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostFluxAxis::X
         }
     }
-    /// The patch normal for a patch centred at `center`. Radial faces away from the
-    /// origin (falls back to +X at the origin).
-    pub fn normal(self, center: glam::Vec3) -> glam::Vec3 {
-        match self {
-            FluxAxis::X => glam::Vec3::X,
-            FluxAxis::Y => glam::Vec3::Y,
-            FluxAxis::Z => glam::Vec3::Z,
-            FluxAxis::Radial => {
-                let n = center.normalize_or_zero();
-                if n == glam::Vec3::ZERO {
-                    glam::Vec3::X
-                } else {
-                    n
-                }
-            }
-        }
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> FluxAxis {
+        FluxAxis::from_u32(self.to_u32())
     }
 }
 
@@ -2254,8 +2289,14 @@ impl HostGeneratorMode {
 /// probing the compiled program; the explicit variants override (e.g. to force a
 /// vector program's magnitude into a scalar density). Order/`to_u32` ride
 /// `Shared.field[0]`; **append-only**.
+/// **Host-facing mirror of [`organon_core::params::FieldKind`]** (organon#49 T4a).
+///
+/// Same orphan-rule split as [`HostFuncName`]. ⚠️ This list and core's MUST stay
+/// identical, in order — the index is the wire format. `host_field_kind_mirrors_core` pins them
+/// element-wise, by name, in both directions.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum FieldKind {
+pub enum HostFieldKind {
     #[name = "Auto (infer)"]
     Auto,
     #[name = "Scalar (density)"]
@@ -2266,17 +2307,22 @@ pub enum FieldKind {
     Complex,
 }
 
-impl FieldKind {
+impl HostFieldKind {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> FieldKind {
-        match v {
-            1 => FieldKind::Scalar,
-            2 => FieldKind::Vector,
-            3 => FieldKind::Complex,
-            _ => FieldKind::Auto,
+    pub fn from_u32(v: u32) -> HostFieldKind {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostFieldKind::Auto
         }
+    }
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> FieldKind {
+        FieldKind::from_u32(self.to_u32())
     }
 }
 
@@ -4359,7 +4405,7 @@ pub struct OrganicMathParams {
     /// Grid resolution (cells per axis). Higher = sharper + slower (CPU, Phase 0).
     #[id = "fdrs"] pub fdtd_res: FloatParam,
     /// Source waveform: one-shot Gaussian Pulse vs continuous CW sinusoid.
-    #[id = "fdsm"] pub fdtd_source: EnumParam<FdtdSource>,
+    #[id = "fdsm"] pub fdtd_source: EnumParam<HostFdtdSource>,
     /// Source frequency ω (radians per animation-time unit); CW rate / pulse content.
     #[id = "fdfr"] pub fdtd_freq: FloatParam,
     /// Source drive amplitude.
@@ -4416,7 +4462,7 @@ pub struct OrganicMathParams {
 
     // --- #381 Tier 1 Field Engine (arbitrary closed-form field equations) ---
     /// Render kind selector (Auto infers from the compiled program).
-    #[id = "fekd"] pub field_kind: EnumParam<FieldKind>,
+    #[id = "fekd"] pub field_kind: EnumParam<HostFieldKind>,
     /// Phenomenon Gallery preset (Coulomb … Gaussian, or Custom = sidecar program).
     #[id = "fepr"] pub field_preset: EnumParam<FieldPreset>,
     /// Domain scale `k` — spatial-frequency multiplier applied to the sample
@@ -5731,7 +5777,7 @@ pub struct OrganicMathParams {
     /// Flux patch half-size (world units).
     #[id = "infs"] pub instr_flux_size: FloatParam,
     /// Flux patch orientation.
-    #[id = "infa"] pub instr_flux_axis: EnumParam<FluxAxis>,
+    #[id = "infa"] pub instr_flux_axis: EnumParam<HostFluxAxis>,
     /// Flux patch sample resolution (n per side).
     #[id = "infr"] pub instr_flux_res: FloatParam,
     /// Append a probe-trace CSV row each frame (to `ipc::probe_csv_path()`).
@@ -6032,7 +6078,7 @@ pub struct OrganicMathParams {
     /// Density source: Legacy (today's node metaball, byte-identical) / Auto (field
     /// generators → analytic energy, others → smoothed nodes) / Field-baked /
     /// Smoothed node.
-    #[id = "fvsr"] pub fv_source: EnumParam<FieldVolSource>,
+    #[id = "fvsr"] pub fv_source: EnumParam<HostFieldVolSource>,
     /// Smoothing-kernel width scale for the node bake (× the metaball radius). 1 =
     /// neutral; higher = softer, cloudier density.
     #[id = "fvsm"] pub fv_smooth: FloatParam,
@@ -6056,7 +6102,7 @@ pub struct OrganicMathParams {
     // --- Calibrated colour (#349): a cross-cutting colour-means-a-level tint ---
     /// Colour mode: Aesthetic (today's tint, byte-identical) or Calibrated (colour =
     /// a measured dB level via a legend-backed perceptual LUT).
-    #[id = "clmo"] pub col_mode: EnumParam<ColourMode>,
+    #[id = "clmo"] pub col_mode: EnumParam<HostColourMode>,
     /// Low end of the dB window mapped to the LUT (e.g. −60 dBFS → LUT 0).
     #[id = "cllo"] pub col_lo_db: FloatParam,
     /// High end of the dB window mapped to the LUT (e.g. 0 dBFS → LUT 1).
@@ -6065,7 +6111,7 @@ pub struct OrganicMathParams {
     #[id = "cllt"] pub col_lut: EnumParam<CalLut>,
     /// What "measured level" drives the colour: Auto (field → band dBFS, else LUFS) /
     /// Band / Loudness.
-    #[id = "clsc"] pub col_source: EnumParam<CalColourSource>,
+    #[id = "clsc"] pub col_source: EnumParam<HostCalColourSource>,
     /// Blend of the calibrated tint over the aesthetic tint (0..1).
     #[id = "clam"] pub col_amount: FloatParam,
 
@@ -7792,7 +7838,7 @@ impl Default for OrganicMathParams {
             // toggle. Match ipc::Shared::default().fdtd exactly (the Default→Shared golden).
             fdtd_on: BoolParam::new("FDTD Solver", false),
             fdtd_res: flin("FDTD Resolution", 64.0, 16.0, 96.0),
-            fdtd_source: EnumParam::new("FDTD Source", FdtdSource::Pulse),
+            fdtd_source: EnumParam::new("FDTD Source", HostFdtdSource::Pulse),
             fdtd_freq: flin("FDTD Frequency", 8.0, 0.5, 40.0),
             fdtd_drive: flin("FDTD Drive", 1.0, 0.0, 20.0),
             fdtd_substeps: flin("FDTD Substeps", 4.0, 1.0, 16.0),
@@ -7846,7 +7892,7 @@ impl Default for OrganicMathParams {
             ma_orbit_psi: flin("Ma Orbit ψ", std::f32::consts::FRAC_PI_2, 0.0, 6.283),
             ma_orbit_free: flin("Ma Orbit Free Rate", 0.05, 0.0, 2.0),
             // #381 Tier 1 Field Engine — defaults render the Coulomb gallery preset.
-            field_kind: EnumParam::new("Fe Kind", FieldKind::Auto),
+            field_kind: EnumParam::new("Fe Kind", HostFieldKind::Auto),
             field_preset: EnumParam::new("Fe Phenomenon", FieldPreset::Coulomb),
             field_scale: flin("Fe Domain Scale k", 1.0, 0.05, 8.0),
             field_extent: flin("Fe Box Extent", 6.0, 0.5, 40.0),
@@ -8435,7 +8481,7 @@ impl Default for OrganicMathParams {
             instr_flux_y: flin("Flux Y", 0.0, -20.0, 20.0),
             instr_flux_z: flin("Flux Z", 0.0, -20.0, 20.0),
             instr_flux_size: flin("Flux Patch Size", 2.0, 0.25, 20.0),
-            instr_flux_axis: EnumParam::new("Flux Axis", FluxAxis::X),
+            instr_flux_axis: EnumParam::new("Flux Axis", HostFluxAxis::X),
             instr_flux_res: flin("Flux Samples", 16.0, 2.0, 64.0),
             instr_csv_log: BoolParam::new("Probe CSV Log", false),
             // HUD panel presentation. Match ipc::Shared::default().instrument2 exactly.
@@ -8615,7 +8661,7 @@ impl Default for OrganicMathParams {
             an_reference_hud: BoolParam::new("Instrument HUD (visual)", false),
 
             // #348 Field Volume: Legacy source → today's Volume byte-identical.
-            fv_source: EnumParam::new("Field Volume Source", FieldVolSource::Legacy),
+            fv_source: EnumParam::new("Field Volume Source", HostFieldVolSource::Legacy),
             fv_smooth: flin("Volume Smoothing", 1.0, 0.25, 4.0),
             fv_exposure_db: flin("Volume Exposure (dB)", 0.0, -24.0, 24.0),
             fv_calibrate: BoolParam::new("Volume Calibrated Brightness", false),
@@ -8625,11 +8671,11 @@ impl Default for OrganicMathParams {
             fv_line_thickness: flin("Line Thickness", 0.09, 0.01, 0.5),
 
             // #349 Calibrated colour: Aesthetic → today's tint byte-identical.
-            col_mode: EnumParam::new("Colour Mode", ColourMode::Aesthetic),
+            col_mode: EnumParam::new("Colour Mode", HostColourMode::Aesthetic),
             col_lo_db: flin("Colour Low (dB)", -60.0, -120.0, 0.0),
             col_hi_db: flin("Colour High (dB)", 0.0, -60.0, 12.0),
             col_lut: EnumParam::new("Colour LUT", CalLut::Turbo),
-            col_source: EnumParam::new("Colour Source", CalColourSource::Auto),
+            col_source: EnumParam::new("Colour Source", HostCalColourSource::Auto),
             col_amount: flin("Colour Amount", 1.0, 0.0, 1.0),
 
             cam_path: EnumParam::new("Camera Path", HostCamPath::Off),
@@ -9776,6 +9822,44 @@ mod host_mirror_tests {
         assert_eq!(HostCamPath::from_u32(9999), HostCamPath::Off);
     }
 
+    // ── organon#49 T4a: the last six `world.rs` reaches for through `params` ────
+    //
+    // Each pair gets its own `host_*_mirrors_core` below, matching this file's existing
+    // convention. This one test covers the whole wave's `.core()` round-trip, which the
+    // per-enum tests do not: they pin the NAMES, this pins that the adapter and the
+    // semantic value agree on the variant at every index.
+
+    /// Every pair in this wave round-trips through the shared index, and out-of-range
+    /// lands on the same variant on both sides.
+    #[test]
+    fn host_field_enums_agree_on_round_trip_and_fallback() {
+        for (i, c) in FdtdSource::ALL.iter().enumerate() {
+            assert_eq!(HostFdtdSource::from_u32(i as u32).core(), *c);
+        }
+        for (i, c) in FieldVolSource::ALL.iter().enumerate() {
+            assert_eq!(HostFieldVolSource::from_u32(i as u32).core(), *c);
+        }
+        for (i, c) in ColourMode::ALL.iter().enumerate() {
+            assert_eq!(HostColourMode::from_u32(i as u32).core(), *c);
+        }
+        for (i, c) in CalColourSource::ALL.iter().enumerate() {
+            assert_eq!(HostCalColourSource::from_u32(i as u32).core(), *c);
+        }
+        for (i, c) in FieldKind::ALL.iter().enumerate() {
+            assert_eq!(HostFieldKind::from_u32(i as u32).core(), *c);
+        }
+        for (i, c) in FluxAxis::ALL.iter().enumerate() {
+            assert_eq!(HostFluxAxis::from_u32(i as u32).core(), *c);
+        }
+        // The documented defaults, which are also the out-of-range answers.
+        assert_eq!(HostFdtdSource::from_u32(9999).core(), FdtdSource::Pulse);
+        assert_eq!(HostFieldVolSource::from_u32(9999).core(), FieldVolSource::Legacy);
+        assert_eq!(HostColourMode::from_u32(9999).core(), ColourMode::Aesthetic);
+        assert_eq!(HostCalColourSource::from_u32(9999).core(), CalColourSource::Auto);
+        assert_eq!(HostFieldKind::from_u32(9999).core(), FieldKind::Auto);
+        assert_eq!(HostFluxAxis::from_u32(9999).core(), FluxAxis::X);
+    }
+
     #[test]
     fn host_palette_mirrors_core() {
         assert_mirrors(
@@ -9789,6 +9873,115 @@ mod host_mirror_tests {
         // `Native` is both ordinal 0 and the fallback — an unknown palette degrades to
         // today's look rather than to an arbitrary gradient.
         assert_eq!(HostPalette::from_u32(9999), HostPalette::Native);
+    }
+
+    // ── organon#49 T4a: the six that free `world.rs` from `params.rs` ───────────────
+    //
+    // With these pinned, every type `world.rs` names in `crate::params` resolves to
+    // `organon-core` — which is the precondition for moving `world.rs` itself.
+
+    #[test]
+    fn host_fdtd_source_mirrors_core() {
+        assert_mirrors(
+            "FdtdSource",
+            HostFdtdSource::variants(),
+            &FdtdSource::ALL.map(|v| (v.as_str(), v.to_u32())),
+        );
+        assert_eq!(HostFdtdSource::from_u32(9999), HostFdtdSource::Pulse);
+    }
+
+    #[test]
+    fn host_field_vol_source_mirrors_core() {
+        assert_mirrors(
+            "FieldVolSource",
+            HostFieldVolSource::variants(),
+            &FieldVolSource::ALL.map(|v| (v.as_str(), v.to_u32())),
+        );
+        assert_eq!(HostFieldVolSource::from_u32(9999), HostFieldVolSource::Legacy);
+    }
+
+    #[test]
+    fn host_colour_mode_mirrors_core() {
+        assert_mirrors(
+            "ColourMode",
+            HostColourMode::variants(),
+            &ColourMode::ALL.map(|v| (v.as_str(), v.to_u32())),
+        );
+        assert_eq!(HostColourMode::from_u32(9999), HostColourMode::Aesthetic);
+    }
+
+    /// ⚠️ **`CalColourSource::Auto` carries no `#[name]`**, so nih-plug *derives* its
+    /// display string instead of reading one. That makes this the only name in the wave
+    /// that is not written down anywhere, and this assertion is what establishes it. If
+    /// the derive's convention ever changes, this fails loudly rather than the editor's
+    /// dropdown quietly disagreeing with what `organon` prints.
+    #[test]
+    fn host_cal_colour_source_mirrors_core() {
+        assert_mirrors(
+            "CalColourSource",
+            HostCalColourSource::variants(),
+            &CalColourSource::ALL.map(|v| (v.as_str(), v.to_u32())),
+        );
+        assert_eq!(HostCalColourSource::from_u32(9999), HostCalColourSource::Auto);
+        // The derived name, stated: nothing else in the tree writes it down, so this is
+        // the assertion that establishes what core's `as_str` must copy.
+        assert_eq!(
+            HostCalColourSource::variants()[0],
+            "Auto",
+            "nih-plug's derived name for a variant with no #[name] is what core copies",
+        );
+    }
+
+    #[test]
+    fn host_field_kind_mirrors_core() {
+        assert_mirrors(
+            "FieldKind",
+            HostFieldKind::variants(),
+            &FieldKind::ALL.map(|v| (v.as_str(), v.to_u32())),
+        );
+        assert_eq!(HostFieldKind::from_u32(9999), HostFieldKind::Auto);
+    }
+
+    #[test]
+    fn host_flux_axis_mirrors_core() {
+        assert_mirrors(
+            "FluxAxis",
+            HostFluxAxis::variants(),
+            &FluxAxis::ALL.map(|v| (v.as_str(), v.to_u32())),
+        );
+        assert_eq!(HostFluxAxis::from_u32(9999), HostFluxAxis::X);
+    }
+
+    /// **The tier's own acceptance test, as code.** Not a mirror pin — this asserts the
+    /// *point* of T4a: that nothing `world.rs` names in `crate::params` still requires a
+    /// plugin host. It reads `world.rs`'s own import line, so it tracks the real file
+    /// rather than a list someone has to remember to update.
+    #[test]
+    fn every_param_type_world_names_is_in_core() {
+        let world = include_str!("world.rs");
+        let line = world
+            .lines()
+            .find(|l| l.contains("organic_math_native::params::{"))
+            .expect("world.rs must import its param types on one `params::{…}` line");
+        let inner = line
+            .split_once('{')
+            .and_then(|(_, r)| r.split_once('}'))
+            .expect("the params import should be a braced list")
+            .0;
+        // Every name on that line must resolve through `organon_core::params`. The
+        // compiler proves it for the ones below; this catches a NEW name being added to
+        // world.rs's import that only exists on the host side.
+        let known = [
+            "BoidsForm", "FuncName", "GeneratorMode", "OscDivision", "ParamValues",
+        ];
+        for name in inner.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            assert!(
+                known.contains(&name),
+                "world.rs imports `params::{name}`, which organon#49 T4a has not \
+                 confirmed lives in organon-core. Move it there (with a Host* mirror and \
+                 a pin) before Tier 4 moves world.rs, or this import blocks the move.",
+            );
+        }
     }
 
     /// **The tier's own acceptance test, as code.** `cli.rs` and `agent.rs` sit on

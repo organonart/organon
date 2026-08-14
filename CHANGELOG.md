@@ -11,6 +11,28 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The last six params between `world.rs` and the plugin crate
+
+organon#49 Tier 4a. `FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`,
+`FieldKind` and `FluxAxis` join core, each with a `Host*` mirror and an element-wise pin —
+the T1/T2 machine, run a third time. Eighteen variants in total, against `GeneratorMode`'s
+27 alone.
+
+**What this closes.** `world.rs` names 26 things from `crate::params`; every one is a
+*value* type and none is `OrganicMathParams`. With these six in core, **all 26 resolve
+below the plugin crate.** The parameters are no longer what holds `World` upstream — the
+modules it imports are (`cli`, `agent`, `scene_input`, `frame_ring`, `egui_platform`).
+
+📌 `FluxAxis::normal` travelled with the semantic type rather than staying on the mirror,
+because `world.rs` calls it (`axis.normal(center)`, twice) and it is pure glam.
+
+⚠️ **`CalColourSource::Auto` carries no `#[name]`**, so nih-plug *derives* its display
+string rather than reading one — the only name in this wave written down nowhere. Core's
+`as_str` has to state that derived string literally, and
+`host_cal_colour_source_mirrors_core` now asserts it explicitly. Get it wrong and the DAW's
+dropdown and the CLI's resolver disagree about a name neither file spells out, silently.
+
+
 ### `organon-scene` — the substrate moves below the plugin
 
 organon#49 Tier 3. Five modules — `substrate_scene`, `substrate_materials`,
