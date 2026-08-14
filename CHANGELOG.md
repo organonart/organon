@@ -32,7 +32,6 @@ string rather than reading one — the only name in this wave written down nowhe
 `host_cal_colour_source_mirrors_core` now asserts it explicitly. Get it wrong and the DAW's
 dropdown and the CLI's resolver disagree about a name neither file spells out, silently.
 
-
 ### `organon-scene` — the substrate moves below the plugin
 
 organon#49 Tier 3. Five modules — `substrate_scene`, `substrate_materials`,
