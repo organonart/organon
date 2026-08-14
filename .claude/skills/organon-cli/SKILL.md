@@ -155,6 +155,31 @@ And one thing that is not about the lane: a camera command with **no portal open
 `background world`** moves the viewpoint somewhere nothing is drawing it. It succeeds and
 changes no pixel. Open the portal first.
 
+### 🚨 If a human asks for one of these, tell them to type it — do not run it for them
+
+Every `organon console` verb above is also a **slash command in the console's own composer**:
+`/background slate`, `/rig daylight`, `/block 12`, `/portal open`, `/camera reset distance 40`,
+`/camera.read`. Same verbs, same table, same op — the composer's list is *generated* from the
+one the tools you hold are generated from, so it cannot fall behind. `/help` lists it.
+
+**Typed by the person, it runs at once**: no message to you, no inference, no tool call, no
+approval card. Routed through you instead, the same command costs a turn, a tool search and a
+click — measured at about thirteen seconds for `organon console posture desktop`, which is why
+this surface exists at all.
+
+So when James says "make the background slate" in a console tab, the useful answer is
+**`/background slate`** — the words to type — not a tool call on his behalf. Reach for the tool
+yourself when *you* want the console to do something as part of your own work (framing a shot
+you are about to snap, opening a gap you are about to print into). The rule is who wanted it,
+not who is nearer the keyboard.
+
+⚠️ Two grammar notes, because the slash form is not the flag form. The verb loses its
+`organon console` prefix and its dashes: required arguments are positional and optional ones
+are keyword-tagged, so `--distance 40` is typed `distance 40`. That is not a third spelling to
+memorise — **the typed line minus its slash is exactly the sidecar line** the CLI prints as
+`queued: …`. And `//` at the start of a line sends it to the agent unchanged, for the rare
+message that really does begin with a slash.
+
 Your changes ride an **override lane**. Two rules follow from that:
 
 - **The human always wins.** If a person moves a physical slider for a parameter

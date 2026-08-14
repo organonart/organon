@@ -1608,12 +1608,20 @@ transcript, so two conversation tabs both start at 0. Closing a tab renumbers th
 against a class of bug where one conversation paints into another's rectangle.
 
 **Summoning is deliberately a separate seam.** `/surface` typed in the composer is recognised
-by `conversation_view::local_command`, acted on locally and **never written to stdin**;
-`Transcript::insert_artifact` is a method rather than a ninth `AgentEvent`, because no
-harness said this and putting it in the event enum would oblige every mapping to carry an
-event none of them can produce. That is what makes the next step small: the agent summons
-a surface with a tool call, the integrator answers it with the same `insert_artifact`, and
-the local command is deleted without touching anything that draws.
+by the command registry (§1.8) as its `view.surface` entry, acted on locally and **never
+written to stdin**; `Transcript::insert_artifact` is a method rather than a ninth `AgentEvent`,
+because no harness said this and putting it in the event enum would oblige every mapping to
+carry an event none of them can produce. That is what makes the next step small: the agent
+summons a surface with a tool call, the integrator answers it with the same `insert_artifact`,
+and the registry entry is deleted without touching anything that draws.
+
+✏️ **The recogniser it used to live in has become something much larger, and §1.8 owns why.**
+`conversation_view::local_command` matched the single string `/surface` and forwarded
+everything else. It was described here as a temporary seam — it still is, for *this* verb —
+but the mechanism it needed is the one the console needed for a different reason entirely: a
+human's console command was costing an agent round trip and an approval card. The console's
+whole verb vocabulary is now typeable in this composer, generated from the same table the MCP
+tools are generated from.
 
 🚨 **`/panel` is gone, and its machinery with it.** It summoned a panel wired to the
 console's *backdrop* — which a conversation has no scrollback to band across, so the effect
@@ -2772,6 +2780,147 @@ and one pins that the whole scrollback is laid out rather than the visible slice
 egui culls, every figure in the document is about the wrong thing and that test says so. The
 benchmark itself is `#[ignore]`d; §8 of the document is the list of what it did **not** measure.
 
+### 1.8 The command registry — one table, four front doors
+
+**The console's own verbs now have one vocabulary and several spellings, and the newest
+spelling is a slash command a human types into the composer.** `organon-shell/src/registry.rs`
+is the table; `shell_main.rs`'s `console_specs()` / `mcp_specs()` is what fills it.
+
+🚨 **The measurement that forced this.** On 2026-08-13 James typed
+`organon console posture desktop` into a conversation tab. The text was sent to the agent as a
+message; the agent ran inference to decide what it meant; it made a tool-search call to *find*
+the tool; it called the tool; and the console then raised an approval card asking James to
+approve his own command. **About thirteen seconds and a chunk of context for a command he had
+already decided on.**
+
+Nothing in that chain was a bug. It is what the console's older architecture forced: it
+composited *around* a harness it did not own — Claude Code in a PTY, Pi in WSL — and therefore
+had no way to hear a human's intent except through that harness. That is exactly why the MCP
+tools and the `organon console …` CLI exist, and both remain right for the callers they were
+built for. What changed is that §1.1's front-end **owns the composer**, and nobody revisited
+the assumption afterwards.
+
+#### The four doors, and why none of them is redundant
+
+| Door | Who is talking | Route |
+|---|---|---|
+| `organon console background slate` | a terminal, a script, a harness with no other way in | clap → `cli::ConsoleOp` → the sidecar |
+| `mcp__organon__console_background` | an agent, on its own initiative | MCP tool → `ConsoleDispatch` → the sidecar |
+| `/background slate` | **a human, in the composer** | `Registry::resolve` → `ConsoleDispatch` → the sidecar |
+| a pie-menu wedge | a human, with a pointer | **not built** — the registry is shaped for it |
+
+They already converged on `Shell::apply_console(&ConsoleOp)`, which is what makes several
+entry points safe in the first place. This tier makes the **vocabulary** converge too: the
+slash surface is *generated* from the same `Vec<CommandSpec>` the MCP schemas are generated
+from, so a verb cannot exist for an agent and not for the person in front of the console.
+`every_console_verb_is_typeable_as_a_slash_command` and
+`every_surface_of_a_verb_produces_the_same_console_op` (both in `shell_main.rs`) are what hold
+that to more than an intention — the second one asserts that `/camera reset distance 40`, the
+agent's tool arguments, and the CLI's own `ConsoleOp` are one value.
+
+📌 **The typed line, minus its slash, *is* the sidecar line.** `/camera reset distance 40` and
+`camera reset distance 40` are the same words in the same order, because the slash grammar is
+derived to match `cli::console_op_to_line`: **required arguments positional in declared order,
+optional ones keyword-tagged, an optional `Bool` a bare flag.** So `queued: camera reset
+distance 40` printed by the CLI tells a human exactly what to type in the composer, with no
+translation table between them.
+
+#### What a slash command costs, and what it still owes
+
+🚨 **No message, no inference, no tool search, no approval card, no tokens.**
+`ConversationPane::submit` resolves the line *before* the session is even looked up.
+
+⚠️ **The approval model is untouched and still correct**, because it answers a different
+question — *may this agent act on my behalf* — and a person's own keystroke was never that
+question. That is why `Capabilities` now carries **two** dispatches: `dispatch`, which the MCP
+server moves onto its serve thread behind the gate, and `local`, which the composer reaches
+directly. Both are `ConsoleDispatch`, built in `shell_main` from one type.
+
+⚠️ **It is still audited.** The console lane applies nothing locally: it hands the validated
+call to the same dispatch the agent's tools use, which writes the console's sidecar, which
+`Shell::drain_console` drains next frame through the real `CommandService` — leaving a
+`CommandRun` record either way. A slash command skips the agent, not the discipline. It also
+inherits the honest consequence: the receipt says **accepted**, not applied.
+
+#### The hierarchy, and how a pie menu generates itself from it
+
+An `Entry` is a **group**, a **verb** and its **arguments**, never a flat string. The dotted
+catalog name is split once, here, on the **first** dot: `console.background` is group
+`console`, verb `background`; `console.camera.read` is group `console`, verb `camera.read`
+(typed `/camera.read`). Splitting on the last dot instead would invent a `console.camera` ring
+with one wedge in it.
+
+A radial menu is then three reads and no new table:
+
+1. `Registry::groups()` → the root ring (`console`, `view`).
+2. `Registry::verbs_in(group)` → the second ring, each wedge labelled `Entry::verb()` and
+   described by `Entry::doc()`.
+3. `Entry::args()` → the third. **An argument whose `ArgKind` is `Choice` already *is* a ring
+   of wedges** — one per option, closed and validated, because those options were built from
+   `substrate_materials`' own tables rather than restated. `Float` carries its band, so it is a
+   dial. `Int`/`Text` have no closed value space and are the one case needing a typed field.
+
+A wedge press builds the same `(name, args)` pair `Registry::resolve` builds from a typed line
+and hands it to the same dispatch. **The menu is a second renderer of this table, never a
+second table** — which is the whole reason the hierarchy is carried explicitly rather than left
+implicit in a dotted string.
+
+#### Two lanes, because two different things answer
+
+`Lane::Console` verbs are handed down by `shell_main` and act on the console. `Lane::View`
+verbs are answered inside the conversation view and never leave it: `view.surface` (`/surface`,
+unchanged in spelling and behaviour) and `view.help`. They share the registry because a human
+types them in one box and a menu should draw them in one tree; they are marked because the code
+that runs them is not the same code.
+
+⚠️ **The slash namespace is flat while the registry is not**, so two groups can collide on a
+verb word. The first claimant wins and the loser is **reported** — into the pane's log, where a
+human is — rather than being silently untypeable. That is `mcp::McpServer::name_collisions`'
+discipline one layer out, and `every_console_verb_is_typeable_as_a_slash_command` pins that the
+real table has no collision.
+
+#### Recognising a command without swallowing a message
+
+The predecessor of this was `conversation_view::local_command`: an exact match on the single
+string `/surface`, forwarding everything else. Its stated reason was that the two mistakes are
+wildly asymmetric — failing to recognise a command sends a slash-word to the agent, which is
+merely odd, while over-recognising one **swallows a real message**, and the composer cleared
+either way.
+
+That reason survives; the instrument does not, because forwarding `/surfaces` to an agent is
+its own silent failure — the console knows the verb does not exist and says nothing. **A
+refusal is what makes both properties hold at once**: it names what would have worked, and the
+caller does **not** clear the composer, so nothing a person typed can vanish. A refusal is
+recoverable; a swallow is not.
+
+The rules, in order:
+
+1. A line that does not begin with `/` is a message. **This alone is what keeps a *mention*
+   reaching the agent** — "what does `/surface` do?", "use `/theme` for that" — because a
+   sentence about a command has words in front of it.
+2. `//` is the escape: the rest goes to the agent with one slash removed.
+3. A bare `/` names no verb, so there is nothing to refuse. A message, exactly as before.
+4. Otherwise the first word must be a verb in the table and the rest must satisfy that verb's
+   own schema. Anything else is a refusal naming the alternatives.
+
+⚠️ **Every value is checked in `registry.rs` even though the dispatch checks it again**, and
+that is not redundancy for its own sake: this is the only gate with a human in front of it, so
+it is the only one whose message can name the alternatives *while the words are still in the
+composer to be edited*. By the time `validate_args` sees them the line has been sent.
+
+⚠️ **`/help` is generated from the table**, so a verb added to `console_specs()` documents
+itself in the composer with no edit. It lands in the pane's log — which is drawn at the **head**
+of the scrollback, so in a long conversation it is a scroll away. That is a real limitation and
+it is the log's, not this tier's: the transcript has no element for "the console said this",
+and inventing one is a change to the conversation model rather than to the command registry.
+
+⚠️ **What is *not* generated is the CLI's clap surface.** `bin/ctl.rs` still declares its
+subcommands by hand; what binds it to this table is that its `PossibleValuesParser` lists are
+built from the **same word tables** (`substrate_materials::MATERIAL_NAMES`, `cli::PORTAL_WORDS`,
+`kind::KIND_WORDS`) the `Choice` options are, and its own tests pin that. So the *values*
+cannot drift and the *verb list* still can. Generating clap from `CommandSpec` is the remaining
+quarter of "one vocabulary" and is not done.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -2784,6 +2933,7 @@ benchmark itself is `#[ignore]`d; §8 of the document is the list of what it did
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `ConsoleDispatch` onto the audited drain, plus the one in-process read §1.3 adds) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
 | The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md` — the site-by-site investigation these follow from, now merged, carrying this correction as its own §1.1 amendment so the two cannot drift apart |
 | A **read** path for the console's own state | **The camera half has landed, on the MCP lane only** — `console.camera.read` (§1.3, "Reading it back"), answered in-process from the viewpoint `redraw` publishes. What is left is the *other* transport and the *other* verbs. `organon console …` is still fire-and-forget with no return path, so the CLI reads nothing; the honest fix there is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs. ⚠️ **Do not generalise the camera's shape to reach it.** A published cell works because the camera is one small `Copy` tuple owned by the frame path; "the console's state" at large is panes, transcripts and textures, and a cell per fact is a second state tree that will drift from the first. ⚠️ The other tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
+| The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
@@ -3185,11 +3335,20 @@ path silently breaks the three-products-simultaneously guarantee that
   first time a capture shows one; until then the honest state is that a model's reasoning is
   invisible in this front-end.
 - **`/surface` is a temporary summoning seam and is not the feature.** The feature is the
-  element; the local command is scaffolding that exists because agent-summoned artifacts
-  are the next step. Exact-match only (`/surfaces` and `/surface slate` go to the agent),
-  because over-recognising swallows a real message while the composer clears either way.
-  `/panel`, which was the other one, is **removed** — see the summoning seam above for why
-  and for what came out with it.
+  element; the command is scaffolding that exists because agent-summoned artifacts are the next
+  step. ✏️ **What has changed is everything around it**: it is now one entry in the command
+  registry (§1.8) rather than a two-arm match, and `/surfaces` is **refused with the known
+  list** instead of being forwarded to the agent — a refusal leaves the words in the composer,
+  so the "over-recognising swallows a real message" hazard the old rule was defending against
+  is closed more tightly than exact-matching closed it. `/panel`, which was the other one, is
+  still **removed** — see the summoning seam above for why and for what came out with it.
+- ⚠️ **The slash surface has not been driven by a hand.** It is green, unit-tested end to end
+  in `registry.rs` (parse, refuse, help) and pinned against the real verb table in
+  `shell_main.rs` — but no one has yet typed `/background slate` into a running console and
+  watched the backdrop move, and `/help`'s placement at the head of the scrollback is a
+  judgement made from reading the layout rather than from looking at it. The tests that
+  matter most here are the ones a green build cannot supply: whether the receipt lands where
+  a person's eye is, and whether refusing an unknown command reads as helpful or as fussy.
 - ✅ **The composer has been driven by a human, and the keystroke contract holds on real
   hardware.** Checked 2026-08-12 on organon-one by James at the keyboard, in a live
   conversation tab: three rows at rest, the hint carrying the contract, and **Enter sends
