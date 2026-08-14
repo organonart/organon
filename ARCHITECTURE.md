@@ -485,9 +485,11 @@ both binaries together. After any layout growth, **close and reopen the visual w
 
 ## 7. Parameters (`params.rs`)
 
-> ⚠️ **Eight enum params are SPLIT across two crates, and the split has a rule.**
-> `FuncName` (#626 T3); `GeneratorMode`, `BoidsForm`, `OscDivision` (organon#49 T1); and
-> `SurfaceMode`, `MaterialType`, `CamPath`, `Palette` (organon#49 T2) are declared
+> ⚠️ **Fourteen enum params are SPLIT across two crates, and the split has a rule.**
+> `FuncName` (#626 T3); `GeneratorMode`, `BoidsForm`, `OscDivision` (organon#49 T1);
+> `SurfaceMode`, `MaterialType`, `CamPath`, `Palette` (organon#49 T2); and `FdtdSource`,
+> `FieldVolSource`, `ColourMode`, `CalColourSource`, `FieldKind`, `FluxAxis`
+> (organon#49 T4a) are declared
 > **plain** in `organon-core::params` and mirrored in `params.rs` as `Host<Name>`, which
 > carries nih-plug's `#[derive(Enum)]`. The **orphan rule** makes this unavoidable rather
 > than merely preferable: `organic-math-native` cannot
@@ -512,6 +514,11 @@ both binaries together. After any layout growth, **close and reopen the visual w
 > *reordering* — and the index **is** the wire format, shared by `Shared`, presets and
 > automation lanes, so a reorder silently recalls the wrong generator rather than failing
 > loudly. Add a variant to **both**, at the tail.
+>
+> 📌 **After T4a, nothing `world.rs` names in `crate::params` requires nih-plug.** That
+> was the point of the third wave: `world.rs` pulled 26 references from `params.rs`, all
+> of them *value* types, and the six above were the ones not yet in core. The blocker to
+> moving `World` below the plugin crate is now the modules it imports, not the params.
 >
 > 📌 **`cli.rs` and `agent.rs` are nih-plug-free outside their test blocks, and a test
 > keeps them that way** (`cli_and_agent_are_free_of_nih_plug_outside_tests`). That is not
@@ -1868,7 +1875,7 @@ guard fails the run outright rather than shipping the broken manifest.
 | `organon-core/src/tabs.rs` | #626 T3 — the editor's **tab taxonomy**: `UiTab` (the tab bar) + `EditorTab` (the 7-way preset partition). Lifted out of `preset.rs`, which keeps its nih-plug `ParamSetter` logic. Re-exported as `crate::preset::{UiTab, EditorTab}` (§19.0) |
 | `organon-core/src/kind.rs` | #48 T1 — the console's **kind** vocabulary: `Kind` (`scene`/`panel`), `KIND_WORDS`, and `resolve`, whose refusal carries the known list. Here because the two front-ends that had a copy each are in *different* crates (`cli.rs`, `organon-shell/conversation.rs`) and this is the only one both can see; a closed set of words needs no host, GPU or UI. ⚠️ No `Default` — the "a kindless `patch` line means `scene`" rule is that lane's and lives in `cli::PATCH_DEFAULT_KIND` |
 | `organon-core/src/lib.rs` | #626 T3 — the core crate root. Its header records what may and may not enter core |
-| `organon-core/src/params.rs` | #626 T3 / organon#49 T1+T2 — the param types with **no host concern**: `ParamValues` (the algorithm's numeric block), the `IndexedEnum` trait (core's counterpart to nih-plug's `Enum`), and **eight** semantic enums — `FuncName`, `GeneratorMode`, `BoidsForm`, `OscDivision`, `SurfaceMode`, `MaterialType`, `CamPath`, `Palette`. Each is mirrored in `params.rs` by a `Host*` adapter carrying nih-plug's derive (the orphan rule; §7 owns the contract) and pinned to it by a `host_*_mirrors_core` test. Re-exported, so `crate::params::GeneratorMode` still resolves |
+| `organon-core/src/params.rs` | #626 T3 / organon#49 T1+T2+T4a — the param types with **no host concern**: `ParamValues` (the algorithm's numeric block), the `IndexedEnum` trait (core's counterpart to nih-plug's `Enum`), and **fourteen** semantic enums — `FuncName`, `GeneratorMode`, `BoidsForm`, `OscDivision`, `SurfaceMode`, `MaterialType`, `CamPath`, `Palette`, `FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`, `FieldKind`, `FluxAxis`. Each is mirrored in `params.rs` by a `Host*` adapter carrying nih-plug's derive (the orphan rule; §7 owns the contract) and pinned to it by a `host_*_mirrors_core` test. Re-exported, so `crate::params::GeneratorMode` still resolves |
 | `mind_ui.rs` | #483 Tier 1 — the shared Mind-UI chrome: edition-filtered tab bar, active-tab clamp, product heading (+ tests). Tier 2 factors the Mind card body in here |
 | `mind_main.rs` | #483 Tier 1 — the `organon-mind` standalone entry point (`required-features = ["mind-edition"]`) |
 | `mind_ring.rs` | #367 Tier 2 activation-ring mmap: `MindRing`/`MindFrame` + `MindRingWriter`/`MindRingReader` (separate channel from `Shared`; per-token model activations → node-glow). Carries the Phase-B three-way append (#507 trajectory+lens / #505 sparse experts / #409 SAE features), its **pinned-offset** test, and the `frame_bytes` layout guard (+ tests) |

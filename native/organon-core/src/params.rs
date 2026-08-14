@@ -831,6 +831,254 @@ impl Palette {
     }
 }
 
+// ── organon#49 T4a: the last six enums `world.rs` reaches for through `params` ──────
+//
+// With these here, nothing `world.rs` names in `crate::params` requires nih-plug — which
+// is the precondition for `world.rs` itself moving below the plugin crate. Same split as
+// T1/T2, same `Host*` mirrors, same element-wise pins. Every one is small (2–4 variants);
+// the whole wave is 18 variants against `GeneratorMode`'s 27 alone.
+
+/// FDTD Maxwell solver (#412 T3) source waveform. `Pulse` is a one-shot Gaussian wavelet
+/// (the "watch it launch and travel" transient); `Cw` is a continuous sinusoid at the
+/// source frequency (steady radiation / resonance).
+///
+/// ⚠️ Append-only; the index is the wire format.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum FdtdSource {
+    Pulse,
+    Cw,
+}
+
+impl FdtdSource {
+    pub const ALL: [FdtdSource; 2] = [FdtdSource::Pulse, FdtdSource::Cw];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FdtdSource::Pulse => "Pulse",
+            FdtdSource::Cw => "CW (continuous)",
+        }
+    }
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> FdtdSource {
+        match v {
+            1 => FdtdSource::Cw,
+            _ => FdtdSource::Pulse,
+        }
+    }
+}
+
+/// Field Volume density source (#348) — how `SurfaceMode::Volume` bakes its density
+/// field. `Legacy` is the node point-set metaball bake and the default, so it stays
+/// byte-identical; the others render density instead of nodes.
+///
+/// ⚠️ Append-only; packed into `Shared.fieldvol[0]`.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum FieldVolSource {
+    Legacy,
+    Auto,
+    FieldBaked,
+    SmoothedNode,
+}
+
+impl FieldVolSource {
+    pub const ALL: [FieldVolSource; 4] = [
+        FieldVolSource::Legacy,
+        FieldVolSource::Auto,
+        FieldVolSource::FieldBaked,
+        FieldVolSource::SmoothedNode,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldVolSource::Legacy => "Legacy (node metaball)",
+            FieldVolSource::Auto => "Auto (field / smoothed)",
+            FieldVolSource::FieldBaked => "Field-baked (energy)",
+            FieldVolSource::SmoothedNode => "Smoothed node",
+        }
+    }
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> FieldVolSource {
+        match v {
+            1 => FieldVolSource::Auto,
+            2 => FieldVolSource::FieldBaked,
+            3 => FieldVolSource::SmoothedNode,
+            _ => FieldVolSource::Legacy,
+        }
+    }
+}
+
+/// Calibrated-colour mode (#349). `Aesthetic` is today's tint (HSV / palette / RGB-cube)
+/// and the default, so it stays byte-identical; `Calibrated` is colour that means a
+/// measured dB level, sampled from a legend-backed perceptual LUT.
+///
+/// ⚠️ Append-only; packed into `Shared.colour[0]`.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum ColourMode {
+    Aesthetic,
+    Calibrated,
+}
+
+impl ColourMode {
+    pub const ALL: [ColourMode; 2] = [ColourMode::Aesthetic, ColourMode::Calibrated];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColourMode::Aesthetic => "Aesthetic",
+            ColourMode::Calibrated => "Calibrated (dB)",
+        }
+    }
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> ColourMode {
+        match v {
+            1 => ColourMode::Calibrated,
+            _ => ColourMode::Aesthetic,
+        }
+    }
+}
+
+/// What "measured level" the calibrated colour reads (#349). `Auto` sends field
+/// generators (Maxwell / Acoustic) to their band's dBFS and everything else to momentary
+/// LUFS.
+///
+/// ⚠️ Append-only; packed into `Shared.colour[4]`.
+///
+/// 📌 `Auto` carries **no `#[name]`** on the host mirror, so nih-plug derives its display
+/// string rather than reading one. That is the one variant in this wave whose name is not
+/// written down anywhere, and `host_cal_colour_source_mirrors_core` is what establishes
+/// what it actually is — if this string is wrong, that test fails rather than the UI
+/// quietly disagreeing with the CLI.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum CalColourSource {
+    Auto,
+    Band,
+    Lufs,
+}
+
+impl CalColourSource {
+    pub const ALL: [CalColourSource; 3] = [
+        CalColourSource::Auto,
+        CalColourSource::Band,
+        CalColourSource::Lufs,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CalColourSource::Auto => "Auto",
+            CalColourSource::Band => "Band (dBFS)",
+            CalColourSource::Lufs => "Loudness (LUFS)",
+        }
+    }
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> CalColourSource {
+        match v {
+            1 => CalColourSource::Band,
+            2 => CalColourSource::Lufs,
+            _ => CalColourSource::Auto,
+        }
+    }
+}
+
+/// Field Engine (#381 T1) render-kind selector. `Auto` infers the kind by probing the
+/// compiled program; the explicit variants override it.
+///
+/// ⚠️ Append-only; rides `Shared.field[0]`.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum FieldKind {
+    Auto,
+    Scalar,
+    Vector,
+    Complex,
+}
+
+impl FieldKind {
+    pub const ALL: [FieldKind; 4] = [
+        FieldKind::Auto,
+        FieldKind::Scalar,
+        FieldKind::Vector,
+        FieldKind::Complex,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldKind::Auto => "Auto (infer)",
+            FieldKind::Scalar => "Scalar (density)",
+            FieldKind::Vector => "Vector (lines + aura)",
+            FieldKind::Complex => "Complex (|psi|^2 + phase)",
+        }
+    }
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> FieldKind {
+        match v {
+            1 => FieldKind::Scalar,
+            2 => FieldKind::Vector,
+            3 => FieldKind::Complex,
+            _ => FieldKind::Auto,
+        }
+    }
+}
+
+/// Orientation of the #391 T1 Poynting-flux measurement patch — the surface the
+/// instrument integrates energy flux through.
+///
+/// ⚠️ Append-only; packs into `Shared.instrument[13]`.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum FluxAxis {
+    X,
+    Y,
+    Z,
+    Radial,
+}
+
+impl FluxAxis {
+    pub const ALL: [FluxAxis; 4] = [FluxAxis::X, FluxAxis::Y, FluxAxis::Z, FluxAxis::Radial];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FluxAxis::X => "X",
+            FluxAxis::Y => "Y",
+            FluxAxis::Z => "Z",
+            FluxAxis::Radial => "Radial",
+        }
+    }
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+    pub fn from_u32(v: u32) -> FluxAxis {
+        match v {
+            1 => FluxAxis::Y,
+            2 => FluxAxis::Z,
+            3 => FluxAxis::Radial,
+            _ => FluxAxis::X,
+        }
+    }
+
+    /// The patch normal for a patch centred at `center`. Radial faces away from the
+    /// origin (falls back to +X at the origin).
+    ///
+    /// ⚠️ This travels with the semantic type rather than staying on the host mirror,
+    /// because `world.rs` calls it (`axis.normal(center)`, twice) and `world.rs` is what
+    /// organon#49 Tier 4 moves below the plugin crate. It is pure glam — no host in it.
+    pub fn normal(self, center: Vec3) -> Vec3 {
+        match self {
+            FluxAxis::X => Vec3::X,
+            FluxAxis::Y => Vec3::Y,
+            FluxAxis::Z => Vec3::Z,
+            FluxAxis::Radial => {
+                let n = center.normalize_or_zero();
+                if n == Vec3::ZERO {
+                    Vec3::X
+                } else {
+                    n
+                }
+            }
+        }
+    }
+}
+
 impl_indexed_enum!(
     FuncName,
     GeneratorMode,
@@ -840,6 +1088,12 @@ impl_indexed_enum!(
     MaterialType,
     CamPath,
     Palette,
+    FdtdSource,
+    FieldVolSource,
+    ColourMode,
+    CalColourSource,
+    FieldKind,
+    FluxAxis,
 );
 
 /// The vector-shaped numeric params consumed by [`crate::math::draw_tissue`].
