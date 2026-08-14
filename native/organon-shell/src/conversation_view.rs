@@ -41,6 +41,7 @@ use crate::approval::{
     PendingApproval,
 };
 use crate::block_panel::{DEFAULT_SLIDERS, SLIDER_WIDTH};
+use crate::card_density::{self, DensityMap, Row};
 use crate::command::CommandSpec;
 use crate::conversation::{
     AgentEvent, Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock,
@@ -495,6 +496,15 @@ pub struct ConversationPane {
     /// names the element it changed, so the exact answer is also the cheap one. Bounded
     /// like the other side maps by the `retain` at the end of [`scrollback`].
     diffs: HashMap<ElementId, Option<EditDiff>>,
+    /// How much room each settled tool card takes, and which groups a hand has opened
+    /// ([`crate::card_density`]).
+    ///
+    /// 🚨 **A side map for the same reason [`PanelState`] is one**, and with one extra
+    /// consequence: the automatic half of it is applied only while [`Self::pinned`] is true,
+    /// which is what stops a card completing far above a reader's viewport from changing the
+    /// height of what they are looking at. That argument is the module's, and the field is
+    /// where the `pinned` bit reaches it. Pruned by the same `retain` the other two get.
+    density: DensityMap,
     /// The button labels a summoned panel offers, **handed down** by whoever opened the
     /// tab. This crate cannot see the console's material table and must not learn to; it
     /// draws these and reports which was pressed ([`ArtifactAction`]).
@@ -648,6 +658,7 @@ impl ConversationPane {
             composer_height: 0.0,
             artifacts: HashMap::new(),
             diffs: HashMap::new(),
+            density: DensityMap::default(),
             buttons,
             sliders,
             approvals,
@@ -1347,11 +1358,40 @@ fn scrollback(
     // loop, the moment the button is read.
     let mut answered: Vec<(ElementId, Answer)> = Vec::new();
     let mut revoked: Vec<ElementId> = Vec::new();
+    // Density toggles, collected for the same reason a verdict is: the transcript and the
+    // density map are both read through the walk, so a press is applied after it.
+    let mut toggled_cards: Vec<ElementId> = Vec::new();
+    let mut toggled_groups: Vec<ElementId> = Vec::new();
     // Destructured so the transcript can be read while the widget state is written: they
     // are disjoint fields, and keeping them disjoint is the whole point of the side map.
     let ConversationPane {
-        transcript, artifacts, diffs, pinned, sliders: defaults, waiting, memory, log, ..
+        transcript,
+        artifacts,
+        diffs,
+        density: density_map,
+        pinned,
+        sliders: defaults,
+        waiting,
+        memory,
+        log,
+        ..
     } = pane;
+    // 🚨 **Everything about card density is decided here, before a single row is laid out**,
+    // and `*pinned` is what makes it safe: an automatic collapse is applied only while the
+    // view is following the live edge, where `stick_to_bottom` holds the last row still and
+    // the shrink is absorbed above it. `crate::card_density`'s module doc owns the argument.
+    // `*pinned` is last frame's reading, re-derived from where the reader actually left the
+    // scroll — which is exactly the question being asked, one frame's worth of lag included.
+    density_map.settle(transcript.elements().iter(), *pinned);
+    let gated = card_density::gated_calls(transcript.elements().iter());
+    let rows = card_density::plan(&card_density::slots(
+        transcript.elements().iter(),
+        density_map,
+        &gated,
+    ));
+    // Re-borrowed immutably for the walk; the toggles it collects are applied after it ends,
+    // which is when this borrow does.
+    let density: &DensityMap = density_map;
     let out = egui::ScrollArea::vertical()
         .auto_shrink(false)
         .stick_to_bottom(*pinned)
@@ -1394,7 +1434,10 @@ fn scrollback(
                         .italics(),
                     );
                 }
-                for element in transcript.elements() {
+                // One element, drawn as itself. A closure rather than the loop body it used
+                // to be, because there are now two callers: the ordinary walk, and the
+                // members of a group a hand has opened. The body is untouched.
+                let mut draw_body = |ui: &mut egui::Ui, element: &Element| {
                     match &element.body {
                         // The one body drawn here rather than in `draw_element`: it is the only
                         // one that needs state to survive between frames, and `draw_element`
@@ -1469,11 +1512,48 @@ fn scrollback(
                             let diff = diffs.entry(element.id).or_insert_with(|| {
                                 edit_diff(card.name.as_deref(), &card.arguments)
                             });
-                            tool_card(ui, card, diff.as_ref(), theme, form);
+                            // The one arm density reaches: a settled success is one line,
+                            // and everything else — running, failed, hand-opened — is the
+                            // card it always was. `tool_card` is unchanged.
+                            if density.is_open(element.id) {
+                                tool_card(ui, card, diff.as_ref(), theme, form);
+                            } else if dense_card(
+                                ui,
+                                element.id,
+                                card,
+                                diff.as_ref().map(|d| &d.diff),
+                                gated.contains(card.call_id.as_str()),
+                                theme,
+                                form,
+                            ) {
+                                toggled_cards.push(element.id);
+                            }
                         }
                         _ => draw_element(ui, element, theme, form),
                     }
                     ui.add_space(form.card_gap);
+                };
+                let elements = transcript.elements();
+                for row in &rows {
+                    match row {
+                        Row::One(index) => draw_body(ui, &elements[*index]),
+                        Row::Group { key, start, len } => {
+                            let open = density.is_group_open(*key);
+                            let line = card_density::group_line(
+                                elements.range(*start..*start + *len).filter_map(|e| e.tool()),
+                            );
+                            if group_row(ui, *key, &line, open, theme, form) {
+                                toggled_groups.push(*key);
+                            }
+                            if open {
+                                for index in *start..*start + *len {
+                                    draw_body(ui, &elements[index]);
+                                }
+                            } else {
+                                ui.add_space(form.card_gap);
+                            }
+                        }
+                    }
                 }
             };
             match form.content_margin() {
@@ -1489,6 +1569,15 @@ fn scrollback(
             }
         });
     *pinned = pinned_after_scroll(out.state.offset.y, out.content_size.y, out.inner_rect.height());
+    // A hand's answer, recorded as the hand's — nothing automatic ever undoes it, which is
+    // the whole of "a card that re-collapses under a reader's hand is worse than one that
+    // never collapsed". Applied after the walk for the same reason a verdict is.
+    for id in toggled_cards {
+        density_map.toggle_card(id);
+    }
+    for key in toggled_groups {
+        density_map.toggle_group(key);
+    }
     for (id, answer) in answered {
         transcript.answer_approval(id, answer);
     }
@@ -1514,6 +1603,9 @@ fn scrollback(
     // answered by a human, so dropping it here **denies** it (`crate::approval`) instead of
     // leaving the agent blocked for the rest of the session.
     waiting.retain(|id, _| transcript.get(*id).is_some());
+    // And once more for the density map, so a card the cap evicted takes its collapsed state
+    // and any group it anchored with it.
+    density_map.retain(|id| transcript.get(id).is_some());
     ConversationOutput { surfaces: join_drives(laid_out, drives) }
 }
 
@@ -1697,6 +1789,116 @@ fn tool_card(
             }
         });
     card_left_rule(ui, framed.response.rect, theme, form);
+}
+
+/// **A tool call that worked, as one line** — no frame, no bevel, no border.
+///
+/// James, looking at a real screenshot: *"a typical screenshot is five or six tool calls,
+/// each with a beveled border around it, so it feels like a list of bevel-bordered status
+/// updates. You don't want to see all that while you're developing."* This is the answer, and
+/// it is a *presentation* answer: [`crate::card_density`] decides **when**, and nothing
+/// anywhere drops a byte. The card is one click away and its full arguments, its full output
+/// and its correlation id are all still in the model.
+///
+/// Three parts, in the order a person reads them: **the verb, the object, and a magnitude**.
+/// Colour is spent on none of them — success is quiet, and a page of quiet rows is what makes
+/// the one red bordered failure legible from across the room.
+///
+/// 🚨 **The `toolu_` id is drawn when the call was gated, and that is the whole of how the
+/// approval↔result link survives.** An approval card and the result it authorises share
+/// nothing but that id (`doc/console_approval_protocol.md` §3), so a gated call keeps its own
+/// row ([`card_density::Slot::gated`]) *and* keeps the id on it. An ungated call has no
+/// approval to be linked to; its id is one click away like everything else.
+///
+/// Returns whether the row was clicked.
+fn dense_card(
+    ui: &mut egui::Ui,
+    id: ElementId,
+    card: &ToolCard,
+    diff: Option<&LineDiff>,
+    gated: bool,
+    theme: &Theme,
+    form: &Form,
+) -> bool {
+    let line = card_density::dense_line(card, diff);
+    ui.push_id(id.0, |ui| {
+        let mut hit = false;
+        ui.horizontal(|ui| {
+            let mark = RichText::new(card_density::MORE).color(theme.dim).monospace();
+            hit |= ui
+                .add(egui::Label::new(mark).sense(egui::Sense::click()))
+                .on_hover_text("open — the arguments, the output and the id are all still here")
+                .clicked();
+            let verb = RichText::new(&line.verb).color(theme.prose).monospace();
+            hit |= ui.add(egui::Label::new(verb).sense(egui::Sense::click())).clicked();
+            if let Some(object) = &line.object {
+                let object = RichText::new(object).color(theme.dim).monospace().small();
+                hit |= ui.add(egui::Label::new(object).sense(egui::Sense::click())).clicked();
+            }
+            if let Some(magnitude) = &line.magnitude {
+                let magnitude = label(ui, format!("· {magnitude}"), theme.dim, form);
+                hit |= ui.add(egui::Label::new(magnitude).sense(egui::Sense::click())).clicked();
+            }
+            if gated {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(card.call_id.as_str()).color(theme.dim).small().monospace(),
+                    );
+                });
+            }
+        });
+        hit
+    })
+    .inner
+}
+
+/// **A run of calls that all worked, as one row.**
+///
+/// The second half of the density rule: six dense lines are quieter than six cards, and one
+/// row is quieter still. What it says is a count and the verbs — see
+/// [`card_density::GroupLine`] for why there is no duration in it, which is the one thing the
+/// brief that commissioned this asked for and the wire does not carry.
+///
+/// ⚠️ **Expanding does not restructure.** The group's membership is decided by
+/// [`card_density::plan`] from the *settled* bit alone, so opening it — or opening one of its
+/// members afterwards — makes rows taller and never splits the group under the reader's hand.
+///
+/// Returns whether the row was clicked.
+fn group_row(
+    ui: &mut egui::Ui,
+    key: ElementId,
+    line: &card_density::GroupLine,
+    open: bool,
+    theme: &Theme,
+    form: &Form,
+) -> bool {
+    // ⚠️ Namespaced, because the key IS the first member's [`ElementId`] and that member's own
+    // row pushes the same number one level down. Two siblings on one id is an egui clash.
+    ui.push_id(("card-density-group", key.0), |ui| {
+        let mut hit = false;
+        ui.horizontal(|ui| {
+            let mark = if open { card_density::LESS } else { card_density::MORE };
+            let mark = RichText::new(mark).color(theme.dim).monospace();
+            hit |= ui
+                .add(egui::Label::new(mark).sense(egui::Sense::click()))
+                .on_hover_text(if open {
+                    "collapse — every call here succeeded"
+                } else {
+                    "open — every call here succeeded"
+                })
+                .clicked();
+            let count = RichText::new(&line.count).color(theme.prose).monospace();
+            hit |= ui.add(egui::Label::new(count).sense(egui::Sense::click())).clicked();
+            if let Some(verbs) = &line.verbs {
+                // `·` U+00B7 is carried by both of egui's faces — the same glyph the subagent
+                // header and `capability_label` already use.
+                let verbs = label(ui, format!("· {verbs}"), theme.dim, form);
+                hit |= ui.add(egui::Label::new(verbs).sense(egui::Sense::click())).clicked();
+            }
+        });
+        hit
+    })
+    .inner
 }
 
 /// What a dispatch card's progress row says, as text — the judgment, without the egui.
@@ -4298,6 +4500,137 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Card density, through the real `scrollback`. [`crate::card_density`]'s own tests hold
+    // the judgments; these hold the **wiring** — that the collapse gate is fed the pane's
+    // scroll state and not `true`, and that the map is pruned like every other side map.
+    // Both are things a green build cannot tell you.
+
+    /// A pane holding one finished tool call, plus the element's id.
+    fn pane_with_finished_call(name: &str, is_error: bool) -> (ConversationPane, ElementId) {
+        pane_with_finished_call_capped(name, is_error, Transcript::new())
+    }
+
+    fn pane_with_finished_call_capped(
+        name: &str,
+        is_error: bool,
+        transcript: Transcript,
+    ) -> (ConversationPane, ElementId) {
+        let mut pane = rewrap_bench::bench_pane(transcript);
+        let id = crate::conversation::ToolId("toolu_one".into());
+        pane.absorb(AgentEvent::ToolCall {
+            id: id.clone(),
+            name: name.into(),
+            arguments: Some(r#"{"file_path":"src/lib.rs"}"#.to_string()),
+        });
+        pane.absorb(AgentEvent::ToolResult {
+            id,
+            output: "a\nb\nc".into(),
+            is_error,
+            detail: ResultDetail::default(),
+        });
+        let element = pane.transcript.elements()[0].id;
+        (pane, element)
+    }
+
+    /// 🚨 **CONTRACT: the collapse gate is fed the pane's own scroll state.**
+    ///
+    /// This is the wiring half of the scroll-stability argument — the pure half is
+    /// `card_density::nothing_settles_while_a_reader_is_scrolled_up`. A `scrollback` that
+    /// passed `true` here would compile, pass every unit test in that module, and jump a
+    /// reader's view every time a long-running call finished above them.
+    #[test]
+    fn a_card_collapses_only_while_the_view_is_following_the_live_edge() {
+        let (mut pane, id) = pane_with_finished_call("Read", false);
+        pane.pinned = false;
+        draw_once(&mut pane);
+        assert!(pane.density.is_open(id), "a reader scrolled up sees no height change");
+
+        pane.pinned = true;
+        draw_once(&mut pane);
+        assert!(!pane.density.is_open(id), "back at the live edge, it settles");
+    }
+
+    /// 🚨 **CONTRACT: a failure keeps its weight even at the live edge.** The one card the
+    /// density rule must never touch, checked through the same path that collapses the
+    /// others.
+    #[test]
+    fn a_failed_card_is_never_collapsed_by_the_walk() {
+        let (mut pane, id) = pane_with_finished_call("Bash", true);
+        pane.pinned = true;
+        for _ in 0..3 {
+            draw_once(&mut pane);
+            assert!(pane.density.is_open(id), "a failure stays open, bordered and loud");
+        }
+    }
+
+    /// The same `retain` line every other side map gets, for the same reason.
+    #[test]
+    fn a_card_the_cap_evicted_takes_its_density_with_it() {
+        let capped = Transcript::with_limits(crate::conversation::Limits {
+            max_elements: 2,
+            ..crate::conversation::Limits::default()
+        });
+        let (mut pane, id) = pane_with_finished_call_capped("Read", false, capped);
+        pane.pinned = true;
+        draw_once(&mut pane);
+        assert!(!pane.density.is_open(id), "the card settled, so there is state to lose");
+
+        // Push past the cap; the transcript evicts from the front, taking the card with it.
+        // ⚠️ Ids are never reused, so the check below cannot be satisfied by a collision.
+        pane.absorb(AgentEvent::HumanInput { text: "one".into() });
+        pane.absorb(AgentEvent::HumanInput { text: "two".into() });
+        assert!(pane.transcript.get(id).is_none(), "the element really is gone");
+        draw_once(&mut pane);
+        assert!(pane.density.is_open(id), "an evicted element's density is forgotten");
+    }
+
+    /// 🚨 **CONTRACT: an approval and the result it authorises stay linked.** The `toolu_` id
+    /// is the only thing joining them (`doc/console_approval_protocol.md` §3), so the gated
+    /// call keeps a row of its own — never inside a group, where the id would not be drawn.
+    #[test]
+    fn an_approval_and_the_result_it_authorised_stay_linked() {
+        let mut pane = rewrap_bench::bench_pane(Transcript::new());
+        pane.transcript.insert_approval(ApprovalBlock {
+            tool_name: "Bash".into(),
+            input: r#"{"command":"ls"}"#.into(),
+            tool_use_id: "toolu_gated".into(),
+            state: ApprovalState::Pending,
+        });
+        for (index, id) in ["toolu_gated", "toolu_b", "toolu_c", "toolu_d"].iter().enumerate() {
+            let id = crate::conversation::ToolId((*id).into());
+            pane.absorb(AgentEvent::ToolCall {
+                id: id.clone(),
+                name: format!("Tool{index}"),
+                arguments: Some("{}".to_string()),
+            });
+            pane.absorb(AgentEvent::ToolResult {
+                id,
+                output: String::new(),
+                is_error: false,
+                detail: ResultDetail::default(),
+            });
+        }
+        pane.pinned = true;
+        draw_once(&mut pane);
+
+        let elements = pane.transcript.elements();
+        let gated = card_density::gated_calls(elements.iter());
+        assert!(gated.contains("toolu_gated"), "the id comes off the approval card itself");
+        let rows =
+            card_density::plan(&card_density::slots(elements.iter(), &pane.density, &gated));
+        // The approval is row 0, the gated call keeps row 1 to itself, and only the three
+        // ungated calls behind it become a group.
+        assert_eq!(
+            rows,
+            vec![
+                Row::One(0),
+                Row::One(1),
+                Row::Group { key: elements[2].id, start: 2, len: 3 },
+            ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // The diff cache. See [`ConversationPane::diffs`] for what it is for and
     // `conversation_view/edit_diff_bench.rs` for what it saves.
 
@@ -5975,7 +6308,45 @@ mod tests {
             // Belt and braces on the one that regressed: the dingbats are gone by name.
             assert!(!mark.contains('✓') && !mark.contains('✗'), "{state:?} is back on a dingbat");
         }
-        assert!(checked >= 9, "the guard must actually have looked at something: {checked}");
+        // The density rows — the newest site, and the reason this guard is an allowlist. A
+        // disclosure triangle is the obvious character for both marks and is in none of the
+        // four fonts, exactly like the dingbats above.
+        for mark in [card_density::MORE, card_density::LESS] {
+            check("a density disclosure mark", mark);
+        }
+        let group = card_density::group_line([&ToolCard {
+            call_id: crate::conversation::ToolId("toolu_x".into()),
+            name: Some("Read".into()),
+            arguments: complete("{}"),
+            state: ToolState::Complete { output: String::new(), is_error: false },
+            subagent: SubagentLog::default(),
+            detail: ResultDetail::default(),
+            progress: SubagentProgress { tool_uses: Some(3), ..SubagentProgress::default() },
+        }]
+        .into_iter());
+        check("a group row's count", &group.count);
+        check("a group row's verbs", group.verbs.as_deref().unwrap_or_default());
+        check("a dispatch magnitude", &card_density::magnitude(&tool_card_for_glyphs(), None).unwrap());
+
+        assert!(checked >= 13, "the guard must actually have looked at something: {checked}");
+    }
+
+    /// A settled dispatch card, for the glyph guard above — its magnitude is the one density
+    /// string that reaches for a separator (`·`).
+    fn tool_card_for_glyphs() -> ToolCard {
+        ToolCard {
+            call_id: crate::conversation::ToolId("toolu_x".into()),
+            name: Some("Agent".into()),
+            arguments: complete("{}"),
+            state: ToolState::Complete { output: String::new(), is_error: false },
+            subagent: SubagentLog::default(),
+            detail: ResultDetail::default(),
+            progress: SubagentProgress {
+                tool_uses: Some(3),
+                duration_ms: Some(12_400),
+                ..SubagentProgress::default()
+            },
+        }
     }
 
     /// One frame of the strip, headless — the same shape [`composer_frame`] uses, measuring
