@@ -55,6 +55,15 @@ use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::theme::Theme;
 use crate::timeline::pinned_after_scroll;
 
+/// The re-wrap measurement — what a width change costs this file, per frame.
+///
+/// Test-only, and a *sibling* of the tests below rather than part of them: it drives
+/// [`scrollback`] over transcripts of up to ten thousand elements, which is a benchmark
+/// and not a correctness check. Its findings are `doc/console_rewrap_measurement.md`; the
+/// module doc says what it measures and, more importantly, what it does not.
+#[cfg(test)]
+mod rewrap_bench;
+
 /// The console's MCP `serverInfo.name`, and therefore the middle of every namespaced tool
 /// name Claude Code spells: `mcp__organon__…`.
 pub const SERVER_NAME: &str = "organon";

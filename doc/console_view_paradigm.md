@@ -286,9 +286,13 @@ Stated rather than guessed, per house discipline:
   anchoring; promotion may inherit that solution or may not, and nobody has looked.
 - **Whether a pane can hold a harness *and* an exhibit viewer simultaneously**, or whether
   that is what splitting is for.
-- **The re-wrap cost of a layout that changes width.** Splitting a pane changes the
-  transcript's available width, which re-wraps it. This is the same measurement posture's
-  tween needs and it has not been taken.
+- ~~**The re-wrap cost of a layout that changes width.**~~ **Taken 2026-08-13 —
+  `doc/console_rewrap_measurement.md`.** It does re-wrap, entirely: egui's galley cache is
+  keyed on the wrap width, and nothing culls, so a width that moves by a whole point misses
+  on every paragraph in the retained scrollback. ≈ 7 µs per galley laid out against ≈ 0.9 µs
+  reused — **6–9× per frame**, i.e. 9.1 ms at a 400-element session and 308 ms at the
+  10 000-element cap. **Splitting a pane costs exactly one such frame and nothing after it**
+  (7.6 ms at 400, 342.9 ms at the cap). Five options are priced there; none is chosen.
 
 ---
 

@@ -2502,6 +2502,43 @@ converts to `0` silently — one bad float would square every corner in the wind
 nothing. Resolving it where it enters is the only place it is still a number anyone could
 notice.
 
+### 1.7 The re-wrap measurement — what a width change costs the transcript
+
+`conversation_view/rewrap_bench.rs` is an instrument rather than a feature, and it is in §1
+because the *instrument and its finding* exist right now even though both things waiting on
+them do not. **`doc/console_rewrap_measurement.md` is the document; this is the pointer.**
+
+⚠️ **This section was written against a tree where posture did not exist**, and said so — the
+measurement was taken on a branch off `main` while `posture.rs` was still unmerged. Posture
+landed in the same integration, so §1.6 now describes it and this is no longer a stand-in for
+a missing section. What has not changed is the part that matters: **the number was taken
+before the tween was built rather than after** — the order the portal's "immersive is nearly
+free" claim did not get, and the reason that claim had to be retracted.
+
+⚠️ **The tween is still unbuilt.** §1.6 ships pinned at `t = 0.0`, so nothing yet pays the
+animating column *because of posture* — but the console already pays it on a window-resize
+drag, which is this section's actual finding.
+
+The one line: **egui's galley cache is keyed on the wrap width** (`epaint-0.33.3/src/text/fonts.rs:884`
+→ `text_layout_types.rs:439`), so a width that moves by a whole point is a **total** miss across
+the entire retained scrollback — and nothing culls, because `egui::Label::ui` builds its galley
+*before* it tests `is_rect_visible`. Measured on this machine, release: **≈ 7 µs to lay out a
+wrapped galley against ≈ 0.9 µs to reuse one — 6–9× per frame**, which is 9.1 ms per frame at a
+400-element session and 308 ms at the 10 000-element cap. A single change (pane splitting, or
+snapping a tween at its end) costs exactly one such frame and nothing after it.
+
+📌 **The larger finding is in the steady column.** The transcript is not virtualised, so its
+layout cost is linear in scrollback length *with nothing animating*: 8.1 ms per frame at 2 000
+elements, 51.6 ms at the cap. Posture's tween does not create that — it multiplies it by eight
+and makes it visible eight times sooner. Window-resize drags already pay the animating column
+today, on `main`, with no posture and no panes.
+
+Two tests hold the parts that can rot silently, both in the default suite: one pins epaint's
+cache keying (a pinned-dependency contract, the `native/tests/egui_popup_contract.rs` argument),
+and one pins that the whole scrollback is laid out rather than the visible slice — if a future
+egui culls, every figure in the document is about the wrong thing and that test says so. The
+benchmark itself is `#[ignore]`d; §8 of the document is the list of what it did **not** measure.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -2514,6 +2551,7 @@ notice.
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `ConsoleDispatch` onto the audited drain, plus the one in-process read §1.3 adds) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
 | The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md` — the site-by-site investigation these follow from, now merged, carrying this correction as its own §1.1 amendment so the two cannot drift apart |
 | A **read** path for the console's own state | **The camera half has landed, on the MCP lane only** — `console.camera.read` (§1.3, "Reading it back"), answered in-process from the viewpoint `redraw` publishes. What is left is the *other* transport and the *other* verbs. `organon console …` is still fire-and-forget with no return path, so the CLI reads nothing; the honest fix there is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs. ⚠️ **Do not generalise the camera's shape to reach it.** A published cell works because the camera is one small `Copy` tuple owned by the frame path; "the console's state" at large is panes, transcripts and textures, and a cell per fact is a second state tree that will drift from the first. ⚠️ The other tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
+| Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Shell #7 T2+ |
 
 **IPC rule inherited whole:** any new Shell channel — mmap, sidecar, socket — goes
