@@ -1072,8 +1072,7 @@ mod tests {
         use crate::preset::UiTab;
         use nih_plug::prelude::Enum;
         // Every generator resolves to a Range whose anchors are non-empty IDs.
-        for i in 0..GeneratorMode::variants().len() {
-            let g = GeneratorMode::from_index(i);
+        for g in GeneratorMode::ALL {
             match generator_knob_context(g) {
                 KnobContext::Range(first, end) => {
                     assert!(!first.is_empty());
@@ -1121,8 +1120,7 @@ mod tests {
                 check(id, "curated tab list");
             }
         }
-        for i in 0..GeneratorMode::variants().len() {
-            let g = GeneratorMode::from_index(i);
+        for g in GeneratorMode::ALL {
             if let KnobContext::Range(first, end) = generator_knob_context(g) {
                 check(first, "generator range start");
                 if let Some(e) = end {

@@ -18,7 +18,7 @@
 
 use crate::agent::{self, CliOp, SlotKind};
 use crate::ipc::{self, Shared};
-use crate::params::{GeneratorMode, MaterialType, SurfaceMode};
+use crate::params::{HostGeneratorMode, MaterialType, SurfaceMode};
 use nih_plug::prelude::Enum;
 
 /// A parsed `organon` invocation.
@@ -129,7 +129,7 @@ pub fn ops_for(cmd: &CtlCmd) -> Result<Option<Vec<CliOp>>, String> {
         CtlCmd::Do { json } => vec![CliOp::Plan(json.clone())],
         CtlCmd::Release { id } => vec![CliOp::Release(id.clone())],
         CtlCmd::Generator { which } => {
-            vec![CliOp::Generator(resolve_enum::<GeneratorMode>(which)?)]
+            vec![CliOp::Generator(resolve_enum::<HostGeneratorMode>(which)?)]
         }
         CtlCmd::Surface { which } => vec![CliOp::Surface(resolve_enum::<SurfaceMode>(which)?)],
         CtlCmd::Material { which } => vec![CliOp::Material(resolve_enum::<MaterialType>(which)?)],
@@ -660,7 +660,7 @@ pub fn catalog_entries() -> Vec<(&'static str, &'static str, Option<(f32, f32)>)
 /// Description of a selector variant by ordinal (Layer 1 of the #452 "describe surface" —
 /// the compile-enforced generator/surface/material prose, surfaced through the CLI).
 fn generator_desc_at(i: usize) -> &'static str {
-    agent::generator_desc(<GeneratorMode as Enum>::from_index(i))
+    agent::generator_desc(<HostGeneratorMode as Enum>::from_index(i).core())
 }
 fn surface_desc_at(i: usize) -> &'static str {
     agent::surface_desc(<SurfaceMode as Enum>::from_index(i))
@@ -695,7 +695,7 @@ pub fn catalog_json(s: Option<&Shared>) -> String {
     };
     serde_json::json!({
         "params": params,
-        "generators": selector(GeneratorMode::variants(), &generator_desc_at),
+        "generators": selector(HostGeneratorMode::variants(), &generator_desc_at),
         "surfaces": selector(SurfaceMode::variants(), &surface_desc_at),
         "materials": selector(MaterialType::variants(), &material_desc_at),
     })
@@ -736,7 +736,7 @@ pub fn catalog_text(s: Option<&Shared>, verbose: bool) -> String {
     };
     section(
         "GENERATORS (`organon generator <name|ordinal>`):",
-        GeneratorMode::variants(),
+        HostGeneratorMode::variants(),
         &generator_desc_at,
     );
     section(
@@ -781,8 +781,8 @@ pub fn describe_text(s: Option<&Shared>, query: &str) -> Result<String, String> 
         out.push_str(&format!("  {}\n", agent::param_desc(q).unwrap_or("(no description)")));
     }
     // Any selector kind the name/ordinal matches.
-    if let Ok(i) = resolve_enum::<GeneratorMode>(q) {
-        let (i, name) = (i as usize, GeneratorMode::variants()[i as usize]);
+    if let Ok(i) = resolve_enum::<HostGeneratorMode>(q) {
+        let (i, name) = (i as usize, HostGeneratorMode::variants()[i as usize]);
         out.push_str(&format!("GENERATOR {i}  {name}\n  {}\n", generator_desc_at(i)));
     }
     if let Ok(i) = resolve_enum::<SurfaceMode>(q) {
@@ -864,7 +864,7 @@ pub fn recipe_ops(name: &str) -> Result<Vec<CliOp>, String> {
     })?;
     let mut ops = Vec::new();
     if let Some(g) = r.generator {
-        ops.push(CliOp::Generator(resolve_enum::<GeneratorMode>(g)?));
+        ops.push(CliOp::Generator(resolve_enum::<HostGeneratorMode>(g)?));
     }
     if let Some(sf) = r.surface {
         ops.push(CliOp::Surface(resolve_enum::<SurfaceMode>(sf)?));
@@ -895,7 +895,7 @@ pub fn status_text(s: &Shared) -> String {
         "generator: {} \"{}\"   surface: {} \"{}\"   material: {} \"{}\"\n\
          tempo: {} bpm (sync {})   transport: {}, beat {:.2}{}\n",
         s.generator,
-        variant_name::<GeneratorMode>(s.generator),
+        variant_name::<HostGeneratorMode>(s.generator),
         s.surface_mode,
         variant_name::<SurfaceMode>(s.surface_mode),
         s.lighting[7] as u32,
@@ -915,7 +915,7 @@ pub fn status_text(s: &Shared) -> String {
 /// One-shot status as JSON.
 pub fn status_json(s: &Shared) -> String {
     serde_json::json!({
-        "generator": { "ordinal": s.generator, "name": variant_name::<GeneratorMode>(s.generator) },
+        "generator": { "ordinal": s.generator, "name": variant_name::<HostGeneratorMode>(s.generator) },
         "surface": { "ordinal": s.surface_mode, "name": variant_name::<SurfaceMode>(s.surface_mode) },
         "material": { "ordinal": s.lighting[7] as u32, "name": variant_name::<MaterialType>(s.lighting[7] as u32) },
         "tempo_bpm": s.tempo,
@@ -1184,7 +1184,7 @@ pub fn docs_files() -> Vec<(&'static str, String)> {
                  beat) works the same way whichever one you pick.",
                 "`native/src/agent.rs::generator_desc`",
                 "generator",
-                GeneratorMode::variants(),
+                HostGeneratorMode::variants(),
                 &generator_desc_at,
             ),
         ),
@@ -1246,18 +1246,18 @@ mod tests {
 
     #[test]
     fn resolves_selectors_by_ordinal_name_and_substring() {
-        assert_eq!(resolve_enum::<GeneratorMode>("0"), Ok(0));
-        assert_eq!(resolve_enum::<GeneratorMode>("dna").unwrap(), {
-            GeneratorMode::Dna.to_index() as u32
+        assert_eq!(resolve_enum::<HostGeneratorMode>("0"), Ok(0));
+        assert_eq!(resolve_enum::<HostGeneratorMode>("dna").unwrap(), {
+            HostGeneratorMode::Dna.to_index() as u32
         });
         assert_eq!(
             resolve_enum::<MaterialType>("chrome").unwrap(),
             MaterialType::Chrome.to_index() as u32
         );
         // Substring must be unambiguous.
-        assert!(resolve_enum::<GeneratorMode>("neural").is_err()); // field vs network
-        assert!(resolve_enum::<GeneratorMode>("zzz").is_err());
-        assert!(resolve_enum::<GeneratorMode>("9999").is_err());
+        assert!(resolve_enum::<HostGeneratorMode>("neural").is_err()); // field vs network
+        assert!(resolve_enum::<HostGeneratorMode>("zzz").is_err());
+        assert!(resolve_enum::<HostGeneratorMode>("9999").is_err());
     }
 
     #[test]
@@ -1298,7 +1298,7 @@ mod tests {
         assert!(j["params"].as_array().unwrap().len() >= agent::ACTUATABLE_IDS.len());
         assert_eq!(
             j["generators"].as_array().unwrap().len(),
-            GeneratorMode::variants().len()
+            HostGeneratorMode::variants().len()
         );
         assert!(!j["surfaces"].as_array().unwrap().is_empty());
         assert!(j["materials"].as_array().unwrap().len() >= 3);
@@ -1672,7 +1672,7 @@ mod tests {
         let files = docs_files();
         let page = |n: &str| &files.iter().find(|(f, _)| *f == n).expect("page exists").1;
         for (names, file) in [
-            (GeneratorMode::variants(), "generators.md"),
+            (HostGeneratorMode::variants(), "generators.md"),
             (SurfaceMode::variants(), "surfaces.md"),
             (MaterialType::variants(), "materials.md"),
         ] {
@@ -1681,7 +1681,7 @@ mod tests {
                 assert!(md.contains(&format!("## {n}\n")), "{file} is missing {n}");
             }
         }
-        for (i, _) in GeneratorMode::variants().iter().enumerate() {
+        for (i, _) in HostGeneratorMode::variants().iter().enumerate() {
             let d = generator_desc_at(i);
             assert!(d.len() > 40, "generator {i} has a stub description: {d:?}");
         }

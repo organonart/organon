@@ -1978,14 +1978,14 @@ pub(crate) fn editor_ui(
             // Where the params stood *before* this auto-point wrote anything. Captured here, once,
             // because it is the only moment it is knowable — see the `Abandon` arm below.
             state.mind_auto_view_baseline =
-                Some((params.generator.value(), params.nw_topology.value()));
+                Some((params.generator.value().core(), params.nw_topology.value()));
         }
         if let Some(pending) = state.mind_auto_view_pending {
             const TARGET: (crate::params::GeneratorMode, crate::params::NeuralTopology) = (
                 crate::params::GeneratorMode::NeuralNetwork,
                 crate::params::NeuralTopology::Connectome,
             );
-            let now = (params.generator.value(), params.nw_topology.value());
+            let now = (params.generator.value().core(), params.nw_topology.value());
             // The readback. `set_parameter` queues for the audio thread rather than applying
             // inline, so this is false for a frame or so after every issue — that is `Wait`, not
             // failure.
@@ -2040,7 +2040,7 @@ pub(crate) fn editor_ui(
                     setter.begin_set_parameter(&params.generator);
                     setter.set_parameter(
                         &params.generator,
-                        crate::params::GeneratorMode::NeuralNetwork,
+                        crate::params::HostGeneratorMode::NeuralNetwork,
                     );
                     setter.end_set_parameter(&params.generator);
                     setter.begin_set_parameter(&params.nw_topology);
@@ -2387,7 +2387,7 @@ pub(crate) fn editor_ui(
             // tabs (the Generator tab's Surface card + the Look tab's
             // KIFS gating), so it's computed once before the tab bar.
             use crate::params::GeneratorMode;
-            let gmode = params.generator.value();
+            let gmode = params.generator.value().core();
             let original = gmode == GeneratorMode::Original;
             // Minimal-surface is dual-path: parametric families emit a
             // (u,v) Grid that Surface modes skin — Weierstrass (3..5) and
@@ -7596,7 +7596,7 @@ fn step_component_division(params: &OrganicMathParams, setter: &ParamSetter, del
 /// `agent::actuate`). Unknown ids are ignored.
 fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &agent::ApplyOp) {
     use agent::ApplyOp;
-    use crate::params::{CamPath, GeneratorMode, MaterialType, SurfaceMode};
+    use crate::params::{CamPath, HostGeneratorMode, MaterialType, SurfaceMode};
     use nih_plug::prelude::Enum;
     macro_rules! set {
         ($p:expr, $v:expr) => {{
@@ -7607,7 +7607,9 @@ fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &age
         }};
     }
     match op {
-        ApplyOp::Generator(i) => set!(&params.generator, GeneratorMode::from_index(*i as usize)),
+        ApplyOp::Generator(i) => {
+            set!(&params.generator, HostGeneratorMode::from_index(*i as usize))
+        }
         ApplyOp::Surface(i) => set!(&params.surface_mode, SurfaceMode::from_index(*i as usize)),
         ApplyOp::Material(i) => set!(&params.mat_type, MaterialType::from_index(*i as usize)),
         ApplyOp::Release => {} // values stay put; the editor's own button clears holds
@@ -7922,7 +7924,7 @@ fn knob_context_key(state: &preset::PresetUi, params: &OrganicMathParams) -> Str
     match state.knob_config.mode {
         controller::KnobMode::Performer => format!("perf:{}", state.knob_config.active_page),
         controller::KnobMode::Explore => {
-            match controller::explore_knob_context(state.tab, params.generator.value()) {
+            match controller::explore_knob_context(state.tab, params.generator.value().core()) {
                 // A range key is its first anchor — distinct per generator.
                 controller::KnobContext::Range(first, _) => format!("range:{first}"),
                 controller::KnobContext::List(_) => format!("tab:{:?}", state.tab),
@@ -7976,7 +7978,7 @@ fn knob_targets(
             }
         }
         controller::KnobMode::Explore => {
-            match controller::explore_knob_context(tab, params.generator.value()) {
+            match controller::explore_knob_context(tab, params.generator.value().core()) {
                 controller::KnobContext::Range(first, end) => {
                     if let Some(&start) = index.get(first) {
                         let stop =
