@@ -423,6 +423,14 @@ def cmd_new_report(brief_id, model, notes):
         dest = REPORTS / f"{brief_id}-{slug}-{today}-{n}.md"
         n += 1
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Flatten `notes` to a single line. The front matter is a block terminated by a `---`
+    # line and parsed one `key: value` per line, so a newline in this value silently ends
+    # the block early and the keys below it become report body — the file then fails
+    # `--validate` for missing keys that are *right there*, which is a confusing way to
+    # learn you passed a multi-line string. The one caller in CI passes a fixed string, so
+    # this is not a live bug; it is a function that writes a contract being unable to emit
+    # something the validator would reject.
+    notes = " ".join(str(notes).split())
     dest.write_text(
         f"---\nbrief: {brief_id}\nmodel: {model}\n"
         f"model_surface: {os.environ.get('RESEARCH_SURFACE', 'automated run')}\n"
