@@ -3749,8 +3749,9 @@ fn help_text() -> String {
         scrim_default = term_view::SCRIM_DEFAULT,
         scrim_floor = term_view::SCRIM_FLOOR,
         // ⚠️ The floor is the *palette's* since #38, so quoting one number would be a lie the
-        // moment `light` became selectable — which is exactly what the verb two lines below
-        // made possible. Both are quoted, and the light one names the palette it belongs to.
+        // moment `light` became selectable — which is exactly what `organon console theme`,
+        // listed further down this same text, made possible. Both floors are quoted, and the
+        // light one names the palettes it belongs to.
         scrim_floor_light = term_view::SCRIM_FLOOR_LIGHT,
         // Derived, not named: *which* palettes carry the light floor is a fact about
         // `Theme::scrim_floor`, and a hardcoded "light" would go stale the day a fifth
