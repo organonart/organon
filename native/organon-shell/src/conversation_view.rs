@@ -43,8 +43,9 @@ use crate::approval::{
 use crate::block_panel::{DEFAULT_SLIDERS, SLIDER_WIDTH};
 use crate::command::CommandSpec;
 use crate::conversation::{
-    Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock, ArtifactContent,
-    Body, Change, Element, ElementId, Ignored, PanelSpec, ResultDetail, RunOutcome, StepState,
+    AgentEvent, Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock,
+    ArtifactContent, Body, Change, Element, ElementId, Ignored, PanelSpec, ResultDetail,
+    RunOutcome, StepState,
     SubagentAct, SubagentLog, SubagentProgress, SurfaceSpec, ToolCard, ToolState, Transcript,
     Verdict,
 };
@@ -63,6 +64,21 @@ use crate::timeline::pinned_after_scroll;
 /// module doc says what it measures and, more importantly, what it does not.
 #[cfg(test)]
 mod rewrap_bench;
+
+/// What an `Edit` card costs per frame — the measurement behind [`ConversationPane::diffs`].
+///
+/// The sibling of [`rewrap_bench`], and deliberately a second module rather than a section
+/// of it: they answer different questions about the same walk. That one asks what a change
+/// of *width* costs and takes a `Read` corpus; this one asks what a tool card's own
+/// derivation costs and takes five shapes of `Edit`. Its findings are
+/// `doc/console_edit_diff_cost.md` — which is a sibling of the other's document for the same
+/// reason.
+///
+/// ⚠️ The pane builder and frame driver are **shared, not copied** — this module borrows
+/// [`rewrap_bench`]'s, so a change to how a bench pane is built cannot land in one figure and
+/// not the other.
+#[cfg(test)]
+mod edit_diff_bench;
 
 /// The console's MCP `serverInfo.name`, and therefore the middle of every namespaced tool
 /// name Claude Code spells: `mcp__organon__…`.
@@ -434,6 +450,35 @@ pub struct ConversationPane {
     /// transcript — see [`PanelState`]. Pruned against the transcript every frame, so an
     /// element the cap evicted takes its state with it.
     artifacts: HashMap<ElementId, PanelState>,
+    /// What [`edit_diff`] returned for each tool card, so the parse and the alignment
+    /// happen **once per card** instead of once per card per frame.
+    ///
+    /// 🚨 **This is not an optimisation of a hot loop; it is the removal of a cost that was
+    /// linear in the whole scrollback.** `tool_card` used to call [`edit_diff`] from its
+    /// body, which re-ran `serde_json::from_str` over the entire arguments blob and
+    /// [`text_diff::line_diff`] over the result on **every frame, for every `Edit` card in
+    /// the transcript** — and the transcript is not virtualised, so a card thousands of
+    /// lines off screen paid in full. Measured at
+    /// **1.4 µs for an ordinary one-line edit and 65 µs for a large one**; at a stated one
+    /// large edit in ten it was **+4.4 ms per frame** on a 400-card session, a quarter of a
+    /// 60 Hz budget spent recomputing a bit-identical answer.
+    /// `doc/console_edit_diff_cost.md` has the tables and
+    /// `conversation_view/edit_diff_bench.rs` is the instrument.
+    ///
+    /// ⚠️ **Every tool card gets an entry, not only the `Edit`s.** A `None` is the answer
+    /// "this card has no diff", and caching it is what stops a streaming `Edit` — whose
+    /// arguments are half a JSON document and which [`edit_diff`] declines — from being
+    /// re-asked every frame while it arrives.
+    ///
+    /// ⚠️ **Invalidation is by eviction on [`Change::Updated`], never by comparing the
+    /// arguments**, and that is the only correct choice available: complete arguments are
+    /// **not** immutable, since a second `ToolCall` on an unresolved card replaces the text
+    /// wholesale (`conversation.rs`'s `ToolCall` arm). A fingerprint cheap enough to take
+    /// every frame would have to be shorter than the text, and any such thing can collide;
+    /// hashing the whole blob costs a large fraction of what it saves. The fold already
+    /// names the element it changed, so the exact answer is also the cheap one. Bounded
+    /// like the other side maps by the `retain` at the end of [`scrollback`].
+    diffs: HashMap<ElementId, Option<EditDiff>>,
     /// The button labels a summoned panel offers, **handed down** by whoever opened the
     /// tab. This crate cannot see the console's material table and must not learn to; it
     /// draws these and reports which was pressed ([`ArtifactAction`]).
@@ -567,6 +612,7 @@ impl ConversationPane {
             want_focus: true,
             composer_height: 0.0,
             artifacts: HashMap::new(),
+            diffs: HashMap::new(),
             buttons,
             sliders,
             approvals,
@@ -576,6 +622,39 @@ impl ConversationPane {
             memory: DecisionMemory::new(),
             models: Vec::new(),
             pending_model: None,
+        }
+    }
+
+    /// Fold one mapped event into the transcript and keep the pane's derived state in step
+    /// with it. Returns whether anything changed, i.e. whether a repaint is owed.
+    ///
+    /// 🚨 **The one place a cached diff is invalidated**, and the reason it can be exact
+    /// rather than approximate: an update is the only way a card's arguments can move, and
+    /// the fold *says which element it moved*. Dropping the entry re-derives it on the next
+    /// frame. See [`ConversationPane::diffs`] for why a fingerprint would have been both
+    /// weaker and more expensive than asking the fold.
+    ///
+    /// ⚠️ **Every update evicts, not only an argument one** — a `ToolResult` lands here too
+    /// and drops a diff that was still good. That is one recomputation per card per result,
+    /// deliberately: narrowing it would mean this method reasoning about *which* field the
+    /// fold touched, which is knowledge that belongs to the fold and would rot silently the
+    /// day a new event arm is added.
+    ///
+    /// A method rather than the four lines it replaces inside the drain loop, because the
+    /// eviction rule above is load-bearing and the drain loop needs a live agent process to
+    /// reach. This is what the cache's tests drive.
+    fn absorb(&mut self, mapped: AgentEvent) -> bool {
+        match self.transcript.apply(mapped) {
+            Change::Appended(_) => {
+                self.pinned = true;
+                true
+            }
+            Change::Updated(id) => {
+                self.diffs.remove(&id);
+                true
+            }
+            Change::Meta => true,
+            Change::Ignored(_) => false,
         }
     }
 
@@ -644,14 +723,7 @@ impl ConversationPane {
                         audits.push(start.tools.clone());
                     }
                     for mapped in self.mapper.map(&event) {
-                        match self.transcript.apply(mapped) {
-                            Change::Appended(_) => {
-                                self.pinned = true;
-                                changed = true;
-                            }
-                            Change::Updated(_) | Change::Meta => changed = true,
-                            Change::Ignored(_) => {}
-                        }
+                        changed |= self.absorb(mapped);
                     }
                 }
                 StreamItem::Noise(line) => self.note(format!("stdout: {line}")),
@@ -1183,7 +1255,7 @@ fn scrollback(
     // Destructured so the transcript can be read while the widget state is written: they
     // are disjoint fields, and keeping them disjoint is the whole point of the side map.
     let ConversationPane {
-        transcript, artifacts, pinned, sliders: defaults, waiting, memory, log, ..
+        transcript, artifacts, diffs, pinned, sliders: defaults, waiting, memory, log, ..
     } = pane;
     let out = egui::ScrollArea::vertical()
         .auto_shrink(false)
@@ -1292,6 +1364,18 @@ fn scrollback(
                                 None => {}
                             }
                         }
+                        // The third body drawn here rather than in `draw_element`, for the
+                        // same reason as the first: it needs state that survives between
+                        // frames. What survives is its diff — see
+                        // [`ConversationPane::diffs`], and note that the entry is computed
+                        // here and merely *read* by `tool_card`, so the card stays a
+                        // function of what it is given.
+                        Body::Tool(card) => {
+                            let diff = diffs.entry(element.id).or_insert_with(|| {
+                                edit_diff(card.name.as_deref(), &card.arguments)
+                            });
+                            tool_card(ui, card, diff.as_ref(), theme, form);
+                        }
                         _ => draw_element(ui, element, theme, form),
                     }
                     ui.add_space(form.card_gap);
@@ -1325,6 +1409,11 @@ fn scrollback(
     // evicts from the front and `get` answers `None` for an evicted id, so this is a
     // one-line answer to "does the side map leak on a long session" — it does not.
     artifacts.retain(|id, _| transcript.get(*id).is_some());
+    // The same line again, and it is what makes the diff cache safe on a session that runs
+    // all day: an entry holds at most `MAX_ROWS` rows of text however large the edit it came
+    // from was, so the cache is bounded by the transcript's own cap rather than by anything
+    // about the edits.
+    diffs.retain(|id, _| transcript.get(*id).is_some());
     // ⚠️ The same line, with teeth: a question whose element the cap evicted can never be
     // answered by a human, so dropping it here **denies** it (`crate::approval`) instead of
     // leaving the agent blocked for the rest of the session.
@@ -1390,12 +1479,11 @@ fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme, form: &Form
             let text = if a.complete { a.text.clone() } else { format!("{}|", a.text) };
             ui.label(body(ui, text, theme.prose, form));
         }
-        Body::Tool(card) => tool_card(ui, card, theme, form),
         // Drawn by `scrollback`, which holds the widget state a panel needs between
-        // frames — and, for an approval, the question itself. Nothing to do here, and
-        // nothing missing: an element is drawn exactly once, by whichever of the two has
-        // what it needs.
-        Body::Artifact(_) | Body::Approval(_) => {}
+        // frames, the question an approval is asking, and the diff a tool card draws.
+        // Nothing to do here, and nothing missing: an element is drawn exactly once, by
+        // whichever of the two has what it needs.
+        Body::Artifact(_) | Body::Approval(_) | Body::Tool(_) => {}
         Body::RunEnd(end) => {
             // Named `outcome` rather than `label`, which is now a function in this module:
             // a local of that name would shadow it and the two calls below would stop
@@ -1434,7 +1522,20 @@ fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme, form: &Form
 /// patch someone has to parse back out of prose. And the result's own sibling object —
 /// `tool_use_result`, which a terminal never sees — becomes [`detail_rows`]: for a `Read`,
 /// how much of the file the call actually covered.
-fn tool_card(ui: &mut egui::Ui, card: &ToolCard, theme: &Theme, form: &Form) {
+///
+/// ⚠️ **`diff` is handed in rather than computed here**, and that is a correctness-neutral
+/// change with a large price attached: computing it in this body meant re-parsing the
+/// arguments and re-aligning the text on every frame, for every card in a scrollback that
+/// is not virtualised. [`ConversationPane::diffs`] owns it now. `None` means this card has
+/// no diff to draw — it is not an `Edit`, or its arguments have not settled — which is
+/// exactly what [`edit_diff`] returns and is why the two cases stay one branch here.
+fn tool_card(
+    ui: &mut egui::Ui,
+    card: &ToolCard,
+    diff: Option<&EditDiff>,
+    theme: &Theme,
+    form: &Form,
+) {
     let (state_text, accent) = match &card.state {
         ToolState::Running => ("running", theme.running),
         ToolState::Complete { is_error: false, .. } => ("ok", theme.ok),
@@ -1468,8 +1569,8 @@ fn tool_card(ui: &mut egui::Ui, card: &ToolCard, theme: &Theme, form: &Form) {
                 });
             });
 
-            match edit_diff(card.name.as_deref(), &card.arguments) {
-                Some(diff) => diff_body(ui, &diff, theme),
+            match diff {
+                Some(diff) => diff_body(ui, diff, theme),
                 None => arguments_body(ui, &card.arguments, theme),
             }
 
@@ -4097,6 +4198,146 @@ mod tests {
         assert!(
             notes.iter().any(|n| n == "not aligned — 200 lines against 200 is past the diff budget"),
             "{notes:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The diff cache. See [`ConversationPane::diffs`] for what it is for and
+    // `conversation_view/edit_diff_bench.rs` for what it saves.
+
+    /// The `Edit` arguments a cache test edits, so the two strings differ in one line.
+    fn edit_args(old: &str, new: &str) -> String {
+        serde_json::json!({ "file_path": "src/lib.rs", "old_string": old, "new_string": new })
+            .to_string()
+    }
+
+    /// Draw one frame of `pane`'s scrollback, which is what fills the cache.
+    ///
+    /// The pane driver is `edit_diff_bench`'s, shared rather than copied — see
+    /// [`rewrap_bench::bench_pane`].
+    fn draw_once(pane: &mut ConversationPane) {
+        let ctx = egui::Context::default();
+        edit_diff_bench::frame(
+            &ctx,
+            pane,
+            &SurfaceImages::new(),
+            &Theme::organon(),
+            edit_diff_bench::Cache::On,
+        );
+    }
+
+    /// A pane holding one `Edit` card whose arguments are `args`, plus the element's id.
+    fn pane_with_edit(args: &str) -> (ConversationPane, ElementId) {
+        let mut pane = rewrap_bench::bench_pane(Transcript::new());
+        pane.absorb(AgentEvent::ToolCall {
+            id: crate::conversation::ToolId("t1".into()),
+            name: "Edit".into(),
+            arguments: Some(args.to_string()),
+        });
+        let id = pane.transcript.elements()[0].id;
+        (pane, id)
+    }
+
+    /// **CONTRACT.** What the cache holds is exactly what [`edit_diff`] would have returned.
+    ///
+    /// The whole claim of the cache is that it changes *when* the work happens and never
+    /// *what* it produces, so this is the property the saving is only worth having if it
+    /// holds.
+    #[test]
+    fn a_cached_diff_is_what_edit_diff_would_have_returned() {
+        let args = edit_args("let a = 1;\nlet b = 2;", "let a = 1;\nlet b = 3;");
+        let (mut pane, id) = pane_with_edit(&args);
+        assert!(pane.diffs.is_empty(), "nothing is computed before a frame asks for it");
+        draw_once(&mut pane);
+        let cached = pane.diffs.get(&id).expect("the frame must have cached this card");
+        assert_eq!(cached, &edit_diff(Some("Edit"), &complete(&args)), "the cache must not lie");
+        assert!(cached.is_some(), "a complete Edit has a diff, so this is not vacuous");
+    }
+
+    /// 🚨 **CONTRACT, and the one that makes the cache safe: replacing a card's complete
+    /// arguments replaces its diff.**
+    ///
+    /// This is not hypothetical and it is why the cache is invalidated by eviction rather
+    /// than by any test on the arguments themselves. `Arguments::complete` is **not** a
+    /// promise of immutability — a second `ToolCall` for an id that is not yet *resolved*
+    /// overwrites the text wholesale ([`crate::conversation::Transcript::apply`]) — so a
+    /// cache keyed on "complete" alone would show the first arguments' diff forever, under
+    /// a card displaying the second arguments' path.
+    #[test]
+    fn replacing_complete_arguments_replaces_the_cached_diff() {
+        let first = edit_args("let a = 1;", "let a = 2;");
+        let (mut pane, id) = pane_with_edit(&first);
+        draw_once(&mut pane);
+        let before = pane.diffs.get(&id).cloned().expect("cached");
+
+        let second = edit_args("let z = 9;", "let z = 8;");
+        pane.absorb(AgentEvent::ToolCall {
+            id: crate::conversation::ToolId("t1".into()),
+            name: "Edit".into(),
+            arguments: Some(second.clone()),
+        });
+        assert!(
+            !pane.diffs.contains_key(&id),
+            "the fold reported an update and the entry must be gone before the next frame"
+        );
+
+        draw_once(&mut pane);
+        let after = pane.diffs.get(&id).cloned().expect("recached");
+        assert_ne!(after, before, "the card is showing a stale diff of arguments it no longer has");
+        assert_eq!(after, edit_diff(Some("Edit"), &complete(&second)));
+    }
+
+    /// **CONTRACT.** A streaming call caches its `None` and picks up a diff the moment its
+    /// arguments settle.
+    ///
+    /// The `None` is cached on purpose — it is what stops a half-arrived `Edit` being
+    /// re-asked on every frame while it streams — and this pins that it is not *sticky*.
+    #[test]
+    fn a_streaming_card_caches_no_diff_and_gains_one_when_its_arguments_settle() {
+        let id = crate::conversation::ToolId("t1".into());
+        let mut pane = rewrap_bench::bench_pane(Transcript::new());
+        pane.absorb(AgentEvent::ToolCall { id: id.clone(), name: "Edit".into(), arguments: None });
+        let element = pane.transcript.elements()[0].id;
+        pane.absorb(AgentEvent::ToolArgumentsDelta { id: id.clone(), fragment: "{\"old_st".into() });
+        draw_once(&mut pane);
+        assert_eq!(
+            pane.diffs.get(&element),
+            Some(&None),
+            "half a JSON document must cache the absence of a diff, not a diff"
+        );
+
+        let settled = edit_args("let a = 1;", "let a = 2;");
+        pane.absorb(AgentEvent::ToolCall {
+            id,
+            name: "Edit".into(),
+            arguments: Some(settled.clone()),
+        });
+        draw_once(&mut pane);
+        assert_eq!(
+            pane.diffs.get(&element),
+            Some(&edit_diff(Some("Edit"), &complete(&settled))),
+            "a cached None outlived the arguments arriving"
+        );
+    }
+
+    /// **CONTRACT.** A card the transcript's cap evicted takes its cached diff with it.
+    ///
+    /// The same line, and the same reason, as the `artifacts` retain beside it: a side map
+    /// on a session that runs all day leaks unless something prunes it against the
+    /// transcript. Worth its own test here because a diff entry is far larger than a
+    /// `PanelState`.
+    #[test]
+    fn an_evicted_card_takes_its_cached_diff_with_it() {
+        let args = edit_args("let a = 1;", "let a = 2;");
+        let (mut pane, id) = pane_with_edit(&args);
+        draw_once(&mut pane);
+        assert!(pane.diffs.contains_key(&id));
+        // Evict it the way the cap does — by id, through the transcript's own front-eviction.
+        pane.transcript = Transcript::new();
+        draw_once(&mut pane);
+        assert!(
+            pane.diffs.is_empty(),
+            "the retain at the end of `scrollback` did not prune an entry whose element is gone"
         );
     }
 
