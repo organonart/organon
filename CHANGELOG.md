@@ -11,6 +11,35 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Console: a tool call that worked stops taking a whole card
+
+The conversation view was *"a list of bevel-bordered status updates"* — five or six tool
+calls on a typical screen, each one rendering its full arguments and full output forever, at
+full weight. A turn's mechanical work occupied the transcript in proportion to how much work
+it was, rather than to how much attention it deserved.
+
+New module `native/organon-shell/src/card_density.rs` (no egui, like `text_diff`). **Success
+is quiet; only a departure from normal takes weight.** A settled success becomes one line —
+the verb, the object and a magnitude (`Read src/lib.rs · 120 lines`, `Edit … · +3 -1`) — a
+consecutive run of three or more inside one turn becomes one row with a count, and a
+**failure is untouched: open, bordered, loud, and structurally incapable of being collapsed
+or of joining a group.** Nothing is deleted; everything is one click from the card it was.
+
+Three things the design is built around. **An authorised call is never anonymous** — an
+approval and its result share only a `toolu_` id, so a gated call keeps its own row and draws
+that id. **Nothing above a reader can change height while they are reading** — an automatic
+collapse is applied only while the view is following the live edge, and a manual toggle can
+only change content at or below the row that was clicked, so scroll position is stable by
+construction rather than by compensation. And **a hand outranks the machine permanently**: a
+card the reader opened stays open through every later event.
+
+⚠️ **No group row carries a duration**, which the design asked for. `ToolCard` holds no timing
+and `conversation.rs` has no clock by design; a number the view timed itself would be its own
+stopwatch wearing the agent's voice. A tool with nothing to measure renders **no** magnitude
+rather than a zero. `SHELL_ARCHITECTURE.md` §1.1 owns the full rule, and its honesty ledger
+records the part that matters: whether the collapsed transcript actually *reads* better is
+unverified — nobody has seen it.
+
 ### `organon-scene` — the substrate moves below the plugin
 
 organon#49 Tier 3. Five modules — `substrate_scene`, `substrate_materials`,

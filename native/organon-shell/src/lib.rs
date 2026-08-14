@@ -73,6 +73,12 @@
 //! token in it is a scalar, so the desktop state is the same draw code reading different
 //! numbers rather than a second renderer, and one `t ∈ [0,1]` reaches every draw site as a
 //! resolved `&Form` beside the `&Theme`.
+//!
+//! [`card_density`] is the **third**: how much room a tool call takes once it has stopped
+//! being news. Theme is what the console is made of, posture is how it holds itself, density
+//! is how long a thing keeps its weight. Success collapses to one line and a run of them to
+//! one row; a failure never does, which is the asymmetry that makes the quiet safe to read.
+//! Pure functions and a side map — no egui, so the judgments are tested without a window.
 
 pub mod agent_event;
 pub mod agent_map;
@@ -82,6 +88,7 @@ pub mod approval;
 pub mod block_anchor;
 pub mod block_panel;
 pub mod camera;
+pub mod card_density;
 pub mod command;
 pub mod conversation;
 pub mod conversation_view;

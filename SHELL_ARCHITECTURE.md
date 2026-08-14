@@ -1940,6 +1940,128 @@ exist for its whole life. `scrollback` now draws those lines dimmed at the head 
 transcript. Same defect as an inherited working directory, one layer over: the console knows,
 and says it to nobody.
 
+#### Card density — success is quiet, and only a departure from normal takes weight
+
+**The problem, from a real screenshot.** *"The console feels very busy… a typical screenshot
+is five or six tool calls, each with a beveled border around it, so it feels like a list of
+bevel-bordered status updates. You don't want to see all that while you're developing."* The
+sharper diagnosis is that a completed tool card rendered its full arguments and its full
+output, forever, at full weight — so a turn's **mechanical work occupied the transcript in
+proportion to how much work it was, rather than to how much attention it deserved.**
+
+`card_density.rs` is the seventh conversation module, and like `text_diff.rs` it has no egui
+in it: the part that can be *wrong* is a set of pure functions over plain values.
+
+**The state → weight rule.**
+
+| state | treatment |
+|---|---|
+| running | open, unchanged — the work is happening |
+| **succeeded** | one dense line: **the verb, the object, and a magnitude**. Expandable. |
+| **failed** | open, bordered, loud — **unchanged, and structurally never collapsible** |
+| a consecutive run of settled successes in one turn | one row with a count, expandable |
+
+🚨 **Collapse, never delete.** The console's identity is that it gates and evidences what an
+agent did, so nothing here removes an element, edits a transcript or drops a byte. Four things
+must not be lost, and three of them are enforced by construction rather than by care:
+
+1. **The record.** Every collapsed thing is one click from the card it was. The full
+   arguments, the full output and the correlation id are all still in the model — the density
+   map is a side map keyed by `ElementId`, exactly like `PanelState` and the diff cache, and
+   for the same reason (the transcript is folded from a stream and would rewrite anything kept
+   inside it).
+2. **The `toolu_` correlation.** An approval card and the result it authorises share a tool-use
+   id and nothing else (`doc/console_approval_protocol.md` §3). So **an authorised call is
+   never anonymous**: `gated_calls` reads every `tool_use_id` off the approval elements in the
+   flow, a gated call is excluded from grouping outright, and its dense row *draws the id*. An
+   ungated call has no approval to be linked to, so its id is one click away like everything
+   else.
+3. **Errors.** A failure never settles, at any scroll position, so it is never collapsed and —
+   because grouping consumes only *settled* successes — it can never be inside a group. **A run
+   containing a failure is two runs with a failure between them.**
+4. **Scroll position.** Below, because it is the requirement most likely to be got wrong.
+
+🚨 **Scroll stability, and it is a construction rather than a compensation.** Changing a
+card's height re-lays out the transcript; `doc/console_rewrap_measurement.md` measured what a
+*width* change costs and this is the same hazard from the other side. Two rules make a jump
+impossible instead of correcting one afterwards:
+
+* **An automatic density change is applied only while the view is following the live edge.**
+  `DensityMap::settle` takes the pane's own `pinned` bit, so a card that completes while a
+  reader has scrolled up simply does not settle yet — it settles the moment they return to the
+  bottom, where `stick_to_bottom` holds the last row still and the shrink is absorbed above
+  it. While anybody is reading history, **nothing above them can change height at all.**
+* **A manual toggle changes only the height of content at or below the row that was clicked**,
+  and that row is on screen because it was clicked. Everything above keeps its layout
+  position, so expansion grows downward, away from the reader's eye.
+
+⚠️ **This is why the collapse is not re-derived from `ToolState` at each draw.**
+`ToolState::Complete` arrives as a `Change::Updated` on an element that may be far above the
+live edge — a tool that ran for two minutes while the agent wrote twenty more elements.
+Collapsing on the state alone would yank a reader who was nowhere near it. The measured
+consequence of getting this wrong is not available (see the ledger); the mechanism is pinned
+by `a_card_collapses_only_while_the_view_is_following_the_live_edge`, which drives a real
+frame and would pass just as happily if `scrollback` passed `true`, were it not asserting the
+scrolled-up case first.
+
+**The grouping boundary is a consecutive run, not a turn** — and the turn is a hard boundary
+*on top of* that, so a group is always work done inside one turn and never a run that
+straddles two. A turn interleaves prose and calls ("I'll read these three files", three calls,
+"now the edit", two calls); grouping per turn would have to either reorder the transcript,
+which destroys the record, or emit a group spanning the prose between its members, which
+claims an adjacency that is not there. A run preserves order exactly and groups precisely the
+block that *reads* as a block. `GROUP_MIN` is **3**: at two, a group row costs one row and
+names no verbs where two dense lines cost two rows and name both, so the trade is a wash.
+
+**A card lands expanded and collapses when it completes**, rather than landing collapsed. The
+work is news while it is happening — that is the whole argument for the card in the first
+place — and a call that opens already-summarised would make a running tool and a finished one
+look the same. ⚠️ **And a hand outranks all of it, permanently.** `CardState` carries two
+independent bits: `settled` is the automatic one, and `by_hand: Option<bool>` is a human's
+standing instruction that nothing automatic ever clears. A card the reader opened stays open
+through every later event, because *a card that re-collapses under a reader's hand is worse
+than one that never collapsed.*
+
+📌 **Grouping is structural and expansion is not**, which is what stops a hand from
+restructuring the transcript. Membership is decided from the `settled` bit alone, so opening a
+group — or opening one of its members afterwards — makes rows taller and never splits the
+group into two groups and an orphan under the reader's finger.
+
+**Magnitude, per tool, in provenance order** — what the *tool* measured beats what the view
+can derive from what the tool sent: `ResultDetail`'s line counts (`120 lines`, `120 of 900
+lines`); then the cached `Edit` alignment (`+3 -1`); then a dispatch's `task_*` progress
+(`3 tools · 12.4s`, the one duration that exists because the *harness* measured it); then the
+output's own line count. 🚨 **A tool with no obvious magnitude renders none** — the slot is
+simply absent, never a zero and never a stand-in, the same refusal `SessionFacts` makes for a
+context percentage whose denominator is not on the wire. An invented number on a row this
+dense would be read as a measured one.
+
+⚠️ **A group row carries no duration, and the design that commissioned this asked for one**
+(`7 tools · 12s`). `ToolCard` carries no timing and `conversation.rs` has no clock by design —
+the same refusal `SubagentProgress::duration_ms` makes for a single card, one level up. A
+number the view timed itself would be the view's stopwatch wearing the agent's voice, and it
+would keep counting for a session that had silently died. The row says how many and which
+verbs; the seconds are not on the wire.
+
+⚠️ **The disclosure marks are ASCII `+` and `-` on purpose.** egui does no OS font fallback
+and the four fonts it bundles carry no disclosure triangle — `▸` and `▾` would be boxes,
+exactly like the `✓`/`✗` that shipped in the subagent card. The allowlist in
+`no_symbol_the_console_draws_is_a_glyph_egui_lacks` now covers this site too.
+
+⏸ **Out of scope, and shaped so it can be added.** The **in-flight slot above the composer** —
+an ephemeral row that is replaced rather than appended — is composer-adjacent and belongs with
+whoever is editing that band. It attaches without touching this model: `Transcript::running_tools()`
+already names the live ids, a running card never settles and is therefore never grouped, and
+the slot would be a *second view* of those same elements rather than a state they enter. The
+only thing that would have to change here is the choice to keep drawing a running card in the
+flow as well, which is a display decision and not a structural one.
+
+⚠️ **Suppressing content *within* a card is a separate, real decision and is not made here.**
+A subagent card renders the harness's metadata block verbatim — *"Async agent launched
+successfully… never quote any part of it"* — which is noise a reader never wants. That is a
+question about what a card should elide rather than about how long it keeps its weight, and
+folding it into this tier would have made one change out of two.
+
 ### 1.2 The portal — a screen-anchored, live, orbitable window onto the world
 
 `organon console portal open`, typed at a prompt **inside the console**, floats a rendered
@@ -2630,6 +2752,24 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **Nobody has seen a collapsed transcript, so whether it actually *reads* better is
+  unverified — and that is the entire point of the change.** Card density was designed against
+  a screenshot and a sentence, and everything claimed for it here is a claim about code:
+  `cargo test -p organon-shell --lib` is **563 green** (539 before, plus twenty in
+  `card_density` and four in `conversation_view`), `cargo check --features shell-edition --bin
+  organon-console` is clean, and `cargo check --tests -p organic-math-native --features
+  shell-edition` is clean. **That is the whole claim: it compiles and the tests pass.** What it
+  does not establish, in order of how much it matters: (1) that six calls collapsed to six
+  dense lines is *calmer* rather than merely smaller — a wall of one-line rows is its own kind
+  of noise, and the only way to know is to look at a real session; (2) that the **scroll
+  stability** construction holds in a window. The two rules are pinned by pure functions and by
+  one real-frame test, but "the reader's eye does not move" is a statement about pixels, and no
+  card has ever collapsed under a live scroll on this machine; the failure mode, if the
+  argument is wrong somewhere, is a jump nobody would catch in a test. (3) That `GROUP_MIN = 3`
+  is the right threshold, which is a taste call made without ever seeing a group. (4) That the
+  dense row is legible at all — the verb is `prose` and everything after it is `dim`, chosen so
+  that colour stays reserved for a failure, and a row that turns out to be too faint to scan is
+  a one-token change nobody can make from here.
 - ⚠️ **The desktop posture has never been drawn, and neither has the terminal one since the
   wiring.** §1.6 ships at `t = 0.0`, which is meant to be today's console to the point:
   `form_at_terminal_is_the_form_that_shipped` pins all fourteen tokens against values read out

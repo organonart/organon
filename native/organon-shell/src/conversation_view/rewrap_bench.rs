@@ -55,6 +55,7 @@ use std::time::{Duration, Instant};
 use super::{scrollback, ConversationPane, SurfaceImages};
 use crate::agent_map::EventMapper;
 use crate::approval::{approval_channel, DecisionMemory};
+use crate::card_density::DensityMap;
 use crate::conversation::{
     AgentEvent, MessageId, ResultDetail, RunOutcome, ToolId, Transcript,
 };
@@ -216,6 +217,12 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         composer_height: 0.0,
         artifacts: HashMap::new(),
         diffs: HashMap::new(),
+        // ⚠️ Empty, and `pinned` above is `false`, so **nothing settles and nothing
+        // collapses**: both benches keep measuring the open card they have always measured,
+        // and their published figures stay comparable across this change. A bench that
+        // silently started measuring one-line rows would report a large speed-up that is
+        // really a change of subject.
+        density: DensityMap::default(),
         buttons: Vec::new(),
         sliders: Vec::new(),
         approvals: None,
