@@ -2918,6 +2918,7 @@ dependencies = [
  "organon-core",
  "organon-mind",
  "organon-render",
+ "organon-scene",
  "organon-shell",
  "pollster",
  "raw-window-handle 0.5.2",
@@ -2965,6 +2966,15 @@ dependencies = [
  "naga",
  "organon-core",
  "wgpu",
+]
+
+[[package]]
+name = "organon-scene"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "organon-core",
 ]
 
 [[package]]

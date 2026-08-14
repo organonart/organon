@@ -33,6 +33,21 @@ CROSS-CRATE CHURN: 73.6%  (203/276)     §2.4 band: ≳30%   [at 7e19bc8d]
 answer is: do not split repositories.** One repo, crates published to crates.io — §2.5's
 own preferred end state — and the number is the argument for it rather than against.
 
+> 📌 **organon#49 reached the same answer from the other end, and added a sixth crate on
+> the way** (`organon-scene`, Tier 3). #49 asks how to distribute **Organon Console**
+> without making a user meet the visualizer, and the finding was that Console is a
+> GPL-3.0-or-later binary of the VST3 crate — `shell_main.rs` lives in
+> `organic-math-native`, so it links nih-plug and inherits the licence from a plugin
+> binding it never calls. That is a **crate-graph** problem, not a repository one, and the
+> route is the same one this file argues for: move the seam, keep the repo. The two
+> analyses are independent and agree, which is worth more than either alone.
+>
+> ⚠️ **The churn number above predates that work and will move because of it.** Splitting
+> modules out of `organic-math-native` mechanically *raises* cross-crate churn for a while
+> — a change that used to be one crate's is now two. Re-run
+> `native/tools/crate-churn.py` before quoting it; a higher reading after #49 is the
+> extraction showing up in the data, not the engine destabilising.
+
 **The important half is WHY, because it means the number will not decay on its own.**
 The dominant pair is `organic-math-native × organon-core`, and **96% of those 179 merges
 touch a param-chain file**. That is invariant #3 — *a param is a chain, not a line* —

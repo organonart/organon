@@ -1706,6 +1706,7 @@ matter (`xtask` is the VST3/CLAP bundler and is not part of the engine):
 | **`organon-core`** | `native/organon-core` | `memmap2`, `half`, `glam`, `bytemuck`, `serde`, `serde_json` | the **host-free spine**: `math`, `ipc`, `params`, `gguf`, `gguf_data`, `edition`, `tabs` |
 | **`organon-mind`** | `native/organon-mind` | `organon-core`, `egui`, `bytemuck`, `memmap2` — **and nothing else** | **T4** — the interpretability instrument: the activation ring, Mind UI, model shell. **No nih-plug.** |
 | **`organon-render`** | `native/organon-render` | `organon-core`, `wgpu`, `glam`, `bytemuck`, `image`, `half` | **T4** — the renderer: `render` + its 36 surface submodules, plus `axes`/`chamber`, and **50 shaders**. **No nih-plug, no egui, no winit.** |
+| **`organon-scene`** | `native/organon-scene` | `organon-core`, `glam`, `bytemuck` | **organon#49 T3** — the **substrate**: `substrate_scene` / `substrate_materials` / `substrate_camera` / `substrate_epochs` + `overlay_meta`. Scene *state*, not drawing. **No nih-plug, no wgpu, no egui, no winit.** |
 | `organic-math-native` | `native/` | all three + the world | everything else — the plugin, the visual, the editor, **`world.rs`** |
 
 **⚠️ `organon-render` is `world::render`; `world.rs` is NOT part of it and did not move.**
@@ -1739,6 +1740,7 @@ number out of the script, and Tier 5's open questions.
 
 ```bash
 cargo tree -p organon-core     # must contain NO nih_plug, NO wgpu, NO egui, NO winit
+cargo tree -p organon-scene    # same bar, one layer up (organon#49 T3)
 ```
 
 That is the tier's acceptance test. It is meaningful only while core's dependency list
