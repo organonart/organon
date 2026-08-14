@@ -5,7 +5,7 @@ GPL, and the line between them is drawn by a dependency rather than by preferenc
 
 | What | Licence | Why |
 |---|---|---|
-| `native/organon-core` · `native/organon-render` · `native/organon-mind` · `native/organon-shell` | **MIT OR Apache-2.0** (your choice) | The engine. No plugin bindings anywhere in it. |
+| `native/organon-core` · `native/organon-render` · `native/organon-mind` · `native/organon-console` | **MIT OR Apache-2.0** (your choice) | The engine. No plugin bindings anywhere in it. |
 | `native/xtask` | **MIT OR Apache-2.0** | The build tool. Does not link plugin bindings. |
 | `native/` root crate (`organic-math-native`) — the plugin, the standalone, the visual, the `organon` CLI | **GPL-3.0-or-later** | Forced. See below. |
 
@@ -24,7 +24,7 @@ Not a choice, and worth stating precisely so nobody "fixes" it:
 ## What this means for you
 
 **Using the engine in your own project** — take `organon-core`, `organon-render`,
-`organon-mind` or `organon-shell` under MIT or Apache-2.0, whichever suits you.
+`organon-mind` or `organon-console` under MIT or Apache-2.0, whichever suits you.
 That is the ~100k lines worth reusing, and it is deliberately unencumbered: the
 math, the renderer, the GGUF reader, the IPC spine. Nothing in them links a plugin
 binding, and `cargo tree -p organon-core` is the test that keeps it that way.

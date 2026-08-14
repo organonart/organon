@@ -7,7 +7,7 @@
 # `export-public.sh`'s member guard fails on the one that is missing, rather than
 # shipping a manifest that names a member nobody exported. That failure is the system
 # working, not an obstacle to route around.
-members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-shell"]
+members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-console"]
 
 [package]
 name = "organic-math-native"
@@ -56,22 +56,22 @@ name = "organon-mind"
 path = "src/mind_main.rs"
 required-features = ["mind-edition"]
 
-# Shell #3 T1 — **Organon Shell**: the agent-operating workstation. The
-# compositor UI lives in the `organon-shell` crate (nih_plug-free, Edition-parametric);
+# Console #3 T1 — **Organon Console**: the agent-operating workstation. The
+# compositor UI lives in the `organon-console` crate (nih_plug-free, Edition-parametric);
 # this bin is the window — it sits HERE, like organon-mind's, because the embedded
-# viewport (Shell #6) renders `World`, which is this crate's until #618
-# extracts it. Requires `shell-edition`, so a default build never produces it.
+# viewport (Console #6) renders `World`, which is this crate's until #618
+# extracts it. Requires `console-edition`, so a default build never produces it.
 #
-# ⚠️ The ARTIFACT is `organon-console`; the CRATE is still `organon-shell`. That gap is
-# deliberate, not an oversight mid-rename: the public name is Organon Console, but the
-# crate name, the `shell-edition` feature, the `ORGANON_SHELL_*` variables (a shipped flag
-# surface) and the `organon-shell` IPC namespace (a WIRE identifier the `organon` CLI joins
-# on) are each read by something else. Issue #3 owns closing the gap with deprecation
-# aliases; renaming them here would be find-and-replace across a process boundary.
+# ⚠️ **Two things here still spell "shell" and both are deliberate**, because each is read
+# from outside this repo: the `ORGANON_SHELL_*` environment variables (a shipped flag
+# surface — the launch shims on the workstation set them) and the `organon-shell` IPC
+# namespace string in `organon-core/src/edition.rs` (a WIRE identifier the `organon` CLI
+# joins on to find a running console). Renaming either is a find-and-replace across a
+# process boundary, and it fails silently on the far side.
 [[bin]]
 name = "organon-console"
-path = "src/shell_main.rs"
-required-features = ["shell-edition"]
+path = "src/console_main.rs"
+required-features = ["console-edition"]
 
 # Separate-process visual window (winit + wgpu). Reads params from shared memory.
 [[bin]]
@@ -113,12 +113,12 @@ required-features = ["embedded-llm"]
 # so `EDITION` resolves to `Edition::Mind` in exactly one place.
 mind-edition = ["organon-core/mind-edition", "organon-mind/mind-edition"]
 
-# Shell #3 T1 — the **Organon Shell** edition switch, mind-symmetric:
-#   cargo build --release --features shell-edition --bin organon-console
+# Console #3 T1 — the **Organon Console** edition switch, mind-symmetric:
+#   cargo build --release --features console-edition --bin organon-console
 # Forwarded to organon-core (EDITION's one resolution site) and through the
-# organon-shell crate's own feature, so the two cannot disagree. Mutually exclusive
+# organon-console crate's own feature, so the two cannot disagree. Mutually exclusive
 # with mind-edition (compile_error! in organon-core's edition.rs).
-shell-edition = ["organon-core/shell-edition", "organon-shell/shell-edition"]
+console-edition = ["organon-core/console-edition", "organon-console/console-edition"]
 
 # Pulls in the llama.cpp binding (which statically links + builds llama.cpp itself).
 # OFF by default: the plugin, standalone, visual, and mind-writer bins never touch it.
@@ -131,9 +131,9 @@ embedded-llm = ["dep:llama-cpp-4", "dep:minijinja", "dep:minijinja-contrib"]
 organon-core = { path = "organon-core" }
 organon-mind = { path = "organon-mind" }
 organon-render = { path = "organon-render" }
-# Shell #3 T1 — the Shell compositor UI. Unconditional like its siblings
+# Console #3 T1 — the Console compositor UI. Unconditional like its siblings
 # (the lib is tiny and Edition-parametric); only the BIN is feature-gated.
-organon-shell = { path = "organon-shell" }
+organon-console = { path = "organon-console" }
 # #367 Tier 2b / #522 Tier 1 — llama.cpp bindings for the embedded inference runtime.
 # OPTIONAL + feature-gated: nothing links it unless `--features embedded-llm`. Bundles
 # + statically links llama.cpp, with the GPU backend chosen per target (see below).

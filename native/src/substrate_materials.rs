@@ -717,7 +717,7 @@ pub const PAPER: SubstrateMaterial = SubstrateMaterial {
 /// because a material must not leave graphite's overlay behind.
 ///
 /// The brush axis is a legibility choice as much as a look. The substrate camera is top-down
-/// with screen-up = world −Z (`shell_main.rs:124-131`), so a +Z brush runs **vertically** up
+/// with screen-up = world −Z (`console_main.rs:124-131`), so a +Z brush runs **vertically** up
 /// the pane — across the glyph rows rather than along them, which is the orientation least
 /// likely to be read as underlining. Both baked layers are `Stripes` on the same axis, so
 /// grooves, banding and the stretched highlight all agree.
@@ -780,7 +780,7 @@ static MATERIALS: [&SubstrateMaterial; 4] = [&GRAPHITE, &PAPER, &SLATE, &METAL];
 // and the reason is that the directions are not this file's to move:
 //
 // * `lighting[4]` (key azimuth) is **overridden by the integrator** after the look is applied
-//   (`shell_main.rs:144-159`), re-derived for the camera that file installs. A rig that wrote
+//   (`console_main.rs:144-159`), re-derived for the camera that file installs. A rig that wrote
 //   it would be silently discarded on one path and fight on another.
 // * `lighting[3]` (key elevation) is not overridden, but elevation and azimuth are one
 //   statement about where the light is; moving one without the other is half a rig. Tier 1
@@ -873,7 +873,7 @@ static RIGS: [&SubstrateRigLook; 2] = [&STUDIO, &DAYLIGHT];
 /// Assumes [`crate::substrate_scene::apply_substrate_look`] has already run: this writes only
 /// the surface response, never the geometry, the stillness switches, the palette or the
 /// background. Names match **case-insensitively**, following the backdrop selector's own
-/// precedent (`shell_main.rs:96`); normalizing beyond that is the CLI's job.
+/// precedent (`console_main.rs:96`); normalizing beyond that is the CLI's job.
 ///
 /// Pure: a total function of the fields it writes, with no dependence on the rest of `s`, no
 /// I/O, no clock and no allocation. Idempotent by construction — every write is a constant —
@@ -1475,7 +1475,7 @@ mod tests {
         }
     }
 
-    /// Case-insensitive, per `shell_main.rs:96`'s precedent for the backdrop selector.
+    /// Case-insensitive, per `console_main.rs:96`'s precedent for the backdrop selector.
     #[test]
     fn names_match_case_insensitively() {
         for name in MATERIAL_NAMES {

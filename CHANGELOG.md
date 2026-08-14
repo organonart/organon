@@ -11,6 +11,75 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The product is called Organon Console, and the tree now says so
+
+The rename to **Organon Console** was made a while ago and only ever reached the binary's
+name; everything behind it still said *Shell*. This finishes it. The crate
+`native/organon-shell` is now **`native/organon-console`**, the cargo feature
+`shell-edition` is **`console-edition`**, `native/src/shell_main.rs` is
+**`console_main.rs`**, the app state `Shell` is **`Console`**, `Edition::Shell` is
+**`Edition::Console`** (with `is_shell` → `is_console` and `SHELL_TABS` →
+`CONSOLE_TABS`), `ShellApp` is **`ConsoleApp`**, the provisional command `shell.echo` is
+**`console.echo`**, the PR label `shell` is **`console`**, and `SHELL_ARCHITECTURE.md` is
+**`CONSOLE_ARCHITECTURE.md`** — moved with `git mv`, so its history follows. Every
+citation of the old names across `CLAUDE.md`, `ARCHITECTURE.md`, `MIND_ARCHITECTURE.md`,
+`CONTRIBUTING.md`, `README.md`, `LICENSING.md`, `doc/`, the `organon-cli` skill, the
+`.claude` hooks and `.github/workflows/ci.yml` moved with them. **CI moved in this same
+change** — a feature rename that lands without it fails every PR.
+
+🚨 **Three words spelled "shell" live in this tree and only one of them was ours.** The
+product; **a shell** (bash, WSL, `cmd`, the program a terminal harness runs); and a
+**geometric** shell (`math::outer_shell`, `PhylSurface::Shell`, the Plexus overlay rind,
+a free-slip spherical boundary). The third is the largest by far — 149 occurrences in
+`math.rs` alone — and `ORGANON_SHELL_TABS=shell-wsl,shell` carries two of the three senses
+on one line. Nothing was renamed that a shell or a solid still means; the harness ids
+`shell` / `shell-wsl`, the label `Shell (WSL)`, `default_shell`, `shell_dash_c` and
+`$SHELL` are all untouched. Organon **Mind**'s `mind_shell.rs` is untouched too: it is a
+different product's UI scaffold, not this one's name.
+
+⚠️ **Two things deliberately still say "shell", because both are read from outside this
+repository and a rename here does not reach the far side:**
+
+1. **The IPC namespace value `"organon-shell"`** (`organon-core/src/edition.rs`). The
+   `organon` CLI joins on that exact string to find a running console, and the launch
+   shims set `ORGANON_IPC_NS=organon-shell` to fork a second one into its own namespace.
+   It is a **wire identifier, not a name** — the same class of frozen string as
+   `Edition::Full`'s `"organic-math"`. The `Edition` variant renamed *around* it, which is
+   exactly the distinction: a variant is ours, a wire value is a contract.
+   `console_edition_identity_and_tabs` pins the string, so a find-and-replace fails there
+   loudly rather than at a user's keyboard silently.
+2. **The `ORGANON_SHELL_*` environment variables** — all nine. They are a shipped flag
+   surface that the workstation's `organon-console.cmd` / `oc.cmd` shims already set.
+
+A third stayed for the same reason with a smaller blast radius: the private-annex
+citations `doc/organon_shell_prd.md` and `doc/organon_shell_buildplan.md` name files in a
+tree this repository cannot see, so renaming the citation would only dangle it. Rename the
+annex first. And `%APPDATA%\OrganonShell` stays, because an existing install reads it.
+
+⚠️ **One behaviour genuinely changed, and it is not cosmetic.** `CommandService`'s catalog
+is sorted by name, so `console.echo` now precedes `session.note` where `shell.echo`
+followed it. `catalog_list_spec_and_suggest` caught it and its expectations moved with the
+rename — the catalog doing what it says, not a regression.
+
+`doc/arch/topology.md` was brought true in the same pass, which the rename only exposed:
+`CLAUDE.md` says that file owns *"the crate graph and what may depend on what"* and it did
+not state one. It now carries the graph read from the manifests (five members, the three
+leaf crates siblings rather than a stack, `nih_plug` and the window stack confined to the
+root crate) and corrects the claim that the console crate is "organon-core + egui only" —
+it has taken `serde`/`serde_json`, `dirs`, `portable-pty` and `alacritty_terminal` since,
+so the *publishability* claim survives and the *smallness* claim did not. Its module list
+gained `theme.rs`, `posture.rs` and `prefs.rs`, and records that `kind.rs` sits in
+`organon-core` rather than here for a topology reason. `.claude/hooks/doc-rules.sh` now
+makes topology.md accountable for `native/organon-console/Cargo.toml` as well, and the
+now-permanently-absent `SHELL_ARCHITECTURE.md` entry was removed from
+`.claude/settings.json` — a listed doc that can never exist is false reassurance.
+
+**Verified:** `cargo test -p organon-console --lib` 526 passed / 1 ignored,
+`cargo test -p organon-core` 556 passed, `cargo check --features console-edition --bin
+organon-console` and `cargo check --tests -p organic-math-native --features
+console-edition` both clean, and all four doc hooks run green. Not seen running — no
+window was opened.
+
 ### `cli.rs` and `agent.rs` stop needing a plugin host
 
 organon#49 Tier 2. Both files reached `nih_plug::prelude::Enum` to do three things: list

@@ -6,15 +6,19 @@
 > console did not exist yet. None of that is re-explained here. What follows is the console
 > on top of it.
 >
-> **Names, before anything else.** The product is **Organon Console**; the binary is
-> `organon-console`; the crate is `native/organon-shell`, the cargo feature is
-> `shell-edition`, the IPC namespace is `organon-shell`, and the living architecture doc is
-> `SHELL_ARCHITECTURE.md`. The gap is deliberate — each of the working names is read by
-> something else (a feature resolver, another process, a hook table) — and issue #3 owns
-> closing it with deprecation aliases rather than find-and-replace. Expect both spellings
-> in the tree and do not tidy them.
+> **Names, before anything else.** The product is **Organon Console** and everything in the
+> tree now spells it that way: the binary is `organon-console`, the crate is
+> `native/organon-console`, the cargo feature is `console-edition`, and the living
+> architecture doc is `CONSOLE_ARCHITECTURE.md`.
 >
-> **This is an overview, not the authority.** `SHELL_ARCHITECTURE.md` is the code-grounded
+> ⚠️ **Exactly two things still say "shell", and both are read from OUTSIDE this repo**, so
+> they are frozen rather than missed: the **IPC namespace is `organon-shell`** (a wire
+> identifier the `organon` CLI joins on to find a running console) and the
+> **`ORGANON_SHELL_*` environment variables** (a shipped flag surface the workstation's
+> launch shims set). Moving either here does not move the far side, and the failure is
+> silent on both. Do not tidy them.
+>
+> **This is an overview, not the authority.** `CONSOLE_ARCHITECTURE.md` is the code-grounded
 > state and wins every disagreement with this file. What this file adds is the shape and
 > the argument, which are spread across an execution plan, three protocol docs, a demo
 > script and two issues.
@@ -27,12 +31,12 @@ this document exists to avoid.
 
 | Word | Means |
 |---|---|
-| **seen** | built, and a person watched it work on real hardware. The date, the machine and what was checked are in `doc/console_spike_demo_script.md` or in `SHELL_ARCHITECTURE.md` §3 |
+| **seen** | built, and a person watched it work on real hardware. The date, the machine and what was checked are in `doc/console_spike_demo_script.md` or in `CONSOLE_ARCHITECTURE.md` §3 |
 | **unseen** | built, headless-tested, green — and nobody has looked at it. This is the normal state of recent work, and it is **not** a synonym for "works" |
 | **declined** | deliberately not built, with the reason recorded. Often the more informative entry |
 | **planned** | argued and named, not built |
 
-`SHELL_ARCHITECTURE.md` §3 is the honesty ledger and is where these distinctions are
+`CONSOLE_ARCHITECTURE.md` §3 is the honesty ledger and is where these distinctions are
 maintained in the same change as the code. If you extend the console, you add to it.
 
 ---
@@ -63,7 +67,7 @@ actually happens.
 ## 2. What the console is
 
 **Two front-ends over one renderer.** A tab is one or the other; the fork is
-`Pane` in `native/src/shell_main.rs`.
+`Pane` in `native/src/console_main.rs`.
 
 | Front-end | What it is | Rule it lives under |
 |---|---|---|
@@ -210,7 +214,7 @@ Six modules carry it — a decoder that owns its own line buffering (a chunk bou
 is the normal case), a transcript model with no egui and no clock, the one seam file that
 knows both types, a live-child driver, the drawing, and a small pure text-alignment module.
 The load-bearing mapping rules each come from a measurement and each produce a view that looks
-*nearly* right if you get them wrong; `SHELL_ARCHITECTURE.md` §1.1 has them, and the first —
+*nearly* right if you get them wrong; `CONSOLE_ARCHITECTURE.md` §1.1 has them, and the first —
 an `assistant` line carries **one content block, not a whole message** — is the one that
 silently eats the assistant's prose if you pass `message_id` straight through.
 
@@ -523,8 +527,8 @@ docs, installed alongside it. A skill teaching it how to modify itself. And a lo
 change takes effect.
 
 Two of the three exist here, and the first is stronger than a shipped-docs approach can
-normally be: `SHELL_ARCHITECTURE.md` is the console's living state and it is **hook-enforced**
-— `.claude/hooks/doc-rules.sh` maps `native/organon-shell/src/*.rs` to it, so the code cannot
+normally be: `CONSOLE_ARCHITECTURE.md` is the console's living state and it is **hook-enforced**
+— `.claude/hooks/doc-rules.sh` maps `native/organon-console/src/*.rs` to it, so the code cannot
 move without the doc being called for. A shipped snapshot ships and hopes; here the drift is
 caught by machinery. The skill exists too, and now carries the self-extension section.
 
@@ -561,7 +565,7 @@ the path the tool reads, and a fresh clone on any platform gets a real directory
 **Two: a conversation tab was standing in no project at all.** The built-in `claude-chat`
 registry row carried no `cwd`, spawning reads that as *the app's own directory*, and a console
 started from a PATH shim is nowhere in particular — so the agent saw no repo-local
-`.claude/skills/`, no project `CLAUDE.md` and no `SHELL_ARCHITECTURE.md`. Measured: it
+`.claude/skills/`, no project `CLAUDE.md` and no `CONSOLE_ARCHITECTURE.md`. Measured: it
 answered `Unknown skill: organon-cli` with the skill correctly on disk, and separately spent
 several approval cards running `ls` and `--help` to rediscover a CLI that has an 18 KB guide
 sitting in the checkout. The only symptom is an agent that seems oddly ignorant. **Fixed:**
@@ -596,7 +600,7 @@ as setup.
 
 | You want | Read |
 |---|---|
-| The code-grounded state, and what has not been seen | `SHELL_ARCHITECTURE.md` — §1 terminal host, §1.1 conversation view, §2 claimed seams, §3 the honesty ledger |
+| The code-grounded state, and what has not been seen | `CONSOLE_ARCHITECTURE.md` — §1 terminal host, §1.1 conversation view, §2 claimed seams, §3 the honesty ledger |
 | Why the fork happened, and the rules for working on it | `doc/console_spike_execution_plan.md` — §5.9, §5.9.25, §5.9.26, §6 |
 | The measured wire behaviour | `doc/console_approval_protocol.md`, `doc/console_session_control_protocol.md`, `doc/console_patch_protocol.md` |
 | What can actually be demonstrated today | `doc/console_spike_demo_script.md` — the status column is the honest answer |

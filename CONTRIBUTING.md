@@ -13,7 +13,7 @@ These are not style preferences. Each one has cost someone real work.
    either orphans the device in every saved session — the most destructive edit available
    in this codebase, and it looks like tidying up. The CLAP ID contains an old studio name;
    that is *why* it is commented, and it stays. Equally: never add a second plugin
-   identity. Organon Mind and Organon Shell are standalone-only, permanently.
+   identity. Organon Mind and Organon Console are standalone-only, permanently.
 
 2. **`Shared` — the IPC snapshot — is append-only.** The plugin process writes it and the
    visual process reads it at fixed byte offsets. Never reorder or insert fields. Append
@@ -76,10 +76,10 @@ too**, because their features are default-off and a green suite says nothing abo
 
 ```bash
 cargo build --release --features mind-edition  --bin organon-mind
-cargo build --release --features shell-edition --bin organon-console
+cargo build --release --features console-edition --bin organon-console
 ```
 
-CI runs exactly this matrix (default / mind / shell / Windows) on every PR.
+CI runs exactly this matrix (default / mind / console / Windows) on every PR.
 
 **Be precise about what you verified.** `cargo test` includes offline shader validation,
 so it catches binding, type and uniformity errors without a GPU — but it cannot see

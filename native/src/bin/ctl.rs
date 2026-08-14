@@ -53,7 +53,7 @@ fn param_ids() -> clap::builder::PossibleValuesParser {
 const CONSOLE_MATERIALS: &[&str] = &["graphite", "paper", "slate", "metal"];
 
 /// The backdrop **sources**, which are not materials and not Leaf A's. These come from
-/// `shell_main.rs`'s `BackdropSource` value space — `world` keeps the live `organon
+/// `console_main.rs`'s `BackdropSource` value space — `world` keeps the live `organon
 /// set`/`generator`/`recipe` response behind the glyphs, `off` is a flat fill, and
 /// `substrate` selects the lit plane without saying which material. One verb covers both
 /// because from the outside there is one question: what is behind the text?
@@ -571,7 +571,7 @@ fn run_eyes(req: cli::EyesReq, timeout: std::time::Duration) -> ! {
 /// `ipc::Reader::open().is_live()` is false. That heuristic is about the **World** lane
 /// (brief R3): it probes the `Shared` mmap's `seq` counter for *motion*, so what it really
 /// measures is redraw cadence, not existence. The console publishes `Shared` every redraw
-/// (`shell_main.rs`), so a console idling between repaints can read "dead" while it is
+/// (`console_main.rs`), so a console idling between repaints can read "dead" while it is
 /// plainly alive and about to drain this very line. Printing "your command was dropped" at
 /// the moment it is being honoured is worse than saying nothing. The probe also costs up
 /// to ~150 ms per invocation, which a console verb — the one people will hold a key down
@@ -1180,13 +1180,13 @@ mod tests {
     /// `params.rs`'s ranges — drifted on 9 of 45 ids (brief R6).
     ///
     /// ⚠️ **`CONSOLE_SOURCES` is pinned by a literal, not bound.** `world`/`off`/`substrate`
-    /// are `BackdropSource`'s value space, and `BackdropSource` lives in `src/shell_main.rs`
+    /// are `BackdropSource`'s value space, and `BackdropSource` lives in `src/console_main.rs`
     /// — another `[[bin]]`, which no `bin` can import. The other half of this literal is
     /// `BACKDROP_SOURCE_WORDS` there, asserted against `console_source` by
     /// `every_source_word_resolves_and_a_typed_name_is_stricter_than_the_env_var`. Two
     /// alarms, one wire missing; the fix is a `pub const` in `cli.rs` beside
     /// `parse_console_op` (already the declared home of "both ends speak one vocabulary from
-    /// one place"), and it is in SHELL_ARCHITECTURE.md's honesty ledger.
+    /// one place"), and it is in CONSOLE_ARCHITECTURE.md's honesty ledger.
     #[test]
     fn the_console_vocabularies_are_bound_to_the_tables_that_draw_them() {
         use organic_math_native::substrate_materials;
@@ -1203,7 +1203,7 @@ mod tests {
         assert_eq!(
             CONSOLE_SOURCES,
             &["world", "off", "substrate"][..],
-            "the other half of this literal is BACKDROP_SOURCE_WORDS in src/shell_main.rs"
+            "the other half of this literal is BACKDROP_SOURCE_WORDS in src/console_main.rs"
         );
         // The two vocabularies must stay disjoint, or `background studio` would parse.
         for r in CONSOLE_RIGS {

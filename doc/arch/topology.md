@@ -62,22 +62,82 @@ dance*, which is paid per unit of work, not per intermediate commit on a branch.
 
 ---
 
-## The fifth member — `organon-shell` (Shell #3 T1, 2026-08-07)
+## The crate graph — who may depend on what
 
-**Organon Shell** joined the workspace as its own crate (the organon-mind pattern:
+**Read from the manifests, not from memory** (`cargo tree -p <crate> --depth 1 -e normal`,
+re-run 2026-08-13 at the Console rename). Five workspace members plus the root package:
+
+```
+organic-math-native  (root: plugin cdylib + 6 bins, GPL-3.0-or-later)
+  ├── organon-core ────────── the host-free spine
+  ├── organon-render ──┐
+  ├── organon-mind ────┼───── each depends on organon-core, and on NOTHING else here
+  └── organon-console ─┘
+xtask                          (build tooling; depends on no member)
+```
+
+| Crate | Its own direct deps | The rule it is held to |
+|---|---|---|
+| `organon-core` | `bytemuck`, `glam`, `half`, `memmap2`, `serde`, `serde_json` | **no `nih_plug`, no `wgpu`, no `egui`** — `cargo tree -p organon-core` is the acceptance test |
+| `organon-render` | `organon-core`, `bytemuck`, `glam`, `half`, `image`, `wgpu` | no `nih_plug`, no `egui`, no `winit` |
+| `organon-mind` | `organon-core`, `bytemuck`, `dirs`, `egui`, `memmap2` | no `nih_plug` |
+| `organon-console` | `organon-core`, `alacritty_terminal`, `dirs`, `egui`, `portable-pty`, `serde`, `serde_json` | **no `nih_plug`, ever** — standalone-only permanently, so any `nih_plug` in this graph is a loaded gun pointed at Organon's VST3 class ID |
+
+⚠️ **The three leaf crates are siblings, not a stack.** None of `organon-render`,
+`organon-mind`, `organon-console` depends on either of the others; every edge between them
+would have to go through the root crate, which is why the console's binary lives in the
+root package (it renders `World`) while its compositor lib does not (that would drag
+`nih_plug` into a package forbidden to have it).
+
+⚠️ **`nih_plug` and the whole window stack — `winit`, `wgpu`'s surface, the vendored
+`egui-wgpu` — belong to the ROOT crate alone.** That is what keeps the four members
+`MIT OR Apache-2.0` while the root is GPL: see `LICENSING.md`, and note that "make the
+licences consistent" would relicense the reusable engine onto a plugin binding's terms.
+
+---
+
+## The fifth member — `organon-console` (Console #3 T1, 2026-08-07)
+
+**Organon Console** joined the workspace as its own crate (the organon-mind pattern:
 a nih_plug-free lib, the `required-features`-gated bin in the root crate beside
 `mind_main.rs`, edition feature forwarded to `organon-core` where `EDITION`
 resolves). Three topology facts, so the tables above age predictably:
 
 - **Exported like every other member.** `mirror-platform.manifest` carries
-  `INCLUDE native/organon-shell`, so the crate crosses byte-identical and the root
-  manifest's forwarding feature `shell-edition = ["organon-core/shell-edition"]`
+  `INCLUDE native/organon-console`, so the crate crosses byte-identical and the root
+  manifest's forwarding feature `console-edition = ["organon-core/console-edition"]`
   stays valid on the far side, because organon-core crosses too and carries the
   target feature. A new member is one manifest decision, not two — see §"the export"
-  in `CLAUDE.md`.
-- **Publishable in principle** (organon-core + egui only — the window stack lives
-  with the root-crate bin), and no longer blocked by anything structural.
+  in `CLAUDE.md`. ⚠️ That manifest lives in the **private** tree; `scripts/` does not
+  exist in this repo, so the line above cannot be checked from here.
+- **Publishable in principle**, and no longer blocked by anything structural — but
+  ⚠️ **not on the two-dependency footing this section used to claim.** It said
+  "organon-core + egui only"; the crate has since taken `serde`/`serde_json` (the #4
+  session schema *is* serde types), `dirs` (the one store-path resolver) and, at
+  Console #10 T1, `portable-pty` + `alacritty_terminal` — the real PTY and VT state
+  machine. Seven direct dependencies, all on crates.io, none of them a host or a
+  window: the *publishability* claim survives, the *smallness* claim did not, and
+  those are different claims.
 - **Its product docs stay in the private annex** — `doc/organon_shell_prd.md` and
-  `doc/organon_shell_buildplan.md`, which `EXCLUDE doc` keeps out. Only the code and
-  `SHELL_ARCHITECTURE.md` cross into the public tree, so a public reader sees what
-  Shell *is* and what exists today, but not the tactical sequencing.
+  `doc/organon_shell_buildplan.md`, which `EXCLUDE doc` keeps out. ⚠️ Those two
+  filenames keep the old product name because that is what the files are actually
+  called; renaming the citation without renaming the annex would only dangle it. Only
+  the code and `CONSOLE_ARCHITECTURE.md` cross into the public tree, so a public reader
+  sees what the Console *is* and what exists today, but not the tactical sequencing.
+
+### What the crate has grown since (2026-08-13)
+
+`native/organon-console/src` is **29 modules**, not the Tier-1 handful this section was
+written against. The ones that arrived after it and that a topology reader will look for:
+
+- **`theme.rs`** — one `Theme` of `Color32` fields; every colour the console paints.
+- **`posture.rs`** — how the console holds itself, the second axis beside the theme.
+- **`prefs.rs`** — `preferences.json` beside `harnesses.json` in the store root, so a
+  choice can outlive a launch instead of being an `ORGANON_SHELL_*` variable read once.
+- **`kind.rs` is NOT here — it is in `organon-core`**, and that placement is a topology
+  fact rather than a filing preference: the three copies of the kind vocabulary lived in
+  *different crates* (`cli.rs` in the root, `block_panel.rs` and `conversation.rs` in the
+  console), so the wire copy could not import the paint ones. `organon-core` is the only
+  crate all three can see, and a closed set of words needs no host, GPU or UI.
+
+`CONSOLE_ARCHITECTURE.md` owns what each of them does; this file owns only where they sit.

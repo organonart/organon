@@ -18,7 +18,7 @@
 //! | [`gguf_data`] | tensor payload reads; depends only on [`gguf`]. |
 //! | [`edition`] | resolves #536 T4 **reference #4** — `ipc.rs → crate::edition`, ×6. |
 //! | [`ipc`] | **T4** — `Shared`, the plugin↔visual wire format. See the ⚠️ below. |
-//! | [`kind`] | #48 T1 — the console's **kind** vocabulary. It is here because the two front-ends that had a copy each live in *different* crates (`cli.rs` in the root crate, `conversation.rs` in `organon-shell`), so this is the only crate both can see — and a closed set of words needs no host, GPU or UI. |
+//! | [`kind`] | #48 T1 — the console's **kind** vocabulary. It is here because the two front-ends that had a copy each live in *different* crates (`cli.rs` in the root crate, `conversation.rs` in `organon-console`), so this is the only crate both can see — and a closed set of words needs no host, GPU or UI. |
 //! | [`math`] | **PR B** — the algorithm itself (31.5k lines). Pure; no host, no GPU. |
 //! | [`params`] | **PR B** — `ParamValues` + the semantic enums, #536 T4 reference #2; plus `IndexedEnum` (organon#49 T2), core's counterpart to nih-plug's `Enum`. |
 //! | [`tabs`] | resolves #536 T4 **reference #5** — `edition.rs → preset::UiTab`. |

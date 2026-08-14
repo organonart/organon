@@ -10,11 +10,13 @@
 # doc could rot silently into an incoherent state while unwatched — the exact
 # failure mode #618 T0b exists to catch. Parked is not unwatched.
 #
-# 📌 SHELL_ARCHITECTURE.md and CONSOLE_ARCHITECTURE.md are BOTH in the list, and only
-# one of them exists at a time — the Shell→Console rename lands on its own branch, and
-# a hook that has to be edited in the same commit as a rename is a hook that will be
-# wrong for whichever branch you are not on. `[ -f "$f" ] || continue` below makes a
-# listed-but-absent doc a silent skip, so the list is correct on both sides of it.
+# 📌 The list carried BOTH SHELL_ARCHITECTURE.md and CONSOLE_ARCHITECTURE.md while the
+# Console rename was in flight, so the hook was correct on either side of it without
+# being edited in the rename's own commit. The rename has landed; the SHELL_ entry is
+# now permanently absent, and `[ -f "$f" ] || continue` would silently skip it forever —
+# a listed doc that can never exist is false reassurance, not tolerance — so it has been
+# removed from `.claude/settings.json`. Re-add a second name only for the duration of
+# the next such rename.
 #
 # The existing doc hooks answer two questions:
 #   architecture-doc-check.sh   (Stop)         "you changed X without Y"

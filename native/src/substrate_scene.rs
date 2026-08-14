@@ -4,8 +4,8 @@
 //! Console Spike Tier 1 Leaf B; `doc/console_spike_as_built_brief.md` **R5**. R5's finding
 //! is the whole shape of this file: the plane is reachable *today*, through
 //! `RenderPath::Membrane` + `cube.wgsl` + the existing lighting/composite rig, with **no
-//! new shader and no new `Shared` field**. Organon Shell already owns and republishes a
-//! full `Shared` every redraw (`shell_main.rs:425-427`), so the substrate "scene" is a
+//! new shader and no new `Shared` field**. Organon Console already owns and republishes a
+//! full `Shared` every redraw (`console_main.rs:425-427`), so the substrate "scene" is a
 //! **params builder, not a renderer feature** — and a params builder is a pure function
 //! over bytes, testable headless, which is why it is a leaf at all.
 //!

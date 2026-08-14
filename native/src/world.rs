@@ -1390,7 +1390,7 @@ pub struct World {
     // above it is relative. `Some((center, yaw, pitch, distance, roll, fov_deg))`
     // overrides all six at the finalization below, exactly as the rails branch does,
     // and latches off the `cam_center` auto-follow while it is installed. Set by
-    // `set_substrate_rig`; the only caller today is Organon Shell's backdrop, which
+    // `set_substrate_rig`; the only caller today is Organon Console's backdrop, which
     // frames a flat plane and cannot have the field's AABB dragging the centre.
     substrate_rig: Option<(Vec3, f32, f32, f32, f32, f32)>,
     // Rails mode (#187): set each frame from the active generator. While riding,
@@ -10293,7 +10293,7 @@ impl World {
     /// drag, a wheel, `organon console camera`, and an MCP framing — and the world *clamps* on
     /// the way in. A host that remembered what it last asked for would report a value the camera
     /// may never have held, and would be blind to every move a hand made. The console serves this
-    /// to an agent (`organon-shell::camera::Viewpoint`), and an agent acting on a stale framing is
+    /// to an agent (`organon-console::camera::Viewpoint`), and an agent acting on a stale framing is
     /// exactly the failure that read exists to end.
     ///
     /// ⚠️ **It is the base orbit, not the camera the frame is drawn with.** The finalization adds
@@ -10309,7 +10309,7 @@ impl World {
     }
 
     /// Install (or clear) an **absolute** camera rig — Console Spike Tier 1, for Organon
-    /// Shell's substrate backdrop.
+    /// the Console's substrate backdrop.
     ///
     /// The tuple is `(center, yaw, pitch, distance, roll, fov_deg)` — the six the camera
     /// finalization selects between, in that order, which is exactly what
