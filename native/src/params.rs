@@ -9952,34 +9952,75 @@ mod host_mirror_tests {
         assert_eq!(HostFluxAxis::from_u32(9999), HostFluxAxis::X);
     }
 
-    /// **The tier's own acceptance test, as code.** Not a mirror pin — this asserts the
-    /// *point* of T4a: that nothing `world.rs` names in `crate::params` still requires a
-    /// plugin host. It reads `world.rs`'s own import line, so it tracks the real file
-    /// rather than a list someone has to remember to update.
+    /// **Every param type `world.rs` names must live in core**, or Tier 4 cannot move it.
+    ///
+    /// Scans `world.rs` for *both* spellings — the braced
+    /// `use organic_math_native::params::{…}` list **and** inline
+    /// `organic_math_native::params::X` / `params::X` paths — and asserts each named type
+    /// is one this issue has actually moved.
+    ///
+    /// ⚠️ **Scanning only the braced import was this test's original bug.** The six types
+    /// T4a moved (`FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`,
+    /// `FieldKind`, `FluxAxis`) are reached inline, never through the import list, so the
+    /// first version passed while saying nothing about them — a test that was green
+    /// precisely where the work was.
+    ///
+    /// The list is hand-maintained on purpose: it is a statement of *what has been moved
+    /// deliberately*, not a mirror of core's contents, so a new type appearing in
+    /// `world.rs` fails here until someone decides where it belongs.
     #[test]
     fn every_param_type_world_names_is_in_core() {
         let world = include_str!("world.rs");
-        let line = world
-            .lines()
-            .find(|l| l.contains("organic_math_native::params::{"))
-            .expect("world.rs must import its param types on one `params::{…}` line");
-        let inner = line
-            .split_once('{')
-            .and_then(|(_, r)| r.split_once('}'))
-            .expect("the params import should be a braced list")
-            .0;
-        // Every name on that line must resolve through `organon_core::params`. The
-        // compiler proves it for the ones below; this catches a NEW name being added to
-        // world.rs's import that only exists on the host side.
-        let known = [
-            "BoidsForm", "FuncName", "GeneratorMode", "OscDivision", "ParamValues",
+
+        // Types confirmed resident in `organon_core::params` by #626 T3 and organon#49
+        // T1/T2/T4a. `IndexedEnum` is core's trait; `Host*` names are the adapters and
+        // are host-side by definition, so they are not candidates here.
+        let in_core = [
+            "BoidsForm", "CalColourSource", "CamPath", "ColourMode", "FdtdSource",
+            "FieldKind", "FieldVolSource", "FluxAxis", "FuncName", "GeneratorMode",
+            "IndexedEnum", "MaterialType", "OscDivision", "Palette", "ParamValues",
+            "SurfaceMode",
         ];
-        for name in inner.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+
+        let mut seen: Vec<&str> = Vec::new();
+        for line in world.lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            // Braced import lists.
+            if let Some((_, rest)) = line.split_once("params::{") {
+                if let Some((inner, _)) = rest.split_once('}') {
+                    seen.extend(inner.split(',').map(str::trim).filter(|n| !n.is_empty()));
+                }
+            }
+            // Inline paths: `…params::Name` followed by `::` or a non-ident char.
+            let mut hay = line;
+            while let Some(i) = hay.find("params::") {
+                let after = &hay[i + "params::".len()..];
+                if !after.starts_with('{') {
+                    let name: String = after
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() && name.chars().next().is_some_and(char::is_uppercase) {
+                        seen.push(&after[..name.len()]);
+                    }
+                }
+                hay = &hay[i + "params::".len()..];
+            }
+        }
+        assert!(
+            !seen.is_empty(),
+            "found no `params::` references in world.rs — the scan itself is broken, which \
+             would make this test pass by seeing nothing",
+        );
+        for name in seen {
             assert!(
-                known.contains(&name),
-                "world.rs imports `params::{name}`, which organon#49 T4a has not \
-                 confirmed lives in organon-core. Move it there (with a Host* mirror and \
-                 a pin) before Tier 4 moves world.rs, or this import blocks the move.",
+                in_core.contains(&name),
+                "world.rs names `params::{name}`, which organon#49 has not moved to \
+                 organon-core. Move it there (with a Host* mirror and a pin) before Tier 4 \
+                 moves world.rs — this import is what would block it.",
             );
         }
     }
