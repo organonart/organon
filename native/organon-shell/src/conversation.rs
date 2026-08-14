@@ -118,6 +118,13 @@
 //! either the texture or the live look is in this module — which is exactly the test that the
 //! split holds.
 //!
+//! Since #48 Tier 1 the *set* of those kinds is not this module's own: it is
+//! [`organon_core::kind::Kind`], which the terminal front-end's patch lane resolves from too.
+//! **A patch is inline-in-a-terminal and an artifact is inline-in-a-conversation — two
+//! placements of one kind**, so [`ArtifactContent`]'s arms are one per kind and nothing else,
+//! and [`ArtifactContent::kind`] is where the two meet. The payloads stay here, because that
+//! is the half the two placements genuinely differ in.
+//!
 //! [`Body::Approval`] is the third such element and the one with something real on the
 //! other end of it: an agent thread, blocked on a socket, waiting for a human to press a
 //! button. The same split holds and matters more — the element *describes* a decision
@@ -146,6 +153,7 @@
 //! that ever needs a limit it belongs next to `max_elements`, with its own counter, not as
 //! a quiet `truncate()`.
 
+use organon_core::kind::Kind;
 use std::collections::{HashMap, VecDeque};
 
 /// Identifies one assistant text block. The integrator must make it unique **per rendered
@@ -655,15 +663,44 @@ pub struct ArtifactBlock {
     pub content: ArtifactContent,
 }
 
-/// What kind of artifact it is. The second arm is the one the first was shaped for: an
-/// engine-rendered picture, which needs a render-to-texture path and an eviction cap, is a
-/// variant rather than a second [`Body`].
+/// What kind of artifact it is, **and what describes it**. The second arm is the one the
+/// first was shaped for: an engine-rendered picture, which needs a render-to-texture path and
+/// an eviction cap, is a variant rather than a second [`Body`].
+///
+/// 🚨 **The kind is shared with the terminal front-end; the payload is not.** Both front-ends
+/// resolve from [`organon_core::kind::Kind`] — this enum's arms are one per kind and nothing
+/// else, pinned by [`Self::kind`] and its test. What differs is what a kind arrives *with*: a
+/// patch is a word on a text lane and can be nothing more (`doc/console_patch_protocol.md`'s
+/// whole point is that a program which can print cannot drive the machine), while an artifact
+/// is summoned from inside the console and so may carry a description. Collapsing the two
+/// shapes into one would mean either giving the wire lane a payload it must never have, or
+/// throwing away the spec the view draws from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArtifactContent {
     /// A control panel: named sliders and named buttons, in draw order.
     Panel(PanelSpec),
     /// A rendered surface — a picture the engine draws, living in the flow.
     Surface(SurfaceSpec),
+}
+
+impl ArtifactContent {
+    /// The shared kind this artifact is the **inline-in-a-conversation** placement of.
+    ///
+    /// ⚠️ **`Surface` answers `Kind::Scene`, and the spelling difference is deliberate and
+    /// user-facing.** The terminal lane's word is `scene` — `--help`, the `organon-cli` skill
+    /// and the sidecar wire all carry it, so it is frozen. This front-end's word is
+    /// `/surface`, which a human already types in the composer. Neither may be changed
+    /// silently, so #48 Tier 1 unified the **set of kinds** and left the two spellings alone;
+    /// this method is the one place they meet, and
+    /// [`every_shared_kind_has_exactly_one_artifact_arm`](self) is what stops it drifting into
+    /// two taxonomies again. `SHELL_ARCHITECTURE.md` §1.1 records what unifying the words
+    /// would cost, so the next tier decides rather than rediscovers.
+    pub fn kind(&self) -> Kind {
+        match self {
+            ArtifactContent::Panel(_) => Kind::Panel,
+            ArtifactContent::Surface(_) => Kind::Scene,
+        }
+    }
 }
 
 /// A rendered surface, **described**: what it is a picture *of*, and nothing else.
@@ -2329,6 +2366,51 @@ mod tests {
                 drives: target,
             }),
         }
+    }
+
+    /// 🚨 **The two front-ends' kinds are one set, and this is what keeps them one set.**
+    /// Before #48 Tier 1 this taxonomy existed twice — a bare enum on the patch lane, this one
+    /// carrying payloads — in two crates that cannot see each other, and they had already
+    /// diverged in spelling. `Kind` is now the only vocabulary and this asserts the two
+    /// directions that would let a second one grow back: an arm here whose kind is not in
+    /// `kind::ALL` (a conversation showing something the console has no name for), and a kind
+    /// in `kind::ALL` with no arm here (a word `--help` offers that this front-end cannot
+    /// draw). Both are silent failures — the first paints an unnamed thing, the second accepts
+    /// a word and does nothing.
+    ///
+    /// ⚠️ Note what it does **not** assert: that the arm is *spelled* like the kind. `Surface`
+    /// answers `Kind::Scene` on purpose (see [`ArtifactContent::kind`]) — the mapping is the
+    /// thing under test, not the naming.
+    #[test]
+    fn every_shared_kind_has_exactly_one_artifact_arm() {
+        let arms = [
+            ArtifactContent::Panel(PanelSpec {
+                sliders: vec![],
+                buttons: vec![],
+                drives: ElementId(0),
+            }),
+            ArtifactContent::Surface(SurfaceSpec::default()),
+        ];
+        let mut covered: Vec<Kind> = arms.iter().map(ArtifactContent::kind).collect();
+        covered.sort_by_key(|k| k.as_word());
+        covered.dedup();
+        assert_eq!(
+            covered.len(),
+            arms.len(),
+            "two arms answering one kind is a kind this view cannot address"
+        );
+        for k in organon_core::kind::ALL {
+            assert!(
+                covered.contains(k),
+                "`{}` is a kind the console offers and this front-end has no arm for",
+                k.as_word()
+            );
+        }
+        assert_eq!(
+            covered.len(),
+            organon_core::kind::ALL.len(),
+            "an arm here whose kind is not in the shared vocabulary is a second registry"
+        );
     }
 
     /// **The pairing the whole feature rests on**: a surface and the panel that drives it are

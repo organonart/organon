@@ -110,6 +110,52 @@ the `Posture` beside its `Theme` and `redraw` resolves one `&Form` per frame.
 - No animation (that is a later tier — `t` is set once and held), no new palette, no
   ordinals in the gutter, and the terminal host is untouched: a character grid's form is
   the font's, with no padding or corner for a scalar to move.
+### One kind registry, where the console had two (#48 Tier 1)
+
+The console has two front-ends, and the same two-item taxonomy had been written **three**
+times: `cli::PatchKind` (`Scene`/`Panel`) on the wire, `block_panel::PatchContent`
+(`Scene`/`Panel`) as the terminal's paint target, and `conversation::ArtifactContent`
+(`Surface`/`Panel`) in the conversation. Reached independently, in different crates, and
+**already diverged in spelling** — the shape this repo keeps recording as "two resolvers that
+can disagree eventually do". Adding a media kind would have made it four.
+
+`organon_core::kind::Kind` is now the one vocabulary, in the spine because that is the only
+crate all three copies can see (`cli.rs` is the root crate, the other two are `organon-shell`)
+and because a closed set of words needs no host, GPU or UI.
+
+**One vocabulary, two payload carriers — one per placement.** A patch is inline-in-a-terminal
+and an artifact is inline-in-a-conversation; `PatchContent` and `ArtifactContent` each answer
+`kind()`, and each has a test that fails on an arm with no kind or a kind with no arm. They
+are deliberately **not** merged: a patch's panel owns live widget state pinned to scrollback
+lines, an artifact's is a description the view keys state off, and the `Kind` on the wire must
+be able to carry neither — `doc/console_patch_protocol.md`'s whole point is that a program
+which can print cannot drive the machine. The kind is the half that is genuinely shared; the
+description is the half that genuinely differs.
+
+⚠️ The design doc this came from (`doc/console_view_paradigm.md` §5) counted **two** copies.
+The third turned up while unifying them, and it is the one that settled the shape — a two-way
+merge of a bare enum and a payload-carrying one would have had no obvious answer to "where do
+the payloads go", while three copies made the placement/vocabulary split read off the tree.
+
+Inert by contract: `scene` and `panel` behave exactly as before, and `--kind scene` is
+unchanged in `--help`, in the `organon-cli` skill and on the sidecar wire.
+
+- **An unknown kind is refused with the known list.** `Kind::resolve` returns
+  `` `hologram` is not a kind — known kinds: scene, panel `` — no nearest match, no case
+  folding, no prefix rule. The three arrival paths now give three deliberate answers: clap
+  refuses at the CLI boundary, the command service refuses with that sentence (an agent there
+  has no other way to ask what the build can draw), and the sidecar skips the line in silence,
+  because nobody is listening and a guess would paint the wrong object into a rectangle
+  someone else's output is holding open.
+- ⚠️ **The two *words* were deliberately not unified.** `scene` is public CLI surface and
+  `/surface` is a composer command a human already types, so an inert tier could break
+  neither. `ArtifactContent::Surface` answers `Kind::Scene` through one documented, tested
+  crossing; `SHELL_ARCHITECTURE.md` §1.1 states what unifying the spellings would cost, so the
+  next tier decides rather than rediscovers.
+- **`Kind` has no `Default`.** The "a `patch` line with no third word means `scene`" rule is a
+  wire-compatibility fact about that one verb, not a claim that `scene` is the natural kind, so
+  it stayed behind as `cli::PATCH_DEFAULT_KIND` — the conversation front-end must not inherit
+  an answer to a question it never asked.
 
 ### A CRLF checkout silently un-installs the `organon-cli` skill
 

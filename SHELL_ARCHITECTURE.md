@@ -415,13 +415,41 @@ position.
 
   On the CLI side the verb is `ConsoleOp::Patch { up, rows, kind }`, wire form
   `patch <up> <rows> <kind>`, both counts bounded by `cli::MAX_BLOCK_ROWS`. The kind is
-  `cli::PatchKind` over `cli::PATCH_KIND_WORDS` — one table, read by clap's possible-values
-  parser, by the console's `ArgKind::Choice` schema and by `PatchKind::from_word`, so `--help`
-  cannot offer a kind the console has no way to paint. Two asymmetries on the wire, both
-  deliberate: a line with **no** kind is `scene` (what a claim meant before there was a choice,
-  which keeps the verified arm working byte for byte), while an **unknown** kind skips the line
-  — a newer CLI naming a kind this build cannot draw must not have a guess painted into a
-  rectangle someone else's output is holding open.
+  `organon_core::kind::Kind` over `kind::KIND_WORDS` — one table, read by clap's
+  possible-values parser, by the console's `ArgKind::Choice` schema and by `Kind::from_word`,
+  so `--help` cannot offer a kind the console has no way to paint. Two asymmetries on the
+  wire, both deliberate: a line with **no** kind is `scene` (what a claim meant before there
+  was a choice, which keeps the verified arm working byte for byte), while an **unknown** kind
+  skips the line — a newer CLI naming a kind this build cannot draw must not have a guess
+  painted into a rectangle someone else's output is holding open.
+
+  **The kind vocabulary is not this lane's, and since #48 Tier 1 it is not written three
+  times.** `Kind` lives in `organon-core/src/kind.rs` — in the spine because the copies were in
+  **different crates** (`cli.rs` in the root crate, `block_panel.rs` and `conversation.rs` in
+  `organon-shell`) and the wire copy could not import the paint ones, so core is the only crate
+  all three can see; a closed set of words needs no host, GPU or UI, which is what makes it
+  welcome there.
+
+  ⚠️ **The design doc counted two copies and there were three** — `block_panel::PatchContent`,
+  the paint target one layer in from the wire, is the same taxonomy again. That correction is
+  what settles the shape: **one vocabulary, two payload carriers, one per placement.**
+  `PatchContent` is inline-in-a-terminal, `ArtifactContent` (§1.1) is inline-in-a-conversation,
+  both answer `kind()`, and each has a test that fails on an arm with no kind or a kind with no
+  arm. They are not merged because their payloads are genuinely different things — a patch's
+  panel owns live widget state pinned to scrollback lines, an artifact's is a description the
+  view keys state off — and a `Kind` that tried to carry either would have to carry both.
+
+  What also did *not* move is `PATCH_DEFAULT_KIND`: the "a kindless line means `scene`" rule is
+  a wire-compatibility fact about this verb, so it sits in `cli.rs` beside the parser that
+  needs it, and `Kind` deliberately has **no `Default`** for the other front-end to inherit.
+
+  Three ways a word can arrive and three answers, which is the whole of what "resolved in one
+  place" buys: on the **CLI** clap refuses it against the shared table before a byte is
+  written; through the **command service** `Kind::resolve` refuses it with the known list
+  spelled out (`` `hologram` is not a kind — known kinds: scene, panel ``), because an agent
+  on that end has no other way to ask what this build can draw; and on the **sidecar** an
+  unknown word skips the line in silence, because nobody is listening there and a guess would
+  paint the wrong object. None of the three approximates.
 
   ⚠️ Unchanged by any of this: the sidecar is drained **once per frame** and is out of band
   with the PTY byte stream, so "the line you are on now" resolves at drain time. A writer that
@@ -1447,7 +1475,26 @@ where you are sitting is a bad instrument, and no amount of wiring fixes it.
 
 `ArtifactContent::Surface` is the answer. **`/surface` summons two elements**: a rendered
 surface, and directly beneath it a panel whose `PanelSpec::drives` names that surface's
-`ElementId`. The buttons and knobs then change the picture a few rows up, in the same view,
+`ElementId`.
+
+⚠️ **`ArtifactContent`'s arms are one per shared kind, and its two spellings are not the
+terminal lane's.** #48 Tier 1 made `organon_core::kind::Kind` the single vocabulary both
+front-ends resolve from; `ArtifactContent::kind()` answers it, and
+`every_shared_kind_has_exactly_one_artifact_arm` fails if an arm appears with no kind or a
+kind appears with no arm. What it deliberately does **not** enforce is spelling:
+`ArtifactContent::Surface` answers `Kind::Scene`. Both words are user-facing and neither could
+move in an inert tier — `scene` is in `--help`, in the `organon-cli` skill and on the sidecar
+wire, and `/surface` is what a human types in this composer — so the tier unified the *set* of
+kinds and left the two names alone. Unifying them costs a documented break of one of the two
+plus the skill and the protocol doc that quote it; that is a decision for whoever adds the
+third kind, and it is recorded here so they decide rather than rediscover.
+
+**The payload asymmetry is not a wart either.** A patch names a kind and can carry nothing
+more — `doc/console_patch_protocol.md`'s whole point is that a program which can print must
+not be able to drive the machine — while an artifact is summoned from inside the console and
+so carries a `PanelSpec` or a `SurfaceSpec`. The kind is the half that is genuinely shared;
+the description is the half that genuinely differs, and forcing either shape onto the other
+would mean giving the text lane a payload or throwing away what the view draws from. The buttons and knobs then change the picture a few rows up, in the same view,
 while the hand is on them — and a driving panel's button is **consumed by its surface** and
 never reaches `apply_console`, so it cannot also repaint a backdrop somewhere else.
 
@@ -2461,6 +2508,7 @@ notice.
 |---|---|---|
 | Viewport interaction + provenance (T2+) | T1's pane (`shell_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Shell #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Shell #4 T2+ |
+| Rich media in the console — the exhibit, off-thread decode, a texture budget, placement and promotion | **T1 landed**: `organon_core::kind::Kind` is the one vocabulary both front-ends resolve from, and `ArtifactContent::kind()` ties this crate's arms to it. The next kind is a variant there plus a renderer — never a second registry, and never a media-shaped exception to this one. ⚠️ The two spellings for the engine-drawn kind (`scene` on the wire, `/surface` in the composer) survive T1 on purpose; §1.1 states what unifying them costs | #48 |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Shell #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `ConsoleDispatch` onto the audited drain, plus the one in-process read §1.3 adds) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
@@ -2492,12 +2540,30 @@ path silently breaks the three-products-simultaneously guarantee that
   the 0.13em tracking, the border/rule exchange and the corner ticks are *specified and
   compiled*, not seen. The first honest test of the axis is somebody moving the scalar and
   looking.
-- ⚠️ **`Theme::card_left_rule` is a colour no palette in this build makes visible.**
-  `organon` sets it fully transparent, which is this palette's answer rather than a
-  placeholder — so the left-rule half of the card-edge exchange has never drawn a pixel at any
-  posture, and `a_transparent_palette_rule_stays_invisible_at_every_posture` pins that it
-  cannot. The mechanism is real and the second palette to be written is what will first
-  exercise it.
+- ⚠️ **`Theme::card_left_rule` has never drawn a pixel, though two palettes now ask it to.**
+  `light` sets `#c9ced6` and `dark` sets `#363b43`, while `organon` and `chocolate` set it
+  fully transparent — and in both of those that is the palette's *answer*, not a placeholder:
+  `organon` has four-sided boxes and `chocolate` separates by surface tone alone, so each
+  declines the rule by declining to colour it.
+  `a_transparent_palette_rule_stays_invisible_at_every_posture` pins that a declining palette
+  cannot be made to show one. But the left-rule half of the card-edge exchange only draws at
+  `t > 0`, and **nothing has ever been rendered at any `t > 0`** — so the mechanism is
+  specified, compiled and pinned, and still unseen.
+  ⚠️ **This entry said "a colour no palette in this build makes visible" until the palettes
+  and posture were merged together**, which was true of each branch alone and false of the two
+  combined. It is recorded rather than quietly rewritten because it is the exact shape this
+  ledger exists to catch: a claim that stays true right up until an integration, and that
+  nothing in either branch's own tests could have falsified.
+- ⚠️ **The kind registry unification (#48 T1) has not been seen on screen at all, and it is a
+  refactor whose whole claim is that nothing changed.** `cargo test -p organon-shell --lib` is
+  502 green (two more than before — one arms-match-the-vocabulary test per placement), `cargo test
+  -p organon-core` is 544 green (four more — the round trip, the no-approximation rule, the
+  refusal carrying the known list, and the happy arm of the refusing path), and `cargo check
+  --features shell-edition --bin organon-console` is clean. **That is the whole claim: it
+  compiles and the tests pass.** No patch has been claimed in a running terminal since the
+  move, no `/surface` has been summoned, and the refusal sentence has never been read by a
+  human off a real console — it is pinned by a test that asserts the known words appear in it,
+  which is a different thing from anyone having seen it.
 
 - ⚠️ **No preferences file has ever been written on a real machine.** §1.5 is pinned by ten
   headless tests against temp directories — round trip, missing file, malformed file, a

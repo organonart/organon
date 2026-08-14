@@ -20,6 +20,7 @@ use crate::agent::{self, CliOp, SlotKind};
 use crate::ipc::{self, Shared};
 use crate::params::{HostGeneratorMode, MaterialType, SurfaceMode};
 use nih_plug::prelude::Enum;
+use organon_core::kind::Kind;
 
 /// A parsed `organon` invocation.
 #[derive(Debug, Clone, PartialEq)]
@@ -291,8 +292,9 @@ pub enum ConsoleOp {
     /// ordinary blank lines through the ordinary PTY, which the shell, ConPTY and the console
     /// all agree exist — and then says where it is. The console only *records*.
     ///
-    /// `kind` is what the console should draw in it — see [`PatchKind`].
-    Patch { up: u16, rows: u16, kind: PatchKind },
+    /// `kind` is what the console should draw in it — see [`Kind`], the vocabulary both
+    /// front-ends resolve from.
+    Patch { up: u16, rows: u16, kind: Kind },
     /// Open or close **the portal** — a screen-anchored, live, orbitable window onto the
     /// Organon world, floating over the transcript while the transcript scrolls past under it.
     ///
@@ -441,9 +443,9 @@ pub enum PortalCmd {
 /// The portal words, in the order `--help` should list them.
 ///
 /// One table, read by `bin/ctl.rs`'s possible-values parser, by the console's command schema
-/// and by [`PortalCmd::from_word`] — [`PATCH_KIND_WORDS`]' arrangement exactly, for the reason
-/// recorded there: a second hand-maintained copy is how a CLI comes to accept a word nothing
-/// can act on.
+/// and by [`PortalCmd::from_word`] — `organon_core::kind::KIND_WORDS`' arrangement exactly,
+/// for the reason recorded there: a second hand-maintained copy is how a CLI comes to accept
+/// a word nothing can act on.
 pub const PORTAL_WORDS: &[&str] = &["open", "close", "toggle"];
 
 impl PortalCmd {
@@ -468,56 +470,20 @@ impl PortalCmd {
     }
 }
 
-/// What a claimed rectangle **shows**: the `kind` field
-/// `doc/console_patch_protocol.md` §3 declares as required on every claim.
+/// What a claimed rectangle **shows** when the claim does not say.
 ///
-/// 🚨 **A name the console resolves — never a command, never a path.** The writer says what
-/// *sort* of thing belongs in the gap it left; which scene, which panel, and how either is
-/// drawn are the console's business entirely. That asymmetry is why this is a closed set of
-/// words rather than a payload: a claim that could carry a command would be a claim that
-/// could carry anything, and the whole point of a claim is that a program which can print can
-/// ask for a rectangle without being able to drive the machine.
+/// 🚨 **This default belongs to this lane, not to the vocabulary.** [`Kind`] itself has no
+/// `Default`, deliberately: a sidecar line with no third word was written before kinds
+/// existed and *meant* the rendered scene, which is a wire-compatibility fact about
+/// `patch <up> <rows> [kind]` and about nothing else. The conversation front-end has no such
+/// history and must not inherit an answer to a question it never asked — see
+/// `organon_core::kind`'s module doc.
 ///
-/// It is also why the two arms are so unequal in what they *cost* and so equal in what they
-/// *say*. Everything up to the paint — the claim, the anchor arithmetic, the per-pane ledger —
-/// is shared; the kind selects the last step and nothing before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PatchKind {
-    /// The rendered scene, sampled through the claimed rows. **The default**, because it is
-    /// what a claim meant before there was anything to choose between.
-    #[default]
-    Scene,
-    /// A live control panel: real widgets living in the transcript, not a picture of them.
-    Panel,
-}
-
-/// The kind words, in the order `--help` should list them.
-///
-/// One table, read by `bin/ctl.rs`'s possible-values parser, by the console's command schema
-/// and by [`PatchKind::from_word`] — the arrangement `console background`'s materials use, for
-/// the reason recorded there: a second hand-maintained copy is how a CLI comes to accept a
-/// word nothing can draw.
-pub const PATCH_KIND_WORDS: &[&str] = &["scene", "panel"];
-
-impl PatchKind {
-    /// The word this kind travels as, on the wire and in `--help`.
-    pub fn as_word(self) -> &'static str {
-        match self {
-            PatchKind::Scene => "scene",
-            PatchKind::Panel => "panel",
-        }
-    }
-
-    /// The kind a word names, or `None` — which the sidecar reader treats as a line to skip,
-    /// exactly as it treats an unknown verb.
-    pub fn from_word(word: &str) -> Option<Self> {
-        match word {
-            "scene" => Some(PatchKind::Scene),
-            "panel" => Some(PatchKind::Panel),
-            _ => None,
-        }
-    }
-}
+/// An **unknown** kind is a different thing entirely and gets the opposite treatment
+/// ([`parse_console_op`]): a newer CLI naming a kind this build cannot draw skips the line
+/// rather than falling back to here, because guessing would paint the wrong object into a
+/// rectangle someone else's output is holding open.
+pub const PATCH_DEFAULT_KIND: Kind = Kind::Scene;
 
 /// The tallest block `organon console block` will open.
 ///
@@ -582,14 +548,15 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
             let rows = it.next()?.parse::<u16>().ok()?;
             // The kind is the one field on this lane with a default, and only because it
             // arrived after the verb did: a line with no third word was written when a claim
-            // had nothing to choose between, and [`PatchKind::Scene`] is what it meant. An
+            // had nothing to choose between, and [`PATCH_DEFAULT_KIND`] is what it meant. An
             // *unknown* third word is a different thing entirely — a newer CLI naming a kind
             // this build cannot draw — and the lane's standing rule for that is to skip the
             // line rather than guess, since guessing would paint the wrong object in a
-            // rectangle someone else's output is holding open.
+            // rectangle someone else's output is holding open. `from_word` rather than
+            // `resolve` for exactly that: there is no human on this end to read a refusal.
             let kind = match it.next() {
-                None => PatchKind::Scene,
-                Some(word) => PatchKind::from_word(word)?,
+                None => PATCH_DEFAULT_KIND,
+                Some(word) => Kind::from_word(word)?,
             };
             Some(ConsoleOp::Patch { up, rows, kind })
         }
@@ -1759,13 +1726,13 @@ mod tests {
             // …and the claim, whose payload is two counts and a kind. Every kind rides the
             // round trip, because the kind is the field that decides what gets *painted* and
             // a spelling that survived one direction only would paint the wrong object.
-            ConsoleOp::Patch { up: 0, rows: 1, kind: PatchKind::Scene },
-            ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Scene },
-            ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Panel },
+            ConsoleOp::Patch { up: 0, rows: 1, kind: Kind::Scene },
+            ConsoleOp::Patch { up: 12, rows: 12, kind: Kind::Scene },
+            ConsoleOp::Patch { up: 12, rows: 12, kind: Kind::Panel },
             ConsoleOp::Patch {
                 up: MAX_BLOCK_ROWS,
                 rows: MAX_BLOCK_ROWS,
-                kind: PatchKind::Panel,
+                kind: Kind::Panel,
             },
         ] {
             let line = console_op_to_line(&op);
@@ -1786,32 +1753,26 @@ mod tests {
         assert_eq!(console_op_to_line(&ConsoleOp::Rig("studio".into())), "rig studio");
         assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
         assert_eq!(
-            console_op_to_line(&ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Panel }),
+            console_op_to_line(&ConsoleOp::Patch { up: 12, rows: 12, kind: Kind::Panel }),
             "patch 12 12 panel"
         );
     }
 
-    /// **The kind's two directions must agree, and the word list is what `--help` and the
-    /// console's schema are both built from** — so a kind added to the enum and forgotten in
-    /// the table would be a value the CLI cannot express and the palette cannot show.
+    /// **This lane's two facts about the kind**, now that the vocabulary itself lives in
+    /// `organon_core::kind` and is round-tripped by its own tests.
     ///
-    /// The default is pinned separately and deliberately: it is what a claim written before
-    /// there was a choice resolves to, so changing it silently repaints every such claim.
+    /// The first is that the CLI word for the engine-drawn kind is `scene` and has not moved.
+    /// It is in `--help`, in the `organon-cli` skill and on this sidecar wire, so it is public
+    /// surface: renaming an internal variant is free, renaming a word someone types is not.
+    ///
+    /// The second is the default, pinned here rather than on [`Kind`] because it is a
+    /// wire-compatibility rule belonging to `patch` alone — what a claim written before there
+    /// was a choice resolves to, so changing it silently repaints every such claim.
     #[test]
-    fn every_patch_kind_word_resolves_and_round_trips() {
-        for word in PATCH_KIND_WORDS {
-            let kind = PatchKind::from_word(word).unwrap_or_else(|| panic!("{word} resolves"));
-            assert_eq!(kind.as_word(), *word, "the word and the enum must agree");
-        }
-        for kind in [PatchKind::Scene, PatchKind::Panel] {
-            assert!(
-                PATCH_KIND_WORDS.contains(&kind.as_word()),
-                "{kind:?} is not in the table `--help` is built from"
-            );
-        }
-        assert_eq!(PatchKind::from_word("nonsense"), None);
-        assert_eq!(PatchKind::from_word("Panel"), None, "the wire form is lowercase");
-        assert_eq!(PatchKind::default(), PatchKind::Scene, "a claim with no kind is a scene");
+    fn the_cli_word_for_a_scene_is_still_scene_and_a_kindless_claim_means_it() {
+        assert_eq!(Kind::Scene.as_word(), "scene", "public CLI surface — do not rename");
+        assert_eq!(Kind::from_word("scene"), Some(Kind::Scene));
+        assert_eq!(PATCH_DEFAULT_KIND, Kind::Scene, "a claim with no kind is a scene");
     }
 
     /// A claim's kind: absent means `scene` (the shape the verb shipped with), unknown means
@@ -1820,12 +1781,12 @@ mod tests {
     fn a_claim_with_no_kind_is_a_scene_and_an_unknown_kind_is_skipped() {
         assert_eq!(
             parse_console_op("patch 12 12"),
-            Some(ConsoleOp::Patch { up: 12, rows: 12, kind: PatchKind::Scene }),
+            Some(ConsoleOp::Patch { up: 12, rows: 12, kind: Kind::Scene }),
             "a line from before the kind existed still claims a rectangle"
         );
         assert_eq!(
             parse_console_op("patch 0 8 panel"),
-            Some(ConsoleOp::Patch { up: 0, rows: 8, kind: PatchKind::Panel })
+            Some(ConsoleOp::Patch { up: 0, rows: 8, kind: Kind::Panel })
         );
         assert_eq!(parse_console_op("patch 12 12 hologram"), None, "a kind we cannot draw");
         assert_eq!(parse_console_op("patch 12"), None, "a claim with a missing half");
@@ -1953,8 +1914,8 @@ mod tests {
 
     /// The word table `--help`, the console's schema and the parser are all built from must
     /// name every axis the parser accepts, and nothing it does not — the drift guard
-    /// [`PATCH_KIND_WORDS`] and [`PORTAL_WORDS`] carry, for a verb whose words are not an enum
-    /// and so cannot be checked by exhaustiveness.
+    /// `organon_core::kind::KIND_WORDS` and [`PORTAL_WORDS`] carry, for a verb whose words are
+    /// not an enum and so cannot be checked by exhaustiveness.
     #[test]
     fn every_camera_word_is_one_the_parser_takes_and_the_table_has_no_others() {
         for word in CAMERA_WORDS {

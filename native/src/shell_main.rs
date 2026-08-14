@@ -65,6 +65,7 @@ use organic_math_native::substrate_scene;
 use organic_math_native::world::World;
 use organon_core::edition::EDITION;
 use organon_core::ipc;
+use organon_core::kind;
 use organon_shell::block_anchor::Block;
 use organon_shell::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_shell::camera;
@@ -402,7 +403,7 @@ const CMD_ROWS: &str = "rows";
 /// [`CMD_PATCH`]'s other argument: how many lines above the current line the rectangle starts.
 const CMD_UP: &str = "up";
 /// [`CMD_PATCH`]'s third argument: what the console should draw in the rectangle. A `Choice`
-/// rather than an `Int` or a free word, over `cli::PATCH_KIND_WORDS` — the same
+/// rather than an `Int` or a free word, over `organon_core::kind::KIND_WORDS` — the same
 /// table-not-a-restatement arrangement `background`'s materials use, so the palette, the
 /// CLI's `--help` and this schema cannot come to know different kinds.
 const CMD_KIND: &str = "kind";
@@ -494,7 +495,7 @@ fn console_specs() -> Vec<CommandSpec> {
                 ArgSpec {
                     name: CMD_KIND.into(),
                     kind: ArgKind::Choice(
-                        cli::PATCH_KIND_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                        kind::KIND_WORDS.iter().map(|s| (*s).to_string()).collect(),
                     ),
                     required: true,
                 },
@@ -659,12 +660,18 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             // membership was already settled by `validate_args`. What this adds is the
             // conversion — a word the schema accepts must still resolve to something this
             // build can paint, and the two lists are the same list.
+            //
+            // `Kind::resolve` rather than `from_word`, because there is a human (or an agent
+            // reading an error) on this end: the refusal it returns carries the known list,
+            // which is the difference between "no" and "no, and here is what would work". The
+            // sidecar drain uses `from_word` for the opposite reason — nobody is listening
+            // there, so an unknown kind skips the line in silence.
             let kind = args
                 .get(CMD_KIND)
                 .and_then(Value::as_str)
-                .and_then(cli::PatchKind::from_word)
-                .ok_or_else(|| {
-                    format!("{name}: `{CMD_KIND}` must be one of {:?}", cli::PATCH_KIND_WORDS)
+                .ok_or_else(|| format!("{name}: `{CMD_KIND}` is missing or is not a string"))
+                .and_then(|word| {
+                    kind::Kind::resolve(word).map_err(|e| format!("{name}: `{CMD_KIND}` — {e}"))
                 })?;
             match (u16::try_from(up), u16::try_from(rows)) {
                 (Ok(up), Ok(rows))
@@ -2257,12 +2264,12 @@ impl Shell {
     /// rectangle — so they get one implementation and one set of tests. The kind is read for
     /// the first time when the rows are painted, where a mistake is a thing you can see.
     ///
-    /// [`cli::PatchKind::Panel`] is the one arm that carries state, and it is built here
+    /// [`kind::Kind::Panel`] is the one arm that carries state, and it is built here
     /// because the button labels are handed **down**: `organon-shell` cannot see
     /// `substrate_materials` and must not learn to. It draws the labels and reports which one
     /// was pressed; this file is the only place that knows a `metal` button and
     /// `organon console background metal` are the same act.
-    fn claim_patch(&mut self, up: u16, rows: u16, kind: cli::PatchKind) {
+    fn claim_patch(&mut self, up: u16, rows: u16, kind: kind::Kind) {
         let pane = self.strip.active;
         // Terminal-only, for [`Shell::open_block`]'s reason.
         let (Some(Some(session)), Some(looks)) = (
@@ -2281,8 +2288,8 @@ impl Shell {
         let first_abs = cursor_abs.saturating_sub(u64::from(up));
         let block = Block { first_abs, rows };
         looks.blocks.push(match kind {
-            cli::PatchKind::Scene => Patch::scene(block),
-            cli::PatchKind::Panel => Patch::panel(
+            kind::Kind::Scene => Patch::scene(block),
+            kind::Kind::Panel => Patch::panel(
                 block,
                 BlockPanel::new(
                     format!("◈ organon · patch @ line {first_abs} · {rows} rows"),
@@ -4063,7 +4070,7 @@ mod cli_tests {
                     _ => panic!("{}: expected a Choice", spec.name),
                 } }),
                 CMD_BLOCK => json!({ CMD_ROWS: 3 }),
-                CMD_PATCH => json!({ CMD_UP: 1, CMD_ROWS: 2, CMD_KIND: cli::PATCH_KIND_WORDS[0] }),
+                CMD_PATCH => json!({ CMD_UP: 1, CMD_ROWS: 2, CMD_KIND: kind::KIND_WORDS[0] }),
                 CMD_PORTAL => json!({ CMD_STATE: cli::PORTAL_WORDS[0] }),
                 // The partial form on purpose: the flagship framing is one axis, and the
                 // three nulls are what a partial call actually serializes to.
@@ -4134,7 +4141,7 @@ mod cli_tests {
         // a dressing. The panel kind is the one that could plausibly drift here, since its
         // buttons change the look: they do it by re-entering `apply_console` as a `Background`
         // op, never by the claim itself meaning something.
-        for kind in [cli::PatchKind::Scene, cli::PatchKind::Panel] {
+        for kind in [kind::Kind::Scene, kind::Kind::Panel] {
             assert_eq!(
                 console_step(
                     BackdropSource::Substrate,
@@ -4165,11 +4172,11 @@ mod cli_tests {
         };
         assert_eq!(
             offered.as_slice(),
-            cli::PATCH_KIND_WORDS,
+            kind::KIND_WORDS,
             "the catalog and the CLI are built from one table"
         );
         for word in offered {
-            let kind = cli::PatchKind::from_word(word)
+            let kind = kind::Kind::from_word(word)
                 .unwrap_or_else(|| panic!("the catalog offers `{word}` and nothing resolves it"));
             assert_eq!(
                 op_from(CMD_PATCH, &json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: word })),
@@ -4179,6 +4186,17 @@ mod cli_tests {
         for bad in [json!({ CMD_UP: 12, CMD_ROWS: 12 }), json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: "hologram" })] {
             let e = op_from(CMD_PATCH, &bad).expect_err("no kind this console can paint");
             assert!(e.contains(CMD_KIND), "the message must name the slot: {e}");
+        }
+        // 🚨 **The refusal carries the known list**, which is the whole difference between a
+        // usable error and a dead end: an agent that named a kind this build cannot draw has
+        // no other way to ask what it *can* draw — `organon console` is fire-and-forget and
+        // returns nothing. Asserted word by word rather than against a fixed sentence, so a
+        // kind added later has to appear here without this test being edited.
+        let e = op_from(CMD_PATCH, &json!({ CMD_UP: 12, CMD_ROWS: 12, CMD_KIND: "hologram" }))
+            .expect_err("`hologram` is not a kind");
+        assert!(e.contains("hologram"), "it quotes back what was asked for: {e}");
+        for word in kind::KIND_WORDS {
+            assert!(e.contains(word), "the refusal must offer `{word}`: {e}");
         }
     }
 
@@ -4539,8 +4557,8 @@ mod cli_tests {
             bg("off"),
             rig_op("daylight"),
             cli::ConsoleOp::Block(7),
-            cli::ConsoleOp::Patch { up: 0, rows: 7, kind: cli::PatchKind::Scene },
-            cli::ConsoleOp::Patch { up: 12, rows: 12, kind: cli::PatchKind::Panel },
+            cli::ConsoleOp::Patch { up: 0, rows: 7, kind: kind::Kind::Scene },
+            cli::ConsoleOp::Patch { up: 12, rows: 12, kind: kind::Kind::Panel },
             cli::ConsoleOp::Portal(cli::PortalCmd::Open),
             cli::ConsoleOp::Portal(cli::PortalCmd::Close),
             cli::ConsoleOp::Portal(cli::PortalCmd::Toggle),
