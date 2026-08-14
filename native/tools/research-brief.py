@@ -38,11 +38,17 @@ demand and attached to a workflow run.
             guarded by `generated_reference_is_current` — so counting rows there is
             counting the source, one hop removed)
 
-⚠️ The failure mode worth knowing: the catalog counts parse **table rows in generated
-Markdown**. If `organon docs` ever changes its table shape, these counts silently drop to
-zero rather than erroring. `--validate` therefore asserts they are non-zero, so a shape
-change fails a CI job instead of quietly shipping a brief that tells four models this
-project has no generators.
+⚠️ Two failure modes, both of which produce a plausible wrong number rather than an error,
+and both of which `--validate` therefore watches:
+
+- The catalog counts parse **table rows in generated Markdown**. If `organon docs` ever
+  changes its table shape, they silently drop to zero, so `--validate` asserts they are
+  non-zero — a shape change fails a CI job instead of quietly shipping a brief that tells
+  four models this project has no generators.
+- The whole-tree counts must exclude `native/vendor/` (patched third-party crates), which
+  is what `own_files` is for. An exclusion whose directory has been renamed matches
+  nothing and re-contaminates the counts in silence, so `--validate` warns when a name in
+  `EXCLUDED_TREES` resolves to nothing.
 
 The durable-doc list is not duplicated here either — it is read out of
 `.claude/hooks/doc-rules.sh`, the same table both doc hooks source. Adding a durable doc
@@ -83,6 +89,26 @@ REPORT_KEYS = ("brief", "model", "run_date", "commit", "status")
 REPORT_STATUS = ("unreviewed", "adjudicated", "superseded")
 
 SCOREABLE = ("yes", "partial", "no")
+
+# Trees under `native/` that are NOT this project's code. `native/vendor/` holds patched
+# copies of third-party crates (`egui-wgpu`, `nih_plug_egui`); counting their shaders and
+# tests as Organon's own is not an imprecise number, it is a mislabelled one — and this
+# fact pack's entire premise is that a `measured` line says exactly what was measured.
+#
+# The per-crate table never had this problem: `rust_stats()` walks each workspace
+# member's own `src/`, and vendor is not a member. The whole-tree globs are where it can
+# happen, so they all go through `own_files()` rather than calling `ROOT.glob` directly.
+EXCLUDED_TREES = ("vendor",)
+
+
+def own_files(pattern):
+    """Every path matching `pattern` that is Organon's own code, not vendored third-party.
+
+    One helper rather than a filter repeated at each call site: the bug this closes was
+    two globs that each looked correct alone, and a third would have looked correct too.
+    """
+    return [p for p in ROOT.glob(pattern)
+            if not any(part in EXCLUDED_TREES for part in p.parts)]
 
 
 def git(*args, default=""):
@@ -210,7 +236,7 @@ def durable_docs():
 def count_matches(pattern, *globs):
     n = 0
     for g in globs:
-        for f in ROOT.glob(g):
+        for f in own_files(g):
             try:
                 n += len(re.findall(pattern, f.read_text(encoding="utf-8",
                                                          errors="replace")))
@@ -262,13 +288,14 @@ def fact_pack():
     for label, n in catalog_counts():
         add(f"- **{label}** — {n}")
 
-    add("\n### Scale of the other trees *(measured)*\n")
-    add(f"- **WGSL shaders** — {len(list(ROOT.glob('native/**/*.wgsl')))}")
+    add("\n### Scale of the other trees *(measured — Organon's own code only;")
+    add("`native/vendor/` is patched third-party source and is excluded)*\n")
+    add(f"- **WGSL shaders** — {len(own_files('native/**/*.wgsl'))}")
     n_tests = count_matches(r"#\[test\]", "native/**/*.rs")
     add(f"- **`#[test]` attributes** — {n_tests} *(measured, but an undercount: "
         "`#[cfg(test)]` helpers and table-driven cases mean this is not the number of "
         "assertions)*")
-    add(f"- **Markdown under `doc/`** — {len(list(ROOT.glob('doc/**/*.md')))} files")
+    add(f"- **Markdown under `doc/`** — {len(own_files('doc/**/*.md'))} files")
 
     add("\n### Durable docs *(measured; list read from `.claude/hooks/doc-rules.sh`)*\n")
     add("| Doc | Lines | Last touched |")
@@ -424,6 +451,17 @@ def cmd_validate():
                         "probably changed; fix catalog_counts() in this script")
     if not durable_docs():
         warns.append("no durable docs resolved from .claude/hooks/doc-rules.sh")
+
+    # An exclusion that matches nothing is a no-op nobody notices. If `native/vendor/` is
+    # ever renamed, the shader and test counts quietly start including third-party code
+    # again — the exact defect this list exists to prevent — and every number stays
+    # plausible. A warning rather than an error: the public repo is produced by
+    # subtraction, and an export that drops vendor entirely is legitimate.
+    for tree in EXCLUDED_TREES:
+        if not any(p.is_dir() for p in ROOT.glob(f"native/**/{tree}")):
+            warns.append(f"EXCLUDED_TREES names `{tree}`, which does not exist under "
+                         "native/ — if it was renamed, the shader and test counts are "
+                         "silently counting third-party code again")
 
     for w in warns:
         print(f"warning: {w}")
