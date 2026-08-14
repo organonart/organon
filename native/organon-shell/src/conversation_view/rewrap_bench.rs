@@ -225,6 +225,11 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         memory: DecisionMemory::new(),
         models: Vec::new(),
         pending_model: None,
+        // A bench pane draws; it never submits. An empty console catalog leaves the registry
+        // holding only the view lane, and `NoDispatch` is the honest occupant of a lane
+        // nothing in this file can reach.
+        registry: super::Registry::new(&[]),
+        local: Box::new(crate::mcp::NoDispatch),
     }
 }
 

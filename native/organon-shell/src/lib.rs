@@ -68,6 +68,15 @@
 //! `CONTEXT_ARC`, `COMPOSER_EDGE_DEAD`), and what they lacked was the ability to hold a
 //! second answer, which a `const` cannot.
 //!
+//! [`registry`] is the console's **command vocabulary as one table**, and the slash commands
+//! generated from it. Its reason is a measurement: a verb typed by a human used to be sent to
+//! the agent, understood by inference, found by a tool search, called back as a tool, and then
+//! offered to that same human for approval — about thirteen seconds for a command he had
+//! already decided on. A console that owns its composer does not need to ask an agent what its
+//! own user meant. The registry is also shaped for the pointer surface that comes next: a
+//! group, a verb and its argument choices, which is a radial menu's three rings with no second
+//! table.
+//!
 //! [`posture`] is the **second** axis, orthogonal to that one: the theme is what the console
 //! is made of, posture is how it holds itself — terminal-tight or desktop-open. Every form
 //! token in it is a scalar, so the desktop state is the same draw code reading different
@@ -93,6 +102,7 @@ pub mod platform;
 pub mod portal;
 pub mod posture;
 pub mod prefs;
+pub mod registry;
 pub mod scroll_anchor;
 pub mod session;
 pub mod tabs;

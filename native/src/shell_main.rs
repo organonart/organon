@@ -1837,9 +1837,22 @@ impl Shell {
                 // the camera read, which exists here and nowhere else because only a caller
                 // inside this process has somewhere for an answer to arrive. See `mcp_specs`.
                 // The cell is *cloned*, so every tab reads the one the frame path publishes.
+                //
+                // 🚨 **And the same table is now the composer's slash commands** — the pane
+                // builds an `organon_shell::registry::Registry` from these very specs, so
+                // `/background slate` typed by a human, `mcp__organon__console_background`
+                // called by the agent, and `organon console background slate` typed into a
+                // terminal are three spellings of one verb. `every_surface_of_a_verb_produces_
+                // the_same_console_op` below is what holds that to more than a claim.
+                //
+                // ⚠️ **`local` is a second `ConsoleDispatch`, not the same one**, because
+                // `dispatch` is moved onto the MCP server's serve thread. It is deliberately
+                // *not* behind the approval gate: the gate answers "may this agent act on my
+                // behalf", and a person's own keystroke was never that question.
                 conversation_view::Capabilities {
                     specs: mcp_specs(),
                     dispatch: Box::new(ConsoleDispatch { viewpoint: self.viewpoint.clone() }),
+                    local: Box::new(ConsoleDispatch { viewpoint: self.viewpoint.clone() }),
                 },
             );
             // Said twice on purpose, to two different readers: into the pane, where it
@@ -4090,6 +4103,181 @@ mod cli_tests {
         // The row range: a real gate, and the model is told why.
         let refused = line(CMD_BLOCK, json!({ CMD_ROWS: 9000 })).expect_err("out of range");
         assert!(refused.contains("must be 1..="), "{refused}");
+    }
+
+    /// 🚨 **The fourth front door: every console verb is typeable as a slash command, and the
+    /// word to type is derived from the same table the tool name is derived from.**
+    ///
+    /// This is the property that makes "one registry" a fact rather than an intention. A verb
+    /// added to [`console_specs`] becomes an MCP tool, a sidecar line *and* a slash command
+    /// with no edit anywhere — and a verb that somehow existed for the agent and not for the
+    /// person sitting in front of the console would fail here.
+    ///
+    /// ⚠️ The typed lines are **generated from each spec's own arguments**, not listed, for the
+    /// reason the round-trip loop above is: a hand-written list stops covering the table the
+    /// day the table grows, and does so silently.
+    ///
+    /// ⚠️ `cargo check --profile test` only in this session; CI executes it.
+    #[test]
+    fn every_console_verb_is_typeable_as_a_slash_command() {
+        use organon_shell::registry::{Lane, Registry, Resolved};
+
+        let specs = mcp_specs();
+        let registry = Registry::new(&specs);
+        assert!(
+            registry.collisions().is_empty(),
+            "a verb whose word is already held is silently untypeable: {:?}",
+            registry.collisions()
+        );
+
+        for spec in &specs {
+            let entry = registry
+                .entries()
+                .iter()
+                .find(|e| e.name() == spec.name)
+                .unwrap_or_else(|| panic!("`{}` is in the catalog but is not typeable", spec.name));
+            assert_eq!(entry.lane(), Lane::Console);
+            assert_eq!(entry.doc(), spec.doc, "the composer's line is the tool's");
+            assert_eq!(entry.args(), spec.args, "one schema, not two");
+            // The word is the catalog name minus the product's own namespace — so the read
+            // verb, whose name carries two dots, is `/camera.read`.
+            assert_eq!(registry.entry(entry.verb()).map(|e| e.name()), Some(spec.name.as_str()));
+        }
+
+        // The view lane is present beside it, in its own group, so a menu draws one tree.
+        assert_eq!(registry.groups(), ["console", "view"]);
+        assert!(registry.entry("surface").is_some(), "the composer keeps its own verb");
+        assert!(registry.entry("help").is_some(), "and can say what it answers");
+
+        // Now the mechanical half: a minimal typed line per verb, built from that verb's own
+        // schema, resolving to the catalog name and to arguments `op_from` accepts.
+        for spec in console_specs() {
+            let verb = registry
+                .entries()
+                .iter()
+                .find(|e| e.name() == spec.name)
+                .expect("registered above")
+                .verb()
+                .to_string();
+            let mut typed = format!("/{verb}");
+            for arg in &spec.args {
+                if !arg.required {
+                    continue;
+                }
+                typed.push(' ');
+                typed.push_str(&match &arg.kind {
+                    ArgKind::Choice(options) => options[0].clone(),
+                    ArgKind::Int => "2".to_string(),
+                    ArgKind::Float { min, .. } => format!("{min}"),
+                    ArgKind::Bool => "true".to_string(),
+                    ArgKind::Text => "x".to_string(),
+                });
+            }
+            // `console.camera` has no required argument at all, and a framing that names
+            // nothing is refused by design — so it is typed with the axis a human would.
+            if spec.name == CMD_CAMERA {
+                typed = format!("/{verb} distance 40");
+            }
+            let Resolved::Run { lane, name, args } = registry.resolve(&typed) else {
+                panic!("`{typed}` must resolve for `{}`", spec.name);
+            };
+            assert_eq!(lane, Lane::Console);
+            assert_eq!(name, spec.name);
+            let op = op_from(&name, &args).unwrap_or_else(|e| panic!("{typed}: {e}"));
+            let written = cli::console_op_to_line(&op);
+            assert!(
+                cli::parse_console_op(&written).is_some(),
+                "`{typed}` writes `{written}`, which the drain cannot read back"
+            );
+        }
+    }
+
+    /// 🚨 **One verb, four spellings, one [`cli::ConsoleOp`] — the invariant the whole
+    /// registry exists to make true.**
+    ///
+    /// Each row is the same act said three ways this test can reach: as the `ConsoleOp` the
+    /// CLI's clap layer builds, as the tool arguments an agent's MCP call carries
+    /// ([`op_args`]), and as the line a human types in the composer. The pie menu is the
+    /// fourth and is not built — but it produces a `(name, args)` pair out of the same
+    /// registry, so it lands in this test the day it exists.
+    ///
+    /// ⚠️ If these ever diverge, the symptom is not a build failure. It is
+    /// `/background slate` doing something subtly different from
+    /// `organon console background slate` — two resolvers that can disagree, eventually
+    /// disagreeing, which is the failure this tree has recorded from the store path to
+    /// `doc-rules.sh` to the three kind registries `kind.rs` collapsed.
+    ///
+    /// ⚠️ `cargo check --profile test` only in this session; CI executes it.
+    #[test]
+    fn every_surface_of_a_verb_produces_the_same_console_op() {
+        use organon_shell::registry::{Registry, Resolved};
+
+        let registry = Registry::new(&mcp_specs());
+        let cases: Vec<(&str, cli::ConsoleOp)> = vec![
+            ("/background slate", bg("slate")),
+            ("/background world", bg("world")),
+            ("/rig daylight", rig_op("daylight")),
+            ("/block 7", cli::ConsoleOp::Block(7)),
+            ("/patch 12 12 panel", cli::ConsoleOp::Patch { up: 12, rows: 12, kind: kind::Kind::Panel }),
+            ("/patch 0 7 scene", cli::ConsoleOp::Patch { up: 0, rows: 7, kind: kind::Kind::Scene }),
+            ("/portal toggle", cli::ConsoleOp::Portal(cli::PortalCmd::Toggle)),
+            (
+                "/camera reset",
+                cli::ConsoleOp::Camera(cli::CameraFraming { reset: true, ..Default::default() }),
+            ),
+            (
+                "/camera distance 40",
+                cli::ConsoleOp::Camera(cli::CameraFraming {
+                    distance: Some(40.0),
+                    ..Default::default()
+                }),
+            ),
+            (
+                "/camera reset yaw -1.2 pitch 0.3 distance 12.5",
+                cli::ConsoleOp::Camera(cli::CameraFraming {
+                    reset: true,
+                    yaw: Some(-1.2),
+                    pitch: Some(0.3),
+                    distance: Some(12.5),
+                }),
+            ),
+        ];
+
+        for (typed, expected) in cases {
+            // The agent's spelling → the op. (The CLI's own spelling *is* `expected`: clap
+            // builds a `ConsoleOp` directly, which is why it is the value on the right.)
+            assert_eq!(
+                op_from(spec_name(&expected), &op_args(&expected)),
+                Ok(expected.clone()),
+                "the MCP spelling of {expected:?}"
+            );
+            // The human's spelling → the same op, through the same converter.
+            let Resolved::Run { name, args, .. } = registry.resolve(typed) else {
+                panic!("`{typed}` must be a command")
+            };
+            assert_eq!(name, spec_name(&expected), "`{typed}` names its own catalog entry");
+            assert_eq!(op_from(&name, &args), Ok(expected.clone()), "the slash spelling of {typed}");
+            // 📌 …and the typed line, minus its slash, **is** the sidecar line. That is not a
+            // coincidence to be enjoyed: the slash grammar is required-positional then
+            // keyword-tagged precisely because that is what `cli::console_op_to_line` already
+            // writes, so a human reading `queued: camera reset distance 40` on a terminal
+            // knows what to type in the composer without a translation table.
+            assert_eq!(
+                cli::console_op_to_line(&expected),
+                typed.trim_start_matches('/'),
+                "the typed line is the sidecar line, verb and all"
+            );
+        }
+
+        // The read has no op and must not acquire one by being typeable.
+        let Resolved::Run { name, args, .. } = registry.resolve("/camera.read") else {
+            panic!("the read is typeable")
+        };
+        assert_eq!(name, CMD_CAMERA_READ);
+        assert!(
+            op_from(&name, &args).is_err(),
+            "a read must never convert into a line written onto a fire-and-forget channel"
+        );
     }
 
     /// **The block verb's row range is a gate on both sides of the sidecar, and this is the

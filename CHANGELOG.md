@@ -11,6 +11,45 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Slash commands in the console — one command registry, four front doors
+
+A command a **person** types now runs at once, locally, and costs no inference. Typing
+`/background slate` into a conversation tab changes the backdrop on the next frame; before
+this, the equivalent went to the agent as a message, was understood by inference, was located
+by a tool-search call, came back as a tool call, and raised an approval card asking the human
+to approve his own command — about **thirteen seconds and a chunk of context for a command he
+had already decided on**, measured on 2026-08-13.
+
+Nothing in that chain was a bug. It is what the console's earlier architecture forced: it
+composited *around* a harness it did not own, so it had no way to hear a human's intent except
+through that harness. The conversation front-end ended that assumption — the console owns the
+composer — and nobody revisited the consequence.
+
+**One table, four spellings.** `organon-shell/src/registry.rs` holds the console's vocabulary
+as a hierarchy — a group, a verb, and its argument choices — built from the same
+`Vec<CommandSpec>` the MCP tool schemas are generated from. So `organon console background
+slate` from a terminal, `mcp__organon__console_background` from an agent, and `/background
+slate` from a person are three renderings of one definition, and all three produce the same
+`cli::ConsoleOp`. A pie menu is the fourth and is not built; the hierarchy is carried
+explicitly so that it can be generated rather than restated. All three existing surfaces stay:
+they serve callers with genuinely different routes in.
+
+- Typeable now: `/background`, `/rig`, `/block`, `/patch`, `/portal`, `/camera`,
+  `/camera.read`, plus the view's own `/surface` (unchanged) and a generated `/help`.
+- **The typed line, minus its slash, is the sidecar line** — `/camera reset distance 40` is
+  what the CLI already prints as `queued: camera reset distance 40`, so there is no third
+  spelling to learn.
+- **Still audited.** A slash command is handed to the same dispatch an agent's tool call
+  reaches, onto the same sidecar, drained through the same `CommandService` — it leaves a
+  `CommandRun` record. It skips the agent, not the discipline, and reports *accepted* rather
+  than *applied*.
+- **The approval model is untouched**, because it answers a different question — may this
+  *agent* act on my behalf — and a person's own keystroke was never that question.
+- An unknown command is **refused with the known list** instead of being forwarded as chat, and
+  a refusal does **not** clear the composer, so nothing a person typed can vanish. A line that
+  merely *mentions* a command still reaches the agent, and `//` sends one that really does
+  begin with a slash.
+
 ### `organon-scene` — the substrate moves below the plugin
 
 organon#49 Tier 3. Five modules — `substrate_scene`, `substrate_materials`,

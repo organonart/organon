@@ -52,6 +52,7 @@ use crate::conversation::{
 use crate::mcp::{ExposureAudit, McpServer, NoDispatch, ToolDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
 use crate::posture::Form;
+use crate::registry;
 use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::theme::Theme;
 use crate::timeline::pinned_after_scroll;
@@ -185,42 +186,33 @@ pub fn surface_visible(rect: egui::Rect, viewport: egui::Rect) -> bool {
         && rect.top() < viewport.bottom()
 }
 
-/// A composer line the view acts on itself and **never sends to the agent**.
+/// 🚨 **The composer's slash commands now live in [`crate::registry`], and this is where they
+/// used to live.**
 ///
-/// ⚠️ **A temporary seam, and shaped to be removed.** Summoning is about to become the
-/// agent's job — a tool call the integrator answers with
-/// [`Transcript::insert_artifact`](crate::conversation::Transcript::insert_artifact), where
-/// the tool card is the anchor — so the summoning path is kept entirely separate from the
-/// element: this enum decides *that* a surface is wanted, [`ConversationPane::summon_surface`]
-/// builds one, and neither knows about the other's existence beyond that call. Deleting
-/// this enum and its branch in [`ConversationPane::submit`] removes the local command and
-/// touches nothing that draws.
+/// What was here was `local_command`: an exact match on the single string `/surface`,
+/// forwarding everything else to the agent. It was described as a temporary seam that would be
+/// deleted once the agent could summon a surface itself — and the mechanism it built is
+/// instead the one the console needed for a much larger reason.
 ///
-/// 🚨 **There was a second command here, `/panel`, and it is gone.** It summoned a panel
-/// wired to the *console* — the backdrop behind whatever terminal tab was next door — so
-/// its controls changed something you could not see from the tab you clicked in. Driven by
-/// a human, that reads as a panel whose knobs do nothing. `/surface` is not an alternative
-/// to it; it is the same panel pointed at something in the same view, which is what makes
-/// the instrument legible. Removing `/panel` took the console-driving arm of
-/// [`PanelSpec::drives`] with it, so a panel now always names a target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LocalCommand {
-    /// `/surface` — put a rendered surface in the flow, and a panel under it that drives
-    /// **that surface**. Control and consequence in one glance.
-    Surface,
-}
-
-/// Recognise a local command, or `None` for an ordinary message.
+/// A measurement is what changed it. `organon console posture desktop`, typed into a
+/// conversation tab, went to the agent as a message, was understood by inference, was located
+/// by a tool-search call, came back as a tool call, and raised an approval card asking the
+/// human to approve his own command — about thirteen seconds and a chunk of context for a
+/// command he had already decided on. That path was not a bug; it was the console's older
+/// architecture, in which it composited around a harness it did not own and had no way to hear
+/// a human's intent except through it. This front-end ended that assumption and nobody
+/// revisited the consequence.
 ///
-/// Exact-match only: a message that merely *starts* with a slash is a message (a human
-/// asking about `/surface` must reach the agent), and swallowing it would be a silent send
-/// failure — the worst kind, because the composer clears either way.
-pub fn local_command(line: &str) -> Option<LocalCommand> {
-    match line.trim() {
-        "/surface" => Some(LocalCommand::Surface),
-        _ => None,
-    }
-}
+/// So this seam is no longer temporary and no longer single-purpose: [`crate::registry`] holds
+/// **every** verb the console answers, `/surface` among them, and generates the typed surface
+/// from the same table the MCP tools are generated from. The original plan is untouched — when
+/// the agent can summon an artifact by tool call, the `view.surface` entry goes and nothing
+/// that draws is disturbed.
+///
+/// The other command that used to be here, `/panel`, is still gone: it summoned a panel wired
+/// to the *console*'s backdrop, which a conversation has no scrollback to show, so its controls
+/// changed something you could not see from the tab you clicked in.
+pub use crate::registry::{Lane, Registry, Resolved};
 
 /// One artifact's **live** widget state — the values a hand moves.
 ///
@@ -289,9 +281,25 @@ pub fn default_slider_table() -> Vec<(String, f32)> {
 ///
 /// ⚠️ The dispatch is `Send` because it runs on [`McpHttp`]'s serve thread, never on the
 /// UI thread — see [`crate::mcp`]'s module doc.
+///
+/// 🚨 **Two dispatches, and they are two because two different questions are being asked.**
+/// [`Capabilities::dispatch`] is what the *agent* reaches, through the MCP server, past the
+/// approval gate — the question there is *may this agent act on my behalf*, and the card that
+/// answers it is correct. [`Capabilities::local`] is what a *human's* slash command reaches,
+/// with no gate, because approving your own keystroke is not a safety property: it is the
+/// thirteen-second round trip [`Resolved`] exists to delete. They are the same verbs onto the
+/// same audited sidecar; only the asking differs.
+///
+/// ⚠️ A second handle rather than a shared one because [`ToolDispatch`] is consumed by the MCP
+/// server (`McpHttp::start` takes it by value and moves it onto its serve thread). The console's
+/// own dispatch is a cheap value holding published cells, so a second one costs nothing and,
+/// more to the point, cannot be a second *implementation* — `shell_main` builds both from one
+/// type, and the CLI/MCP/slash round-trip test pins that they mean the same thing.
 pub struct Capabilities {
     pub specs: Vec<CommandSpec>,
     pub dispatch: Box<dyn ToolDispatch + Send>,
+    /// The same verbs, reached by the person in front of the console rather than by the agent.
+    pub local: Box<dyn ToolDispatch>,
 }
 
 impl Capabilities {
@@ -301,8 +309,16 @@ impl Capabilities {
     /// records that a server whose `tools/list` returns only the handler reports
     /// `status: connected` and the model simply sees no tools from it. It is what every
     /// test in this file uses, and what a caller with no verbs to offer should pass.
+    ///
+    /// With no specs the registry holds only the view lane, so [`Capabilities::local`] is
+    /// unreachable here for the same reason [`NoDispatch`] is unreachable behind an empty MCP
+    /// table: nothing resolves to it.
     pub fn none() -> Self {
-        Self { specs: Vec::new(), dispatch: Box::new(NoDispatch) }
+        Self {
+            specs: Vec::new(),
+            dispatch: Box::new(NoDispatch),
+            local: Box::new(NoDispatch),
+        }
     }
 }
 
@@ -368,11 +384,11 @@ fn collision_note(collisions: &[String]) -> Option<String> {
 /// asked *"may I run this shell command"* instead of one naming a capability. Everything
 /// needed was already here; the two ends were never joined.
 fn start_approvals(
-    capabilities: Capabilities,
+    specs: &[CommandSpec],
+    dispatch: Box<dyn ToolDispatch + Send>,
 ) -> Result<(ApprovalWiring, McpWiring, Receiver<PendingApproval>, Vec<String>), String> {
     let (gate, inbox) = approval_channel();
-    let Capabilities { specs, dispatch } = capabilities;
-    let server = McpServer::new(&specs, Box::new(gate)).with_server_name(SERVER_NAME);
+    let server = McpServer::new(specs, Box::new(gate)).with_server_name(SERVER_NAME);
     let permission_tool = server.permission_tool_flag_value();
     let served = server.namespaced_tool_names();
     let mut notes = Vec::new();
@@ -518,6 +534,14 @@ pub struct ConversationPane {
     /// [`PendingModel`] — this is what stops the plate asserting a model that is not yet
     /// true.
     pending_model: Option<PendingModel>,
+    /// Every verb this pane answers, console and view alike — see [`crate::registry`]. Built
+    /// once from the handed-down catalog, because it is the same table for the tab's whole
+    /// life and re-deriving it per keystroke would be work for no fact.
+    registry: Registry,
+    /// Where a **human's** console command goes: straight onto the console's audited sidecar,
+    /// with no agent, no inference and no approval card in the way. See [`Capabilities`] for
+    /// why this is not the same handle the MCP server holds.
+    local: Box<dyn ToolDispatch>,
 }
 
 /// A `set_model` in flight, from the click to the moment the strip's own model fact moves.
@@ -575,8 +599,19 @@ impl ConversationPane {
         sliders: Vec<(String, f32)>,
         capabilities: Capabilities,
     ) -> Self {
+        let Capabilities { specs, dispatch, local } = capabilities;
+        // Built before the server is handed the specs, from the same list, so the verbs a
+        // human can type and the verbs an agent is offered are one table by construction
+        // rather than by two calls that happen to agree.
+        let registry = Registry::new(&specs);
         let mut log = VecDeque::new();
-        let (approvals, wiring, inbox) = match start_approvals(capabilities) {
+        for name in registry.collisions() {
+            log.push_back(format!(
+                "`{name}` cannot be typed as a slash command — another verb already holds that \
+                 word"
+            ));
+        }
+        let (approvals, wiring, inbox) = match start_approvals(&specs, dispatch) {
             Ok((held, wiring, inbox, notes)) => {
                 // Whatever the wiring had to say about itself, in the pane rather than only
                 // on a stderr nobody is reading. `push_back` rather than `note` because the
@@ -622,7 +657,15 @@ impl ConversationPane {
             memory: DecisionMemory::new(),
             models: Vec::new(),
             pending_model: None,
+            registry,
+            local,
         }
+    }
+
+    /// Every verb this pane answers, as a hierarchy — the seam a pointer surface (a context
+    /// menu, the pie menu) reads instead of building a table of its own.
+    pub fn registry(&self) -> &Registry {
+        &self.registry
     }
 
     /// Fold one mapped event into the transcript and keep the pane's derived state in step
@@ -1065,27 +1108,79 @@ impl ConversationPane {
     }
 
     /// Send the composer's contents and clear it. Renders nothing locally (rule 2).
+    ///
+    /// 🚨 **A command is resolved before the session is even looked up**, so it works in a pane
+    /// whose agent has died — and, far more importantly, so that it costs no inference and
+    /// raises no approval card. That is the whole of what this change buys: see
+    /// [`Registry::resolve`].
+    ///
+    /// ⚠️ **A refusal does not clear the composer**, and every other outcome does. The words
+    /// stay where a hand can fix them, which is what makes refusing an unknown slash command
+    /// strictly better than the forwarding it replaced: nothing a person typed can vanish.
     fn submit(&mut self) {
         let text = self.composer.trim().to_string();
         if text.is_empty() {
             return;
         }
-        // A local command is handled here and **never written to stdin** — checked before
-        // the session lookup so it works in a pane whose agent is gone. See [`LocalCommand`]
-        // for why this seam is temporary.
-        if let Some(command) = local_command(&text) {
-            match command {
-                LocalCommand::Surface => self.summon_surface(),
+        let outgoing = match self.registry.resolve(&text) {
+            Resolved::Message => text.clone(),
+            Resolved::Escaped(line) => line,
+            Resolved::Refused(message) => {
+                self.note(message);
+                return;
             }
-            self.composer.clear();
-            return;
-        }
+            Resolved::Run { lane, name, args } => {
+                self.run_command(lane, &name, &text, args);
+                self.composer.clear();
+                return;
+            }
+        };
         let Some(session) = self.session.as_mut() else { return };
-        match session.send_user(&text) {
+        match session.send_user(&outgoing) {
             Ok(()) => self.composer.clear(),
             Err(e) => {
                 self.note(format!("could not send: {e}"));
                 self.failure = Some(format!("the agent stopped listening: {e}"));
+            }
+        }
+    }
+
+    /// Run one resolved command. `typed` is what the human wrote, so the receipt echoes their
+    /// own words rather than a catalog name they never saw.
+    ///
+    /// The two lanes really do need two arms, and the split is not cosmetic: a view verb acts
+    /// on *this transcript* and returns nothing, while a console verb is handed to the same
+    /// dispatch an agent's tool call reaches — which writes the console's sidecar, which the
+    /// frame path drains through the real [`crate::command::CommandService`]. So a slash
+    /// command still leaves a `CommandRun` record; what it skips is the agent, not the audit.
+    fn run_command(
+        &mut self,
+        lane: Lane,
+        name: &str,
+        typed: &str,
+        args: serde_json::Value,
+    ) {
+        match lane {
+            Lane::View => match name {
+                registry::VERB_SURFACE => self.summon_surface(),
+                registry::VERB_HELP => {
+                    // Collected first: `help_lines` borrows the registry and `note` wants the
+                    // pane.
+                    let lines = self.registry.help_lines();
+                    for line in lines {
+                        self.note(line);
+                    }
+                }
+                other => self.note(format!(
+                    "`{other}` is in the registry's view lane and nothing here answers it — \
+                     that is a wiring bug, not something you typed wrongly"
+                )),
+            },
+            Lane::Console => {
+                // The call first, so the borrow of `local` has ended before `note` takes the
+                // whole pane.
+                let result = self.local.call(name, args);
+                self.note(registry::receipt(typed, &result));
             }
         }
     }
@@ -4413,29 +4508,39 @@ mod tests {
         assert!(edit_diff(Some("Edit"), &streaming).is_none(), "never parse a fragment");
     }
 
-    /// A local command is recognised **exactly**, because the cost of the two mistakes is
-    /// wildly asymmetric: failing to recognise one sends a slash-word to the agent, which is
-    /// merely odd, while over-recognising one swallows a real message — and the composer
-    /// clears either way, so the human watches their sentence vanish into nothing.
+    /// **`/surface` still resolves to exactly what it always did**, now out of the registry
+    /// rather than out of a two-arm match.
+    ///
+    /// This is what is left here of `only_an_exact_slash_surface_is_a_local_command`. The
+    /// property that test defended — a message that merely mentions a command is not a
+    /// command, and nothing a person typed may vanish — now lives in
+    /// [`crate::registry`]'s own tests, where the rules are, and is *stronger* there: an
+    /// unknown slash command is refused with the known set instead of being forwarded to an
+    /// agent that will make something up about it, and a refusal leaves the words in the
+    /// composer. What belongs in this file is only the join: that the view lane's spelling
+    /// has not moved.
     #[test]
-    fn only_an_exact_slash_surface_is_a_local_command() {
-        assert_eq!(local_command("/surface"), Some(LocalCommand::Surface));
-        assert_eq!(local_command(" /surface \n"), Some(LocalCommand::Surface), "trimmed like a send");
-        for message in [
-            "/surfaces",
-            "/surface slate",
-            "surface",
-            "/",
-            "",
-            // 🚨 The retired command. `/panel` drove the console's backdrop, which a
-            // conversation has no scrollback to show, so its controls appeared to do
-            // nothing. It is not swallowed and it is not aliased to `/surface` — it is an
-            // ordinary message now, and reaches the agent like any other sentence.
-            "/panel",
-            "  /panel  ",
-        ] {
-            assert_eq!(local_command(message), None, "{message:?} belongs to the agent");
-        }
+    fn the_view_lane_keeps_the_spelling_it_had() {
+        let registry = Registry::new(&[]);
+        assert_eq!(
+            registry.resolve("/surface"),
+            Resolved::Run {
+                lane: Lane::View,
+                name: registry::VERB_SURFACE.into(),
+                args: serde_json::json!({}),
+            }
+        );
+        assert_eq!(
+            registry.entry("surface").map(|e| e.name()),
+            Some(registry::VERB_SURFACE),
+            "a pane offered no console verbs still answers its own"
+        );
+        // 🚨 The retired command. `/panel` drove the console's backdrop, which a conversation
+        // has no scrollback to show, so its controls appeared to do nothing. It is not
+        // aliased to `/surface` and it is not swallowed — it is refused, by name, with the
+        // list of what would have worked.
+        assert!(matches!(registry.resolve("/panel"), Resolved::Refused(_)));
+        assert_eq!(registry.resolve("what does /surface do?"), Resolved::Message);
     }
 
     /// The knobs start where the console said they start, so the two front-ends draw one
@@ -5565,7 +5670,7 @@ mod tests {
             },
         ];
         let (wiring, mcp, _inbox, notes) =
-            start_approvals(Capabilities { specs, dispatch: Box::new(NoDispatch) })
+            start_approvals(&specs, Box::new(NoDispatch))
                 .expect("a loopback port and a temp config");
         assert!(notes.is_empty(), "a table with no collisions has nothing to report: {notes:?}");
 
@@ -5583,7 +5688,8 @@ mod tests {
 
         // And the empty case is still reachable and still honest: a caller with nothing to
         // offer serves the handler alone (§9 point 5's safest shape).
-        let (bare, _, _, _) = start_approvals(Capabilities::none()).expect("wiring");
+        let (bare, _, _, _) =
+            start_approvals(&[], Box::new(NoDispatch)).expect("wiring");
         assert!(bare.served.is_empty());
     }
 
@@ -5627,7 +5733,7 @@ mod tests {
             },
         ];
         let (wiring, _, _, notes) =
-            start_approvals(Capabilities { specs: colliding, dispatch: Box::new(NoDispatch) })
+            start_approvals(&colliding, Box::new(NoDispatch))
                 .expect("a loopback port and a temp config");
         assert_eq!(notes.len(), 1, "one line, naming the loss: {notes:?}");
         assert!(notes[0].contains("console/portal"), "{:?}", notes[0]);
