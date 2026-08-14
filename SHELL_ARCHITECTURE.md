@@ -168,7 +168,11 @@ position.
   blamed the Feedback channel, which `is_live` never reads).
 - **The console command lane (#4 T2, `cli.rs` + `shell_main.rs`)** — the first typed
   sentence that changes the console: `organon console background <name>` and
-  `organon console rig <name>`. **A third transport, because it has a third
+  `organon console rig <name>`, joined since #38 by `organon console theme <name>` and
+  `organon console posture <word>` — the console's own dressing rather than the
+  substrate's, and the first two verbs on this lane that a person reaches for because of
+  how the window *looks to them* rather than what it is showing. **A third transport,
+  because it has a third
   destination.** `cli.txt` is drained by the `World` and the eyes sidecar is answered by
   the visual; a backdrop is `Shell` state and neither of them can reach it, so routing a
   console verb over the existing lane would queue it where nothing can act on it —
@@ -473,7 +477,9 @@ position.
   service handed back, so dispatch is in the path, not beside it.
 - **Dev flags**: `ORGANON_SHELL_CMD` (one plain-command tab, headless proof),
   `ORGANON_SHELL_TABS` (comma harness ids), `ORGANON_SHELL_DEFAULT`,
-  `ORGANON_SHELL_BACKDROP`, `ORGANON_SHELL_SCRIM`, **`ORGANON_SHELL_PTY_DEBUG`**.
+  `ORGANON_SHELL_BACKDROP`, `ORGANON_SHELL_SCRIM`, **`ORGANON_SHELL_PTY_DEBUG`**,
+  **`ORGANON_SHELL_THEME`** (#38 — the one that overrides a *stored* preference, for one
+  launch and out loud; §1.5 carries the amendment and its two conditions).
   **`organon-console --help` is their documentation** (2026-08-09) — the binary had no
   argument handling at all until then, so `--help` started the event loop and hung. The
   scrim line is **formatted from `term_view::SCRIM_DEFAULT`/`SCRIM_FLOOR`**, not restated:
@@ -2169,9 +2175,53 @@ opened on it — see the ledger.
 **Three more palettes stand beside it: `light`, `dark` and `chocolate`**, each a constructor,
 each specified by James as ~10 named roles. `Theme::by_name(&str) -> Option<Theme>` resolves a
 name against `Theme::NAMES`, and `None` for anything else — never a panic, never a substitute,
-because a picker wants to say "unknown" while `prefs.rs` wants `unwrap_or_default()`. 📌
-**Nothing selects a palette yet**: no picker, no CLI verb, no startup read. `shell_main.rs`
-still builds `Theme::organon()`, and this is the seam the picker will land on.
+because a picker wants to say "unknown" while `prefs.rs` wants `unwrap_or_default()`.
+`Theme::resolve` is `by_name` with a refusal that carries the known set, and `Theme::named`
+returns the palette *with its canonical name*, which is what a store records.
+
+#### Reaching one: `organon console theme <name>`
+
+**A person can now select a palette three ways, and the precedence is
+`ORGANON_SHELL_THEME` → `preferences.json` → `organon`.** `theme::select(env, stored)` is that
+order, as one pure function returning a `Selection` — the palette, its canonical name, a
+`ThemeSource` saying which rung won, and `notes` the console prints on its own stderr.
+`Shell::new` reads the two sources and hands them in; the resolution is testable without a
+process environment or a store on disk, which is why it lives in `theme.rs` and not inline.
+
+**The verb is live, and live is the requirement rather than a convenience.** `organon console
+theme light` reaches `Shell::apply_console` on the console sidecar and repaints on the next
+frame. Four palettes compared by relaunching four times is not a comparison: what is being
+judged is a wash of colour across a window full of real text, and the judgement is made by
+looking back and forth, which a relaunch destroys.
+
+🚨 **`Shell::set_theme` re-issues `set_visuals`, and it must.** `redraw` borrows `&self.theme`
+afresh every frame, so the fields need nothing but an assignment — but `Visuals` is set *on the
+context* and held there, so without the second call roughly half the window (sliders, popup
+frames, the `TextEdit` selection wash, scrollbars) would keep the outgoing palette. That is the
+same asymmetry that made `Theme::visuals` necessary at all, met from the other direction.
+
+⚠️ **The pick is stored, and `set_theme` deliberately does not early-return when the palette
+asked for is already the one painted.** Launch under `ORGANON_SHELL_THEME=chocolate` over a
+stored `light`, then type `organon console theme chocolate`, meaning "yes, keep this one": an
+early-out on the *painted* palette would repaint nothing (correct) and store nothing (wrong),
+and the choice would evaporate at exit exactly as it did before any of this existed. The
+**store** decides whether there is work to do. The write is load-modify-save, never a fresh
+`Preferences { theme }` — that struct will grow fields, and constructing one here would
+silently discard preferences this call knows nothing about.
+
+⚠️ **A refusal is loud at both ends and it never approximates.** `bin/ctl.rs` restricts the
+word at the clap boundary from `Theme::NAMES` *itself* rather than a copy of it, so a fifth
+palette reaches `--help` and tab completion in the commit that adds it; `Shell::set_theme`
+resolves again on arrival, because a line written straight onto the sidecar never met clap. An
+unknown name at startup **falls through to the next source** rather than resetting to
+`organon` — a typo in a launch shim must not silently discard a stored choice — and says so
+with the known set. There is no case folding and no nearest-match anywhere: a palette
+substituted for the one asked for is indistinguishable from success, which defeats the point
+of being able to tell which one you are looking at.
+
+**One owner, still.** `Shell` gains `theme_name: &'static str` beside `theme` — carried rather
+than reverse-looked-up, because §1.4's own rule is that palettes may share field values, so a
+`Theme` is not a reliable key to its own name.
 
 **One owner: `Shell` in `native/src/shell_main.rs`**, one field, borrowed into `redraw`'s
 closure beside `sessions` and `strip` and passed down as `&Theme` to every draw call —
@@ -2279,8 +2329,11 @@ under a 40 % grey wash, technically legible and not a page at all. The reasoning
 are pale; against a light page and dark glyphs the world may have roughly a quarter, so the
 floor is the complement. ⚠️ Note `SCRIM_DEFAULT = 185` is itself *below* it, so on `light` every
 unset launch is lifted to the floor — the floor working, not a bug, since the default was chosen
-against a dark page. 📌 `--help` still quotes `SCRIM_FLOOR` as "the" floor; that is exactly true
-for every palette this build can select, and becomes a lie the day a picker can choose `light`.
+against a dark page. 📌 **`--help` used to quote `SCRIM_FLOOR` as "the" floor, and the note
+here said that would become a lie the day a picker could choose `light`. That day was
+`organon console theme`, so it is fixed rather than merely predicted**: the scrim line quotes
+both floors and names which palettes carry the light one — derived by filtering `Theme::NAMES`
+on `scrim_floor`, so a fifth palette with a light page is covered without an edit.
 
 #### egui's own chrome — `Theme::visuals()`
 
@@ -2360,21 +2413,44 @@ does nothing. That exact failure is on record on this machine for `harnesses.jso
 PowerShell `Set-Content -Encoding utf8`. Both halves are pinned: what we write has no BOM, and
 a BOM'd file reads as defaults rather than panicking.
 
-📌 **No environment variable overrides a stored preference, and that is a decision, not an
-omission.** The `ORGANON_SHELL_*` family is untouched — this module reads none of it. An
-override would defeat the thing being built: a user picks a theme, it stores correctly, and
-next launch a variable baked into a launch shim wins silently, which is indistinguishable from
-the evaporation the file exists to end. The shims already demonstrate the shape —
-`organon-console.cmd` sets `ORGANON_SHELL_TABS` unconditionally, so the documented way to
-override it is ignored without a word. A one-launch override, if ever wanted, belongs in a CLI
-flag that can say so in the console's own output.
+📌 **AMENDED (#38): `ORGANON_SHELL_THEME` does override the stored palette — for one launch,
+out loud, and without writing.**
 
-📌 **This is storage only; nothing reads `theme` yet.** The `Theme` type is being built
-separately, and the field is a plain `String` name so the two stay independent: the consumer
-maps a name it recognises and falls back to its own default for one it does not, which is also
-what makes a file written by a newer console harmless to an older one. Nothing in
-`shell_main.rs` calls `load_default()` yet — wiring it belongs with the consumer, because a
-startup read into a field nobody reads is dead code.
+The decision this replaces read *"no environment variable overrides a stored preference, and
+that is a decision, not an omission"*, and its reasoning still stands where it applies: an
+override baked into a launch shim wins **silently**, which is indistinguishable from the
+evaporation this file exists to end, and `organon-console.cmd` already demonstrates the failure
+by setting `ORGANON_SHELL_TABS` unconditionally so the documented way to override it is ignored
+without a word. That paragraph also named its own escape hatch — *"a one-launch override, if
+ever wanted, belongs in a CLI flag that can say so in the console's own output"*.
+
+**What changed is that the console can now be told a palette at all, and the objection turns
+out to be to the silence rather than to the precedence.** The escape hatch as written cannot be
+taken: `organon-console` has no flags. It is launched by shims, and an environment variable
+*is* its argument surface — `--help` documents variables for exactly that reason. So the
+override is granted and the original objection is answered head-on, in two properties that are
+pinned by tests in `theme.rs` rather than left as intent:
+
+1. **It announces itself, every launch**, naming the variable, the palette it chose and the
+   stored palette it is standing in front of. `Selection::notes`, printed by `Shell::new` on
+   the console's own stderr.
+2. **It never writes.** Only `organon console theme` stores anything, so an override cannot
+   destroy the choice underneath it — unset the variable and the stored palette is back.
+
+Together those make it a **loan, not a takeover**: it can only win while it is set, and it
+cannot win quietly. ⚠️ **This licenses `ORGANON_SHELL_THEME` and nothing else.** The rest of
+the `ORGANON_SHELL_*` family still overrides nothing, because none of it has a stored
+counterpart to override; the day one does, it inherits both properties above or it does not get
+the precedence.
+
+**`theme` is read at startup, and written by `organon console theme`.** `Shell::new` calls
+`Preferences::load_default()` and hands `theme.as_deref()` to `theme::select`; `Shell::set_theme`
+loads, sets the field, and calls `save_default()`. ⚠️ **Load-modify-save, never
+`Preferences { theme }`** — this struct grows by adding fields, and constructing a fresh one at
+a write site silently discards every preference that site does not know about, which is a bug
+that arrives later and looks like somebody else's. The field stays a plain `String` name so an
+unresolvable value (a palette written by a newer console) costs the *preference* and not the
+console: `select` reports it, names the known set, and falls through to the default.
 
 ### 1.6 Posture — how the console holds itself, on an axis of its own
 
@@ -2382,10 +2458,46 @@ startup read into a field nobody reads is dead code.
 `Form`, the fourteen form tokens resolved at that `t`.** `Posture::TERMINAL` (`t = 0`) is the
 console exactly as it has always drawn; `Posture::DESKTOP` (`t = 1`) is James's desktop form —
 inset by a 90-point left gutter, roomier, ruled down the left instead of boxed, with
-registration ticks at the corners of the conversation area. **This build ships at
-`Posture::TERMINAL` and nothing moves it**: `Shell` sets the field once and holds it, so the
-tier adds the axis without moving along it. ⚠️ No window has been opened on it — see the
-ledger.
+registration ticks at the corners of the conversation area. **Every console still opens at
+`Posture::TERMINAL`, and `organon console posture <word>` is what moves it.** ⚠️ No window has
+been opened at any `t > 0` — see the ledger.
+
+#### Reaching it: `organon console posture <terminal|desktop|0.0-1.0>`
+
+`Posture::resolve` takes either end's word **or a bare scalar**, and the scalar is accepted
+because a `Posture` *is* a scalar: refusing `0.5` would mean the CLI could not say a thing the
+type represents and `Form::at` draws. ⚠️ **Refused, never clamped** — a typed `90` is degrees
+where the axis wanted a fraction, and answering `desktop` would let the mistake look like it
+worked. `Posture::new` still clamps, because it is fed by code where an overshoot really is a
+rounding error; `from_scalar` is the brace on that belt, `CameraFraming::in_range`'s
+arrangement exactly.
+
+🚨 **It SNAPS, and that is a decision rather than a stage on the way to a tween.** The axis
+exists so a later tier *can* animate it — that is why every token is a scalar — but a tween
+moves the transcript's wrap width continuously, and §1.7 prices a single width change at
+~7.6 ms at 400 elements, with five options and no decision taken. A snap pays that cost **once**,
+in a frame nobody perceives as a jump; an unconsidered tween pays it every frame of the motion
+and reflows a wall of text under someone's eyes to do it. Tier C still owns the tween, its
+`request_repaint` discipline and what a moving layout does to the scroll anchor.
+
+⚠️ **It is NOT remembered, and this is the deliberate asymmetry with the palette.** §1.4's
+palette is *what the console is made of* — a person who picks one means it, and it should be
+there tomorrow, which is why it reaches `preferences.json`. A posture, at this tier, is *how it
+stands right now*: a view you take to look at something. The desktop end has never been drawn
+on a real screen (§3), so a stored `desktop` would mean every console from then on opens into
+an unaudited layout, recoverable only by typing the verb back or editing JSON — while closing
+the window is a free undo. **Revisit when the tween lands.** An animated posture somebody has
+actually lived in *is* a preference, and it is one field on `Preferences` away.
+
+⚠️ **Where the refusal happens is not where the other console verbs put it, and the reason is
+the scalar.** Every other named argument on `organon console` is gated by clap's
+`PossibleValuesParser`; this one cannot be, because `Choice` and `Float` are separate kinds and
+neither says "one of these two words, or a number in this band". So `bin/ctl.rs` calls
+`Posture::resolve` in `run_console` instead — a human still gets the good error before a byte
+reaches the sidecar, at the cost of `<POSTURE>` not tab-completing. The console's dispatch
+catalog (`console.posture`) takes the opposite trade and declares `ArgKind::Choice` over
+`POSTURE_WORDS` **only**: the words are what a caller reaching for a posture means, the scalar
+is for a hand exploring the axis, and a hand has a terminal.
 
 🚨 **Posture is orthogonal to the palette, and that is the whole reason it is a second value
 rather than more fields on `Theme`.** §1.4 answers *what the console is made of*; this
@@ -2401,7 +2513,8 @@ unrepresentable and every draw site a branch. `Form::at(t)` interpolates compone
 Tier C's animation is therefore a change to *one field on `Shell`* rather than a rewrite of
 the drawing.
 
-**One owner, no globals** — `Shell` holds `posture: Posture` beside its `Theme`, `redraw`
+**One owner, no globals** — `Shell` holds `posture: Posture` beside its `Theme` and
+`theme_name`, `redraw`
 resolves `let form = &self.posture.form()` **once per frame**, and `&Form` is passed down
 beside `&Theme`. No `static`, no `thread_local!`, no `OnceCell`. Resolving per draw call
 would be cheap and wrong for a reason that outlives this tier: two calls in one frame could
@@ -2515,9 +2628,11 @@ a missing section. What has not changed is the part that matters: **the number w
 before the tween was built rather than after** — the order the portal's "immersive is nearly
 free" claim did not get, and the reason that claim had to be retracted.
 
-⚠️ **The tween is still unbuilt.** §1.6 ships pinned at `t = 0.0`, so nothing yet pays the
-animating column *because of posture* — but the console already pays it on a window-resize
-drag, which is this section's actual finding.
+⚠️ **The tween is still unbuilt, and this measurement is why `organon console posture` snaps.**
+§1.6 opens at `t = 0.0` and the verb moves it in one step, so posture pays the animating column
+**once per command** and never per frame — the single-change row below, priced at exactly one
+frame. The console already pays the animating column on a window-resize drag, which is this
+section's actual finding.
 
 The one line: **egui's galley cache is keyed on the wrap width** (`epaint-0.33.3/src/text/fonts.rs:884`
 → `text_layout_types.rs:439`), so a width that moves by a whole point is a **total** miss across
@@ -2567,9 +2682,11 @@ path silently breaks the three-products-simultaneously guarantee that
   of `main` *before* a line moved, `nothing_is_wrapped_or_overridden_at_the_terminal_end`
   pins the two `None`s that make the no-change claim structural rather than arithmetical, and
   the midpoint and quarter tests stop a `Form::at` that ignored `t` from passing.
-  `cargo test -p organon-shell --lib` is **513 green** (500 on `main`, plus twelve in
-  `posture` and one in `theme`) and `cargo check --features shell-edition --bin
-  organon-console` is clean. **That is the whole claim: it compiles and the tests pass.** What
+  `cargo test -p organon-shell --lib` is **534 green** and `cargo check --features shell-edition
+  --bin organon-console` is clean. **That is the whole claim: it compiles and the tests pass.**
+  ⚠️ **#38 removed the excuse, not the gap**: `organon console posture desktop` moves the
+  scalar from a running console, so "nothing can reach `t > 0`" is no longer true and the
+  first honest test of the axis is one command away. What
   it does not establish: that `t = 0.0` really is pixel-identical — the wiring moved five card
   frames onto `Form`, threaded `&Form` through nine functions, added a closure around the
   scrollback's walk and now paints two things (the left rule, the ticks) that return before
@@ -2603,17 +2720,22 @@ path silently breaks the three-products-simultaneously guarantee that
   human off a real console — it is pinned by a test that asserts the known words appear in it,
   which is a different thing from anyone having seen it.
 
-- ⚠️ **No preferences file has ever been written on a real machine.** §1.5 is pinned by ten
-  headless tests against temp directories — round trip, missing file, malformed file, a
-  BOM'd file, an unknown key, a missing key, the atomic replace, the stranded-temp check,
-  first-run directory creation, and that the store root is literally
-  `SessionLog::store_root()`. `cargo test -p organon-shell --lib` is 490 green and `cargo
-  check --features shell-edition --bin organon-console` is clean. **That is the whole
-  claim: it compiles and the tests pass.** Nothing has written to a real
-  `%APPDATA%\OrganonShell\preferences.json`, no console has read one back at startup, and
-  no preference has survived an actual exit — because nothing calls this module yet. The
-  first honest test of the durable promise happens when the theme picker lands on top of
-  it; until then this is a writer with no writer.
+- ⚠️ **No preferences file has ever been written on a real machine — and #38 changed the
+  reason, not the fact.** §1.5 is pinned by ten headless tests against temp directories — round
+  trip, missing file, malformed file, a BOM'd file, an unknown key, a missing key, the atomic
+  replace, the stranded-temp check, first-run directory creation, and that the store root is
+  literally `SessionLog::store_root()`. `cargo test -p organon-shell --lib` is **534 green** and
+  `cargo check --features shell-edition --bin organon-console` is clean. **That is the whole
+  claim: it compiles and the tests pass.** What changed: this used to be "a writer with no
+  writer", because nothing called the module. `Shell::new` now calls `load_default()` at
+  startup and `Shell::set_theme` calls `save_default()`, so the caller exists — but it has
+  never run. Nothing has written a real `%APPDATA%\OrganonShell\preferences.json`, no console
+  has read one back, and no preference has survived an actual exit, because no console has been
+  opened on this code at all. ⚠️ **The first `organon console theme` anybody types is the first
+  honest test of the durable promise, and it exercises the whole chain at once** — store root
+  resolution on Windows, `create_dir_all`, the temp-then-rename, and the read on the *next*
+  launch. Read the console's stderr while doing it: a failed save says so there and nowhere
+  else.
 
 - ⚠️ **The theme extraction has not been seen on screen, and "the look did not change" is a
   claim about a test rather than about a window.** `theme_organon_is_the_look_that_shipped`
@@ -2624,16 +2746,19 @@ path silently breaks the three-products-simultaneously guarantee that
   prove the console still draws it in the same place: the extraction also moved four `&Theme`
   borrows through the draw path and rewrapped a dozen call sites, and only a running window
   can say the strip, the composer and the grid still look like themselves.
-- 🚨 **Nobody has ever seen `light`, `dark` or `chocolate`, and a palette that passes its hex
-  test can still look wrong.** These are ~150 colour values and two structural decisions, and
-  the entire claim is: `cargo test -p organon-shell --lib` is **508 green** (500 before, eight
-  new tests) and `cargo check --features shell-edition --bin organon-console` is clean. **It
-  compiles and the tests pass.** What that establishes is narrow and worth naming: every hex
-  James specified is on the field he specified it for, `organon` is byte-unchanged including
-  its chrome, names resolve and fall back, no scrim setting crosses any palette's floor, and
-  the chrome derivation moves no geometry. What it cannot establish is anything a palette is
-  *for*. No window has been opened on one — indeed nothing can open one, because nothing
-  selects a palette yet. Specifically unverified, in the order they are most likely to be
+- 🚨 **Nobody has ever seen `light`, `dark` or `chocolate` — but as of #38 somebody CAN, in one
+  command, and that is the change: the obstacle is no longer the code.** These are ~150 colour
+  values and two structural decisions, and the entire claim is still: `cargo test -p
+  organon-shell --lib` is **534 green** and `cargo check --features shell-edition --bin
+  organon-console` is clean. **It compiles and the tests pass.** What that establishes is narrow
+  and worth naming: every hex James specified is on the field he specified it for, `organon` is
+  byte-unchanged including its chrome, names resolve and fall back, no scrim setting crosses any
+  palette's floor, and the chrome derivation moves no geometry. What it cannot establish is
+  anything a palette is *for*. No window has been opened on one. ⚠️ **This entry said "indeed
+  nothing can open one, because nothing selects a palette yet" until the verbs landed** —
+  `organon console theme light` in a running console is now the whole procedure, and there is
+  no longer any excuse for this entry to still be here at the next revision. Specifically
+  unverified, in the order they are most likely to be
   wrong: whether `SCRIM_FLOOR_LIGHT = 192` actually leaves a legible page over a live
   backdrop (it is reasoned, not measured, and the reasoning is in the constant's doc);
   whether **dropping amber** leaves "a tool is running" distinguishable from prose at a glance

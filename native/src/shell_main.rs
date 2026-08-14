@@ -3717,7 +3717,10 @@ fn help_text() -> String {
          Environment:\n    \
              ORGANON_SHELL_BACKDROP=<src> behind the glyphs: 0/unset off, 1 the world,\n                                 \
              {substrate} the lit substrate plane\n    \
-             ORGANON_SHELL_SCRIM=<0..255> legibility scrim alpha (default {scrim_default}, floor {scrim_floor})\n    \
+             ORGANON_SHELL_SCRIM=<0..255> legibility scrim alpha (default {scrim_default}; the\n                                 \
+             floor is the PALETTE's — {scrim_floor} on a dark page, {scrim_floor_light} on {light_theme})\n    \
+             ORGANON_SHELL_THEME=<name>   palette for THIS launch only: {themes}\n                                 \
+             (overrides a stored choice, never writes one)\n    \
              ORGANON_SHELL_TABS=a,b,c     open these harness ids at start\n    \
              ORGANON_SHELL_DEFAULT=<id>   harness for the first tab (else Pi if installed)\n    \
              ORGANON_SHELL_CMD=<cmd>      one plain-command tab, for headless checks\n    \
@@ -3737,12 +3740,31 @@ fn help_text() -> String {
          \n\
          Inside a tab the `organon` CLI addresses this process — the namespace is inherited:\n    \
              organon console background <{backgrounds}>\n    \
-             organon console rig <{rigs}>\n\
+             organon console rig <{rigs}>\n    \
+             organon console theme <{themes}>       live, and stored as a preference\n    \
+             organon console posture <{postures}|0.0-1.0>  snaps; not remembered\n\
          \n\
          Docs: SHELL_ARCHITECTURE.md\n",
         substrate = BACKDROP_SUBSTRATE,
         scrim_default = term_view::SCRIM_DEFAULT,
         scrim_floor = term_view::SCRIM_FLOOR,
+        // ⚠️ The floor is the *palette's* since #38, so quoting one number would be a lie the
+        // moment `light` became selectable — which is exactly what the verb two lines below
+        // made possible. Both are quoted, and the light one names the palette it belongs to.
+        scrim_floor_light = term_view::SCRIM_FLOOR_LIGHT,
+        // Derived, not named: *which* palettes carry the light floor is a fact about
+        // `Theme::scrim_floor`, and a hardcoded "light" would go stale the day a fifth
+        // palette wants a light page.
+        light_theme = Theme::NAMES
+            .iter()
+            .filter(|n| {
+                Theme::by_name(n).is_some_and(|t| t.scrim_floor == term_view::SCRIM_FLOOR_LIGHT)
+            })
+            .copied()
+            .collect::<Vec<_>>()
+            .join("|"),
+        themes = Theme::NAMES.join("|"),
+        postures = organon_shell::posture::POSTURE_WORDS.join("|"),
         // Quoted from the tables the drain resolves against, never restated — the discipline
         // the scrim line already earned here, and the reason `--help` cannot advertise a
         // material this build cannot draw.
@@ -3807,6 +3829,11 @@ mod cli_tests {
     /// and silently falls back. This pins both halves: the byte scale in the notation, and
     /// the actual numbers. Change `SCRIM_DEFAULT`/`SCRIM_FLOOR` and the help follows; write a
     /// literal back into the help and this fails.
+    ///
+    /// ⚠️ **BOTH floors, since #38.** The floor became the palette's when `light` was added,
+    /// and quoting only `SCRIM_FLOOR` was true exactly as long as no palette could be
+    /// selected — `organon console theme light` ended that, so a single number in `--help`
+    /// would now be a confident lie about the console the reader is looking at.
     #[test]
     fn the_scrim_line_matches_the_code_it_documents() {
         let h = help_text();
@@ -3816,10 +3843,33 @@ mod cli_tests {
             h.contains(&format!("default {}", organon_shell::term_view::SCRIM_DEFAULT)),
             "help does not quote SCRIM_DEFAULT"
         );
-        assert!(
-            h.contains(&format!("floor {}", organon_shell::term_view::SCRIM_FLOOR)),
-            "help does not quote SCRIM_FLOOR"
-        );
+        for floor in
+            [organon_shell::term_view::SCRIM_FLOOR, organon_shell::term_view::SCRIM_FLOOR_LIGHT]
+        {
+            assert!(h.contains(&floor.to_string()), "help does not quote the floor {floor}");
+        }
+        // …and it names which palette the light floor belongs to, so the two numbers are
+        // usable rather than merely present.
+        assert!(h.contains("light"), "help does not say whose floor {} is",
+            organon_shell::term_view::SCRIM_FLOOR_LIGHT);
+    }
+
+    /// CONTRACT: **`--help` offers every palette and posture the console can actually
+    /// reach**, quoted from `Theme::NAMES` and `POSTURE_WORDS` rather than restated — the
+    /// discipline the background/rig lines already earned here, for its reason: a `--help`
+    /// that advertises a palette this build cannot paint is worse than one that lists none.
+    #[test]
+    fn the_help_offers_the_palettes_and_postures_that_exist() {
+        let h = help_text();
+        assert!(h.contains("organon console theme"), "the theme verb is unlisted");
+        assert!(h.contains("organon console posture"), "the posture verb is unlisted");
+        assert!(h.contains(theme::THEME_ENV), "the one-launch override is undocumented");
+        for name in Theme::NAMES {
+            assert!(h.contains(name), "`{name}` is a palette `--help` never mentions");
+        }
+        for word in organon_shell::posture::POSTURE_WORDS {
+            assert!(h.contains(word), "`{word}` is a posture `--help` never mentions");
+        }
     }
 
     /// The backdrop's value space, both halves: the new spelling reaches the substrate, and

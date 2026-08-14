@@ -11,6 +11,64 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### A palette and a posture a person can reach — `organon console theme` / `posture`
+
+The Console has shipped four palettes (`organon`, `light`, `dark`, `chocolate`) and a
+terminal↔desktop posture axis for a while, and **a human could select none of them**:
+`shell_main.rs` hardcoded `Theme::organon()` and `Posture::TERMINAL`, and the preferences
+file nothing had ever written was never read. Two verbs and a startup read close that.
+
+**`organon console theme <name>` repaints the running window and stores the choice.** Live
+is the requirement rather than a convenience: what is being judged is a wash of colour
+across a window full of real text, and that judgement is made by looking back and forth,
+which comparing four palettes across four relaunches destroys. The write goes to
+`preferences.json` — the first thing the Console has ever persisted on a person's behalf —
+so the next launch opens where you left it.
+
+**`organon console posture <terminal|desktop|0.0-1.0>` snaps.** The axis is a scalar and
+every form token lerps along it, so a bare `0.5` is a real console rather than a rounding of
+one end. ⚠️ There is no animation, deliberately: a tween moves the transcript's wrap width
+continuously, and `doc/console_rewrap_measurement.md` prices one such width change at
+~7.6 ms at 400 elements with five options and no decision taken. A snap pays that once, in a
+frame nobody reads as a jump. ⚠️ The posture is **not** remembered — a palette is what the
+console is made of, a posture (at this tier, undrawn on any real screen) is a view you take
+to look at something, and closing the window is a free undo worth keeping.
+
+**Startup precedence: `ORGANON_SHELL_THEME` → `preferences.json` → `organon`.** 📌 That
+first rung **amends a recorded decision**. `SHELL_ARCHITECTURE.md` §1.5 said no environment
+variable may override a stored preference, and its reasoning — a variable baked into a
+launch shim wins *silently*, which is the evaporation the preferences file exists to end —
+still stands. It was taken when nothing could select a theme at all, and it named its own
+escape hatch: a one-launch override "belongs in a CLI flag that can say so in the console's
+own output". `organon-console` has no flags; it is launched by shims, and an environment
+variable *is* its argument surface. So the objection is answered directly instead: the
+override **announces itself every launch**, naming the variable, the palette and the stored
+palette it stands in front of, and it **never writes** — unset it and the stored choice is
+back. A loan, not a takeover. §1.5 carries the amendment.
+
+⚠️ **An unknown name is refused out loud and never approximated**, at both ends: `bin/ctl.rs`
+builds its `--help` list and its clap gate from `Theme::NAMES` itself, and the console
+resolves again on arrival for a line hand-written onto the sidecar. At startup an unknown
+name **falls through to the next source** rather than resetting to `organon`, so a typo in a
+shim cannot silently discard a stored choice.
+
+⚠️ **Both verbs are routed before `console_step`**, beside `block`/`patch`/`portal`/`camera`.
+Everything after that point reaches `record_look_change`, which snapshots the backdrop into
+the Tier-4 epoch ledger — and a palette is not a substrate look. Neither verb writes
+`backdrop_source` or changes a pixel behind the glyphs, so banding the transcript for one
+would record a change that did not happen.
+
+`console.theme` and `console.posture` join the dispatch catalog, and `--help` now lists both
+verbs, `ORGANON_SHELL_THEME`, and **both** scrim floors — quoting one was true exactly as
+long as no palette could be selected.
+
+🚨 **Still nobody has seen `light`, `dark`, `chocolate` or any `t > 0`.** This removes the
+obstacle, not the gap: `cargo test -p organon-shell --lib` is 534 green and the two
+`shell-edition` checks are clean, which is a claim about tests and not about a window. The
+first `organon console theme light` anybody types is also the first real exercise of the
+preferences file — store-root resolution, `create_dir_all`, temp-then-rename, and the read
+back at the next launch. A failed save says so on the console's own stderr and nowhere else.
+
 ### The three enums standing between `world.rs` and a Console that isn't a plugin binary
 
 `GeneratorMode`, `BoidsForm` and `OscDivision` move to `organon-core::params`, joining
