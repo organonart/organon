@@ -3043,6 +3043,159 @@ built from the **same word tables** (`substrate_materials::MATERIAL_NAMES`, `cli
 cannot drift and the *verb list* still can. Generating clap from `CommandSpec` is the remaining
 quarter of "one vocabulary" and is not done.
 
+### 1.9 The command panel — see your choices while you type, and see what happened after
+
+**The precedent is NeoVim's `which-key`**: press a prefix, a panel shows every valid
+continuation *with its description*; press another key and it narrows. It is fast because it
+never asks you to remember — it shows you, and once you know, the showing costs nothing
+because you are already past it. James's own framing, 2026-08-14: *"when I type slash, I want
+to see something pop up… a pop-up full-width display that lists all my choices."*
+
+`/` shows every verb. `/s` leaves `surface`, so the line reads `/surface` and Enter runs it.
+`/c` leaves `camera` and `camera.read` — type the next letter to narrow. `/theme ` shows the
+palettes, and `/theme ch` leaves `chocolate`. **Values complete exactly like verbs**, which is
+what makes the surface feel finished, and it is free: an `ArgKind::Choice` already *is* the
+list, built from `Theme::NAMES` and `substrate_materials`' tables rather than restated.
+
+#### The candidate model, and the three renderers of it
+
+`registry.rs::Registry::candidates(line) -> Option<Palette>` is a **pure function returning
+structured values** — no egui, no formatted rows, testable headless. A `Candidate` is:
+
+| Field | What it is |
+|---|---|
+| `label` | the word — `theme`, `chocolate`, `distance` |
+| `doc` | one line, off the table. Empty for a `Choice` option, which stands for itself |
+| `completion` | 🚨 **the whole composer line accepting it would produce**, never the fragment |
+| `kind` | `Verb { group, lane }` / `Keyword` / `Value` |
+| `completes` | whether that line is a complete, valid command — asked of `resolve`, so it cannot drift from what Enter does |
+
+🚨 **`completion` being the whole line is what makes one generator serve every renderer.**
+Accepting is `line = candidate.completion`; asking `candidates` again with it yields the next
+ring. That two-step loop is the entirety of what a renderer implements, and it is the same
+loop whether the accept came from Tab, from a wedge, or from a click.
+
+**Three surfaces draw this list and there is one generator**: the panel above the composer;
+the **pie menu**, whose three rings are `groups()` → `verbs_in()` → an argument's `Choice`
+(§2, still unbuilt); and `/help`. A renderer that needed its own generator would be a second
+vocabulary, which is the failure §1.8 exists to prevent, reached from the other end.
+
+The `Palette` around them carries `slot` — which word is being narrowed — `typed`,
+`candidates`, and `runnable` (the line **as it stands** already resolves). ⚠️ `Slot::Value`
+carries the whole `ArgSpec`, not a list of options, because the arguments with *no* closed
+value space are precisely the ones a renderer must treat differently: `Float` is a dial with
+its band already stated, `Int` and `Text` need a typed field. `Palette::hint()` is the
+sentence for a human; the `ArgKind` on the slot is the fact for anything else.
+
+#### Prefix, not fuzzy
+
+Matching is a **case-insensitive prefix**, in table order. Subsequence matching (`/pst` →
+`posture`) is faster on a long list, and this list is nine verbs long, so that speed is not on
+offer. What it would buy instead is the ability for a line that reads like a typo to match a
+distant verb — and with auto-execute available, a surprising *match* becomes a surprising
+*action*. Prefix is also what makes "press another key and it narrows" literally true, which
+is the property being copied. **Fuzzy is not reachable and is not built**; `registry::narrows`
+is the one function that would have to change.
+
+#### Tab completes, Enter runs, and they are never the same key
+
+The composer is also where a human talks to the agent, so the send key must mean one thing
+always. **Tab accepts** the highlighted candidate and cannot send anything at all; **Enter
+submits the line as it stands** and never accepts.
+
+⚠️ **Enter with exactly one candidate left is deliberately not an accept.** `/theme` names one
+verb and is *not* runnable, so an Enter that accepted would have to either run an incomplete
+command or silently rewrite the line and wait for a second Enter — one key doing two different
+things one keystroke apart. Instead Enter reaches `Registry::resolve`, which refuses it by
+name (*"`/theme` needs `name`"*) and **does not clear the composer**, so the words are still
+there and Tab is one key away. That is §1.8's rule unchanged, and it is what makes "Enter
+never accepts" affordable.
+
+Arrows move the highlight, wrapping; Escape shuts the panel until the line changes.
+
+🚨 **`lock_focus(true)` on the composer is load-bearing, not a preference.** egui's focus
+manager reads Tab out of the **raw input** in `Focus::begin_pass`, before any console code
+runs, so consuming the event is too late to stop focus leaving for whatever button the
+scrollback drew — and the keystrokes after it would go somewhere invisible. `lock_focus` sets
+`EventFilter::tab`, which is the flag that pass tests. ⚠️ Visible consequence when the panel
+is shut: Tab indents the message instead of moving focus, which is what a text box does
+everywhere else.
+
+⚠️ **Escape's hazard is real here but it is NOT the terminal's.** In a terminal tab Escape
+belongs to the child (`vim` needs it) and must be consumed before `term_view` clones the event
+vector; the conversation front-end has no child reading keys, so that hazard does not apply.
+A different one does, one layer down: the same `begin_pass` **drops the focused widget** on
+Escape, and `TextEdit` exposes no setter for `EventFilter::escape`. So Escape cannot be
+prevented from blurring the composer — it is *repaired*, by re-requesting focus in the frame
+the panel is dismissed. One frame passes with nothing focused, during which no keystroke can
+arrive. All four keys are matched with `matches_exact`, never `matches_logically`, for the
+shift-permissive reason `composer_key` already documents.
+
+#### Auto-execute, and the guard on it
+
+James asked for it: *"it will just execute the thing as soon as it knows what we want."*
+🚨 **What makes it safe is that "knows what we want" is a provable state, not a guess:**
+`Palette::autorun` fires only when **exactly one candidate remains and that candidate
+completes the command**. `/s` leaves `surface`, which takes nothing, so there is nothing else
+the line could have meant. `/t` leaves `theme`, which still needs a value — so it does **not**
+fire, because firing there would run a command while the hand is still typing its argument.
+That case is pinned by test in both `registry.rs` and `conversation_view.rs`.
+
+**Off by default.** `ORGANON_PALETTE_AUTORUN=1` switches it on for a session, read once at
+tab construction rather than per frame.
+
+#### The panel only exists for a command line
+
+🚨 **A panel that appeared while prose was being typed would be intolerable**, so the test is
+`Registry::resolve`'s own and no other: the line must begin with `/`, and `//` is an escape
+meaning the line is a message. A sentence *mentioning* a command has words in front of the
+slash and answers `None`. ⚠️ A bare `/` answers `Some` with the whole table even though
+`resolve` calls it a message — those are not in conflict: showing the choices is what `/` is
+*for*, and nothing runs until the line is a command.
+
+⚠️ **The list is capped at eight rows with a count of the remainder, rather than scrolled.**
+`console.background` offers more materials than fit, so it genuinely overflows — but a
+vertical `ScrollArea` dropped into this bottom-up column takes the whole pane (684 pt of a
+684 pt pane, measured; see §1.1's composer). "Type another letter to narrow" is also the
+faster route to the one you want.
+
+#### The same region is where a command answers
+
+🚨 **The defect this closes.** A slash command's receipt goes to the pane's log, and the log
+is drawn at the **head** of the scrollback — so in any conversation longer than a screen the
+confirmation lands far above the live edge and is, in practice, invisible. James typed
+`/posture desktop` on 2026-08-14, the console obeyed, and nothing he could see said so. §1.8
+recorded that as a limitation on the grounds that the transcript has no "the console said
+this" element and inventing one is a change to the conversation model. **The panel needs no
+such element**: it is already full-width, already appears and disappears with the command
+line, and is already where the eye is.
+
+- ⚠️ **A receipt and a candidate list share one region and mean opposite things** — "here is
+  what happened" against "here is what you may do" — so they are distinguished
+  **structurally**: a receipt is a single band with a coloured word marker (`ok` / `refused`);
+  candidates are a headed list with `>` on the highlighted row. Only ever one of the two.
+- 🚨 **A refusal outlives a success**, which is `card_density`'s asymmetry one layer out: a
+  confirmation nobody reads cost nothing, because the command ran; a refusal nobody reads
+  cost the command *and* the knowledge that it did not happen. So a success ages out after
+  eight seconds and a refusal never does. Both go the moment the line is edited, which is the
+  honest signal that the human has moved on — and it is what hands the region back to the
+  candidates. `receipt_holds` is that rule as a pure function.
+- `registry::Receipt { ok, text }` is the structured value; `registry::receipt` formats the
+  log's line **from it**, so the band and the log cannot come to disagree about what happened.
+  The marker is a word rather than a glyph because `✓`/`✗` are in none of egui's four fonts.
+
+⚠️ **`/help` is now the third-best way to find a verb**, behind typing `/` and behind the pie
+menu that will read the same table. Its body still lands at the head of the scrollback, which
+is the limitation §1.8 named; this tier routes around it for *receipts* rather than fixing it
+for *output*, because a twenty-line help text in a band above the composer is a different
+thing from a one-line answer.
+
+⚠️ **ASCII throughout the panel**, deliberately. The obvious characters — `▸`/`▾` for the
+highlight, `…` for a `Float`'s band — are in none of egui's bundled fonts and would ship as
+boxes, which is exactly how `✓`/`✗` reached a third draw site. The glyph allowlist test in
+`conversation_view` now walks every string the panel can draw, **including the ones derived
+from a schema**, since a range or an option list is where a stray glyph would hide.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -3066,6 +3219,25 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **Nobody has seen the command panel, so whether it *feels* fast is unverified — and
+  "fast" is the entire claim being made for it.** Everything §1.9 asserts is a claim about
+  code: `cargo test -p organon-console --lib` is **604 green** (583 before, plus eleven in
+  `registry` and ten in `conversation_view`), `cargo check --features console-edition --bin
+  organon-console` is clean, and `cargo check --tests -p organic-math-native --features
+  console-edition` is clean. **That is the whole claim: it compiles and the tests pass.** What
+  it does not establish, in order of how much it matters: (1) that a panel appearing on the
+  first `/` reads as *help* rather than as an interruption — which-key is fast because the
+  panel is glanced at and then outrun, and whether this one can be outrun is a question about
+  a running window; (2) that the region above the composer is the right place for it at all,
+  since it pushes the scrollback up by a band whose height changes with the list, and a
+  transcript that jumps every time a letter narrows the list would be worse than no panel;
+  (3) that eight rows is the right cap — `console.background` overflows it and nobody has seen
+  what "+N more" looks like against a real material table; (4) that the `>` marker and colour
+  are enough to tell the highlighted row from the others without a painted highlight, which
+  was chosen to avoid a second way for a band's height to be wrong. ⚠️ **Auto-execute has
+  never been used by a human.** The guard is pinned by test in two places and the switch is
+  off, but "a command fires as you type" is a feeling as much as a rule, and the first honest
+  test of it is James setting `ORGANON_PALETTE_AUTORUN=1` and typing `/s`.
 - 🚨 **Nobody has seen a collapsed transcript, so whether it actually *reads* better is
   unverified — and that is the entire point of the change.** Card density was designed against
   a screenshot and a sentence, and everything claimed for it here is a claim about code:

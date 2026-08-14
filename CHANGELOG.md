@@ -49,6 +49,47 @@ collecting — so CI named `console.theme` and said nothing whatever about
 `console.posture` until that one was fixed. Anyone acting on this check has to re-run
 until it is silent instead of trusting the single name it offered; the test now says so
 where the arm is.
+### A command palette above the composer — see your choices while you type
+
+`/` now opens a full-width panel listing every verb with its description; a keystroke narrows
+it, Tab completes the highlighted one, and values complete the same way, so `/theme ch` leaves
+`chocolate`. The precedent is NeoVim's `which-key`, and the point is the same: never ask
+anyone to remember a hierarchy you could simply show them.
+
+🚨 **Candidate generation is a pure function returning structured values**
+(`Registry::candidates` → `Palette` of `Candidate`), with no egui and no formatted rows,
+because **three surfaces draw one list**: this panel, the pie menu (whose three rings are
+`groups()` → `verbs_in()` → an argument's `Choice`), and `/help`. A `Candidate` carries the
+**whole line** accepting it would produce, so accepting is `line = completion` and asking
+again yields the next ring — the entire loop a renderer implements. Nothing restates a
+vocabulary: the options are `Theme::NAMES` and `substrate_materials`' own tables, and a
+`Float` argument hands over its band instead of a list.
+
+📌 **Tab completes, Enter runs, and they are never the same key.** The composer is also where
+a human talks to the agent, so the send key means one thing always. Enter with one candidate
+left is deliberately *not* an accept: `/theme` is unique and still incomplete, and one key
+that either runs an incomplete command or silently rewrites the line is worse than a refusal
+that names what is missing and leaves the words in the box.
+
+🚨 **Auto-execute exists and is off** (`ORGANON_PALETTE_AUTORUN=1`). It fires only when
+exactly one candidate remains **and** that candidate completes the command — so `/s` runs
+`surface`, and `/t` does not run `theme`, because a command firing while the hand is still
+typing its argument is the failure the guard is for.
+
+⚠️ **The panel only exists for a line that is a command** — `Registry::resolve`'s own test,
+so a sentence mentioning `/surface` still reaches the agent and `//` still escapes. A refused
+command still does not clear the composer.
+
+🚨 **The same region is where a command answers.** A slash command's receipt went to the pane
+log, which draws at the head of the scrollback — invisible in any conversation longer than a
+screen, which is how `/posture desktop` came to look like it had failed. The band now shows
+it where it was typed, structurally distinct from a candidate list, and **a refusal outlives a
+success**: success ages out, a refusal holds until the line is edited.
+
+⚠️ `lock_focus(true)` on the composer is what makes Tab available at all — egui's focus
+manager reads Tab out of the raw input before any console code runs — and Escape *blurs* the
+composer for the same reason, so the panel re-requests focus rather than pretending it can
+stop it.
 
 ### The last six params between `world.rs` and the plugin crate
 
