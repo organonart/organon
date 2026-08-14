@@ -274,7 +274,15 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # ⚠️ The DEFAULT branch, not the dispatched ref. The research job runs against
+      # whatever branch you dispatched, and checking that out here would branch the report
+      # off it — a PR stacked on another PR, which CLAUDE.md's invariant 5 forbids because
+      # a stacked PR can report "merged" and never reach the main line. It has happened
+      # twice in this repository. A report is an independent change and branches off main
+      # like one; the commit it describes is recorded in its front matter, not in its base.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -296,17 +304,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if git diff --quiet -- doc/research/reports/; then
-            echo "::notice::no new report to file"; exit 0
+          # `git status --porcelain`, NOT `git diff --quiet`. A freshly downloaded report is
+          # an UNTRACKED file, and `git diff` does not see untracked files — so the diff
+          # spelling reported "nothing to file", exited 0, and the job went green having
+          # published nothing. That is the worst shape a bug can take here: the run passes,
+          # the report exists in the artifact, and no one is told it never landed.
+          if [ -z "$(git status --porcelain -- doc/research/reports/)" ]; then
+            echo "::warning::no new report to file — the research job produced nothing new"
+            exit 0
           fi
+          REPORT=$(ls -1 doc/research/reports/*.md | grep -v 'README.md' | head -1)
           BRANCH="research/report-${GITHUB_RUN_ID}"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add doc/research/reports/
-          git commit -m "Research report: $(ls -1 doc/research/reports/*.md | head -1 | xargs basename)
-
-          Filed by the Research dispatch workflow. status: unreviewed — the claims are
+          git commit \
+            -m "Research report: $(basename "$REPORT")" \
+            -m "Filed by the Research dispatch workflow. status: unreviewed — the claims are
           checkable, not checked. Adjudicate them into doc/research/FINDINGS.md before
           anything cites this report."
           git push -u origin "$BRANCH"
