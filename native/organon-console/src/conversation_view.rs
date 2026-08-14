@@ -56,6 +56,7 @@ use crate::posture::Form;
 use crate::registry;
 use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::theme::Theme;
+use crate::theme_edit::{self, EditKey, ThemeChange, ThemeEditor};
 use crate::timeline::pinned_after_scroll;
 
 /// The re-wrap measurement — what a width change costs this file, per frame.
@@ -161,6 +162,15 @@ pub struct SurfaceRequest {
 pub struct ConversationOutput {
     /// The **visible** surfaces this frame, in transcript order.
     pub surfaces: Vec<SurfaceRequest>,
+    /// A palette the live editor changed this frame, and what to do with the store.
+    ///
+    /// 🚨 **`Some` only on the frames something actually moved.** This crate is handed
+    /// `&Theme` and cannot assign it — the one owner is `console_main`'s `Console`, which is
+    /// [`crate::theme`]'s "one owner, no globals" rule — so an edit has to leave the drawing
+    /// code as a value. Answering `Some` unconditionally would make `console_main` re-derive
+    /// and re-upload egui's whole chrome every frame, because `Visuals` is held on the context
+    /// rather than read per frame.
+    pub theme: Option<ThemeChange>,
 }
 
 /// The pictures the console has ready, by element. Absent is normal, not an error: a surface
@@ -568,6 +578,16 @@ pub struct ConversationPane {
     /// Off unless `ORGANON_PALETTE_AUTORUN=1`; the rule it obeys is
     /// [`Palette::autorun`]'s and lives there, not here.
     autorun: bool,
+    /// The live palette editor, when `/theme edit` has opened one. See [`crate::theme_edit`].
+    ///
+    /// ⚠️ **Per tab, and the palette it edits is not.** A `Theme` is console-wide, so two tabs
+    /// with editors open are two views of one palette — which is fine and is what a hand would
+    /// expect, because each tab's editor reads the live palette every frame and only *holds*
+    /// the in-flight HSV of fields being dragged in that tab. What it must not do is outlive
+    /// the palette it was opened against: [`ConversationPane::theme_editor_ui`] closes it if
+    /// the palette changes underneath it, which is what `/theme chocolate` typed while an
+    /// editor is open does.
+    theme_edit: Option<ThemeEditor>,
 }
 
 /// A command's answer, shown where the command was typed.
@@ -738,6 +758,7 @@ impl ConversationPane {
             palette_selected: 0,
             palette_dismissed: None,
             receipt: None,
+            theme_edit: None,
             // Read once, here, rather than per frame: it is a switch for a session, and an
             // env lookup inside the draw path would be a syscall per keystroke.
             autorun: std::env::var("ORGANON_PALETTE_AUTORUN").is_ok_and(|v| v == "1"),
@@ -1199,7 +1220,7 @@ impl ConversationPane {
     /// ⚠️ **A refusal does not clear the composer**, and every other outcome does. The words
     /// stay where a hand can fix them, which is what makes refusing an unknown slash command
     /// strictly better than the forwarding it replaced: nothing a person typed can vanish.
-    fn submit(&mut self) {
+    fn submit(&mut self, theme: &Theme, theme_name: &str) {
         let text = self.composer.trim().to_string();
         if text.is_empty() {
             return;
@@ -1218,7 +1239,7 @@ impl ConversationPane {
                 return;
             }
             Resolved::Run { lane, name, args } => {
-                let receipt = self.run_command(lane, &name, &text, args);
+                let receipt = self.run_command(lane, &name, &text, args, theme, theme_name);
                 self.composer.clear();
                 // After the clear, so `answered` is the emptied box the success is about.
                 self.answer(receipt);
@@ -1249,6 +1270,8 @@ impl ConversationPane {
         name: &str,
         typed: &str,
         args: serde_json::Value,
+        theme: &Theme,
+        theme_name: &str,
     ) -> Receipt {
         match lane {
             Lane::View => match name {
@@ -1275,6 +1298,21 @@ impl ConversationPane {
                 }
             },
             Lane::Console => {
+                // 🚨 **Two of `/theme`'s argument values open a surface here instead of
+                // dispatching**, and this is the one place a console-lane verb is answered
+                // locally. It is not a lane violation so much as the lane's own edge: the
+                // palette really is console-wide state (which is why the *edits* leave on
+                // `ConversationOutput` for `console_main` to own), but the editor is a panel in
+                // this transcript, drawn in this pane's band, and there is nothing on the
+                // sidecar for a dispatch to reach that could draw it. Every other value of
+                // every other console verb falls straight through to the dispatch below.
+                if name == registry::VERB_THEME {
+                    if let Some(word) = args.get(registry::THEME_ARG).and_then(|v| v.as_str()) {
+                        if theme_edit::is_edit_word(word) {
+                            return self.open_editor_receipt(typed, theme, theme_name);
+                        }
+                    }
+                }
                 // The call first, so the borrow of `local` has ended before `note` takes the
                 // whole pane.
                 let result = self.local.call(name, args);
@@ -1291,6 +1329,83 @@ impl ConversationPane {
     /// outcomes their different lifetimes without either of them knowing about the other.
     fn answer(&mut self, receipt: Receipt) {
         self.receipt = Some(PanelReceipt { receipt, answered: self.composer.clone(), since: None });
+    }
+
+    /// Open the editor and answer the line that asked for it.
+    ///
+    /// ⚠️ The receipt is written but will not be *seen*: `command_panel` gives the band to the
+    /// editor, which is the surface the receipt would have been announcing. It still goes to
+    /// the pane's log, and it is still what `Resolved::Run`'s contract requires, so the two
+    /// halves of §1.9's receipt rule stay true even where one of them is invisible. The keys
+    /// are named on the editor's own last row instead, which is where a hand is looking.
+    fn open_editor_receipt(&mut self, typed: &str, theme: &Theme, name: &str) -> Receipt {
+        self.open_theme_editor(theme, name, None);
+        let text = format!("{typed} - editing `{name}` live; nothing is stored until you save");
+        self.note(text.clone());
+        Receipt { ok: true, text }
+    }
+
+    /// Open the live palette editor on the palette being painted, optionally on one field.
+    ///
+    /// ⚠️ `focus` has **no command form yet** and is always `None` from the slash surface.
+    /// `/theme`'s schema carries one argument, so `/theme edit human_text` is not a line the
+    /// registry can produce; the parameter exists because landing on a named colour is a
+    /// one-line change the moment a second argument is worth adding, and because the editor's
+    /// tests need it. It is not dead code pretending to be a feature — nothing claims the
+    /// command exists.
+    ///
+    /// The name is asked of [`Theme`] rather than handed in, because this crate is given the
+    /// palette's *values* and not its label — and filing an override under the wrong name is
+    /// the one mistake that would apply a light-theme correction to a dark palette. An
+    /// unrecognised palette (one carrying overrides already, so not equal to any compiled one)
+    /// falls back to the stored name, which is what `console_main` passes down.
+    fn open_theme_editor(&mut self, theme: &Theme, name: &str, focus: Option<&str>) {
+        self.theme_edit = Some(ThemeEditor::open(theme, name, focus));
+    }
+
+    /// Draw the editor and report what it changed, closing it on Escape.
+    ///
+    /// 🚨 **The editor closes itself if the palette changes underneath it.** `console_main`
+    /// owns the one `Theme`, and `/theme chocolate` — or the CLI, or an agent's tool call —
+    /// can repaint while an editor is open on `light`. Its held HSV would then describe
+    /// colours that are no longer there, and the next drag would snap a chocolate field to a
+    /// light hue. Comparing the incoming palette against what the editor last painted is one
+    /// `PartialEq` on a struct of sixty-eight colours per frame, which is nothing, and it is
+    /// the only signal available: this crate is not told when the palette is reassigned.
+    fn theme_editor_ui(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<ThemeChange> {
+        let editor = self.theme_edit.as_mut()?;
+        if editor.working() != theme {
+            // Not ours. Somebody else repainted; the session is over and the palette on screen
+            // is the truth.
+            self.theme_edit = None;
+            self.note(
+                "the palette changed while the theme editor was open, so the editor closed — \
+                 `/theme edit` reopens it on the new one"
+                    .to_string(),
+            );
+            return None;
+        }
+        let rows = editor.band_rows();
+        let row = ui
+            .text_style_height(&egui::TextStyle::Body)
+            .max(ui.text_style_height(&egui::TextStyle::Monospace));
+        let spacing = ui.spacing().item_spacing.y;
+        // The same arithmetic `candidate_panel` uses, for `plate`'s reserved-not-discovered
+        // reason. A `DragValue` is taller than a label, so the row metric is floored at the
+        // interact size or the last row would be clipped by its own widgets.
+        let row = row.max(ui.spacing().interact_size.y);
+        let band = rows as f32 * row
+            + (rows.saturating_sub(1)) as f32 * spacing
+            + 2.0 * PALETTE_PAD_Y as f32
+            + 2.0 * PALETTE_STROKE;
+
+        let mut change = None;
+        plate(ui, band, theme, |ui| {
+            if let Some(editor) = self.theme_edit.as_mut() {
+                change = editor.ui(ui, theme);
+            }
+        });
+        change
     }
 
     /// What the panel above the composer would offer for the line as it stands, or `None`
@@ -1346,11 +1461,17 @@ impl ConversationPane {
 /// where a one-line band with a rule under it reads as a divider rather than as the thing it
 /// is. [`status_strip`] belongs with the composer, at the bottom, which is where Claude
 /// Desktop puts the model affordance and where a hand looking for it goes.
+/// `theme_name` is the palette's canonical name, handed down because this crate is given the
+/// palette's *values* and cannot recover its label — once a stored override has been laid over
+/// it, the live palette equals none of the compiled ones. The live editor files what it saves
+/// under this name, and filing under the wrong one would apply a light-theme correction to a
+/// dark palette.
 pub fn draw(
     ui: &mut egui::Ui,
     pane: &mut ConversationPane,
     images: &SurfaceImages,
     theme: &Theme,
+    theme_name: &str,
     form: &Form,
 ) -> ConversationOutput {
     let mut out = ConversationOutput::default();
@@ -1361,12 +1482,12 @@ pub fn draw(
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         status_strip(ui, pane, theme);
         ui.add_space(4.0);
-        composer(ui, pane, theme);
+        composer(ui, pane, theme, theme_name);
         // Above the composer, and drawn AFTER it: the composer's own keys may have completed
         // the line this frame, and the panel must show the ring that completion opened rather
         // than the one it closed. In a bottom-up column later means higher.
         ui.add_space(4.0);
-        command_panel(ui, pane, theme, form);
+        out.theme = command_panel(ui, pane, theme, form);
         ui.add_space(4.0);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -1729,7 +1850,9 @@ fn scrollback(
     // And once more for the density map, so a card the cap evicted takes its collapsed state
     // and any group it anchored with it.
     density_map.retain(|id| transcript.get(id).is_some());
-    ConversationOutput { surfaces: join_drives(laid_out, drives) }
+    // The scrollback cannot change the palette — only the editor above the composer can, and
+    // `draw` assigns that field from `command_panel`'s answer.
+    ConversationOutput { surfaces: join_drives(laid_out, drives), theme: None }
 }
 
 /// Fold each driving panel's state into the surface it names.
@@ -4058,7 +4181,20 @@ const PALETTE_KEYS: &str = "Tab completes - Enter runs";
 ///
 /// The receipt wins while it holds ([`receipt_holds`]), because it is about a line that has
 /// already been sent and the candidates are about a line that has not.
-fn command_panel(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, form: &Form) {
+fn command_panel(
+    ui: &mut egui::Ui,
+    pane: &mut ConversationPane,
+    theme: &Theme,
+    form: &Form,
+) -> Option<ThemeChange> {
+    // 🚨 **The editor wins the band outright while it is open**, ahead of both a receipt and
+    // the candidate list. Those two answer a line — one being typed, one just sent — and are
+    // gone within seconds; the editor is a surface a hand is *working in*, and one that
+    // vanished because a keystroke reached the composer underneath would be unusable. It is
+    // also the only one of the three a person explicitly opened and can explicitly close.
+    if pane.theme_edit.is_some() {
+        return pane.theme_editor_ui(ui, theme);
+    }
     let now = ui.input(|i| i.time);
     if let Some(held) = pane.receipt.as_mut() {
         // Stamped on the first frame it is drawn, not when it was made: a receipt must not
@@ -4067,16 +4203,17 @@ fn command_panel(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, 
         if receipt_holds(held.receipt.ok, &held.answered, &pane.composer, now - since) {
             let receipt = held.receipt.clone();
             receipt_band(ui, &receipt, theme, form);
-            return;
+            return None;
         }
         pane.receipt = None;
     }
-    let Some(palette) = pane.palette() else { return };
+    let Some(palette) = pane.palette() else { return None };
     // Clamped rather than kept in step: the list is rebuilt from the line on every keystroke,
     // so an index from the previous list is the one thing that can be out of range.
     let selected = pane.palette_selected.min(palette.candidates.len().saturating_sub(1));
     pane.palette_selected = selected;
     candidate_panel(ui, &pane.registry, &palette, selected, theme, form);
+    None
 }
 
 /// One command's answer, in the place the command was typed.
@@ -4308,14 +4445,23 @@ const COMPOSER_STROKE: f32 = 1.0;
 const COMPOSER_HINT: &str = "message the agent — Enter sends, Shift+Enter for a new line";
 const COMPOSER_HINT_DEAD: &str = "the agent is not running";
 
-fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
+fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme_name: &str) {
     let live = pane.failure.is_none();
     // 🚨 **Before the widget, necessarily.** egui hands each widget a *clone* of the event
     // list taken when the widget runs, so an event removed here is an event the `TextEdit`
     // never sees — and an event removed *after* it has already been acted on. Tab, the
     // arrows and Escape all have meanings inside a text box, and the panel may only take
     // them while it is open.
-    let took = live.then(|| palette_keys(ui, pane)).flatten();
+    // 🚨 **The editor is asked first, and it answers instead of the panel rather than as well
+    // as it.** Both want Tab, the arrows and Escape, and only one of the two is ever on screen
+    // — `command_panel` gives the band to the editor outright — so letting both read the same
+    // frame's keys would move a highlight nobody can see.
+    let took = if pane.theme_edit.is_some() {
+        theme_edit_keys(ui, pane);
+        None
+    } else {
+        live.then(|| palette_keys(ui, pane)).flatten()
+    };
     // Three disjoint fields, borrowed separately, so the box can own the text while
     // `submit` still needs the whole pane afterwards.
     let submit = composer_box(
@@ -4328,11 +4474,11 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
         theme,
     );
     if submit {
-        pane.submit();
+        pane.submit(theme, theme_name);
         return;
     }
     // Last, so it sees the line *after* this frame's typing as well as after a Tab.
-    palette_autorun(pane);
+    palette_autorun(pane, theme, theme_name);
 }
 
 /// What a frame's palette keys did to the line, when they did anything.
@@ -4340,6 +4486,45 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
 enum Took {
     /// The line was replaced by a completion, so the caret has to be put back at its end.
     Line,
+}
+
+/// Read this frame's keys on the **editor's** behalf, consuming exactly the ones it acts on.
+///
+/// ⚠️ **State-conditional in the same way [`palette_keys`] is**, and for the same reason: an
+/// editor is only open because somebody typed `/theme edit`, so nothing is taken from a hand
+/// that has not opened one. ⚠️ It claims **no printing key and not Enter** — see
+/// [`crate::theme_edit::edit_key`] — because the composer is still live underneath and a
+/// message must remain sendable without closing the editor first.
+fn theme_edit_keys(ui: &egui::Ui, pane: &mut ConversationPane) {
+    if pane.theme_edit.is_none() {
+        return;
+    }
+    let acts: Vec<EditKey> = ui.input_mut(|i| {
+        let mut acts = Vec::new();
+        i.events.retain(|event| {
+            let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
+                return true;
+            };
+            match theme_edit::edit_key(*key, *modifiers) {
+                EditKey::Ignore => true,
+                act => {
+                    acts.push(act);
+                    false
+                }
+            }
+        });
+        acts
+    });
+    for act in acts {
+        let Some(editor) = pane.theme_edit.as_mut() else { return };
+        if !editor.key(act) {
+            pane.theme_edit = None;
+            // egui's focus manager already dropped the composer on Escape, before any of this
+            // ran — `palette_key`'s note, and the same repair.
+            pane.want_focus = true;
+            return;
+        }
+    }
 }
 
 /// Read this frame's keys on the panel's behalf, consuming exactly the ones it acts on.
@@ -4400,12 +4585,12 @@ fn palette_keys(ui: &egui::Ui, pane: &mut ConversationPane) -> Option<Took> {
 /// wiring between them. It runs **after** the panel keys, so a Tab that completed the line to
 /// its last word fires on the same frame — which is what "as soon as it knows what we want"
 /// has to mean to be worth having.
-fn palette_autorun(pane: &mut ConversationPane) {
+fn palette_autorun(pane: &mut ConversationPane, theme: &Theme, theme_name: &str) {
     let Some(palette) = pane.palette() else { return };
     let Some(candidate) = palette.autorun(pane.autorun) else { return };
     let candidate = candidate.clone();
     pane.accept(&candidate);
-    pane.submit();
+    pane.submit(theme, theme_name);
 }
 
 /// Draw the composer and report whether this frame asked for it to be sent.
@@ -6872,6 +7057,13 @@ mod tests {
         check("a receipt's marker", "ok");
         check("a receipt's marker", "refused");
 
+        // The live colour editor — the same region, the same hazard. Its group headings are
+        // hand-written prose in `theme.rs`'s field macro and its field names are drawn
+        // verbatim, so both are enumerated rather than sampled. See `theme_edit::drawn_strings`.
+        for text in theme_edit::drawn_strings() {
+            check("the theme editor", &text);
+        }
+
         assert!(checked >= 30, "the guard must actually have looked at something: {checked}");
     }
 
@@ -7086,12 +7278,17 @@ mod tests {
                 target: TargetKind::Viewport,
                 args: vec![ArgSpec {
                     name: "name".into(),
-                    kind: ArgKind::Choice(vec![
-                        "organon".into(),
-                        "light".into(),
-                        "dark".into(),
-                        "chocolate".into(),
-                    ]),
+                    // The two editor words are values of this argument in the real spec too
+                    // (`console_main::console_specs`), and they have to be here or
+                    // `Registry::resolve` refuses `/theme edit` during validation — before the
+                    // intercept in `run_command` can ever see it.
+                    kind: ArgKind::Choice(
+                        ["organon", "light", "dark", "chocolate"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .chain(theme_edit::EDIT_WORDS.iter().map(|s| (*s).to_string()))
+                            .collect(),
+                    ),
                     required: true,
                 }],
             },
@@ -7109,6 +7306,152 @@ mod tests {
                 ],
             },
         ]
+    }
+
+    /// 🚨 CONTRACT: **both editor words open the editor, and neither reaches the dispatch.**
+    /// `/theme edit` is a console-lane verb answered locally — the one place that happens — so
+    /// this pins both halves: the editor exists afterwards, and the pane's `local` dispatch was
+    /// not called (it is `NoDispatch`, which would have produced a failed receipt).
+    #[test]
+    fn both_editor_words_open_the_editor_without_dispatching() {
+        for word in theme_edit::EDIT_WORDS {
+            let mut pane = palette_pane();
+            pane.composer = format!("/theme {word}");
+            pane.submit(&Theme::light(), "light");
+
+            assert!(pane.theme_edit.is_some(), "`/theme {word}` did not open the editor");
+            let receipt = pane.receipt.as_ref().expect("a receipt").receipt.clone();
+            assert!(receipt.ok, "`/theme {word}` was refused: {}", receipt.text);
+            assert!(receipt.text.contains("light"), "the receipt names the palette: {receipt:?}");
+            assert!(
+                receipt.text.contains("nothing is stored"),
+                "the receipt must say the edits are not saved yet: {receipt:?}"
+            );
+            assert_eq!(pane.composer, "", "a command that ran clears the composer");
+            let editor = pane.theme_edit.as_ref().unwrap();
+            assert_eq!(editor.name(), "light");
+            assert_eq!(editor.working(), &Theme::light(), "opening changed a colour");
+            assert_eq!(editor.unsaved(), 0);
+        }
+    }
+
+    /// CONTRACT: a palette **name** still dispatches, and opens no editor. This is the arm the
+    /// intercept must not swallow — it is every other value of the same argument.
+    #[test]
+    fn a_palette_name_still_goes_to_the_dispatch() {
+        let mut pane = palette_pane();
+        pane.composer = "/theme chocolate".into();
+        pane.submit(&Theme::light(), "light");
+        assert!(pane.theme_edit.is_none(), "a palette name opened the editor");
+        // `NoDispatch` refuses, which is what proves the call actually left this crate.
+        let receipt = pane.receipt.as_ref().expect("a receipt").receipt.clone();
+        assert!(!receipt.ok, "NoDispatch should have refused: {receipt:?}");
+    }
+
+    /// 🚨 CONTRACT: **the editor takes the band from the candidate list**, and gives it back
+    /// when it closes. Two surfaces cannot own one region; §1.9 already made that argument for
+    /// the receipt and the candidates, and the editor is the third claimant.
+    #[test]
+    fn the_editor_owns_the_band_while_it_is_open() {
+        let ctx = egui::Context::default();
+        let mut pane = palette_pane();
+
+        // A command line with the editor shut: the candidate list has the band.
+        pane.composer = "/theme ".into();
+        let (candidates, _) = palette_frame(&ctx, &mut pane, Vec::new());
+        assert!(candidates > 0.0, "the candidate list drew nothing");
+
+        // Same line, editor open: the band is the editor's and it is a different height.
+        pane.open_theme_editor(&Theme::organon(), "organon", None);
+        let (editor, _) = palette_frame(&ctx, &mut pane, Vec::new());
+        assert!(editor > 0.0, "the editor drew nothing");
+        assert_ne!(
+            editor, candidates,
+            "the band is the same height either way, so it is drawing the same thing — the \
+             editor is not actually taking the region from the candidate list"
+        );
+        assert!(pane.theme_edit.is_some(), "drawing a frame closed the editor");
+
+        // Escape closes it, and the band goes back to the candidates.
+        let (after, _) = palette_frame(
+            &ctx,
+            &mut pane,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(pane.theme_edit.is_none(), "Escape did not close the editor");
+        assert_eq!(
+            after, candidates,
+            "the band did not go back to the candidate list after the editor closed"
+        );
+    }
+
+    /// 🚨 CONTRACT: **the editor closes itself if the palette changes underneath it.** Its held
+    /// HSV describes colours that are no longer on screen, so the next drag would snap a field
+    /// to a hue from the outgoing palette. `/theme chocolate` typed elsewhere, the CLI, or an
+    /// agent's tool call can all do this while an editor is open.
+    #[test]
+    fn the_editor_closes_when_the_palette_is_repainted_under_it() {
+        let ctx = egui::Context::default();
+        let mut pane = palette_pane();
+        pane.open_theme_editor(&Theme::light(), "light", None);
+
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut change = None;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    // Note the palette handed in is NOT the one the editor was opened on.
+                    change = command_panel(ui, &mut pane, &Theme::chocolate(), &Form::TERMINAL);
+                });
+            });
+        });
+        assert!(pane.theme_edit.is_none(), "the editor survived a repaint underneath it");
+        assert!(change.is_none(), "a closing editor must not also emit a palette");
+        assert!(
+            pane.log.iter().any(|l| l.contains("the palette changed")),
+            "the console said nothing about closing the editor: {:?}",
+            pane.log
+        );
+    }
+
+    /// CONTRACT: an untouched editor emits nothing. `console_main` re-derives egui's whole
+    /// chrome for every change it is handed, so a `Some` per frame would rebuild and re-upload
+    /// it sixty times a second for a palette nobody is touching.
+    #[test]
+    fn an_untouched_editor_asks_for_nothing() {
+        let ctx = egui::Context::default();
+        let mut pane = palette_pane();
+        pane.open_theme_editor(&Theme::organon(), "organon", None);
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 700.0),
+                )),
+                ..Default::default()
+            };
+            let mut change = None;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                        change = command_panel(ui, &mut pane, &Theme::organon(), &Form::TERMINAL);
+                    });
+                });
+            });
+            assert!(change.is_none(), "an idle editor asked for a repaint");
+        }
     }
 
     /// A pane with a real registry, no agent, and nothing in the transcript.
@@ -7139,7 +7482,7 @@ mod tests {
         let _ = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    composer(ui, pane, &Theme::organon());
+                    composer(ui, pane, &Theme::organon(), "organon");
                     let before = ui.available_height();
                     command_panel(ui, pane, &Theme::organon(), &Form::TERMINAL);
                     band = before - ui.available_height();

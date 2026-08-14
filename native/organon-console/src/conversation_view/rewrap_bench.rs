@@ -215,6 +215,7 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         session: None,
         transcript,
         mapper: EventMapper::new(),
+        theme_edit: None,
         failure: None,
         composer: String::new(),
         log: VecDeque::new(),
