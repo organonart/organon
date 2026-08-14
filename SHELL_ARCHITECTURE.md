@@ -2114,10 +2114,17 @@ fix it (the camera really did move, and it will be there the moment something sh
 **`organon-shell/src/theme.rs` holds `Theme`: a plain struct of `Color32` fields, one per
 semantic role, grouped by area (transcript, cards, status strip, composer, terminal, patch
 panels, timeline, tabs).** `Theme::organon()` is the phosphor-green look the console has
-always had and is the only palette this build ships. The extraction is meant to be
-pixel-identical, and `theme_organon_is_the_look_that_shipped` is what backs that: it pins
-every field against the literal RGB the corresponding `const` held on `main` before the move.
-⚠️ No window has been opened on it — see the ledger.
+always had and is still the **default**. The extraction is meant to be pixel-identical, and
+`theme_organon_is_the_look_that_shipped` is what backs that: it pins every field against the
+literal RGB the corresponding `const` held on `main` before the move. ⚠️ No window has been
+opened on it — see the ledger.
+
+**Three more palettes stand beside it: `light`, `dark` and `chocolate`**, each a constructor,
+each specified by James as ~10 named roles. `Theme::by_name(&str) -> Option<Theme>` resolves a
+name against `Theme::NAMES`, and `None` for anything else — never a panic, never a substitute,
+because a picker wants to say "unknown" while `prefs.rs` wants `unwrap_or_default()`. 📌
+**Nothing selects a palette yet**: no picker, no CLI verb, no startup read. `shell_main.rs`
+still builds `Theme::organon()`, and this is the seam the picker will land on.
 
 **One owner: `Shell` in `native/src/shell_main.rs`**, one field, borrowed into `redraw`'s
 closure beside `sessions` and `strip` and passed down as `&Theme` to every draw call —
@@ -2138,23 +2145,130 @@ two decisions together — a lighter palette almost certainly wants a terminal f
 a human's typed line to part company — so `roles_that_share_a_value_are_still_separate_fields`
 asserts the coincidences *and* the separation on purpose.
 
-**What a second palette would override, and what it must not touch.** Every field on
-`Theme`, and only those. Four things stay outside it, each because it is not taste:
+**Ten roles specified, fifty fields to fill: the derivation rules.** Each spec names about ten
+colours; `Theme` has about fifty. Every field a spec does not reach is derived by a rule
+written at the site, never by an invented pigment, and the rules are four:
 
-- **The scrim's alpha.** Only the three colour channels moved (`term_scrim_tint`);
-  `SCRIM_DEFAULT`/`SCRIM_FLOOR` stay in `term_view`, because PRD §4.6's floor is an
-  instrument and a palette that could raise it could trade the glyphs away.
+1. **The surface ladder.** A spec gives a page and a panel; the second raised step is the
+   spec's own **hairline** colour, which is by construction exactly one step further from the
+   page. (`chocolate` names all four of its steps — `#191919 → #1F1F1F → #262626 → #303030` —
+   so none of this applies to it.)
+2. **States.** A state the spec names takes its named colour; a state it does not name comes
+   from the palette's **text ladder**, never from a hue the spec never introduced. ⚠️ That is
+   why **none of the three has an amber**: "a tool is running" is primary text, not
+   `organon`'s orange. `running`, `timeline_status_running` and `mode_alert` are the fields
+   this decides.
+3. **The one exception to 2.** "Blocked on a human" (`asking`), the context ring
+   (`context_arc`), the approval accent and the non-default-permission note (`mode_alert`) take
+   the palette's **accent**. They are what an accent is for — present, not an outcome — and
+   `mode_alert`'s field doc already forbids drawing it red. ⚠️ `context_arc_high` breaks
+   `organon`'s `== mode_alert` coincidence and takes the **error** colour instead: it is the
+   one reading on the band that becomes a failure if ignored.
+4. **Tinted plates** are a stated linear mix: the user bubble is the accent at **1:5 over the
+   panel**, the scripted-replay banner is the **error at 20 % over the page** (a replay must
+   never pass as live, so it is drawn from the warning family), `composer_edge_dead` is the
+   **error 1:1 into the page**, and `panel_fill` is the **page premultiplied at `organon`'s own
+   `0xe6`**.
+
+⚠️ **`ansi16` is CHOSEN for all three and is marked so in the source.** All three specs were
+written against the conversation view and say nothing about a terminal. `light`'s follows the
+**GitHub Light** lineage (the widest-read light terminal palette, so most likely to be what a
+TUI's own scheme was checked against) — note it maps *white* and *bright white* to dark
+colours, or the text vanishes on paper. `dark`'s and `chocolate`'s reuse each spec's own
+accent/success/error as blue/green/red and match a yellow, magenta and cyan to that weight.
+⚠️ `chocolate`'s ANSI is the one place its monochrome discipline is deliberately not applied:
+a program asking for red is asking for red, and rendering `git diff` in graphite would be the
+console overpainting what a program said.
+
+**Chocolate's two spec details that look like mistakes and are not.** `Theme::ok` is the
+secondary grey `#8F8F8F`, because that field colours the literal word `ok` beside a finished
+tool call and the spec says that word is not green. ⚠️ **The green the spec does name lives on
+`timeline_status_ok`** — the console draws the word *and* its marker from one field, so "grey
+word, green dot" cannot be expressed without a new field plus a `conversation_view` change;
+that is out of scope for a palette and is recorded rather than fudged.
+`chocolate_stays_neutral_and_keeps_its_ladder` asserts the rest: every neutral has its three
+channels equal, so no dark surface can pick up a blue cast, and no surface is the accent.
+
+**What a palette still must not touch.** Two things stay outside it, each because it is not
+taste:
+
 - **The xterm 256-colour cube and greyscale ramp.** `ansi16` is the theme's — a light
   console beside a black grid is two products in one window — but indices 16..=255 are a
-  *standard*: a program asking for 196 is asking for xterm's red.
-- **Truecolor and OSC overrides**, which belong to the program that sent them.
+  *standard*: a program asking for 196 is asking for xterm's red. **Truecolor and OSC
+  overrides** likewise belong to the program that sent them.
 - **`Color32::WHITE` at five `painter.image` calls** (`term_view`'s band and patch quads,
   `conversation_view`'s surface, `paint_portal`, `app`'s scene pane). That argument is a
   per-channel multiplier, not a colour; white is the identity, and a theme reaching it would
   tint the engine's own render. Each site carries a one-line comment saying so.
 
-egui's own `Visuals` — widget chrome, `weak`/`strong` text, `extreme_bg_color` — is the
-remaining uncovered surface and is untouched by this tier.
+#### The scrim floor is the palette's now, and it still is not the setting's
+
+🚨 **`SCRIM_FLOOR = 96` structurally forbade a light theme, and James's decision (2026-08-13)
+was to make the floor theme-aware.** `Theme::scrim_floor` is an alpha byte on the palette;
+`term_view::scrim_alpha(env, floor)` takes it and clamps `ORGANON_SHELL_SCRIM` up to it.
+`term_view` keeps two constants — `SCRIM_FLOOR = 96` for a dark page (`organon`, `dark`,
+`chocolate`) and `SCRIM_FLOOR_LIGHT = 192` for a light one.
+
+**The rule was always "the glyphs stay legible". What was dropped is the assumption that
+legibility means darkness.** A scrim is `term_scrim_tint` over the live backdrop and the floor
+is how much backdrop it may leave showing. 96/255 of near-black stops a bright frame washing
+out pale glyphs; the same 96 under a *white* tint protects nothing, because the glyphs are dark,
+the danger is a *dark* backdrop, and the composite is a mid-grey that dark text disappears into.
+A light palette was therefore not reachable by swapping colours at all — it would have sat under
+a compulsory near-black veil however its fields were set.
+
+⚠️ **The half that must not weaken has not weakened: no setting can cross a floor.**
+`no_scrim_setting_can_cross_the_floor` now runs the whole byte scale, the parse failures and the
+unset case against **every palette's own floor**, and asserts the two floors by name so a change
+that quietly equalised them would still fail. What changed is *who names* the floor — a
+compiled-in palette, which is a coherent instrument including the terms on which its own glyphs
+stay readable, rather than a value typed into a launch shim.
+
+⚠️ **`SCRIM_FLOOR_LIGHT = 192` is CHOSEN, not measured.** It is not derivable from 96: a strict
+"same worst-case contrast" mirror returns a *lower* number, because sRGB gamma makes dark text
+on mid-grey read better than pale text on the same grey — which would produce a light console
+under a 40 % grey wash, technically legible and not a page at all. The reasoning used instead:
+96 lets the world keep ~62 % of the frame, which a near-black page affords because its glyphs
+are pale; against a light page and dark glyphs the world may have roughly a quarter, so the
+floor is the complement. ⚠️ Note `SCRIM_DEFAULT = 185` is itself *below* it, so on `light` every
+unset launch is lifted to the floor — the floor working, not a bug, since the default was chosen
+against a dark page. 📌 `--help` still quotes `SCRIM_FLOOR` as "the" floor; that is exactly true
+for every palette this build can select, and becomes a lie the day a picker can choose `light`.
+
+#### egui's own chrome — `Theme::visuals()`
+
+🚨 **`shell_main.rs` called `egui_ctx.set_visuals(egui::Visuals::dark())` once, hardcoded, and
+that one call coloured the sliders, popup frames, `TextEdit` selection wash and scrollbars.** A
+palette assembled only from `Theme`'s fields left roughly half the window dark-hardcoded —
+survivable for three dark palettes, fatal for a light one, which would have read as broken
+rather than as light. `Theme::visuals()` derives `Visuals` from the palette; `shell_main.rs`
+calls `set_visuals(theme.visuals())`.
+
+**`ChromeSource` has three answers, not two.** `DerivedLight` and `DerivedDark` choose which
+egui base the derivation starts from; `EguiDark` means *not derived at all*, and it is
+`organon`'s. 🚨 **`Theme::organon().visuals()` returns `Visuals::dark()` byte-for-byte**, so
+adding three palettes cannot silently restyle the console that already ships;
+`organon_chrome_is_still_egui_dark_to_the_byte` is what catches anyone tidying the special case
+away, and `a_derived_chrome_carries_the_palette_rather_than_eguis` catches the opposite failure
+— a `visuals()` that returns its base unchanged would pass the `organon` pin and leave `light`
+in egui's dark chrome.
+
+**The mapping**, all of it from existing fields: `panel_fill` ← `term_bg` (the page);
+`extreme_bg_color` ← `composer_fill` (with `text_edit_bg_color` left `None`, i.e. "follow
+`extreme_bg_color`", so the composer's plate is stated once); `code_bg_color` ←
+`surface_empty`; `faint_bg_color` ← `strip_fill`; `window_fill` ← `tab_menu_fill` with
+`window_stroke` ← `model_edge`; `hyperlink_color` ← `asking`; `warn_fg_color` ← `mode_alert`;
+`error_fg_color` ← `bad`; and the five widget states ride the console's own surface ladder
+(untouched → the status band's weight, hovered → the model plate, active → that plate's edge).
+The **selection wash is `timeline_bubble_user`** — the palette already had to answer "the accent
+tinted far enough into a surface that text stays readable on it", which is exactly what a
+selection asks.
+
+⚠️ **Colour only.** Corner radii, widget expansion, stroke *widths* and shadows all come from
+the egui base and are left alone — `bg_stroke`/`fg_stroke` have their `.color` assigned rather
+than being replaced, so each keeps its width. Form is a separate axis with a separate owner, and
+`the_chrome_derivation_never_touches_form` fails if a colour change ever grows a geometry change
+beside it.
 
 ### 1.5 Preferences — the console's first thing that remembers what a person chose
 
@@ -2215,6 +2329,132 @@ what makes a file written by a newer console harmless to an older one. Nothing i
 `shell_main.rs` calls `load_default()` yet — wiring it belongs with the consumer, because a
 startup read into a field nobody reads is dead code.
 
+### 1.6 Posture — how the console holds itself, on an axis of its own
+
+**`organon-shell/src/posture.rs` holds two types: `Posture`, a scalar `t ∈ [0,1]`, and
+`Form`, the fourteen form tokens resolved at that `t`.** `Posture::TERMINAL` (`t = 0`) is the
+console exactly as it has always drawn; `Posture::DESKTOP` (`t = 1`) is James's desktop form —
+inset by a 90-point left gutter, roomier, ruled down the left instead of boxed, with
+registration ticks at the corners of the conversation area. **This build ships at
+`Posture::TERMINAL` and nothing moves it**: `Shell` sets the field once and holds it, so the
+tier adds the axis without moving along it. ⚠️ No window has been opened on it — see the
+ledger.
+
+🚨 **Posture is orthogonal to the palette, and that is the whole reason it is a second value
+rather than more fields on `Theme`.** §1.4 answers *what the console is made of*; this
+answers *how it stands*. `organon` at desktop posture and a light palette at terminal posture
+are both real consoles, and neither is a variant of the other — a palette that also decided
+the padding would make "the phosphor look, but roomier" unsayable, which is the exact request
+this axis exists to answer.
+
+**Why a scalar and not two modes: every form token is a scalar, and scalars lerp.** The
+desktop state is not a second renderer and not a second set of draw calls; it is the same
+draw code reading different numbers. A mode enum would have made every intermediate value
+unrepresentable and every draw site a branch. `Form::at(t)` interpolates componentwise, and
+Tier C's animation is therefore a change to *one field on `Shell`* rather than a rewrite of
+the drawing.
+
+**One owner, no globals** — `Shell` holds `posture: Posture` beside its `Theme`, `redraw`
+resolves `let form = &self.posture.form()` **once per frame**, and `&Form` is passed down
+beside `&Theme`. No `static`, no `thread_local!`, no `OnceCell`. Resolving per draw call
+would be cheap and wrong for a reason that outlives this tier: two calls in one frame could
+disagree, which is precisely the tearing a tween would make visible.
+
+**The tokens, both ends, and where the terminal value was read from.** Every terminal value
+was read out of the code as it stood on `main` before a line of it moved, and
+`form_at_terminal_is_the_form_that_shipped` pins each one with its source in the assertion
+message — that test is the tier's entire safety net, because a wrong number compiles and
+draws.
+
+| Token | terminal | desktop | terminal value read from |
+|---|---|---|---|
+| `gutter` | `0` | `90` | there is no gutter today |
+| `card_radius` | `6` | `8` | `CornerRadius::same(6)` at all five card frames |
+| `nested_radius` | `4` | `6` | `CornerRadius::same(4)` — `surface_element`'s waiting plate |
+| `card_pad_x` / `card_pad_y` | `8` / `8` | `18` / `18` | `Margin::same(8)`; `block_panel::PAD` is `8.0` |
+| `human_pad_x` / `human_pad_y` | `10` / `6` | `18` / `18` | `Margin::symmetric(10, 6)` — the one asymmetric card |
+| `line_height` | `1.0` | `1.6` | no `line_height` call exists, i.e. the font's own row |
+| `card_gap` | `8` | `18` | `ui.add_space(8.0)` after each element in `scrollback` |
+| `label_tracking` | `0` | `0.13` em | egui's default `extra_letter_spacing` |
+| `card_border` | `1.0` | `0.0` | `Stroke::new(1.0f32, accent)`, at full alpha |
+| `left_rule` | `0.0` | `1.0` | there is no left rule today |
+| `tick` | `0.0` | `1.0` | there are no ticks today |
+| `tick_len` | `8` | `8` | James's spec; the same at both ends on purpose |
+
+🚨 **`card_radius`'s terminal end is `6`, and the specification says `0` (square). They cannot
+both be honoured, and this is the one place the design and "change nothing on screen"
+disagree.** The console's cards have had `CornerRadius::same(6)` since they were written, so
+a terminal end of `0` would square every card in the flow the moment this tier landed — a
+visible change, at the posture that is supposed to be today's console, verifiable only by
+somebody looking at a window, which this tier explicitly did not have. It is therefore
+resolved in favour of the no-change constraint and **recorded rather than silently
+reconciled**: the intended terminal end is square, the shipped one is `6`, and flipping it is
+one number in `Form::TERMINAL` plus one in
+`form_at_terminal_is_the_form_that_shipped`. Whoever flips it should expect the flow to look
+different at `t = 0` and should be prepared to say so.
+
+Two desktop numbers are **derived rather than given**, and both say so in `Form::DESKTOP`'s
+doc: `card_gap` takes the padding's number because the spec said "roomier" and no figure, so
+the space between two cards matches the space inside one; and `nested_radius`'s `6` keeps the
+terminal end's two-point step below `card_radius`, making the two ends a translation rather
+than a re-proportioning.
+
+🚨 **The card-edge decision: posture owns the scalar, the PALETTE owns whether the edge is
+visible.** The four-sided border fades out and a left rule fades in over **one shared lerp**
+(`card_border + left_rule == 1` at every `t`, pinned by test), and no draw site branches on a
+theme. A palette that separates surfaces by fill alone gives `Theme::card_left_rule` **zero
+alpha** and gets nothing; one that wants a hairline gives it a real colour. `organon` takes
+the first answer, which is what keeps this tier invisible — its cards are four-sided boxes,
+so there was no rule to preserve. **The rejected alternative was a `Box | LeftRule | None`
+enum per theme**: it puts a branch in every card draw, and it makes the tween *discontinuous*
+exactly where the enum flips, which an alpha cannot be.
+
+⚠️ **The border carries a tool card's state, and the rule does not.** At desktop posture the
+accent-coloured box is gone, so a card's running/ok/error reading no longer comes off its
+edge — which is why the state *word* beside the tool's name is not optional and must never
+become a colour alone. Whether the rule should instead be drawn in the card's own accent is a
+real question and a one-line change; it needs somebody who can look at a window, so it is
+named here rather than guessed at.
+
+⚠️ **`card_stroke` answers `Option<Stroke>`, not a transparent stroke, and `gutter_margin` and
+`body_line_height` answer `Option` for the same reason.** `Frame` reserves a stroke's width
+whether or not it can be seen, so a zero-alpha border would leave a point of invisible inset
+around every card; and at the terminal end the scrollback's walk runs directly in the scroll
+area's own `Ui` with the text laid out by the font, rather than inside a zero-margin wrapper
+with an explicit line height that *ought* to equal the one egui would have computed. Those
+`None`s are the no-change guarantee, not an optimisation — identical by construction instead
+of identical by arithmetic.
+
+🚨 **Two tokens genuinely do not interpolate, and they are LEFT OUT rather than faked.**
+**Font family** (mono ↔ sans) and **label case** (`command:` ↔ `COMMAND:`) are the two form
+decisions in the design that are not scalars: there is no half-mono face and no half-capital
+letter. They are **not fields on `Form` at all** — not a threshold, not a snap — and the
+console's font choices and label spellings are exactly what they were. The alternative
+considered was snapping both at some `t`; it is cheap to write and wrong twice over, because
+a snap inside a tween reads as a lurch precisely when the tween is meant to read as one
+motion (Tier C's problem, created here), and it puts a *threshold constant* in the same struct
+as thirteen honest continuous values, so a reader can no longer tell by looking which fields
+mean what they say. Nothing draws a sans face or a capitalised label today, so leaving them
+out costs nothing and leaves the decision with whoever can look at a window. ⚠️ Fonts are not
+a blocker when that day comes and need no new asset: `organon-shell` installs no
+`FontDefinitions`, so it inherits egui's built-ins, which carry a proportional sans beside
+the mono.
+
+**What posture does not govern.** The **terminal host** (`term_view`): a character grid's
+form is the font's — cell size, baseline and wrap are all consequences of the glyph metrics,
+and there is no padding, corner or gap in it for a scalar to move. Within the conversation
+view, the **tab strip, the composer plate, the model plates and the status band** keep their
+own constants: they are chrome, not cards, and a tier that wants them to breathe should say
+so out loud rather than inherit it from a token named "card". And the **gutter's contents**:
+this tier claims the 90-point column and leaves it empty, because the reflow is the part that
+can be wrong and is worth seeing on its own before Tier D draws turn ordinals into it.
+
+⚠️ **`Posture::new` and `Form::at` clamp, and NaN resolves to the terminal end.** These
+numbers reach `Margin`'s `i8` and `CornerRadius`'s `u8` through `as` casts, where a `NaN`
+converts to `0` silently — one bad float would square every corner in the window and report
+nothing. Resolving it where it enters is the only place it is still a number anyone could
+notice.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -2234,6 +2474,30 @@ path silently breaks the three-products-simultaneously guarantee that
 `edition.rs`'s pairwise-distinct-namespace test pins.
 
 ## 3. Honesty ledger
+
+- ⚠️ **The desktop posture has never been drawn, and neither has the terminal one since the
+  wiring.** §1.6 ships at `t = 0.0`, which is meant to be today's console to the point:
+  `form_at_terminal_is_the_form_that_shipped` pins all fourteen tokens against values read out
+  of `main` *before* a line moved, `nothing_is_wrapped_or_overridden_at_the_terminal_end`
+  pins the two `None`s that make the no-change claim structural rather than arithmetical, and
+  the midpoint and quarter tests stop a `Form::at` that ignored `t` from passing.
+  `cargo test -p organon-shell --lib` is **513 green** (500 on `main`, plus twelve in
+  `posture` and one in `theme`) and `cargo check --features shell-edition --bin
+  organon-console` is clean. **That is the whole claim: it compiles and the tests pass.** What
+  it does not establish: that `t = 0.0` really is pixel-identical — the wiring moved five card
+  frames onto `Form`, threaded `&Form` through nine functions, added a closure around the
+  scrollback's walk and now paints two things (the left rule, the ticks) that return before
+  touching the painter, and only a running window can say the flow still looks like itself.
+  Nothing has ever been rendered at any `t > 0`, so the 90-point gutter, the 1.6 line height,
+  the 0.13em tracking, the border/rule exchange and the corner ticks are *specified and
+  compiled*, not seen. The first honest test of the axis is somebody moving the scalar and
+  looking.
+- ⚠️ **`Theme::card_left_rule` is a colour no palette in this build makes visible.**
+  `organon` sets it fully transparent, which is this palette's answer rather than a
+  placeholder — so the left-rule half of the card-edge exchange has never drawn a pixel at any
+  posture, and `a_transparent_palette_rule_stays_invisible_at_every_posture` pins that it
+  cannot. The mechanism is real and the second palette to be written is what will first
+  exercise it.
 
 - ⚠️ **No preferences file has ever been written on a real machine.** §1.5 is pinned by ten
   headless tests against temp directories — round trip, missing file, malformed file, a
@@ -2256,6 +2520,25 @@ path silently breaks the three-products-simultaneously guarantee that
   prove the console still draws it in the same place: the extraction also moved four `&Theme`
   borrows through the draw path and rewrapped a dozen call sites, and only a running window
   can say the strip, the composer and the grid still look like themselves.
+- 🚨 **Nobody has ever seen `light`, `dark` or `chocolate`, and a palette that passes its hex
+  test can still look wrong.** These are ~150 colour values and two structural decisions, and
+  the entire claim is: `cargo test -p organon-shell --lib` is **508 green** (500 before, eight
+  new tests) and `cargo check --features shell-edition --bin organon-console` is clean. **It
+  compiles and the tests pass.** What that establishes is narrow and worth naming: every hex
+  James specified is on the field he specified it for, `organon` is byte-unchanged including
+  its chrome, names resolve and fall back, no scrim setting crosses any palette's floor, and
+  the chrome derivation moves no geometry. What it cannot establish is anything a palette is
+  *for*. No window has been opened on one — indeed nothing can open one, because nothing
+  selects a palette yet. Specifically unverified, in the order they are most likely to be
+  wrong: whether `SCRIM_FLOOR_LIGHT = 192` actually leaves a legible page over a live
+  backdrop (it is reasoned, not measured, and the reasoning is in the constant's doc);
+  whether **dropping amber** leaves "a tool is running" distinguishable from prose at a glance
+  when the only difference is which field it came from and both are primary text; whether the
+  derived `Visuals` covers *every* egui surface a real session shows — sliders, scrollbars and
+  popup frames were reasoned about, never looked at; whether `light`'s GitHub-Light ANSI reads
+  correctly under an actual TUI; and whether `chocolate`'s greys land as "warm graphite" rather
+  than as flat neutral, which is the one thing a channels-equal assertion explicitly cannot
+  answer.
 - 🚨 **No agent has ever called `console.camera.read`, and the number it would return has never
   been checked against a picture.** Built on this machine without launching the console:
   `cargo test -p organon-shell --lib` (486 pass, 11 of them this module's) and `cargo check

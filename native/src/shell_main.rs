@@ -76,6 +76,7 @@ use organon_shell::conversation_view::{self, ConversationPane, SurfaceImages, Su
 use organon_shell::harness::{self, HarnessSpec};
 use organon_shell::platform::Platform;
 use organon_shell::portal::{self, PortalState};
+use organon_shell::posture::Posture;
 use organon_shell::session::{Issuer, SessionLog};
 use organon_shell::tabs::{self, Tab, TabAction, TabStrip};
 use organon_shell::term::{self, TermSession};
@@ -1394,6 +1395,21 @@ struct Shell {
     /// reaches every draw site as `&Theme` — never cloned per frame, never a `static`, so a
     /// later per-tab or preview palette is a second value rather than a rewrite.
     theme: Theme,
+    /// **How the console holds itself** — see [`organon_shell::posture`]. The second axis,
+    /// and orthogonal to the palette above it: `theme` is what the console is made of,
+    /// `posture` is whether it stands terminal-tight or desktop-open, and every combination
+    /// of the two is a real console.
+    ///
+    /// One owner for the same reason `theme` has one, and it is a `Posture` rather than a
+    /// resolved `Form` because the scalar is what a later tier *animates*: a `Form` on the
+    /// struct would make the tween a question of which of fourteen fields somebody
+    /// remembered to move. `redraw` resolves it once per frame and passes `&Form` down.
+    ///
+    /// ⚠️ **Set once and held.** There is no animation here and no timer: this tier wires the
+    /// tokens and ships at the terminal end, so the console draws exactly what it drew
+    /// before. Tier C owns the tween, its `request_repaint` discipline and what a moving
+    /// layout does to the scroll anchor.
+    posture: Posture,
 }
 
 /// Register the portal's interaction region and paint it.
@@ -1512,7 +1528,17 @@ fn engine_plan(
 impl Shell {
     fn new() -> Self {
         let egui_ctx = egui::Context::default();
-        egui_ctx.set_visuals(egui::Visuals::dark());
+        // The palette this process paints. Chosen here and nowhere else — `organon` is still
+        // the default and nothing selects another yet (`Theme::by_name` is the seam a picker
+        // and `prefs.rs` will share).
+        let theme = Theme::organon();
+        // egui's own chrome — sliders, popup frames, the `TextEdit` selection wash, scrollbars
+        // — comes from the palette rather than from a hardcoded `Visuals::dark()`. This call
+        // *was* that hardcoded line, and it is why a light palette could not have worked from
+        // `Theme`'s fields alone: roughly half the window would have stayed dark. For
+        // `Theme::organon` the derivation returns `Visuals::dark()` byte-for-byte, so this
+        // console is unchanged — see `Theme::visuals` and the test that pins it.
+        egui_ctx.set_visuals(theme.visuals());
         let source =
             parse_backdrop_source(std::env::var("ORGANON_SHELL_BACKDROP").ok().as_deref());
         let shared = initial_shared(source);
@@ -1589,9 +1615,13 @@ impl Shell {
             hand_camera_at: None,
             agent_camera_at: None,
             viewpoint: camera::ViewpointCell::new(),
-            // The only palette this build ships. A second one arrives as another
-            // constructor on `Theme`, not as a branch here.
-            theme: Theme::organon(),
+            // Built above, because `set_visuals` needs it too — one palette per process, and
+            // the chrome and the fields must come from the same one.
+            theme,
+            // The terminal end: today's console, to the point. Nothing sets this to anything
+            // else yet — a picker, a preference and a tween are all later tiers, and each
+            // wants a window to be looked at.
+            posture: Posture::TERMINAL,
         }
     }
 
@@ -3125,6 +3155,11 @@ impl Shell {
         // The palette, split out of `self` exactly as everything else here is — one shared
         // borrow that every draw call inside the closure passes down.
         let theme = &self.theme;
+        // The form tokens at this frame's posture, resolved **once** and borrowed exactly as
+        // the palette is. Resolving per draw call would be cheap and wrong for a reason that
+        // outlives this tier: two calls in one frame could then disagree, which is precisely
+        // the tearing a tween would make visible.
+        let form = &self.posture.form();
         let mut portal_rect: Option<egui::Rect> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
@@ -3203,7 +3238,8 @@ impl Shell {
                             // does nothing. An inline artifact needs none of that machinery —
                             // it is an element in a flow that draws itself — so what comes
                             // back is where its surfaces ended up, and nothing else.
-                            let out = conversation_view::draw(ui, chat, &surface_images, theme);
+                            let out =
+                                conversation_view::draw(ui, chat, &surface_images, theme, form);
                             surface_requests = out.surfaces;
                         }
                         _ => {

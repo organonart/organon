@@ -37,6 +37,79 @@ wrong generator. `GeneratorMode`'s once-re-seated ordinals (`None` = 17, `AxonWa
 stays, and it was right on the reason it gave — `math.rs` only needed it in a test. That
 note is now rewritten rather than deleted: the reason was about `math.rs`, and `math.rs`
 was simply never the only caller that mattered.
+### Three palettes beside `organon` — `light`, `dark` and `chocolate`
+
+`Theme` gains three constructors and a `Theme::by_name` resolver. `organon` stays the
+default and is byte-unchanged. Nothing selects a palette yet: no picker, no CLI verb, no
+startup read — `by_name` is the seam a picker and `prefs.rs`'s stored `theme` name will
+share, and an unknown name is `None` rather than a panic or a substitution.
+
+Two things had to move first, because a palette alone could not have reached either.
+
+**The legibility scrim's floor is the palette's, not one constant.** `SCRIM_FLOOR = 96` is a
+mandatory near-black wash over the whole rect whenever a backdrop is live, so a light theme
+was not reachable by swapping colours — it would have sat under a compulsory dark veil
+however its fields were set. The floor is now `Theme::scrim_floor`, and `term_view` carries
+two: `SCRIM_FLOOR = 96` for a dark page, `SCRIM_FLOOR_LIGHT = 192` for a light one. ⚠️ PRD
+§4.6's rule was always *the glyphs stay legible*; what is dropped is the assumption that
+legibility means darkness. **No setting can still cross a floor** — `ORGANON_SHELL_SCRIM` is
+clamped up to the active palette's, and the exhaustive test now runs over every palette's own
+answer rather than one constant.
+
+**egui's own chrome is derived from the palette.** `set_visuals(egui::Visuals::dark())` was
+one hardcoded call colouring sliders, popup frames, the `TextEdit` selection wash and
+scrollbars — roughly half the pixels, which would have left `light` reading as broken rather
+than as light. `Theme::visuals()` derives them; ⚠️ for `organon` it returns `Visuals::dark()`
+byte-for-byte, pinned by test, so adding palettes cannot restyle the console that ships. It
+writes colours only — corner radii, widget expansion, stroke widths and shadows come from the
+egui base untouched.
+
+Each spec names about ten roles and `Theme` has about fifty fields; every derived field
+carries its rule at the site. ⚠️ Notably **none of the three has an amber** (no spec names
+one, so "a tool is running" is primary text), and `ansi16` is **chosen, not specified**, for
+all three and marked so — the specs were written against the conversation view and say nothing
+about a terminal.
+
+⚠️ **Nobody has seen any of them.** 508 tests green, `cargo check --features shell-edition`
+clean — that is the whole claim. A palette that passes its hex test can still look wrong.
+### Posture — terminal ⟷ desktop as a second axis, orthogonal to the palette
+
+Organon Shell gains `posture.rs`: a scalar `t ∈ [0,1]` and the fourteen form tokens
+resolved at it. The theme is what the console is *made of*; posture is *how it holds
+itself* — flush and tight and square like a terminal, or inset and open and ruled like a
+desktop document. The two are independent on purpose, so `organon` at desktop posture and a
+light palette at terminal posture are both real consoles.
+
+It is implementable rather than merely appealing because **every form token is a scalar,
+and scalars lerp**: the desktop state is not a second renderer, it is the same draw code
+reading different numbers. `Form::at(t)` interpolates the gutter, the corner radii, the
+paddings, the line height, the card gap, the label tracking and three alphas; `Shell` holds
+the `Posture` beside its `Theme` and `redraw` resolves one `&Form` per frame.
+
+- 🚨 **Nothing on screen changes.** The console ships at `Posture::TERMINAL`, and every
+  terminal-end value was read out of the code before it moved — pinned by
+  `form_at_terminal_is_the_form_that_shipped`, with the source of each in its assertion.
+  The two `Option` returns (`gutter_margin`, `body_line_height`) make that structural: at
+  `t = 0` the scrollback wraps in nothing and the text is laid out by the font, exactly as
+  before, rather than by a number that ought to agree.
+- 🚨 **Posture owns the scalars; the palette owns whether a card has a visible edge.** The
+  four-sided border fades out and a left rule fades in over one shared lerp, with no
+  per-theme branch at any draw site — a palette that separates surfaces by fill alone gives
+  the new `Theme::card_left_rule` zero alpha. The rejected alternative, a
+  `Box | LeftRule | None` enum per theme, puts a branch in every card draw and makes the
+  tween discontinuous where the enum flips.
+- ⚠️ **One token's terminal end disagrees with the spec, and is recorded rather than
+  reconciled.** The design gives square corners at terminal posture; the console has drawn
+  `CornerRadius::same(6)` since its cards were written, so squaring them would be a visible
+  change at the posture that is supposed to *be* today's console — and this tier had no
+  window to check it in. The shipped terminal end is `6`; flipping it is one number and a
+  matching one in the test.
+- ⚠️ **Font family and label case are left out rather than faked.** There is no half-mono
+  face and no half-capital letter, so neither is a field: an interpolation that claimed
+  otherwise would be a lie that compiles.
+- No animation (that is a later tier — `t` is set once and held), no new palette, no
+  ordinals in the gutter, and the terminal host is untouched: a character grid's form is
+  the font's, with no padding or corner for a scalar to move.
 
 ### A CRLF checkout silently un-installs the `organon-cli` skill
 
