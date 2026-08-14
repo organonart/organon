@@ -11,6 +11,41 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### `organon-scene` — the substrate moves below the plugin
+
+organon#49 Tier 3. Five modules — `substrate_scene`, `substrate_materials`,
+`substrate_camera`, `substrate_epochs` and `overlay_meta`, 5 972 lines — leave
+`organic-math-native` for a new crate carrying **no nih-plug, no wgpu, no egui, no
+winit**. `cargo tree -p organon-scene` is the acceptance test, the same bar `organon-core`
+holds one layer down. Every `crate::substrate_*::…` path still resolves through a named
+re-export.
+
+**Why a third crate rather than more `organon-core`.** Everything here would compile in
+core — it adds no dependency core lacks. The split is on identity: core is the *spine*
+(the wire format, the algorithm, the param vocabulary) and is the crates.io-published
+face, so its public API is a standing commitment; six thousand lines of substrate look and
+camera arithmetic makes that commitment larger and its identity vaguer. `organon-render`
+was the other candidate and is worse: its own manifest insists, at length, that it is
+`world::render` and **not** the world, because #626 conflated those once. This is scene
+*state*, not drawing.
+
+⚠️ **Two things deliberately stayed behind, and both were surprises.**
+
+`scene_input` looks like it belongs — same Console Spike lineage, same subject — and
+#49 scoped it as zero-coupling. It isn't: **68 of its lines reach `egui`**, because it
+turns pointer gestures into `CameraInput`. The original measurement counted upward
+`crate::` references and never asked what *external* crates each module named. It travels
+with `world.rs` in Tier 4. (`overlay_meta` failed the same grep and is innocent — the hits
+were the substring `egui` inside `AxonWaveguide`.)
+
+`substrate_scene`'s and `substrate_materials`'s **test modules** also stayed, relocated to
+`native/tests/substrate.rs` byte-for-byte. Their baseline is
+`OrganicMathParams::default().to_shared()` — the *plugin's* default parameter set, named
+as such in their own fixtures. `Shared::default()` is a deliberately different thing (core
+calls it "the web app's helix defaults"), so substituting it would change what every
+assertion is measured against **without changing whether it passes**. #626 Tier 3 hit this
+exact problem when `math.rs` moved and answered it the same way.
+
 ### An `Edit` card stops re-deriving its diff sixty times a second
 
 `tool_card` called `edit_diff` from inside its own body, so **every frame, for every `Edit`

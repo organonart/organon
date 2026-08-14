@@ -15,8 +15,8 @@
 //! card; the flagships (Organic Math, Frenet, DNA, Harmonic, Minimal-surface, Synchrotron)
 //! carry a bespoke live eval, the others a key-param readout (#135 P2/P4, #150 P2).
 
-use crate::ipc::Shared;
-use crate::params::GeneratorMode;
+use organon_core::ipc::Shared;
+use organon_core::params::GeneratorMode;
 
 /// A formula image bundled by the visual (`overlay.rs` maps this to the PNG bytes).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -371,7 +371,7 @@ fn eval_map_attractor(c: &OverlayCtx) -> Values {
     let m = c.s.mapattractor;
     let o = c.s.maporbit;
     let playing = c.s.transport[0] > 0.5;
-    let ab = crate::math::map_attractor_effective_ab(&m, &o, c.beat_pos, c.gen_phase_hi, playing);
+    let ab = organon_core::math::map_attractor_effective_ab(&m, &o, c.beat_pos, c.gen_phase_hi, playing);
     let loop_beats = o[1].max(0.25);
     // The live φ ticker is a *closed-loop* phase — only meaningful in Lissajous mode.
     // Off has no motion and Linear rides an unbounded `a_drive`/`b_drive` ramp (the
@@ -379,7 +379,7 @@ fn eval_map_attractor(c: &OverlayCtx) -> Values {
     // would misrepresent the field. Derive it in f64 then narrow (same as the
     // renderer), so it doesn't quantize away once `beat_pos` grows large.
     let is_lissajous =
-        crate::math::MapOrbitMode::from_u32(o[0] as u32) == crate::math::MapOrbitMode::Lissajous;
+        organon_core::math::MapOrbitMode::from_u32(o[0] as u32) == organon_core::math::MapOrbitMode::Lissajous;
     let phi = if !is_lissajous {
         0.0
     } else if playing {

@@ -7,7 +7,7 @@
 # `export-public.sh`'s member guard fails on the one that is missing, rather than
 # shipping a manifest that names a member nobody exported. That failure is the system
 # working, not an obstacle to route around.
-members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-shell"]
+members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-scene", "organon-shell"]
 
 [package]
 name = "organic-math-native"
@@ -131,6 +131,9 @@ embedded-llm = ["dep:llama-cpp-4", "dep:minijinja", "dep:minijinja-contrib"]
 organon-core = { path = "organon-core" }
 organon-mind = { path = "organon-mind" }
 organon-render = { path = "organon-render" }
+# organon#49 T3 — the substrate: scene look/materials/camera/epochs + overlay metadata,
+# below the plugin. Unconditional like its siblings; carries no nih_plug, wgpu or egui.
+organon-scene = { path = "organon-scene" }
 # Shell #3 T1 — the Shell compositor UI. Unconditional like its siblings
 # (the lib is tiny and Edition-parametric); only the BIN is feature-gated.
 organon-shell = { path = "organon-shell" }

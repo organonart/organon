@@ -24,6 +24,16 @@
 
 ---
 
+> 📦 **The substrate modules live in `organon-scene` now** (organon#49 Tier 3, 2026-08-14).
+> `substrate_scene`, `substrate_materials`, `substrate_camera`, `substrate_epochs` and
+> `overlay_meta` moved out of the root crate into a crate carrying **no nih-plug, no wgpu,
+> no egui** — a step on #49's route to a Console binary that is not a GPL artifact of the
+> VST3 crate. Every `crate::substrate_*::…` path in the root crate still resolves through a
+> re-export, so the descriptions below are unaffected; only the *home* changed.
+>
+> ⚠️ `scene_input` did **not** move — it reaches egui, and it travels with `world.rs` in
+> Tier 4.
+
 ## 1. What exists right now (the terminal form — trees A/B/E Tier 1 + the landed v2 foundations)
 
 **Organon Shell is a next-gen TUI host** (PRD v3.2 §1.2, reframed 2026-08-08): tabs of
@@ -216,7 +226,7 @@ position.
      count). Bands partition the viewport, edges monotone, and the **alt screen is always
      exactly one band** — the alt grid is built with zero scrollback, so its geometry says
      nothing about absolute lines. No egui, no alacritty, no wgpu.
-  2. **`substrate_epochs.rs` (root crate) — the ledger.** Which look ran from which line,
+  2. **`substrate_epochs.rs` (`organon-scene`) — the ledger.** Which look ran from which line,
      `Look` = `(material, rig)` **names**, never bytes. `MAX_EPOCHS = 8`, which is a
      stateable ceiling rather than an adjective: 63.3 MiB of pane-sized RGBA8 at 1080p,
      253.1 MiB at 4K (`worst_case_bytes`, pinned by test). Past the cap the two oldest

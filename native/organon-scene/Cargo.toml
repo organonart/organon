@@ -1,0 +1,60 @@
+# organon-scene — the substrate: what the scene IS, below the plugin (organon#49 T3).
+#
+# ⚠️ NO nih_plug. NO wgpu. NO egui. NO winit. The `organon-core` rule, for a crate one
+# layer up: `cargo tree -p organon-scene` is the acceptance test.
+#
+# 🎯 WHY THIS IS ITS OWN CRATE AND NOT MORE `organon-core`.
+#
+# Everything here would *compile* in core — it adds no dependency core lacks. It is
+# separate on identity, not on dependencies:
+#
+#   * `organon-core` is the **spine**: the wire format (`ipc`), the algorithm (`math`),
+#     the param vocabulary, the edition, the GGUF reader. Under #626 §2.5 it is also the
+#     crate published to crates.io, so its public API is a standing commitment. Folding
+#     six thousand lines of substrate look/camera/epoch logic into that makes the
+#     commitment larger and the identity vaguer.
+#   * `organon-render` is emphatically **`world::render`, not the world** — its own
+#     manifest says so, at length, because #626 conflated the two once. These modules are
+#     scene *state*, not drawing, so putting them there would re-make that mistake in the
+#     other direction.
+#
+# So: a third home, for the layer between the spine and the things that draw it.
+#
+# 📌 WHAT LIVES HERE. Pure scene description — no host, no GPU, no UI:
+#   substrate_scene      the substrate LOOK as a pure function over `Shared`
+#   substrate_materials  four materials + two lighting rigs, as deltas on that snapshot
+#   substrate_camera     the camera rig (pure glam arithmetic)
+#   substrate_epochs     the epoch ledger (pure bookkeeping)
+#   overlay_meta         per-generator capture-overlay metadata
+#
+# ⚠️ `scene_input` DELIBERATELY DID NOT COME. It is the sibling that looks like it
+# belongs and does not: 68 lines of it reach `egui` (`Pos2`, `Rect`, `Context`,
+# `RawInput`) because it translates pointer gestures into `CameraInput`. That is a UI
+# concern, and it travels with `world.rs` in Tier 4, to whatever crate hosts the
+# egui/wgpu/winit layer. Adding egui here to collect it would cost this crate its
+# acceptance test on the first day.
+#
+# ⚠️ TWO TEST MODULES DID NOT COME EITHER, and the reason is worth knowing before you
+# "fix" it. `substrate_scene`'s and `substrate_materials`'s tests build their baseline
+# from `OrganicMathParams::default().to_shared()` — the PLUGIN's default parameter set,
+# named as such in their own doc comments. `Shared::default()` is a different thing on
+# purpose (core documents it as "the web app's helix defaults"), so swapping it in would
+# silently change what those tests assert. They are relocated to
+# `native/tests/substrate.rs` instead, byte-for-byte, which is the same answer #626 T3
+# reached for `math.rs`'s `Shared` test (`native/tests/vecbuild_ipc.rs`).
+[package]
+name = "organon-scene"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Organon's substrate: the scene's look, materials, camera rig and epoch ledger as pure state."
+repository = "https://github.com/organonart/organon"
+
+[dependencies]
+organon-core = { path = "../organon-core" }
+# `substrate_camera`'s rig arithmetic and `substrate_scene`'s vector fields.
+glam = { version = "0.33", features = ["bytemuck"] }
+# `substrate_materials` (22 sites) and `substrate_scene` write `Shared`'s `Pod` arrays.
+# `min_const_generics` for the same reason core needs it — `Shared` carries arrays past
+# bytemuck's hand-written impls.
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
