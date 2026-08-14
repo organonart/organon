@@ -64,6 +64,7 @@ Usage:
 """
 
 import argparse
+import datetime
 import os
 import re
 import subprocess
@@ -395,6 +396,39 @@ its shape exactly.
 """
 
 
+def cmd_new_report(brief_id, model, notes):
+    """Create an empty report with correct front matter and print its path.
+
+    The front matter is a contract `--validate` enforces, so the thing that writes it and
+    the thing that checks it live in one file. The alternative — a workflow echoing a
+    YAML block into a heredoc — is a second copy of the contract that rots the first time
+    a key is added, and it rots silently because the only thing that would notice is the
+    validator it drifted from.
+
+    An automated leg calls this, then appends the report body below the header.
+    """
+    if not any(p.stem == brief_id for p, _, _ in load_briefs()):
+        print(f"error: no brief `{brief_id}`. Try --list.", file=sys.stderr)
+        return 1
+    today = datetime.date.today().isoformat()
+    slug = re.sub(r"[^a-z0-9.-]+", "-", model.lower()).strip("-")
+    dest = REPORTS / f"{brief_id}-{slug}-{today}.md"
+    n = 2
+    while dest.exists():
+        dest = REPORTS / f"{brief_id}-{slug}-{today}-{n}.md"
+        n += 1
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        f"---\nbrief: {brief_id}\nmodel: {model}\n"
+        f"model_surface: {os.environ.get('RESEARCH_SURFACE', 'automated run')}\n"
+        f"run_date: {today}\n"
+        f"commit: {git('rev-parse', '--short', 'HEAD', default='unknown')}\n"
+        f"status: unreviewed\nadjudicated_by:\nnotes: {notes}\n---\n\n",
+        encoding="utf-8")
+    print(dest)
+    return 0
+
+
 def cmd_validate():
     """The CI gate. Checks the parts of this system that can rot without anyone noticing.
 
@@ -481,11 +515,24 @@ def main():
     g.add_argument("--brief", metavar="ID", help="build one dispatch prompt")
     g.add_argument("--all", action="store_true", help="build every dispatch prompt")
     g.add_argument("--validate", action="store_true", help="CI gate: check the contracts")
+    g.add_argument("--new-report", action="store_true",
+                   help="create an empty report with correct front matter; print its path")
     ap.add_argument("--out", metavar="DIR", help="write to DIR instead of stdout")
+    # `--brief` is in the exclusive group above (it selects an action), so --new-report
+    # takes the id under its own name rather than fighting it for the flag.
+    ap.add_argument("--brief-id", dest="brief_id", help="--new-report: which brief")
+    ap.add_argument("--model", help="--new-report: the model that will write it")
+    ap.add_argument("--notes", default="", help="--new-report: the notes: field")
     args = ap.parse_args()
 
     if args.validate:
         return cmd_validate()
+
+    if args.new_report:
+        if not args.brief_id or not args.model:
+            print("error: --new-report needs --brief-id and --model", file=sys.stderr)
+            return 1
+        return cmd_new_report(args.brief_id, args.model, args.notes)
 
     if args.list:
         for path, meta, _ in load_briefs():

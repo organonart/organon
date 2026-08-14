@@ -2,52 +2,51 @@ name: Research dispatch
 
 # Deep-research evals — `doc/research/README.md` owns the why.
 #
-# Two things happen here, and they are deliberately different jobs with different
-# permissions:
+# Four jobs, and the split between them is the security design rather than tidiness:
 #
 #   validate   every PR that touches the research directory. Read-only. Checks the
 #              mechanical contracts — briefs parse, reports declare their provenance and
 #              name a brief that exists, the fact-pack parsers still find something.
-#   dispatch   on demand, and on every published release. Builds the dispatch prompts
-#              (brief + measured repo state) and attaches them to the run, so a round can
-#              be started by copying one out of the job summary. On a release it also
-#              uploads them as release assets, because a release is the moment the
-#              question "what was true of this tree" has a durable answer.
+#   dispatch   builds the dispatch prompts (brief + measured repo state) for a human to
+#              paste into models this workflow cannot reach. No model runs here.
+#   research   THE AUTOMATED LEG. Hands a dispatch prompt to Claude with the repository
+#              checked out, and files the report. Runs at `contents: read`.
+#   publish    takes the report the research job produced and puts it somewhere durable —
+#              a release asset, a pull request. No model runs here either.
 #
-# ⚠️ This workflow does NOT call any model. That is a decision with reasons, and
-# `doc/research/README.md` §"Why a human is still in the loop" carries them: the eval
-# premise needs several labs, deep research is mostly not an API, and adjudication —
-# the step that produces the value — is judgement. Automating dispatch alone would fill
-# `doc/research/reports/` with unreviewed essays, which is exactly what the `status`
-# field exists to make visible.
+# ⚠️ The model never holds a writable token. `research` cannot push, cannot open a PR and
+# cannot touch a release; everything that writes runs in a job with no model in it,
+# consuming an artifact. That is the same boundary claude-review.yml relies on and says so
+# at length: the tool allowlist is not the security boundary, `permissions:` is.
+#
+# ⚠️ No research run fires on a pull request, deliberately. It costs real tokens and
+# produces a document somebody then has to adjudicate; one per PR would fill
+# `doc/research/reports/` faster than anyone could check it, which is the exact failure the
+# `status: unreviewed` field exists to make visible.
 
 on:
   workflow_dispatch:
     inputs:
       brief:
-        description: 'Brief id, or "all" (see doc/research/briefs/)'
+        description: 'Brief id, or "all" for the prompt build (see doc/research/briefs/)'
         required: false
         default: all
         # Deliberately a free-text input rather than a `choice`. A choice list would be a
         # second copy of the brief list, maintained by hand, rotting the first time
         # someone adds a brief and forgets this file. The script validates the id and
         # prints the real list on a miss, which is the same answer one hop later.
-      local_run:
-        description: 'Also run the brief against a local model (needs a self-hosted runner serving one)'
+      research:
+        description: 'Run the brief against Claude and file a report'
         required: false
         default: 'false'
-      runner:
-        description: 'Runner label for the local run. A GitHub-hosted runner has no model.'
+      model:
+        description: 'Model to research with'
         required: false
-        default: self-hosted
-      local_model:
-        description: 'Model name as the local server knows it (e.g. qwen3-8b)'
+        default: claude-opus-5
+      open_pr:
+        description: 'Open a pull request adding the report to doc/research/reports/'
         required: false
-        default: ''
-      local_endpoint:
-        description: 'OpenAI-compatible loopback endpoint on that runner'
-        required: false
-        default: 'http://127.0.0.1:1234/v1/chat/completions'
+        default: 'true'
   release:
     types: [published]
   pull_request:
@@ -150,67 +149,173 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.event.release.tag_name }}" dispatch/*.md --clobber
 
-  # The automated leg — a model running on the machine, over loopback, no vendor and no
-  # repository content leaving the host. It is opt-in TWICE and that is deliberate:
-  #
-  #   * `workflow_dispatch` only. It never fires on a PR, on a push, or on a release.
-  #     A local generation is minutes of somebody's GPU, and a report nobody asked for is
-  #     the failure mode `doc/research/README.md` opens with — an unreviewed essay landing
-  #     next to documents that are hook-enforced current.
-  #   * `local_run: true` on top of that, plus a model name.
-  #
-  # ⚠️ A GitHub-hosted runner has no model server, so this needs a self-hosted runner with
-  # LM Studio, Ollama, or this repo's own `organic-math-mind-runtime` already listening. If
-  # the `runner` label matches nothing the job queues rather than failing — which is why it
-  # is off by default rather than merely unused.
-  #
-  # The report lands as a workflow artifact, NOT as a commit. Filing it is a pull request
-  # like any other change, because `status: unreviewed` means a human has not looked yet,
-  # and a bot committing into `doc/research/reports/` on a schedule is how this directory
-  # would fill with text nobody reads.
-  local-run:
-    if: github.event_name == 'workflow_dispatch' && inputs.local_run == 'true'
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 60
+  # ─────────────────────────────────────────────────────────────────────────────
+  # The automated leg. Claude gets the dispatch prompt AND the repository, which is
+  # what separates this from pasting a prompt into a chat window: it can open the files
+  # a claim rests on. `doc-code-fidelity` requires both halves of every finding quoted
+  # with `path:line`, and that is only honestly attemptable with file access.
+  research:
+    if: |
+      (github.event_name == 'workflow_dispatch' && inputs.research == 'true') ||
+      github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read       # THE boundary — the model's token cannot write anything
+      id-token: write
+    env:
+      # `all` is meaningful when building prompts and meaningless when running one, so
+      # collapse it to the scoreable brief — the leg with ground truth in the tree, and
+      # the one whose output is worth the tokens.
+      BRIEF: ${{ (github.event_name == 'release' || inputs.brief == 'all' || inputs.brief == '') && 'doc-code-fidelity' || inputs.brief }}
+      MODEL: ${{ inputs.model || 'claude-opus-5' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Refuse to start without a model name
-        if: inputs.local_model == ''
+      - name: Build the prompt and an empty report to fill
+        id: prep
         run: |
-          echo "::error::local_run=true needs local_model — the name the local server knows."
-          exit 1
+          mkdir -p dispatch
+          python3 native/tools/research-brief.py --brief "$BRIEF" --out dispatch
+          REPORT=$(RESEARCH_SURFACE="GitHub Actions, repository checked out" \
+            python3 native/tools/research-brief.py --new-report \
+              --brief-id "$BRIEF" --model "$MODEL" \
+              --notes "automated run in CI with file access; claims are checkable but NOT checked — adjudicate before citing")
+          echo "report=$REPORT" >> "$GITHUB_OUTPUT"
+          echo "Report file: $REPORT"
 
-      - name: Run the brief against the local model
-        run: |
-          python3 native/tools/research-run.py \
-            --brief "${{ inputs.brief }}" \
-            --model "${{ inputs.local_model }}" \
-            --endpoint "${{ inputs.local_endpoint }}"
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}   # required — OAuth path 401s without it
+          prompt: |
+            Carry out a research brief on this repository and write the report.
 
+            1. Read `dispatch/dispatch-${{ env.BRIEF }}.md`. That file is your brief: it
+               contains the question, the scope, the method, the measured repository state
+               and the output contract. Follow it exactly — including the output contract,
+               whose `## Claims` section is machine-read and must keep its shape.
+
+            2. Do the research against THIS tree, which is checked out. Use Read, Grep and
+               Glob. This is the whole reason the job exists: a claim you can anchor to
+               `path:line` is worth more than three you cannot, and a `verified` claim you
+               did not actually open a file to check is the one defect that makes the
+               report unusable.
+
+            3. Write the report into `${{ steps.prep.outputs.report }}`. That file already
+               contains its YAML front matter — **keep those lines byte-identical** and put
+               your report below them. Do not create a different file; a validator checks
+               that exact path and its contract.
+
+            4. Run `python3 native/tools/research-brief.py --validate` and fix anything it
+               reports about your file.
+
+            Do NOT read ARCHITECTURE.md or CLAUDE.md end to end unprompted — ARCHITECTURE.md
+            is ~2,000 lines and both are already in your context. Grep them for the specific
+            claims you are checking.
+
+            Do not commit, push or open anything. Writing the report file is the whole job;
+            a later step publishes it.
+          # A research pass reads many files and writes one long document, so it needs a
+          # far larger turn budget than the review workflow's 60. Write/Edit are allowed
+          # because producing the report file IS the deliverable — and they are safe here
+          # for the same reason the review workflow's allowlist is not the boundary:
+          # `contents: read` above means nothing written can leave the runner except as
+          # the artifact a later job picks up.
+          claude_args: >-
+            --allowedTools
+            "Read,Grep,Glob,LS,TodoWrite,Write,Edit,Bash(python3 native/tools/research-brief.py:*),Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(rg:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(ls:*),Bash(find:*)"
+            --model ${{ env.MODEL }}
+            --max-turns 150
+
+      # If the model wrote nothing, the report is still just front matter and has no
+      # `## Claims` section — so this fails rather than filing a blank as evidence.
       - name: Check the report against the contracts
         run: python3 native/tools/research-brief.py --validate
 
       - uses: actions/upload-artifact@v4
         with:
-          name: research-report-${{ inputs.brief }}-${{ github.sha }}
-          path: doc/research/reports/*.md
+          name: research-report-${{ github.sha }}
+          path: doc/research/reports/
           retention-days: 90
 
       - name: Summarise
         if: always()
         run: |
           {
-            echo '## Local model run'
+            echo "## Research report — \`$BRIEF\` · \`$MODEL\`"
             echo
-            echo "Brief \`${{ inputs.brief }}\` · model \`${{ inputs.local_model }}\` · commit \`$GITHUB_SHA\`"
+            echo "Commit \`$GITHUB_SHA\`. Status is **unreviewed**: file access makes the"
+            echo 'claims checkable, not checked. Adjudicate them against the tree and record'
+            echo 'the verdicts in `doc/research/FINDINGS.md` before anything cites this.'
             echo
-            echo 'The report is an artifact on this run, with `status: unreviewed`. It is'
-            echo 'evidence of what a model said, not a statement about this codebase.'
-            echo 'Adjudicate its claims against the tree and record the verdicts in'
-            echo '`doc/research/FINDINGS.md` before anything cites it — and note that a'
-            echo 'local model has no file access, so any `verified` claim about source it'
-            echo 'was never shown should be refuted.'
+            if [ -f "${{ steps.prep.outputs.report }}" ]; then
+              echo '<details><summary>The report</summary>'
+              echo
+              echo '````markdown'
+              cat "${{ steps.prep.outputs.report }}"
+              echo '````'
+              echo
+              echo '</details>'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Publishing — no model here, only the artifact the research job produced. This is where
+  # the write permissions live, and it is why the research job does not need them.
+  publish:
+    needs: research
+    if: always() && needs.research.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: research-report-${{ github.sha }}
+          path: doc/research/reports/
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" doc/research/reports/*.md --clobber
+
+      # A report becomes an artifact OF the repository by being merged, not by a bot
+      # committing it. So: a branch and a draft PR, which a person reads and lands — the
+      # same path every other change takes. `status: unreviewed` in the front matter is
+      # exactly what that PR is asking someone to change.
+      - name: Open a pull request with the report
+        if: github.event_name != 'release' && inputs.open_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet -- doc/research/reports/; then
+            echo "::notice::no new report to file"; exit 0
+          fi
+          BRANCH="research/report-${GITHUB_RUN_ID}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add doc/research/reports/
+          git commit -m "Research report: $(ls -1 doc/research/reports/*.md | head -1 | xargs basename)
+
+          Filed by the Research dispatch workflow. status: unreviewed — the claims are
+          checkable, not checked. Adjudicate them into doc/research/FINDINGS.md before
+          anything cites this report."
+          git push -u origin "$BRANCH"
+          gh pr create --draft \
+            --title "Research report — $(date +%Y-%m-%d)" \
+            --body "$(printf '%s\n' \
+              'Filed automatically by the Research dispatch workflow.' '' \
+              '⚠️ **`status: unreviewed`.** File access makes these claims checkable, not checked.' \
+              'Nothing should cite this report — adjudicate its `## Claims` list against the tree' \
+              'and record the verdicts in `doc/research/FINDINGS.md`, which is what later work reads.' '' \
+              'Merging this files the evidence. It does not endorse it.' '' \
+              '---' '_Generated by [Claude Code](https://claude.ai/code)_')"

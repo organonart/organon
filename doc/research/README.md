@@ -88,43 +88,68 @@ The `Research dispatch` workflow (`.github/workflows/research.yml`) builds the p
 you — run it from the Actions tab, or let it fire on a published release — and attaches
 them to the run. It validates on every PR that touches this directory.
 
-## The local-model leg
+## The Claude leg — the automated one
 
-One leg is automated, and it is the one that needs no vendor: a model **running on your
-machine**, reached over loopback.
+The `Research dispatch` workflow can carry a brief out end to end. It builds the dispatch
+prompt, hands it to Claude **with the repository checked out**, and files the report as a
+workflow artifact — attaching it to the release when a release triggered the run.
 
-```bash
-# LM Studio (1234) / Ollama (11434) / this repo's own organic-math-mind-runtime
-python3 native/tools/research-run.py --brief doc-code-fidelity --model qwen3-8b
-python3 native/tools/research-run.py --brief doc-code-fidelity --model llama3 \
-    --endpoint http://127.0.0.1:11434/v1/chat/completions
-python3 native/tools/research-run.py --brief doc-code-fidelity --model m --dry-run
+The file access is what makes this leg worth having. A model that can only read a prompt
+must guess about source; this one runs `Read`, `Grep` and `Glob` against the actual tree,
+which is the difference between an essay about the documentation and an audit of it. It is
+the only configuration in which `doc-code-fidelity` — scored on precision, and requiring
+both halves of every finding quoted with `path:line` — can honestly be attempted.
+
+```
+Actions → Research dispatch → Run workflow
+  brief:    doc-code-fidelity
+  research: true
+  model:    claude-opus-5
 ```
 
-It writes a report into `reports/` with the front matter filled in and `status:
-unreviewed`. There was no convention to invent: `agent.rs` settled it, POSTing the
-OpenAI-compatible shape to `http://127.0.0.1:1234/v1/chat/completions` by default — so
-every backend the Performer agent already works with works here, and pointing it at
-`organic-math-mind-runtime` makes an **Organon-hosted model audit Organon**.
+Three properties of that job, each deliberate:
 
-**`http://` and loopback only, enforced.** A remote host is refused rather than
-configured, which keeps "no script sends this repository to a vendor" true without anyone
-having to trust a flag. For a hosted model's opinion, paste the prompt in by hand.
+- **It never fires on a pull request.** `workflow_dispatch` and `release` only, and
+  `research: true` on top. A research run costs real tokens and produces a document
+  somebody then has to adjudicate; firing one per PR would produce a directory of
+  unreviewed essays faster than anyone could check them.
+- **The model's token cannot write.** The research job runs at `contents: read`. Publishing
+  — attaching to a release, opening the pull request that lands the report — happens in
+  separate jobs with no model in them. A report reaches `doc/research/reports/` through
+  review, like any other change.
+- **It is still `status: unreviewed`.** Claude reading the tree makes the claims
+  *checkable*, not *checked*. The ledger is still filled by a person, and a claim this leg
+  marked `verified` is exactly as adjudicable as one from any other model. That it shares a
+  vendor with the repository's review workflow is a reason to want the other legs, not a
+  reason to trust this one more.
 
-⚠️ **What a local leg can honestly be asked.** A model on `/v1/chat/completions` has **no
-file access** — it sees the prompt and nothing else. So the runner packs the durable docs
-alongside the fact pack and tells the model that `verified` is available only for text it
-can actually see. It *can* check prose against the measured numbers and against other
-documents: stale counts, internal contradictions, build claims the manifest data refutes.
-It *cannot* verify anything about a source file it was never shown — and on
-`doc-code-fidelity`, which is scored on precision, a confident source claim from a local
-run is a hallucination and should be refuted on adjudication. **A local report that comes
-back mostly `inferred` is the system working.**
+## Later: a local model, running continuously
 
-The workflow's `local-run` job does the same on a self-hosted runner. It is opt-in twice
-(`workflow_dispatch` only, then `local_run: true`), never fires on a PR or a release, and
-uploads the report as an artifact rather than committing it — filing a report is a pull
-request like any other change.
+Deliberately **not** built yet, and worth writing down because the argument for it is
+economic rather than technical.
+
+Every leg above is priced per run, which is what makes a round an event: you dispatch one,
+you wait, you adjudicate. A model running on the machine changes the unit economics to
+roughly zero marginal cost, and that buys something a hosted model cannot at any sensible
+price — **continuous** feedback. Not a round per release, but a standing check: every
+commit, or every hour, re-reading what changed and asking whether the documents still
+describe it. Most of those runs would find nothing, which is precisely why nobody would pay
+a vendor to do them, and precisely why they are worth doing when they are free.
+
+The shape is already half-decided by the repository. `agent.rs` speaks the OpenAI-compatible
+wire to `http://127.0.0.1:1234/v1/chat/completions` (LM Studio's port; Ollama on 11434), and
+`organic-math-mind-runtime` serves that same shape — so an Organon-hosted model auditing
+Organon needs no new protocol.
+
+Two things it must not pretend, both of which the brief design already accounts for:
+
+- A model on `/v1/chat/completions` has **no file access**. It can check prose against the
+  measured fact pack and against other documents — stale counts, internal contradictions,
+  build claims the manifest refutes — and it cannot verify anything about source it was
+  never shown. A continuous local leg is an ideal fit for exactly the checkable half.
+- Its findings still need adjudication. Continuous cheap output with nobody checking it is
+  how a findings ledger fills with noise; the answer is a narrower brief for this leg, not
+  a lower bar.
 
 ## Why the rest still has a human in the loop
 

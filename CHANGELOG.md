@@ -43,33 +43,39 @@ CI job refuses a report that does not, and `FINDINGS.md` — not the reports —
 work cites. It is the same posture Mind takes toward every quantity it displays: an
 unlabelled number is worse than a missing one.
 
-**One leg is automated, and it is the one that needs no vendor.**
-`native/tools/research-run.py` runs a brief against a model on the machine, over loopback.
-There was no convention to invent: `agent.rs` settled it long ago, POSTing the
-OpenAI-compatible shape to `http://127.0.0.1:1234/v1/chat/completions` — LM Studio's port,
-Ollama on 11434, and **`organic-math-mind-runtime` serves that same shape**, so pointing
-this at it makes an Organon-hosted model audit Organon. `http://` and loopback are
-enforced rather than defaulted, which keeps "no script sends this repository to a vendor"
-true without anyone having to trust a flag.
+**One leg is automated: `.github/workflows/research.yml` hands a brief to Claude with the
+repository checked out.** File access is what makes it worth having — a model that can
+only read a prompt must guess about source, while this one greps the tree, which is the
+difference between an essay about the documentation and an audit of it. It is the only
+configuration in which `doc-code-fidelity`, scored on precision and demanding both halves
+of every finding quoted with `path:line`, can honestly be attempted.
 
-⚠️ **A local model has no file access, and the runner says so in the prompt and in the
-report's `notes:`.** It can check prose against the measured fact pack and against other
-documents — stale counts, internal contradictions, build claims the manifest refutes — all
-of which are *in the pack*. It cannot verify anything about a source file it was never
-shown, and on `doc-code-fidelity`, which is scored on precision, a confident source claim
-from a local run is a hallucination to be refuted on adjudication. A local report that
-comes back mostly `inferred` is the system working.
+⚠️ **The model never holds a writable token.** The research job runs at `contents: read`;
+attaching to a release and opening the pull request that lands the report happen in a
+separate job with no model in it, consuming an artifact. That is the boundary
+`claude-review.yml` already relies on and documents: the tool allowlist is not the security
+boundary, `permissions:` is.
+
+**A report becomes an artifact of the repository by being merged, not by a bot committing
+it.** The publish job opens a *draft* PR whose body says outright that merging files the
+evidence and does not endorse it. `status: unreviewed` is what that PR asks a person to
+change.
 
 `.github/workflows/research.yml` validates the contracts on every PR that touches the
 directory, and builds the dispatch prompts on demand and on every published release
-(attached to the release, and pasted into the job summary to copy). It calls **no model**:
-the eval premise needs several labs, deep research is mostly not an API, and adjudication —
-the step that produces the value — is judgement. Automating dispatch alone would fill the
-directory with unreviewed essays, which is precisely what the `status` field exists to
-make visible. The `local-run` job is opt-in twice — `workflow_dispatch` only, then
-`local_run: true` — never fires on a PR or a release, needs a self-hosted runner already
-serving a model, and uploads its report as an artifact rather than committing it. A
-hosted-model leg is a reasonable later tier; new capability starts inert.
+(attached to the release, and pasted into the job summary to copy) for the models CI cannot
+reach — the eval premise wants several labs, and one vendor's token buys one vendor's
+opinion. Adjudication stays a human step in every case: it is the half that produces the
+value, and automating dispatch while leaving it undone is what would fill the directory
+with unreviewed essays. **No research run fires on a pull request** — one per PR would fill the
+directory faster than anyone could adjudicate it — and a hosted round still wants several
+labs, which one vendor's token cannot buy.
+
+A **local** model running continuously is recorded as a later tier rather than built. The
+argument for it is economic, not technical: every leg here is priced per run, which makes a
+round an event. Zero marginal cost buys something no vendor sells at a sensible price —
+a standing check on every commit, most of which find nothing, which is exactly why nobody
+would pay for them and exactly why they are worth doing when free.
 
 ### `organon-scene` — the substrate moves below the plugin
 
