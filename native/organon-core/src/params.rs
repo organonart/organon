@@ -59,6 +59,17 @@
 //! `HostOscDivision`) for exactly the orphan-rule reason `HostFuncName` exists, and each
 //! pair is pinned element-wise by a test there.
 //!
+//! ⚠️ **Tier 2 added four more, and for a different consumer** (organon#49 T2):
+//! `SurfaceMode`, `MaterialType`, `CamPath` and `Palette`. Not because `world.rs` names
+//! them, but because `cli.rs` and `agent.rs` do — and those two are *also* on the path
+//! (`world.rs` imports `agent`; `shell_main.rs` imports both), so they have to lose
+//! nih-plug too. Tier 2's scope was set by that transitive fact rather than by the
+//! original list: the CLI's three selectors are generator/surface/material, and the
+//! agent's feature fingerprint adds palette and camera path. That is the whole set.
+//!
+//! Eight semantic enums now live here, and [`IndexedEnum`] is the vocabulary that lets a
+//! caller list, name and index them without a plugin host.
+//!
 //! **The same shape of correction already applies to `ipc.rs`, one section up.** This
 //! note used to add that `ipc.rs` likewise stays, because #536 T4 reference #3
 //! (`math.rs` → `crate::ipc::Shared`) was *also* test-only and co-location bought
@@ -68,6 +79,73 @@
 //! read these notes as *records of a moment*, not as standing prohibitions.
 
 use glam::Vec3;
+
+/// **Core's counterpart to nih-plug's `Enum`** (organon#49 Tier 2).
+///
+/// Tier 1 moved the semantic enums here but left `cli.rs` and `agent.rs` reaching for
+/// `nih_plug::prelude::Enum` to do three things: list the variant names, look one up by
+/// index, and count them. None of that is a plugin-host concern — it is *"this enum has
+/// an ordered set of variants with display names"*, which is exactly what the wire format
+/// already requires of these types. The nih-plug trait was standing in for a vocabulary
+/// core is better placed to own.
+///
+/// That matters because `cli.rs` and `agent.rs` are both on `world.rs`'s dependency path
+/// (`world.rs` imports `agent`, and `shell_main.rs` imports both), so they have to become
+/// nih-plug-free for Tier 4 to move `world.rs` below the plugin crate.
+///
+/// ⚠️ **The index is the wire format** — see [`FuncName`]. `all()` is in declaration
+/// order, and `index()`/`from_index()` agree with each type's inherent `to_u32`/`from_u32`
+/// by construction. The `Host*` mirrors in `params.rs` are pinned to these lists
+/// element-wise by name; that pinning is what lets a caller use either side and get the
+/// same answer.
+///
+/// **Method names deliberately do not collide with the inherent ones.** Each type already
+/// has `as_str`/`to_u32`/`from_u32`, and a trait method of the same name would be shadowed
+/// by the inherent one at every call site — silently, and differently depending on whether
+/// the trait was in scope. `all`/`label`/`index`/`from_index` cannot be confused for them.
+pub trait IndexedEnum: Copy + PartialEq + 'static {
+    /// Every variant, in declaration order = index order = the wire format.
+    fn all() -> &'static [Self];
+
+    /// This variant's display name — equal to the host mirror's `#[name = "…"]`.
+    fn label(self) -> &'static str;
+
+    /// The variant at `i`, falling back to the type's documented default when out of
+    /// range (never a panic: these indices arrive from `Shared`, from presets, and from
+    /// a human typing at a CLI).
+    fn from_index(i: u32) -> Self;
+
+    /// Position in [`IndexedEnum::all`]. Defaulted rather than required — it is a search
+    /// of a list that is at most 27 long, in CLI and doc paths only, and a hand-written
+    /// override would be a second place for the index to drift.
+    fn index(self) -> u32 {
+        Self::all().iter().position(|v| *v == self).unwrap_or(0) as u32
+    }
+
+    /// Display names in index order — the shape nih-plug's `variants()` returned, which
+    /// is what the CLI's resolver, the `organon docs` generator and the agent's
+    /// capability catalog all consume.
+    ///
+    /// Allocates, and that is fine: every caller is parsing a command line, building a
+    /// prompt, or writing a markdown file. Deriving it from `all()` keeps one source of
+    /// truth instead of a `NAMES` constant that could drift from `label()`.
+    fn labels() -> Vec<&'static str> {
+        Self::all().iter().map(|v| v.label()).collect()
+    }
+}
+
+/// Implements [`IndexedEnum`] by delegating to the inherent `ALL` / `as_str` / `from_u32`
+/// each of these types already has. Six near-identical impls is exactly the kind of
+/// repetition that rots one line at a time.
+macro_rules! impl_indexed_enum {
+    ($($t:ty),* $(,)?) => { $(
+        impl IndexedEnum for $t {
+            fn all() -> &'static [Self] { &Self::ALL }
+            fn label(self) -> &'static str { self.as_str() }
+            fn from_index(i: u32) -> Self { Self::from_u32(i) }
+        }
+    )* };
+}
 
 /// A waveshaper applied to a phasor — a synth oscillator's wave family.
 ///
@@ -457,6 +535,313 @@ impl OscDivision {
     }
 }
 
+/// How each node is turned into geometry (organon#49 T2).
+///
+/// `Original` = an independent cube per node. `FlowAligned` orients each cube toward its
+/// successor so consecutive nodes connect into ribbons; `SweptTubes` renders those
+/// bridges as cylinders. `Metaball`/`Volume` bake the node set into one scalar field and
+/// raymarch it as a skin or a participating medium; `Membrane` lofts a sheet between
+/// strands; `Voxel` is the grid-snapped DDA path; `NeuralTissue` builds closed anatomical
+/// primitives; `Splat` draws anisotropic 3-D Gaussians; `Plexus` wires nearest neighbours
+/// into a field web.
+///
+/// The per-variant prose stays on `params.rs`'s `HostSurfaceMode` — those strings are the
+/// DAW's dropdown, which is a host concern.
+///
+/// ⚠️ Append-only; the index is the wire format. `Plexus` took ordinal 9 because `Splat`
+/// took 8 on the main merge.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum SurfaceMode {
+    Original,
+    FlowAligned,
+    SweptTubes,
+    Metaball,
+    Membrane,
+    Voxel,
+    Volume,
+    NeuralTissue,
+    Splat,
+    Plexus,
+}
+
+impl SurfaceMode {
+    pub const ALL: [SurfaceMode; 10] = [
+        SurfaceMode::Original,
+        SurfaceMode::FlowAligned,
+        SurfaceMode::SweptTubes,
+        SurfaceMode::Metaball,
+        SurfaceMode::Membrane,
+        SurfaceMode::Voxel,
+        SurfaceMode::Volume,
+        SurfaceMode::NeuralTissue,
+        SurfaceMode::Splat,
+        SurfaceMode::Plexus,
+    ];
+
+    /// Matches the host mirror's `#[name = "…"]`; pinned by a test in `params.rs`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SurfaceMode::Original => "Original",
+            SurfaceMode::FlowAligned => "Flow-Aligned",
+            SurfaceMode::SweptTubes => "Swept Tubes",
+            SurfaceMode::Metaball => "Metaball",
+            SurfaceMode::Membrane => "Membrane",
+            SurfaceMode::Voxel => "Voxel",
+            SurfaceMode::Volume => "Volume",
+            SurfaceMode::NeuralTissue => "Neural Tissue",
+            SurfaceMode::Splat => "Splat",
+            SurfaceMode::Plexus => "Plexus",
+        }
+    }
+
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    pub fn from_u32(v: u32) -> SurfaceMode {
+        match v {
+            1 => SurfaceMode::FlowAligned,
+            2 => SurfaceMode::SweptTubes,
+            3 => SurfaceMode::Metaball,
+            4 => SurfaceMode::Membrane,
+            5 => SurfaceMode::Voxel,
+            6 => SurfaceMode::Volume,
+            7 => SurfaceMode::NeuralTissue,
+            8 => SurfaceMode::Splat,
+            9 => SurfaceMode::Plexus,
+            _ => SurfaceMode::Original,
+        }
+    }
+}
+
+/// How a surface shades (organon#49 T2) — the PBR lobe selector.
+///
+/// ⚠️ Append-only; the index is the wire format, and `cube.wgsl` branches on it. The
+/// per-variant prose stays on `params.rs`'s `HostMaterialType`.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum MaterialType {
+    Standard,
+    Chrome,
+    Glass,
+    Refractive,
+    Anisotropic,
+    Clearcoat,
+    Velvet,
+    Subsurface,
+}
+
+impl MaterialType {
+    pub const ALL: [MaterialType; 8] = [
+        MaterialType::Standard,
+        MaterialType::Chrome,
+        MaterialType::Glass,
+        MaterialType::Refractive,
+        MaterialType::Anisotropic,
+        MaterialType::Clearcoat,
+        MaterialType::Velvet,
+        MaterialType::Subsurface,
+    ];
+
+    /// Matches the host mirror's `#[name = "…"]`; pinned by a test in `params.rs`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MaterialType::Standard => "Standard",
+            MaterialType::Chrome => "Chrome",
+            MaterialType::Glass => "Glass",
+            MaterialType::Refractive => "Refractive",
+            MaterialType::Anisotropic => "Anisotropic",
+            MaterialType::Clearcoat => "Clearcoat",
+            MaterialType::Velvet => "Velvet",
+            MaterialType::Subsurface => "Subsurface",
+        }
+    }
+
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    pub fn from_u32(v: u32) -> MaterialType {
+        match v {
+            1 => MaterialType::Chrome,
+            2 => MaterialType::Glass,
+            3 => MaterialType::Refractive,
+            4 => MaterialType::Anisotropic,
+            5 => MaterialType::Clearcoat,
+            6 => MaterialType::Velvet,
+            7 => MaterialType::Subsurface,
+            _ => MaterialType::Standard,
+        }
+    }
+}
+
+/// Auto-orbit camera path presets (organon#49 T2). `Off` leaves the camera fully manual.
+///
+/// ⚠️ Append-only; the index is the wire format. Ordinals 5–10 are #307 Tier 2's
+/// cinematic moves, appended after the original five.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum CamPath {
+    Off,
+    HCircle,
+    VCircle,
+    Figure8,
+    Spiral,
+    Boom,
+    Pendulum,
+    Truck,
+    PushPull,
+    PolarOver,
+    Drift,
+}
+
+impl CamPath {
+    pub const ALL: [CamPath; 11] = [
+        CamPath::Off,
+        CamPath::HCircle,
+        CamPath::VCircle,
+        CamPath::Figure8,
+        CamPath::Spiral,
+        CamPath::Boom,
+        CamPath::Pendulum,
+        CamPath::Truck,
+        CamPath::PushPull,
+        CamPath::PolarOver,
+        CamPath::Drift,
+    ];
+
+    /// Matches the host mirror's `#[name = "…"]`; pinned by a test in `params.rs`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CamPath::Off => "Off",
+            CamPath::HCircle => "Horizontal Circle",
+            CamPath::VCircle => "Vertical Circle",
+            CamPath::Figure8 => "Figure Eight",
+            CamPath::Spiral => "Spiral",
+            CamPath::Boom => "Boom (Crane)",
+            CamPath::Pendulum => "Pendulum",
+            CamPath::Truck => "Truck (Lateral)",
+            CamPath::PushPull => "Push / Pull",
+            CamPath::PolarOver => "Over the Top",
+            CamPath::Drift => "Handheld Drift",
+        }
+    }
+
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    pub fn from_u32(v: u32) -> CamPath {
+        match v {
+            1 => CamPath::HCircle,
+            2 => CamPath::VCircle,
+            3 => CamPath::Figure8,
+            4 => CamPath::Spiral,
+            5 => CamPath::Boom,
+            6 => CamPath::Pendulum,
+            7 => CamPath::Truck,
+            8 => CamPath::PushPull,
+            9 => CamPath::PolarOver,
+            10 => CamPath::Drift,
+            _ => CamPath::Off,
+        }
+    }
+}
+
+/// The colour LUT applied across every surface mode (organon#49 T2).
+///
+/// `Native` keeps the RGB-cube / HSV colouring; every other variant replaces it. The
+/// non-`Native`, non-`Spectrum` palettes are Inigo-Quilez cosine gradients; `Spectrum`
+/// keeps the exact HSV wheel.
+///
+/// ⚠️ Append-only; the index is the wire format. `Native` is ordinal 0 **and** the
+/// out-of-range fallback, which is what makes an unknown palette degrade to today's look
+/// rather than to an arbitrary gradient.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Palette {
+    Native,
+    Spectrum,
+    CoralReef,
+    DeepSea,
+    Anemone,
+    Jellyfish,
+    Nautilus,
+    Kelp,
+    Bioluminescence,
+    Flesh,
+    Candy,
+    Plasma,
+    Neon,
+}
+
+impl Palette {
+    pub const ALL: [Palette; 13] = [
+        Palette::Native,
+        Palette::Spectrum,
+        Palette::CoralReef,
+        Palette::DeepSea,
+        Palette::Anemone,
+        Palette::Jellyfish,
+        Palette::Nautilus,
+        Palette::Kelp,
+        Palette::Bioluminescence,
+        Palette::Flesh,
+        Palette::Candy,
+        Palette::Plasma,
+        Palette::Neon,
+    ];
+
+    /// Matches the host mirror's `#[name = "…"]`; pinned by a test in `params.rs`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Palette::Native => "Native (HSV / RGB)",
+            Palette::Spectrum => "Spectrum (HSV)",
+            Palette::CoralReef => "Coral Reef",
+            Palette::DeepSea => "Deep Sea",
+            Palette::Anemone => "Anemone",
+            Palette::Jellyfish => "Jellyfish",
+            Palette::Nautilus => "Nautilus",
+            Palette::Kelp => "Kelp",
+            Palette::Bioluminescence => "Bioluminescence",
+            Palette::Flesh => "Flesh",
+            Palette::Candy => "Candy",
+            Palette::Plasma => "Plasma",
+            Palette::Neon => "Neon",
+        }
+    }
+
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    pub fn from_u32(v: u32) -> Palette {
+        match v {
+            1 => Palette::Spectrum,
+            2 => Palette::CoralReef,
+            3 => Palette::DeepSea,
+            4 => Palette::Anemone,
+            5 => Palette::Jellyfish,
+            6 => Palette::Nautilus,
+            7 => Palette::Kelp,
+            8 => Palette::Bioluminescence,
+            9 => Palette::Flesh,
+            10 => Palette::Candy,
+            11 => Palette::Plasma,
+            12 => Palette::Neon,
+            _ => Palette::Native,
+        }
+    }
+}
+
+impl_indexed_enum!(
+    FuncName,
+    GeneratorMode,
+    BoidsForm,
+    OscDivision,
+    SurfaceMode,
+    MaterialType,
+    CamPath,
+    Palette,
+);
+
 /// The vector-shaped numeric params consumed by [`crate::math::draw_tissue`].
 ///
 /// #626 T3 PR B: moved here from `params.rs` with `FuncName`. It moves *free* — six
@@ -564,6 +949,81 @@ mod tests {
     fn unknown_osc_division_falls_back_to_quarter() {
         assert_eq!(OscDivision::from_u32(2), OscDivision::Quarter);
         assert_eq!(OscDivision::from_u32(9999), OscDivision::Quarter);
+    }
+
+    // ── organon#49 T2 ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn surface_and_material_indices_round_trip() {
+        for (i, s) in SurfaceMode::ALL.iter().enumerate() {
+            assert_eq!(s.to_u32(), i as u32, "{s:?} is not at its declared index");
+            assert_eq!(SurfaceMode::from_u32(i as u32), *s);
+        }
+        for (i, m) in MaterialType::ALL.iter().enumerate() {
+            assert_eq!(m.to_u32(), i as u32, "{m:?} is not at its declared index");
+            assert_eq!(MaterialType::from_u32(i as u32), *m);
+        }
+        assert_eq!(SurfaceMode::from_u32(9999), SurfaceMode::Original);
+        assert_eq!(MaterialType::from_u32(9999), MaterialType::Standard);
+    }
+
+    /// `Splat` = 8 and `Plexus` = 9 by merge order, asserted by name so a "tidier"
+    /// reordering of `ALL` still fails.
+    #[test]
+    fn surface_mode_merge_order_ordinals_are_pinned() {
+        assert_eq!(SurfaceMode::Splat.to_u32(), 8);
+        assert_eq!(SurfaceMode::Plexus.to_u32(), 9);
+    }
+
+    /// The trait must agree with the inherent methods for **every** implementor —
+    /// `index()` is a default that searches `all()`, so this is what catches an `ALL`
+    /// that disagrees with `to_u32`.
+    #[test]
+    fn indexed_enum_agrees_with_the_inherent_methods() {
+        fn check<T: IndexedEnum + std::fmt::Debug>(inherent: &[(T, u32, &'static str)]) {
+            assert_eq!(T::all().len(), inherent.len(), "all() length");
+            assert_eq!(T::labels().len(), inherent.len(), "labels() length");
+            for (v, wire, name) in inherent {
+                assert_eq!(v.index(), *wire, "{v:?}: index() vs to_u32()");
+                assert_eq!(v.label(), *name, "{v:?}: label() vs as_str()");
+                assert_eq!(T::from_index(*wire), *v, "{v:?}: from_index() vs from_u32()");
+            }
+        }
+        check(&FuncName::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+        check(&GeneratorMode::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+        check(&BoidsForm::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+        check(&OscDivision::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+        check(&SurfaceMode::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+        check(&MaterialType::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+        check(&CamPath::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+        check(&Palette::ALL.map(|v| (v, v.to_u32(), v.as_str())));
+    }
+
+    /// Display names must be unique per type, because the CLI resolves a selector by
+    /// **unambiguous case-insensitive substring** — two equal names would make one
+    /// unreachable, and the ambiguity error would name the same string twice.
+    #[test]
+    fn labels_are_unique_within_each_type() {
+        fn check<T: IndexedEnum>(what: &str) {
+            let names = T::labels();
+            for (i, a) in names.iter().enumerate() {
+                for b in names.iter().skip(i + 1) {
+                    assert_ne!(
+                        a.to_lowercase(),
+                        b.to_lowercase(),
+                        "{what}: duplicate display name {a:?}",
+                    );
+                }
+            }
+        }
+        check::<FuncName>("FuncName");
+        check::<GeneratorMode>("GeneratorMode");
+        check::<BoidsForm>("BoidsForm");
+        check::<OscDivision>("OscDivision");
+        check::<SurfaceMode>("SurfaceMode");
+        check::<MaterialType>("MaterialType");
+        check::<CamPath>("CamPath");
+        check::<Palette>("Palette");
     }
 
     #[test]

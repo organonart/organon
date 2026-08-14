@@ -371,7 +371,7 @@ pub fn format_value(style: FormatStyle, v: f32) -> String {
 mod tests {
     use super::*;
     use crate::agent;
-    use crate::params::{CamPath, MaterialType, Palette};
+    use crate::params::{CamPath, IndexedEnum, MaterialType, Palette};
     use std::collections::BTreeSet;
 
     /// Read a param's `(min, max, default)` back out of a *type-erased* `ParamPtr`, which
@@ -684,9 +684,9 @@ mod tests {
                 .clone()
         };
         for (id, names) in [
-            ("cam_path", <CamPath as Enum>::variants()),
-            ("mat_type", <MaterialType as Enum>::variants()),
-            ("palette", <Palette as Enum>::variants()),
+            ("cam_path", CamPath::labels()),
+            ("mat_type", MaterialType::labels()),
+            ("palette", Palette::labels()),
         ] {
             let got = variants_of(id);
             assert_eq!(got.len(), names.len(), "{id}: variant count");

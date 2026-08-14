@@ -23,7 +23,10 @@ use nih_plug::prelude::*;
 /// `param_table.rs` and `lib.rs` keep resolving verbatim; only the ~12 sites that touch
 /// an `EnumParam` had to change, because those are the ones that genuinely handle the
 /// host adapter rather than the semantic value.
-pub use organon_core::params::{BoidsForm, FuncName, GeneratorMode, OscDivision, ParamValues};
+pub use organon_core::params::{
+    BoidsForm, CamPath, FuncName, GeneratorMode, IndexedEnum, MaterialType, OscDivision,
+    Palette, ParamValues, SurfaceMode,
+};
 use nih_plug_egui::EguiState;
 use std::sync::Arc;
 
@@ -122,8 +125,18 @@ impl HostFuncName {
 }
 
 /// Auto-orbit camera path presets. `Off` leaves the camera fully manual.
+/// **Host-facing mirror of [`organon_core::params::CamPath`]** (organon#49 T2).
+///
+/// Same orphan-rule split as [`HostFuncName`]: `EnumParam<T>` requires
+/// `T: nih_plug::Enum`, which `organic-math-native` cannot implement for core's type.
+/// The per-variant prose below stays HERE — these strings are the DAW's dropdown.
+///
+/// ⚠️ **This list and core's MUST stay identical, in order** — the index is the wire
+/// format. `host_cam_path_mirrors_core` pins them element-wise, by name, in both
+/// directions; if you add a variant, add it to BOTH and at the tail.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum CamPath {
+pub enum HostCamPath {
     #[name = "Off"]
     Off,
     #[name = "Horizontal Circle"]
@@ -149,36 +162,28 @@ pub enum CamPath {
     Drift,
 }
 
-impl CamPath {
+impl HostCamPath {
     pub fn to_u32(self) -> u32 {
-        match self {
-            CamPath::Off => 0,
-            CamPath::HCircle => 1,
-            CamPath::VCircle => 2,
-            CamPath::Figure8 => 3,
-            CamPath::Spiral => 4,
-            CamPath::Boom => 5,
-            CamPath::Pendulum => 6,
-            CamPath::Truck => 7,
-            CamPath::PushPull => 8,
-            CamPath::PolarOver => 9,
-            CamPath::Drift => 10,
+        self as u32
+    }
+
+    /// Unknown ids fall back to `Off`, matching core. Built on the derived
+    /// `Enum::from_index` rather than a second match — `enum_from_u32_via_index!`'s idiom
+    /// at the top of this file. The bounds check is load-bearing: these indices arrive
+    /// from `Shared` and from presets, so out-of-range input is expected.
+    pub fn from_u32(v: u32) -> HostCamPath {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostCamPath::Off
         }
     }
-    pub fn from_u32(v: u32) -> CamPath {
-        match v {
-            1 => CamPath::HCircle,
-            2 => CamPath::VCircle,
-            3 => CamPath::Figure8,
-            4 => CamPath::Spiral,
-            5 => CamPath::Boom,
-            6 => CamPath::Pendulum,
-            7 => CamPath::Truck,
-            8 => CamPath::PushPull,
-            9 => CamPath::PolarOver,
-            10 => CamPath::Drift,
-            _ => CamPath::Off,
-        }
+
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> CamPath {
+        CamPath::from_u32(self.to_u32())
     }
 }
 
@@ -1310,8 +1315,18 @@ impl LiqShape {
 /// nodes connect into ribbons/tubes instead of crossing as independent spikes.
 /// `SweptTubes` = the same per-segment bridges rendered as round cylinders
 /// instead of boxes, for a smoother tube look.
+/// **Host-facing mirror of [`organon_core::params::SurfaceMode`]** (organon#49 T2).
+///
+/// Same orphan-rule split as [`HostFuncName`]: `EnumParam<T>` requires
+/// `T: nih_plug::Enum`, which `organic-math-native` cannot implement for core's type.
+/// The per-variant prose below stays HERE — these strings are the DAW's dropdown.
+///
+/// ⚠️ **This list and core's MUST stay identical, in order** — the index is the wire
+/// format. `host_surface_mode_mirrors_core` pins them element-wise, by name, in both
+/// directions; if you add a variant, add it to BOTH and at the tail.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum SurfaceMode {
+pub enum HostSurfaceMode {
     #[name = "Original"]
     Original,
     #[name = "Flow-Aligned"]
@@ -1370,23 +1385,28 @@ pub enum SurfaceMode {
     Plexus,
 }
 
-impl SurfaceMode {
+impl HostSurfaceMode {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> SurfaceMode {
-        match v {
-            1 => SurfaceMode::FlowAligned,
-            2 => SurfaceMode::SweptTubes,
-            3 => SurfaceMode::Metaball,
-            4 => SurfaceMode::Membrane,
-            5 => SurfaceMode::Voxel,
-            6 => SurfaceMode::Volume,
-            7 => SurfaceMode::NeuralTissue,
-            8 => SurfaceMode::Splat,
-            9 => SurfaceMode::Plexus,
-            _ => SurfaceMode::Original,
+
+    /// Unknown ids fall back to the first variant, matching core. Built on the derived
+    /// `Enum::from_index` rather than a second match — `enum_from_u32_via_index!`'s idiom
+    /// at the top of this file. The bounds check is load-bearing: these indices arrive
+    /// from `Shared` and from presets, so out-of-range input is expected.
+    pub fn from_u32(v: u32) -> HostSurfaceMode {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostSurfaceMode::Original
         }
+    }
+
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> SurfaceMode {
+        SurfaceMode::from_u32(self.to_u32())
     }
 }
 
@@ -3680,8 +3700,18 @@ impl MembraneArmBuild {
 /// exposed on any material through the existing Surface-FX translucency + the
 /// `sss_thickness` dial, and the Glass/Refractive body gains an `interior_scatter`
 /// glow (opal). Picking `Subsurface` just forces the lobe on.
+/// **Host-facing mirror of [`organon_core::params::MaterialType`]** (organon#49 T2).
+///
+/// Same orphan-rule split as [`HostFuncName`]: `EnumParam<T>` requires
+/// `T: nih_plug::Enum`, which `organic-math-native` cannot implement for core's type.
+/// The per-variant prose below stays HERE — these strings are the DAW's dropdown.
+///
+/// ⚠️ **This list and core's MUST stay identical, in order** — the index is the wire
+/// format. `host_material_type_mirrors_core` pins them element-wise, by name, in both
+/// directions; if you add a variant, add it to BOTH and at the tail.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum MaterialType {
+pub enum HostMaterialType {
     #[name = "Standard"]
     Standard,
     #[name = "Chrome"]
@@ -3700,21 +3730,28 @@ pub enum MaterialType {
     Subsurface,
 }
 
-impl MaterialType {
+impl HostMaterialType {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> MaterialType {
-        match v {
-            1 => MaterialType::Chrome,
-            2 => MaterialType::Glass,
-            3 => MaterialType::Refractive,
-            4 => MaterialType::Anisotropic,
-            5 => MaterialType::Clearcoat,
-            6 => MaterialType::Velvet,
-            7 => MaterialType::Subsurface,
-            _ => MaterialType::Standard,
+
+    /// Unknown ids fall back to the first variant, matching core. Built on the derived
+    /// `Enum::from_index` rather than a second match — `enum_from_u32_via_index!`'s idiom
+    /// at the top of this file. The bounds check is load-bearing: these indices arrive
+    /// from `Shared` and from presets, so out-of-range input is expected.
+    pub fn from_u32(v: u32) -> HostMaterialType {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostMaterialType::Standard
         }
+    }
+
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> MaterialType {
+        MaterialType::from_u32(self.to_u32())
     }
 }
 
@@ -3810,8 +3847,18 @@ impl RenderStyle {
 /// any explicit palette applies its LUT across **all** surface modes, replacing
 /// the RGB-cube colouring. The non-Native palettes are Inigo-Quilez cosine
 /// gradients (compact + smooth); `Spectrum` keeps the exact HSV wheel.
+/// **Host-facing mirror of [`organon_core::params::Palette`]** (organon#49 T2).
+///
+/// Same orphan-rule split as [`HostFuncName`]: `EnumParam<T>` requires
+/// `T: nih_plug::Enum`, which `organic-math-native` cannot implement for core's type.
+/// The per-variant prose below stays HERE — these strings are the DAW's dropdown.
+///
+/// ⚠️ **This list and core's MUST stay identical, in order** — the index is the wire
+/// format. `host_palette_mirrors_core` pins them element-wise, by name, in both
+/// directions; if you add a variant, add it to BOTH and at the tail.
+///
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum Palette {
+pub enum HostPalette {
     #[name = "Native (HSV / RGB)"]
     Native,
     #[name = "Spectrum (HSV)"]
@@ -3840,26 +3887,28 @@ pub enum Palette {
     Neon,
 }
 
-impl Palette {
+impl HostPalette {
     pub fn to_u32(self) -> u32 {
         self as u32
     }
-    pub fn from_u32(v: u32) -> Palette {
-        match v {
-            1 => Palette::Spectrum,
-            2 => Palette::CoralReef,
-            3 => Palette::DeepSea,
-            4 => Palette::Anemone,
-            5 => Palette::Jellyfish,
-            6 => Palette::Nautilus,
-            7 => Palette::Kelp,
-            8 => Palette::Bioluminescence,
-            9 => Palette::Flesh,
-            10 => Palette::Candy,
-            11 => Palette::Plasma,
-            12 => Palette::Neon,
-            _ => Palette::Native,
+
+    /// Unknown ids fall back to `Native`, matching core. Built on the derived
+    /// `Enum::from_index` rather than a second match — `enum_from_u32_via_index!`'s idiom
+    /// at the top of this file. The bounds check is load-bearing: these indices arrive
+    /// from `Shared` and from presets, so out-of-range input is expected.
+    pub fn from_u32(v: u32) -> HostPalette {
+        let n = <Self as Enum>::variants().len();
+        if (v as usize) < n {
+            <Self as Enum>::from_index(v as usize)
+        } else {
+            HostPalette::Native
         }
+    }
+
+    /// The semantic value this adapter stands for, through the shared index.
+    #[inline]
+    pub fn core(self) -> Palette {
+        Palette::from_u32(self.to_u32())
     }
 }
 
@@ -5274,7 +5323,7 @@ pub struct OrganicMathParams {
     #[id = "scsf"] pub sc_surface: EnumParam<ScenerySurface>,
     /// Scenery material: Standard PBR / Chrome / Glass — independent of the
     /// primary generator's material.
-    #[id = "scmt"] pub sc_mat: EnumParam<MaterialType>,
+    #[id = "scmt"] pub sc_mat: EnumParam<HostMaterialType>,
     /// Scenery metallic (Standard branch).
     #[id = "scme"] pub sc_metallic: FloatParam,
     /// Scenery roughness.
@@ -5289,7 +5338,7 @@ pub struct OrganicMathParams {
     /// Scenery glass index of refraction.
     #[id = "scio"] pub sc_ior: FloatParam,
     /// Scenery palette (colour LUT) — independent of the main palette.
-    #[id = "scpl"] pub sc_palette: EnumParam<Palette>,
+    #[id = "scpl"] pub sc_palette: EnumParam<HostPalette>,
     /// Scenery translucency (SSS) amount — additive, inert at 0.
     #[id = "scss"] pub sc_sss: FloatParam,
     /// Scenery SSS normal distortion.
@@ -5336,7 +5385,7 @@ pub struct OrganicMathParams {
     // --- material (a third uniform set) — a Look, applied instantly (the water
     // --- LEVEL is a landform param and quantizes with Terra). ---
     /// Water material (Standard / Chrome / Glass — Glass reads as water).
-    #[id = "wtmt"] pub wt_mat: EnumParam<MaterialType>,
+    #[id = "wtmt"] pub wt_mat: EnumParam<HostMaterialType>,
     /// Water roughness (low = a mirror-calm surface).
     #[id = "wtrg"] pub wt_roughness: FloatParam,
     /// Water index of refraction (1.33 = real water).
@@ -5699,7 +5748,7 @@ pub struct OrganicMathParams {
     #[id = "inhd"] pub instr_hud_dock: EnumParam<HudDock>,
 
     // --- Surface (how nodes become geometry) ---
-    #[id = "surf"] pub surface_mode: EnumParam<SurfaceMode>,
+    #[id = "surf"] pub surface_mode: EnumParam<HostSurfaceMode>,
     // Origin mode for the Original cube-field: Corner (grid corner at the origin,
     // the historical look) vs Centered (grid symmetric about the origin).
     #[id = "orig"] pub origin_mode: EnumParam<OriginMode>,
@@ -5863,7 +5912,7 @@ pub struct OrganicMathParams {
     /// Edge tube-impostor radius (× node spacing). Shared.
     #[id = "pler"] pub plexus_edge_radius: FloatParam,
     /// Node impostor material — full independent control.
-    #[id = "plnt"] pub plexus_node_type: EnumParam<MaterialType>,
+    #[id = "plnt"] pub plexus_node_type: EnumParam<HostMaterialType>,
     #[id = "plnm"] pub plexus_node_metallic: FloatParam,
     #[id = "plng"] pub plexus_node_rough: FloatParam,
     #[id = "plno"] pub plexus_node_ior: FloatParam,
@@ -5872,7 +5921,7 @@ pub struct OrganicMathParams {
     #[id = "plnv"] pub plexus_node_val: FloatParam,
     #[id = "plne"] pub plexus_node_emissive: FloatParam,
     /// Edge impostor material — independent of the node material.
-    #[id = "plet"] pub plexus_edge_type: EnumParam<MaterialType>,
+    #[id = "plet"] pub plexus_edge_type: EnumParam<HostMaterialType>,
     #[id = "plem"] pub plexus_edge_metallic: FloatParam,
     #[id = "pleg"] pub plexus_edge_rough: FloatParam,
     #[id = "pleo"] pub plexus_edge_ior: FloatParam,
@@ -6021,7 +6070,7 @@ pub struct OrganicMathParams {
     #[id = "clam"] pub col_amount: FloatParam,
 
     // --- Camera (auto-orbit) ---
-    #[id = "cpth"] pub cam_path: EnumParam<CamPath>,
+    #[id = "cpth"] pub cam_path: EnumParam<HostCamPath>,
     #[id = "cspd"] pub cam_speed: FloatParam,
     #[id = "ckik"] pub cam_kick: FloatParam,
     #[id = "cdmp"] pub cam_damping: FloatParam,
@@ -6100,19 +6149,19 @@ pub struct OrganicMathParams {
     /// RNG seed so a Random/Shuffle/Weighted storyboard replays identically.
     #[id = "cssd"] pub cam_story_seed: IntParam,
     // Shot 0
-    #[id = "cs0p"] pub cam_shot0_path: EnumParam<CamPath>,
+    #[id = "cs0p"] pub cam_shot0_path: EnumParam<HostCamPath>,
     #[id = "cs0b"] pub cam_shot0_bars: EnumParam<BarPeriod>,
     #[id = "cs0r"] pub cam_shot0_radius: FloatParam,
     // Shot 1
-    #[id = "cs1p"] pub cam_shot1_path: EnumParam<CamPath>,
+    #[id = "cs1p"] pub cam_shot1_path: EnumParam<HostCamPath>,
     #[id = "cs1b"] pub cam_shot1_bars: EnumParam<BarPeriod>,
     #[id = "cs1r"] pub cam_shot1_radius: FloatParam,
     // Shot 2
-    #[id = "cs2p"] pub cam_shot2_path: EnumParam<CamPath>,
+    #[id = "cs2p"] pub cam_shot2_path: EnumParam<HostCamPath>,
     #[id = "cs2b"] pub cam_shot2_bars: EnumParam<BarPeriod>,
     #[id = "cs2r"] pub cam_shot2_radius: FloatParam,
     // Shot 3
-    #[id = "cs3p"] pub cam_shot3_path: EnumParam<CamPath>,
+    #[id = "cs3p"] pub cam_shot3_path: EnumParam<HostCamPath>,
     #[id = "cs3b"] pub cam_shot3_bars: EnumParam<BarPeriod>,
     #[id = "cs3r"] pub cam_shot3_radius: FloatParam,
 
@@ -6149,7 +6198,7 @@ pub struct OrganicMathParams {
     #[id = "brdec"] pub breath_decay: FloatParam,
 
     // --- Environment / PBR (IBL) ---
-    #[id = "mtyp"] pub mat_type: EnumParam<MaterialType>,
+    #[id = "mtyp"] pub mat_type: EnumParam<HostMaterialType>,
     #[id = "ior"]  pub ior: FloatParam, // glass index of refraction
     /// Beer–Lambert absorption strength for the `Refractive` material (σ scale;
     /// the node's albedo is what survives, mirroring the liquid's convention).
@@ -6261,7 +6310,7 @@ pub struct OrganicMathParams {
     #[id = "irdh"] pub irid_shift: FloatParam,
 
     /// Colour palette (1-D LUT) for the strand/field sweep. Native = current look.
-    #[id = "pal"] pub palette: EnumParam<Palette>,
+    #[id = "pal"] pub palette: EnumParam<HostPalette>,
 
     // --- Metaball mode (only used when Surface Mode = Metaball) ---
     /// Per-node influence radius (world units). Must exceed the node spacing
@@ -6689,7 +6738,7 @@ pub struct OrganicMathParams {
     #[id = "chdbf"] pub panel_db_floor: FloatParam,
     #[id = "chdbt"] pub panel_db_top: FloatParam,
     /// Impostor material (Tier 2) + metallic/roughness + emissive glow + line radius.
-    #[id = "chmat"] pub panel_material: EnumParam<MaterialType>,
+    #[id = "chmat"] pub panel_material: EnumParam<HostMaterialType>,
     #[id = "chmet"] pub panel_metallic: FloatParam,
     #[id = "chrgh"] pub panel_roughness: FloatParam,
     #[id = "chemi"] pub panel_emissive: FloatParam,
@@ -8187,14 +8236,14 @@ impl Default for OrganicMathParams {
             rl_evolve: flin("Rail Evolve", 0.0, 0.0, 1.0),
             sc_mode: EnumParam::new("Scenery", SceneryMode::None),
             sc_surface: EnumParam::new("Scenery Surface", ScenerySurface::Cubes),
-            sc_mat: EnumParam::new("Scenery Material", MaterialType::Standard),
+            sc_mat: EnumParam::new("Scenery Material", HostMaterialType::Standard),
             sc_metallic: flin("Scenery Metallic", 0.0, 0.0, 1.0),
             sc_roughness: flin("Scenery Roughness", 0.35, 0.0, 1.0),
             sc_glow: flin("Scenery Glow", 0.2, 0.0, 2.0),
             sc_emissive: flin("Scenery Emissive", 0.0, 0.0, 16.0),
             sc_opacity: flin("Scenery Opacity", 1.0, 0.0, 1.0),
             sc_ior: flin("Scenery Glass IOR", 1.45, 1.0, 2.5),
-            sc_palette: EnumParam::new("Scenery Palette", Palette::Native),
+            sc_palette: EnumParam::new("Scenery Palette", HostPalette::Native),
             sc_sss: flin("Scenery Translucency", 0.0, 0.0, 1.0),
             sc_sss_dist: flin("Scenery SSS Distortion", 0.3, 0.0, 1.0),
             sc_sss_pow: flin("Scenery SSS Power", 4.0, 1.0, 16.0),
@@ -8217,7 +8266,7 @@ impl Default for OrganicMathParams {
             terra_clearance: flin("Terra Clearance", 1.5, 0.2, 5.0),
             terra_noise_freq: flin("Terra Detail Freq", 0.15, 0.01, 1.0),
             // Terra water (#206 Tier 3): calm see-through glass water.
-            wt_mat: EnumParam::new("Water Material", MaterialType::Glass),
+            wt_mat: EnumParam::new("Water Material", HostMaterialType::Glass),
             wt_roughness: flin("Water Roughness", 0.06, 0.0, 1.0),
             wt_ior: flin("Water IOR", 1.33, 1.0, 2.5),
             wt_opacity: flin("Water Opacity", 0.7, 0.0, 1.0),
@@ -8395,7 +8444,7 @@ impl Default for OrganicMathParams {
             instr_hud_scale: flin("HUD Size", 1.0, 0.4, 3.0),
             instr_hud_dock: EnumParam::new("HUD Dock", HudDock::TopLeft),
 
-            surface_mode: EnumParam::new("Surface Mode", SurfaceMode::Original),
+            surface_mode: EnumParam::new("Surface Mode", HostSurfaceMode::Original),
             origin_mode: EnumParam::new("Origin Mode", OriginMode::Corner),
             // 0 = sharp cube (today's look); 0.5 = wide rounded cube; 1 = sphere.
             bevel: flin("Bevel", 0.0, 0.0, 1.0),
@@ -8490,7 +8539,7 @@ impl Default for OrganicMathParams {
             plexus_edges: BoolParam::new("Plexus Edges", true),
             plexus_node_radius: flin("Plexus Node Radius", 0.35, 0.02, 1.5),
             plexus_edge_radius: flin("Plexus Edge Radius", 0.09, 0.01, 0.8),
-            plexus_node_type: EnumParam::new("Plexus Node Material", MaterialType::Standard),
+            plexus_node_type: EnumParam::new("Plexus Node Material", HostMaterialType::Standard),
             plexus_node_metallic: flin("Plexus Node Metallic", 0.1, 0.0, 1.0),
             plexus_node_rough: flin("Plexus Node Roughness", 0.4, 0.0, 1.0),
             plexus_node_ior: flin("Plexus Node IOR", 1.45, 1.0, 2.5),
@@ -8498,7 +8547,7 @@ impl Default for OrganicMathParams {
             plexus_node_sat: flin("Plexus Node Saturation", 0.0, 0.0, 1.0),
             plexus_node_val: flin("Plexus Node Value", 1.0, 0.0, 2.0),
             plexus_node_emissive: flin("Plexus Node Emissive", 0.6, 0.0, 16.0),
-            plexus_edge_type: EnumParam::new("Plexus Edge Material", MaterialType::Standard),
+            plexus_edge_type: EnumParam::new("Plexus Edge Material", HostMaterialType::Standard),
             plexus_edge_metallic: flin("Plexus Edge Metallic", 0.0, 0.0, 1.0),
             plexus_edge_rough: flin("Plexus Edge Roughness", 0.6, 0.0, 1.0),
             plexus_edge_ior: flin("Plexus Edge IOR", 1.45, 1.0, 2.5),
@@ -8583,7 +8632,7 @@ impl Default for OrganicMathParams {
             col_source: EnumParam::new("Colour Source", CalColourSource::Auto),
             col_amount: flin("Colour Amount", 1.0, 0.0, 1.0),
 
-            cam_path: EnumParam::new("Camera Path", CamPath::Off),
+            cam_path: EnumParam::new("Camera Path", HostCamPath::Off),
             // Flow speed (cycles/beat): the master orbit rate in BOTH plain orbit-cam
             // and sequencer modes. Widened from the old 0..0.05 (which capped at the
             // default, so the slider could only slow down) to a usable 0..1 range.
@@ -8632,16 +8681,16 @@ impl Default for OrganicMathParams {
             cam_story_count: ilin("Storyboard Shots", 4, 1, 4),
             cam_story_mode: EnumParam::new("Storyboard Order", CamOrder::Series),
             cam_story_seed: ilin("Storyboard Seed", 1, 0, 9999),
-            cam_shot0_path: EnumParam::new("Shot 1 Move", CamPath::HCircle),
+            cam_shot0_path: EnumParam::new("Shot 1 Move", HostCamPath::HCircle),
             cam_shot0_bars: EnumParam::new("Shot 1 Bars", BarPeriod::B8),
             cam_shot0_radius: flin("Shot 1 Radius", 1.0, 0.3, 3.0),
-            cam_shot1_path: EnumParam::new("Shot 2 Move", CamPath::Spiral),
+            cam_shot1_path: EnumParam::new("Shot 2 Move", HostCamPath::Spiral),
             cam_shot1_bars: EnumParam::new("Shot 2 Bars", BarPeriod::B8),
             cam_shot1_radius: flin("Shot 2 Radius", 1.3, 0.3, 3.0),
-            cam_shot2_path: EnumParam::new("Shot 3 Move", CamPath::Figure8),
+            cam_shot2_path: EnumParam::new("Shot 3 Move", HostCamPath::Figure8),
             cam_shot2_bars: EnumParam::new("Shot 3 Bars", BarPeriod::B4),
             cam_shot2_radius: flin("Shot 3 Radius", 0.8, 0.3, 3.0),
-            cam_shot3_path: EnumParam::new("Shot 4 Move", CamPath::Boom),
+            cam_shot3_path: EnumParam::new("Shot 4 Move", HostCamPath::Boom),
             cam_shot3_bars: EnumParam::new("Shot 4 Bars", BarPeriod::B8),
             cam_shot3_radius: flin("Shot 4 Radius", 1.5, 0.3, 3.0),
 
@@ -8660,7 +8709,7 @@ impl Default for OrganicMathParams {
             breath_attack: flin("Breath Attack (ms)", 8.0, 1.0, 200.0),
             breath_decay: flin("Breath Decay (ms)", 400.0, 20.0, 3000.0),
 
-            mat_type: EnumParam::new("Material Type", MaterialType::Standard),
+            mat_type: EnumParam::new("Material Type", HostMaterialType::Standard),
             ior: flin("Glass IOR", 1.45, 1.0, 2.5),
             mat_absorb: flin("Absorption", 1.0, 0.0, 8.0),
             refr_overlay: BoolParam::new("Refraction Overlay", false),
@@ -8717,7 +8766,7 @@ impl Default for OrganicMathParams {
             iridescence: flin("Iridescence", 0.0, 0.0, 1.0),
             irid_scale: flin("Iridescence Scale", 2.0, 0.1, 6.0),
             irid_shift: flin("Iridescence Hue", 0.0, 0.0, 1.0),
-            palette: EnumParam::new("Palette", Palette::Native),
+            palette: EnumParam::new("Palette", HostPalette::Native),
 
             // Metaball — radius > unit node spacing so blobs fuse into a skin.
             metaball_radius: flin("Metaball Radius", 1.3, 1.0, 100.0),
@@ -8966,7 +9015,7 @@ impl Default for OrganicMathParams {
             // dB window (−72..0); these are no longer read but kept for preset compat.
             panel_db_floor: flin("Scope dB Floor (unused)", -60.0, -120.0, -6.0),
             panel_db_top: flin("Scope dB Top (unused)", 0.0, -60.0, 12.0),
-            panel_material: EnumParam::new("Chamber Material", MaterialType::Standard),
+            panel_material: EnumParam::new("Chamber Material", HostMaterialType::Standard),
             panel_metallic: flin("Chamber Metallic", 0.8, 0.0, 1.0),
             panel_roughness: flin("Chamber Roughness", 0.25, 0.0, 1.0),
             panel_emissive: flin("Chamber Emissive", 0.0, 0.0, 8.0),
@@ -9683,6 +9732,92 @@ mod host_mirror_tests {
         );
         for (i, c) in OscDivision::ALL.iter().enumerate() {
             assert_eq!(HostOscDivision::from_u32(i as u32).core(), *c);
+        }
+    }
+
+    // ── organon#49 T2: the four pairs that let `cli.rs` and `agent.rs` drop nih-plug ──
+
+    #[test]
+    fn host_surface_mode_mirrors_core() {
+        assert_mirrors(
+            "SurfaceMode",
+            HostSurfaceMode::variants(),
+            &SurfaceMode::ALL.map(|s| (s.as_str(), s.to_u32())),
+        );
+        for (i, c) in SurfaceMode::ALL.iter().enumerate() {
+            assert_eq!(HostSurfaceMode::from_u32(i as u32).core(), *c);
+        }
+        assert_eq!(HostSurfaceMode::from_u32(9999), HostSurfaceMode::Original);
+    }
+
+    #[test]
+    fn host_material_type_mirrors_core() {
+        assert_mirrors(
+            "MaterialType",
+            HostMaterialType::variants(),
+            &MaterialType::ALL.map(|m| (m.as_str(), m.to_u32())),
+        );
+        for (i, c) in MaterialType::ALL.iter().enumerate() {
+            assert_eq!(HostMaterialType::from_u32(i as u32).core(), *c);
+        }
+        assert_eq!(HostMaterialType::from_u32(9999), HostMaterialType::Standard);
+    }
+
+    #[test]
+    fn host_cam_path_mirrors_core() {
+        assert_mirrors(
+            "CamPath",
+            HostCamPath::variants(),
+            &CamPath::ALL.map(|c| (c.as_str(), c.to_u32())),
+        );
+        for (i, c) in CamPath::ALL.iter().enumerate() {
+            assert_eq!(HostCamPath::from_u32(i as u32).core(), *c);
+        }
+        assert_eq!(HostCamPath::from_u32(9999), HostCamPath::Off);
+    }
+
+    #[test]
+    fn host_palette_mirrors_core() {
+        assert_mirrors(
+            "Palette",
+            HostPalette::variants(),
+            &Palette::ALL.map(|p| (p.as_str(), p.to_u32())),
+        );
+        for (i, c) in Palette::ALL.iter().enumerate() {
+            assert_eq!(HostPalette::from_u32(i as u32).core(), *c);
+        }
+        // `Native` is both ordinal 0 and the fallback — an unknown palette degrades to
+        // today's look rather than to an arbitrary gradient.
+        assert_eq!(HostPalette::from_u32(9999), HostPalette::Native);
+    }
+
+    /// **The tier's own acceptance test, as code.** `cli.rs` and `agent.rs` sit on
+    /// `world.rs`'s dependency path, so they have to be nih-plug-free before Tier 4 can
+    /// move `world.rs` below the plugin crate. A grep is the check, and a grep is exactly
+    /// what nobody re-runs — so it lives here instead.
+    ///
+    /// ⚠️ **`cli.rs`'s `#[cfg(test)]` block is deliberately exempt.** `engine_ranges`
+    /// walks the plugin's own `Params` tree through `ParamPtr`, which is host-side by
+    /// nature; #49 T2 predicted that risk and it landed on a test rather than on shipped
+    /// code. Test code does not travel to a lower crate, so it does not block Tier 4.
+    #[test]
+    fn cli_and_agent_are_free_of_nih_plug_outside_tests() {
+        for (name, src) in [
+            ("agent.rs", include_str!("agent.rs")),
+            ("cli.rs", include_str!("cli.rs")),
+        ] {
+            let shipped = src.split("\n#[cfg(test)]").next().unwrap();
+            let hits: Vec<_> = shipped
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.contains("nih_plug"))
+                .map(|(i, l)| format!("  {name}:{}: {}", i + 1, l.trim()))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "{name} reaches nih-plug outside its test block, which blocks #49 Tier 4:\n{}",
+                hits.join("\n"),
+            );
         }
     }
 }

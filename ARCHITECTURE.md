@@ -485,26 +485,40 @@ both binaries together. After any layout growth, **close and reopen the visual w
 
 ## 7. Parameters (`params.rs`)
 
-> ⚠️ **Four enum params are SPLIT across two crates, and the split has a rule.**
-> `FuncName` (#626 T3), then `GeneratorMode`, `BoidsForm` and `OscDivision`
-> (organon#49 T1), are declared **plain** in `organon-core::params` and mirrored in
-> `params.rs` as `HostFuncName` / `HostGeneratorMode` / `HostBoidsForm` /
-> `HostOscDivision`, which carry nih-plug's `#[derive(Enum)]`. The **orphan rule** makes
-> this unavoidable rather than merely preferable: `organic-math-native` cannot
+> ⚠️ **Eight enum params are SPLIT across two crates, and the split has a rule.**
+> `FuncName` (#626 T3); `GeneratorMode`, `BoidsForm`, `OscDivision` (organon#49 T1); and
+> `SurfaceMode`, `MaterialType`, `CamPath`, `Palette` (organon#49 T2) are declared
+> **plain** in `organon-core::params` and mirrored in `params.rs` as `Host<Name>`, which
+> carries nih-plug's `#[derive(Enum)]`. The **orphan rule** makes this unavoidable rather
+> than merely preferable: `organic-math-native` cannot
 > `impl nih_plug::Enum for organon_core::…`, because both the trait and the type are
 > foreign to it. Core owns the semantic type; the host owns the adapter.
 >
 > **Which one do I name?** The semantic type, unless you are touching an `EnumParam` —
-> declaring it, `EnumParam::new`, `setter.set_parameter`, `variants()`, `from_index`, or
-> anything else that wants nih-plug's trait. Those are the adapter's; everything else is
-> core's, and `params.rs` re-exports the semantic names so `crate::params::GeneratorMode`
-> still resolves. `Host*::core()` converts, through the shared index.
+> declaring it, `EnumParam::new`, `setter.set_parameter`, or anything else that wants
+> nih-plug's trait. Those are the adapter's; everything else is core's, and `params.rs`
+> re-exports the semantic names so `crate::params::GeneratorMode` still resolves.
+> `Host*::core()` converts, through the shared index.
+>
+> **To list, name or index a semantic enum, use `organon_core::params::IndexedEnum`**
+> (organon#49 T2) — `all()` / `label()` / `labels()` / `index()` / `from_index()`. It is
+> core's counterpart to nih-plug's `Enum`, and it exists because listing an enum's
+> variants was never a plugin-host concern. Its method names deliberately differ from the
+> inherent `as_str`/`to_u32`/`from_u32`, since same-named trait methods would be silently
+> shadowed by the inherent ones.
 >
 > **Each pair is pinned by a test** (`host_*_mirrors_core`) that compares the two lists
 > **element-wise by name, in both directions**. A length check would pass a same-length
 > *reordering* — and the index **is** the wire format, shared by `Shared`, presets and
 > automation lanes, so a reorder silently recalls the wrong generator rather than failing
 > loudly. Add a variant to **both**, at the tail.
+>
+> 📌 **`cli.rs` and `agent.rs` are nih-plug-free outside their test blocks, and a test
+> keeps them that way** (`cli_and_agent_are_free_of_nih_plug_outside_tests`). That is not
+> tidiness: both sit on `world.rs`'s dependency path — `world.rs` imports `agent`, and
+> `shell_main.rs` imports both — so they must travel to a lower crate when §19's Tier 4
+> moves `World`. `cli.rs`'s test block is exempt on purpose; it walks the plugin's own
+> `Params` tree, which is host-side by nature, and test code does not travel.
 
 - **`OrganicMathParams`** — a nih-plug `#[derive(Params)]` struct, **1 372**
   host-mappable `#[id]` params. Each is automatable, MIDI-learnable, and
@@ -1851,7 +1865,7 @@ guard fails the run outright rather than shipping the broken manifest.
 | `organon-core/src/edition.rs` | #483 Tier 1 — build-time product editions: `Edition` (`Full`/`Mind`) + `EDITION`, driving product name / IPC namespace / visible `UiTab`s. Pure + unit-tested for both editions from a default build (§4.1). **#626 T3: moved to `organon-core`**; re-exported as `crate::edition` |
 | `organon-core/src/tabs.rs` | #626 T3 — the editor's **tab taxonomy**: `UiTab` (the tab bar) + `EditorTab` (the 7-way preset partition). Lifted out of `preset.rs`, which keeps its nih-plug `ParamSetter` logic. Re-exported as `crate::preset::{UiTab, EditorTab}` (§19.0) |
 | `organon-core/src/lib.rs` | #626 T3 — the core crate root. Its header records what may and may not enter core |
-| `organon-core/src/params.rs` | #626 T3 / organon#49 T1 — the param types with **no host concern**: `ParamValues` (the algorithm's numeric block) + the four semantic enums `FuncName`, `GeneratorMode`, `BoidsForm`, `OscDivision`. Each enum is mirrored in `params.rs` by a `Host*` adapter carrying nih-plug's derive (the orphan rule; §7 owns the contract) and pinned to it by a `host_*_mirrors_core` test. Re-exported, so `crate::params::GeneratorMode` still resolves |
+| `organon-core/src/params.rs` | #626 T3 / organon#49 T1+T2 — the param types with **no host concern**: `ParamValues` (the algorithm's numeric block), the `IndexedEnum` trait (core's counterpart to nih-plug's `Enum`), and **eight** semantic enums — `FuncName`, `GeneratorMode`, `BoidsForm`, `OscDivision`, `SurfaceMode`, `MaterialType`, `CamPath`, `Palette`. Each is mirrored in `params.rs` by a `Host*` adapter carrying nih-plug's derive (the orphan rule; §7 owns the contract) and pinned to it by a `host_*_mirrors_core` test. Re-exported, so `crate::params::GeneratorMode` still resolves |
 | `mind_ui.rs` | #483 Tier 1 — the shared Mind-UI chrome: edition-filtered tab bar, active-tab clamp, product heading (+ tests). Tier 2 factors the Mind card body in here |
 | `mind_main.rs` | #483 Tier 1 — the `organon-mind` standalone entry point (`required-features = ["mind-edition"]`) |
 | `mind_ring.rs` | #367 Tier 2 activation-ring mmap: `MindRing`/`MindFrame` + `MindRingWriter`/`MindRingReader` (separate channel from `Shared`; per-token model activations → node-glow). Carries the Phase-B three-way append (#507 trajectory+lens / #505 sparse experts / #409 SAE features), its **pinned-offset** test, and the `frame_bytes` layout guard (+ tests) |

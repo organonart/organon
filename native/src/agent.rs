@@ -35,7 +35,7 @@
 //! the agent hold is released.
 
 use crate::ipc::Shared;
-use crate::params::{GeneratorMode, HostGeneratorMode, MaterialType, SurfaceMode};
+use crate::params::{GeneratorMode, IndexedEnum, MaterialType, SurfaceMode};
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -464,25 +464,33 @@ pub fn param_desc(id: &str) -> Option<&'static str> {
 }
 
 /// The capability catalog block: every generator / surface / material as `index = name:
-/// description`, with indices + names read from the derived `Enum` (never hand-numbered).
+/// description`, with indices + names read from [`IndexedEnum`] (never hand-numbered).
+///
+/// organon#49 T2: this used to read them from nih-plug's derived `Enum`. Same indices and
+/// same strings — the `Host*` mirrors are pinned to core's lists element-wise by name —
+/// but taken from the crate that owns the semantics rather than from the plugin host, so
+/// nothing on `world.rs`'s dependency path needs nih-plug to describe a generator.
 fn capability_catalog() -> String {
-    use nih_plug::prelude::Enum;
+    /// One section, so the three cannot drift in format. Takes the describer as a
+    /// function of the semantic type, which is what each `*_desc` already is.
+    fn section<T: IndexedEnum>(s: &mut String, head: &str, desc: fn(T) -> &'static str) {
+        s.push_str(head);
+        for (i, v) in T::all().iter().enumerate() {
+            s.push_str(&format!("  {i} = {}: {}\n", v.label(), desc(*v)));
+        }
+    }
     let mut s = String::new();
-    s.push_str("GENERATORS — the geometry engine (select_generator index):\n");
-    for (i, name) in <HostGeneratorMode as Enum>::variants().iter().enumerate() {
-        let g = <HostGeneratorMode as Enum>::from_index(i).core();
-        s.push_str(&format!("  {i} = {name}: {}\n", generator_desc(g)));
-    }
-    s.push_str("\nSURFACES — how nodes are drawn, works across generators (select_surface index):\n");
-    for (i, name) in <SurfaceMode as Enum>::variants().iter().enumerate() {
-        let sm = <SurfaceMode as Enum>::from_index(i);
-        s.push_str(&format!("  {i} = {name}: {}\n", surface_desc(sm)));
-    }
-    s.push_str("\nMATERIALS — shading (select_material index):\n");
-    for (i, name) in <MaterialType as Enum>::variants().iter().enumerate() {
-        let mt = <MaterialType as Enum>::from_index(i);
-        s.push_str(&format!("  {i} = {name}: {}\n", material_desc(mt)));
-    }
+    section::<GeneratorMode>(
+        &mut s,
+        "GENERATORS — the geometry engine (select_generator index):\n",
+        generator_desc,
+    );
+    section::<SurfaceMode>(
+        &mut s,
+        "\nSURFACES — how nodes are drawn, works across generators (select_surface index):\n",
+        surface_desc,
+    );
+    section::<MaterialType>(&mut s, "\nMATERIALS — shading (select_material index):\n", material_desc);
     s
 }
 
@@ -1470,7 +1478,7 @@ pub fn scene_features(v: &crate::preset::PresetValues, scope: crate::preset::Pre
 
     // Generator + surface FORM (the geometry engine + how nodes are drawn).
     if want(EditorTab::Generator) {
-        f.push(format!("Generator: {}", enum_name::<HostGeneratorMode>(v.generator)));
+        f.push(format!("Generator: {}", enum_name::<GeneratorMode>(v.generator)));
         f.push(format!("Surface form: {}", enum_name::<SurfaceMode>(v.surface_mode)));
     }
 
@@ -1567,14 +1575,19 @@ fn hue_word(h: f32) -> &'static str {
     }
 }
 
-/// Display name of an `Enum` ordinal (from the derived `#[name = ...]`), clamped.
-fn enum_name<T: nih_plug::prelude::Enum>(i: u32) -> &'static str {
-    use nih_plug::prelude::Enum;
-    let n = <T as Enum>::variants().len();
-    if n == 0 {
-        return "";
+/// Display name of an ordinal, clamped to the last variant.
+///
+/// organon#49 T2: over [`IndexedEnum`] rather than nih-plug's `Enum`. The clamp is kept
+/// rather than replaced by `from_index`'s fallback, because the two differ and the
+/// difference is visible here: `from_index` sends an out-of-range value to the type's
+/// *first* variant, which would print "Original" for a corrupt ordinal. Clamping to the
+/// last variant keeps an out-of-range value looking out-of-range in the prompt.
+fn enum_name<T: IndexedEnum>(i: u32) -> &'static str {
+    let all = T::all();
+    match all.len() {
+        0 => "",
+        n => all[(i as usize).min(n - 1)].label(),
     }
-    <T as Enum>::variants()[(i as usize).min(n - 1)]
 }
 
 /// Build the user prompt from the scope-aware feature fingerprint: the distinguishing
@@ -2292,7 +2305,6 @@ mod tests {
 
     #[test]
     fn capability_catalog_covers_every_variant_and_is_bounded() {
-        use nih_plug::prelude::Enum;
         // Every generator/surface/material variant has a non-empty, length-bounded
         // description (the exhaustive match already forces coverage at compile time; this
         // guards against a stub "" or accidental bloat, and keeps them single-line).
@@ -2301,12 +2313,12 @@ mod tests {
             assert!(!d.is_empty() && d.len() <= 500, "generator {i} desc len {}", d.len());
             assert!(!d.contains('\n'));
         }
-        for i in 0..<SurfaceMode as Enum>::variants().len() {
-            let d = surface_desc(<SurfaceMode as Enum>::from_index(i));
+        for (i, sm) in SurfaceMode::ALL.iter().enumerate() {
+            let d = surface_desc(*sm);
             assert!(!d.is_empty() && d.len() <= 500, "surface {i} desc len {}", d.len());
         }
-        for i in 0..<MaterialType as Enum>::variants().len() {
-            let d = material_desc(<MaterialType as Enum>::from_index(i));
+        for (i, mt) in MaterialType::ALL.iter().enumerate() {
+            let d = material_desc(*mt);
             assert!(!d.is_empty() && d.len() <= 500, "material {i} desc len {}", d.len());
         }
         // The assembled block names real capabilities with their indices, and the full

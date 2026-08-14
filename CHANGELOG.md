@@ -11,6 +11,37 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### `cli.rs` and `agent.rs` stop needing a plugin host
+
+organon#49 Tier 2. Both files reached `nih_plug::prelude::Enum` to do three things: list
+an enum's variant names, look one up by index, and count them. None of that is a
+plugin-host concern — it is *"this enum has an ordered set of variants with display
+names"*, which the wire format already requires of these types. `organon-core::params`
+now owns that vocabulary as **`IndexedEnum`** (`all` / `label` / `labels` / `index` /
+`from_index`), and both files use it instead.
+
+Four more semantic enums move to core to make that possible — `SurfaceMode`,
+`MaterialType`, `CamPath` and `Palette` — each with a `Host*` mirror and a
+`host_*_mirrors_core` pin, exactly as Tier 1 did. Eight now live in core.
+
+⚠️ **The scope was set by a transitive fact, and the issue had under-scoped it.** Tier 2
+was written as "a small index trait"; it needed four enum moves as well, because
+`cli.rs`'s three selectors are generator/surface/material and `agent.rs`'s feature
+fingerprint adds palette and camera path. The reason those two files matter at all is
+that they sit on `world.rs`'s dependency path — `world.rs` imports `agent`, and
+`shell_main.rs` imports both — so they have to travel to a lower crate when Tier 4 moves
+`World`.
+
+📌 **The tier's acceptance bar is now a test, not a grep.**
+`cli_and_agent_are_free_of_nih_plug_outside_tests` reads both files and fails on any
+`nih_plug` outside the `#[cfg(test)]` block. `cli.rs`'s test block is exempt on purpose:
+`engine_ranges` walks the plugin's own `Params` tree through `ParamPtr`, which is
+host-side by nature — Tier 2 predicted that risk, and it landed on a test rather than on
+shipped code, where it blocks nothing.
+
+Nothing about the built product changes: same variants, same order, same display names,
+same wire indices.
+
 ### The three enums standing between `world.rs` and a Console that isn't a plugin binary
 
 `GeneratorMode`, `BoidsForm` and `OscDivision` move to `organon-core::params`, joining

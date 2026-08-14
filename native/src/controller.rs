@@ -1070,7 +1070,6 @@ mod tests {
     fn explore_contexts_cover_every_tab_and_generator() {
         use crate::params::GeneratorMode;
         use crate::preset::UiTab;
-        use nih_plug::prelude::Enum;
         // Every generator resolves to a Range whose anchors are non-empty IDs.
         for g in GeneratorMode::ALL {
             match generator_knob_context(g) {
@@ -1108,7 +1107,7 @@ mod tests {
     #[test]
     fn every_knob_context_id_exists_in_the_param_map() {
         use crate::params::{GeneratorMode, OrganicMathParams};
-        use nih_plug::prelude::{Enum, Params};
+        use nih_plug::prelude::Params;
         let p = OrganicMathParams::default();
         let ids: std::collections::BTreeSet<String> =
             p.param_map().into_iter().map(|(id, _, _)| id).collect();
