@@ -11,6 +11,49 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### `organon-world` — the window layer leaves the plugin crate
+
+organon#49 Tier 4b. `scene_input`, `egui_platform`, `frame_ring` and `audio_ring` —
+**2 294 lines** — move to a new crate that carries `egui` **on purpose** and `nih_plug`
+not at all. `cargo tree -p organon-world` is the acceptance test; unlike core and scene,
+only the nih-plug half of that bar applies here.
+
+**Why a new crate was unavoidable.** `world.rs` needs egui, wgpu and winit together, and
+every existing crate refuses at least one: core and scene forbid all three, `organon-render`
+forbids egui and winit (and its manifest argues at length that it is `world::render`, not
+the world), `organon-shell` forbids nih-plug permanently and is the compositor rather than
+the engine. `organon-scene`'s own manifest anticipated this and declined to name it —
+`scene_input` "travels with `world.rs` in Tier 4, to whatever crate hosts the
+egui/wgpu/winit layer." This is that crate.
+
+📌 **One crate, not two.** Splitting the input/window layer from the world would put
+`winit` on one side of a boundary and everything else on the other, with `world.rs` the
+only consumer of both halves — a distinction without a seam.
+
+📌 **The name is the cheapest thing in this change.** Nothing outside the workspace reads
+it: no wire format, no saved state, no installed path, no host identity. It was chosen
+rather than deferred because deferring blocks T4c, and being wrong costs a `git mv` —
+unlike every identifier CLAUDE.md's naming section protects.
+
+🚨 **`recorder` looked like a member and is not one — it is `world::recorder`.**
+`world.rs` declares nine submodules by `#[path]`, and `bin/visual.rs` includes `world.rs`
+the same way, so `#[path = "recorder.rs"]` resolves against *the includer's* directory:
+from the binary it reads `src/bin/../recorder.rs`. Moving the file breaks that, with an
+error **the library build never shows** — `cargo check --lib` does not compile binaries.
+
+It was moved, caught by `cargo check --workspace --all-targets`, and reverted. Reverting
+it is also what took `wgpu`, `half` and `dirs` back out of the new manifest, which is why
+this crate is egui-only today. A second, subtler break came with it: the move had
+rewritten `recorder`'s `organic_math_native::audio_ring` import to `crate::audio_ring`,
+and `crate::` means the *binary* when the file is compiled through `bin/visual.rs`. Both
+failures were invisible to `--lib` and both are now covered by the all-targets check.
+
+⚠️ **`agent` and `cli` are deliberately not here**, though `world.rs` imports them
+alongside these five. They carry `param_table` and `preset`, the plugin's own automation
+surface. The membership rule is the one `organon-scene` was drawn by — a module comes only
+if its shipped code names nothing above it — and widening the crate to swallow them would
+be answering T4c's hard question by pretending it is easy.
+
 ### The last six params between `world.rs` and the plugin crate
 
 organon#49 Tier 4a. `FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`,

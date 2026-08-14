@@ -2920,6 +2920,7 @@ dependencies = [
  "organon-render",
  "organon-scene",
  "organon-shell",
+ "organon-world",
  "pollster",
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.2",
@@ -2988,6 +2989,17 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "organon-world"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "egui",
+ "memmap2",
+ "organon-core",
+ "organon-mind",
 ]
 
 [[package]]

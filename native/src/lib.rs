@@ -13,7 +13,6 @@ extern crate self as organic_math_native;
 
 pub mod agent;
 pub mod audio;
-pub mod audio_ring;
 pub mod cli;
 pub mod clip;
 pub mod console_catalog;
@@ -64,16 +63,19 @@ pub use organon_mind::{mind_console, mind_log, mind_ring, mind_shell, mind_ui, m
 pub use organon_scene::{
     overlay_meta, substrate_camera, substrate_epochs, substrate_materials, substrate_scene,
 };
-/// #593 Tier 3 — **the egui platform seam**: how `ui_layer` takes input, without naming a
-/// window. `WindowGeometry` carries the two facts egui reads off a window (physical size,
-/// scale factor), because `baseview::Window` can answer neither; `EguiPlatform` is the trait
-/// the winit backend (`world::winit_platform`) and the baseview one (`baseview_input`, Tier 2)
-/// both satisfy.
+
+/// organon#49 Tier 4b — the **window layer** is its own crate now (`organon-world`: egui
+/// and wgpu on purpose, **no nih-plug**). Re-exported so every existing
+/// `crate::scene_input::…` / `crate::frame_ring::…` path in this crate still resolves —
+/// the same facade Tier 3 used for core, Tier 4 for Mind and T3 for the substrate.
 ///
-/// **Ungated on purpose.** `world` — and therefore `ui_layer` — does not exist in a default
-/// build, so a trait living there could never be implemented by the baseview arm. This is a
-/// trait plus two plain-data types; it pulls in nothing.
-pub mod egui_platform;
+/// ⚠️ **`agent` and `cli` are deliberately NOT in this list**, though `world.rs` imports
+/// them alongside these five. They carry `param_table` and `preset` — the plugin's own
+/// automation surface — so they are host-side until something changes that, and Tier 4c
+/// has to answer them rather than widen the crate to swallow them.
+///
+/// **Named, never glob**, for the reason core's re-export gives above.
+pub use organon_world::{audio_ring, egui_platform, frame_ring, scene_input};
 /// #593 Tier 3 — **the baseview arm** of the `EguiPlatform` seam, the counterpart to
 /// `winit_platform.rs`.
 ///
@@ -121,7 +123,6 @@ pub mod wgpu_editor;
 /// mind-edition build **not compiling** if anything on that path still names it is the tier's
 /// completion test. `MIND_ARCHITECTURE.md` §2.5 carries the per-item verdict.
 #[cfg(not(feature = "mind-edition"))]
-pub mod frame_ring;
 mod keymap;
 pub mod material_graph;
 
@@ -129,11 +130,6 @@ pub mod param_table;
 pub mod params;
 mod preset;
 pub mod recipe;
-/// #621 — **the viewport's camera input**: the backend-neutral `CameraInput` the world's winit
-/// arms and the wgpu editor both drive, and the egui-side region that produces it. Ungated,
-/// because both editions compile `editor_ui`; only a host that draws a scene behind the panel
-/// (`EditorCtx::scene_behind`) ever registers the region.
-pub mod scene_input;
 pub mod synth;
 /// #542 Tier 1 — the house style: design tokens, the egui theme, and the control-row
 /// grid. Everything that decides how the editor *looks* resolves here rather than being

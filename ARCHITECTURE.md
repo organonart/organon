@@ -1714,6 +1714,7 @@ matter (`xtask` is the VST3/CLAP bundler and is not part of the engine):
 | **`organon-mind`** | `native/organon-mind` | `organon-core`, `egui`, `bytemuck`, `memmap2` — **and nothing else** | **T4** — the interpretability instrument: the activation ring, Mind UI, model shell. **No nih-plug.** |
 | **`organon-render`** | `native/organon-render` | `organon-core`, `wgpu`, `glam`, `bytemuck`, `image`, `half` | **T4** — the renderer: `render` + its 36 surface submodules, plus `axes`/`chamber`, and **50 shaders**. **No nih-plug, no egui, no winit.** |
 | **`organon-scene`** | `native/organon-scene` | `organon-core`, `glam`, `bytemuck` | **organon#49 T3** — the **substrate**: `substrate_scene` / `substrate_materials` / `substrate_camera` / `substrate_epochs` + `overlay_meta`. Scene *state*, not drawing. **No nih-plug, no wgpu, no egui, no winit.** |
+| **`organon-world`** | `native/organon-world` | `organon-core`, `organon-mind`, `egui`, `memmap2`, `bytemuck` | **organon#49 T4b** — the **window layer**: `scene_input` / `egui_platform` / `frame_ring` / `audio_ring`. Carries egui **on purpose** (wgpu + winit arrive with `world.rs` in T4c); the one bar it holds is **no nih-plug**. ⚠️ `recorder` is NOT here — it is a `world.rs` `#[path]` submodule and cannot travel without its parent |
 | `organic-math-native` | `native/` | all three + the world | everything else — the plugin, the visual, the editor, **`world.rs`** |
 
 **⚠️ `organon-render` is `world::render`; `world.rs` is NOT part of it and did not move.**
@@ -1748,6 +1749,8 @@ number out of the script, and Tier 5's open questions.
 ```bash
 cargo tree -p organon-core     # must contain NO nih_plug, NO wgpu, NO egui, NO winit
 cargo tree -p organon-scene    # same bar, one layer up (organon#49 T3)
+cargo tree -p organon-world    # organon#49 T4b — only the nih_plug half applies:
+                               # this crate carries egui deliberately
 ```
 
 That is the tier's acceptance test. It is meaningful only while core's dependency list

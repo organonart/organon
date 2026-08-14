@@ -7,7 +7,15 @@
 # `export-public.sh`'s member guard fails on the one that is missing, rather than
 # shipping a manifest that names a member nobody exported. That failure is the system
 # working, not an obstacle to route around.
-members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-scene", "organon-shell"]
+members = [
+    "xtask",
+    "organon-core",
+    "organon-mind",
+    "organon-render",
+    "organon-scene",
+    "organon-shell",
+    "organon-world",
+]
 
 [package]
 name = "organic-math-native"
@@ -134,6 +142,10 @@ organon-render = { path = "organon-render" }
 # organon#49 T3 — the substrate: scene look/materials/camera/epochs + overlay metadata,
 # below the plugin. Unconditional like its siblings; carries no nih_plug, wgpu or egui.
 organon-scene = { path = "organon-scene" }
+# organon#49 T4b — the window layer: viewport input, the egui platform seam, the two
+# IPC rings and the recorder. Carries egui + wgpu (and winit from T4c) on purpose;
+# carries no nih_plug, which is the bar that matters for it.
+organon-world = { path = "organon-world" }
 # Shell #3 T1 — the Shell compositor UI. Unconditional like its siblings
 # (the lib is tiny and Edition-parametric); only the BIN is feature-gated.
 organon-shell = { path = "organon-shell" }

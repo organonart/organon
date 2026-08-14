@@ -50,7 +50,7 @@ const OFF_WRITE_COUNT: usize = 16;
 
 /// The audio-ring path (`$TMPDIR/organic-math-audio.bin`). Re-exported from `ipc.rs`.
 pub fn audio_ring_path() -> PathBuf {
-    crate::ipc::audio_ring_path()
+    organon_core::ipc::audio_ring_path()
 }
 
 /// Ring writer (the plugin). Created once per `initialize()` with the host sample rate,
