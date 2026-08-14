@@ -4325,20 +4325,38 @@ mod tests {
     /// The same line, and the same reason, as the `artifacts` retain beside it: a side map
     /// on a session that runs all day leaks unless something prunes it against the
     /// transcript. Worth its own test here because a diff entry is far larger than a
-    /// `PanelState`.
+    /// `PanelState` — an `Edit` card's arguments can be tens of kilobytes.
+    ///
+    /// ⚠️ **Driven through the real cap** — a two-element [`Limits`] and enough cards to
+    /// overflow it — rather than by assigning a fresh [`Transcript`] over the pane's. The
+    /// short version would have proved the `retain` fires and nothing about the mechanism
+    /// that actually removes elements: eviction is from the **front**, one at a time, while
+    /// the pane keeps running and `next_element` keeps climbing. Replacing the transcript
+    /// wholesale is something no code in this crate does, and it restarts the id counter,
+    /// so it would have tested a pruning story that cannot occur.
     #[test]
-    fn an_evicted_card_takes_its_cached_diff_with_it() {
-        let args = edit_args("let a = 1;", "let a = 2;");
-        let (mut pane, id) = pane_with_edit(&args);
-        draw_once(&mut pane);
-        assert!(pane.diffs.contains_key(&id));
-        // Evict it the way the cap does — by id, through the transcript's own front-eviction.
-        pane.transcript = Transcript::new();
-        draw_once(&mut pane);
-        assert!(
-            pane.diffs.is_empty(),
-            "the retain at the end of `scrollback` did not prune an entry whose element is gone"
-        );
+    fn a_card_the_cap_evicted_takes_its_cached_diff_with_it() {
+        let mut pane = rewrap_bench::bench_pane(Transcript::with_limits(
+            crate::conversation::Limits { max_elements: 2, ..Default::default() },
+        ));
+        let mut ids = Vec::new();
+        for n in 0..4 {
+            pane.absorb(AgentEvent::ToolCall {
+                id: crate::conversation::ToolId(format!("t{n}")),
+                name: "Edit".into(),
+                arguments: Some(edit_args(&format!("let a = {n};"), &format!("let a = {n}1;"))),
+            });
+            ids.push(pane.transcript.elements().back().expect("a card").id);
+            draw_once(&mut pane);
+        }
+        assert_eq!(pane.transcript.elements().len(), 2, "the cap must actually have evicted");
+        assert_eq!(pane.diffs.len(), 2, "one cached diff per surviving card, and no more");
+        for gone in &ids[..2] {
+            assert!(!pane.diffs.contains_key(gone), "an evicted card left its diff behind");
+        }
+        for kept in &ids[2..] {
+            assert!(pane.diffs.contains_key(kept), "a card still on screen lost its diff");
+        }
     }
 
     /// **CONTRACT.** The path is not printed twice. A `Read` card already carries

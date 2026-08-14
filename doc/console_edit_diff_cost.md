@@ -105,6 +105,12 @@ large, this is the cost. Supply your own `n`.
 **Machine:** `ORGANON-ONE` — AMD Ryzen Threadripper PRO 9955WX (16C), 32 GB, Windows 11 Pro
 10.0.26200. **Toolchain:** `x86_64-pc-windows-msvc`, `--release`. **egui/epaint 0.33.3.**
 
+📌 **Re-taken after the rebase onto `main`'s posture work**, which put a `Form` through
+`scrollback` and therefore through this bench's draw path. Every figure reproduced inside the
+variance §3 and §5.4 already state. The bench passes `Form::TERMINAL` for the reason
+`rewrap_bench` does — a desktop `Form` insets the column through `gutter_margin`, and posture
+is not what either bench varies.
+
 | shape | args bytes | rows drawn | total µs | of which parse | of which diff | fit in one 60 Hz frame |
 |---|---:|---:|---:|---:|---:|---:|
 | one-line | 410 | 6 | **1.5** | 0.5 | 1.0 | 11 111 |
@@ -303,13 +309,21 @@ than copying it.
 | `a_cached_diff_is_what_edit_diff_would_have_returned` | the cache changing *what* is drawn, not just when |
 | `replacing_complete_arguments_replaces_the_cached_diff` | 🚨 §6.1's stale-diff-under-a-new-path failure |
 | `a_streaming_card_caches_no_diff_and_gains_one_when_its_arguments_settle` | a cached `None` outliving the arguments arriving |
-| `an_evicted_card_takes_its_cached_diff_with_it` | the side map leaking on an all-day session |
+| `a_card_the_cap_evicted_takes_its_cached_diff_with_it` | the side map leaking on an all-day session |
 | `the_pure_function_is_still_uncached_and_the_cache_is_at_the_call_site` | a second cache appearing inside `edit_diff`, which would silently stop `Cache::Off` reproducing the old code |
 
 📌 **Mutation-checked rather than assumed.** Deleting the `self.diffs.remove(&id)` line fails
 the two invalidation tests and nothing else; commenting out the `diffs.retain` fails the
 eviction test and nothing else. Both were run. A test that passes on broken code is not a
 test, and the only way to know which one you have is to break it on purpose.
+
+⚠️ The eviction test drives the **real** cap — a two-element `Limits` and enough cards to
+overflow it — rather than assigning a fresh `Transcript` over the pane's. The short version
+proves the `retain` fires and nothing about the mechanism that removes elements: eviction is
+from the front, one at a time, while the pane keeps running and `next_element` keeps climbing.
+Replacing the transcript wholesale is something no code in this crate does, *and* it restarts
+the id counter — so it would have tested a pruning story that cannot occur, and would have
+been the only place in the tree where a recycled `ElementId` was reachable at all.
 
 ---
 
