@@ -1,8 +1,13 @@
 //! # organon-world — the window layer, below the plugin
 //!
 //! **organon#49 Tier 4b.** What `world.rs` reaches for that needed a crate carrying
-//! `egui` and `wgpu`: viewport camera input, the egui platform seam, the two IPC rings,
-//! and the frame recorder.
+//! `egui`: viewport camera input, the egui platform seam, and the two IPC rings.
+//!
+//! 📌 **Four modules, and `egui` is the heaviest thing in the manifest.** This paragraph
+//! said "`egui` and `wgpu` … and the frame recorder" until the `recorder` revert (below)
+//! made both halves false. `Cargo.toml` and `ARCHITECTURE.md` were corrected in that
+//! change and this header was not — the ordinary way a summary goes stale is that the
+//! detail underneath it gets the fix and the sentence on top does not.
 //!
 //! ## The boundary
 //!
@@ -35,7 +40,7 @@
 //!
 //! **`agent` and `cli` are not here**, though `world.rs` imports both. They carry
 //! `param_table` and `preset` — the plugin's own automation surface — and Tier 4c has to
-//! answer them on their own terms rather than by widening this crate. The five modules
+//! answer them on their own terms rather than by widening this crate. The four modules
 //! above were the ones whose shipped code names nothing above them; that is the whole
 //! membership rule, and it is the same one `organon-scene` was drawn by.
 //!
