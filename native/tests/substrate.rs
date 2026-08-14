@@ -808,15 +808,17 @@ mod materials {
     // (d) the name tables, and that no two names are the same look
     // -----------------------------------------------------------------------------
 
-    /// Every advertised name applies, **and no two names are the same picture.** The second
-    /// half is the one that earns its place: a copy-paste that left two materials identical
-    /// would ship four names and three looks, and nothing else here would notice.
+    /// Every advertised name applies, **and no two names are the same picture.** That
+    /// second clause is the one that earns its place: a copy-paste leaving two materials
+    /// identical would ship four names and three looks, and nothing else here would notice.
+    ///
+    /// ⚠️ The other half of this test — that `MATERIAL_NAMES` is in `MATERIALS` order —
+    /// stayed in `substrate_materials.rs` (organon#49 T3). `MATERIALS` is a private static
+    /// and an integration test cannot see it; making it `pub` to satisfy a test would widen
+    /// the crate's API for the convenience of its own suite. The two halves also fail for
+    /// unrelated reasons, so splitting them is an improvement rather than a concession.
     #[test]
     fn every_material_name_applies_and_is_a_distinct_look() {
-        assert_eq!(MATERIAL_NAMES.len(), MATERIALS.len());
-        for (name, m) in MATERIAL_NAMES.iter().zip(MATERIALS.iter()) {
-            assert_eq!(name, &m.name, "MATERIAL_NAMES must be in MATERIALS order");
-        }
         for (i, a) in MATERIAL_NAMES.iter().enumerate() {
             let sa = with_material(a);
             for b in MATERIAL_NAMES.iter().skip(i + 1) {
@@ -830,12 +832,10 @@ mod materials {
         }
     }
 
+    /// The rig half of the same split — the `RIG_NAMES`/`RIGS` order assertion is in
+    /// `substrate_materials.rs`, for the reason above.
     #[test]
     fn every_rig_name_applies_and_is_a_distinct_look() {
-        assert_eq!(RIG_NAMES.len(), RIGS.len());
-        for (name, r) in RIG_NAMES.iter().zip(RIGS.iter()) {
-            assert_eq!(name, &r.name, "RIG_NAMES must be in RIGS order");
-        }
         for (i, a) in RIG_NAMES.iter().enumerate() {
             let sa = with_rig(a);
             for b in RIG_NAMES.iter().skip(i + 1) {

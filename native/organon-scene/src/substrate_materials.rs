@@ -356,8 +356,18 @@ const fn derive(normal: bool, ao: bool, from_albedo: bool, strength: f32, ao_str
     ]
 }
 
-/// No derived maps.
-const DERIVE_NONE: [f32; 8] = derive(false, false, false, 1.0, 1.0);
+/// No derived maps — the neutral value of `Shared.material_derive`.
+///
+/// `pub` since organon#49 T3, on its own merits rather than for the suite's convenience:
+/// it is the identity of a `Shared` field, so anything that wants to say *"this material
+/// derives nothing"* — a test, a future console readout, another crate reading the
+/// snapshot — needs a name for it, and the alternative is each caller re-spelling
+/// `derive(false, false, false, 1.0, 1.0)` and drifting.
+///
+/// ⚠️ Contrast `MATERIALS`/`RIGS`, which stayed private in the same change. Those are
+/// implementation tables whose public face is `MATERIAL_NAMES`/`RIG_NAMES`; widening them
+/// would have been exporting internals to satisfy a test. A neutral value is not.
+pub const DERIVE_NONE: [f32; 8] = derive(false, false, false, 1.0, 1.0);
 
 /// `material_live[8]` = `[anim_on, anim_speed, anim_mode, flow_x, flow_y, displace,
 /// audio_drive (reserved), _]` (`param_table.rs:1295-1301`), written **still** by every
@@ -1045,3 +1055,30 @@ pub fn rig_field_manifest() -> &'static [(&'static str, FieldRestore)] {
 ///    alone will not darken the material; that was the first pass's mistake and it is easy to
 ///    repeat.
 pub const KNOWN_LIMITS: () = ();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The name tables are in table order.** This half of the pair stayed here when
+    /// organon#49 T3 moved the rest of the suite to `native/tests/substrate.rs`, because
+    /// `MATERIALS` and `RIGS` are private statics: an integration test cannot see them,
+    /// and making them `pub` to satisfy a test would widen this crate's API for the
+    /// convenience of its own suite.
+    ///
+    /// The half that left asserts something different — that no two names produce a
+    /// byte-identical look — and needs the plugin's default `Shared` to do it. Two
+    /// assertions, two reasons to fail, two homes; the split is an improvement on the
+    /// single test they used to be.
+    #[test]
+    fn name_tables_are_in_table_order() {
+        assert_eq!(MATERIAL_NAMES.len(), MATERIALS.len());
+        for (name, m) in MATERIAL_NAMES.iter().zip(MATERIALS.iter()) {
+            assert_eq!(name, &m.name, "MATERIAL_NAMES must be in MATERIALS order");
+        }
+        assert_eq!(RIG_NAMES.len(), RIGS.len());
+        for (name, r) in RIG_NAMES.iter().zip(RIGS.iter()) {
+            assert_eq!(name, &r.name, "RIG_NAMES must be in RIGS order");
+        }
+    }
+}
