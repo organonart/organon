@@ -2449,6 +2449,30 @@ written at the site, never by an invented pigment, and the rules are four:
    spec's own **hairline** colour, which is by construction exactly one step further from the
    page. (`chocolate` names all four of its steps — `#191919 → #1F1F1F → #262626 → #303030` —
    so none of this applies to it.)
+
+   🚨 **`light`'s page is the one role in any palette that is NOT its spec's value.** The spec
+   says `#ffffff`; `Theme::LIGHT_PAGE` is **`#fafbfc`**, because James looked at the palette in
+   a running console on 2026-08-14 and asked for the whitest white turned down. It is a named
+   constant rather than two literals because `term_bg` and `term_scrim_tint` both take it and
+   must track: the scrim is laid over the live backdrop at up to `SCRIM_FLOOR_LIGHT`, so a
+   scrim left white would cover a *larger* area than the terminal with the exact value being
+   complained about, and a scrimmed region would read brighter than the page it borders. The
+   fields stay separate — the struct never merges roles by value — but the value is stated once.
+
+   ⚠️ **The room inside the ladder is far smaller than the request implies, and this is the
+   number to know before touching it again.** Light's steps are 8/7/6 (page→panel), 21/19/16
+   (panel→hairline) and 25/23/19 (hairline→strong): the page's own step was *already* the
+   whisper of the four. So a page may fall **7 units on the tightest channel — 2.35 % of HSV
+   value — before it collides with the panel it must sit above**. `#fafbfc` is the panel plus a
+   uniform 3, which spends 5 of those units and keeps a 3-unit step; uniform because that
+   carries the panel's `+1` green / `+2` blue tilt up to the page, and pure white was the only
+   step in the ladder with no tilt at all. **"A few percent" is not reachable without moving
+   the panel as well**, which is four more spec roles and a decision for James, not a
+   derivation. `the_light_page_stays_a_step_above_the_panel` pins the ordering, the minimum
+   step, the uniform offset and rule 4's premultiply — the ordering needed no guard while the
+   page was `#ffffff`, since nothing can be brighter than white, and its failure now is silent
+   and *inverting*: a page darker than its panel makes every plate drawn on it read as raised
+   out of the paper rather than recessed into it.
 2. **States.** A state the spec names takes its named colour; a state it does not name comes
    from the palette's **text ladder**, never from a hue the spec never introduced. ⚠️ That is
    why **none of the three has an amber**: "a tool is running" is primary text, not
@@ -3219,6 +3243,28 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **Nobody has seen `#fafbfc` on James's display, and he is the only person who can say
+  whether it fixes what he was looking at.** The light page came down from `#ffffff` because
+  he saw glare in a running console; the replacement was **reasoned, not observed**. Everything
+  claimed for it is a claim about code: `cargo test -p organon-console --lib` is **605 green**
+  (604 before, plus `the_light_page_stays_a_step_above_the_panel`), `cargo test -p organon-core`
+  is **556 green**, `cargo check --features console-edition --bin organon-console` is clean, and
+  `cargo check --tests -p organic-math-native --features console-edition` is clean. **That is
+  the whole claim: it compiles and the tests pass.** ⚠️ **What it most likely does not establish
+  is that the change is big enough to matter.** The ladder allows the page to fall only 2.35 %
+  of HSV value before it collides with the panel, and this spends about half of that — a
+  **1.18 %** reduction. If James still sees glare, the honest answer is not to squeeze the
+  remaining units (the step is already halved) but to take the whole light ladder down
+  together, which is a re-spec of four roles he named and therefore his call. Worked numbers
+  for that option, preserving today's gaps exactly, are in the PR that made this change. Also
+  unverified: (1) that the 3-unit page→panel step survives a real display's gamma and the
+  composer plate and status strip still read as sitting *on* the page rather than merging into
+  it — they carry `#e2e5e9` hairlines doing most of that work, but the fill step is the
+  reinforcement and nobody has looked; (2) that `panel_fill`'s matching move is invisible,
+  since a Tier 5 patch panel only appears over a live backdrop and none was running; (3) that a
+  TUI's own light colour scheme still reads correctly against a page that is no longer the pure
+  white `ansi16`'s GitHub Light lineage was chosen against — the shift is 3 units and the
+  foregrounds did not move, so this is noted rather than suspected.
 - 🚨 **Nobody has seen the command panel, so whether it *feels* fast is unverified — and
   "fast" is the entire claim being made for it.** Everything §1.9 asserts is a claim about
   code: `cargo test -p organon-console --lib` is **604 green** (583 before, plus eleven in

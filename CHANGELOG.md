@@ -11,6 +11,40 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The light theme's page is no longer pure white
+
+James looked at `light` in a running console and asked for the whitest white turned down.
+It was `#ffffff` on `term_bg` and `term_scrim_tint`; both are now `LIGHT_PAGE` — **`#fafbfc`**,
+stated once so the terminal's background and the scrim laid over the backdrop cannot drift
+apart. The scrim matters more than it sounds: it paints over a *larger* area than the
+terminal, so leaving it white would have kept the complained-about glare and made a scrimmed
+region read brighter than the page beside it.
+
+⚠️ **This is a deliberate departure from a written spec, and it is recorded as one.** The
+`[spec]` comment in `Theme::light` no longer claims a value the code does not have, and the
+test that pins the specified hexes now asserts the page **as an instruction from James**
+rather than quietly relaxing to accept anything.
+
+🚨 **The ladder is what bounds the change, and the room in it is tiny.** Light's surfaces climb
+away from the page by darkening — page → panel `#f7f8f9` → hairline `#e2e5e9` → strong
+`#c9ced6` — and the page→panel step was already the whisper of the four (8/7/6 per channel
+against the next step's 21/19/16). **The entire distance the page may fall before colliding
+with the panel is 7 units, 2.35 % of HSV value.** `#fafbfc` is the panel plus a uniform 3,
+which spends 5 of those units on the glare, leaves a 3-unit step, and carries the panel's own
+cool tilt up to the page — pure white was the only step in the ladder with no tilt at all.
+Anything approaching "a few percent" would have to move the panel too, which is four more spec
+roles and James's call rather than this change's.
+
+`panel_fill` moved with it (`#e6e6e6e6` → `#e1e2e3e6`) because derivation rule 4 states it as
+*the page premultiplied at `organon`'s own `0xe6`* — leaving it behind would not have been
+"not touching a patch panel", it would have been a written rule quietly becoming false.
+
+New test `the_light_page_stays_a_step_above_the_panel` pins the ordering, a minimum step, the
+uniform-offset rule and rule 4's premultiply. While the page was `#ffffff` the ordering was
+free — nothing can be brighter than white — and it is now editable, with a silent and
+*inverting* failure: a page darker than its panel makes every plate drawn on it read as raised
+out of the paper instead of recessed into it, which is the opposite of the whole metaphor.
+
 ### A command palette above the composer — see your choices while you type
 
 `/` now opens a full-width panel listing every verb with its description; a keystroke narrows
