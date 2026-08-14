@@ -34,8 +34,8 @@ build, deliberately, and neither is packaged as an app yet, so you run them from
   from the model file; see [`../watching_a_mind_think.md`](../watching_a_mind_think.md) for
   the plain-language account of what is measured and what is a stand-in, and
   [`../../MIND_ARCHITECTURE.md`](../../MIND_ARCHITECTURE.md) for what exists right now.
-- **Organon Shell** — an agent-operating workstation. See
-  [`../../SHELL_ARCHITECTURE.md`](../../SHELL_ARCHITECTURE.md).
+- **Organon Console** — an agent-operating workstation. See
+  [`../../CONSOLE_ARCHITECTURE.md`](../../CONSOLE_ARCHITECTURE.md).
 
 ## If you are here to build on it
 

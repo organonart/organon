@@ -89,8 +89,8 @@ while IFS= read -r rule; do
       reason="$reason Render-pipeline files changed this session ($hit ) but doc/arch/render.md was not updated. That is the #590 Tier 3 split-out of the old ARCHITECTURE.md §9 and it is NOT auto-injected, so nothing else will remind you: if this change added or altered a pass, a RenderPath, the RenderFrame seam, an rt_* stage, or the IBL/shader inventory, update it in this same change. Structural changes may also need ARCHITECTURE.md §9's altitude summary." ;;
     MIND_ARCHITECTURE.md)
       reason="$reason Organon Mind files changed this session ($hit ) but MIND_ARCHITECTURE.md was not updated. It is the living state doc for what Mind does RIGHT NOW, and it carries the honesty ledger — so if this change added or altered a lens, a readout, the activation path, or the edition shell, update it in this same change, and give any new displayed quantity its provenance marker (measured / derived / proxy / projection)." ;;
-    SHELL_ARCHITECTURE.md)
-      reason="$reason Organon Shell files changed this session ($hit ) but SHELL_ARCHITECTURE.md was not updated. It is Shell's living state doc (the PRD and build plan are in doc/, private; the code-grounded what-exists-now lives here and is the only Shell doc that goes public) — if this change added or altered a panel, a surface, the command seam, or the edition wiring, update it in this same change." ;;
+    CONSOLE_ARCHITECTURE.md)
+      reason="$reason Organon Console files changed this session ($hit ) but CONSOLE_ARCHITECTURE.md was not updated. It is the Console's living state doc (the PRD and build plan are in doc/, private; the code-grounded what-exists-now lives here and is the only Console doc that goes public) — if this change added or altered a panel, a surface, the command seam, or the edition wiring, update it in this same change." ;;
   esac
 done <<EOF
 $rules

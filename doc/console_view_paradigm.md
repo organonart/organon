@@ -171,7 +171,7 @@ Both now answer `kind()`, each pinned by its own test.
 
 ⚠️ **One thing Tier 1 did NOT do, deliberately: unify the two *words*.** The terminal lane says
 `scene` and the composer says `/surface`, and both are typed by humans — so an inert tier
-could change neither. `SHELL_ARCHITECTURE.md` §1.1 records what unifying them would cost.
+could change neither. `CONSOLE_ARCHITECTURE.md` §1.1 records what unifying them would cost.
 
 🚨 **This already existed in embryo TWICE, the two copies already overlapped, and they had
 already begun to drift.** Measured 2026-08-13 by reading the tree:

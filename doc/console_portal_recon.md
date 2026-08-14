@@ -12,7 +12,7 @@ single recommendation is given.
 This document was written *before* the portal existed and is merged *after* it. Both halves of
 that sentence matter. Read on the original terms — a survey of what a portal would cost — but
 read knowing that PR #32 (`console/portal`) landed the portal itself and PR #33
-(`console/portal-camera`) landed its camera, and that **`SHELL_ARCHITECTURE.md` §1.2 and §1.3 are
+(`console/portal-camera`) landed its camera, and that **`CONSOLE_ARCHITECTURE.md` §1.2 and §1.3 are
 now the authority on what the console actually does.** This is the investigation those two tiers
 were built from; it is not a description of the tree.
 
@@ -42,7 +42,7 @@ events sketched there — on the rule that *an event nothing can raise is an unt
 pretending to be a design*. The four-state machine is still the destination; §7 is its argument,
 not its shipped signature.
 
-⚠️ **Every line number below is as of `02fff1a` and most have moved** — `shell_main.rs` alone
+⚠️ **Every line number below is as of `02fff1a` and most have moved** — `console_main.rs` alone
 gained ~1100 lines in the tiers this document produced. `world.rs:6525`, the substrate-rig trap
 that is the single most valuable finding here, is now `world.rs:6530`. Follow the **function
 names**, which are stable; treat the numbers as provenance for what was read, not as an index.
@@ -113,12 +113,12 @@ look first.**
 > The measurement was right; the conclusion drawn from it was one path short. Recorded rather than
 > deleted because the backdrop half is what immersive will be built out of.
 
-`Shell::render_backdrop` (`native/src/shell_main.rs:1979`) allocates a texture sized to the
+`Console::render_backdrop` (`native/src/console_main.rs:1979`) allocates a texture sized to the
 **pane's fraction of the swapchain** (`scene_input::pane_pixels_in`, `:2019-2022`), renders the
 World or the substrate into it every frame (`:2073`), and registers it with egui. `term_view::draw`
 then paints it — banded by look-epoch — and lays the scrim over it
-(`native/organon-shell/src/term_view.rs:665-682`). `scrim_alpha`
-(`native/organon-shell/src/term_view.rs:86`) defaults to 185 and can never go below
+(`native/organon-console/src/term_view.rs:665-682`). `scrim_alpha`
+(`native/organon-console/src/term_view.rs:86`) defaults to 185 and can never go below
 `SCRIM_FLOOR` = 96; `no_scrim_setting_can_cross_the_floor` proves that over the entire byte range.
 
 So: a full-window render, behind the text, with a tuned semi-translucent legibility layer over it
@@ -133,13 +133,13 @@ qualifications, all minor:
   `0..1` quad, which is what immersive wants; a portal-driven immersive should therefore not open
   a new epoch, or the first screenful will be striped.
 - **The conversation front-end has no backdrop at all.** `bands` and `patch_image` are handed only
-  to the terminal branch (`native/src/shell_main.rs:2479-2489`); the conversation branch draws
+  to the terminal branch (`native/src/console_main.rs:2479-2489`); the conversation branch draws
   nothing behind itself. Immersive in a conversation tab is genuinely new work — the CentralPanel
   would need a painted image beneath `conversation_view::draw` and a scrim over it.
 
 ### 1.2 Full screen ≈ immersive minus the overlay — **refuted as stated**
 
-`Shell::render_source` (`native/src/shell_main.rs:1971`) is:
+`Console::render_source` (`native/src/console_main.rs:1971`) is:
 
 ```rust
 if self.backdrop_source == BackdropSource::Off && self.patches_want_image() {
@@ -157,7 +157,7 @@ below is unchanged; only the address moved.
 
 That is *engine draws* vs *backdrop paints*. It has no third axis for *overlay paints*, and there
 is no such axis anywhere: the tab strip is declared unconditionally
-(`native/src/shell_main.rs:2452`), the `CentralPanel` always dispatches to one of the two
+(`native/src/console_main.rs:2452`), the `CentralPanel` always dispatches to one of the two
 front-ends (`:2471-2505`), and the scrim is applied unconditionally inside the `Some(bands)` arm.
 
 Full screen therefore needs a new suppression branch. **It is small, and the precedent for its
@@ -181,7 +181,7 @@ The nearest existing thing is `/surface` in the conversation front-end. It is al
 
 - an egui-laid-out rect (`conversation_view::surface_element`, full column width by
   `SURFACE_HEIGHT` = 260 pt);
-- backed by its own render target, allocated and registered by `Shell::make_surface_texture`;
+- backed by its own render target, allocated and registered by `Console::make_surface_texture`;
 - rendered by the **one** World into that target, with the rig re-framed for that rect's aspect;
 - bounded by a cap (`MAX_SURFACE_TEXTURES` = 4) with least-recently-**requested** eviction and one
   log line per release;
@@ -202,14 +202,14 @@ Everything in that list is reusable verbatim. What a portal changes is exactly f
 
 | Site | Assumption |
 |---|---|
-| `SurfaceKey` | `type SurfaceKey = (usize, ElementId)` — pane index plus element id (`native/src/shell_main.rs:776`) |
+| `SurfaceKey` | `type SurfaceKey = (usize, ElementId)` — pane index plus element id (`native/src/console_main.rs:776`) |
 | the map | `surfaces: HashMap<SurfaceKey, SurfaceTexture>` (`:1035`) |
 | the request list | `wanted: Vec<SurfaceKey> = requests.iter().map(|r| (pane, r.element))` (`:2154`) |
 | key construction | `let key = (pane, request.element)` in the allocate/render loop (`:2173`) |
 | the eviction log | prints `element {key.1 .0} (pane {key.0})` (`:2274-2279`) — a portal here would print a fabricated element id in a fabricated pane |
 | `free_all_surfaces` | frees everything when a tab close renumbers the panes (`:2290`, called at `:1402`) |
 | the test helper | `fn key(pane: usize, element: u64) -> SurfaceKey` and its three tests (`:3510-3557`) |
-| the image map | `pub type SurfaceImages = HashMap<ElementId, egui::TextureId>` (`native/organon-shell/src/conversation_view.rs:146`), filled at `native/src/shell_main.rs:2199` |
+| the image map | `pub type SurfaceImages = HashMap<ElementId, egui::TextureId>` (`native/organon-console/src/conversation_view.rs:146`), filled at `native/src/console_main.rs:2199` |
 
 `surfaces_to_evict` itself is key-agnostic — it only needs `Copy + PartialEq` — so the pure
 eviction policy and its tests survive any keying change untouched.
@@ -228,7 +228,7 @@ the portal from `free_all_surfaces` (a pane renumbering means nothing to it, and
 every tab close is a visible flicker in a thing that is meant to be steady), and teaching the
 eviction log a second sentence so it does not print a fake element id.
 
-So: a `portal: Option<SurfaceTexture>` field on `Shell`, beside `backdrop`. `SurfaceTexture`,
+So: a `portal: Option<SurfaceTexture>` field on `Console`, beside `backdrop`. `SurfaceTexture`,
 `make_surface_texture` and the free-and-log body are all reused; only the log's identifying clause
 differs. `SurfaceKey`, its three tests, `SurfaceImages` and the whole `conversation_view` seam stay
 exactly as they are — which also means the portal works identically in a **terminal** tab, where
@@ -261,7 +261,7 @@ that function already carries.
 
 ⚠️ If you take the enum route anyway: a portal requested every frame **permanently costs the
 conversation one of its four slots**, so a transcript with four visible surfaces plus a portal
-starts thrashing — the truncation branch at `native/src/shell_main.rs:2132-2144` fires, prints its
+starts thrashing — the truncation branch at `native/src/console_main.rs:2132-2144` fires, prints its
 "scroll one out of view to free a slot" line, and one surface renders "rendering…" forever. That is
 a real regression in an unrelated feature, caused by a keying decision. Bump the cap to 5 and
 re-pin `the_surface_budget_is_four_textures_worth` if you go that way.
@@ -279,7 +279,7 @@ if !stale || budget == 0 { continue; }
 budget -= 1;
 ```
 
-(`native/src/shell_main.rs:2194-2203`.) `SurfaceLook` is compared for equality; a surface whose
+(`native/src/console_main.rs:2194-2203`.) `SurfaceLook` is compared for equality; a surface whose
 look has not changed is not re-rendered, "and that is what makes an idle conversation cost zero
 engine frames" (`:738-750`). `SURFACE_RENDERS_PER_FRAME` = 1 bounds it to one extra `World` frame
 per console frame.
@@ -294,7 +294,7 @@ world moves, the beat clock advances, the camera orbits. Concretely:
 ### The per-frame cost with the backdrop also up
 
 The console **repaints continuously** — `redraw()` ends with `window.request_redraw()`
-(`native/src/shell_main.rs:2593`) — so this is a per-frame, always-on cost, not an occasional one.
+(`native/src/console_main.rs:2593`) — so this is a per-frame, always-on cost, not an occasional one.
 Each `World::render_to_texture` is a full `frame_body` (`native/src/world.rs:2050` → `:2071` →
 `:2081`): every generator, every pass, the whole post chain, and the CLI drain.
 
@@ -316,7 +316,7 @@ non-issue to the default.
 ✅ **The state machine dissolves it at no cost.** In **Portal** the backdrop is off and only the
 portal renders. In **Immersive** and **Full screen** the portal *is* the backdrop — same pane-sized
 texture, same render — so only the backdrop renders. **At most one World render per frame, in
-every state, by construction.** Say this out loud in `SHELL_ARCHITECTURE.md` when it lands; it is
+every state, by construction.** Say this out loud in `CONSOLE_ARCHITECTURE.md` when it lands; it is
 the kind of property that is free while someone remembers why and expensive the first time
 somebody adds a second portal.
 
@@ -335,7 +335,7 @@ if self.surfaces.get(&key).is_none_or(|t| t.size != size) {
 }
 ```
 
-(`native/src/shell_main.rs:2174-2179`.) And `free_surface` logs **unconditionally**
+(`native/src/console_main.rs:2174-2179`.) And `free_surface` logs **unconditionally**
 (`:2271-2286`) — deliberately, on the rule that "a cap that silently drops a picture is
 indistinguishable from a renderer that failed to draw one".
 
@@ -347,7 +347,7 @@ it, and `holds` resets to `None` so the next frame re-renders. Plus one `[surfac
 > calls `free_portal("the portal changed size")` and reallocates — so the portal frees,
 > reallocates, re-registers and logs one `[surface]` line on **every frame of a window-resize
 > drag**. The animation half is still hypothetical because the animation is unbuilt; the
-> resize half is shipped, and `SHELL_ARCHITECTURE.md`'s "what nobody has looked at" list names
+> resize half is shipped, and `CONSOLE_ARCHITECTURE.md`'s "what nobody has looked at" list names
 > it. The recommendation below — allocate at the destination, scale the quad, settle once — is
 > unchanged and closes both.
 
@@ -390,7 +390,7 @@ Three things fall out of it:
 
 The current policy is UV 0..1 with a deliberate comment: "the console renders the target at
 exactly this rect's pixel size, so there is no fit policy to get wrong and no letterboxing"
-(`native/organon-shell/src/conversation_view.rs:1500-1501`). The rule above preserves that
+(`native/organon-console/src/conversation_view.rs:1500-1501`). The rule above preserves that
 property *at both endpoints* and relaxes it only mid-flight, where the quad is a uniformly scaled
 copy of the destination image.
 
@@ -424,7 +424,7 @@ vertical one is a lie. Not needed by the recommendation above, but the day someo
 
 ### Recommendation: **not `egui::Area`.** A rect in the `CentralPanel`, registered after the content.
 
-The tree has one `Area` (`native/organon-shell/src/tabs.rs:184`, the harness menu) and its comment
+The tree has one `Area` (`native/organon-console/src/tabs.rs:184`, the harness menu) and its comment
 carries the hazard: *"it still looked right only because egui clamps an `Area` back inside the
 screen rect — so the position was a fallback, not a placement"*. An `Area` is positioned in screen
 coordinates and silently clamped; a portal positioned from a constant rather than derived from the
@@ -460,14 +460,14 @@ let events = ui.input(|i| i.events.clone());
 let scroll = ui.input(|i| i.raw_scroll_delta.y);
 ```
 
-(`native/organon-shell/src/term_view.rs:597-648`.) Raw input, read directly. **egui layer order is
+(`native/organon-console/src/term_view.rs:597-648`.) Raw input, read directly. **egui layer order is
 irrelevant to code that reads raw input** — an `Area`, a later-registered rect, a modal, none of
 them would stop the wheel scrolling the transcript out from under a portal or stop a keystroke
 reaching the PTY.
 
 The existing answer is an explicit rect test, and it is exactly the precedent to copy:
 `block_panel::pointer_inside(&panel_placements(..), pointer)`
-(`native/organon-shell/src/block_panel.rs:241`), fed into `term_view::draw` and consulted *before*
+(`native/organon-console/src/block_panel.rs:241`), fed into `term_view::draw` and consulted *before*
 the wheel is applied — deliberately against the pre-wheel view state, "because the pointer is over
 what is on the screen right now". Note that today it is fed `panel_placements`, not every patch:
 **a scene patch deliberately does not claim the wheel**, on the reasoning that "a scene patch is
@@ -610,7 +610,7 @@ rather than by feel.
 
 ### Where it should live
 
-**A new pure module in `organon-shell`** — that crate is nih_plug-, wgpu- and World-free, and is
+**A new pure module in `organon-console`** — that crate is nih_plug-, wgpu- and World-free, and is
 already where every pure, headless-tested piece of console arithmetic lives (`scroll_anchor`,
 `block_anchor`, `block_panel::placements`, `strip_content`, `scrim_alpha`). It cannot see
 `BackdropSource`, `World` or `Shared`, and it does not need to: the machine is a state and an
@@ -626,7 +626,7 @@ Plus the animation as a second pure function — a source rect, a destination re
 `t`, an easing curve, and `fn rect_at(from, to, t) -> egui::Rect`. Both are exhaustively testable
 with no GPU, no window and no agent, which is the bar `CLAUDE.md` sets for cloud sessions.
 
-`shell_main.rs` maps the resulting state onto the two render decisions (which source the engine
+`console_main.rs` maps the resulting state onto the two render decisions (which source the engine
 draws, whether the backdrop paints) and onto the winit fullscreen request. That mapping is a match,
 and it is where the "at most one World render per frame" invariant of §3 becomes visible.
 
@@ -647,7 +647,7 @@ The two conditions:
    (`input_state/mod.rs:759-779`) `retain`s the event out of `i.events`, which is the exact vector
    `term_view` clones — so consuming genuinely removes it from the PTY stream. It must run inside
    `egui_ctx.run` **before** the `CentralPanel`, which is where `tabs::command_key_action` already
-   reads keys (`native/src/shell_main.rs:2440-2449`) and is the natural home.
+   reads keys (`native/src/console_main.rs:2440-2449`) and is the natural home.
 2. ⚠️ `consume_key` matches modifiers **logically**, so it also eats Shift+Escape and Alt+Escape.
    Harmless in practice; if it ever matters, read `i.events` and test `matches_exact(NONE)` —
    the same inversion the composer already had to make for Shift+Enter.
@@ -669,9 +669,9 @@ to need **state-dependent** key ownership, and that is worth naming when it land
 | clap subcommand | `ConsoleAction` in `native/src/bin/ctl.rs:282`, dispatched by `run_console` at `:529` |
 | wire form | `cli::console_op_to_line` / `cli::parse_console_op` — `<verb> <word>`, one line each |
 | transport | `cli::console_cmd_path()` → `ipc::ns_file("console.txt")`, i.e. `$TMPDIR/<namespace>-console.txt` |
-| drain | `Shell::drain_console`, once per frame, before the snapshot is published, on the same file-length cursor pair the World uses for `cli.txt` |
-| validate + log | `Shell::dispatch_console` builds a `CommandService` per batch, registers `console_specs()`, dispatches as `Issuer::Worker("organon-cli")` |
-| apply | `Shell::apply_console` |
+| drain | `Console::drain_console`, once per frame, before the snapshot is published, on the same file-length cursor pair the World uses for `cli.txt` |
+| validate + log | `Console::dispatch_console` builds a `CommandService` per batch, registers `console_specs()`, dispatches as `Issuer::Worker("organon-cli")` |
+| apply | `Console::apply_console` |
 
 And crucially: `term.rs:195` sets `cmd.env("ORGANON_IPC_NS", organon_core::ipc::namespace())` on
 every PTY child. **A command typed in a console tab reaches *this* console**, which is what makes
@@ -741,7 +741,7 @@ if budget < SURFACE_RENDERS_PER_FRAME {
 }
 ```
 
-(`native/src/shell_main.rs:2205-2230`.) The World has exactly one way to learn what to draw — the
+(`native/src/console_main.rs:2205-2230`.) The World has exactly one way to learn what to draw — the
 snapshot — so a surface's look is published, the frame is taken, and the console's own snapshot is
 put back. The restore is not tidiness: without it `organon status` / `organon get` would report
 whichever surface rendered last, "a lane nobody typed into, describing a picture that is not the
@@ -758,7 +758,7 @@ World choice pays.
 
 `render_surfaces`' own doc prices it: *"A second one would recompile ~50 shaders and ~62 pipelines
 and duplicate every sim buffer, to draw the same plane."* The console constructs its one `World` in
-`Shell::new` and hands it the device at `attach_gpu`; it renders only into textures, never the
+`Console::new` and hands it the device at `attach_gpu`; it renders only into textures, never the
 swapchain.
 
 Beyond the init cost, a second World would be a second `Shared` reader and a second CLI drain — so
@@ -794,10 +794,10 @@ implements, because today `background world` paints the window with nothing to h
 ### 🔍 Is the backdrop hard-coded as a startup-only mode? **No — checked, and this is good news.**
 
 `backdrop_source` is *seeded* from the environment once
-(`parse_backdrop_source(std::env::var("ORGANON_SHELL_BACKDROP")…)`, `native/src/shell_main.rs:1055`),
+(`parse_backdrop_source(std::env::var("ORGANON_SHELL_BACKDROP")…)`, `native/src/console_main.rs:1055`),
 but it is a plain field that `apply_console` writes at runtime (`:1546-1548`). `console_step` is
 total over `world` / `off` / `substrate` — `BACKDROP_SOURCE_WORDS` — and its transitions are
-directly tested (`native/src/shell_main.rs:2898-2953`), including `substrate → world → off →
+directly tested (`native/src/console_main.rs:2898-2953`), including `substrate → world → off →
 substrate`. `render_backdrop`'s `Off` arm even clears the substrate rig specifically because the
 source *can* become `off` at runtime and a stale rig would frame a plane nobody is drawing.
 
@@ -824,11 +824,11 @@ rather than after it, because the portal is what makes the flag unnecessary.
 ## 11. Recommended shape
 
 **A screen-anchored, live, orbitable `World` portal, painted in the `CentralPanel` after the
-front-end, driven by a pure state machine in `organon-shell`, opened by a `console.portal` verb.**
+front-end, driven by a pure state machine in `organon-console`, opened by a `console.portal` verb.**
 
-1. **`portal.rs` in `organon-shell`** — `PortalState`, `PortalEvent`, `step`, and the rect
+1. **`portal.rs` in `organon-console`** — `PortalState`, `PortalEvent`, `step`, and the rect
    interpolation. Pure, headless, exhaustively tested. No egui state, no World, no `Shared`.
-2. **`Shell::portal: Option<SurfaceTexture>`** beside `backdrop`, plus the portal's own state and
+2. **`Console::portal: Option<SurfaceTexture>`** beside `backdrop`, plus the portal's own state and
    in-flight animation. Reuses `make_surface_texture` and the free-and-log body; `SurfaceKey`,
    `SurfaceImages` and the `conversation_view` seam are untouched.
 3. **`render_source` gains a third input** — "a portal is open and wants source X" — extending the
@@ -844,8 +844,8 @@ front-end, driven by a pure state machine in `organon-shell`, opened by a `conso
    layer order will not do it.
 7. **Escape consumed conditionally**, in the pre-panel key block, only in Immersive/FullScreen.
 8. **`console.portal` as a `CommandSpec` first**, clap second, both reading one table.
-9. **Document it in `SHELL_ARCHITECTURE.md` in the same change** — the doc hook watches
-   `organon-shell/src/*.rs` and `shell_main.rs` is covered by the root architecture rule.
+9. **Document it in `CONSOLE_ARCHITECTURE.md` in the same change** — the doc hook watches
+   `organon-console/src/*.rs` and `console_main.rs` is covered by the root architecture rule.
 
 ### Honest cost
 

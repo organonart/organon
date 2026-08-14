@@ -43,11 +43,11 @@ on PATH. No Node/npm.
 **Build.**
 
 ```
-cargo build --release --features shell-edition --bin organon-console
+cargo build --release --features console-edition --bin organon-console
 cargo build --release --bin organon
 ```
 
-The console requires `shell-edition`; the `organon` CLI does not. `shell-edition` and
+The console requires `console-edition`; the `organon` CLI does not. `console-edition` and
 `mind-edition` are mutually exclusive (a `compile_error!` in `organon-core`'s `edition.rs`
 enforces it).
 
@@ -57,12 +57,12 @@ enforces it).
 scrim line is formatted from constants deliberately, so add a flag and update the help in the
 same change.
 
-**Read first, in this order:** `SHELL_ARCHITECTURE.md` (the code-grounded state), issue #3
+**Read first, in this order:** `CONSOLE_ARCHITECTURE.md` (the code-grounded state), issue #3
 (the design), issue #4 (the beats). `CLAUDE.md` and `CONTRIBUTING.md` in this repo govern
 everything else.
 
-**Hooks that will fire.** `.claude/hooks/doc-rules.sh` requires `SHELL_ARCHITECTURE.md` to
-move in the same change as `native/organon-shell/*`. `structure-drift-check.sh` watches
+**Hooks that will fire.** `.claude/hooks/doc-rules.sh` requires `CONSOLE_ARCHITECTURE.md` to
+move in the same change as `native/organon-console/*`. `structure-drift-check.sh` watches
 `lib.rs`. Do not fight them — they encode real lessons.
 
 **Verify before you start.** Build both binaries, launch the console, open a Pi or Claude
@@ -103,8 +103,8 @@ somewhere it will rot.
 
 ### 3.3 Integration — never spreads
 
-Anything touching `shell_main.rs`, `term_view.rs`, `native/src/lib.rs`, `Cargo.toml`, the
-wgpu device, or `SHELL_ARCHITECTURE.md`. **One writer per tier.** These are the widest merge
+Anything touching `console_main.rs`, `term_view.rs`, `native/src/lib.rs`, `Cargo.toml`, the
+wgpu device, or `CONSOLE_ARCHITECTURE.md`. **One writer per tier.** These are the widest merge
 surfaces in the tree and a spacing or wiring diff conflicts on every hunk.
 
 ### 3.4 The shape of a tier
@@ -157,7 +157,7 @@ Each returns a written answer with file paths and line references, no code chang
 dispatching any tier — several tier descriptions below were corrected by it, and the
 corrections are folded into §5 and §6.
 
-**R1 — the compositing seam.** In `shell_main.rs`, where exactly is the `World` rendered and
+**R1 — the compositing seam.** In `console_main.rs`, where exactly is the `World` rendered and
 painted under the glyphs? Function signatures, the render-target format, and what the
 "measured render-sRGB/sample-linear gamma pair" concretely is. **What would a second,
 alternative background source have to satisfy to drop into that same seam?**
@@ -233,7 +233,7 @@ invites exactly the wrong comparison.
 material library, the camera rig, the compositing seam and its measured gamma pair, and the
 absolute-line band arithmetic are all the machinery a patch is made of, and every one of them
 is used by Tier 5. What changes is **where the pixels land**: in a claimed rectangle, not
-across the window. `Shell::render_source` now separates *what the engine draws* from *what the
+across the window. `Console::render_source` now separates *what the engine draws* from *what the
 backdrop paints*, so a patch renders with the backdrop off and nothing paints across the
 window.
 
@@ -248,7 +248,7 @@ the table beneath it says.
 |---|---|---|
 | Leaf A | new `substrate/camera.rs` (root crate) | narrow-FOV **perspective** rig as a pure function (not true ortho — R2); tests for projection, and edge-to-centre view-vector deviation **as a function of aspect** — vertical FOV is what the engine takes |
 | Leaf B | new substrate `Shared`-state builder (pure, root crate) | one plane via `RenderPath::Membrane` — **no new shader** (R5); per-vertex albedo + the narrow FOV carry the read |
-| Integrator | `shell_main.rs`, `world.rs`, `term_view.rs`, `SHELL_ARCHITECTURE.md`, `doc/arch/render.md` | wire into the backdrop seam **fixing its aspect** (size the texture to the panel rect — R1/R4: it is stretched today); the `world.rs` camera arm + both FOV clamps + the auto-follow latch (R2); extract a testable `scrim_alpha` and assert `SCRIM_FLOOR` holds |
+| Integrator | `console_main.rs`, `world.rs`, `term_view.rs`, `CONSOLE_ARCHITECTURE.md`, `doc/arch/render.md` | wire into the backdrop seam **fixing its aspect** (size the texture to the panel rect — R1/R4: it is stretched today); the `world.rs` camera arm + both FOV clamps + the auto-follow latch (R2); extract a testable `scrim_alpha` and assert `SCRIM_FLOOR` holds |
 
 Leaves A and B are genuinely concurrent — A is arithmetic, B is a state builder. They meet
 only at the integrator. **The World stays selectable as a backdrop source beside the
@@ -262,8 +262,8 @@ and FOV shading only.
 | Lane | Owns | Output |
 |---|---|---|
 | Leaf A | the material set, + the map-gate lift in `render.rs:3640-3654` | four materials worth showing (graphite/paper/slate need the #472 maps, which the Membrane path cannot sample until the gate lifts — R5); two lighting rigs (the fill's direction is derived, not aimable — promise intensity only) |
-| Leaf B | the CLI arm: `ctl.rs` + `cli.rs` `console` subcommand | `organon console background <name>` in clap `--help`, args validated; ops written to a NEW `ns_file("console.txt")` sidecar — **not** `CliOp`/`cli.txt`, which the World drains, not the Shell (R3) |
-| Integrator | `shell_main.rs`, `SHELL_ARCHITECTURE.md` | stand up the product's **first `CommandService` instance** (specs must register into something real — none exists in the product today, R3); drain `console.txt` in the frame path; dispatch → live substrate change, under a second, no grid relayout |
+| Leaf B | the CLI arm: `ctl.rs` + `cli.rs` `console` subcommand | `organon console background <name>` in clap `--help`, args validated; ops written to a NEW `ns_file("console.txt")` sidecar — **not** `CliOp`/`cli.txt`, which the World drains, not the Console (R3) |
+| Integrator | `console_main.rs`, `CONSOLE_ARCHITECTURE.md` | stand up the product's **first `CommandService` instance** (specs must register into something real — none exists in the product today, R3); drain `console.txt` in the frame path; dispatch → live substrate change, under a second, no grid relayout |
 
 ### ⚡ Sequence amendment (2026-08-11, coordinator + James): Tier 4 lands before Tier 3
 
@@ -302,10 +302,10 @@ Because the vocabulary is settled, all four leaves fan out at once:
 | Lane | Owns | Output |
 |---|---|---|
 | Leaf A | schema types + serde + the emitter; owns `ctl.rs` and `cli.rs` this tier | a `Discover { path }` subcommand plus `--json` on the existing `describe` — the invocation the schema settled in `acae19a` (subcommands, matching the CLI's own grammar; never global flags); the `discover`/`describe --json` read path skips the ~150 ms `is_live` probe (R3); round-trip tests, tolerant defaults, the test list at the end of the schema doc; SKILL.md gains the new grammar per §10 |
-| Leaf B | a NEW root-crate module (e.g. `native/src/console_catalog.rs`) — **not** `organon-shell`, which is forbidden nih-plug (R6) | two pieces, budgeted separately: the field-name↔wire-id **namespace bridge**, generated from `param_table.rs`'s slot lists (a hand-written table would be the fourth copy of the one that already drifted); then `core_catalog` entries → `CommandSpec`s + descriptors **generated** (I2), guarded by `taper_round_trips_against_the_engine_range`. Its `pub mod` line in `lib.rs` belongs to the integrator, added up front |
-| Leaf C | new reserved-row module in `organon-shell` | pure arithmetic, **both directions**: `grid_rows(avail_h, cell_h, strip_rows)` AND `strip_height(strip_rows, cell_h)` — one number, two projections, or points and rows diverge at fractional DPI (R4); saturating sub, floor ≥ 2; empty payload → 0 rows (that IS auto-hide); tested across resize, fractional cell heights, ppp ∈ {1.0, 1.25, 1.5, 2.0, 2.25} |
+| Leaf B | a NEW root-crate module (e.g. `native/src/console_catalog.rs`) — **not** `organon-console`, which is forbidden nih-plug (R6) | two pieces, budgeted separately: the field-name↔wire-id **namespace bridge**, generated from `param_table.rs`'s slot lists (a hand-written table would be the fourth copy of the one that already drifted); then `core_catalog` entries → `CommandSpec`s + descriptors **generated** (I2), guarded by `taper_round_trips_against_the_engine_range`. Its `pub mod` line in `lib.rs` belongs to the integrator, added up front |
+| Leaf C | new reserved-row module in `organon-console` | pure arithmetic, **both directions**: `grid_rows(avail_h, cell_h, strip_rows)` AND `strip_height(strip_rows, cell_h)` — one number, two projections, or points and rows diverge at fractional DPI (R4); saturating sub, floor ≥ 2; empty payload → 0 rows (that IS auto-hide); tested across resize, fractional cell heights, ppp ∈ {1.0, 1.25, 1.5, 2.0, 2.25} |
 | Leaf D | the strip widget (`tabs.rs`) | the existing tab strip extracted to be data-driven: labels in, index out, callback. Fix the stale "along the bottom" module doc and the upward-anchored `+` menu while there (R4) |
-| Integrator | `shell_main.rs`, `term_view.rs`, `term.rs`, `native/src/lib.rs`, `SHELL_ARCHITECTURE.md` | the strip is a bottom `TopBottomPanel` declared **before** the CentralPanel — under that approach `term_view.rs`/`term.rs` need **no arithmetic change** (R4); the one forced structural change is `cell_h` escaping `term_view::draw` (a public `cell_metrics`); suppress auto-hide while scrolled into history (a toggle is a real `Term::resize` and the view jumps a row); tap → compose into the input line, prompt-ready buffering. Taps come from egui widgets in the panel — click→cell mapping is explicitly dropped unless a need appears |
+| Integrator | `console_main.rs`, `term_view.rs`, `term.rs`, `native/src/lib.rs`, `CONSOLE_ARCHITECTURE.md` | the strip is a bottom `TopBottomPanel` declared **before** the CentralPanel — under that approach `term_view.rs`/`term.rs` need **no arithmetic change** (R4); the one forced structural change is `cell_h` escaping `term_view::draw` (a public `cell_metrics`); suppress auto-hide while scrolled into history (a toggle is a real `Term::resize` and the view jumps a row); tap → compose into the input line, prompt-ready buffering. Taps come from egui widgets in the panel — click→cell mapping is explicitly dropped unless a need appears |
 
 ⚠️ **`term_view.rs` and `term.rs` both belong to the integrator in this tier.** Leaf C writes
 arithmetic in its own file and never calls it from theirs. The `[grid]` debug line keeps
@@ -325,7 +325,7 @@ that is already true.
 |---|---|---|
 | Leaf A | new scroll-anchor module | scrollback offset → screen rect, as a pure function |
 | Leaf B | patch lifetime policy | a crude, honest, logged GPU cap for off-screen patches |
-| Integrator | `shell_main.rs`, `term_view.rs` | anchor patches; look applies forward, history keeps its own |
+| Integrator | `console_main.rs`, `term_view.rs` | anchor patches; look applies forward, history keeps its own |
 
 **Do not build a restyle-everything path.** Nothing restyles history; patches stay where they
 were created. That is both the cheap implementation and the correct one.
@@ -384,9 +384,9 @@ it; it does not design it.
 
 | Lane | Owns | Output |
 |---|---|---|
-| Leaf A | new `block_anchor.rs` in `organon-shell` | ✅ **landed** (`console/t5-anchor`) — blocks → viewport row ranges, with the texture-slice offset for a half-scrolled block; model-agnostic, so the design change above cost it nothing |
+| Leaf A | new `block_anchor.rs` in `organon-console` | ✅ **landed** (`console/t5-anchor`) — blocks → viewport row ranges, with the texture-slice offset for a half-scrolled block; model-agnostic, so the design change above cost it nothing |
 | Leaf B | the marker scanner | the in-band claim recognised on the way to the VT parser, split-read safe; pure, headless |
-| Integrator | `term.rs`, `term_view.rs`, `shell_main.rs`, `cli.rs`, `ctl.rs`, docs | `feed_local` + the bracket (the **fallback** path, for when nobody is writing); the paint call; the patch ledger |
+| Integrator | `term.rs`, `term_view.rs`, `console_main.rs`, `cli.rs`, `ctl.rs`, docs | `feed_local` + the bracket (the **fallback** path, for when nobody is writing); the paint call; the patch ledger |
 
 **Known, accepted, and written into the protocol rather than solved:** a gap made of spaces does
 not survive a width change — reflow rewraps the paragraph and the rectangle is destroyed. The
@@ -623,9 +623,9 @@ change takes effect. The first two are context engineering — no build, no new 
 is why this is nearer than "self-extending harness" makes it sound.
 
 **Two of the three already exist here, and one of them is stronger than Pi's version.**
-`SHELL_ARCHITECTURE.md` is the console's living state, and it is *hook-enforced*: ✅
-`.claude/hooks/doc-rules.sh:31` maps `native/organon-shell/src/*.rs` and
-`native/organon-shell/Cargo.toml` to it, so the code cannot move without the doc being called
+`CONSOLE_ARCHITECTURE.md` is the console's living state, and it is *hook-enforced*: ✅
+`.claude/hooks/doc-rules.sh:31` maps `native/organon-console/src/*.rs` and
+`native/organon-console/Cargo.toml` to it, so the code cannot move without the doc being called
 for. A shipped-docs approach normally cannot promise that — it ships a snapshot and hopes. Here
 the drift is caught by machinery. The skill exists too; §5.9.25 and §10 already govern it.
 
@@ -636,10 +636,10 @@ running inside. The step from "reach the console's capabilities" to "alter them"
 it looks, and it is the same seam.
 
 **There is already ONE working self-extension seam, and it is the template.** ✅ The harness
-registry: `harness::load` (`native/organon-shell/src/harness.rs:188`) seeds from `builtin()`,
+registry: `harness::load` (`native/organon-console/src/harness.rs:188`) seeds from `builtin()`,
 reads `harnesses.json` from the OrganonShell store root, and merges user entries **over the
 built-ins by id** — a matching id replaces the built-in wholesale, a new id appends in file
-order. `shell_main.rs:1236` calls it at startup. So **a new tab type is a data change with no
+order. `console_main.rs:1236` calls it at startup. So **a new tab type is a data change with no
 rebuild**, and this machine already relies on it (the Vera and Shell (WSL) rows). The module
 documents its own traps, and two matter to anyone building on this shape: ⚠️ a missing *or
 unparseable* file is silently "no user entries" — `read_to_string(…).ok().and_then(|s|
@@ -677,9 +677,9 @@ The finding above is kept as written because it records what was true and how it
 **Tonight's status strip is the test case, and it is encouraging.** An agent inside the console
 adding that strip would have needed three things: which file owns the bottom band, the
 🚨 `ScrollArea`-inside-`Layout::bottom_up` collapse, and the honesty rule about what may be
-displayed at all. ✅ All three are written down — the first two in `SHELL_ARCHITECTURE.md`'s
+displayed at all. ✅ All three are written down — the first two in `CONSOLE_ARCHITECTURE.md`'s
 "The two bands under the scrollback", the third in the `SessionFacts` doc comment in
-`native/organon-shell/src/agent_map.rs` (why a context bar, a quota percentage, a session token
+`native/organon-console/src/agent_map.rs` (why a context bar, a quota percentage, a session token
 total and `num_turns` are each declined). None of that was written as preparation for this. The
 useful inference: the eventual guide is more **assembling what already exists** than authoring
 something new.
@@ -692,7 +692,7 @@ it unreachable from a conversation tab, because **that tab did not run in any pr
 directory*, and a console started from a PATH shim is nowhere in particular. Measured: an
 agent in a conversation tab answered `Unknown skill: organon-cli`, and separately spent
 several approval cards running `ls` and `--help` to rediscover a CLI whose 18 KB guide was
-sitting in the checkout. It could not have read `SHELL_ARCHITECTURE.md` either — the very
+sitting in the checkout. It could not have read `CONSOLE_ARCHITECTURE.md` either — the very
 authority the paragraph above tells it to consult *before* the tree.
 
 Worth stating plainly because the section reads optimistically without it: **the two of three
@@ -709,7 +709,7 @@ the rule that produced it every single time, warning when the directory carries 
 `CLAUDE.md` or `.git`. Rule 3 is the one that matters for this section: it makes *"`cd` into a
 checkout, start the console"* land in that checkout with no configuration, so the console's
 own repo is reachable for exactly the reason anyone else's is, and no path is named in product
-data. `SHELL_ARCHITECTURE.md` §1.1 owns the reasoning, including why terminal tabs are
+data. `CONSOLE_ARCHITECTURE.md` §1.1 owns the reasoning, including why terminal tabs are
 deliberately left alone and what the rejected alternatives cost.
 
 ⚠️ **One half is measured and unexplained, and it bounds the claim.** `system/init` reports
@@ -887,7 +887,7 @@ approvals.
 
 ✏️ **Amended 2026-08-13: `tool_use_result` has landed**, as `conversation::ResultDetail` on the
 tool card — and it carries **four** fields rather than the three named above, `startLine`
-having been in the capture all along. `SHELL_ARCHITECTURE.md`'s "`tool_use_result` — the
+having been in the capture all along. `CONSOLE_ARCHITECTURE.md`'s "`tool_use_result` — the
 sibling object a terminal never sees" owns the shape. Three things the note above did not
 anticipate, each of which is a rule rather than a detail:
 
@@ -929,8 +929,8 @@ a time; this is the next one.
 
 1. **One writer per file, declared before dispatch.** No exceptions, no "I'll just add one
    line."
-2. **No sub-agent touches `shell_main.rs`, `term_view.rs`, `native/src/lib.rs`, `Cargo.toml`,
-   `SHELL_ARCHITECTURE.md`, `native/src/world.rs`, or `organon-render/src/render.rs`** except
+2. **No sub-agent touches `console_main.rs`, `term_view.rs`, `native/src/lib.rs`, `Cargo.toml`,
+   `CONSOLE_ARCHITECTURE.md`, `native/src/world.rs`, or `organon-render/src/render.rs`** except
    the current tier's integrator — the last two joined the list in Phase 0 (R2/R3/R5: the
    camera arm, the CLI drain and the membrane path all live in them). `ctl.rs`, `cli.rs` and
    `agent.rs` are one-writer-per-tier by the declarations in §5.
@@ -1033,7 +1033,7 @@ Per §3.5 the coordinator delegates all the *writing*. These are not writing:
 Per tier, in the tier's own change — never as a cleanup pass at the end:
 
 - **`CONSOLE_ARCHITECTURE.md`** — every tier. A Stop hook enforces it for
-  `native/organon-shell/*`.
+  `native/organon-console/*`.
 - **`CHANGELOG.md`** — every tier.
 - **`doc/console_spike_demo_script.md`** — the status column, in the same change as the tier
   that delivers the beat. What we can actually show should never be a matter of memory.
@@ -1081,7 +1081,7 @@ that has to be demoable, built in five tiers, each one a visible beat.
 
 Read these, in this order, before doing anything:
   1. doc/console_spike_execution_plan.md   — how the work divides (this is your plan)
-  2. SHELL_ARCHITECTURE.md                 — the code-grounded state of the console
+  2. CONSOLE_ARCHITECTURE.md                 — the code-grounded state of the console
   3. gh issue view 4                       — the spike: the beats and the tiers
   4. gh issue view 3                       — the console: the design the spike slices
   5. doc/console_discover_schema.md        — the settled wire format Tier 3 implements
@@ -1094,7 +1094,7 @@ dispatched and to whom, reading what comes back and rejecting it when it is wron
 running the build and tests, the beat checks, and the commits.
 
 Section 6 of the plan governs file ownership. Never let two agents into
-shell_main.rs, term_view.rs, native/src/lib.rs, Cargo.toml, or SHELL_ARCHITECTURE.md
+console_main.rs, term_view.rs, native/src/lib.rs, Cargo.toml, or CONSOLE_ARCHITECTURE.md
 at the same time. The integrator lane is one sub-agent at a time and you wait for it
 (run_in_background: false) before dispatching anything touching the same files.
 
@@ -1114,9 +1114,9 @@ Do not start Tier 1 until the brief exists and I have seen it.
 
 Notes on this environment: Windows 11, PowerShell 5.1 (&& is a parse error — use
 `cmd; if ($?) { next }`), RTX 5090, cargo/rustc on PATH, no Node/npm. The console
-requires --features shell-edition. `organon-console --help` documents every dev flag.
-Hooks in .claude/hooks/ will require SHELL_ARCHITECTURE.md to move in the same change
-as any native/organon-shell/* edit — that is deliberate; do not work around it.
+requires --features console-edition. `organon-console --help` documents every dev flag.
+Hooks in .claude/hooks/ will require CONSOLE_ARCHITECTURE.md to move in the same change
+as any native/organon-console/* edit — that is deliberate; do not work around it.
 
 Report at each gate: after Tier 0, after the brief, and after each tier's beat check.
 A green build is never evidence that a beat works — you have a GPU and a display, so

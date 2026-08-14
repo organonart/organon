@@ -374,16 +374,16 @@ jobs:
         working-directory: native
         run: cargo test --release --workspace --features mind-edition
 
-  # ── Leg 2b: the Organon Shell edition (Shell #3 T1) ──────────────────────────
-  # Same asymmetry argument as leg 2: `shell-edition` is default-off, so legs 1–2
-  # compile none of `src/shell_main.rs` and none of the `Edition::Shell` arms.
+  # ── Leg 2b: the Organon Console edition (Console #3 T1) ──────────────────────────
+  # Same asymmetry argument as leg 2: `console-edition` is default-off, so legs 1–2
+  # compile none of `src/console_main.rs` and none of the `Edition::Console` arms.
   # Mind-symmetric commands: the bin lives in the root crate (the window will
   # render `World`, which lives here until #618), the compositor lib in the
-  # `organon-shell` package. Those two names differ on purpose — the ARTIFACT is
-  # `--bin organon-console` (the public name), the PACKAGE is still
-  # `-p organon-shell`. Don't "fix" one to match the other.
-  shell-edition:
-    name: build (shell-edition)
+  # `organon-console` package — so `--bin organon-console` and `-p organon-console`
+  # name two different things that now happen to share a spelling. The bin is built
+  # from the ROOT package; `-p organon-console` will not produce it.
+  console-edition:
+    name: build (console-edition)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -401,15 +401,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-          key: shell-edition
+          key: console-edition
 
-      - name: Build Organon Shell
+      - name: Build Organon Console
         working-directory: native
-        run: cargo build --release --features shell-edition --bin organon-console
+        run: cargo build --release --features console-edition --bin organon-console
 
-      - name: Test (shell-edition, incl. offline WGSL validation)
+      - name: Test (console-edition, incl. offline WGSL validation)
         working-directory: native
-        run: cargo test --release --workspace --features shell-edition
+        run: cargo test --release --workspace --features console-edition
 
   # ── Leg 3: the Windows cross-check — ALL editions, on a Linux runner ──────────
   # organon#658 Tier 1. The cheap half of the platform axis: 1x billing, no apt
@@ -457,11 +457,11 @@ jobs:
         working-directory: native
         run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets --features mind-edition
 
-      # Shell #3 T1 — same 1x-runner argument that put Mind here: Shell's
+      # Console #3 T1 — same 1x-runner argument that put Mind here: the Console's
       # Windows compile coverage comes from this cheap leg, not a second 4x one.
-      - name: Check (shell-edition, Windows target)
+      - name: Check (console-edition, Windows target)
         working-directory: native
-        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets --features shell-edition
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets --features console-edition
 
   # ── Leg 4: Windows, for real — the only leg that links and runs tests there ───
   # organon#658 Tier 1. The expensive half (~4x a Linux leg), so it is used only

@@ -31,6 +31,102 @@ string rather than reading one — the only name in this wave written down nowhe
 `as_str` has to state that derived string literally, and
 `host_cal_colour_source_mirrors_core` now asserts it explicitly. Get it wrong and the DAW's
 dropdown and the CLI's resolver disagree about a name neither file spells out, silently.
+### Posture's desktop margin is symmetric — the transcript is centred, not shoved right
+
+The `Form` token `gutter` becomes **`margin`**, and `Form::gutter_margin` becomes
+**`Form::content_margin`**, answering `Margin::symmetric(margin, 0)` — the same 90 points on
+the left and the right at desktop posture, so the conversation sits centred in its pane. Both
+ends and the midpoint are pinned as before (`0` / `45` / `90`), and the terminal end still
+answers `Option::None` rather than a zero margin, so the scrollback's walk runs in the scroll
+area's own `Ui` with no wrapping `Frame` at all — unchanged by construction rather than by
+arithmetic that ought to agree.
+
+**It was left-only because the specification was describing a picture.** The sentence the
+tier was built from — "add a narrow empty left margin column, about 90px wide" — was written
+to prompt an image generator into restyling a screenshot, and was implemented literally.
+Drawn on a real window for the first time, it read as the console pushed off its own left
+edge. Renaming the token is part of the fix rather than tidying after it: a field called
+`gutter` that produces a symmetric inset is a lie the next reader has no way to catch.
+
+⚠️ **Every posture test passed the whole time**, because they all asserted the *scalar*
+(`f.gutter == 90.0`) and none of them asserted the `Margin` it became — which is where the
+asymmetry lived. `the_content_margin_is_symmetric_at_every_posture` now walks the axis and
+checks the shape at each step: `left == right`, no vertical inset, and the value is the token.
+
+⚠️ **A margin, not a measure.** The text column is whatever the pane has left — 920 points at
+the console's default 1100, but 2320 at 2500, which is wider than prose wants. Claude Desktop
+caps the *measure* instead. That was considered and deferred, and `SHELL_ARCHITECTURE.md` §1.6
+records why it is a bigger change than it looks: **"uncapped" is not a width**, so a cap
+cannot be one more scalar lerping between the two ends — every single-token spelling is either
+non-monotone at the midpoint or makes the terminal end depend on the window size. The honest
+form needs `t` itself and an available width at the call site, and it should wait for somebody
+to have looked at the desktop posture on a wide window. Nobody has.
+### Slash commands in the console — one command registry, four front doors
+
+A command a **person** types now runs at once, locally, and costs no inference. Typing
+`/background slate` into a conversation tab changes the backdrop on the next frame; before
+this, the equivalent went to the agent as a message, was understood by inference, was located
+by a tool-search call, came back as a tool call, and raised an approval card asking the human
+to approve his own command — about **thirteen seconds and a chunk of context for a command he
+had already decided on**, measured on 2026-08-13.
+
+Nothing in that chain was a bug. It is what the console's earlier architecture forced: it
+composited *around* a harness it did not own, so it had no way to hear a human's intent except
+through that harness. The conversation front-end ended that assumption — the console owns the
+composer — and nobody revisited the consequence.
+
+**One table, four spellings.** `organon-shell/src/registry.rs` holds the console's vocabulary
+as a hierarchy — a group, a verb, and its argument choices — built from the same
+`Vec<CommandSpec>` the MCP tool schemas are generated from. So `organon console background
+slate` from a terminal, `mcp__organon__console_background` from an agent, and `/background
+slate` from a person are three renderings of one definition, and all three produce the same
+`cli::ConsoleOp`. A pie menu is the fourth and is not built; the hierarchy is carried
+explicitly so that it can be generated rather than restated. All three existing surfaces stay:
+they serve callers with genuinely different routes in.
+
+- Typeable now: `/background`, `/rig`, `/block`, `/patch`, `/portal`, `/camera`,
+  `/camera.read`, plus the view's own `/surface` (unchanged) and a generated `/help`.
+- **The typed line, minus its slash, is the sidecar line** — `/camera reset distance 40` is
+  what the CLI already prints as `queued: camera reset distance 40`, so there is no third
+  spelling to learn.
+- **Still audited.** A slash command is handed to the same dispatch an agent's tool call
+  reaches, onto the same sidecar, drained through the same `CommandService` — it leaves a
+  `CommandRun` record. It skips the agent, not the discipline, and reports *accepted* rather
+  than *applied*.
+- **The approval model is untouched**, because it answers a different question — may this
+  *agent* act on my behalf — and a person's own keystroke was never that question.
+- An unknown command is **refused with the known list** instead of being forwarded as chat, and
+  a refusal does **not** clear the composer, so nothing a person typed can vanish. A line that
+  merely *mentions* a command still reaches the agent, and `//` sends one that really does
+  begin with a slash.
+### Console: a tool call that worked stops taking a whole card
+
+The conversation view was *"a list of bevel-bordered status updates"* — five or six tool
+calls on a typical screen, each one rendering its full arguments and full output forever, at
+full weight. A turn's mechanical work occupied the transcript in proportion to how much work
+it was, rather than to how much attention it deserved.
+
+New module `native/organon-shell/src/card_density.rs` (no egui, like `text_diff`). **Success
+is quiet; only a departure from normal takes weight.** A settled success becomes one line —
+the verb, the object and a magnitude (`Read src/lib.rs · 120 lines`, `Edit … · +3 -1`) — a
+consecutive run of three or more inside one turn becomes one row with a count, and a
+**failure is untouched: open, bordered, loud, and structurally incapable of being collapsed
+or of joining a group.** Nothing is deleted; everything is one click from the card it was.
+
+Three things the design is built around. **An authorised call is never anonymous** — an
+approval and its result share only a `toolu_` id, so a gated call keeps its own row and draws
+that id. **Nothing above a reader can change height while they are reading** — an automatic
+collapse is applied only while the view is following the live edge, and a manual toggle can
+only change content at or below the row that was clicked, so scroll position is stable by
+construction rather than by compensation. And **a hand outranks the machine permanently**: a
+card the reader opened stays open through every later event.
+
+⚠️ **No group row carries a duration**, which the design asked for. `ToolCard` holds no timing
+and `conversation.rs` has no clock by design; a number the view timed itself would be its own
+stopwatch wearing the agent's voice. A tool with nothing to measure renders **no** magnitude
+rather than a zero. `SHELL_ARCHITECTURE.md` §1.1 owns the full rule, and its honesty ledger
+records the part that matters: whether the collapsed transcript actually *reads* better is
+unverified — nobody has seen it.
 
 ### `organon-scene` — the substrate moves below the plugin
 
@@ -124,6 +220,75 @@ and never survived being multiplied by a session.
 The instrument stays in the tree (`conversation_view/edit_diff_bench.rs`), including a
 `Cache::Off` mode that reproduces the old code exactly, so the before-and-after can be
 re-taken rather than believed. Full write-up: `doc/console_edit_diff_cost.md`.
+### The product is called Organon Console, and the tree now says so
+
+The rename to **Organon Console** was made a while ago and only ever reached the binary's
+name; everything behind it still said *Shell*. This finishes it. The crate
+`native/organon-shell` is now **`native/organon-console`**, the cargo feature
+`shell-edition` is **`console-edition`**, `native/src/shell_main.rs` is
+**`console_main.rs`**, the app state `Shell` is **`Console`**, `Edition::Shell` is
+**`Edition::Console`** (with `is_shell` → `is_console` and `SHELL_TABS` →
+`CONSOLE_TABS`), `ShellApp` is **`ConsoleApp`**, the provisional command `shell.echo` is
+**`console.echo`**, the PR label `shell` is **`console`**, and `SHELL_ARCHITECTURE.md` is
+**`CONSOLE_ARCHITECTURE.md`** — moved with `git mv`, so its history follows. Every
+citation of the old names across `CLAUDE.md`, `ARCHITECTURE.md`, `MIND_ARCHITECTURE.md`,
+`CONTRIBUTING.md`, `README.md`, `LICENSING.md`, `doc/`, the `organon-cli` skill, the
+`.claude` hooks and `.github/workflows/ci.yml` moved with them. **CI moved in this same
+change** — a feature rename that lands without it fails every PR.
+
+🚨 **Three words spelled "shell" live in this tree and only one of them was ours.** The
+product; **a shell** (bash, WSL, `cmd`, the program a terminal harness runs); and a
+**geometric** shell (`math::outer_shell`, `PhylSurface::Shell`, the Plexus overlay rind,
+a free-slip spherical boundary). The third is the largest by far — 149 occurrences in
+`math.rs` alone — and `ORGANON_SHELL_TABS=shell-wsl,shell` carries two of the three senses
+on one line. Nothing was renamed that a shell or a solid still means; the harness ids
+`shell` / `shell-wsl`, the label `Shell (WSL)`, `default_shell`, `shell_dash_c` and
+`$SHELL` are all untouched. Organon **Mind**'s `mind_shell.rs` is untouched too: it is a
+different product's UI scaffold, not this one's name.
+
+⚠️ **Two things deliberately still say "shell", because both are read from outside this
+repository and a rename here does not reach the far side:**
+
+1. **The IPC namespace value `"organon-shell"`** (`organon-core/src/edition.rs`). The
+   `organon` CLI joins on that exact string to find a running console, and the launch
+   shims set `ORGANON_IPC_NS=organon-shell` to fork a second one into its own namespace.
+   It is a **wire identifier, not a name** — the same class of frozen string as
+   `Edition::Full`'s `"organic-math"`. The `Edition` variant renamed *around* it, which is
+   exactly the distinction: a variant is ours, a wire value is a contract.
+   `console_edition_identity_and_tabs` pins the string, so a find-and-replace fails there
+   loudly rather than at a user's keyboard silently.
+2. **The `ORGANON_SHELL_*` environment variables** — all nine. They are a shipped flag
+   surface that the workstation's `organon-console.cmd` / `oc.cmd` shims already set.
+
+A third stayed for the same reason with a smaller blast radius: the private-annex
+citations `doc/organon_shell_prd.md` and `doc/organon_shell_buildplan.md` name files in a
+tree this repository cannot see, so renaming the citation would only dangle it. Rename the
+annex first. And `%APPDATA%\OrganonShell` stays, because an existing install reads it.
+
+⚠️ **One behaviour genuinely changed, and it is not cosmetic.** `CommandService`'s catalog
+is sorted by name, so `console.echo` now precedes `session.note` where `shell.echo`
+followed it. `catalog_list_spec_and_suggest` caught it and its expectations moved with the
+rename — the catalog doing what it says, not a regression.
+
+`doc/arch/topology.md` was brought true in the same pass, which the rename only exposed:
+`CLAUDE.md` says that file owns *"the crate graph and what may depend on what"* and it did
+not state one. It now carries the graph read from the manifests (five members, the three
+leaf crates siblings rather than a stack, `nih_plug` and the window stack confined to the
+root crate) and corrects the claim that the console crate is "organon-core + egui only" —
+it has taken `serde`/`serde_json`, `dirs`, `portable-pty` and `alacritty_terminal` since,
+so the *publishability* claim survives and the *smallness* claim did not. Its module list
+gained `theme.rs`, `posture.rs` and `prefs.rs`, and records that `kind.rs` sits in
+`organon-core` rather than here for a topology reason. `.claude/hooks/doc-rules.sh` now
+makes topology.md accountable for `native/organon-console/Cargo.toml` as well, and the
+now-permanently-absent `SHELL_ARCHITECTURE.md` entry was removed from
+`.claude/settings.json` — a listed doc that can never exist is false reassurance.
+
+**Verified:** `cargo test -p organon-console --lib` 526 passed / 1 ignored,
+`cargo test -p organon-core` 556 passed, `cargo check --features console-edition --bin
+organon-console` and `cargo check --tests -p organic-math-native --features
+console-edition` both clean, and all four doc hooks run green. Not seen running — no
+window was opened.
+
 ### `cli.rs` and `agent.rs` stop needing a plugin host
 
 organon#49 Tier 2. Both files reached `nih_plug::prelude::Enum` to do three things: list
@@ -154,6 +319,63 @@ shipped code, where it blocks nothing.
 
 Nothing about the built product changes: same variants, same order, same display names,
 same wire indices.
+### A palette and a posture a person can reach — `organon console theme` / `posture`
+
+The Console has shipped four palettes (`organon`, `light`, `dark`, `chocolate`) and a
+terminal↔desktop posture axis for a while, and **a human could select none of them**:
+`shell_main.rs` hardcoded `Theme::organon()` and `Posture::TERMINAL`, and the preferences
+file nothing had ever written was never read. Two verbs and a startup read close that.
+
+**`organon console theme <name>` repaints the running window and stores the choice.** Live
+is the requirement rather than a convenience: what is being judged is a wash of colour
+across a window full of real text, and that judgement is made by looking back and forth,
+which comparing four palettes across four relaunches destroys. The write goes to
+`preferences.json` — the first thing the Console has ever persisted on a person's behalf —
+so the next launch opens where you left it.
+
+**`organon console posture <terminal|desktop|0.0-1.0>` snaps.** The axis is a scalar and
+every form token lerps along it, so a bare `0.5` is a real console rather than a rounding of
+one end. ⚠️ There is no animation, deliberately: a tween moves the transcript's wrap width
+continuously, and `doc/console_rewrap_measurement.md` prices one such width change at
+~7.6 ms at 400 elements with five options and no decision taken. A snap pays that once, in a
+frame nobody reads as a jump. ⚠️ The posture is **not** remembered — a palette is what the
+console is made of, a posture (at this tier, undrawn on any real screen) is a view you take
+to look at something, and closing the window is a free undo worth keeping.
+
+**Startup precedence: `ORGANON_SHELL_THEME` → `preferences.json` → `organon`.** 📌 That
+first rung **amends a recorded decision**. `SHELL_ARCHITECTURE.md` §1.5 said no environment
+variable may override a stored preference, and its reasoning — a variable baked into a
+launch shim wins *silently*, which is the evaporation the preferences file exists to end —
+still stands. It was taken when nothing could select a theme at all, and it named its own
+escape hatch: a one-launch override "belongs in a CLI flag that can say so in the console's
+own output". `organon-console` has no flags; it is launched by shims, and an environment
+variable *is* its argument surface. So the objection is answered directly instead: the
+override **announces itself every launch**, naming the variable, the palette and the stored
+palette it stands in front of, and it **never writes** — unset it and the stored choice is
+back. A loan, not a takeover. §1.5 carries the amendment.
+
+⚠️ **An unknown name is refused out loud and never approximated**, at both ends: `bin/ctl.rs`
+builds its `--help` list and its clap gate from `Theme::NAMES` itself, and the console
+resolves again on arrival for a line hand-written onto the sidecar. At startup an unknown
+name **falls through to the next source** rather than resetting to `organon`, so a typo in a
+shim cannot silently discard a stored choice.
+
+⚠️ **Both verbs are routed before `console_step`**, beside `block`/`patch`/`portal`/`camera`.
+Everything after that point reaches `record_look_change`, which snapshots the backdrop into
+the Tier-4 epoch ledger — and a palette is not a substrate look. Neither verb writes
+`backdrop_source` or changes a pixel behind the glyphs, so banding the transcript for one
+would record a change that did not happen.
+
+`console.theme` and `console.posture` join the dispatch catalog, and `--help` now lists both
+verbs, `ORGANON_SHELL_THEME`, and **both** scrim floors — quoting one was true exactly as
+long as no palette could be selected.
+
+🚨 **Still nobody has seen `light`, `dark`, `chocolate` or any `t > 0`.** This removes the
+obstacle, not the gap: `cargo test -p organon-shell --lib` is 534 green and the two
+`shell-edition` checks are clean, which is a claim about tests and not about a window. The
+first `organon console theme light` anybody types is also the first real exercise of the
+preferences file — store-root resolution, `create_dir_all`, temp-then-rename, and the read
+back at the next launch. A failed save says so on the console's own stderr and nowhere else.
 
 ### The three enums standing between `world.rs` and a Console that isn't a plugin binary
 

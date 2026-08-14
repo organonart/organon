@@ -49,7 +49,7 @@
 //! **A different consumer changed the answer.** `world.rs` imports
 //! `params::{BoidsForm, FuncName, GeneratorMode, OscDivision, ParamValues}`, and `world.rs`
 //! has to become reachable from a crate that does not carry `nih_plug` — otherwise
-//! `shell_main.rs` (and therefore the whole Organon Console binary) stays inside
+//! `console_main.rs` (and therefore the whole Organon Console binary) stays inside
 //! `organic-math-native` and inherits GPL from a VST3 binding it never calls. Two of those
 //! five already resolved here; these three are the remainder. The reason the old note gave
 //! was about `math.rs`, and it is still true about `math.rs` — it simply was never the only
@@ -62,7 +62,7 @@
 //! ⚠️ **Tier 2 added four more, and for a different consumer** (organon#49 T2):
 //! `SurfaceMode`, `MaterialType`, `CamPath` and `Palette`. Not because `world.rs` names
 //! them, but because `cli.rs` and `agent.rs` do — and those two are *also* on the path
-//! (`world.rs` imports `agent`; `shell_main.rs` imports both), so they have to lose
+//! (`world.rs` imports `agent`; `console_main.rs` imports both), so they have to lose
 //! nih-plug too. Tier 2's scope was set by that transitive fact rather than by the
 //! original list: the CLI's three selectors are generator/surface/material, and the
 //! agent's feature fingerprint adds palette and camera path. That is the whole set.
@@ -90,7 +90,7 @@ use glam::Vec3;
 /// core is better placed to own.
 ///
 /// That matters because `cli.rs` and `agent.rs` are both on `world.rs`'s dependency path
-/// (`world.rs` imports `agent`, and `shell_main.rs` imports both), so they have to become
+/// (`world.rs` imports `agent`, and `console_main.rs` imports both), so they have to become
 /// nih-plug-free for Tier 4 to move `world.rs` below the plugin crate.
 ///
 /// ⚠️ **The index is the wire format** — see [`FuncName`]. `all()` is in declaration

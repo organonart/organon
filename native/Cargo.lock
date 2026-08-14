@@ -2915,11 +2915,11 @@ dependencies = [
  "nih_plug",
  "nih_plug_egui",
  "objc",
+ "organon-console",
  "organon-core",
  "organon-mind",
  "organon-render",
  "organon-scene",
- "organon-shell",
  "pollster",
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.2",
@@ -2930,6 +2930,19 @@ dependencies = [
  "wgpu",
  "windows-sys 0.61.2",
  "winit",
+]
+
+[[package]]
+name = "organon-console"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "dirs",
+ "egui",
+ "organon-core",
+ "portable-pty",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2975,19 +2988,6 @@ dependencies = [
  "bytemuck",
  "glam",
  "organon-core",
-]
-
-[[package]]
-name = "organon-shell"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "dirs",
- "egui",
- "organon-core",
- "portable-pty",
- "serde",
- "serde_json",
 ]
 
 [[package]]

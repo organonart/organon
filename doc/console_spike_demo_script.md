@@ -30,7 +30,7 @@ conversation view earns its own beat when it has one.
 | | |
 |---|---|
 | Machine | ORGANON-ONE — RTX 5090, Windows 11 |
-| Build | `cargo build --release --features shell-edition --bin organon-console` and `cargo build --release --bin organon` |
+| Build | `cargo build --release --features console-edition --bin organon-console` and `cargo build --release --bin organon` |
 | Before starting | Close anything else on the GPU. Full screen. Cursor parked off-window between beats. |
 | Fallback | If a beat fails live, the previous beat is the stopping point — never improvise past a broken one. |
 
@@ -72,7 +72,7 @@ surface for a while and the scrollback carries it. That reads as the transcript 
 material. Opening with it reads as wallpaper.
 
 ⚠️ Consequence taken in the same change: a patch no longer borrows the backdrop's texture.
-`Shell::render_source` separates *what the engine draws* from *what the backdrop paints*, so a
+`Console::render_source` separates *what the engine draws* from *what the backdrop paints*, so a
 scene can be rendered purely to fill a patch while the window behind it stays flat black. One
 render, no second `World`.
 
@@ -335,7 +335,7 @@ made structural in the one place where a hand and an agent write the same three 
 🚨 **Status, plainly: nobody has run any of this.** Both halves were built in sessions with no
 GPU. The state machine, the rect, the wheel arbitration, the CLI round trip, the
 one-render-per-frame invariant, the hand-hold's boundary behaviour and the camera's wire form
-are pinned by 438 headless tests and the shell-edition build is green — **and none of that is
+are pinned by 438 headless tests and the console-edition build is green — **and none of that is
 evidence that anything appears or that anything moved.** Do not put this beat in a demo until
 James has driven it. The first check is the cheap one: does a window appear at all, and does the
 transcript scroll underneath rather than taking it along? The second is `organon console camera

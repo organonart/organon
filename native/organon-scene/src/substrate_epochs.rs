@@ -37,7 +37,7 @@
 //! **It owns no GPU objects and imports no `wgpu`.** It decides *which* textures should
 //! exist ([`EpochLedger::plan`] → [`SlotAction`]); the Tier 4 integrator executes those
 //! decisions against the `Backdrop { texture, view, size, id }` lifecycle already standing in
-//! `shell_main.rs` (brief **R1**: create-on-size-change, `register_native_texture` once, then
+//! `console_main.rs` (brief **R1**: create-on-size-change, `register_native_texture` once, then
 //! `update_egui_texture_from_wgpu_texture` against the carried `egui::TextureId`). One
 //! retained epoch ⇒ one such `Backdrop`, keyed by [`EpochId`].
 //!
@@ -158,7 +158,7 @@ pub struct Epoch {
 /// # The arithmetic, not an adjective
 ///
 /// One epoch costs one pane-sized `Rgba8UnormSrgb` texture — the same allocation
-/// `shell_main.rs` already makes for the single live backdrop (brief R1). Four bytes per
+/// `console_main.rs` already makes for the single live backdrop (brief R1). Four bytes per
 /// pixel, no mips, one sample. [`worst_case_bytes`] computes the ceiling; the honest figures:
 ///
 /// | pane | per epoch | × [`MAX_EPOCHS`] |
@@ -666,7 +666,7 @@ impl EpochLedger {
     /// deduplicated and id-ascending.
     ///
     /// `pane_resized` is the integrator's existing size-change test — the same condition
-    /// `shell_main.rs` already computes as `backdrop.size != (w, h)` (brief R1). It is the
+    /// `console_main.rs` already computes as `backdrop.size != (w, h)` (brief R1). It is the
     /// **only** thing that stales a rendered epoch; see [`SlotAction::Rerender`].
     ///
     /// # The order is part of the contract

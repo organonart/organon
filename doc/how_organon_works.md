@@ -4,9 +4,9 @@
 > the system is, how it is put together, what it can do, and where the seams are. It is
 > distilled from the repo's working architecture references (`ARCHITECTURE.md` for the
 > native engine, `doc/arch/render.md` for the render pipeline, `MIND_ARCHITECTURE.md`
-> for the Mind lane, `SHELL_ARCHITECTURE.md` for the Organon Console — which the code
-> still calls *Shell* internally) with the implementation minutiae — byte offsets, slot
-> indices, layout versions, per-PR history — deliberately left out.
+> for the Mind lane, `CONSOLE_ARCHITECTURE.md` for the Organon Console) with the
+> implementation minutiae — byte offsets, slot indices, layout versions, per-PR history —
+> deliberately left out.
 >
 > **Audience:** an engineer, a technically literate reader, or a writer who needs an
 > accurate account of the whole system in one pass.
@@ -55,7 +55,7 @@ A cargo workspace of five crates — a root crate plus **`organon-core`** (the h
 spine: math, IPC, params, GGUF, editions — no plugin framework, no GPU, no UI, enforced
 by dependency test), **`organon-render`** (the renderer and its ~50 shaders — no plugin
 framework, no UI toolkit, no windowing), **`organon-mind`** (Mind's own code), and
-**`organon-shell`** (the console's compositor and terminal) — compiles into:
+**`organon-console`** (the console's compositor and terminal) — compiles into:
 
 | Binary | What it is |
 |---|---|
@@ -66,7 +66,7 @@ framework, no UI toolkit, no windowing), **`organon-mind`** (Mind's own code), a
 | **mind-writer** | a synthetic activation-frame generator (exercises the live LLM path with zero inference) |
 | **mind-runtime** | an embedded llama.cpp runtime that loads a `.gguf`, runs real inference, and streams activations (opt-in build feature) |
 | **organon-mind** | **Organon Mind** — the LLM-analysis edition (opt-in build feature) |
-| **organon-shell** | the **Organon Console** — Organon as an agent-operating workstation (opt-in build feature; binary and crate keep the internal *shell* name) |
+| **organon-console** | the **Organon Console** — Organon as an agent-operating workstation (opt-in build feature) |
 
 Module compilation is split by binary: the plugin dylib never compiles the renderer or
 the inference runtime. The pure mathematics (`math.rs`) lives in `organon-core`, is
@@ -115,7 +115,7 @@ to prove it.
 ### 2.4 Editions
 
 **Organon** (the visualizer), **Organon Mind** (the analysis lane as its own standalone
-instrument), and the **Organon Console** (internally the *Shell* edition) are the same
+instrument), and the **Organon Console** (the `console-edition` build) are the same
 engine wearing a different front-of-house, selected at build time by a cargo feature.
 This is one product in three builds — an edition, not a fork: the algorithm, every
 shader, the snapshot layout, the preset store, and — critically — the *visual binary*
@@ -794,9 +794,11 @@ ledger's last row.
 
 The **Organon Console** is Organon used as an agent-operating workstation — the third
 edition and the newest lane, not a separate product. When you are using the console you
-are using Organon. (It grew under the working name *Organon Shell*, and the code keeps
-that name internally: the `organon-shell` crate and binary, the `shell-edition` feature,
-`SHELL_ARCHITECTURE.md`.) Its current form is a **GPU terminal with the engine behind
+are using Organon. (It grew under the working name *Organon Console*; the code now spells the
+product name throughout — the `organon-console` crate and binary, the `console-edition`
+feature, `CONSOLE_ARCHITECTURE.md` — and the only survivals of the old name are the
+`organon-shell` IPC namespace and the `ORGANON_SHELL_*` variables, both of which other
+processes read.) Its current form is a **GPU terminal with the engine behind
 the glyphs** — tabs of agent harnesses (Claude Code, Pi, and friends, plus a plain
 shell) drawn as a real terminal emulator inside a wgpu window, with the Organon world
 rendered underneath.
