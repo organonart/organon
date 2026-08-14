@@ -101,6 +101,37 @@ uniform-offset rule and rule 4's premultiply. While the page was `#ffffff` the o
 free — nothing can be brighter than white — and it is now editable, with a silent and
 *inverting* failure: a page darker than its panel makes every plate drawn on it read as raised
 out of the paper instead of recessed into it, which is the opposite of the whole metaphor.
+### Organon Console has a window icon — the aperture mark, instead of the OS default
+
+Two concentric rings and a centre dot in warm gold on near-black, ticked at N/E/S/W. The SVG
+lives at `native/assets/chrome/`, and the rasters generated from it are compiled into the
+binary and handed to winit at window creation.
+
+🚨 **"It shows the default icon" was two defaults, set by two unrelated APIs.**
+`with_window_icon` is winit's portable call and on Windows reaches `ICON_SMALL` alone — title
+bar and Alt-Tab. The **taskbar button** is `ICON_BIG`, reachable only through
+`WindowAttributesExtWindows::with_taskbar_icon`. Setting the portable one alone would have
+looked like a fix and left the most visible of the three untouched.
+
+📌 **The pixels are committed, not rasterised at build time.** A `resvg` build-dependency
+would keep the SVG as the single source, but the root crate has no build script today and it
+builds the plugin cdylib, the standalone, the visual, the CLI and three editions — all of
+which would grow one so that a single window could have an icon. Committing the rasters adds
+**no dependency at all** (`image` is already here). The drift that buys is paid for in the
+open: the SVG sits beside them, `assets/chrome/README.md` has the regeneration command, and
+two tests pin the rasters' dimensions and opacity so a broken asset fails at test time rather
+than shipping a window whose icon quietly did not load.
+
+⚠️ **The mark does not survive 16×16.** Rendered, magnified and looked at: the outer ring's
+3 px stroke lands on 0.4 px, the inner ring's on 0.19 px, the ticks and centre dot disappear.
+32×32 is the floor. No 16 px raster is committed — that would only hand Windows an illegible
+bitmap to prefer over a downsample of a good one. A legible small size needs a hinted variant
+of the drawing, which is an artwork decision.
+
+⚠️ **Console only**, gated on `console-edition`. Organon and Organon Mind are separate
+products with their own identity; the mechanism would work for them and is deliberately not
+wired up. The **executable** icon (Explorer, pinned shortcuts) is a different mechanism — a
+Win32 resource and a `.ico` — and is not done.
 
 ### A command palette above the composer — see your choices while you type
 

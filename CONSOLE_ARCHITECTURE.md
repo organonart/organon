@@ -3398,6 +3398,67 @@ site. The glyph allowlist test in `conversation_view` walks every string the pan
 **including the ones derived from a schema** and the compact row as a whole assembled line at
 three widths, since a range, an option list or a separator is where a stray glyph hides.
 
+### 1.10 The window icon — the aperture mark, and the two defaults it replaces
+
+The Console opened with the operating system's default icon. `native/src/console_icon.rs`
+is the whole of the fix: two PNGs `include_bytes!`d into the binary, decoded once in
+`ApplicationHandler::resumed`, handed to winit through `console_icon::apply`.
+
+The artwork is `native/assets/chrome/aperture-mark-on-dark.svg` — two concentric rings and
+a centre dot in warm gold on near-black, ticked at N/E/S/W. It is the **source**; the
+rasters beside it are generated from it, and `assets/chrome/README.md` carries the command
+that regenerates them.
+
+🚨 **"The Console shows the default icon" was two different defaults, set by two unrelated
+APIs, and only one of them is portable.** `with_window_icon` is winit's cross-platform
+call, and on Windows it reaches `ICON_SMALL` alone — title bar and Alt-Tab. The **taskbar
+button**, the most visible of the three, is `ICON_BIG`, reachable only through
+`WindowAttributesExtWindows::with_taskbar_icon`, which exists on Windows and nowhere else.
+Setting just the portable one would have looked like a fix and left the taskbar untouched.
+Both live behind one `apply` call so the platform story has a single home. (On macOS
+`with_window_icon` does nothing at all — the icon there comes from an `.app` bundle, and
+the Console has none.)
+
+⚠️ **The rasters are committed rather than built, and the drift that buys is paid for
+explicitly.** Rasterising at build time with `resvg` would make the SVG the only source,
+but the root crate has **no build script today**, and adding one is not a local change: it
+builds the plugin cdylib, the standalone, the visual, the CLI and three editions, and every
+one of them would grow a build script plus ~20 build-dependency crates so that one window
+could have an icon. Committing the pixels costs **nothing** — `image` is already a
+dependency here, for the overlay's formula PNGs. The price is that the PNGs can fall out of
+step with the SVG, and the mitigation is that the SVG sits beside them with the regeneration
+command written down, plus two tests (`console_icon::tests`) that pin the rasters' sizes and
+opacity so a broken or resized asset fails at test time rather than shipping a window whose
+icon silently did not load.
+
+⚠️ **Drawing the circles and lines in code was the third option and is the one to avoid.**
+It looks like less machinery; it is a transcription of a design asset that stops matching
+the day the asset changes, with nothing to say so.
+
+⚠️ **winit takes one bitmap per slot — it does not accept a set and pick**, which is what a
+Windows `.ico` resource does. So the sizes are a choice about what scales best rather than a
+spread: **48×48** for the window slot (`SM_CXSMICON` is 16 px at 100 % scaling and 36 px at
+this workstation's 225 %; 48 divides exactly by 3 into 16 and by 2 into 24 and reduces into
+36, so every common slot is a downsample) and **256×256** for the taskbar.
+
+⚠️ **The mark does not survive 16×16, and that is a property of the artwork, not of this
+code.** Measured, magnified, and looked at: the outer ring's 3 px stroke lands on 0.4 px and
+the inner ring's 1.4 px stroke on 0.19 px; the ticks and the centre dot vanish and what is
+left is a dark square with a grey smudge in it. **32×32 is the floor.** No 16 px raster is
+committed, deliberately — shipping one would only give Windows an illegible bitmap to prefer
+over a downsample of a good one. A legible small size needs a *hinted* variant of the
+drawing (thicker strokes, no inner ring), which is an artwork decision.
+
+📌 **This is the window icon, not the executable icon.** What Explorer draws on
+`organon-console.exe`, and what a pinned shortcut shows, is a Win32 `RT_GROUP_ICON` resource
+linked into the binary — a `.ico` plus a build script. Not done, and `assets/chrome/README.md`
+records what it would cost.
+
+⚠️ **Scoped to the Console alone.** `console_icon` is gated on `console-edition`, so the
+plugin cdylib does not carry an icon it can never draw. Organon and Organon Mind are separate
+products with their own identity; the mechanism is reusable by them and is deliberately not
+wired up.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -3449,6 +3510,28 @@ path silently breaks the three-products-simultaneously guarantee that
   by a hand either** — `arrow_owner`'s four cases are pinned as a pure function and driven
   through real frames, but "Up did what I expected" is exactly the kind of claim a test cannot
   make.
+- 🚨 **Nobody has seen the window icon rendered, at any size, in any slot.** §1.10 is a
+  claim about code and about PNG files, and nothing more: `cargo test -p organon-console
+  --lib` is unchanged by it (the icon lives in the root crate), `cargo test -p
+  organon-core` is **556 green**, `cargo check --features console-edition --bin
+  organon-console` is clean, and `cargo check --tests -p organic-math-native --features
+  console-edition` is clean. **That is the whole claim: it compiles and the tests pass.**
+  Only James has the display. What has *not* been established, in order of how much it
+  matters: (1) that the icon appears **at all** — `decode` returns `None` on failure by
+  design, so a window that opens with the OS default is indistinguishable from one where
+  nothing was wired up, and the two tests only prove the bytes are a well-formed 48×48 and
+  256×256 RGBA, never that winit accepted them or that Windows drew them; (2) that
+  `with_taskbar_icon` actually changes the **taskbar button** — that reading comes from
+  winit 0.30.13's `platform_impl/windows/window.rs` (`set_taskbar_icon` → `IconType::Big`),
+  which is the right call by inspection but has not been watched happen; (3) how the
+  **opaque `#0e0d0b` tile reads against a light taskbar** — the artwork is "on-dark" by
+  design and was deliberately not changed, but on a light theme it will be a near-black
+  square with a gold mark in it rather than a mark, and whether that is right is James's
+  call; (4) whether the **48 px raster downscaled by Windows to 16 px** is any better than
+  the 16 px render that was rejected as illegible — the arithmetic says a reduction beats a
+  direct render at that size, and Windows' own downscaler was never watched do it. The one
+  thing that *is* measured rather than argued: the 16 px render was produced, magnified 16×
+  and looked at, and it is not recognisable as the aperture mark.
 - 🚨 **Nobody has seen `#fafbfc` on James's display, and he is the only person who can say
   whether it fixes what he was looking at.** The light page came down from `#ffffff` because
   he saw glare in a running console; the replacement was **reasoned, not observed**. Everything
