@@ -32,6 +32,22 @@ on:
         # second copy of the brief list, maintained by hand, rotting the first time
         # someone adds a brief and forgets this file. The script validates the id and
         # prints the real list on a miss, which is the same answer one hop later.
+      local_run:
+        description: 'Also run the brief against a local model (needs a self-hosted runner serving one)'
+        required: false
+        default: 'false'
+      runner:
+        description: 'Runner label for the local run. A GitHub-hosted runner has no model.'
+        required: false
+        default: self-hosted
+      local_model:
+        description: 'Model name as the local server knows it (e.g. qwen3-8b)'
+        required: false
+        default: ''
+      local_endpoint:
+        description: 'OpenAI-compatible loopback endpoint on that runner'
+        required: false
+        default: 'http://127.0.0.1:1234/v1/chat/completions'
   release:
     types: [published]
   pull_request:
@@ -133,3 +149,68 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.event.release.tag_name }}" dispatch/*.md --clobber
+
+  # The automated leg — a model running on the machine, over loopback, no vendor and no
+  # repository content leaving the host. It is opt-in TWICE and that is deliberate:
+  #
+  #   * `workflow_dispatch` only. It never fires on a PR, on a push, or on a release.
+  #     A local generation is minutes of somebody's GPU, and a report nobody asked for is
+  #     the failure mode `doc/research/README.md` opens with — an unreviewed essay landing
+  #     next to documents that are hook-enforced current.
+  #   * `local_run: true` on top of that, plus a model name.
+  #
+  # ⚠️ A GitHub-hosted runner has no model server, so this needs a self-hosted runner with
+  # LM Studio, Ollama, or this repo's own `organic-math-mind-runtime` already listening. If
+  # the `runner` label matches nothing the job queues rather than failing — which is why it
+  # is off by default rather than merely unused.
+  #
+  # The report lands as a workflow artifact, NOT as a commit. Filing it is a pull request
+  # like any other change, because `status: unreviewed` means a human has not looked yet,
+  # and a bot committing into `doc/research/reports/` on a schedule is how this directory
+  # would fill with text nobody reads.
+  local-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.local_run == 'true'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse to start without a model name
+        if: inputs.local_model == ''
+        run: |
+          echo "::error::local_run=true needs local_model — the name the local server knows."
+          exit 1
+
+      - name: Run the brief against the local model
+        run: |
+          python3 native/tools/research-run.py \
+            --brief "${{ inputs.brief }}" \
+            --model "${{ inputs.local_model }}" \
+            --endpoint "${{ inputs.local_endpoint }}"
+
+      - name: Check the report against the contracts
+        run: python3 native/tools/research-brief.py --validate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-report-${{ inputs.brief }}-${{ github.sha }}
+          path: doc/research/reports/*.md
+          retention-days: 90
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo '## Local model run'
+            echo
+            echo "Brief \`${{ inputs.brief }}\` · model \`${{ inputs.local_model }}\` · commit \`$GITHUB_SHA\`"
+            echo
+            echo 'The report is an artifact on this run, with `status: unreviewed`. It is'
+            echo 'evidence of what a model said, not a statement about this codebase.'
+            echo 'Adjudicate its claims against the tree and record the verdicts in'
+            echo '`doc/research/FINDINGS.md` before anything cites it — and note that a'
+            echo 'local model has no file access, so any `verified` claim about source it'
+            echo 'was never shown should be refuted.'
+          } >> "$GITHUB_STEP_SUMMARY"

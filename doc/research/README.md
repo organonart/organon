@@ -88,14 +88,52 @@ The `Research dispatch` workflow (`.github/workflows/research.yml`) builds the p
 you — run it from the Actions tab, or let it fire on a published release — and attaches
 them to the run. It validates on every PR that touches this directory.
 
-## Why a human is still in the loop
+## The local-model leg
 
-The workflow builds prompts and checks contracts. It does not call models, and that is a
-decision rather than a gap.
+One leg is automated, and it is the one that needs no vendor: a model **running on your
+machine**, reached over loopback.
+
+```bash
+# LM Studio (1234) / Ollama (11434) / this repo's own organic-math-mind-runtime
+python3 native/tools/research-run.py --brief doc-code-fidelity --model qwen3-8b
+python3 native/tools/research-run.py --brief doc-code-fidelity --model llama3 \
+    --endpoint http://127.0.0.1:11434/v1/chat/completions
+python3 native/tools/research-run.py --brief doc-code-fidelity --model m --dry-run
+```
+
+It writes a report into `reports/` with the front matter filled in and `status:
+unreviewed`. There was no convention to invent: `agent.rs` settled it, POSTing the
+OpenAI-compatible shape to `http://127.0.0.1:1234/v1/chat/completions` by default — so
+every backend the Performer agent already works with works here, and pointing it at
+`organic-math-mind-runtime` makes an **Organon-hosted model audit Organon**.
+
+**`http://` and loopback only, enforced.** A remote host is refused rather than
+configured, which keeps "no script sends this repository to a vendor" true without anyone
+having to trust a flag. For a hosted model's opinion, paste the prompt in by hand.
+
+⚠️ **What a local leg can honestly be asked.** A model on `/v1/chat/completions` has **no
+file access** — it sees the prompt and nothing else. So the runner packs the durable docs
+alongside the fact pack and tells the model that `verified` is available only for text it
+can actually see. It *can* check prose against the measured numbers and against other
+documents: stale counts, internal contradictions, build claims the manifest data refutes.
+It *cannot* verify anything about a source file it was never shown — and on
+`doc-code-fidelity`, which is scored on precision, a confident source claim from a local
+run is a hallucination and should be refuted on adjudication. **A local report that comes
+back mostly `inferred` is the system working.**
+
+The workflow's `local-run` job does the same on a self-hosted runner. It is opt-in twice
+(`workflow_dispatch` only, then `local_run: true`), never fires on a PR or a release, and
+uploads the report as an artifact rather than committing it — filing a report is a pull
+request like any other change.
+
+## Why the rest still has a human in the loop
+
+The workflow builds prompts, checks contracts, and can drive a local model. It calls **no
+hosted model**, and that is a decision rather than a gap.
 
 - **The eval premise requires several labs.** One vendor's token buys one vendor's
   opinion, and a single-model round loses the cross-model signal that makes the scoreable
-  briefs worth running at all.
+  briefs worth running at all. The local leg is one leg, not a round.
 - **Deep research is mostly not an API.** The strongest versions of this capability are
   interactive products; automating the weakest available substitute would produce reports
   that look like the real thing and are not.
@@ -104,7 +142,7 @@ decision rather than a gap.
   leaving that undone would fill this directory with unreviewed essays, which is the
   failure mode the status field exists to make visible.
 
-Automating a single leg — a Claude Code run over the same dispatch prompt, posting an
+A hosted-model leg — a Claude Code run over the same dispatch prompt, posting an
 `unreviewed` report — is a reasonable later increment, and it is deliberately not tier
 one. New capability starts inert here.
 
