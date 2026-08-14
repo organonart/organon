@@ -3196,6 +3196,144 @@ boxes, which is exactly how `✓`/`✗` reached a third draw site. The glyph all
 `conversation_view` now walks every string the panel can draw, **including the ones derived
 from a schema**, since a range or an option list is where a stray glyph would hide.
 
+### 1.10 The live colour editor — tune the palette while looking at it
+
+`/theme edit` (or `/theme adjust`) opens an editor for the palette being painted, in §1.9's band
+above the composer. James's framing, 2026-08-14: *"a little dialog, much like the place where we
+do our command completions… it shows the theme and the theme colors, and each one has a little
+HSV editor on it."*
+
+**The loop it replaces.** Every colour in `theme.rs` was chosen against a described intent and
+then written as a hex literal and compiled. That is a fine way to *state* a palette and a
+hopeless way to *judge* one — the only way to find out whether `light`'s whitest white is too
+bright is to look at it, and until now that meant edit, rebuild, relaunch, look.
+
+#### One vocabulary: the fields are enumerated once
+
+🚨 **`theme.rs`'s `colour_fields!` macro is the only list of the palette's colours.** It
+generates `Theme::fields`, `Theme::fields_mut`, `Theme::SCALAR_FIELDS` and `Theme::GROUPS` from
+one grouped declaration, so a colour added later is editable, diffable, storable and on a ring
+with no second place to remember. This is §1.8's rule reached from a new direction: a
+hand-listed editor would silently stop covering a field somebody added, and nothing would say
+so.
+
+⚠️ **Rust has no reflection, so the list is hand-written** — which makes the guard the actual
+work. `every_colour_a_palette_can_differ_in_is_reachable` copies field-by-field *through the
+accessor* between every ordered pair of the four palettes, adds the two non-colour fields
+(`scrim_floor`, `chrome`) by hand, and asserts the result equals the source; a field the
+accessor cannot reach keeps the destination's value and the comparison fails by name. Its
+residual blind spot is stated in the test: **a colour on which all four palettes agree to the
+byte** is invisible to it, and a fifth palette closes that gap for that field.
+
+⚠️ `ansi16` is one array field, so the macro cannot name its members; `ANSI16_NAMES` supplies
+the sixteen and `Theme::editor_groups` folds them onto the terminal's ring. `TERMINAL_GROUP`
+names the heading they attach to, so renaming it cannot silently orphan them.
+
+#### 🚨 The HSV is the truth, not the RGB
+
+**RGB → HSV → RGB does not round-trip, and it is not a rounding error.** A grey has no hue: drag
+saturation to nought and the hue is gone from the bytes, so an editor re-deriving HSV every
+frame would show hue 0 (red) the moment a colour went neutral, and dragging saturation back up
+would return red rather than the blue it was. Value does the same at nought. So the editor holds
+the `Hsva` of every field a hand has touched and derives the `Color32` from it — never the
+reverse. An untouched field is not in the map and is read straight off the palette, which keeps
+the state proportional to the editing rather than to the sixty-eight colours.
+
+⚠️ **This is why it does not use `egui::color_picker::color_picker_color32`.** That function
+solves the same problem with a cache in egui's context memory keyed by the **`Color32`** — and
+§`theme`'s module doc explains at length why this palette deliberately keeps four fields holding
+`#c8e6c8` (`human_text`, `tab_active`, `tab_menu_installed`, `term_fg`) apart. Keyed by value
+they share one entry; keyed by field they do not.
+
+⚠️ **A second, subtler round-trip lives in the row itself and is pinned by test.** The drags are
+in degrees and percent because that is how a hand thinks, and `h * 360.0 / 360.0` is not `h` in
+binary floating point — so writing the scaled values back unconditionally made every field
+differ from itself on the first frame, reporting a change nobody made and marking a freshly
+opened palette `unsaved`. The comparison is on what the widget was *given* against what it
+*returned*, which is the only form that can be quiet when nothing moved.
+`an_untouched_editor_asks_for_nothing` is the test that found it.
+
+#### The seam: the editor cannot assign the palette, and should not be able to
+
+`conversation_view::draw` is handed `&Theme`; the one owner is `console_main`'s `Console`, which
+is `theme.rs`'s "one owner, no globals" rule and the thing that makes a per-tab or preview
+palette a second value rather than a rewrite. So an edit leaves as a value —
+`ConversationOutput::theme: Option<ThemeChange>` — and `Console::apply_theme_change` assigns it
+after the frame closure's borrow has ended.
+
+🚨 **`Some` only on the frames something moved.** `Visuals` is held on the egui context rather
+than read per frame, so `console_main` re-derives and re-uploads the whole chrome for every
+change it is handed; answering `Some` unconditionally would do that sixty times a second for a
+palette nobody was touching.
+
+`theme_name` is now threaded into `draw` because this crate is given the palette's *values* and
+cannot recover its label — once an override has been laid over it, the live palette equals none
+of the compiled ones, and filing a saved override under the wrong name would apply a
+light-theme correction to a dark palette.
+
+#### What persistence means
+
+Three things, deliberately not gated on each other:
+
+| | Writes | Says |
+|---|---|---|
+| a drag | nothing | the head row's `unsaved` count |
+| **save** | `theme_overrides[name]` = the **diff** from the compiled palette | a stderr line naming the count |
+| **revert** | removes that entry | the palette returns to what this build ships |
+
+🚨 **Unsaved is always visible.** A tuning session that evaporates at exit without having said so
+is worse than no editor: the tuning felt finished. It is drawn in `mode_alert`, not `bad` — it is
+not an error.
+
+⚠️ **Overrides are keyed by palette**, because an override is a judgement about one palette.
+⚠️ **Only the difference is stored**, so a later build that improves a shade nobody tuned is not
+silently overruled by a file its owner believed recorded three edits. ⚠️ A stored colour naming a
+field this build lacks, or a string that is not eight hex digits, is **skipped with a note** —
+losing nine good edits over a tenth that aged badly is the wrong trade. ⚠️ Hex is **eight
+digits always**: `panel_fill` is premultiplied at `0xe6` and a six-digit form would silently make
+every saved panel opaque.
+
+Startup applies overrides **after** `theme::select` has settled which palette won — an override
+corrects a named palette and cannot resurrect a different one. ⚠️ It applies to an
+environment-selected palette too: the variable is a loan of *which palette*, and the tuned
+colours are part of what that palette now looks like on this machine.
+
+#### The band, and the keys
+
+The editor takes the region outright from both the receipt and the candidate list while it is
+open. Those two answer a line and are gone in seconds; this is a surface a hand is *working in*,
+and one that vanished because a keystroke reached the composer would be unusable.
+
+🚨 **It claims Tab, the arrows and Escape — and no printing key, and not Enter.** The composer is
+still live underneath, so a message stays sendable without closing the editor, and Enter keeps
+meaning exactly one thing, which is §1.9's rule unchanged. Only one of the editor and the panel
+reads a frame's keys, since both want the same three.
+
+🚨 **The editor closes itself if the palette changes underneath it.** `/theme chocolate` typed
+elsewhere, the CLI, or an agent's tool call can all repaint while an editor is open on `light`;
+its held HSV would then describe colours that are no longer there. Comparing the incoming
+palette against what the editor last painted is one `PartialEq` per frame and is the only signal
+available — this crate is not told when the palette is reassigned.
+
+⚠️ **`edit` and `adjust` are values of `console.theme`'s argument, not a verb.** That is what
+makes them complete for free from the same `Choice` §1.9 already draws, with no second table and
+no new ring. Two consequences: they must be in the `Choice` or `Registry::resolve` refuses
+`/theme edit` during validation before the view sees it; and they are refused **on the sidecar**
+by name, because the CLI and the MCP lane have no band above a composer to draw a dialog in.
+This is the one place a console-lane verb is answered locally, and it is the lane's edge rather
+than a violation: the palette really is console-wide (which is why the *edits* leave on
+`ConversationOutput`), but the editor is a panel in this transcript.
+
+⚠️ **ASCII throughout**, like the rest of the band. `theme_edit::drawn_strings` enumerates every
+string the editor can draw — including the **group headings**, which are hand-written prose in
+the field macro, and the **field names** — and §1.9's glyph allowlist test walks it. Sampling
+rather than enumerating is how `✓` reached a third draw site.
+
+⚠️ `ThemeEditor::open` takes a `focus` field name and **no command produces one yet**:
+`/theme`'s schema carries a single argument, so `/theme edit human_text` is not a line the
+registry can build. It exists because landing on a named colour is a one-line change the moment
+a second argument is worth adding. Nothing claims the command exists.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -3219,6 +3357,29 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **Nobody has seen the colour editor, and it is a tool for judging colours by eye — so the
+  one thing it exists to do is exactly the thing not verified.** Everything §1.10 asserts is a
+  claim about code: `cargo test -p organon-console --lib` is **630 green** (604 before, plus
+  twelve in `theme_edit`, six in `theme` and five in `conversation_view`), `cargo test -p
+  organon-core` is 556 green, and both `cargo check` legs are clean. **That is the whole claim:
+  it compiles and the tests pass.** What it does not establish, in order of how much it matters:
+  (1) **that three numeric H/S/V drags are enough to judge a colour by** — the alternative was
+  egui's 2D picker, which is a far better instrument per colour and shows one colour at a time,
+  and James asked for a list where each row has an editor, so the row won; whether a row is
+  enough is a question about a hand on a mouse; (2) that eight rows is the right window, and
+  that a highlight-following window pages the way a hand expects on the timeline's eleven and
+  the terminal's twenty — the arithmetic is pinned by test, the *feel* is not; (3) that the
+  editor's band, which is taller than the candidate list's, does not push the transcript around
+  disruptively — §1.9's own ledger already flags band height as an open question and this makes
+  the band bigger; (4) that `unsaved` in `mode_alert` on the right of the head row is actually
+  noticed, which is the entire defence against a tuning session evaporating at exit; (5) that a
+  drag at 60 fps through `set_visuals` on every change is smooth — the change is gated to frames
+  where something moved, but nothing has measured a sustained drag. ⚠️ **Nothing has been saved
+  and reloaded by a human**, so the round trip through `preferences.json` is pinned by unit test
+  and by nothing else. ⚠️ The immediate motivation — `light`'s whitest white being too bright —
+  is **not fixed by this change**: `Theme::light`'s `term_bg` is still `#ffffff` in the compiled
+  palette, deliberately, because the editor is the general answer and the specific correction is
+  now James's to make and save.
 - 🚨 **Nobody has seen the command panel, so whether it *feels* fast is unverified — and
   "fast" is the entire claim being made for it.** Everything §1.9 asserts is a claim about
   code: `cargo test -p organon-console --lib` is **604 green** (583 before, plus eleven in

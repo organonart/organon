@@ -117,4 +117,5 @@ pub mod term;
 pub mod term_view;
 pub mod text_diff;
 pub mod theme;
+pub mod theme_edit;
 pub mod timeline;
