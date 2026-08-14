@@ -31,6 +31,36 @@ string rather than reading one — the only name in this wave written down nowhe
 `as_str` has to state that derived string literally, and
 `host_cal_colour_source_mirrors_core` now asserts it explicitly. Get it wrong and the DAW's
 dropdown and the CLI's resolver disagree about a name neither file spells out, silently.
+### Posture's desktop margin is symmetric — the transcript is centred, not shoved right
+
+The `Form` token `gutter` becomes **`margin`**, and `Form::gutter_margin` becomes
+**`Form::content_margin`**, answering `Margin::symmetric(margin, 0)` — the same 90 points on
+the left and the right at desktop posture, so the conversation sits centred in its pane. Both
+ends and the midpoint are pinned as before (`0` / `45` / `90`), and the terminal end still
+answers `Option::None` rather than a zero margin, so the scrollback's walk runs in the scroll
+area's own `Ui` with no wrapping `Frame` at all — unchanged by construction rather than by
+arithmetic that ought to agree.
+
+**It was left-only because the specification was describing a picture.** The sentence the
+tier was built from — "add a narrow empty left margin column, about 90px wide" — was written
+to prompt an image generator into restyling a screenshot, and was implemented literally.
+Drawn on a real window for the first time, it read as the console pushed off its own left
+edge. Renaming the token is part of the fix rather than tidying after it: a field called
+`gutter` that produces a symmetric inset is a lie the next reader has no way to catch.
+
+⚠️ **Every posture test passed the whole time**, because they all asserted the *scalar*
+(`f.gutter == 90.0`) and none of them asserted the `Margin` it became — which is where the
+asymmetry lived. `the_content_margin_is_symmetric_at_every_posture` now walks the axis and
+checks the shape at each step: `left == right`, no vertical inset, and the value is the token.
+
+⚠️ **A margin, not a measure.** The text column is whatever the pane has left — 920 points at
+the console's default 1100, but 2320 at 2500, which is wider than prose wants. Claude Desktop
+caps the *measure* instead. That was considered and deferred, and `SHELL_ARCHITECTURE.md` §1.6
+records why it is a bigger change than it looks: **"uncapped" is not a width**, so a cap
+cannot be one more scalar lerping between the two ends — every single-token spelling is either
+non-monotone at the midpoint or makes the terminal end depend on the window size. The honest
+form needs `t` itself and an available width at the call site, and it should wait for somebody
+to have looked at the desktop posture on a wide window. Nobody has.
 
 ### `organon-scene` — the substrate moves below the plugin
 

@@ -1265,16 +1265,16 @@ fn scrollback(
             // surface's visibility is decided against this one rect, so two surfaces cannot
             // come to disagree about where the viewport is.
             //
-            // ⚠️ Read from the scroll area's own `Ui`, i.e. **before** the gutter is claimed
-            // below. That is deliberate: a surface is visible or not according to where the
-            // *viewport* is, and the gutter narrows the content, not the window.
+            // ⚠️ Read from the scroll area's own `Ui`, i.e. **before** the margins are
+            // claimed below. That is deliberate: a surface is visible or not according to
+            // where the *viewport* is, and the margins narrow the content, not the window.
             let viewport = ui.clip_rect();
-            // 🚨 **The walk is a closure so the gutter can wrap it or not.** At terminal
-            // posture `gutter_margin` is `None` and the body runs directly in the scroll
+            // 🚨 **The walk is a closure so the margins can wrap it or not.** At terminal
+            // posture `content_margin` is `None` and the body runs directly in the scroll
             // area's `Ui`, exactly as it did before this tier — no wrapping `Frame`, nothing
-            // that could move a row by a point. Tier D fills that column; this tier only
-            // opens it, so at desktop posture there is 90 points of nothing on the left and
-            // that is the whole visible change.
+            // that could move a row by a point. Tier D fills the left column; this tier only
+            // opens both, so at desktop posture there is 90 points of nothing on each side
+            // and that is the whole visible change.
             let mut walk = |ui: &mut egui::Ui| {
                 ui.add_space(6.0);
                 // The console's own remarks about this session, above the first message: which
@@ -1381,13 +1381,14 @@ fn scrollback(
                     ui.add_space(form.card_gap);
                 }
             };
-            match form.gutter_margin() {
+            match form.content_margin() {
                 // A `Frame` with no fill and no stroke is nothing but its margin, which is
-                // exactly what a gutter is: the content is inset and everything below it —
-                // wrapping, the scroll extent, a surface's laid-out rect — follows from the
-                // narrower width without a single call site knowing about it.
-                Some(gutter) => {
-                    Frame::new().inner_margin(gutter).show(ui, walk);
+                // exactly what this is: the content is inset by the same amount on both
+                // sides — so it is centred — and everything below it — wrapping, the scroll
+                // extent, a surface's laid-out rect — follows from the narrower width without
+                // a single call site knowing about it.
+                Some(margin) => {
+                    Frame::new().inner_margin(margin).show(ui, walk);
                 }
                 None => walk(ui),
             }

@@ -32,8 +32,16 @@ Nothing culls. Every element in the transcript pays, on screen or not (§4).
 Two roadmaps change the transcript's available width, and both were scoped without knowing what
 that costs.
 
-1. **Posture's tween.** The `Form` animates a `gutter` token 0 → 90 pt. Available width moves on
+1. **Posture's tween.** The `Form` animates a `margin` token 0 → 90 pt. Available width moves on
    *every frame of the tween*, so the whole scrollback re-wraps on every frame, for the duration.
+   ⚠️ **The token was called `gutter` and applied on the left alone when this was measured; it
+   is now `margin` and is applied on both sides**, so the true travel between the two ends is
+   `2 × 90` rather than 90 and the tween has at most 181 distinct wrap widths rather than 91.
+   **Every figure below stands**, because the finding is per-*change*, not per-magnitude — a
+   width that moves by one point is as total a cache miss as one that moves by a hundred. What
+   doubles is the *length* of a one-point-per-frame triangle, not the cost of a frame in it.
+   `rewrap_bench`'s `SWEEP` const is deliberately still 90, so the numbers here can be re-taken
+   over the range they were taken over.
 2. **Pane splitting** (`console_view_paradigm.md` §2, issue #48 Tier 4). Same change of width,
    once rather than sixty times.
 
@@ -73,7 +81,7 @@ Three consequences, in the order they matter:
   together.
 - **A sub-point wobble is free.** The rounding at `:879` exists precisely to stop egui's own
   layout feedback loop from thrashing the cache, and it means a tween finer than one point per
-  frame costs nothing extra. It also means a 0 → 90 pt gutter has **at most 91 distinct wrap
+  frame costs nothing extra. It also means a 0 → 90 pt inset has **at most 91 distinct wrap
   widths**, which is what makes §7's quantisation option available at all.
 - **The cache cannot remember the width it came from.** `flush_cache` retains an entry only if
   `last_used == current_generation`, so a tween's return leg misses exactly as hard as its
@@ -109,7 +117,7 @@ samples, and the reported min/max show the tail.
 | Condition | What the width does |
 |---|---|
 | **steady** | constant at 1100 pt — every galley was in the cache from the frame before |
-| **animating** | one point of gutter per frame, triangle 0 → 90 → 0, forever |
+| **animating** | one point of inset per frame, triangle 0 → 90 → 0, forever |
 | **one step** | steady, then a single 90 pt change, then steady at the new width |
 
 **Passes are counted, not assumed.** `egui::Context::run` re-runs the whole ui when something
@@ -289,7 +297,7 @@ Two live consequences, neither hypothetical:
 Stated with prices, **not ranked, and not chosen.** The 60 fps budget is 16.7 ms for
 *everything*, so read "fits" as "fits with nothing else in the frame".
 
-### A — Tween the gutter as designed, one point per frame
+### A — Tween the margin as designed, one point per frame
 
 **Cost:** the animating column, on every frame of the tween.
 
@@ -306,13 +314,13 @@ smooth for ten cards, janky after an hour of work, and it degrades gradually so 
 
 ### B — Animate the chrome only; hold the wrap width fixed
 
-**Cost:** the steady column throughout — **zero re-wrap.** The gutter appears by moving or
+**Cost:** the steady column throughout — **zero re-wrap.** The margin appears by moving or
 painting chrome beside a transcript whose column never changes.
 
 **What it costs elsewhere:** the transcript must be laid out at a width that is not its
 container's, i.e. an explicit width threaded through `scrollback` instead of `ui.available_width()`.
 There are **10 sites** in `conversation_view.rs` reading `available_width`, though not all are in
-the scrollback path. And the text does not reflow into the space the gutter opened, ever or until
+the scrollback path. And the text does not reflow into the space the margin opened, ever or until
 the tween ends — which may be the correct *look* (a page whose margin changes without its
 measure changing is how print behaves) or may be exactly the thing posture is for. That is a
 design question this number cannot answer.
@@ -333,9 +341,9 @@ pane on a 10 000-element transcript is a 340 ms freeze on this machine, and this
 
 ### D — Quantise the tween
 
-Follows from the rounding at `fonts.rs:879`: a gutter that only ever takes N distinct integer
+Follows from the rounding at `fonts.rs:879`: a margin that only ever takes N distinct integer
 values is N option-C events, with the steady figure on every frame between them. A six-step
-gutter across a fifteen-frame tween, at 400 elements:
+margin across a fifteen-frame tween, at 400 elements:
 
 - continuous: 15 × 9.100 = **136.5 ms** total, worst frame **9.1 ms**
 - six steps: 6 × 7.599 + 9 × 1.180 = **56.2 ms** total, worst frame **7.6 ms**

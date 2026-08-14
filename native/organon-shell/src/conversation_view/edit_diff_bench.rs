@@ -79,7 +79,7 @@
 //! **What is shared is [`super::rewrap_bench::bench_pane`]**, because it enumerates every field of
 //! [`ConversationPane`] and is therefore the one piece that rots when the struct changes —
 //! as it did when `diffs` landed. **What is not shared is the frame driver**, deliberately:
-//! that module's takes a width and imposes a gutter, this one's takes a [`Cache`] and
+//! that module's takes a width and imposes an inset, this one's takes a [`Cache`] and
 //! imposes nothing, and a merged driver would hand each measurement a parameter it does not
 //! use and must remember to hold still.
 
@@ -496,7 +496,7 @@ pub(super) fn frame(
     let out = ctx.run(input, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             // 🚨 **The TERMINAL form, for the reason `rewrap_bench` gives and one of its
-            // own.** A desktop `Form` would inset the column through `gutter_margin`, so
+            // own.** A desktop `Form` would inset the column through `content_margin`, so
             // every card would wrap at a width nothing here names — and posture is not what
             // this bench varies. Holding it equal to the other bench's also keeps the two
             // documents' figures on one footing.

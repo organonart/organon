@@ -2526,10 +2526,12 @@ console: `select` reports it, names the known set, and falls through to the defa
 **`organon-shell/src/posture.rs` holds two types: `Posture`, a scalar `t ∈ [0,1]`, and
 `Form`, the fourteen form tokens resolved at that `t`.** `Posture::TERMINAL` (`t = 0`) is the
 console exactly as it has always drawn; `Posture::DESKTOP` (`t = 1`) is James's desktop form —
-inset by a 90-point left gutter, roomier, ruled down the left instead of boxed, with
-registration ticks at the corners of the conversation area. **Every console still opens at
-`Posture::TERMINAL`, and `organon console posture <word>` is what moves it.** ⚠️ No window has
-been opened at any `t > 0` — see the ledger.
+the transcript **centred, with a 90-point margin down each side**, roomier, ruled down the
+left instead of boxed, with registration ticks at the corners of the conversation area.
+**Every console still opens at `Posture::TERMINAL`, and `organon console posture <word>` is
+what moves it.** ⚠️ The desktop end has now been seen **once**, and that sighting is why the
+margin is symmetric rather than a left gutter — but nothing has been drawn at any intermediate
+`t`; see the ledger for exactly what was seen and what has not been.
 
 #### Reaching it: `organon console posture <terminal|desktop|0.0-1.0>`
 
@@ -2597,7 +2599,7 @@ draws.
 
 | Token | terminal | desktop | terminal value read from |
 |---|---|---|---|
-| `gutter` | `0` | `90` | there is no gutter today |
+| `margin` | `0` | `90` **each side** | there is no margin today |
 | `card_radius` | `6` | `8` | `CornerRadius::same(6)` at all five card frames |
 | `nested_radius` | `4` | `6` | `CornerRadius::same(4)` — `surface_element`'s waiting plate |
 | `card_pad_x` / `card_pad_y` | `8` / `8` | `18` / `18` | `Margin::same(8)`; `block_panel::PAD` is `8.0` |
@@ -2628,6 +2630,52 @@ the space between two cards matches the space inside one; and `nested_radius`'s 
 terminal end's two-point step below `card_radius`, making the two ends a translation rather
 than a re-proportioning.
 
+🚨 **`margin` is symmetric, and it began as a left-only `gutter` — this is the one token the
+first cut got wrong, and it took a window to see it.** The tier was built from a written
+specification that said "add a narrow empty left margin column, about 90px wide", and it was
+implemented exactly as written: `Margin { left: 90, right: 0, .. }`. **That sentence was
+written to prompt an image generator into restyling a screenshot** — it was describing a
+picture, not specifying a layout, and nobody noticed the difference because nobody had drawn
+it. Rendered, it reads as a window shoved off its own left edge rather than as a centred
+document. What was actually wanted is Claude Desktop's shape: content centred, ~90 points
+clear on both sides. The token is now `margin` and `Form::content_margin` answers
+`Margin::symmetric(margin, 0)`. ⚠️ **Renaming it was not cosmetic**: a field called `gutter`
+that produces a symmetric inset is a lie a reader has no way to catch, and the *next* person
+to add a token would have copied its shape.
+
+⚠️ **Note what the tests did not catch, because it generalises.** Every posture test passed
+the whole time. They all asserted the **scalar** — `f.gutter == 90.0` — and not one of them
+asserted the `Margin` that scalar became, which is where the asymmetry lived. The token was
+right and its spelling was wrong.
+`the_content_margin_is_symmetric_at_every_posture` now walks the axis and checks the shape at
+each step (`left == right`, no vertical inset, the value is the token), which is the assertion
+that would have failed on day one.
+
+⚠️ **A margin, not a measure — and the difference matters on a wide window.** This is an
+*inset*: the text column is whatever the pane has left, so at 1100 points (the console's
+default) the measure is 920, and at 2500 points it is 2320 — long prose at that width is
+genuinely hard to read, and Claude Desktop does not do this. Claude Desktop caps the **measure**
+and lets the margins absorb the rest. The cap was considered and deliberately not taken, for
+three reasons, the third of which is the one worth recording:
+
+* **James asked for 90 on both sides**, at the window he was looking at. A 720-point measure
+  would have given him 190-point margins on that same window — visibly *not* the number he
+  named, on the first thing he looked at.
+* **This pane is not a prose document.** It holds diffs, tool cards with JSON, and rendered
+  surfaces, all of which want width. A cap sized for paragraphs shrinks those too.
+* 🚨 **A measure cap cannot be one more scalar lerping between the two ends, because
+  "uncapped" is not a width.** Every combination was worked through: lerping a `measure` token
+  0 → 720 makes the *midpoint* narrower than the desktop end (a non-monotone tween, i.e. the
+  content pinches and reopens); starting it at a large finite "effectively infinite" number
+  makes the terminal end depend on the window size, which breaks the no-change guarantee on a
+  wide enough one; and a proportional margin (a fraction of available width) preserves the
+  terminal end but does not cap anything. The honest formulation is
+  `inset = t · max(margin, (available − measure) / 2)`, which needs `t` itself — so it needs
+  either a fourth presence token redundant with `margin`, or `t` stored on `Form`, plus
+  `content_margin` taking the available width. That is a real design, and it is a bigger one
+  than it looks. **It should be taken when somebody has looked at the desktop posture on a
+  wide window**, which nobody yet has.
+
 🚨 **The card-edge decision: posture owns the scalar, the PALETTE owns whether the edge is
 visible.** The four-sided border fades out and a left rule fades in over **one shared lerp**
 (`card_border + left_rule == 1` at every `t`, pinned by test), and no draw site branches on a
@@ -2645,7 +2693,7 @@ become a colour alone. Whether the rule should instead be drawn in the card's ow
 real question and a one-line change; it needs somebody who can look at a window, so it is
 named here rather than guessed at.
 
-⚠️ **`card_stroke` answers `Option<Stroke>`, not a transparent stroke, and `gutter_margin` and
+⚠️ **`card_stroke` answers `Option<Stroke>`, not a transparent stroke, and `content_margin` and
 `body_line_height` answer `Option` for the same reason.** `Frame` reserves a stroke's width
 whether or not it can be seen, so a zero-alpha border would leave a point of invisible inset
 around every card; and at the terminal end the scrollback's walk runs directly in the scroll
@@ -2674,9 +2722,10 @@ form is the font's — cell size, baseline and wrap are all consequences of the 
 and there is no padding, corner or gap in it for a scalar to move. Within the conversation
 view, the **tab strip, the composer plate, the model plates and the status band** keep their
 own constants: they are chrome, not cards, and a tier that wants them to breathe should say
-so out loud rather than inherit it from a token named "card". And the **gutter's contents**:
-this tier claims the 90-point column and leaves it empty, because the reflow is the part that
-can be wrong and is worth seeing on its own before Tier D draws turn ordinals into it.
+so out loud rather than inherit it from a token named "card". And the **margins' contents**:
+this tier claims the two 90-point columns and leaves both empty, because the reflow is the
+part that can be wrong and is worth seeing on its own before Tier D draws turn ordinals into
+the left one.
 
 ⚠️ **`Posture::new` and `Form::at` clamp, and NaN resolves to the terminal end.** These
 numbers reach `Margin`'s `i8` and `CornerRadius`'s `u8` through `as` casts, where a `NaN`
@@ -2764,6 +2813,25 @@ path silently breaks the three-products-simultaneously guarantee that
   the 0.13em tracking, the border/rule exchange and the corner ticks are *specified and
   compiled*, not seen. The first honest test of the axis is somebody moving the scalar and
   looking.
+  - 🚨 **UPDATED — the desktop end has now been drawn, once, and the first thing it showed was
+    a bug.** James put the console at desktop posture on the evening of 2026-08-13, at roughly
+    the default 1100-point width, and reported the margin: *"you can see there's a border on
+    the left, a margin, but not on the right."* So the sentence above is no longer wholly
+    true, and this is exactly what it was written to invite. **What was seen:** the inset
+    itself, on a real window, and that it was left-only — which is what §1.6's `margin` token
+    now fixes. **What was still not seen, and what this entry now claims instead:** the
+    symmetric margin — `cargo test -p organon-shell --lib` is **535 green**, one more than
+    before it (`the_content_margin_is_symmetric_at_every_posture`), and both `cargo check`
+    legs are clean, so the fix is compiled and pinned and **not looked at**; the line height, the
+    tracking, the border→rule exchange and the corner ticks, none of which drew a reported
+    observation either way; whether `t = 0.0` is pixel-identical to the console before the
+    wiring; any `t` strictly between the two ends; and the desktop end **on a window wide
+    enough for the measure to be the problem** — §1.6's margin-versus-measure argument turns
+    on that, and it is still an argument rather than a sighting.
+    ⚠️ **The general shape, since this ledger keeps finding it:** one look at one window at
+    one width falsified one claim and left the rest of the paragraph standing. "Has been seen"
+    is not a boolean, and an entry that flips wholesale on the first screenshot is being
+    written too coarsely.
 - ⚠️ **`Theme::card_left_rule` has never drawn a pixel, though two palettes now ask it to.**
   `light` sets `#c9ced6` and `dark` sets `#363b43`, while `organon` and `chocolate` set it
   fully transparent — and in both of those that is the palette's *answer*, not a placeholder:
