@@ -247,9 +247,16 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         // composer is empty, so no line is a command line and nothing is drawn. `autorun` is
         // off for the same reason it is off in the product — a bench must not run commands.
         palette_selected: 0,
-        palette_dismissed: None,
+        palette_dismissed: false,
+        composer_seen: String::new(),
+        history: std::collections::VecDeque::new(),
+        history_at: None,
+        want_caret: false,
         receipt: None,
         autorun: false,
+        // The verbose list is off here for the same reason it is off in the product: the
+        // primary panel is the one row, and a bench must measure what a person will see.
+        verbose: false,
     }
 }
 

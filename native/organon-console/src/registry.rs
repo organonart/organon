@@ -532,6 +532,18 @@ pub fn receipt_of(typed: &str, result: &Result<Value, String>) -> Receipt {
     }
 }
 
+/// The word the log puts in front of a command that worked.
+///
+/// 🚨 **A word, not a glyph, and this line is the fourth site to learn it.** It was `✓`
+/// (U+2713), which is in none of egui's four bundled fonts and drew as an empty box in the
+/// pane log *and* in the status band — photographed on a running console on 2026-08-14
+/// (`☐ /rig daylight — {"accepted":"rig daylight"}`). `conversation_view`'s allowlist guard
+/// existed and did not catch it, because the guard walks an enumerated list of draw sites and
+/// this string is built **here** and drawn **there**. Both halves are fixed: the marker is
+/// now the same word the band above the composer already uses for the same outcome, and the
+/// guard now checks this function's own output.
+pub const RECEIPT_OK: &str = "ok";
+
 /// What the pane's **log** says back after a command ran.
 ///
 /// Pure, and here rather than in the view, so the sentence a human reads is pinned by a test
@@ -541,7 +553,7 @@ pub fn receipt_of(typed: &str, result: &Result<Value, String>) -> Receipt {
 pub fn receipt(typed: &str, result: &Result<Value, String>) -> String {
     let receipt = receipt_of(typed, result);
     if receipt.ok {
-        format!("✓ {}", receipt.text)
+        format!("{RECEIPT_OK} {}", receipt.text)
     } else {
         receipt.text
     }
@@ -663,6 +675,31 @@ impl Palette {
         }
         match &self.candidates[..] {
             [only] if only.completes => Some(only),
+            _ => None,
+        }
+    }
+
+    /// 🚨 **The candidate a renderer should take without being asked, and it is NOT
+    /// [`Palette::autorun`].**
+    ///
+    /// One continuation left is not a choice, it is an answer the human has already given by
+    /// typing far enough — so showing them a one-item list and asking them to press Tab is
+    /// the surface making them confirm what it already knows. James, 2026-08-14: *"Do not
+    /// show me the single choice like you currently do. Simply complete the completion
+    /// because it's the only option."*
+    ///
+    /// 🚨 **Completing is not running, and the two have separate switches on purpose.**
+    /// This rewrites the line and stops; [`Palette::autorun`] submits it, is off by default,
+    /// and additionally requires [`Candidate::completes`]. A line completed here is left
+    /// sitting in the composer for a hand to finish or an Enter to send.
+    ///
+    /// ⚠️ **`completion != line` is what makes this terminate.** `/surface` already *is* its
+    /// own sole completion, so a rule that only counted candidates would rewrite the line to
+    /// itself for ever. It is also the display rule the compact row reads: a sole candidate
+    /// that is already the whole line is a list with nothing in it to choose.
+    pub fn sole_completion(&self, line: &str) -> Option<&Candidate> {
+        match &self.candidates[..] {
+            [only] if only.completion != line => Some(only),
             _ => None,
         }
     }
@@ -1389,6 +1426,44 @@ mod tests {
         );
     }
 
+    /// 🚨 CONTRACT: **completing a lone candidate and running one are different questions
+    /// with different answers**, and the pair below is the whole of the difference.
+    ///
+    /// `/b` leaves only `background`, so the *word* is settled and there is nothing to
+    /// choose — but `background` still needs a material, so nothing may run. `autorun`
+    /// refuses it (see the test above) and `sole_completion` takes it, which is exactly the
+    /// asymmetry: a completion leaves a line in the box, and a line in the box is not an
+    /// action.
+    #[test]
+    fn a_lone_candidate_completes_itself_without_ever_running() {
+        assert_eq!(
+            palette("/b").sole_completion("/b").map(|c| c.completion.as_str()),
+            Some("/background "),
+            "one word left is an answer already given, not a choice to be confirmed"
+        );
+        assert_eq!(palette("/b").autorun(true), None, "…and it still must not RUN");
+
+        // The case James hit: a verb whose arguments are the whole point offers none of them
+        // until the line reaches its value slot, and only a trailing space gets it there.
+        assert_eq!(labels("/patch"), ["patch"], "the bare word is still the verb slot");
+        assert_eq!(
+            palette("/patch").sole_completion("/patch").map(|c| c.completion.as_str()),
+            Some("/patch "),
+            "so completing it is what opens the argument ring at all"
+        );
+
+        // Two candidates is not one, however much the first looks finished. `/camera` is a
+        // whole verb AND the prefix of another, which is the case a count alone gets wrong.
+        assert_eq!(labels("/camera"), ["camera", "camera.read"]);
+        assert_eq!(palette("/camera").sole_completion("/camera"), None);
+
+        // 🚨 The termination rule. `/surface` is already its own completion, so a rule that
+        // counted candidates and nothing else would rewrite the line to itself for ever.
+        assert_eq!(labels("/surface"), ["surface"]);
+        assert_eq!(palette("/surface").sole_completion("/surface"), None);
+        assert_eq!(palette("/z").sole_completion("/z"), None, "and none is not one");
+    }
+
     /// Whitespace decides which question is being asked, and `split_whitespace` throws it
     /// away — so it is read before the split. Both spellings must work from a real composer,
     /// which may hold leading spaces.
@@ -1429,13 +1504,18 @@ mod tests {
     }
 
     /// The receipt says accepted, never applied — the op lands on the next frame.
+    ///
+    /// ⚠️ **These strings used to open with `✓` and that was the defect, not the contract.**
+    /// U+2713 is in none of egui's fonts; the log and the status band both drew it as an
+    /// empty box on James's screen. The marker is now [`RECEIPT_OK`], the same word the band
+    /// above the composer uses, so one outcome cannot read as two.
     #[test]
     fn a_receipt_reports_what_actually_happened() {
         assert_eq!(
             receipt("/background slate", &Ok(json!({ "accepted": "background slate" }))),
-            "✓ /background slate — {\"accepted\":\"background slate\"}"
+            "ok /background slate — {\"accepted\":\"background slate\"}"
         );
-        assert_eq!(receipt("/surface", &Ok(Value::Null)), "✓ /surface");
+        assert_eq!(receipt("/surface", &Ok(Value::Null)), "ok /surface");
         assert_eq!(
             receipt("/camera distance 9", &Err("out of range".to_string())),
             "out of range",

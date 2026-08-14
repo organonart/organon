@@ -4548,6 +4548,49 @@ mod cli_tests {
         );
     }
 
+    /// 🚨 **The row a person actually sees when they type `/`, pinned against the real
+    /// table.**
+    ///
+    /// The compact command panel is generated from [`Registry::candidates`], so nothing in
+    /// the console restates the verb list — which is right, and which also means the thing
+    /// James looks at exists nowhere as a string that could be read. It does now, here,
+    /// because this is the only module that can see the real catalog.
+    ///
+    /// ⚠️ **This test is a *witness*, not a specification.** It must be updated whenever a
+    /// verb is added — that is the point: a diff to this line is what tells a reviewer the
+    /// surface changed, and it is far cheaper than noticing on a running console.
+    ///
+    /// ⚠️ James's own sketch of the row named eight verbs
+    /// (`surface|theme|posture|background|rig|patch|portal|camera`). The panel deliberately
+    /// shows the **true** list, which is eleven: `block`, `camera.read` and `help` are
+    /// typeable, so hiding them would be the surface disagreeing with the registry — a
+    /// second vocabulary, in the one place that exists to prevent one.
+    #[test]
+    fn the_compact_panel_shows_the_real_table() {
+        use organon_console::conversation_view::compact_line;
+        use organon_console::registry::Registry;
+
+        let registry = Registry::new(&mcp_specs());
+        let all = registry.candidates("/").expect("a bare slash opens the whole table");
+        assert_eq!(
+            compact_line(&all, 0, 200),
+            "[background] | rig | theme | posture | block | patch | portal | camera | \
+             camera.read | surface | help"
+        );
+        // 101 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // count rather than an ellipsis when it does not.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 101);
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +9");
+
+        // The value ring of the verb James found offering nothing: `/portal` completes to
+        // `/portal ` on its own (one candidate), and that is what opens this.
+        let portal = registry.candidates("/portal ").expect("the value ring");
+        assert_eq!(compact_line(&portal, 0, 200), "[open] | close | toggle");
+        // …and an argument with no closed value space says what it wants instead.
+        let block = registry.candidates("/block ").expect("the value ring");
+        assert_eq!(compact_line(&block, 0, 200), "rows: a whole number");
+    }
+
     /// **The block verb's row range is a gate on both sides of the sidecar, and this is the
     /// console-side half.** `ArgKind::Int` carries no bounds, so unlike a material name the
     /// count is *not* fully checked by the schema — `op_from` is what stands between a
