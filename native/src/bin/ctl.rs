@@ -20,6 +20,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use organic_math_native::{agent, cli, ipc, scene_input};
 use organon_core::kind;
+use organon_console::{posture, theme};
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -53,7 +54,7 @@ fn param_ids() -> clap::builder::PossibleValuesParser {
 const CONSOLE_MATERIALS: &[&str] = &["graphite", "paper", "slate", "metal"];
 
 /// The backdrop **sources**, which are not materials and not Leaf A's. These come from
-/// `shell_main.rs`'s `BackdropSource` value space — `world` keeps the live `organon
+/// `console_main.rs`'s `BackdropSource` value space — `world` keeps the live `organon
 /// set`/`generator`/`recipe` response behind the glyphs, `off` is a flat fill, and
 /// `substrate` selects the lit plane without saying which material. One verb covers both
 /// because from the outside there is one question: what is behind the text?
@@ -72,6 +73,17 @@ fn background_names() -> clap::builder::PossibleValuesParser {
 /// Possible-values parser for `console rig <NAME>`.
 fn rig_names() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(CONSOLE_RIGS.iter().copied())
+}
+
+/// Possible-values parser for `console theme <NAME>`.
+///
+/// **Built from `Theme::NAMES` itself**, on [`patch_kinds`]' rule rather than the two
+/// hand-copied lists above — the palettes live in `organon-console`, which this binary already
+/// depends on, so there is no reason to restate them and every reason not to: a fifth palette
+/// must appear in `--help` and in tab completion the moment it appears in the table, and a
+/// copy is how a CLI comes to offer a colour nothing can paint.
+fn theme_names() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(theme::Theme::NAMES.iter().copied())
 }
 
 /// Possible-values parser for `console patch --kind <KIND>`.
@@ -301,6 +313,51 @@ enum ConsoleAction {
         /// The rig (see the value list above)
         #[arg(value_parser = rig_names())]
         name: String,
+    },
+    /// Set the console's colour palette — every colour it paints, at once
+    #[command(after_help = "The change is LIVE and it STICKS: the window repaints on its \
+                            next frame, and the choice is written to preferences.json so the \
+                            next console opens on it. That is the point of a verb rather \
+                            than a launch variable — four palettes compared by relaunching \
+                            four times is not a comparison.\n\n`organon` is the phosphor \
+                            green the console has always had, and is the default for anyone \
+                            who has never chosen. `light` is the one to try if the room \
+                            is bright; `dark` and `chocolate` are two other rooms.\n\n\
+                            ORGANON_SHELL_THEME overrides a stored choice for ONE launch and \
+                            says so on the console's own stderr when it does. It never \
+                            writes: unset it and your stored palette is back.")]
+    Theme {
+        /// The palette (see the value list above)
+        #[arg(value_parser = theme_names())]
+        name: String,
+    },
+    /// Set how the console holds itself — terminal-tight or desktop-open
+    #[command(after_help = "`terminal` is the console exactly as it has always drawn. \
+                            `desktop` insets the conversation behind a 90-point left \
+                            gutter, opens the padding out, and rules each card down the \
+                            left instead of boxing it. A bare number from 0 to 1 stands \
+                            anywhere between them — the axis is a scalar and every form \
+                            token lerps along it, so `0.5` is a real console and not a \
+                            rounding of one of the ends.\n\n\
+                            ⚠️ This SNAPS. There is no animation: the layout is the next \
+                            frame's, which costs one re-wrap of the transcript. A smooth \
+                            tween is a later tier and is a bigger question than it looks \
+                            (doc/console_rewrap_measurement.md).\n\n\
+                            ⚠️ It is NOT remembered. A palette is what the console is made \
+                            of; a posture is a view you take to look at something, and this \
+                            one has never been drawn on a real screen. Closing the console \
+                            puts it back at `terminal`.")]
+    Posture {
+        /// terminal, desktop, or a number from 0 to 1
+        ///
+        /// ⚠️ **No `value_parser` here, unlike every other named argument on this
+        /// subcommand, and it is not an omission.** The value space is two words *or* a
+        /// scalar, and `PossibleValuesParser` cannot express that — it would have to refuse
+        /// `0.5`, which the type represents and `Form::at` draws. So the gate moves one step
+        /// later, into `run_console`, where `Posture::resolve` owns both spellings and the
+        /// refusal that names them. The cost is real and worth stating: `<POSTURE>` does not
+        /// tab-complete the two words, which is why `--help` lists them twice over.
+        word: String,
     },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
@@ -571,7 +628,7 @@ fn run_eyes(req: cli::EyesReq, timeout: std::time::Duration) -> ! {
 /// `ipc::Reader::open().is_live()` is false. That heuristic is about the **World** lane
 /// (brief R3): it probes the `Shared` mmap's `seq` counter for *motion*, so what it really
 /// measures is redraw cadence, not existence. The console publishes `Shared` every redraw
-/// (`shell_main.rs`), so a console idling between repaints can read "dead" while it is
+/// (`console_main.rs`), so a console idling between repaints can read "dead" while it is
 /// plainly alive and about to drain this very line. Printing "your command was dropped" at
 /// the moment it is being honoured is worse than saying nothing. The probe also costs up
 /// to ~150 ms per invocation, which a console verb — the one people will hold a key down
@@ -580,6 +637,24 @@ fn run_console(action: ConsoleAction) -> ! {
     let op = match action {
         ConsoleAction::Background { name } => cli::ConsoleOp::Background(name),
         ConsoleAction::Rig { name } => cli::ConsoleOp::Rig(name),
+        // clap has already restricted this to `Theme::NAMES`, so it travels as typed; the
+        // console resolves it again on arrival, which is the gate that matters for a line
+        // written straight onto the sidecar by hand.
+        ConsoleAction::Theme { name } => cli::ConsoleOp::Theme(name),
+        // 🚨 **The only console argument validated here rather than by clap**, because its
+        // value space is two words *or* a number and `PossibleValuesParser` cannot say that.
+        // Resolving now — and throwing the resolved value away — is deliberate: it is the
+        // difference between a human seeing `sideways is not a posture` here, and seeing
+        // `queued: posture sideways` followed by silence from a window they may not be
+        // looking at. The word travels rather than the scalar so the console's own refusal
+        // can quote what was typed.
+        ConsoleAction::Posture { word } => match posture::Posture::resolve(&word) {
+            Ok(_) => cli::ConsoleOp::Posture(word),
+            Err(e) => {
+                eprintln!("organon: {e}");
+                std::process::exit(2);
+            }
+        },
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
         // here; the fallback rather than an `expect` because it is not a guess — it is the
@@ -986,6 +1061,66 @@ mod tests {
         assert!(parse(&["console", "frobnicate", "x"]).is_err());
     }
 
+    /// CONTRACT: **every palette in `Theme::NAMES` is typeable, and nothing else is.**
+    ///
+    /// The list is read from the table rather than restated, unlike `CONSOLE_MATERIALS` and
+    /// `CONSOLE_RIGS` above — so this test does not pin the four names, it pins that
+    /// `--help`'s value list and the console's own resolver are the *same* list. A fifth
+    /// palette therefore arrives in the CLI for free, and a palette removed from the table
+    /// stops being typeable in the same commit.
+    #[test]
+    fn console_theme_offers_exactly_the_palettes_that_exist() {
+        for name in theme::Theme::NAMES {
+            let c = parse(&["console", "theme", name]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Theme { name: got } } => {
+                    assert_eq!(got, name)
+                }
+                _ => panic!("`console theme {name}` parsed as something else"),
+            }
+            // …and the console can actually paint it. This is the assertion that would have
+            // caught a name in the table with no `by_name` arm behind it.
+            assert!(theme::Theme::by_name(name).is_some(), "`{name}` is offered but unpaintable");
+        }
+        assert!(parse(&["console", "theme", "phosphor"]).is_err(), "not a palette this build has");
+        assert!(parse(&["console", "theme", "Light"]).is_err(), "case is not folded anywhere");
+        assert!(parse(&["console", "theme"]).is_err(), "a palette verb with no palette");
+    }
+
+    /// CONTRACT: **`console posture` accepts a word or a scalar, and clap accepts BOTH
+    /// spellings through to `run_console`.**
+    ///
+    /// ⚠️ The refusal for this one verb happens *after* clap — the value space is two words
+    /// or a number and `PossibleValuesParser` cannot say that — so `parse` succeeding on
+    /// `sideways` is the correct behaviour here rather than a hole. What closes it is
+    /// `Posture::resolve` in `run_console`, and this pins that the two ends of that
+    /// arrangement agree about which strings are good.
+    #[test]
+    fn console_posture_takes_a_word_or_a_scalar_and_refuses_after_clap() {
+        for word in posture::POSTURE_WORDS.iter().copied().chain(["0", "0.5", "1", "1.0"]) {
+            let c = parse(&["console", "posture", word]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Posture { word: got } } => {
+                    assert_eq!(got, word)
+                }
+                _ => panic!("`console posture {word}` parsed as something else"),
+            }
+            assert!(posture::Posture::resolve(word).is_ok(), "`{word}` must resolve");
+        }
+        // clap lets these through; `run_console` is what exits 2 on them. `90` is the case
+        // worth naming: degrees where the axis wanted a fraction, which a clamp would have
+        // answered with `desktop` and called a success.
+        for bad in ["sideways", "1.5", "90", "nan", "inf"] {
+            assert!(parse(&["console", "posture", bad]).is_ok(), "clap does not gate `{bad}`");
+            assert!(posture::Posture::resolve(bad).is_err(), "`{bad}` must be refused");
+        }
+        // A leading `-` is clap's business, not the resolver's: `-0.1` never reaches
+        // `Posture::resolve` because clap reads it as an unknown flag first. Refused either
+        // way, which is all that matters — but by a different gate, so it is asserted apart.
+        assert!(posture::Posture::resolve("-0.1").is_err());
+        assert!(parse(&["console", "posture"]).is_err(), "a posture verb with no posture");
+    }
+
     /// **`console block` is bounded at the clap boundary, which is the only place a row count
     /// can produce a good error.** The sidecar skips a malformed line in silence by design, so
     /// a count that slipped past here would become a command that vanishes — or, without the
@@ -1180,13 +1315,13 @@ mod tests {
     /// `params.rs`'s ranges — drifted on 9 of 45 ids (brief R6).
     ///
     /// ⚠️ **`CONSOLE_SOURCES` is pinned by a literal, not bound.** `world`/`off`/`substrate`
-    /// are `BackdropSource`'s value space, and `BackdropSource` lives in `src/shell_main.rs`
+    /// are `BackdropSource`'s value space, and `BackdropSource` lives in `src/console_main.rs`
     /// — another `[[bin]]`, which no `bin` can import. The other half of this literal is
     /// `BACKDROP_SOURCE_WORDS` there, asserted against `console_source` by
     /// `every_source_word_resolves_and_a_typed_name_is_stricter_than_the_env_var`. Two
     /// alarms, one wire missing; the fix is a `pub const` in `cli.rs` beside
     /// `parse_console_op` (already the declared home of "both ends speak one vocabulary from
-    /// one place"), and it is in SHELL_ARCHITECTURE.md's honesty ledger.
+    /// one place"), and it is in CONSOLE_ARCHITECTURE.md's honesty ledger.
     #[test]
     fn the_console_vocabularies_are_bound_to_the_tables_that_draw_them() {
         use organic_math_native::substrate_materials;
@@ -1203,7 +1338,7 @@ mod tests {
         assert_eq!(
             CONSOLE_SOURCES,
             &["world", "off", "substrate"][..],
-            "the other half of this literal is BACKDROP_SOURCE_WORDS in src/shell_main.rs"
+            "the other half of this literal is BACKDROP_SOURCE_WORDS in src/console_main.rs"
         );
         // The two vocabularies must stay disjoint, or `background studio` would parse.
         for r in CONSOLE_RIGS {

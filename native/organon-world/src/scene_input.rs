@@ -128,7 +128,7 @@ pub enum CameraInput {
 ///
 /// 🚨 **One number, four readers.** `World::apply_camera_input` clamps to it, the camera
 /// finalization clamps the auto-orbit's *sum* to it, `cli`'s `console camera` validates against
-/// it, and `shell_main`'s `console.camera` schema declares it as its `ArgKind::Float` range. A
+/// it, and `console_main`'s `console.camera` schema declares it as its `ArgKind::Float` range. A
 /// second copy is how an agent comes to be refused a value the hand can reach, or granted one it
 /// cannot — and either reads as the camera being broken rather than as two constants disagreeing.
 pub const PITCH_LIMIT: f32 = 1.5;
@@ -304,7 +304,7 @@ pub fn pane_pixels(size_points: (f32, f32), scale: f32) -> (u32, u32) {
 /// A live render target survives that: it is rebuilt the moment the real scale lands. What
 /// does not survive is anything **copied** from it in the meantime. Console Spike Tier 4's
 /// epoch cache copies the live backdrop when a look closes and never re-renders it
-/// (`shell_main.rs`'s `snapshot_live_backdrop`), so a snapshot taken inside that window keeps
+/// (`console_main.rs`'s `snapshot_live_backdrop`), so a snapshot taken inside that window keeps
 /// the small picture for the rest of the session and every band painted from it is magnified
 /// back up — measured at exactly 2.25×, the older epochs blurred while the live band stayed
 /// crisp.

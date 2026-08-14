@@ -19,7 +19,7 @@
 #   organon-scene   forbids wgpu, egui, winit  (scene state, not drawing)
 #   organon-render  forbids egui and winit     — and its manifest argues at length that
 #                   it is `world::render`, NOT the world
-#   organon-shell   forbids nih_plug permanently, and is the compositor, not the engine
+#   organon-console forbids nih_plug permanently, and is the compositor, not the engine
 #
 # The docs anticipated exactly this and declined to name it: organon-scene's manifest says
 # `scene_input` "travels with `world.rs` in Tier 4, to whatever crate hosts the
@@ -55,7 +55,7 @@
 # parent, so `recorder` goes in T4c with `world.rs`. Reverting it is also what took wgpu,
 # half and dirs back out of this manifest.
 #
-# ⚠️ These five are what `world.rs` reaches for that had nowhere else to go. `agent` and
+# ⚠️ These four are what `world.rs` reaches for that had nowhere else to go. `agent` and
 # `cli` are NOT here and must not drift in: they carry `param_table` and `preset`, which
 # are the plugin's own automation surface. T4c has to answer them separately.
 [package]
@@ -63,7 +63,7 @@ name = "organon-world"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Organon's window layer: viewport input, the egui platform seam, the frame/audio rings and the recorder."
+description = "Organon's window layer: viewport input, the egui platform seam and the frame/audio IPC rings."
 repository = "https://github.com/organonart/organon"
 
 [dependencies]

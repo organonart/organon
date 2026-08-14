@@ -5,7 +5,7 @@ scope.** This file exists so two ideas are written down while the machinery that
 cheap is fresh, rather than rediscovered later at full price.
 
 **Why record them now.** Both became obvious *because* of what the spike landed, and neither
-appears anywhere in issue #3, issue #4, `SHELL_ARCHITECTURE.md` or the spike docs — checked.
+appears anywhere in issue #3, issue #4, `CONSOLE_ARCHITECTURE.md` or the spike docs — checked.
 Issue #3's patch primitive is the parent of the first idea and stops one step short of it.
 
 ---
@@ -103,7 +103,7 @@ editor uses — and staying invisible, costing nothing visually, when there is n
 ### Why this is plausible rather than aspirational
 
 - **Panels declared before the CentralPanel subtract from it for free.** That is exactly the
-  mechanism the tab strip uses today (`shell_main.rs:1553` declares
+  mechanism the tab strip uses today (`console_main.rs:1553` declares
   `TopBottomPanel::top("tab-strip")`, then `:1561` the CentralPanel) and exactly what Tier 3's
   bottom strip uses. `SidePanel::left` / `SidePanel::right` are the same primitive on the other
   axis, and **the Organon editor already uses them** — `native/src/lib.rs:1911`, `:1923`,
@@ -132,7 +132,7 @@ second one freehand.
 
 ### The rule that must survive
 
-**The console says nothing about itself when there is nothing to say.** `Edition::Shell`'s
+**The console says nothing about itself when there is nothing to say.** `Edition::Console`'s
 tagline is `""` and that empty string is a contract — callers skip it rather than render it
 (`organon-core/src/edition.rs`). An empty frame stays invisible. A column appears because
 something asked for it, and it goes away again. The moment the frame is *usually* occupied,

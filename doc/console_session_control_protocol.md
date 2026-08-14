@@ -597,7 +597,7 @@ Dr(["default","acceptEdits","bypassPermissions","plan","dontAsk","auto"])
 `--permission-mode` the choices
 `"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"` — **`manual` instead of
 `default`**. The wire enum has `default` and no `manual`. So `manual` is the flag-side spelling of
-the wire's `default`. The fixture `native/organon-shell/fixtures/claude_stream_live_session.jsonl`
+the wire's `default`. The fixture `native/organon-console/fixtures/claude_stream_live_session.jsonl`
 shows `"permissionMode":"default"`, and that is the one the strip reads and the one
 `set_permission_mode` takes.
 

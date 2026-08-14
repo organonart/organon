@@ -21,7 +21,7 @@ body:
       options:
         - Organon (visualizer — plugin or standalone)
         - Organon Mind (watching a model think)
-        - Organon Shell (agent workstation)
+        - Organon Console (agent workstation)
         - The engine itself (math, renderer, shaders)
         - Not sure
     validations:
