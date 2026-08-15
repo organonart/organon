@@ -4562,8 +4562,8 @@ path silently breaks the three-products-simultaneously guarantee that
   deploy**, which is a different sentence.
   ✅ What *is* measured: `organon-console --lib` is **696 passed, 3 ignored** (684 before — the
   twelve are `region`'s), `organon-core` is **593** unchanged (the new wire assertions live inside
-  existing tests), and the console bin target is **60 passed** (59 before). Both `cargo check`
-  legs are clean.
+  existing tests), the console bin target is **60 passed** (59 before) and the CLI's own bin is
+  **15 passed** (14 before). Both `cargo check` legs are clean.
   ⚠️ **Four root-crate tests were edited, and the ledger entry below is why that is worth
   flagging rather than mentioning.** `the_compact_panel_shows_the_real_table` (its string, its
   character count and its hidden `+N`), `the_real_table_says_which_verbs_may_run_without_an_enter`
