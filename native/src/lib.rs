@@ -50,7 +50,7 @@ mod controller;
 /// **Named, never glob.** `pub use organon_core::*` would let core silently widen this
 /// crate's surface later; these are three named modules and nothing else. `ARCHITECTURE.md`
 /// §19 records the decision.
-pub use organon_core::{edition, gguf, gguf_data, ipc, math};
+pub use organon_core::{edition, gguf, gguf_data, ipc, math, panels};
 
 /// #626 Tier 4 — the Mind cluster is its own crate now (`organon-mind`, no nih-plug).
 /// Re-exported so every existing `crate::mind_ring::…` path in this crate still resolves,
@@ -4919,7 +4919,7 @@ pub(crate) fn editor_ui(
                 // column (moved from the Generator tab). Node-field
                 // generators only (raymarch generators have no nodes).
                 if !raymarch {
-                card(&mut c[0], "Surface", |ui| {
+                card(&mut c[0], panels::LOOK_SURFACE.title, |ui| {
                     param_combo_sized(ui, w2, "mode", &params.surface_mode, setter, 2.0 * COMBO_W);
                     param_combo_sized(ui, w2, "palette", &params.palette, setter, 2.0 * COMBO_W);
                     help(ui, "Palette = colour LUT for the sweep. Native keeps the current \
@@ -5380,7 +5380,7 @@ pub(crate) fn editor_ui(
                 } // end Surface card (node-field generators only)
                 // Calibrated colour (#349) — a cross-cutting tint: colour that
                 // MEANS a measured level, applied across every surface mode.
-                card(&mut c[0], "Calibrated Colour (#349)", |ui| {
+                card(&mut c[0], panels::LOOK_COLOUR.title, |ui| {
                     param_combo_sized(ui, w2, "mode", &params.col_mode, setter, 2.0 * COMBO_W);
                     param_combo_sized(ui, w2, "LUT", &params.col_lut, setter, 2.0 * COMBO_W);
                     param_combo_sized(ui, w2, "source", &params.col_source, setter, 2.0 * COMBO_W);
@@ -5396,7 +5396,7 @@ pub(crate) fn editor_ui(
                 });
                 // Post-composite creative FX (#152) — screen-space, so it
                 // applies to EVERY generator (incl. KIFS). Off by default.
-                card(&mut c[2], "Post FX (#152)", |ui| {
+                card(&mut c[2], panels::LOOK_POST.title, |ui| {
                     crow(ui, "enable", &params.fx_enabled, setter);
                     if params.fx_enabled.value() {
                         param_combo(ui, w2, "style", &params.fx_style, setter);
@@ -5436,7 +5436,7 @@ pub(crate) fn editor_ui(
                 // fold of the resolved HDR scene — applies to EVERY generator +
                 // surface (folds the live PBR render, before bloom/composite).
                 // Off by default; always visible (works even over the KIFS field).
-                card(&mut c[2], "Scene Kaleidoscope (#361)", |ui| {
+                card(&mut c[2], panels::LOOK_KALEIDOSCOPE.title, |ui| {
                     crow(ui, "enable (fold the scene)", &params.kal_on, setter);
                     param_combo(ui, w2, "mode", &params.kal_mode, setter);
                     srow(ui, w2, "sectors", &params.kal_sectors, setter);
@@ -5464,7 +5464,7 @@ pub(crate) fn editor_ui(
                 // probes + an energy ledger + a Poynting-flux surface, read from
                 // the same kernels the visual draws. Only meaningful on the field
                 // generators (Maxwell / Acoustic / Cavity); inert (HUD off) by default.
-                card(&mut c[2], "Instrumentation (#391)", |ui| {
+                card(&mut c[2], panels::LOOK_INSTRUMENTATION.title, |ui| {
                     crow(ui, "HUD (draw read-outs)", &params.instr_hud, setter);
                     crow(ui, "field probe", &params.instr_probe_on, setter);
                     srow(ui, w2, "probe X", &params.instr_probe_x, setter);
@@ -5500,7 +5500,7 @@ pub(crate) fn editor_ui(
                 // + Minimal-surface still use the PBR material, so only KIFS
                 // hides them.)
                 if !kifs {
-                card(&mut c[1], "Cast Shadows (#152)", |ui| {
+                card(&mut c[1], panels::LOOK_SHADOWS.title, |ui| {
                     crow(ui, "enable (shadow map)", &params.shadow_enabled, setter);
                     srow(ui, w2, "bias", &params.shadow_bias, setter);
                     srow(ui, w2, "strength", &params.shadow_strength, setter);
@@ -5511,7 +5511,7 @@ pub(crate) fn editor_ui(
                              On an M3+ Mac, RT Shadows (Ray Tracing card) supersede this \
                              map with traced per-pixel occlusion — no bias tuning needed.");
                 });
-                card(&mut c[1], "Ambient Occlusion", |ui| {
+                card(&mut c[1], panels::LOOK_AO.title, |ui| {
                     crow(ui, "enable (depth AO)", &params.ssao, setter);
                     param_combo(ui, w2, "source", &params.ao_source, setter);
                     srow(ui, w2, "radius", &params.ssao_radius, setter);
@@ -5526,7 +5526,7 @@ pub(crate) fn editor_ui(
                              intensity apply to both; bias is GTAO-only; RT rays is the \
                              per-pixel ray count (pair with TAA — it integrates the noise).");
                 });
-                card(&mut c[0], "Material", |ui| {
+                card(&mut c[0], panels::LOOK_MATERIAL.title, |ui| {
                     param_combo(ui, w2, "type", &params.mat_type, setter);
                     srow(ui, w2, "metallic", &params.metallic, setter);
                     srow(ui, w2, "roughness", &params.roughness, setter);
@@ -5685,7 +5685,7 @@ pub(crate) fn editor_ui(
                              (0 = neutral, >1 = override). For cube-to-cube mirroring, also \
                              enable Reflections (SSR) →.");
                 });
-                card(&mut c[1], "Reflections (SSR)", |ui| {
+                card(&mut c[1], panels::LOOK_REFLECTIONS.title, |ui| {
                     crow(ui, "enable (screen-space)", &params.ssr, setter);
                     srow(ui, w2, "intensity", &params.ssr_intensity, setter);
                     srow(ui, w2, "max roughness", &params.ssr_max_roughness, setter);
@@ -5712,7 +5712,7 @@ pub(crate) fn editor_ui(
                              the structure; blend fades between infinite and box-projected. \
                              Reuses the env map (no extra passes); pair with SSR for cube-to-cube.");
                 });
-                card(&mut c[1], "Global Illumination", |ui| {
+                card(&mut c[1], panels::LOOK_GI.title, |ui| {
                     crow(ui, "enable (bounced GI)", &params.gi, setter);
                     srow(ui, w2, "intensity", &params.gi_intensity, setter);
                     srow(ui, w2, "reach", &params.gi_falloff, setter);
@@ -5738,7 +5738,7 @@ pub(crate) fn editor_ui(
                              by all its cubes, not just the top COUNT. Per-light RT shadowing is a \
                              follow-up.");
                 });
-                card(&mut c[1], "Screen-Space GI (#152)", |ui| {
+                card(&mut c[1], panels::LOOK_SSGI.title, |ui| {
                     crow(ui, "enable (SSGI)", &params.ssgi, setter);
                     srow(ui, w2, "intensity", &params.ssgi_intensity, setter);
                     srow(ui, w2, "radius", &params.ssgi_radius, setter);
@@ -5747,7 +5747,7 @@ pub(crate) fn editor_ui(
                              bleed colour onto neighbours. Noisy at low ray counts; pair with \
                              TAA (below) to clean it up. Instanced/node-field paths only.");
                 });
-                card(&mut c[1], "Voxel GI (#152)", |ui| {
+                card(&mut c[1], panels::LOOK_VXGI.title, |ui| {
                     crow(ui, "enable (VXGI)", &params.vxgi_enabled, setter);
                     srow(ui, w2, "intensity", &params.vxgi_intensity, setter);
                     srow(ui, w2, "rays", &params.vxgi_rays, setter);
@@ -5769,7 +5769,7 @@ pub(crate) fn editor_ui(
                              cone (0 = sharp, 1 = glossy blur); reach scales the march by the \
                              scene size; refl steps is the perf dial.");
                 });
-                card(&mut c[1], "Ray Tracing — Hardware (#195)", |ui| {
+                card(&mut c[1], panels::LOOK_RT.title, |ui| {
                     if !rt_available {
                         ui.label(
                             egui::RichText::new(
@@ -6027,7 +6027,7 @@ pub(crate) fn editor_ui(
                 // scale all live in the Neural Field GENERATOR card now, so the Look
                 // duplicate only caused confusion. `neural_enable` (neural[0]) stays
                 // in the params (inert, preset-captured) but no longer has a row.)
-                card(&mut c[2], "Temporal — TAA / Motion Blur (#152)", |ui| {
+                card(&mut c[2], panels::LOOK_TEMPORAL.title, |ui| {
                     crow(ui, "TAA (anti-alias)", &params.taa_enabled, setter);
                     srow(ui, w2, "TAA blend", &params.taa_blend, setter);
                     srow(ui, w2, "TAA sharpen", &params.taa_sharpen, setter);
@@ -6042,7 +6042,7 @@ pub(crate) fn editor_ui(
                              stacked Glass (needs TAA on to resolve the dither). Velocity is \
                              camera-only on node-field paths.");
                 });
-                card(&mut c[0], "Surface FX", |ui| {
+                card(&mut c[0], panels::LOOK_SURFACE_FX.title, |ui| {
                     srow(ui, w2, "translucency", &params.subsurface, setter);
                     srow(ui, w2, "  distortion", &params.sss_distortion, setter);
                     srow(ui, w2, "  power", &params.sss_power, setter);
@@ -6050,7 +6050,7 @@ pub(crate) fn editor_ui(
                     srow(ui, w2, "  scale", &params.irid_scale, setter);
                     srow(ui, w2, "  hue", &params.irid_shift, setter);
                 });
-                card(&mut c[1], "Bioluminescence", |ui| {
+                card(&mut c[1], panels::LOOK_BIOLUMINESCENCE.title, |ui| {
                     srow(ui, w2, "colour cycle", &params.color_cycle, setter);
                     srow(ui, w2, "ripple intensity", &params.ripple_intensity, setter);
                     srow(ui, w2, "  speed", &params.ripple_speed, setter);
@@ -6061,7 +6061,7 @@ pub(crate) fn editor_ui(
                              a travelling HDR emissive pulse through the field (push \
                              intensity > 1 to bloom). Both free-run.");
                 });
-                card(&mut c[1], "Reaction-Diffusion Skin", |ui| {
+                card(&mut c[1], panels::LOOK_SKIN.title, |ui| {
                     srow(ui, w2, "intensity", &params.rd_intensity, setter);
                     srow(ui, w2, "feed", &params.rd_feed, setter);
                     srow(ui, w2, "kill", &params.rd_kill, setter);
@@ -6072,14 +6072,14 @@ pub(crate) fn editor_ui(
                              spots ↔ stripes ↔ maze; pigment carves albedo.");
                 });
                 } // end KIFS-hidden look cards (Cast Shadows → reaction-diffusion)
-                card(&mut c[0], "Lighting (Direct)", |ui| {
+                card(&mut c[0], panels::LOOK_LIGHTING.title, |ui| {
                     srow(ui, w2, "ambient", &params.ambient, setter);
                     srow(ui, w2, "key", &params.key_intensity, setter);
                     srow(ui, w2, "fill", &params.fill_intensity, setter);
                     srow(ui, w2, "elevation", &params.elevation, setter);
                     srow(ui, w2, "azimuth", &params.azimuth, setter);
                 });
-                card(&mut c[0], "Environment (IBL)", |ui| {
+                card(&mut c[0], panels::LOOK_IBL.title, |ui| {
                     srow(ui, w2, "exposure", &params.exposure, setter);
                     srow(ui, w2, "intensity", &params.env_intensity, setter);
                     srow(ui, w2, "rotation", &params.env_rotation, setter);
@@ -6089,7 +6089,7 @@ pub(crate) fn editor_ui(
                     srow(ui, w2, "tint hue", &params.env_tint_hue, setter);
                     srow(ui, w2, "tint amount", &params.env_tint_amt, setter);
                 });
-                card(&mut c[2], "Particle Aura", |ui| {
+                card(&mut c[2], panels::LOOK_PARTICLES.title, |ui| {
                     param_combo(ui, w2, "tier", &params.particles_tier, setter);
                     srow(ui, w2, "speed", &params.particles_speed, setter);
                     srow(ui, w2, "lifetime", &params.particles_lifetime, setter);
@@ -6129,7 +6129,7 @@ pub(crate) fn editor_ui(
                     srow(ui, w2, "count (×1000)", &params.particles_count_k, setter);
                     srow(ui, w2, "grid resolution", &params.particles_grid_res, setter);
                 });
-                card(&mut c[2], "Fluid Ink (#182)", |ui| {
+                card(&mut c[2], panels::LOOK_INK.title, |ui| {
                     crow(ui, "enabled", &params.ink_enabled, setter);
                     // The same param as the Particle Aura's checkbox
                     // (one flag, surfaced in both cards — it already
@@ -6176,7 +6176,7 @@ pub(crate) fn editor_ui(
                              the aura grid dial (128 max is heavy); substeps \
                              stabilise fast stirs at full solver cost each.");
                 });
-                card(&mut c[2], "Liquid (#182 T3)", |ui| {
+                card(&mut c[2], panels::LOOK_LIQUID.title, |ui| {
                     crow(ui, "enabled", &params.liq_enabled, setter);
                     // The same shared flag as the Particle Aura /
                     // Fluid Ink cards — one param, surfaced wherever
@@ -6229,7 +6229,7 @@ pub(crate) fn editor_ui(
                              reseed the pool on change; substeps stabilise fast \
                              stirring at full solver cost each.");
                 });
-                card(&mut c[2], "Liquid Material", |ui| {
+                card(&mut c[2], panels::LOOK_LIQUID_MATERIAL.title, |ui| {
                     param_combo(ui, w2, "material", &params.liq_material, setter);
                     param_combo(ui, w2, "render", &params.liq_render, setter);
                     srow(ui, w2, "metallic", &params.liq_metallic, setter);
@@ -6256,7 +6256,7 @@ pub(crate) fn editor_ui(
                              depths), energy-conserving Fresnel. Absorption \
                              deepens the colour with path length.");
                 });
-                card(&mut c[2], "Fluid Coupling (#182 T4)", |ui| {
+                card(&mut c[2], panels::LOOK_COUPLING.title, |ui| {
                     srow(ui, w2, "fluid → GI (bounce)", &params.fgi_gi, setter);
                     srow(ui, w2, "fluid shadows scene", &params.fgi_shadow, setter);
                     crow(ui, "fluid receives shadows", &params.fgi_receive, setter);
@@ -6279,7 +6279,7 @@ pub(crate) fn editor_ui(
                              GI and the emissive-cube point lights — a pure \
                              GI/light emitter for the fluid. All inert at 0.");
                 });
-                card(&mut c[2], "Bloom", |ui| {
+                card(&mut c[2], panels::LOOK_BLOOM.title, |ui| {
                     srow(ui, w2, "bloom", &params.bloom_intensity, setter);
                     srow(ui, w2, "threshold", &params.bloom_threshold, setter);
                 });

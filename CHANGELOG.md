@@ -185,6 +185,60 @@ alongside these five. They carry `param_table` and `preset`, the plugin's own au
 surface. The membership rule is the one `organon-scene` was drawn by — a module comes only
 if its shipped code names nothing above it — and widening the crate to swallow them would
 be answering T4c's hard question by pretending it is easy.
+### `/organon` tells the truth about the seven tabs it cannot open
+
+Two defects James hit within a minute of first use, both of the same kind — the console knew
+and did not say. He typed `/organon generator 2` and was refused with *"`2` is not one of
+surface | colour | material | …"*: the **Look** tab's twenty-five panels, on a line that said
+`generator`. The only available reading is that the word `generator` had not registered. It had.
+
+**A refusal now names the ring it is refusing against.** The panel argument is declared as the
+union of every slug on every tab — a command schema has one value list per argument and no
+notion of a dependent one — and the refusal read that declaration even when the tab was sitting
+in the same line. It asks the narrowing hook first now, so `/organon look 2` answers *"`/organon
+look`: `2` is not one of surface | colour | …"* with the head carrying the words that chose that
+list, and a wrong pair (`/organon motion surface`, a real slug on the wrong tab) is refused in
+the composer instead of a ring further in. The declared union is unchanged: `/help` and the MCP
+schema have no tab in hand, and the union is the honest answer there.
+
+**And an empty ring can no longer be silent.** Only the Look tab's cards are joined to the panel
+table, so the other seven offered a band with nothing in it — indistinguishable from a broken
+one. All eight tabs are still offered, because `UiTab::ALL` is Organon's real hierarchy and
+hiding seven of it would misrepresent the product; the unjoined ones are **marked** `not mapped
+yet — no panels in the table`, counted off the table so a tab stops being marked the day it is
+joined. The narrowing hook's return type carries the change: an empty result now has to arrive
+as `Ring::Empty(reason)`, so the ring, the hint and the refusal read one sentence and a future
+empty ring cannot be built without one.
+
+Seven tabs are still dead ends. What changed is that they say so, in three places.
+
+### `/organon` — the console's rings are Organon's own UI hierarchy
+
+Typing `/organon` in a conversation offers Organon's eight tabs — generator, motion,
+environment, look, synth, audio, settings, mind. Typing `l` settles on `look` on its own and
+the ring underneath changes to that tab's twenty-five panels; `/organon look surface` puts that
+panel into the flow as an element.
+
+Neither ring is a list the console wrote. The tabs come from `UiTab::ALL`, the editor's own tab
+bar. The panels come from a new `organon_core::panels` table, and the arrow points the way that
+cannot rot: Organon's editor now reads its Look-tab card headings *out of* that table, at all
+twenty-five call sites, so a renamed panel is one edit and the compiler finds the other end.
+
+One addition to the command registry made it possible: an entry may carry a narrowing hook, so
+a ring can depend on the ring above it. `ArgKind` is untouched — a dependent variant would have
+been a change at ~30 exhaustive match sites, across the MCP schema generator and the dispatch
+validator, for one verb.
+
+🚨 **Every panel is declared, not live: the ring lists them and the element says it has not
+been transplanted yet.** The blocker is not drawing — it is that **there is no public way to
+write an Organon parameter from outside `nih_plug`**. Every panel widget writes through a
+`ParamSetter`, and `ParamMut`, `ParamPtr::set_normalized_value`, `FloatParam`'s value fields and
+nih-plug's own standalone `Wrapper` are each `pub(crate)` or in a private module. A panel drawn
+without a write path is a panel whose knobs do nothing, which is precisely why `/panel` was
+retired, so none is claimed. `CONSOLE_ARCHITECTURE.md` §1.11 records the wall and the measured
+way through it — the console already owns a `World` in-process, so no second process or IPC
+bridge is involved, and `PresetValues` is a freely-writable mirror of the params with a
+`to_shared()`; what is missing is the identity join at the widget.
 
 ### `organon-agent`, and `world.rs` runs out of upward edges
 
