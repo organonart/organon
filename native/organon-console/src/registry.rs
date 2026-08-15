@@ -1938,12 +1938,17 @@ mod tests {
 
     /// A candidate carries the panel's real heading, and says out loud when choosing it would
     /// open nothing — before the choice, not after.
+    ///
+    /// ⚠️ **Both arms, on one ring, on purpose.** Surface was `Declared` alongside every other
+    /// panel until Console #7 transplanted it; asserting only the suffixed form let the ring
+    /// go untested for the case it exists to distinguish. Now the same ring carries one of
+    /// each, so the day a second panel lands, this test says which one moved.
     #[test]
-    fn a_declared_panel_says_so_in_the_ring() {
+    fn the_ring_says_which_panels_are_transplanted() {
         let reg = registry();
         let ring = reg.candidates("/organon look ").unwrap().candidates;
         let surface = ring.iter().find(|c| c.label == "surface").unwrap();
-        assert_eq!(surface.doc, "Surface — not transplanted yet");
+        assert_eq!(surface.doc, "Surface", "transplanted — the heading alone");
         let bloom = ring.iter().find(|c| c.label == "bloom").unwrap();
         assert_eq!(bloom.doc, "Bloom — not transplanted yet");
     }
