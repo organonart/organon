@@ -49,7 +49,7 @@
 // `#[path = "../world.rs"]` include, where `crate::` means the BINARY. Only an absolute
 // path resolves in both. organon#49 T4b briefly rewrote this to `crate::` while the file
 // was in `organon-world`, and the library build stayed green while the visual broke.
-use organic_math_native::audio_ring::AudioRingReader;
+use crate::audio_ring::AudioRingReader;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};

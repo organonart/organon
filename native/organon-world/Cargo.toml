@@ -6,10 +6,23 @@
 # wgpu + winit when `world.rs` arrives in T4c, so the "no UI toolkit" half of core's rule
 # does not apply to it.
 #
-# 📌 TODAY IT CARRIES egui AND NOTHING HEAVIER. The T4b membership (below) turned out not
-# to need wgpu at all — see the `recorder` note — so the manifest names egui, memmap2 and
-# bytemuck and stops there. Do not add wgpu "because T4c will want it": an unused
-# dependency is silent, and organon-mind's manifest already records what that costs.
+# 📌 THE HEAVY HALF IS OPTIONAL, AND THAT IS THE WHOLE DESIGN (organon#49 T4c-ii).
+#
+# T4b's rule here was "do not add wgpu because T4c will want it: an unused dependency is
+# silent". T4c-ii brought wgpu, winit and nine more — and kept that rule by making every
+# one of them `optional = true` behind the `world` feature. Off, this crate is exactly the
+# T4b crate: organon-core, organon-mind, egui, memmap2, bytemuck. On, it is the world.
+#
+# 🚨 THE FEATURE IS NOT TIDINESS — IT PROTECTS A MEASURED NUMBER.
+#
+# `native/src/lib.rs` used to declare `pub mod world` behind
+# `#[cfg(any(mind-edition, console-edition))]`, and its comment records why, from a
+# measurement rather than a preference: ungated, the world grows the shipping plugin
+# cdylib from 12 749 728 to 13 250 704 bytes (+490 KB). This crate is an UNCONDITIONAL
+# dependency of `organic-math-native`, so an unconditionally-public `world` module here
+# would put those bytes straight back into the VST3 that ships. `world` (default OFF) is
+# what keeps that from happening; the root crate turns it on only under `mind-edition` /
+# `console-edition`, exactly where it used to declare the module itself.
 #
 # 🎯 WHY A NEW CRATE, AND WHY THIS ONE IS UNAVOIDABLE.
 #
@@ -36,28 +49,56 @@
 # without a seam, since `world.rs` is the only consumer of both halves. T4c adds `world.rs`
 # and its submodules here rather than to a sixth crate.
 #
-# WHAT IS HERE (T4b — the leaves; `world.rs` itself follows in T4c):
-#   scene_input     the viewport's camera input: egui gestures → `CameraInput`
-#   egui_platform   the egui platform seam — `WindowGeometry`, input without naming a window
-#   frame_ring      the frame mmap ring the visual publishes to
-#   audio_ring      the audio mmap ring the plugin publishes to (frame_ring reads it)
+# WHAT IS HERE:
 #
-# 🚨 `recorder` LOOKED LIKE A MEMBER AND IS NOT ONE — it is `world::recorder`.
+#   T4b — always compiled, the leaves that had nowhere else to go:
+#     scene_input     the viewport's camera input: egui gestures → `CameraInput`
+#     egui_platform   the egui platform seam — `WindowGeometry`, input without naming a window
+#     frame_ring      the frame mmap ring the visual publishes to
+#     audio_ring      the audio mmap ring the plugin publishes to (frame_ring reads it)
 #
-# `world.rs` declares nine submodules by `#[path]` (`capture`, `overlay`, `rt`,
-# `metal_island`, `gpu_timer`, `recorder`, `snap`, `ui_layer`, `winit_platform`), and
-# `bin/visual.rs` in turn includes `world.rs` by `#[path = "../world.rs"]`. So
-# `#[path = "recorder.rs"]` resolves relative to *the includer's* directory: from the
-# binary it reads `src/bin/../recorder.rs`. Move the file and that path breaks, with an
-# error the LIBRARY build never shows — `cargo check --lib` does not build binaries.
+#   T4c-ii — behind `world`, the world itself:
+#     world           13.5k lines: the scene, the beat clock, the camera, `frame_body`
+#     + nine `#[path]` submodules  capture · overlay · rt · metal_island · gpu_timer ·
+#                                  recorder · snap · ui_layer · winit_platform
 #
-# It was moved here first and reverted. A `#[path]` submodule cannot travel without its
-# parent, so `recorder` goes in T4c with `world.rs`. Reverting it is also what took wgpu,
-# half and dirs back out of this manifest.
+# 🚨 THE VISUAL BINARY IS NOT HERE — IT IS ITS OWN PACKAGE, AND THAT IS THE ONE
+#    NON-OBVIOUS PART OF T4c-ii.
 #
-# ⚠️ These four are what `world.rs` reaches for that had nowhere else to go. `agent` and
-# `cli` are NOT here and must not drift in: they carry `param_table` and `preset`, which
-# are the plugin's own automation surface. T4c has to answer them separately.
+# `bin/visual.rs` did not use the library's `world` module. It `#[path]`-INCLUDED
+# `world.rs`'s source into itself, compiling the same 13.5k lines a second time,
+# specifically because the library's copy was gated and the binary ships in BOTH editions.
+# A `#[path]` include is not a cargo feature, so that trick let the binary have the world
+# while the cdylib did not. Moving `world.rs` leaves that include pointing at nothing.
+#
+# It could not simply move HERE either, for a reason the survey nearly missed: the visual
+# is the process that runs the AI Performer's worker (`world.rs` drains the chat sidecar and
+# calls `ensure_agent_worker`), so it needs `agent::core_catalog()` — which reads
+# `param_table`, the plugin's own automation surface, and cannot descend. And it could not
+# STAY in `organic-math-native` asking for `organon-world/world`, because **cargo features
+# unify across every target of a package**: the cdylib beside it would get the feature too,
+# which is the +490 KB above.
+#
+# So it is `organon-visual`, a package of its own that depends on BOTH — the plugin crate
+# (which is `crate-type = ["cdylib", "lib"]`, so an ordinary library to a sibling package)
+# and this crate with `world` on. That makes the shipping cdylib byte-identical **by
+# construction** rather than by measurement, because feature unification cannot reach a
+# package that does not contain it.
+#
+# 📌 The dual compilation is GONE, not relocated. The world is compiled once now. That was
+# a side effect of this tier rather than its goal, and it is the largest build-time win in
+# organon#49.
+#
+# 🚨 `recorder` LOOKED LIKE A MEMBER IN T4b AND WAS NOT ONE — it is `world::recorder`, and
+# it arrived here in T4c-ii *with its parent*, which is the only way a `#[path]` submodule
+# can travel. T4b moved it alone, and the break was invisible to `cargo check --lib`
+# because that does not build binaries. The rule it cost a cycle to learn: a `#[path]`
+# submodule cannot travel without the file that declares it.
+#
+# ⚠️ `agent` and `cli` are NOT here and must not drift in. `world.rs` no longer names
+# either (T4c-i moved the Performer to `organon-agent` and gave `World::new` a catalog
+# parameter), but they carry `param_table` and `preset` — the plugin's own automation
+# surface — and Tier 5 has to answer them rather than widen this crate to swallow them.
 [package]
 name = "organon-world"
 version = "0.1.0"
@@ -65,6 +106,45 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Organon's window layer: viewport input, the egui platform seam and the frame/audio IPC rings."
 repository = "https://github.com/organonart/organon"
+
+[features]
+# organon#49 T4c-ii — compiles `world` (+ its nine `#[path]` submodules) and, with it,
+# `[[bin]] organic-math-visual`. **OFF by default, and the header explains what that
+# default is protecting**: this crate is an unconditional dependency of the crate that
+# exports the VST3, so an always-on world puts +490 KB of measured weight back into the
+# shipping cdylib. `organic-math-native` forwards it from `mind-edition` /
+# `console-edition`, which is precisely where its own `#[cfg]` on `pub mod world` used to
+# sit — the gate did not change, only which manifest states it.
+#
+# Everything the world needs is `optional = true` and named here, so a default build of
+# this crate resolves the T4b dependency set exactly and no more.
+world = [
+    "dep:organon-render",
+    "dep:organon-scene",
+    "dep:organon-agent",
+    "dep:wgpu",
+    "dep:winit",
+    "dep:glam",
+    "dep:half",
+    "dep:image",
+    "dep:dirs",
+    "dep:serde_json",
+    "dep:rfd",
+    "dep:ab_glyph",
+    "dep:egui-wgpu",
+    "dep:egui-winit",
+]
+
+# Forwarded from the native crate's feature of the same name, for ONE reason: `world.rs`
+# carries 16 `#[cfg(…feature = "mind-edition"…)]` sites — the #593 Tier 4 frame-mirror
+# gate — and a `feature` cfg is resolved against the crate being compiled. Once `world.rs`
+# lives here, those sixteen ask *this* manifest, so the switch has to exist here or they
+# silently all take the `not(mind-edition)` arm in every build.
+#
+# ⚠️ It selects nothing on its own and must stay that way: `EDITION` resolves in
+# `organon-core::edition` and nowhere else (see core's manifest). This is a cfg passthrough,
+# not a second edition switch.
+mind-edition = []
 
 [dependencies]
 organon-core = { path = "../organon-core" }
@@ -77,3 +157,45 @@ egui = "0.33.3"
 # `frame_ring` / `audio_ring` map the IPC rings.
 memmap2 = "0.9"
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+
+# --- `world` only (organon#49 T4c-ii) -------------------------------------------------
+# Every entry below is `optional = true` and reached through the `world` feature above.
+# Versions are copied from the root manifest verbatim, on purpose: two versions of any of
+# these in one tree is two incompatible types (the root manifest's egui note explains the
+# failure mode), and a path dependency cannot resolve them apart.
+
+# `world.rs` re-exports these three as `world::{axes, chamber, render}`, so every
+# `render::…` call site in the tree still resolves verbatim (#626 T4).
+organon-render = { path = "../organon-render", optional = true }
+# `overlay_meta` — the capture overlay's metadata (organon#49 T3).
+organon-scene = { path = "../organon-scene", optional = true }
+# `world.rs` names 21 symbols from the Performer, all of which descended in T4c-i.
+# ⚠️ `core_catalog` is NOT among them — `World::new` takes the catalog as a parameter
+# precisely so this crate never has to see `param_table`.
+organon-agent = { path = "../organon-agent", optional = true }
+
+wgpu = { version = "30", optional = true }
+winit = { version = "0.30", optional = true }
+glam = { version = "0.33", features = ["bytemuck"], optional = true }
+# f32 → f16 for the Rgba16Float env texture upload.
+half = { version = "2", features = ["bytemuck"], optional = true }
+# Radiance .hdr decode; "png" decodes the #135 overlay formula images.
+image = { version = "0.25", default-features = false, features = [
+    "hdr",
+    "png",
+], optional = true }
+dirs = { version = "5", optional = true }
+serde_json = { version = "1", optional = true }
+# Native file-open dialog: the visual's 'O' key.
+rfd = { version = "0.17", optional = true }
+# CPU glyph rasterizer for the #135 capture-overlay text atlas.
+ab_glyph = { version = "0.2", optional = true }
+# ⚠️ The vendored fork, and the path is relative to THIS manifest — `vendor/egui-wgpu`
+# in the root manifest is `../vendor/egui-wgpu` from here. 0.33.3 to match the one egui.
+egui-wgpu = { path = "../vendor/egui-wgpu", optional = true }
+egui-winit = { version = "0.33.3", default-features = false, features = [
+    "clipboard",
+    "x11",
+    "wayland",
+], optional = true }
+

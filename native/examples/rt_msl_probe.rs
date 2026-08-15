@@ -48,7 +48,7 @@ fn main() {
             include_str!("../organon-render/src/rt_reflect.wgsl"),
             wgpu::TextureFormat::Rgba16Float,
         ),
-        ("rt_debug", include_str!("../src/rt_debug.wgsl"), wgpu::TextureFormat::Rgba16Float),
+        ("rt_debug", include_str!("../organon-world/src/rt_debug.wgsl"), wgpu::TextureFormat::Rgba16Float),
         ("rt_gi", include_str!("../organon-render/src/rt_gi.wgsl"), wgpu::TextureFormat::Rgba16Float),
     ];
     for (name, src, format) in shaders {
