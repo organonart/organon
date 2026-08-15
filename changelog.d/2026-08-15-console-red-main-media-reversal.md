@@ -40,3 +40,28 @@ and the wrong one here would have let a keystroke place an exhibit unasked.
 path has no closed value space — so the command panel never has a lone candidate to
 complete, and autorun is never offered the line in the first place. The field is what makes
 that a stated property rather than a coincidence of the argument's kind.
+
+## The same merge broke a second thing, and only the first one was a compile error
+
+🚨 **Repairing the build revealed `the_real_table_says_which_verbs_may_run_without_an_enter`
+had never run against a table containing `media`.** That test pins the reversal column of the
+console's *whole* vocabulary as a literal list, and the list has no `media` row — for the
+identical reason: `/media` joined the view lane on the branch where `Reversal` did not exist,
+and the test itself arrived on the branch where `/media` did not. Two casualties, one merge,
+neither side red, no conflict to review.
+
+⚠️ **This one is worse than the first, and the difference is the lesson.** A missing struct
+field is `E0063` — loud, immediate, and impossible to ship past anyone who builds. A stale
+whole-vocabulary list is a *failing test*, which means it can only be caught by something that
+**runs** it, and it lives in `console_main.rs`, the **root crate**. The console's four-leg bar
+type-checks that crate (`cargo check --tests -p organic-math-native`) and never executes it —
+the honesty ledger has said so for some time. So the local bar was green on all four legs with
+this test failing, and **CI is what caught it**. That is the bar working exactly as documented
+rather than a surprise, and it is worth stating plainly: on a change that adds or moves a
+console verb, a green four-leg bar is not evidence about this test.
+
+📌 The comment beside `compact_line`'s hidden `+N` count already told this story once — three
+verbs have now moved that line, and both times the mechanism was a merge invalidating a
+statement about the vocabulary as a whole from a hunk that touched neither end of it. The
+fix for both is the same discipline: **re-derive the list from `view_entries()`; never append
+to it and assume the order.**
