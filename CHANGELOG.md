@@ -77,6 +77,71 @@ copy steps are untouched. Only their `cargo build` lines gained `-p organon-visu
 `doc/arch/render.md`'s rule would have silently stopped firing for every moved file. Its
 list is repointed, and `doc/arch/topology.md`'s — which had never listed `organon-scene`,
 `organon-agent` or `organon-world` — gains the four manifests it was missing.
+### The light theme's whole surface ladder comes down to V ≈ 0.85
+
+James looked at the corrected `#fafbfc` page in a running console and said *"the white part is
+too white. Move it down to about a 0.85 V in the HSV system."* **This is the second, larger
+correction of the same complaint, not a contradiction of the first** — `CONSOLE_ARCHITECTURE.md`
+§3's ledger had already predicted that a 1.18 % reduction "may not be enough" and named this
+exact remedy.
+
+🚨 **The result is a light GREY page, not a white one, and that is what was asked for.**
+`V = 0.851` reads as pale grey card stock. §1.4 says so in as many words so that nobody later
+"fixes" it back toward white.
+
+⚠️ **The page could not move alone.** Light's surfaces climb away from the page by darkening,
+and the page→panel step is the whisper of the four — 3/3/3 per channel against panel→hairline's
+21/19/16 and hairline→strong's 25/23/19. A page dropped to `217` against a panel of `249` sits
+**32 units below it** and *inverts* the ladder: every plate drawn on the page would read as
+raised **out of** the paper instead of recessed into it.
+`the_light_page_stays_a_step_above_the_panel` already pinned that and fails on it.
+
+So the move is a **uniform −35 on every channel of every step**, which keeps all three
+inter-step distances to the unit and keeps each step's cool tilt:
+
+| step | before | after | V before → after |
+|---|---|---|---|
+| page (`LIGHT_PAGE`) | `#fafbfc` | **`#d7d8d9`** | 0.988 → **0.851** |
+| panel (`LIGHT_PANEL`) | `#f7f8f9` | **`#d4d5d6`** | 0.976 → 0.839 |
+| hairline (`LIGHT_HAIRLINE`) | `#e2e5e9` | **`#bfc2c6`** | 0.914 → 0.776 |
+| strong (`LIGHT_STRONG`) | `#c9ced6` | **`#a6abb3`** | 0.839 → 0.702 |
+| `panel_fill` | `#e1e2e3e6` | **`#c2c3c4e6`** | rule 4: the page at `0xe6` |
+| `composer_edge_dead` | `#d19090` | **`#bd7c7d`** | rule 4: error 1:1 into the page |
+| `timeline_scripted_fill` | `#edd2d2` | **`#cdb3b4`** | rule 4: error 20 % over the page |
+| `timeline_bubble_user` | `#d1d9f0` | **`#b4bcd3`** | rule 4: accent 1:5 over the panel |
+
+`217/255 = 0.8510` is the nearest a `u8` gets to `0.85 × 255 = 216.75`. The three earlier
+figures — 8/7/6 of headroom, 2.35 % of HSV value, the 1.18 % spent — are historical: they
+measured the distance to a panel that was never obliged to hold still.
+
+⚠️ **Uniform subtraction does not weaken the ladder, it strengthens it slightly.** sRGB's
+transfer curve makes an equal code-value step a larger luminance ratio lower down, so contrast
+between adjacent steps *rises*: panel-on-page 1.026 → 1.030, hairline-on-page 1.220 → 1.253,
+strong-on-page 1.526 → 1.617. `strong` at `#a6abb3` is a more visible border than `#c9ced6`.
+
+🚨 **What it costs is the text ladder, which deliberately did not move.** `primary #0f1114` is
+untouched at 13.3:1 on the new page, but `secondary #5d636c` falls 5.70 → **4.12** on the panel
+(under AA's 4.5) and `faint #8b919b` falls 3.06 → **2.22** on the page and 2.51 → **1.77** on a
+hairline plate. **No compression of the surface ladder repairs this** — the only fix is a
+darker text ladder, three more roles James specified, so it is costed in §1.4 and not taken
+(`#737983` would restore `faint`).
+
+⚠️ **Two rule-4 derivations had already gone stale and are repaired here.**
+`composer_edge_dead` and `timeline_scripted_fill` are mixes "into the page", were computed
+against the spec's `#ffffff`, and the first correction left them behind — a written rule
+quietly false for a day. `panel_fill` moved only because a test pinned it. New test
+`every_light_plate_mixed_from_a_surface_is_recomputed_from_it` pins all three mixes and the
+invariant that would have caught them for free: **a plate mixed into a surface may never be
+brighter than that surface.**
+
+The four steps are now named constants rather than fifteen repeated literals — the panel is
+five fields, the hairline six, the strong border four, and a third correction spelled as
+fifteen hand-edits is one that lands on fourteen of them. Sharing a constant welds nothing:
+every field still assigns independently.
+
+`cargo test -p organon-console --lib` 647 green (646 before); `cargo test -p organon-core` 557
+green; both `--features console-edition` checks clean. 🚨 **Nobody has seen this ladder on a
+display** — see `CONSOLE_ARCHITECTURE.md` §3.
 
 ### `organon-world` — the window layer leaves the plugin crate
 

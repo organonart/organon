@@ -2450,30 +2450,79 @@ written at the site, never by an invented pigment, and the rules are four:
    page. (`chocolate` names all four of its steps — `#191919 → #1F1F1F → #262626 → #303030` —
    so none of this applies to it.)
 
-   🚨 **`light`'s page is the one role in any palette that is NOT its spec's value.** The spec
-   says `#ffffff`; `Theme::LIGHT_PAGE` is **`#fafbfc`**, because James looked at the palette in
-   a running console on 2026-08-14 and asked for the whitest white turned down. It is a named
-   constant rather than two literals because `term_bg` and `term_scrim_tint` both take it and
-   must track: the scrim is laid over the live backdrop at up to `SCRIM_FLOOR_LIGHT`, so a
-   scrim left white would cover a *larger* area than the terminal with the exact value being
-   complained about, and a scrimmed region would read brighter than the page it borders. The
-   fields stay separate — the struct never merges roles by value — but the value is stated once.
+   🚨 **`light`'s whole surface ladder is NOT its spec's, and this is the one place in any
+   palette where that is true.** The spec's ladder is `#ffffff → #f7f8f9 → #e2e5e9 → #c9ced6`.
+   It has been moved down twice, both times on James's instruction after looking at a running
+   console, and the second move is a **correction of the first, not a contradiction of it**:
 
-   ⚠️ **The room inside the ladder is far smaller than the request implies, and this is the
-   number to know before touching it again.** Light's steps are 8/7/6 (page→panel), 21/19/16
-   (panel→hairline) and 25/23/19 (hairline→strong): the page's own step was *already* the
-   whisper of the four. So a page may fall **6 units on the tightest channel — 2.35 % of HSV
-   value — before it collides with the panel it must sit above**; the tightest is *blue*,
-   where the panel is coolest. `#fafbfc` is the panel plus a uniform 3, which spends 3 of
-   those 6 and keeps a 3-unit step; uniform because that
-   carries the panel's `+1` green / `+2` blue tilt up to the page, and pure white was the only
-   step in the ladder with no tilt at all. **"A few percent" is not reachable without moving
-   the panel as well**, which is four more spec roles and a decision for James, not a
-   derivation. `the_light_page_stays_a_step_above_the_panel` pins the ordering, the minimum
-   step, the uniform offset and rule 4's premultiply — the ordering needed no guard while the
-   page was `#ffffff`, since nothing can be brighter than white, and its failure now is silent
-   and *inverting*: a page darker than its panel makes every plate drawn on it read as raised
-   out of the paper rather than recessed into it.
+   | step | spec | 2026-08-14 · the page | 2026-08-14 later · the ladder | V now |
+   |---|---|---|---|---|
+   | page (`LIGHT_PAGE`) | `#ffffff` | `#fafbfc` | **`#d7d8d9`** | **0.851** |
+   | panel (`LIGHT_PANEL`) | `#f7f8f9` | `#f7f8f9` | **`#d4d5d6`** | 0.839 |
+   | hairline (`LIGHT_HAIRLINE`) | `#e2e5e9` | `#e2e5e9` | **`#bfc2c6`** | 0.776 |
+   | strong (`LIGHT_STRONG`) | `#c9ced6` | `#c9ced6` | **`#a6abb3`** | 0.702 |
+
+   The first move turned the page down 1.18 % of HSV value; James looked at it and said *"the
+   white part is too white. Move it down to about a 0.85 V in the HSV system"*. 🚨 **The result
+   is a light GREY page, not a white one** — `V = 0.851` is pale grey card stock, and that is
+   what was asked for. Do not "fix" it back toward white because it stopped looking like paper.
+
+   ⚠️ **The page could not move alone.** The steps are 3/3/3 (page→panel), 21/19/16
+   (panel→hairline) and 25/23/19 (hairline→strong) — the page's own step is the whisper of the
+   four, so a page dropped to `217` against a panel of `249` sits **32 units below it** and
+   *inverts* the ladder. The failure is silent: every plate drawn on the page — the composer,
+   the status strip, a bubble — would read as raised **out of** the paper rather than recessed
+   into it, which is the opposite of the printed-publication metaphor. So the move is a
+   **uniform −35 on every channel of every step**: all three inter-step distances survive to
+   the unit, every step keeps its own cool tilt, and `217/255 = 0.8510` is the nearest a `u8`
+   gets to `0.85 × 255 = 216.75`.
+
+   ⚠️ **Uniform subtraction does not weaken the ladder — it strengthens it slightly**, because
+   sRGB's transfer curve makes an equal code-value step a larger luminance ratio lower down.
+   Measured WCAG contrast between adjacent steps *rises*: panel-on-page 1.026 → 1.030,
+   hairline-on-page 1.220 → 1.253, strong-on-page 1.526 → 1.617. `strong` at `#a6abb3` is a
+   more visible border than `#c9ced6` was, not a mid-grey one — the "floor" worry does not bite.
+
+   🚨 **What the move genuinely costs is the TEXT ladder, which deliberately did not move, and
+   nothing in the surface ladder can repay it.** `primary #0f1114` is untouched and still
+   13.3:1 on the new page. The two weaker text roles are not:
+
+   | foreground | on | before | after |
+   |---|---|---|---|
+   | `primary #0f1114` | page | 18.25 | **13.25** |
+   | `secondary #5d636c` | panel | 5.70 | **4.12** ⚠️ under AA 4.5 |
+   | `faint #8b919b` | page | 3.06 | **2.22** ⚠️ |
+   | `faint #8b919b` (`tab_menu_missing`) | hairline plate | 2.51 | **1.77** ⚠️ |
+   | `success #1a6b46` | page | 6.26 | 4.55 |
+   | `error #a32020` | page | 7.28 | 5.28 |
+   | `accent #1440c4` | page | 7.92 | 5.75 |
+
+   These numbers are set by a page James asked to lower against text he did not ask to darken,
+   so **there is no compression of the surface ladder that fixes them** — the only repair is to
+   darken the text ladder, which is three more spec roles and his call. Costed but not taken:
+   `#737983` (a uniform −24 on `faint`) is what would restore `dim` to its old 3.06:1.
+
+   **Four fields are functions of these steps and moved with them** (rule 4 below).
+   ⚠️ **Two of them had already gone stale**: `composer_edge_dead` and `timeline_scripted_fill`
+   are mixes "into the page", were computed against the spec's `#ffffff`, and the first
+   correction left them behind — a written derivation quietly false for a day. `panel_fill`
+   moved only because a test pinned it. New test
+   `every_light_plate_mixed_from_a_surface_is_recomputed_from_it` pins all three of the mixes
+   *and* the invariant that would have caught them without re-deriving anything: a plate mixed
+   into a surface may never be brighter than that surface.
+
+   **They are named constants rather than fifteen repeated literals.** The panel is five
+   fields, the hairline six, the strong border four; a third correction spelled as fifteen
+   hand-edits is a correction that lands on fourteen of them. Sharing a constant welds nothing
+   — every field still assigns independently and a fifth palette can part any of them — it only
+   stops one *step* of one ladder being two colours by accident. `term_bg` and
+   `term_scrim_tint` are the original reason the pattern exists: the scrim is laid over the
+   live backdrop at up to `SCRIM_FLOOR_LIGHT`, so a scrim left brighter than the page would
+   cover a *larger* area than the terminal with the exact glare being removed.
+
+   `the_light_page_stays_a_step_above_the_panel` pins the ordering, the minimum step, the
+   uniform offset and rule 4's premultiply; the ordering needed no guard while the page was
+   `#ffffff`, since nothing can be brighter than white.
 2. **States.** A state the spec names takes its named colour; a state it does not name comes
    from the palette's **text ladder**, never from a hue the spec never introduced. ⚠️ That is
    why **none of the three has an amber**: "a tool is running" is primary text, not
@@ -3766,28 +3815,55 @@ path silently breaks the three-products-simultaneously guarantee that
   direct render at that size, and Windows' own downscaler was never watched do it. The one
   thing that *is* measured rather than argued: the 16 px render was produced, magnified 16×
   and looked at, and it is not recognisable as the aperture mark.
-- 🚨 **Nobody has seen `#fafbfc` on James's display, and he is the only person who can say
-  whether it fixes what he was looking at.** The light page came down from `#ffffff` because
-  he saw glare in a running console; the replacement was **reasoned, not observed**. Everything
-  claimed for it is a claim about code: `cargo test -p organon-console --lib` is **605 green**
-  (604 before, plus `the_light_page_stays_a_step_above_the_panel`), `cargo test -p organon-core`
-  is **556 green**, `cargo check --features console-edition --bin organon-console` is clean, and
+- ✅ **The `#fafbfc` prediction came true, and it is worth recording as a hit rather than
+  quietly deleting.** That entry said: *"what it most likely does not establish is that the
+  change is big enough to matter … if James still sees glare, the honest answer is not to
+  squeeze the remaining units but to take the whole light ladder down together, which is a
+  re-spec of four roles he named and therefore his call."* He looked at it the same day and
+  said *"the white part is too white. Move it down to about a 0.85 V in the HSV system"* — the
+  exact remedy the ledger had named, at the exact scale it had declined to choose. The ledger
+  was right about the **direction** and right to leave the decision with him; what it got wrong
+  was the framing that made "2.35 % of HSV value" sound like a budget. It was never a budget on
+  the *page* — it was the distance to the panel, and the panel was always free to move.
+  ⚠️ **The general lesson: a headroom figure computed against a fixed neighbour is a fact about
+  the neighbour, not a limit on the thing being measured.** Quoting it as "the room available"
+  is what made a 1.18 % move look like half of everything possible when it was 3 % of what was
+  actually wanted.
+- 🚨 **Nobody has seen `#d7d8d9` on James's display either, and he is the only person who can
+  say whether it is right.** The whole light ladder is down a uniform 35 per channel, the page
+  landing at **V = 0.851**. Unlike `#fafbfc` this is arithmetic against a number he named
+  rather than a value someone reasoned toward, which is a better starting point and still not
+  an observation. Everything claimed for it is a claim about code: `cargo test -p
+  organon-console --lib` is **647 green** (646 before, plus
+  `every_light_plate_mixed_from_a_surface_is_recomputed_from_it`), `cargo test -p organon-core`
+  is **557 green**, `cargo check --features console-edition --bin organon-console` is clean, and
   `cargo check --tests -p organic-math-native --features console-edition` is clean. **That is
-  the whole claim: it compiles and the tests pass.** ⚠️ **What it most likely does not establish
-  is that the change is big enough to matter.** The ladder allows the page to fall only 2.35 %
-  of HSV value before it collides with the panel, and this spends about half of that — a
-  **1.18 %** reduction. If James still sees glare, the honest answer is not to squeeze the
-  remaining units (the step is already halved) but to take the whole light ladder down
-  together, which is a re-spec of four roles he named and therefore his call. Worked numbers
-  for that option, preserving today's gaps exactly, are in the PR that made this change. Also
-  unverified: (1) that the 3-unit page→panel step survives a real display's gamma and the
-  composer plate and status strip still read as sitting *on* the page rather than merging into
-  it — they carry `#e2e5e9` hairlines doing most of that work, but the fill step is the
-  reinforcement and nobody has looked; (2) that `panel_fill`'s matching move is invisible,
-  since a Tier 5 patch panel only appears over a live backdrop and none was running; (3) that a
-  TUI's own light colour scheme still reads correctly against a page that is no longer the pure
-  white `ansi16`'s GitHub Light lineage was chosen against — the shift is 3 units and the
-  foregrounds did not move, so this is noted rather than suspected.
+  the whole claim: it compiles and the tests pass.**
+
+  ⚠️ **The most likely complaint this time is the opposite one: that the page reads as grey
+  rather than as paper.** `V = 0.851` is pale grey card stock, not white, and §1.4 says so in
+  as many words so that nobody later "fixes" it back toward white. If it is too far, the number
+  to move is `LIGHT_PAGE` and the other three follow by the same offset — the constants exist
+  for exactly that.
+
+  ⚠️ **The one thing that is measured and unfavourable is text contrast**, and it is recorded
+  in §1.4 as a table rather than left to be discovered. `secondary #5d636c` on the panel falls
+  5.70 → **4.12**, under AA's 4.5 for normal text; `faint #8b919b` falls 3.06 → **2.22** on the
+  page and 2.51 → **1.77** on a hairline plate (it was already sub-AA before this change).
+  Primary text is unaffected at 13.3:1. **This cannot be fixed from the surface side** — the
+  repair is a darker text ladder, which is three more roles James specified, so it is named
+  here and not taken. `#737983` is what would restore `faint` to what it had.
+
+  Also unverified: (1) that the 3-unit page→panel step, unchanged in absolute terms, still
+  reads on a real display now that both sides are darker — the arithmetic says the *ratio*
+  improved (1.026 → 1.030) but nobody has looked; (2) that `panel_fill`'s matching move is
+  invisible, since a Tier 5 patch panel only appears over a live backdrop and none was running;
+  (3) that a TUI's own light colour scheme still reads correctly against a page 35 units below
+  the pure white `ansi16`'s GitHub Light lineage was chosen against — the foregrounds did not
+  move, and this shift is an order larger than the 3 units the last entry called negligible, so
+  here it is a genuine open question rather than a note; (4) that the recomputed
+  `timeline_scripted_fill` still reads as a warning banner — its mark's contrast falls
+  5.30 → 3.84 against it.
 - 🚨 **Nobody has seen a collapsed transcript, so whether it actually *reads* better is
   unverified — and that is the entire point of the change.** Card density was designed against
   a screenshot and a sentence, and everything claimed for it here is a claim about code:
