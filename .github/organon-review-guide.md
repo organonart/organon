@@ -39,7 +39,10 @@ issues" when that's the truth.
   a param block, a material, or a world layer, **`ARCHITECTURE.md` must be updated
   in the same PR** (tables, counts, file map). A Stop hook enforces this locally;
   check it actually happened. Flag as **should-fix** if missing.
-- Meaningful changes should add a `CHANGELOG.md` entry.
+- Meaningful changes should add a **`changelog.d/` fragment** — one new file,
+  `YYYY-MM-DD-<branch-slug>.md`, in `CHANGELOG.md`'s house style. ⚠️ An entry written
+  directly into `CHANGELOG.md` is not wrong (the release step absorbs it), but it
+  reintroduces the shared insertion point every other open branch conflicts on, so say so.
 
 **Rendering / shaders:**
 - WGSL is validated offline by `tests/wgsl.rs` (naga) — binding indices, uniform

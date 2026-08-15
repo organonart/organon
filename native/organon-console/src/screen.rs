@@ -233,11 +233,14 @@ pub const CHORD: egui::Key = egui::Key::F11;
 /// A toggle is also the worst possible verb to repeat — an absolute `full` would simply be
 /// re-applied and the change guard would swallow it.
 ///
-/// ⚠️ **This is deliberately NOT fixed for the `⌘` chords in the same change.** They read the
-/// same event without the flag and have since they were written, so a held `⌘T` presumably
-/// opens a run of tabs — but that is existing behaviour on a different key table, its right
-/// answer may not be "ignore the repeat" (an autorepeating `⌘1` is arguably fine), and nobody
-/// has reported it. It is filed separately rather than folded in here.
+/// ⚠️ **This was deliberately NOT fixed for the `⌘` chords in the same change**, on the grounds
+/// that they are a different key table whose right answer may not be "ignore the repeat" (an
+/// autorepeating `⌘1` is arguably fine). ✏️ **That held up.** [`crate::tabs::command_key_action`]
+/// takes the flag now too, and answers it the *opposite* way for half its chords: `Switch`
+/// streams on repeat — holding `⌘⇧]` should keep cycling, and repeating `⌘1` means nothing —
+/// while `New` and `Close` refuse it. One blanket rule across both tables would have been wrong
+/// in one of them, which is the argument for resolving a shared input flag **per key table**
+/// rather than once at the read site.
 pub fn screen_key(key: egui::Key, mods: egui::Modifiers, repeat: bool) -> Option<ScreenCmd> {
     (!repeat && key == CHORD && mods.matches_exact(egui::Modifiers::NONE))
         .then_some(ScreenCmd::Toggle)

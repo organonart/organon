@@ -3703,12 +3703,22 @@ impl Console {
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
+            // `repeat` is forwarded rather than filtered here: which chords a held
+            // key may stream is `command_key_action`'s decision, taken per action
+            // and tested there. `action.is_none()` bounds this to one per frame,
+            // which is a rate and not a total — autorepeat is slower than the frame
+            // rate, so every repeat that arrives gets its own frame to act in.
             ctx.input(|i| {
                 for ev in &i.events {
-                    if let egui::Event::Key { key, pressed: true, modifiers, repeat, .. } = ev {
+                    if let egui::Event::Key { key, pressed: true, repeat, modifiers, .. } = ev {
                         if action.is_none() {
-                            action =
-                                tabs::command_key_action(*key, *modifiers, strip, default_harness);
+                            action = tabs::command_key_action(
+                                *key,
+                                *modifiers,
+                                *repeat,
+                                strip,
+                                default_harness,
+                            );
                         }
                         // 🚨 **Read here — beside the ⌘ chords, from the raw frame events,
                         // before a single panel is laid out — and that placement is what makes
@@ -3731,8 +3741,10 @@ impl Console {
                         // `pressed: true` events, so without it a resting finger would flip the
                         // window once per repeat and the state on release would come down to
                         // parity. `screen_key` refuses them; its own doc says why this chord
-                        // needs it more than the `⌘` ones above, which read the same event and
-                        // deliberately keep their existing behaviour.
+                        // needs it more than the `⌘` ones above — which now take the flag too,
+                        // and answer it differently: `command_key_action` streams `Switch` on
+                        // repeat and refuses it only for `New`/`Close`. Two key tables, one
+                        // event, opposite right answers, which is why they resolve separately.
                         if screen_cmd.is_none() {
                             screen_cmd =
                                 organon_console::screen::screen_key(*key, *modifiers, *repeat);
