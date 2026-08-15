@@ -3680,7 +3680,7 @@ impl Console {
                         // typing.
                         //
                         // ⚠️ Deliberately **not** consumed out of `i.events`, unlike the state-
-                        // conditional Escape ownership §3's ledger reserves. Nothing downstream
+                        // conditional Escape ownership §2's portal row reserves. Nothing downstream
                         // wants this key: `term::encode_key` returns `None` for every function
                         // key, so the PTY receives nothing whether or not it is removed, and
                         // both conversation-side key tables answer `Ignore`. All three are
@@ -3771,6 +3771,20 @@ impl Console {
                                 theme,
                                 theme_name,
                                 form,
+                                // 🚨 **The one seam that is not filled yet.**
+                                // [`conversation_view::OrganonDraw`] is where an Organon
+                                // editor panel's body comes from, and this crate is the only
+                                // one that could supply it — the console lib cannot see
+                                // `OrganicMathParams`. It is unreachable today for a reason
+                                // that is not about drawing: every one of Organon's panels
+                                // writes through a `nih_plug::ParamSetter`, and there is **no
+                                // public way to write a param from outside `nih_plug`**
+                                // (`panels::Status::Live` carries the detail). So no panel is
+                                // `Live`, this closure is never called, and the view draws the
+                                // element's frame with a line saying so — rather than a panel
+                                // whose knobs do nothing, which is the failure `/panel` was
+                                // retired for.
+                                &mut |_ui, _panel| {},
                             );
                             surface_requests = out.surfaces;
                             // Applied after the frame, not here: `theme` is borrowed from
@@ -4962,10 +4976,12 @@ mod cli_tests {
     ///
     /// ⚠️ James's own sketch of the row named eight verbs
     /// (`surface|theme|posture|background|rig|patch|portal|camera`). The panel deliberately
-    /// shows the **true** list, which is twelve: `block`, `camera.read` and `help` are
+    /// shows the **true** list, which is thirteen: `block`, `camera.read` and `help` are
     /// typeable, so hiding them would be the surface disagreeing with the registry — a
-    /// second vocabulary, in the one place that exists to prevent one. `screen` is the
-    /// twelfth, and it earned its place here the moment it became typeable.
+    /// second vocabulary, in the one place that exists to prevent one. `screen` and `organon`
+    /// are the twelfth and thirteenth, each earning its place the moment it became typeable —
+    /// and they arrived on separate branches, which is what made the hidden count below merge
+    /// wrong. Update the number here in the same breath as the assertions.
     ///
     /// ⚠️ `cargo check --tests --features console-edition` only in this session; CI executes
     /// it — the same standing caveat the sibling test above carries.
@@ -4979,12 +4995,19 @@ mod cli_tests {
         assert_eq!(
             compact_line(&all, 0, 200),
             "[background] | rig | theme | posture | screen | block | patch | portal | camera | \
-             camera.read | surface | help"
+             camera.read | surface | help | organon"
         );
-        // 110 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 110);
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +10");
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 120);
+        // 🚨 **This line is why the test is a witness rather than a specification, and it very
+        // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
+        // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
+        // to look at, while the combined table is thirteen verbs and the true answer is `+11`.
+        // A hidden count is the one assertion here that a merge can silently invalidate: the
+        // row above conflicts loudly because both sides edited the same words, and this one
+        // does not because both sides happened to write the same number for different reasons.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +11");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
