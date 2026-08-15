@@ -41,7 +41,7 @@ path has no closed value space — so the command panel never has a lone candida
 complete, and autorun is never offered the line in the first place. The field is what makes
 that a stated property rather than a coincidence of the argument's kind.
 
-## The same merge broke a second thing, and only the first one was a compile error
+### The same merge broke a second thing, and only the first one was a compile error
 
 🚨 **Repairing the build revealed `the_real_table_says_which_verbs_may_run_without_an_enter`
 had never run against a table containing `media`.** That test pins the reversal column of the
