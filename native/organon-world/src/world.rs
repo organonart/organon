@@ -705,6 +705,27 @@ impl PerformerLink {
         if self.tx.is_some() {
             return;
         }
+        // 🚨 organon#49 T5b — AN EMPTY CATALOG REFUSES, LOUDLY, INSTEAD OF SERVING A GUTTED
+        // PROMPT. `organon-visual`'s manifest names this as the failure with no error attached
+        // to it: hand `World::new` an empty catalog and everything still compiles and runs, the
+        // model just silently loses every parameter it is allowed to touch. That is precisely
+        // the shape of bug a host that does not run the Performer at all — Organon Console —
+        // would introduce by passing `Vec::new()` and moving on.
+        //
+        // So the absence is made explicit here rather than trusted to a comment at each call
+        // site. A host with no catalog does not get a crippled Performer; it gets none, and the
+        // log says why. ⚠️ Inert for every host that passes a real catalog (the visual, the
+        // standalone, the plugin) — `core_catalog()` is never empty, so this never fires there.
+        if self.catalog.is_empty() {
+            mind_log::append(
+                mind_log::MindEvent::Brief,
+                "agent",
+                "no worker: this host built its World with an empty catalog, so the Performer \
+                 has no vocabulary to actuate. Refusing rather than prompting the model with \
+                 nothing (organon#49 T5b).",
+            );
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let lane = self.lane.clone();
         let reply = self.reply.clone();
