@@ -296,7 +296,7 @@ fn frame(
                 // second time through `content_margin` and every measurement would be taken at
                 // a width neither the caller nor the table names. Posture is not what this
                 // bench varies; width is.
-                let _ = scrollback(ui, pane, images, theme, &Form::TERMINAL, &mut |_, _| {});
+                let _ = scrollback(ui, pane, images, &Default::default(), theme, &Form::TERMINAL, &mut |_, _| {});
             });
         });
     });

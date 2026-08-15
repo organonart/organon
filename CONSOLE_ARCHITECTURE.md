@@ -4133,13 +4133,139 @@ row reserves the phrase *full screen* for a still-unbuilt portal state — the p
 whole window, after `immersive`. Two different rectangles can each be described as going full
 screen, so this one says which.
 
+### 1.13 The exhibit — a picture and a document, from a path a human typed
+
+`/media <path>` puts a file in a conversation tab. Two kinds — `image` (PNG, JPEG) and
+`markdown` — added to `organon_core::kind::Kind` beside `scene` and `panel`, so the console's
+one vocabulary grew rather than being sidestepped. Several paths in one line make **one exhibit
+with several items**: `organon_core::exhibit::Exhibit` is a kind, a non-empty list of items, and
+nothing else. That shape is day-one rather than speculative — three generated candidates
+arriving as one three-item exhibit is the case it exists for, and retrofitting "several items"
+later means touching every kind written before it (#56 T4).
+
+#### 🚨 A media kind names no file, and that is why it could join `Kind` at all
+
+The patch wire is `patch <up> <rows> [kind]` — three positional fields, no payload slot
+(`console_ops::parse_console_op`). That is not an omission; it is the patch protocol's central
+property, that *a program which can print can ask for a rectangle without being able to drive
+the machine*. **A kind carrying a path would end that outright**: anything able to append a line
+to `$TMPDIR/<ns>-console.txt` could make the console open any file the user can read.
+
+So `Kind::Image` does not mean "this file". It means **the exhibit the human loaded** — exactly
+as `Kind::Scene` means "the scene the console is rendering" rather than naming a generator, and
+exactly as a `panel` patch's `BlockPanel` is constructed console-side from a wire word carrying
+no description. Both placements build their payload from console-side state.
+
+⚠️ **`/media` is therefore a view-lane verb and must stay one.** It is deliberately absent from
+`console_specs()` and so from the MCP catalog: an agent cannot call it. #56 leaves *how an
+exhibit reaches the console* open between an agent verb and the console recognising a path in a
+tool result; **this tier picks neither**, because both hand path selection to something that is
+not the person at the keyboard. The absence is the decision, not an oversight, and
+`registry::VERB_MEDIA` carries the reason at the definition.
+
+#### The terminal placement is honest rather than complete
+
+`organon console patch 0 4 image` claims its rows and draws one line: *an image exhibit is shown
+in a conversation tab, not a terminal patch*.
+
+📌 **That is not a media-shaped exception.** The invariant
+`every_shared_kind_has_exactly_one_patch_arm` defends is that the CLI cannot accept a kind word
+this front-end then **silently** ignores — its own doc says the failure is one that "dispatches,
+records a success, and paints nothing". A notice in the claimed rows is not that failure. A
+companion test, `every_kind_either_draws_itself_or_says_why_not`, now pins the other half: a
+media arm answering `None` there would claim rows and draw nothing in them, satisfying the first
+test on paper and breaking it in the pane.
+
+⚠️ **Why the picture is a conversation placement in this tier.** A scene patch works because
+there is exactly *one* scene texture and every scene quad samples it through its rows
+(`term_view::draw`'s `patch_image`). An exhibit has a texture **per item**, so painting one in a
+character grid needs a per-patch texture ledger keyed on something a terminal pane does not have
+— there is no `ElementId` in a grid — plus a second eviction budget and a `draw` signature
+change. That is #56 T5/T6 work. T4's stated bar is *"an image and a markdown document render
+inline in a conversation tab"*, and that is what landed.
+
+#### Nothing touches the frame thread
+
+Opening a file and decoding a JPEG are both unbounded in the only sense that matters — they
+depend on a disk and on somebody else's bytes — so `console_main::service_exhibits` never calls
+either. One thread per item, results on an `mpsc` channel, and a frame that only ever
+**collects**. This is the first place in the console that rule has needed enforcing; everything
+else here is synchronous and in-process.
+
+The visible consequence is one or more frames of `reading...`, the same deferral a conversation
+surface already shows. 🚨 **`Failed` is a state of its own, not a missing entry.** A blank
+rectangle and a file that will never decode must not look alike; collapse them and a bad path
+reads as "still loading" for the rest of the session. The two plates differ in wording and in
+colour, and a `Failed` entry is what stops a broken file being re-read every frame forever.
+
+#### Refusals name the file, and known-but-unbuilt is its own answer
+
+`exhibit::KNOWN_UNBUILT` is the table that makes this more than an extension check. An `.mp3` is
+refused **by name** with its real reason — *audio needs a playback device and a player, not just
+a decoder* — rather than getting the answer a typo gets. PDF, video and LaTeX carry their own.
+A refusal that cannot tell *"I do not know this extension"* from *"I know exactly what this is
+and have not built it"* is a dead end for the person reading it, and both those sentences are
+now pinned by tests.
+
+⚠️ **There is deliberately no `media` kind**, and `kind.rs`'s refusal test asserts the word
+resolves to nothing. "images/mp3/pdf/etc" is three unrelated engineering problems wearing one
+word; a kind named after their union would promise all three from the arm that delivers one.
+
+#### The two tables that can silently disagree
+
+`image` is built `default-features = false`, so an extension in `exhibit::IMAGE_EXTENSIONS` with
+no matching cargo feature is **not a compile error anywhere** — it is a file the composer
+accepts, dispatches, reads off the disk, and only then fails to decode.
+`native/tests/exhibit_formats.rs` encodes and decodes every offered extension **in memory** and
+fails the build if the two drift. No fixture is committed, on #56 T4's own bar: a repository that
+gains sample media never loses it.
+
+#### The budget is the surfaces', not a second one
+
+`surfaces_to_evict` is now **generic over its key** — a conversation surface is keyed
+`(pane, element)`, an exhibit item `(element, item)`, and the policy (least-recently-*requested*
+first, ties broken down the request list) is a fact about how a person reads a scrollback that is
+identical for both. `MAX_EXHIBIT_TEXTURES` is a separate *ceiling* from `MAX_SURFACE_TEXTURES`
+because the two ledgers fill differently — an exhibit can arrive with several items in one
+command, and a pooled cap would let a three-item gallery evict the surface a panel is driving —
+but there is only one policy.
+
+🚨 **Documents are budgeted too, and by bytes rather than by count.** The first cut of this tier
+capped only pictures, reasoning that a `String` costs no GPU. That is true and beside the point,
+and #86's review caught it: a document that is never evicted is held for the rest of the session,
+so a long conversation that opened a dozen READMEs keeps every one alive behind cards nobody can
+see. `documents_to_evict` is the weighed twin of `surfaces_to_evict` — same rule, same tie-break,
+**pure and tested** — and it is a separate function rather than a cap computed for the counting
+one because *how many entries fit* is unanswerable in advance when the entries are different
+sizes: dropping the two oldest might free 4 KB or 8 MB, and only the running total knows when to
+stop. The property that falls out, and that a test pins, is that **one oversized document goes
+alone** rather than taking its small, freshly-read neighbours with it.
+
+⚠️ **`ExhibitContent::Document` holds an `Arc<str>`, and that is a frame-cost decision.** The
+console hands the whole `ExhibitContents` map to the view on *every* frame, exactly as it hands
+over `SurfaceImages` — but that map holds `TextureId`s, which are `Copy`. A `String` here meant a
+moderately-sized README being deep-copied sixty times a second for as long as it was held, in a
+file whose §1.7 measurement exists precisely because frame time is load-bearing. The `Arc` makes
+that clone a refcount bump. Also from #86's review.
+
+Every eviction prints a line naming what went and why (`[exhibit]`), on `free_surface`'s rule and
+for its reason: *a silently dropped texture reads as "the picture is still there"*. **A document
+says so too**, because a re-read nobody was told about is how a document that quietly reloads on
+every scroll looks like a console that is merely slow. It drops the
+**entry**, not only the texture, which is what makes the next frame ask again — an item is **a
+reference, never bytes**, so an eviction costs a re-read and never costs the picture. Pictures
+are scaled to a 2048 px long edge before upload (a phone photograph is 4000 px and would be a
+64 MB texture, against a conversation-surface budget of ~23 MB), and a file over 64 MB is refused
+**before** the decoder sees it, because a decoder handed a 500 MB PNG allocates its full pixel
+buffer before anything can object.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
 |---|---|---|
 | Viewport interaction + provenance (T2+) | T1's pane (`console_main.rs::ScenePane` + `app.rs::SceneView`); camera input rides `scene_input`'s region pattern — never a second gesture vocabulary. The world gate is already `any(mind, shell)`; `World` stays unforked (#618 owns its extraction) | Console #6 |
 | Content-addressed artifact store + lifecycle UI + evidence viewers | `session::Artifact` (metadata landed in #4 T1); payloads beside the log in the session dir | Console #4 T2+ |
-| Rich media in the console — the exhibit, off-thread decode, a texture budget, placement and promotion | **T1 landed**: `organon_core::kind::Kind` is the one vocabulary both front-ends resolve from, and `ArtifactContent::kind()` ties this crate's arms to it. The next kind is a variant there plus a renderer — never a second registry, and never a media-shaped exception to this one. ⚠️ The two spellings for the engine-drawn kind (`scene` on the wire, `/surface` in the composer) survive T1 on purpose; §1.1 states what unifying them costs | #48 |
+| Rich media — **placement and promotion**, the gallery, and the expensive kinds | **§1.13 landed T4**: two media kinds on the one `Kind` vocabulary, `/media` on the view lane, off-thread reads, `Failed` as its own state, and the surfaces' own eviction policy made generic over its key. What is left is #56 T5 (the ladder *inline / docked / full screen*, on T3's animator) and T7's expensive kinds — audio, PDF, LaTeX, video, each behind an opt-in feature on the `--with-llm` precedent. ⚠️ **Two things this tier deliberately did not decide.** *How an exhibit reaches the console* is still open and still picks neither of #56's two options — a path comes from a typed `/media` line and nothing else, which is why the verb is absent from the MCP catalog; anything that changes that is changing a security property, not adding a convenience. And a multi-item exhibit currently draws its items **stacked**, because a scroller or a tap-to-maximise grid is a *placement* decision and placement is T5. ⚠️ The terminal patch placement of a media kind is a notice, not a picture — §1.13 says what painting one there would actually cost | #56 T5, T7 |
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Console #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `ConsoleDispatch` onto the audited drain, plus the one in-process read §1.3 adds) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
@@ -4156,6 +4282,32 @@ path silently breaks the three-products-simultaneously guarantee that
 `edition.rs`'s pairwise-distinct-namespace test pins.
 
 ## 3. Honesty ledger
+
+- 🚨 **The exhibit (§1.13) is code that compiles, runs, and has never been looked at.**
+  `cargo test -p organon-console --lib` is **678 green** (672 before), `cargo test -p organon-core`
+  is **593 green** (580 before), `native/tests/exhibit_formats.rs` adds 2, and both `cargo check`
+  legs are clean — the warning count on the console binary is **179 before and after**, so this
+  change adds none.
+  ✅ **The binary was built and launched**, which the four-leg bar does not do and which is in this
+  ledger because a change once passed all four and then died on startup with a stack overflow. It
+  ran a steady frame loop for 40 s under Xvfb on software Vulkan (lavapipe) with no panic and no
+  error output. That clears *startup*, and only startup.
+  🚨 **No picture has ever been on a screen.** This session had no GPU and no hand: nothing typed
+  `/media`, no PNG was decoded by the running binary, no texture was uploaded or evicted, and
+  nobody has seen whether an image in half a window is useful — which is a question only James can
+  answer. The decode path is exercised only by `exhibit_formats.rs`, which proves the *codec* is
+  present in this build, in memory, and says nothing about the console.
+  ⚠️ **The design makes this un-drivable from outside on purpose, and that is worth knowing before
+  someone tries.** `/media` is a view-lane verb absent from the sidecar and the MCP catalog
+  precisely so that no process other than the person at the keyboard can hand the console a path
+  (§1.13). The consequence is that there is no headless route to summon an exhibit — the first
+  real test is a hand in a window, and that is the cost of the security property rather than a
+  gap in the tests.
+  📌 Specifically **unverified**: that a decoded picture is the right way up and the right colour
+  (the sRGB storage / UNORM sample pair is matched to `make_surface_texture` by reading, not by
+  looking); that the eviction line fires at the cap in a real session; that `reading...` is brief
+  enough to feel like loading rather than breakage; and that Markdown's four line kinds are
+  legible at `EXHIBIT_HEIGHT` in a real card.
 
 - 🚨 **`/organon look surface` opens Organon's real Surface controls; the other twenty-four
   panels still open a line saying they have not been transplanted.** ✏️ **Corrects the entry

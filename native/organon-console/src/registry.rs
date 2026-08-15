@@ -126,6 +126,23 @@ pub const VERB_THEME: &str = "console.theme";
 /// out of the dispatch payload on this side, declared by `console_main`'s spec on the other.
 pub const THEME_ARG: &str = "name";
 
+/// `/media` — show a file from disk in this conversation.
+///
+/// 🚨 **A view-lane verb, and it must stay one.** The console lane writes a sidecar line, and a
+/// sidecar is a *text file any process on the machine can append to* — putting a path on it
+/// would mean any such process could make the console open any file the user can read. That is
+/// the property `doc/console_patch_protocol.md` is built around and the reason
+/// `organon_core::kind::Kind`'s media arms name no file. A path reaches the console from the
+/// composer, where a human typed it, and from nowhere else.
+///
+/// ⚠️ **So this verb is deliberately absent from `console_specs()` and therefore from the MCP
+/// catalog** — an agent cannot call it. #56 leaves "how an exhibit reaches the console" open
+/// between an agent verb and the console sniffing tool results; this tier picks neither, and
+/// the absence is the decision rather than an oversight.
+pub const VERB_MEDIA: &str = "view.media";
+/// The argument `/media` carries its paths in: one or more, separated by spaces.
+pub const MEDIA_ARG: &str = "path";
+
 /// `/organon` — put one of Organon's own editor panels into this conversation.
 ///
 /// A view-lane verb, like [`VERB_SURFACE`]: it acts on *this* transcript and never leaves the
@@ -501,6 +518,24 @@ fn view_entries() -> Vec<Entry> {
             name: VERB_HELP.into(),
             doc: "List every command this console answers".into(),
             args: Vec::new(),
+            lane: Lane::View,
+            narrow: None,
+        },
+        Entry {
+            name: VERB_MEDIA.into(),
+            // The doc line is where a person learns what this build shows, so it names the
+            // extensions from `exhibit`'s own table rather than restating them — the
+            // `console.background` arrangement, for its reason.
+            doc: format!(
+                "Show a file here: {}. Several paths make one exhibit",
+                organon_core::exhibit::ALL_EXTENSIONS.join(", ")
+            ),
+            // ⚠️ **`Text`, not `Choice`.** A path has no closed value space, so there is
+            // nothing for the command panel to complete against and nothing for
+            // `validate_args` to check — which is exactly why the *refusal* has to be good:
+            // `exhibit::Exhibit::resolve` is the only gate, and it is the one that names the
+            // file and says what would have worked.
+            args: vec![ArgSpec { name: MEDIA_ARG.into(), kind: ArgKind::Text, required: true }],
             lane: Lane::View,
             narrow: None,
         },
@@ -1310,7 +1345,7 @@ mod tests {
         }
         assert_eq!(
             reg.verbs(),
-            ["background", "patch", "camera", "camera.read", "surface", "help", "organon"]
+            ["background", "patch", "camera", "camera.read", "surface", "help", "media", "organon"]
         );
     }
 
@@ -1322,7 +1357,7 @@ mod tests {
         let console: Vec<&str> = reg.verbs_in("console").iter().map(|e| e.verb()).collect();
         assert_eq!(console, ["background", "patch", "camera", "camera.read"]);
         let view: Vec<&str> = reg.verbs_in("view").iter().map(|e| e.verb()).collect();
-        assert_eq!(view, ["surface", "help", "organon"]);
+        assert_eq!(view, ["surface", "help", "media", "organon"]);
         assert!(reg.verbs_in("nothing").is_empty());
 
         // The third ring is the argument's own value space — already closed, already
