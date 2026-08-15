@@ -694,7 +694,9 @@ pub struct ConversationPane {
     history_at: Option<usize>,
     /// Something replaced the composer's text wholesale, so the caret has to be put back at
     /// its end. Set by every site that rewrites the line — a Tab, a completion, a recall —
-    /// and consumed by [`composer`] on the next frame it draws.
+    /// and drained by [`composer`] at the **end of the frame that set it**, which is why the
+    /// two sites before the box and the two after it can share one flag. ⚠️ It never survives
+    /// a frame: a request that outlived its frame is exactly the `/hxelp` defect.
     want_caret: bool,
     /// What the last command said back, held for the band above the composer. See
     /// [`PanelReceipt`] — this is the console's answer to a receipt that scrolls off the
@@ -1763,7 +1765,7 @@ impl ConversationPane {
         self.composer = candidate.completion.clone();
         self.palette_selected = 0;
         self.palette_dismissed = false;
-        // A rewritten line leaves egui's caret wherever it was — see `composer_box`.
+        // A rewritten line leaves egui's caret wherever it was — see `put_caret_at_end`.
         self.want_caret = true;
         // The answer to the previous command is not an answer to this line.
         self.receipt = None;
@@ -5504,36 +5506,67 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme
         composer_keys(ui, pane);
     }
     // Three disjoint fields, borrowed separately, so the box can own the text while
-    // `submit` still needs the whole pane afterwards.
-    let submit = composer_box(
+    // `submit` still needs the whole pane afterwards. The id comes back out because the
+    // caret is put right at the end of this function — see `put_caret_at_end`.
+    let (submit, box_id) = composer_box(
         ui,
         &mut pane.composer,
         live,
         &mut pane.want_focus,
         &mut pane.composer_height,
-        std::mem::take(&mut pane.want_caret),
         theme,
     );
     if submit {
         pane.submit(theme, theme_name);
-        return;
+    } else {
+        // 🚨 **Insertion or deletion, decided here and nowhere else.** `notice_edit` above
+        // synced `composer_seen` to the line as it stood at the *start* of this frame, and the
+        // box has just written this frame's keystroke into `composer` — so this is the one
+        // point in the pass where both halves of the edit exist. See `completion_held`.
+        pane.completion_held =
+            completion_held(&pane.composer_seen, &pane.composer, pane.completion_held);
+        // 🚨 **Read here, before `palette_complete` rewrites the line.** This is "did the hand
+        // touch the box this frame", and it is the whole of the settled-frame rule below;
+        // asked after the completion it would be true of every frame a completion ran on,
+        // which is the opposite of what it means. See `palette_autorun`.
+        let edited = pane.composer_seen != pane.composer;
+        // Both after the box, so they see the line as it stands *after* this frame's typing.
+        // Completing first: `autorun` asks whether the line is now a whole command, and a line
+        // one completion short of being one is exactly the case that has just been fixed.
+        palette_complete(pane);
+        palette_autorun(ui.ctx(), pane, edited, theme, theme_name);
     }
-    // 🚨 **Insertion or deletion, decided here and nowhere else.** `notice_edit` above synced
-    // `composer_seen` to the line as it stood at the *start* of this frame, and the box has
-    // just written this frame's keystroke into `composer` — so this is the one point in the
-    // pass where both halves of the edit exist. See `completion_held`.
-    pane.completion_held =
-        completion_held(&pane.composer_seen, &pane.composer, pane.completion_held);
-    // 🚨 **Read here, before `palette_complete` rewrites the line.** This is "did the hand
-    // touch the box this frame", and it is the whole of the settled-frame rule below; asked
-    // after the completion it would be true of every frame a completion ran on, which is the
-    // opposite of what it means. See `palette_autorun`.
-    let edited = pane.composer_seen != pane.composer;
-    // Both after the box, so they see the line as it stands *after* this frame's typing.
-    // Completing first: `autorun` asks whether the line is now a whole command, and a line
-    // one completion short of being one is exactly the case that has just been fixed.
-    palette_complete(pane);
-    palette_autorun(ui.ctx(), pane, edited, theme, theme_name);
+    // 🚨 **LAST, and that is the whole of the caret fix.** Every site that can rewrite the
+    // line wholesale sets `want_caret` — the arrows' history walk and Tab's accept before the
+    // box, the self-completion and autorun's accept after it — so the only place that can see
+    // *all* of them is the end of the pass. Draining it here puts the caret at the end of the
+    // line on the **same frame the line was rewritten**, so the next character typed lands
+    // where a human is looking. ⚠️ Draining it into `composer_box` instead is what produced
+    // `/hxelp`: the box runs before the completion does, so it could only ever honour the
+    // *previous* frame's request, and by then this frame's keystroke had already been placed
+    // at the stale index.
+    if std::mem::take(&mut pane.want_caret) {
+        put_caret_at_end(ui.ctx(), box_id, &pane.composer);
+    }
+}
+
+/// Put egui's caret at the end of the composer's text.
+///
+/// 🚨 **This is state written *between* frames, which is why it works.** egui's `TextEdit`
+/// keeps its cursor as an index of its own, loaded at the top of the widget and stored at the
+/// bottom; a completion that replaces `/h` with `/help` leaves that index at 2. Writing the
+/// state after the widget has run means the *next* frame's `TextEdit` loads a caret already at
+/// the end, so the next character typed appends. Writing it before the widget runs would be
+/// overwritten by the widget itself.
+///
+/// ⚠️ **No state, no caret, no error.** `load_state` answers `None` until the box has drawn at
+/// least once — a dead pane, or the very first frame — and there is nothing to correct in that
+/// case, so the miss is silent by construction rather than by suppression.
+fn put_caret_at_end(ctx: &egui::Context, id: egui::Id, text: &str) {
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return };
+    let end = egui::text::CCursor::new(text.chars().count());
+    state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::one(end)));
+    state.store(ctx, id);
 }
 
 /// Who owns Up and Down this frame.
@@ -5826,10 +5859,12 @@ fn autorun_enabled(var: Option<&str>) -> bool {
 ///
 /// - The completed line is **drawn at least once** before it disappears. Firing on the same
 ///   frame as the keystroke means the human never sees what ran.
-/// - §1.9's one-frame caret window becomes a window in which a keystroke **cancels** the fire
-///   rather than racing it. Typing `su` fast used to be `/s` → fire, with the `u` landing in
-///   whatever the composer became; now the `u` arrives on the frame the fire was waiting for,
-///   re-asks the palette, and the answer is simply different.
+/// - A keystroke arriving while the fire is pending **cancels** it rather than racing it.
+///   Typing `su` fast used to be `/s` → fire, with the `u` landing in whatever the composer
+///   became; now the `u` arrives on the frame the fire was waiting for, re-asks the palette,
+///   and the answer is simply different. ⚠️ This is a separate mechanism from the caret, which
+///   `put_caret_at_end` puts at the end of the line on the rewrite's own frame — the wait is
+///   about *when a command runs*, not about where the next character goes.
 ///
 /// ⚠️ **A settled frame has to be made to happen.** egui repaints on input, so on a keystroke
 /// that settles the line there may be no next frame until something else moves the mouse — and
@@ -5901,18 +5936,21 @@ fn palette_autorun(
 /// consequence when the panel is *shut*: Tab now indents the message rather than moving
 /// focus, which is what a text box does everywhere else.
 ///
-/// `take_caret` puts the cursor at the end of the text. A completion replaces the whole line,
-/// and egui's cursor is an index it keeps itself — leave it alone after `/th` becomes
-/// `/theme ` and the next character lands in the middle of the word.
+/// Returns whether this frame asked to send, **and the `TextEdit`'s id**. The id is the one
+/// thing about the widget its caller cannot derive: a completion replaces the whole line and
+/// egui's cursor is an index it keeps itself, so somebody has to put that cursor back at the
+/// end afterwards. This box deliberately knows nothing about completions, so it hands out the
+/// id and [`composer`] does it — see [`put_caret_at_end`]. ⚠️ Doing it *in here* is what this
+/// function used to do, and it could not work: the box runs before the completion does, so the
+/// only request it could honour was the previous frame's.
 fn composer_box(
     ui: &mut egui::Ui,
     text: &mut String,
     live: bool,
     want_focus: &mut bool,
     measured: &mut f32,
-    take_caret: bool,
     theme: &Theme,
-) -> bool {
+) -> (bool, egui::Id) {
     let row = ui.text_style_height(&egui::TextStyle::Monospace);
     // The floor is what makes the box big before anything is in it; the ceiling is what
     // stops a pasted essay from eating the scrollback.
@@ -5933,7 +5971,7 @@ fn composer_box(
                 .inner_margin(Margin::symmetric(COMPOSER_PAD_X, COMPOSER_PAD_Y))
                 .begin(ui);
 
-            let (submit, focused) = {
+            let (submit, focused, id) = {
                 let ui = &mut framed.content_ui;
                 ui.set_width(ui.available_width());
                 // Fill the reserved band even when the text has just shrunk, so the plate
@@ -5972,20 +6010,6 @@ fn composer_box(
                             response.request_focus();
                             *want_focus = false;
                         }
-                        // After the widget has stored its own state, so this wins. The
-                        // completion already replaced the text; this is only the cursor
-                        // catching up with it.
-                        if take_caret {
-                            if let Some(mut state) =
-                                egui::TextEdit::load_state(ui.ctx(), response.id)
-                            {
-                                let end = egui::text::CCursor::new(text.chars().count());
-                                state.cursor.set_char_range(Some(
-                                    egui::text_selection::CCursorRange::one(end),
-                                ));
-                                state.store(ui.ctx(), response.id);
-                            }
-                        }
                         let focused = response.has_focus();
                         // Read, never consumed: egui hands widgets a *clone* of the event
                         // list, so the Enter the `TextEdit` declined is still here — and
@@ -6001,7 +6025,7 @@ fn composer_box(
                                     )
                                 })
                             });
-                        (submit, focused)
+                        (submit, focused, response.id)
                     });
                 *measured = scrolled.content_size.y;
                 scrolled.inner
@@ -6016,7 +6040,7 @@ fn composer_box(
                 },
             );
             framed.end(ui);
-            submit
+            (submit, id)
         },
     )
     .inner
@@ -7217,15 +7241,15 @@ mod tests {
                     // which is the question a bottom-up column actually asks — and unlike
                     // `min_rect`, it means the same thing in either layout direction.
                     let before = ui.available_height();
-                    submitted = composer_box(
+                    let (sent, _id) = composer_box(
                         ui,
                         &mut pane.text,
                         pane.live,
                         &mut pane.want_focus,
                         &mut pane.measured,
-                        pane.take_caret,
                         &Theme::organon(),
                     );
+                    submitted = sent;
                     height = before - ui.available_height();
                 });
             });
@@ -7240,19 +7264,11 @@ mod tests {
         live: bool,
         want_focus: bool,
         measured: f32,
-        /// Whether this frame replaced the line with a completion — see [`composer_box`].
-        take_caret: bool,
     }
 
     impl FakePane {
         fn new(text: &str) -> Self {
-            Self {
-                text: text.to_string(),
-                live: true,
-                want_focus: true,
-                measured: 0.0,
-                take_caret: false,
-            }
+            Self { text: text.to_string(), live: true, want_focus: true, measured: 0.0 }
         }
     }
 
@@ -8628,7 +8644,6 @@ mod tests {
                         pane.live,
                         &mut pane.want_focus,
                         &mut pane.measured,
-                        false,
                         &Theme::organon(),
                     );
                     left = ui.available_height();
@@ -9450,9 +9465,9 @@ mod tests {
 
     /// 🚨 CONTRACT: **a command does not run on the frame its last character landed.**
     ///
-    /// The completed line has to be drawn at least once before it disappears, and §1.9's
-    /// one-frame caret window has to be a window in which a keystroke *cancels* the fire
-    /// rather than racing it. So the fire waits for a frame in which nothing was typed.
+    /// The completed line has to be drawn at least once before it disappears, and a keystroke
+    /// arriving while a fire is pending has to *cancel* it rather than race it. So the fire
+    /// waits for a frame in which nothing was typed.
     ///
     /// ⚠️ Driven through egui's own `TextEdit`, because "this frame had a keystroke in it" is
     /// only true of a real event — a composer assigned between frames is synced by
@@ -9479,22 +9494,91 @@ mod tests {
         let _ = palette_frame(&ctx, &mut interrupted, typed("h"));
         assert_eq!(interrupted.composer, "/help");
         let _ = palette_frame(&ctx, &mut interrupted, typed("x"));
-        // ⚠️ **`/hxelp`, not `/helpx` — this is §1.9's one-frame caret window, measured.**
-        // The completion rewrote the line on the previous frame and asked for the caret to be
-        // put at its end; that request is consumed by the *next* frame's `composer_box`, so
-        // this character landed at the index the caret still held, after `/h`. The window is
-        // completion's, not autorun's, and it is unchanged by this test. What matters here is
-        // the line below it: whatever the interrupted line turned out to say, no command ran.
-        assert_eq!(interrupted.composer, "/hxelp", "the character landed, mid-word");
+        // ⚠️ **`/helpx`, and the two halves of that are separate contracts.** The character
+        // lands at the *end* because the completion's caret request is drained at the end of
+        // the frame that made it — `put_caret_at_end`, pinned on its own by
+        // `a_character_typed_after_a_completion_lands_at_the_end_of_it`. What this test owns is
+        // the line below: whatever the interrupted line turned out to say, no command ran.
+        assert_eq!(interrupted.composer, "/helpx", "the character landed after the completion");
         assert!(interrupted.receipt.is_none(), "and nothing ran on a line nobody meant");
 
-        // 🚨 …and it does not merely postpone: `/hxelp` is not a command, so quiet frames pass
+        // 🚨 …and it does not merely postpone: `/helpx` is not a command, so quiet frames pass
         // and nothing happens. The keystroke cancelled the fire outright.
         for _ in 0..3 {
             let _ = palette_frame(&ctx, &mut interrupted, Vec::new());
         }
-        assert_eq!(interrupted.composer, "/hxelp");
+        assert_eq!(interrupted.composer, "/helpx");
         assert!(interrupted.receipt.is_none());
+    }
+
+    /// 🚨 CONTRACT: **the character after a completion lands at the end of it.**
+    ///
+    /// Measured on a running build: typing `/`, then `h`, completed the line to `/help` — and
+    /// the next character produced **`/hxelp`**. The completion rewrote the text on its frame
+    /// and asked for the caret; the request was drained by the *next* frame's `composer_box`,
+    /// which runs *before* the completion does, so it could only ever honour the previous
+    /// frame's ask — and by the time it ran, that frame's keystroke had already been placed at
+    /// the stale index, after `/h`. The window was one frame wide, which is ~16 ms at 60 fps
+    /// and well inside a fast burst.
+    ///
+    /// The fix is an ordering, not a second flag: `want_caret` is drained at the **end** of
+    /// `composer`, after `palette_complete` and `palette_autorun`, so the caret moves on the
+    /// same frame the line was rewritten. This test is the property, driven through egui's own
+    /// `TextEdit` — the caret is egui's index, so nothing short of a real widget can show it.
+    ///
+    /// ⚠️ **Autorun is off here on purpose.** `/help` is recoverable, so with the runner on
+    /// the line would fire on the first settled frame and there would be no line left to type
+    /// into. The caret is completion's business; when the command runs is `a_command_waits_
+    /// for_one_frame_in_which_nothing_was_typed`'s.
+    #[test]
+    fn a_character_typed_after_a_completion_lands_at_the_end_of_it() {
+        let ctx = egui::Context::default();
+        let mut pane = typing_pane(&ctx, "/");
+        pane.autorun = autorun_enabled(Some("0"));
+
+        let _ = palette_frame(&ctx, &mut pane, typed("h"));
+        assert_eq!(pane.composer, "/help", "the line completed on the keystroke's own frame");
+
+        let _ = palette_frame(&ctx, &mut pane, typed("x"));
+        assert_eq!(pane.composer, "/helpx", "…and the very next character appended to it");
+
+        // 🚨 The window was one frame wide, so a second character proves nothing on its own —
+        // it is the *first* one after the rewrite that used to land mid-word. Typing on is
+        // still worth pinning: a fix that moved the caret once and then lost it would pass the
+        // assertion above and fail here.
+        let _ = palette_frame(&ctx, &mut pane, typed("y"));
+        assert_eq!(pane.composer, "/helpxy");
+    }
+
+    /// The same property for the *other* two sites that rewrite the line wholesale — a history
+    /// recall and a Tab accept — which run **before** the box rather than after it.
+    ///
+    /// 🚨 **This is why the drain is at the end of the frame rather than moved a few lines up.**
+    /// Both orders have to work through one flag, and a fix that only rearranged the completion
+    /// case would leave these two to a second mechanism that could drift away from it.
+    #[test]
+    fn a_recalled_line_and_a_tab_accept_leave_the_caret_at_the_end_too() {
+        let ctx = egui::Context::default();
+
+        // A recall: the arrows replace the line, and typing continues from its end.
+        let mut recalled = typing_pane(&ctx, "");
+        recalled.autorun = autorun_enabled(Some("0"));
+        recalled.history.push_front("/theme dark".to_string());
+        let _ = palette_frame(&ctx, &mut recalled, key(egui::Key::ArrowUp, egui::Modifiers::NONE));
+        assert_eq!(recalled.composer, "/theme dark", "the walk put the line in the box");
+        let _ = palette_frame(&ctx, &mut recalled, typed("!"));
+        assert_eq!(recalled.composer, "/theme dark!", "and the caret came with it");
+
+        // A Tab accept: the same, one mechanism over. ⚠️ The line is `/theme ` rather than
+        // `/th`, because `/th` completes itself on the frame that puts it in the box and there
+        // would be no Tab left to test — a value ring with six options in it is the one place
+        // Tab still has work to do.
+        let mut tabbed = typing_pane(&ctx, "/theme ");
+        tabbed.autorun = autorun_enabled(Some("0"));
+        let _ = palette_frame(&ctx, &mut tabbed, key(egui::Key::Tab, egui::Modifiers::NONE));
+        assert_eq!(tabbed.composer, "/theme organon", "Tab took the highlighted candidate");
+        let _ = palette_frame(&ctx, &mut tabbed, typed("!"));
+        assert_eq!(tabbed.composer, "/theme organon!", "and typing carried on from its end");
     }
 
     /// The rule the environment variable states, without a test writing to the process
