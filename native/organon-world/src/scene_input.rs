@@ -123,42 +123,18 @@ pub enum CameraInput {
     Frame { yaw: Option<f32>, pitch: Option<f32>, distance: Option<f32> },
 }
 
-/// How far the viewpoint may tip, in radians — straight down to straight up with a little held
-/// back, so the orbit basis never degenerates against `Vec3::Y`.
-///
-/// 🚨 **One number, four readers.** `World::apply_camera_input` clamps to it, the camera
-/// finalization clamps the auto-orbit's *sum* to it, `cli`'s `console camera` validates against
-/// it, and `console_main`'s `console.camera` schema declares it as its `ArgKind::Float` range. A
-/// second copy is how an agent comes to be refused a value the hand can reach, or granted one it
-/// cannot — and either reads as the camera being broken rather than as two constants disagreeing.
-pub const PITCH_LIMIT: f32 = 1.5;
 
-/// The closest the viewpoint may sit to the pivot. Near zero rather than at it, so you can zoom
-/// all the way *through* the centre and come out the other side with geometry still visible.
-pub const DISTANCE_MIN: f32 = 0.1;
 
-/// The furthest the viewpoint may sit from the pivot. See [`PITCH_LIMIT`] on the one-number rule.
-pub const DISTANCE_MAX: f32 = 4000.0;
 
-/// How far yaw may be *asked* for, in radians — one full turn either way.
-///
-/// ⚠️ **Unlike the two above, this is not a clamp anywhere.** Yaw is an angle: the trigonometry
-/// wraps, so every value is meaningful and `World` stores whatever it is given. This is the bound
-/// the **command lane** declares, and it exists so the schema can state a range at all. ±2π covers
-/// every distinct viewpoint twice over; a request outside it is a unit mistake (degrees for
-/// radians is the likely one) and is better refused with a record than silently wrapped.
-pub const YAW_LIMIT: f32 = std::f32::consts::TAU;
 
-/// Where the viewpoint starts, and what `organon console camera --reset` returns it to.
-///
-/// 📌 These are `World::new`'s own initial values, named rather than repeated — which is what
-/// makes "reset" provably *the framing the window opened with* instead of three numbers that were
-/// true on the day someone copied them.
-pub const DEFAULT_YAW: f32 = 0.7;
-/// See [`DEFAULT_YAW`].
-pub const DEFAULT_PITCH: f32 = 0.45;
-/// See [`DEFAULT_YAW`].
-pub const DEFAULT_DISTANCE: f32 = 520.0;
+/// The viewpoint's limits — organon#49 T5a moved them to `organon_core::camera`, because their
+/// readers now span three crates. Re-exported so every `scene_input::PITCH_LIMIT` path here and
+/// in the World resolves exactly as before; `organon_core::camera`'s header owns the reasoning.
+pub use organon_core::camera::{
+    DEFAULT_DISTANCE, DEFAULT_PITCH, DEFAULT_YAW, DISTANCE_MAX, DISTANCE_MIN, PITCH_LIMIT,
+    YAW_LIMIT,
+};
+
 
 /// What one editor frame's pointer interaction asked the camera for.
 ///

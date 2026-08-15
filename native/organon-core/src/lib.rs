@@ -89,6 +89,8 @@
 //! `param_table.rs` therefore came through Tier 3 at a **zero diff**, which is a far
 //! stronger statement about the `Shared` layout than moving and re-verifying them.
 
+pub mod camera;
+pub mod console_ops;
 pub mod edition;
 /// #452 Tier 3 — the `snap` / `record` request+reply wire format, beside the `ipc` paths
 /// it is the format of. Arrived in organon#49 T4c-i from `cli.rs`, which cannot itself
