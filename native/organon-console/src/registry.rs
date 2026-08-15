@@ -558,9 +558,11 @@ fn view_entries() -> Vec<Entry> {
             args: vec![ArgSpec { name: MEDIA_ARG.into(), kind: ArgKind::Text, required: true }],
             lane: Lane::View,
             // An exhibit is an element in the transcript, exactly as `/surface`'s is, and no
-            // verb takes one out. ⚠️ It could not be `Recoverable` even if something did: a
-            // path is `Text`, so the panel never has a lone candidate to complete, and a verb
-            // autorun can never reach is one whose answer here is about the transcript alone.
+            // verb in this table takes one out. ⚠️ Autorun could not reach this line anyway:
+            // the argument is `Text`, a path has no closed value space, so the command panel
+            // never has a lone candidate to complete and never offers the line to autorun at
+            // all. This field is what makes that a stated property of the verb rather than a
+            // coincidence of its argument's kind.
             reversal: Reversal::Permanent,
             narrow: None,
         },
