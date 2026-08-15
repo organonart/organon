@@ -701,8 +701,11 @@ pub struct ConversationPane {
     /// top of the transcript before anyone can read it.
     receipt: Option<PanelReceipt>,
     /// Whether a command may run the instant the panel knows what it is, with no Enter.
-    /// Off unless `ORGANON_PALETTE_AUTORUN=1`; the rule it obeys is
-    /// [`Palette::autorun`]'s and lives there, not here.
+    ///
+    /// **On by default**, since the recoverability term joined [`Palette::autorun`]'s rule:
+    /// what fires unasked is now only what a second command can take back.
+    /// `ORGANON_PALETTE_AUTORUN=0` is the escape hatch and puts the Enter-for-everything
+    /// console back for a session. The rule it obeys lives in [`Palette::autorun`], not here.
     autorun: bool,
     /// Whether the panel draws the **verbose** list — a headed row per candidate with its
     /// doc — instead of the one-row word list that is now the primary mode.
@@ -901,7 +904,9 @@ impl ConversationPane {
             theme_edit: None,
             // Read once, here, rather than per frame: they are switches for a session, and an
             // env lookup inside the draw path would be a syscall per keystroke.
-            autorun: std::env::var("ORGANON_PALETTE_AUTORUN").is_ok_and(|v| v == "1"),
+            autorun: autorun_enabled(
+                std::env::var("ORGANON_PALETTE_AUTORUN").ok().as_deref(),
+            ),
             verbose: std::env::var("ORGANON_PALETTE_VERBOSE").is_ok_and(|v| v == "1"),
         }
     }
@@ -5519,11 +5524,16 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme
     // pass where both halves of the edit exist. See `completion_held`.
     pane.completion_held =
         completion_held(&pane.composer_seen, &pane.composer, pane.completion_held);
+    // 🚨 **Read here, before `palette_complete` rewrites the line.** This is "did the hand
+    // touch the box this frame", and it is the whole of the settled-frame rule below; asked
+    // after the completion it would be true of every frame a completion ran on, which is the
+    // opposite of what it means. See `palette_autorun`.
+    let edited = pane.composer_seen != pane.composer;
     // Both after the box, so they see the line as it stands *after* this frame's typing.
     // Completing first: `autorun` asks whether the line is now a whole command, and a line
     // one completion short of being one is exactly the case that has just been fixed.
     palette_complete(pane);
-    palette_autorun(pane, theme, theme_name);
+    palette_autorun(ui.ctx(), pane, edited, theme, theme_name);
 }
 
 /// Who owns Up and Down this frame.
@@ -5760,10 +5770,11 @@ fn completion_held(before: &str, after: &str, held: bool) -> bool {
 /// the completion because it's the only option."*
 ///
 /// 🚨 **This completes and never runs**, which is the whole distinction from
-/// [`palette_autorun`] below. It is on by default and rewrites the composer; autorun is off
-/// by default and submits. They are separate mechanisms with separate switches, and the fact
-/// that a completion may hand autorun a line it will then run is a *chain*, not a merge —
-/// with autorun off, which is the default, nothing runs.
+/// [`palette_autorun`] below. This one rewrites the composer for **every** verb; autorun
+/// submits, and only for the verbs a second command can take back. They are separate
+/// mechanisms with separate switches, and the fact that a completion may hand autorun a line
+/// it then runs is a *chain*, not a merge — `/su` completes to `/surface` here and stops
+/// there, because `surface` is not something autorun may fire.
 ///
 /// ⚠️ **Escape suppresses it**, for free and correctly: `pane.palette()` answers `None` while
 /// the panel is dismissed, so a human who has shut the panel is not having their line
@@ -5789,24 +5800,66 @@ fn palette_complete(pane: &mut ConversationPane) {
     }
 }
 
-/// Run a command the panel is certain of, with no Enter.
+/// What `ORGANON_PALETTE_AUTORUN` means, as a pure function of the value so it can be pinned
+/// without a test writing to the process environment.
 ///
-/// 🚨 The certainty is [`Palette::autorun`]'s and the switch is the pane's; this is only the
-/// wiring between them. It runs **after** the panel keys, so a Tab that completed the line to
-/// its last word fires on the same frame — which is what "as soon as it knows what we want"
-/// has to mean to be worth having.
+/// 🚨 **The default is ON**, which it was not until the recoverability term joined
+/// [`Palette::autorun`]'s rule. ⚠️ **The escape hatch is `=0`, and the variable's existing
+/// spelling keeps its existing meaning**: anyone who set `=1` to switch autorun on still gets
+/// autorun. Inverting the sense of a variable already in somebody's environment — making `=1`
+/// mean *off* — is the trap this avoids; renaming it would have been the other way to avoid it,
+/// at the cost of a name in a shell profile silently doing nothing.
+fn autorun_enabled(var: Option<&str>) -> bool {
+    var != Some("0")
+}
+
+/// Run a command the panel is certain of **and can afford to be wrong about**, with no Enter.
+///
+/// 🚨 The certainty is [`Palette::autorun`]'s — one candidate, it completes, and the command
+/// it completes to is recoverable — and the switch is the pane's; this is only the wiring
+/// between them, plus the one thing neither of them can see: whether the hand has stopped.
+///
+/// 🚨 **It waits for a settled frame, and that is not a nicety.** `edited` says the composer
+/// changed on *this* frame, and a fire is refused while it is true, so the earliest a command
+/// can run is the first frame in which nothing was typed. Two reasons, and the second is the
+/// one that matters:
+///
+/// - The completed line is **drawn at least once** before it disappears. Firing on the same
+///   frame as the keystroke means the human never sees what ran.
+/// - §1.9's one-frame caret window becomes a window in which a keystroke **cancels** the fire
+///   rather than racing it. Typing `su` fast used to be `/s` → fire, with the `u` landing in
+///   whatever the composer became; now the `u` arrives on the frame the fire was waiting for,
+///   re-asks the palette, and the answer is simply different.
+///
+/// ⚠️ **A settled frame has to be made to happen.** egui repaints on input, so on a keystroke
+/// that settles the line there may be no next frame until something else moves the mouse — and
+/// the command would run minutes later, which is worse than either extreme. The repaint is
+/// requested explicitly when a fire is deferred. ⚠️ It is requested *only* then: an
+/// unconditional request would turn the composer into a 60 Hz spinner for a feature that is
+/// idle almost always.
 ///
 /// 🚨 **It obeys [`completion_held`] too, and here the stake is higher than a rewritten line.**
-/// Backspacing `/surface` to `/surfac` leaves one candidate that *completes*, so with the
-/// switch on this would have **run the command** on a keystroke that was trying to erase it —
-/// the same defect as the completion trap, one consequence worse. Deleting is never an
-/// instruction to act.
-fn palette_autorun(pane: &mut ConversationPane, theme: &Theme, theme_name: &str) {
+/// Backspacing `/theme dark` to `/theme dar` leaves one candidate that *completes*, so this
+/// would have **run the command** on a keystroke that was trying to erase it — the same defect
+/// as the completion trap, one consequence worse. Deleting is never an instruction to act.
+fn palette_autorun(
+    ctx: &egui::Context,
+    pane: &mut ConversationPane,
+    edited: bool,
+    theme: &Theme,
+    theme_name: &str,
+) {
     if pane.completion_held {
         return;
     }
     let Some(palette) = pane.palette() else { return };
     let Some(candidate) = palette.autorun(pane.autorun) else { return };
+    if edited {
+        // The line is ready and the hand is not. Come back next frame and ask again — with no
+        // memory of this one, so a keystroke arriving meanwhile simply changes the answer.
+        ctx.request_repaint();
+        return;
+    }
     let candidate = candidate.clone();
     pane.accept(&candidate);
     pane.submit(theme, theme_name);
@@ -8063,12 +8116,14 @@ mod tests {
                     kind: crate::command::ArgKind::Choice(vec!["open".into(), "close".into()]),
                     required: true,
                 }],
+                reversal: crate::command::Reversal::Recoverable,
             },
             CommandSpec {
                 name: "console.background".into(),
                 doc: "What sits behind the glyphs".into(),
                 target: crate::command::TargetKind::Viewport,
                 args: Vec::new(),
+                reversal: crate::command::Reversal::Recoverable,
             },
         ];
         let (wiring, mcp, _inbox, notes) =
@@ -8126,12 +8181,14 @@ mod tests {
                 doc: "Open or close the portal".into(),
                 target: crate::command::TargetKind::Viewport,
                 args: Vec::new(),
+                reversal: crate::command::Reversal::Recoverable,
             },
             CommandSpec {
                 name: "console/portal".into(),
                 doc: "The same tool name, spelled differently".into(),
                 target: crate::command::TargetKind::Viewport,
                 args: Vec::new(),
+                reversal: crate::command::Reversal::Recoverable,
             },
         ];
         let (wiring, _, _, notes) =
@@ -8730,8 +8787,13 @@ mod tests {
     /// `console_main`, which this crate cannot see, the same reason `registry.rs`'s own
     /// fixture exists; `camera`/`camera.read` is copied from it because a count of one is the
     /// whole trigger for a completion and `/camera` looks finished while being two.
+    ///
+    /// ⚠️ **Every verb here is `Recoverable`, and the fixture is still not one-sided**:
+    /// `Registry::new` always adds the view lane, so `surface` and `organon` (both
+    /// `Permanent`) and `help` (`Recoverable`) are in this table too. `/su` and `/h` are
+    /// therefore the two sides of the autorun rule, with no spec to add for either.
     fn palette_specs() -> Vec<CommandSpec> {
-        use crate::command::{ArgKind, ArgSpec, TargetKind};
+        use crate::command::{ArgKind, ArgSpec, Reversal, TargetKind};
         vec![
             CommandSpec {
                 name: "console.theme".into(),
@@ -8752,6 +8814,7 @@ mod tests {
                     ),
                     required: true,
                 }],
+                reversal: Reversal::Recoverable,
             },
             CommandSpec {
                 name: "console.camera".into(),
@@ -8765,12 +8828,14 @@ mod tests {
                         required: false,
                     },
                 ],
+                reversal: Reversal::Recoverable,
             },
             CommandSpec {
                 name: "console.camera.read".into(),
                 doc: "Where the viewer stands right now".into(),
                 target: TargetKind::Viewport,
                 args: Vec::new(),
+                reversal: Reversal::Recoverable,
             },
         ]
     }
@@ -8923,10 +8988,16 @@ mod tests {
     }
 
     /// A pane with a real registry, no agent, and nothing in the transcript.
+    /// 🚨 **`autorun` is ON here because it is on in the product**, and a palette test running
+    /// against a configuration nobody ships is a test of nothing. `bench_pane` leaves it off —
+    /// a bench must not run commands — so this is where it is put back. The handful of tests
+    /// that are about *completion* rather than running switch it off again by name, which
+    /// makes that a statement rather than an accident.
     fn palette_pane() -> ConversationPane {
         let mut pane = rewrap_bench::bench_pane(Transcript::new());
         pane.registry = Registry::new(&palette_specs());
         pane.want_focus = true;
+        pane.autorun = autorun_enabled(None);
         pane
     }
 
@@ -9316,49 +9387,126 @@ mod tests {
         );
     }
 
-    /// 🚨 **Auto-execute: off by default, and refused for a command that is not finished.**
+    /// 🚨 **Auto-execute, through real frames: what fires, and the two shapes that must not.**
     ///
-    /// `/s` is `surface`, which takes nothing — one candidate, complete, so it fires. `/th`
-    /// is `theme`, which still needs a value — one candidate, *incomplete*, so it must not.
-    /// That second case is the failure this guard exists to prevent: a command running while
-    /// the hand is still typing its argument.
+    /// `/h` is `help`, which takes nothing and reads a table — one candidate, complete,
+    /// recoverable, so it runs and the box empties. `/th` is `theme`, which still needs a
+    /// value, so certainty about the *verb* is not certainty about the *command*. `/s` is
+    /// `surface`, which is certain and complete and still waits, because a surface in the
+    /// transcript is not something a second command takes back.
+    ///
+    /// ⚠️ **`/s` is the regression this test exists for.** It is the line the old rule fired
+    /// on, and it is the line James would have met first.
     #[test]
-    fn auto_execute_is_off_by_default_and_refuses_an_incomplete_command() {
+    fn auto_execute_runs_what_it_can_take_back_and_waits_for_the_rest() {
         let ctx = egui::Context::default();
-        let mut idle = palette_pane();
-        idle.composer = "/s".to_string();
-        for _ in 0..2 {
-            let _ = palette_frame(&ctx, &mut idle, Vec::new());
-        }
-        // ⚠️ The line **completed** itself, because one candidate is one answer — and that is
-        // a different mechanism with a different switch. What matters here is that it sat
-        // there afterwards: a line in the box is not an action.
-        assert_eq!(idle.composer, "/surface", "completed, since there was nothing else it meant");
-        assert!(idle.transcript.elements().is_empty(), "nothing RAN unless it is switched on");
 
-        let mut armed = palette_pane();
-        armed.autorun = true;
-        armed.composer = "/s".to_string();
-        let _ = palette_frame(&ctx, &mut armed, Vec::new());
-        assert_eq!(armed.composer, "", "…and with it on, `/s` ran and emptied the box");
+        let mut reading = palette_pane();
+        reading.composer = "/h".to_string();
+        let _ = palette_frame(&ctx, &mut reading, Vec::new());
+        assert_eq!(reading.composer, "", "`/h` could only be `help`, so it ran and emptied the box");
+        assert!(reading.receipt.is_some(), "…and left a receipt to say so");
+
+        // ⚠️ The line **completes** — that is the other mechanism, and it is on for every verb
+        // — and then sits there. What a human sees is the row saying `Enter runs`.
+        let mut irreversible = palette_pane();
+        irreversible.composer = "/s".to_string();
+        for _ in 0..3 {
+            let _ = palette_frame(&ctx, &mut irreversible, Vec::new());
+        }
+        assert_eq!(irreversible.composer, "/surface", "completed, and then stopped");
         assert!(
-            !armed.transcript.elements().is_empty(),
-            "`/surface` is a view-lane verb, so what it did — the surface and the panel that \
-             drives it — is right here in the transcript"
+            irreversible.transcript.elements().is_empty(),
+            "nothing was put in the transcript by a keystroke"
+        );
+        assert_eq!(
+            row_for(&mut irreversible, &ctx),
+            PALETTE_RUNS,
+            "the ask is the marker that already existed, not a second phrasing of it"
         );
 
-        // The case that must NOT fire, with the switch on. ⚠️ The line completes — `theme` is
-        // the only verb `/th` leaves — and then stops, because `theme` still needs a value.
-        // Completion carrying the line one word further is exactly what makes this the
-        // interesting case rather than a trivial one.
+        // The case that must not fire because the command is not finished. ⚠️ The line
+        // completes to `/theme ` first — completion carrying it one word further is what makes
+        // this interesting rather than trivial.
         let mut waiting = palette_pane();
-        waiting.autorun = true;
         waiting.composer = "/th".to_string();
         for _ in 0..3 {
             let _ = palette_frame(&ctx, &mut waiting, Vec::new());
         }
         assert_eq!(waiting.composer, "/theme ", "`theme` still needs a value — it must sit there");
         assert!(waiting.receipt.is_none(), "and nothing was run to leave a receipt");
+
+        // …and the escape hatch really is one: the same line, with the switch off, behaves
+        // exactly as the console did before this became the default.
+        let mut off = palette_pane();
+        off.autorun = autorun_enabled(Some("0"));
+        off.composer = "/h".to_string();
+        for _ in 0..3 {
+            let _ = palette_frame(&ctx, &mut off, Vec::new());
+        }
+        assert_eq!(off.composer, "/help", "completed, never run");
+        assert!(off.receipt.is_none());
+    }
+
+    /// 🚨 CONTRACT: **a command does not run on the frame its last character landed.**
+    ///
+    /// The completed line has to be drawn at least once before it disappears, and §1.9's
+    /// one-frame caret window has to be a window in which a keystroke *cancels* the fire
+    /// rather than racing it. So the fire waits for a frame in which nothing was typed.
+    ///
+    /// ⚠️ Driven through egui's own `TextEdit`, because "this frame had a keystroke in it" is
+    /// only true of a real event — a composer assigned between frames is synced by
+    /// `notice_edit` before anything looks at it, and is deliberately treated as settled
+    /// already (nothing was typed, so there is no hand to wait for).
+    #[test]
+    fn a_command_waits_for_one_frame_in_which_nothing_was_typed() {
+        let ctx = egui::Context::default();
+        let mut pane = typing_pane(&ctx, "/");
+        let _ = palette_frame(&ctx, &mut pane, typed("h"));
+        assert_eq!(
+            pane.composer, "/help",
+            "the line completed on the keystroke's own frame, as it always has"
+        );
+        assert!(pane.receipt.is_none(), "…and did NOT run on it");
+
+        let _ = palette_frame(&ctx, &mut pane, Vec::new());
+        assert_eq!(pane.composer, "", "the first quiet frame is the one that runs it");
+        assert!(pane.receipt.is_some());
+
+        // 🚨 The point of the wait: a keystroke arriving inside that window re-asks the
+        // question instead of losing a race with it.
+        let mut interrupted = typing_pane(&ctx, "/");
+        let _ = palette_frame(&ctx, &mut interrupted, typed("h"));
+        assert_eq!(interrupted.composer, "/help");
+        let _ = palette_frame(&ctx, &mut interrupted, typed("x"));
+        // ⚠️ **`/hxelp`, not `/helpx` — this is §1.9's one-frame caret window, measured.**
+        // The completion rewrote the line on the previous frame and asked for the caret to be
+        // put at its end; that request is consumed by the *next* frame's `composer_box`, so
+        // this character landed at the index the caret still held, after `/h`. The window is
+        // completion's, not autorun's, and it is unchanged by this test. What matters here is
+        // the line below it: whatever the interrupted line turned out to say, no command ran.
+        assert_eq!(interrupted.composer, "/hxelp", "the character landed, mid-word");
+        assert!(interrupted.receipt.is_none(), "and nothing ran on a line nobody meant");
+
+        // 🚨 …and it does not merely postpone: `/hxelp` is not a command, so quiet frames pass
+        // and nothing happens. The keystroke cancelled the fire outright.
+        for _ in 0..3 {
+            let _ = palette_frame(&ctx, &mut interrupted, Vec::new());
+        }
+        assert_eq!(interrupted.composer, "/hxelp");
+        assert!(interrupted.receipt.is_none());
+    }
+
+    /// The rule the environment variable states, without a test writing to the process
+    /// environment. ⚠️ **`=1` must still mean ON** — it is in shell profiles, and a variable
+    /// that quietly comes to mean the opposite of what somebody wrote is worse than no
+    /// variable at all.
+    #[test]
+    fn the_autorun_switch_defaults_on_and_is_turned_off_by_zero() {
+        assert!(autorun_enabled(None), "unset is the new default, and the new default is on");
+        assert!(!autorun_enabled(Some("0")), "`=0` is the escape hatch");
+        assert!(autorun_enabled(Some("1")), "`=1` means exactly what it always meant");
+        assert!(autorun_enabled(Some("")), "anything else is not the escape hatch");
     }
 
     /// 🚨 CONTRACT: **a lone candidate completes itself, is never shown, and never runs.**
@@ -9375,7 +9523,14 @@ mod tests {
     #[test]
     fn a_lone_candidate_completes_itself_and_is_never_shown() {
         let ctx = egui::Context::default();
+        // ⚠️ **The runner is switched off for the whole of this test, deliberately.** `theme` is
+        // recoverable, so in the product `/theme d` completes *and then runs* — which is the
+        // right behaviour and the wrong instrument for measuring completion. Everything below
+        // is about the line in the box; `auto_execute_runs_what_it_can_take_back_and_waits_
+        // for_the_rest` is about what happens to it afterwards.
+        let off = autorun_enabled(Some("0"));
         let mut pane = palette_pane();
+        pane.autorun = off;
         pane.composer = "/theme d".to_string();
         let _ = palette_frame(&ctx, &mut pane, Vec::new());
         assert_eq!(pane.composer, "/theme dark", "the only option it could have meant");
@@ -9396,6 +9551,7 @@ mod tests {
         // 🚨 The case a count alone gets wrong: `/camera` is a whole verb AND the prefix of
         // another, so it is two candidates and must sit there being a list.
         let mut two = palette_pane();
+        two.autorun = off;
         two.composer = "/camera".to_string();
         let (shown, _) = palette_frame(&ctx, &mut two, Vec::new());
         assert_eq!(two.composer, "/camera", "two candidates settle nothing");
@@ -9406,6 +9562,7 @@ mod tests {
         // trailing space in a verb's completion gets it there — so completing is what opens
         // the ring at all. `/theme` stands in for `/portal` here; the shape is identical.
         let mut opened = palette_pane();
+        opened.autorun = off;
         opened.composer = "/theme".to_string();
         let _ = palette_frame(&ctx, &mut opened, Vec::new());
         assert_eq!(opened.composer, "/theme ", "one step, and the value ring is open");
@@ -9418,6 +9575,7 @@ mod tests {
 
         // Escape suppresses it, for free: no panel, no completion, nothing rewritten.
         let mut shut = palette_pane();
+        shut.autorun = off;
         shut.composer = "/theme d".to_string();
         let _ = palette_frame(&ctx, &mut shut, Vec::new());
         shut.composer = "/theme da".to_string();

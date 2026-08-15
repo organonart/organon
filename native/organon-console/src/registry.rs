@@ -90,7 +90,7 @@ use organon_core::panels;
 use organon_core::tabs::UiTab;
 use serde_json::{json, Map, Value};
 
-use crate::command::{ArgKind, ArgSpec, CommandSpec};
+use crate::command::{ArgKind, ArgSpec, CommandSpec, Reversal};
 
 /// Which machinery answers a verb. See the module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +166,7 @@ pub struct Entry {
     doc: String,
     args: Vec<ArgSpec>,
     lane: Lane,
+    reversal: Reversal,
     narrow: Option<NarrowFn>,
 }
 
@@ -181,6 +182,7 @@ impl PartialEq for Entry {
             && self.doc == other.doc
             && self.args == other.args
             && self.lane == other.lane
+            && self.reversal == other.reversal
     }
 }
 
@@ -245,6 +247,10 @@ impl Entry {
             doc: spec.doc.clone(),
             args: spec.args.clone(),
             lane,
+            // Copied, never re-decided. A console verb declares its recoverability in the same
+            // literal that declares its arguments; this crate has no business having a second
+            // opinion about a verb the root crate wrote.
+            reversal: spec.reversal,
             // A `CommandSpec` is the vocabulary the MCP schema is generated from and carries no
             // hook: a console verb's value space is closed at build time. See [`NarrowFn`].
             narrow: None,
@@ -285,6 +291,12 @@ impl Entry {
 
     pub fn lane(&self) -> Lane {
         self.lane
+    }
+
+    /// Whether running this verb can be taken back — see [`Reversal`]. Read by
+    /// [`Registry::settled`], which is the only thing that turns it into a decision.
+    pub fn reversal(&self) -> Reversal {
+        self.reversal
     }
 
     /// `/background` — the verb alone, for a message that has already said what went wrong
@@ -512,6 +524,8 @@ fn view_entries() -> Vec<Entry> {
                 .into(),
             args: Vec::new(),
             lane: Lane::View,
+            // It puts an element in the transcript and there is no verb that takes one out.
+            reversal: Reversal::Permanent,
             narrow: None,
         },
         Entry {
@@ -519,6 +533,12 @@ fn view_entries() -> Vec<Entry> {
             doc: "List every command this console answers".into(),
             args: Vec::new(),
             lane: Lane::View,
+            // ⚠️ **The one that looks like it belongs on the other side and does not.** `/help`
+            // does write into the pane — but through `note`, which is the capped diagnostic
+            // log, not `Transcript::push`. It reads a table and changes nothing; running it by
+            // accident costs a few lines that scroll. That is the whole distinction the rule
+            // turns on, and it is a difference in the code rather than a judgement call.
+            reversal: Reversal::Recoverable,
             narrow: None,
         },
         Entry {
@@ -560,6 +580,8 @@ fn view_entries() -> Vec<Entry> {
                 },
             ],
             lane: Lane::View,
+            // A panel is an element in the transcript, exactly as `/surface`'s is.
+            reversal: Reversal::Permanent,
             narrow: Some(organon_options),
         },
     ]
@@ -886,6 +908,14 @@ pub struct Candidate {
     /// every required argument satisfied. Derived by asking [`Registry::resolve`] about
     /// [`Candidate::completion`], so it cannot drift from what Enter would actually do.
     pub completes: bool,
+    /// …and that command is one the console may run **without being asked** — see
+    /// [`crate::command::Reversal`]. Derived from the resolved verb's own declaration in the
+    /// same breath as [`Candidate::completes`] (see [`Registry::settled`]), so a renderer never
+    /// has to know which verbs those are.
+    ///
+    /// ⚠️ **False whenever `completes` is false**, and false for a name the registry cannot
+    /// find. Both are the safe direction: unclassified means ask.
+    pub fires: bool,
 }
 
 /// Which word of the line is being narrowed.
@@ -977,19 +1007,28 @@ impl Palette {
     ///
     /// James asked for this — *"it will just execute the thing as soon as it knows what we
     /// want"* — and the thing that makes it safe rather than terrifying is that "knows what we
-    /// want" is a *provable* state, not a guess: exactly one continuation is left **and** that
-    /// continuation completes the command. `/s` leaves only `surface`, which takes no
-    /// arguments, so there is nothing else the line could have meant. `/t` leaves only
-    /// `theme`, which still needs a value — so it does **not** fire, because firing there
-    /// would run a command while the hand is still typing its argument.
+    /// want" is a *provable* state, not a guess. **Three terms, all of them provable:**
     ///
-    /// ⚠️ **Off unless `enabled`.** The caller owns that switch; this owns the rule.
+    /// 1. Exactly one continuation is left, so there is nothing else the line could have meant.
+    /// 2. That continuation **completes** the command. `/th` leaves only `theme`, which still
+    ///    needs a value — so it does not fire, because firing there would run a command while
+    ///    the hand is still typing its argument.
+    /// 3. The command it completes to is **recoverable** ([`Candidate::fires`]). `/su` leaves
+    ///    only `surface`, which takes nothing and is therefore certain — and still waits,
+    ///    because a surface in the transcript is not something a second command takes back.
+    ///
+    /// ⚠️ **The third term is why this could become the default.** With it, being certain is no
+    /// longer sufficient; the console also has to be able to afford being wrong.
+    ///
+    /// ⚠️ **`enabled` is the caller's switch and it is now ON by default** — see
+    /// `ConversationPane::new` and `ORGANON_PALETTE_AUTORUN`. This still owns the rule and
+    /// nothing else; a caller that hands it `false` gets the old Enter-for-everything console.
     pub fn autorun(&self, enabled: bool) -> Option<&Candidate> {
         if !enabled {
             return None;
         }
         match &self.candidates[..] {
-            [only] if only.completes => Some(only),
+            [only] if only.completes && only.fires => Some(only),
             _ => None,
         }
     }
@@ -1004,9 +1043,10 @@ impl Palette {
     /// because it's the only option."*
     ///
     /// 🚨 **Completing is not running, and the two have separate switches on purpose.**
-    /// This rewrites the line and stops; [`Palette::autorun`] submits it, is off by default,
-    /// and additionally requires [`Candidate::completes`]. A line completed here is left
-    /// sitting in the composer for a hand to finish or an Enter to send.
+    /// This rewrites the line and stops; [`Palette::autorun`] submits it, and additionally
+    /// requires [`Candidate::completes`] and [`Candidate::fires`]. A line completed here that
+    /// autorun declines — every irreversible verb — is left sitting in the composer with the
+    /// row saying `Enter runs`, which is the whole of what "stop and ask" looks like.
     ///
     /// ⚠️ **`completion != line` is what makes this terminate.** `/surface` already *is* its
     /// own sole completion, so a rule that only counted candidates would rewrite the line to
@@ -1181,10 +1221,12 @@ impl Registry {
     fn verb_candidate(&self, entry: &Entry, stem: &str) -> Candidate {
         let tail = if entry.args().is_empty() { "" } else { " " };
         let completion = format!("{stem}{}{tail}", entry.verb());
+        let (completes, fires) = self.settled(&completion);
         Candidate {
             label: entry.verb().to_string(),
             doc: entry.doc().to_string(),
-            completes: matches!(self.resolve(&completion), Resolved::Run { .. }),
+            completes,
+            fires,
             completion,
             kind: CandidateKind::Verb {
                 group: entry.group().to_string(),
@@ -1197,12 +1239,38 @@ impl Registry {
     /// value next and a flag may be followed by another keyword.
     fn keyword_candidate(&self, arg: &ArgSpec, stem: &str) -> Candidate {
         let completion = format!("{stem}{} ", arg.name);
+        let (completes, fires) = self.settled(&completion);
         Candidate {
             label: arg.name.clone(),
             doc: value_space(&arg.kind),
-            completes: matches!(self.resolve(&completion), Resolved::Run { .. }),
+            completes,
+            fires,
             completion,
             kind: CandidateKind::Keyword,
+        }
+    }
+
+    /// The two facts about a finished line that decide whether it needs an Enter: is it a whole
+    /// command, and may the console run it unasked.
+    ///
+    /// 🚨 **Both come out of one [`Registry::resolve`] call**, which is what keeps them from
+    /// drifting apart — and from drifting away from what Enter would actually do. The verb is
+    /// read off the *resolution*, never off the typed word, so `/camera.read` and `/camera` are
+    /// told apart by the same machinery that dispatches them.
+    ///
+    /// ⚠️ **A name with no entry answers `false`**, which cannot happen — `resolve` produced
+    /// the name from this very table — but is the safe direction if it ever does. Unclassified
+    /// means ask.
+    fn settled(&self, completion: &str) -> (bool, bool) {
+        match self.resolve(completion) {
+            Resolved::Run { name, .. } => (
+                true,
+                self.entries
+                    .iter()
+                    .find(|e| e.name == name)
+                    .is_some_and(|e| e.reversal == Reversal::Recoverable),
+            ),
+            _ => (false, false),
         }
     }
 
@@ -1247,10 +1315,12 @@ impl Registry {
             .filter(|(option, _)| narrows(option, typed))
             .map(|(option, doc)| {
                 let completion = format!("{stem}{option}{}", if more { " " } else { "" });
+                let (completes, fires) = self.settled(&completion);
                 Candidate {
                     label: option,
                     doc,
-                    completes: matches!(self.resolve(&completion), Resolved::Run { .. }),
+                    completes,
+                    fires,
                     completion,
                     kind: CandidateKind::Value,
                 }
@@ -1269,6 +1339,11 @@ mod tests {
     /// rig tables live in the root crate, which this one cannot see — so it copies the
     /// *shapes* that matter: a required `Choice`, two required `Int`s beside a `Choice`, and
     /// the all-optional camera with a `Bool` flag and three banded `Float`s.
+    ///
+    /// ⚠️ **The `Reversal` of each copies the real catalog's**, and that matters more than the
+    /// argument shapes do: `background` and `camera` are the verbs autorun may fire, `patch` is
+    /// the one that must complete and then wait, and a fixture that made them all one or all
+    /// the other would pin half the rule.
     fn console() -> Vec<CommandSpec> {
         vec![
             CommandSpec {
@@ -1280,6 +1355,7 @@ mod tests {
                     kind: ArgKind::Choice(vec!["graphite".into(), "slate".into()]),
                     required: true,
                 }],
+                reversal: Reversal::Recoverable,
             },
             CommandSpec {
                 name: "console.patch".into(),
@@ -1294,6 +1370,7 @@ mod tests {
                         required: true,
                     },
                 ],
+                reversal: Reversal::Permanent,
             },
             CommandSpec {
                 name: "console.camera".into(),
@@ -1312,12 +1389,14 @@ mod tests {
                         required: false,
                     },
                 ],
+                reversal: Reversal::Recoverable,
             },
             CommandSpec {
                 name: "console.camera.read".into(),
                 doc: "Where the viewer stands right now".into(),
                 target: TargetKind::Viewport,
                 args: Vec::new(),
+                reversal: Reversal::Recoverable,
             },
         ]
     }
@@ -1554,6 +1633,7 @@ mod tests {
             doc: "a second claimant".into(),
             target: TargetKind::Viewport,
             args: Vec::new(),
+            reversal: Reversal::Recoverable,
         });
         let reg = Registry::new(&specs);
         assert_eq!(reg.collisions(), ["elsewhere.background"]);
@@ -1761,24 +1841,26 @@ mod tests {
         assert!(stuck.is_empty(), "a word naming no argument leaves the panel with nothing");
     }
 
-    /// 🚨 **The auto-execute guard, and the case it must refuse.**
+    /// 🚨 **The auto-execute guard, and the three cases it must refuse.**
     ///
-    /// Firing on `/s` is what was asked for: one continuation left, and it needs nothing
-    /// else. Firing on `/b` would run `background` with no material — a command executing
-    /// while the hand is still typing its argument, which is the failure this rule exists to
-    /// prevent. Off unless the caller says otherwise, either way.
+    /// Firing on `/background g` is what was asked for: one continuation left, it completes
+    /// the command, and a backdrop is one command away from any other. Firing on `/b` would
+    /// run `background` with no material — a command executing while the hand is still typing
+    /// its argument. Firing on `/s` would put a surface in the transcript that nothing takes
+    /// back, on a keystroke.
     #[test]
-    fn auto_execute_fires_only_on_a_complete_command() {
-        let unique_and_complete = palette("/s");
+    fn auto_execute_fires_only_on_a_complete_and_recoverable_command() {
+        let unique_and_complete = palette("/background g");
         assert_eq!(
             unique_and_complete.autorun(true).map(|c| c.completion.as_str()),
-            Some("/surface"),
-            "one candidate, and it completes: this is the case James asked for"
+            Some("/background graphite"),
+            "one candidate, it completes, and it can be taken back: this is the case James \
+             asked for"
         );
         assert_eq!(
             unique_and_complete.autorun(false),
             None,
-            "…and it is off unless it is switched on"
+            "…and a caller that switches it off gets the Enter-for-everything console back"
         );
 
         assert_eq!(
@@ -1788,16 +1870,53 @@ mod tests {
         );
         assert_eq!(palette("/c").autorun(true), None, "two candidates is not knowing what we want");
         assert_eq!(palette("/z").autorun(true), None, "and none is not either");
-        // The value ring fires the same way, which is what makes `/theme ch` finish itself.
-        assert_eq!(
-            palette("/background g").autorun(true).map(|c| c.completion.as_str()),
-            Some("/background graphite")
-        );
         assert_eq!(
             palette("/patch ").autorun(true),
             None,
             "an argument with no closed value space can never satisfy the guard"
         );
+    }
+
+    /// 🚨 CONTRACT: **certainty is not enough — the console also has to be able to afford
+    /// being wrong.** This is the term that let auto-execute become the default.
+    ///
+    /// `/s` is the case that used to fire and now must not: `surface` is the only thing it can
+    /// mean and it takes no arguments, so the first two terms hold outright. What it leaves
+    /// behind is an element in the transcript, and no verb in this table takes one out again —
+    /// so the line completes to `/surface` and stops there, with `runnable` telling the row to
+    /// say `Enter runs`.
+    ///
+    /// ⚠️ **The pair is the point.** `help` is a view-lane verb too, takes nothing too, and is
+    /// reached the same way — and it fires, because reading a table changes nothing. If the
+    /// rule had been "view-lane verbs are dangerous" or "verbs with no arguments are
+    /// dangerous" it would have got one of these two wrong.
+    #[test]
+    fn a_verb_that_cannot_be_taken_back_completes_and_then_waits() {
+        let surface = palette("/s");
+        let [only] = &surface.candidates[..] else { panic!("`/s` is `surface` alone") };
+        assert!(only.completes, "the line it produces IS a whole command");
+        assert!(!only.fires, "…and it is not one the console may run unasked");
+        assert_eq!(surface.autorun(true), None, "so no keystroke runs it");
+        assert!(
+            palette("/surface").runnable,
+            "what the human gets instead is the row saying Enter runs"
+        );
+
+        let help = palette("/h");
+        let [only] = &help.candidates[..] else { panic!("`/h` is `help` alone") };
+        assert!(only.completes && only.fires, "a read is the cleanest recoverable case there is");
+        assert_eq!(
+            help.autorun(true).map(|c| c.completion.as_str()),
+            Some("/help"),
+            "so it runs, and the two view-lane verbs part company on recoverability alone"
+        );
+
+        // The console lane's own irreversible verb, so the rule is not a fact about lanes.
+        let patch = palette("/patch 2 3 s");
+        let [only] = &patch.candidates[..] else { panic!("`s` is `scene` alone") };
+        assert!(only.completes, "every required argument is filled");
+        assert!(!only.fires, "…and a claimed rectangle is not something a second command undoes");
+        assert_eq!(patch.autorun(true), None);
     }
 
     /// 🚨 CONTRACT: **completing a lone candidate and running one are different questions
@@ -2005,9 +2124,13 @@ mod tests {
         assert_eq!(labels(&only.completion).len(), 25);
     }
 
-    /// `su` leaves exactly one panel, and accepting it completes the command — which is what
-    /// makes `/organon look su` fire without Enter under [`Palette::autorun`]. This is the
-    /// property `panels::no_slug_is_a_prefix_of_another` exists to protect.
+    /// `su` leaves exactly one panel, and accepting it completes the command — so a hand types
+    /// four characters of a two-ring command and the fifth thing it does is press Enter. This
+    /// is the property `panels::no_slug_is_a_prefix_of_another` exists to protect.
+    ///
+    /// ⚠️ **It completes and does not fire**, which is the interesting half now: `/organon`
+    /// puts a panel in the transcript, so it is the far side of the recoverability rule. The
+    /// saving is still the whole of the typing; what is not saved is the Enter.
     #[test]
     fn a_lone_panel_completes_the_whole_command() {
         let reg = registry();
@@ -2016,7 +2139,8 @@ mod tests {
         let only = &palette.candidates[0];
         assert_eq!(only.completion, "/organon look surface");
         assert!(only.completes, "both rings are filled, so Enter would run it");
-        assert_eq!(palette.autorun(true).map(|c| c.label.as_str()), Some("surface"));
+        assert!(!only.fires, "…and Enter is exactly what it waits for");
+        assert_eq!(palette.autorun(true), None);
     }
 
     /// 🚨 **The refusal names the ring it is refusing against, and it did not.** James typed

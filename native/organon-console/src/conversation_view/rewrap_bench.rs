@@ -245,8 +245,10 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         registry: super::Registry::new(&[]),
         local: Box::new(crate::mcp::NoDispatch),
         // The command panel is a band above the composer and neither bench measures it: the
-        // composer is empty, so no line is a command line and nothing is drawn. `autorun` is
-        // off for the same reason it is off in the product — a bench must not run commands.
+        // composer is empty, so no line is a command line and nothing is drawn. ⚠️ `autorun`
+        // is off here and ON in the product: a bench must not run commands. Tests built on
+        // this pane that care about the shipping behaviour turn it back on — see
+        // `conversation_view::tests::palette_pane`.
         palette_selected: 0,
         palette_dismissed: false,
         composer_seen: String::new(),
