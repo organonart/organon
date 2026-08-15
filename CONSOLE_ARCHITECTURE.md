@@ -2516,20 +2516,42 @@ written at the site, never by an invented pigment, and the rules are four:
    nothing in the surface ladder can repay it.** `primary #0f1114` is untouched and still
    13.3:1 on the new page. The two weaker text roles are not:
 
-   | foreground | on | before | after |
-   |---|---|---|---|
-   | `primary #0f1114` | page | 18.25 | **13.25** |
-   | `secondary #5d636c` | panel | 5.70 | **4.12** ⚠️ under AA 4.5 |
-   | `faint #8b919b` | page | 3.06 | **2.22** ⚠️ |
-   | `faint #8b919b` (`tab_menu_missing`) | hairline plate | 2.51 | **1.77** ⚠️ |
-   | `success #1a6b46` | page | 6.26 | 4.55 |
-   | `error #a32020` | page | 7.28 | 5.28 |
-   | `accent #1440c4` | page | 7.92 | 5.75 |
+   | foreground | on | before | after the move | ✏️ repaired |
+   |---|---|---|---|---|
+   | `primary #0f1114` | page | 18.25 | **13.25** | 13.25 — untouched |
+   | `secondary` | panel | 5.70 | **4.12** ⚠️ under AA 4.5 | `#555b64` → **4.66** ✅ |
+   | `faint` | page | 3.06 | **2.22** ⚠️ | `#737983` → **3.07** ✅ |
+   | `faint` (`tab_menu_missing`) | hairline plate | 2.51 | **1.77** ⚠️ | `#737983` → **2.45** ⚠️ still under AA |
+   | `success #1a6b46` | page | 6.26 | 4.55 | 4.55 — untouched |
+   | `error #a32020` | page | 7.28 | 5.28 | 5.28 — untouched |
+   | `accent #1440c4` | page | 7.92 | 5.75 | 5.75 — untouched |
 
    These numbers are set by a page James asked to lower against text he did not ask to darken,
-   so **there is no compression of the surface ladder that fixes them** — the only repair is to
-   darken the text ladder, which is three more spec roles and his call. Costed but not taken:
-   `#737983` (a uniform −24 on `faint`) is what would restore `dim` to its old 3.06:1.
+   so **there is no compression of the surface ladder that fixes them** — the only repair is on
+   the text, which is the other side of the fraction. ✏️ **That repair has now been taken**, on
+   the two roles that fell under AA and on no others: `LIGHT_SECONDARY` and `LIGHT_FAINT`, each
+   a **uniform per-channel subtraction** — the same method the ladder itself moved by, so both
+   keep their cool tilt rather than being re-picked. `faint`'s −24 was chosen to land on exactly
+   the 3.06 it held before the move; `secondary`'s −8 is the smallest that clears 4.5.
+
+   ⚠️ **One role a single value cannot rescue everywhere.** `faint` on a hairline plate reaches
+   2.45, not 4.5. `tab_menu_missing` labels a thing that is *absent*, and darkening it far
+   enough to clear AA there would make "not mapped yet" heavier on the page than live secondary
+   text — the wrong sentence. Recorded rather than fudged, and **asserted two-sided** so that a
+   later drift in either direction is noticed.
+
+   🚨 **The nine assignment sites are now two named constants**, for the reason the surface
+   ladder already learned: `faint` was four repeated literals and `secondary` five, so a
+   correction spelled as nine hand-edits is a correction that lands on eight of them. Fields
+   still assign independently — no role is merged — only the *value* is stated once.
+
+   📌 **And the table above is now a test.** `every_light_text_role_is_measured_against_the_
+   surface_it_is_drawn_on` computes WCAG luminance and asserts each ratio against the surface
+   the role is really drawn on. This table was prose for a day, and prose is precisely what a
+   later edit is not obliged to keep true — the ladder move changed every number here without
+   touching one text colour, because the two ladders are two sides of one fraction and only one
+   was edited. ⚠️ **Still nobody's eyes.** These are ratios against a standard, not an
+   observation; §3 carries it and only James closes it.
 
    **Four fields are functions of these steps and moved with them** (rule 4 below).
    ⚠️ **Two of them had already gone stale**: `composer_edge_dead` and `timeline_scripted_fill`
@@ -4714,6 +4736,21 @@ path silently breaks the three-products-simultaneously guarantee that
   Primary text is unaffected at 13.3:1. **This cannot be fixed from the surface side** — the
   repair is a darker text ladder, which is three more roles James specified, so it is named
   here and not taken. `#737983` is what would restore `faint` to what it had.
+  ✏️ **Taken since, and the costed number was the right one.** `LIGHT_SECONDARY #555b64`
+  (uniform −8) puts secondary on panel at **4.66**, and `LIGHT_FAINT #737983` (uniform −24) puts
+  faint on page at **3.07** — the 3.06 it held before the ladder moved, to two decimal places.
+  Only those two roles moved; `primary`, `success`, `error` and `accent` are untouched and all
+  clear AA. `faint` on a hairline plate reaches only 2.45 and is knowingly left there, because
+  the role labels something *absent* and darkening it to AA would make "not mapped yet" heavier
+  than live secondary text.
+  📌 §1.4's table is now `every_light_text_role_is_measured_against_the_surface_it_is_drawn_on`,
+  which computes WCAG luminance and asserts each ratio — including the sub-AA exception,
+  bounded on **both** sides. The table was prose for a day, and the ladder move had already
+  demonstrated what prose is worth here: it changed all seven ratios without touching a single
+  text colour, because the two ladders are two sides of one fraction and only one was edited.
+  🚨 **Still nobody's eyes on any of it.** Ratios against a standard are not an observation, and
+  the darkening is as unlooked-at as the page it repays. The complaint to watch for is the
+  opposite of the last one: text that now reads *heavy* on pale card stock.
 
   Also unverified: (1) that the 3-unit page→panel step, unchanged in absolute terms, still
   reads on a real display now that both sides are darker — the arithmetic says the *ratio*

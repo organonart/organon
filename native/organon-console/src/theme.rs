@@ -476,6 +476,33 @@ impl Theme {
     /// weight, not a surface: nothing is filled with it except a pressed widget's plate.
     const LIGHT_STRONG: Color32 = Color32::from_rgb(0xa6, 0xab, 0xb3);
 
+    /// The spec's *secondary*, darkened from `#5d636c` so it clears WCAG AA on the panel.
+    ///
+    /// 🚨 **This is the repayment [`Theme::LIGHT_PAGE`] said it could not make.** Moving the
+    /// whole surface ladder down 35 per channel left the text ladder where it was, and
+    /// `secondary` on panel fell 5.70 → **4.12**, under AA's 4.5. No compression of the
+    /// surfaces fixes that — the page is the value James named — so the repair is here, on the
+    /// text, which is the only other side of the ratio. A uniform **−8 per channel** puts it at
+    /// **4.66**, the same uniform-subtraction method the ladder itself moved by, so the role
+    /// keeps its cool tilt rather than being re-picked.
+    ///
+    /// ⚠️ **Nobody has looked at it.** This is arithmetic against a standard, not an
+    /// observation, exactly as `#d7d8d9` was; `CONSOLE_ARCHITECTURE.md` §3 carries it and only
+    /// James closes it.
+    const LIGHT_SECONDARY: Color32 = Color32::from_rgb(0x55, 0x5b, 0x64);
+    /// The spec's *faint*, darkened from `#8b919b` for the same reason and by the same method.
+    ///
+    /// A uniform **−24 per channel** restores it to **3.06:1** on the page — precisely the
+    /// ratio it had before the ladder moved, which is why this number and not a rounder one.
+    ///
+    /// ⚠️ **`faint` is the one role a single value cannot rescue everywhere.** On the page it is
+    /// back to where it was; on a `LIGHT_HAIRLINE` plate (`tab_menu_missing`) it reaches only
+    /// **2.45**, up from 1.77. That role is a *label for something absent* rather than prose,
+    /// and darkening it far enough to clear AA against the hairline would make it heavier than
+    /// `secondary` on the page — which would say the missing thing matters more than the
+    /// present one. Recorded rather than fudged; see rule 2.
+    const LIGHT_FAINT: Color32 = Color32::from_rgb(0x73, 0x79, 0x83);
+
     /// **A printed technical publication** — quiet, typographic, no phosphor green anywhere.
     /// Specified by James; the ten roles he named are marked `[spec]` below and everything
     /// else follows the module's derivation rules.
@@ -514,7 +541,7 @@ impl Theme {
             human_text: Color32::from_rgb(0x0f, 0x11, 0x14),
             human_fill: Self::LIGHT_HAIRLINE,
             prose: Color32::from_rgb(0x0f, 0x11, 0x14),
-            dim: Color32::from_rgb(0x8b, 0x91, 0x9b),
+            dim: Self::LIGHT_FAINT,
 
             // Rule 2: no amber is specified, so "in flight" is primary text — present and
             // unmissable without introducing a hue the publication never uses.
@@ -529,11 +556,11 @@ impl Theme {
             model_fill: Self::LIGHT_HAIRLINE,
             model_edge: Self::LIGHT_STRONG,
             model_text: Color32::from_rgb(0x0f, 0x11, 0x14),
-            model_badge: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            model_badge: Self::LIGHT_SECONDARY,
             // Rule 3: accent, not the error red the field doc forbids and not an amber this
             // palette does not have.
             mode_alert: Color32::from_rgb(0x14, 0x40, 0xc4),
-            mode_note: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            mode_note: Self::LIGHT_SECONDARY,
             context_track: Self::LIGHT_STRONG,
             // Fainter than the track and still not the band it sits on — on a light page
             // "fainter" means *closer to the page*, which inverts the ordering `organon` has.
@@ -561,7 +588,7 @@ impl Theme {
             term_bg: Self::LIGHT_PAGE,
             term_fg: Color32::from_rgb(0x0f, 0x11, 0x14),
             term_scrim_tint: Self::LIGHT_PAGE,
-            term_exited_notice: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            term_exited_notice: Self::LIGHT_SECONDARY,
             // ⚠️ **CHOSEN, not specified.** The spec is silent on the terminal, and a light
             // background changes what the sixteen names can mean: "white" and "bright white"
             // have to become dark or the text vanishes, and every hue has to darken to hold
@@ -613,12 +640,12 @@ impl Theme {
             // brighter than the page it interrupts, which is the glare being removed.
             timeline_scripted_fill: Color32::from_rgb(0xcd, 0xb3, 0xb4),
             timeline_scripted_mark: Color32::from_rgb(0xa3, 0x20, 0x20),
-            timeline_status_pending: Color32::from_rgb(0x8b, 0x91, 0x9b),
+            timeline_status_pending: Self::LIGHT_FAINT,
             timeline_status_running: Color32::from_rgb(0x0f, 0x11, 0x14),
             timeline_status_ok: Color32::from_rgb(0x1a, 0x6b, 0x46),
             timeline_status_failed: Color32::from_rgb(0xa3, 0x20, 0x20),
             timeline_status_denied: Color32::from_rgb(0xa3, 0x20, 0x20),
-            timeline_status_cancelled: Color32::from_rgb(0x8b, 0x91, 0x9b),
+            timeline_status_cancelled: Self::LIGHT_FAINT,
             timeline_approval_accent: Color32::from_rgb(0x14, 0x40, 0xc4),
             // Rule 4: the accent at 1:5 over the panel — a tinted plate, not a coloured one.
             // Recomputed because the panel moved: (20 + 5·212)/6 = 180 → 0xb4,
@@ -631,11 +658,11 @@ impl Theme {
 
             tab_strip_fill: Self::LIGHT_PANEL,
             tab_active: Color32::from_rgb(0x0f, 0x11, 0x14),
-            tab_inactive: Color32::from_rgb(0x5d, 0x63, 0x6c),
-            tab_plus: Color32::from_rgb(0x5d, 0x63, 0x6c),
+            tab_inactive: Self::LIGHT_SECONDARY,
+            tab_plus: Self::LIGHT_SECONDARY,
             tab_menu_fill: Self::LIGHT_HAIRLINE,
             tab_menu_installed: Color32::from_rgb(0x0f, 0x11, 0x14),
-            tab_menu_missing: Color32::from_rgb(0x8b, 0x91, 0x9b),
+            tab_menu_missing: Self::LIGHT_FAINT,
 
             scrim_floor: crate::term_view::SCRIM_FLOOR_LIGHT,
             chrome: ChromeSource::DerivedLight,
@@ -1669,8 +1696,13 @@ mod tests {
         assert_eq!(Theme::LIGHT_PANEL, Color32::from_rgb(0xd4, 0xd5, 0xd6), "and it is #d4d5d6");
         assert_eq!(t.prose, Color32::from_rgb(0x0f, 0x11, 0x14), "light primary text");
         assert_eq!(t.term_fg, Color32::from_rgb(0x0f, 0x11, 0x14), "light primary text");
-        assert_eq!(t.model_badge, Color32::from_rgb(0x5d, 0x63, 0x6c), "light secondary");
-        assert_eq!(t.dim, Color32::from_rgb(0x8b, 0x91, 0x9b), "light faint metadata");
+        // ✏️ Both darkened from the spec so they clear AA against the moved ladder — see
+        // `LIGHT_SECONDARY` / `LIGHT_FAINT`, and `every_light_text_role_is_measured_against_
+        // the_surface_it_is_drawn_on` for the ratios these hexes exist to produce.
+        assert_eq!(t.model_badge, Theme::LIGHT_SECONDARY, "light secondary");
+        assert_eq!(Theme::LIGHT_SECONDARY, Color32::from_rgb(0x55, 0x5b, 0x64), "…it is #555b64");
+        assert_eq!(t.dim, Theme::LIGHT_FAINT, "light faint metadata");
+        assert_eq!(Theme::LIGHT_FAINT, Color32::from_rgb(0x73, 0x79, 0x83), "…it is #737983");
         assert_eq!(t.strip_edge, Theme::LIGHT_HAIRLINE, "light hairline");
         assert_eq!(Theme::LIGHT_HAIRLINE, Color32::from_rgb(0xbf, 0xc2, 0xc6), "…it is #bfc2c6");
         assert_eq!(t.model_edge, Theme::LIGHT_STRONG, "light stronger border");
@@ -1740,6 +1772,85 @@ mod tests {
         // 🚨 The spec's own sentence, as an assertion: the WORD `ok` is the secondary grey.
         // `conversation_view` draws that word from `theme.ok`, so this is the field it names.
         assert_eq!(t.ok, Color32::from_rgb(0x8f, 0x8f, 0x8f), "the word `ok` is NOT green");
+    }
+
+    /// WCAG relative luminance, sRGB, exactly as the standard defines it.
+    ///
+    /// In the tests rather than the palette on purpose: the console never asks a colour how
+    /// bright it is at runtime, and a helper on `Theme` would be a public API nothing calls.
+    fn luminance(c: Color32) -> f64 {
+        let ch = |v: u8| {
+            let s = f64::from(v) / 255.0;
+            if s <= 0.040_45 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+    }
+
+    /// The WCAG contrast ratio between two opaque colours, lighter over darker.
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (x, y) = (luminance(a), luminance(b));
+        let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// 🚨 CONTRACT: **the light palette's text is measured against the surface it is actually
+    /// drawn on, and the numbers are asserted rather than written down.**
+    ///
+    /// This table lived in `CONSOLE_ARCHITECTURE.md` §1.4 as prose for a day, and prose is
+    /// exactly what a later edit does not have to keep true. Lowering the surface ladder to
+    /// V ≈ 0.85 (James's instruction) moved every one of these ratios without touching a single
+    /// text colour — the two ladders are the two sides of one fraction, and only one of them was
+    /// edited. A test is the only form of that table which cannot quietly go stale.
+    ///
+    /// ⚠️ **`tab_menu_missing` is deliberately BELOW AA and is asserted as such**, so the
+    /// exception is a stated number rather than a gap in the list. It labels a thing that is
+    /// *absent*; darkening it to 4.5 against the hairline plate would make "not mapped yet"
+    /// heavier on the page than live secondary text, which would be the wrong sentence. If a
+    /// later change makes it pass, that is a decision worth noticing, so the bound is two-sided.
+    #[test]
+    fn every_light_text_role_is_measured_against_the_surface_it_is_drawn_on() {
+        let t = Theme::light();
+        const AA: f64 = 4.5;
+
+        // Body text on the page, and the role the whole repair was for.
+        let primary_on_page = contrast(t.prose, Theme::LIGHT_PAGE);
+        assert!(primary_on_page > 13.0, "light primary on page: {primary_on_page:.2}");
+
+        // 🚨 The reason `LIGHT_SECONDARY` exists. Before the darkening this was 4.12.
+        let secondary_on_panel = contrast(t.model_badge, Theme::LIGHT_PANEL);
+        assert!(
+            secondary_on_panel >= AA,
+            "light secondary on panel is under AA at {secondary_on_panel:.2} — \
+             the surfaces cannot repay this, only the text can"
+        );
+
+        // 🚨 The reason `LIGHT_FAINT` exists: back to the 3.06 it held before the ladder moved.
+        let faint_on_page = contrast(t.dim, Theme::LIGHT_PAGE);
+        assert!(
+            faint_on_page > 3.0,
+            "light faint on page: {faint_on_page:.2}, was 2.22 before the darkening"
+        );
+
+        // ⚠️ The stated exception, bounded on both sides so neither drift goes unnoticed.
+        let missing_on_plate = contrast(t.tab_menu_missing, Theme::LIGHT_HAIRLINE);
+        assert!(
+            (2.2..AA).contains(&missing_on_plate),
+            "`tab_menu_missing` on a hairline plate is {missing_on_plate:.2}; it is knowingly \
+             under AA, but below 2.2 it is illegible and above AA somebody made a decision"
+        );
+
+        // The named states, all on the page. These were never the problem and must not become
+        // one: a future ladder move is exactly what would push them under.
+        for (name, c) in
+            [("success", t.timeline_status_ok), ("error", t.bad), ("accent", t.asking)]
+        {
+            let r = contrast(c, Theme::LIGHT_PAGE);
+            assert!(r >= AA, "light {name} on page has fallen to {r:.2}, under AA");
+        }
     }
 
     /// 🚨 **The light surface ladder still climbs, and the page is still the top of it.**
