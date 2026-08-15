@@ -384,6 +384,45 @@ impl Theme {
         }
     }
 
+    /// 🚨 **[`Theme::light`]'s page, and the palette's one deliberate departure from the spec
+    /// James wrote.** The spec says `#ffffff`; this is `#fafbfc`. He asked for it on
+    /// 2026-08-14 after looking at the light theme in a running console — *"turn down the
+    /// value slash brightness of the white, that is the whitest white"* — so the deviation is
+    /// an instruction, not a drift, and it is recorded here rather than left as a hex that
+    /// silently disagrees with the `[spec]` line below.
+    ///
+    /// ⚠️ **The ladder is what bounds this, and the room is far narrower than it looks.** The
+    /// light surfaces climb *away* from the page by darkening — page `#ffffff` → panel
+    /// `#f7f8f9` → hairline `#e2e5e9` → strong `#c9ced6` — and the **page→panel step was
+    /// already the whisper of the four**, 8/7/6 per channel against the next step's 21/19/16.
+    /// So the entire distance a page may fall before it collides with the panel it must sit
+    /// above is **6 units on the tightest channel, 2.35 % of HSV value** — the *blue*
+    /// channel, which is the binding one because the panel is coolest there. "A few percent"
+    /// is not available without moving the panel too, which is four more spec roles and
+    /// James's call rather than this change's.
+    ///
+    /// **The rule, in one sentence: the panel plus 3 on every channel.** A uniform offset
+    /// keeps the panel's own cool tilt (`+1` green, `+2` blue) instead of inventing a
+    /// neutral, which makes the page a *member* of the ladder — pure white was the only step
+    /// in it with no tilt at all. Measured against the binding channel that spends **3 of the
+    /// 6 available units** on the glare and leaves a 3-unit step — half the whisper that was
+    /// there before. ⚠️ Quote the tightest channel, not a convenient one: the page moves
+    /// 5/4/3 and the headroom is 8/7/6, so any figure mixing one channel's travel with
+    /// another's headroom (5 of 7, say) is arithmetic about no channel at all.
+    ///
+    /// ⚠️ **[`Theme::term_bg`] and [`Theme::term_scrim_tint`] both take it, and they must
+    /// track.** They are two roles — what an unpainted cell *is*, and what dims the live
+    /// backdrop behind the glyphs — but the scrim is laid over the world at up to
+    /// [`crate::term_view::SCRIM_FLOOR_LIGHT`], so a scrim left at `#ffffff` would keep
+    /// painting the exact white being complained about, over a *larger* area than the
+    /// terminal, and would make a scrimmed region read brighter than the page it borders.
+    /// The field split stays (the struct never merges roles by value); the value is stated
+    /// once so the two cannot drift apart by accident.
+    ///
+    /// ⚠️ **Nobody has seen this on James's display.** The number is reasoned, not observed —
+    /// `CONSOLE_ARCHITECTURE.md` §3's ledger carries it, and only he can close it.
+    const LIGHT_PAGE: Color32 = Color32::from_rgb(0xfa, 0xfb, 0xfc);
+
     /// **A printed technical publication** — quiet, typographic, no phosphor green anywhere.
     /// Specified by James; the ten roles he named are marked `[spec]` below and everything
     /// else follows the module's derivation rules.
@@ -393,8 +432,12 @@ impl Theme {
     /// text, borders and terminal foreground, which is what makes `organon` look like a
     /// terminal rather than a page. `#1a6b46` is a named **state**, and a publication that
     /// could not say "this succeeded" in green would be paying for the rule twice.
+    ///
+    /// ⚠️ **One role no longer holds its specified hex: the page.** See [`Theme::LIGHT_PAGE`]
+    /// for what it is now and why. Every other `[spec]` value below is untouched.
     pub const fn light() -> Self {
-        // [spec] page #ffffff · panel #f7f8f9 · primary #0f1114 · secondary #5d636c ·
+        // [spec] page #ffffff — SUPERSEDED, see `LIGHT_PAGE` (#fafbfc, James 2026-08-14) ·
+        //        panel #f7f8f9 · primary #0f1114 · secondary #5d636c ·
         //        faint #8b919b · hairline #e2e5e9 · strong #c9ced6 · accent #1440c4 ·
         //        success #1a6b46 · error #a32020
         //
@@ -445,9 +488,11 @@ impl Theme {
             // worn at the weight of a border, not shouted.
             composer_edge_dead: Color32::from_rgb(0xd1, 0x90, 0x90),
 
-            term_bg: Color32::from_rgb(0xff, 0xff, 0xff),
+            // Both `LIGHT_PAGE`, stated once — see its doc for the deviation and the
+            // ladder arithmetic that bounds it.
+            term_bg: Self::LIGHT_PAGE,
             term_fg: Color32::from_rgb(0x0f, 0x11, 0x14),
-            term_scrim_tint: Color32::from_rgb(0xff, 0xff, 0xff),
+            term_scrim_tint: Self::LIGHT_PAGE,
             term_exited_notice: Color32::from_rgb(0x5d, 0x63, 0x6c),
             // ⚠️ **CHOSEN, not specified.** The spec is silent on the terminal, and a light
             // background changes what the sixteen names can mean: "white" and "bright white"
@@ -476,7 +521,15 @@ impl Theme {
             ],
 
             // Rule 4: the page at the same 0xe6 alpha `organon` uses, premultiplied.
-            panel_fill: Color32::from_rgba_premultiplied(0xe6, 0xe6, 0xe6, 0xe6),
+            //
+            // ⚠️ **This moved with the page and had to.** Rule 4 states this field as a
+            // *function* of the page, so leaving `0xe6,0xe6,0xe6` behind would not have been
+            // "not changing a patch panel" — it would have been a stated derivation quietly
+            // becoming false, which is the one failure a written rule is supposed to prevent.
+            // `LIGHT_PAGE` × 0xe6/0xff, rounded: 250·230/255 = 225.5 → 0xe1, 251 → 226.4 →
+            // 0xe2, 252 → 227.3 → 0xe3. Hand-computed because `from_rgba_premultiplied` takes
+            // the product, and this is a `const fn`.
+            panel_fill: Color32::from_rgba_premultiplied(0xe1, 0xe2, 0xe3, 0xe6),
             panel_edge: Color32::from_rgb(0xc9, 0xce, 0xd6),
             panel_title: Color32::from_rgb(0x0f, 0x11, 0x14),
             panel_text: Color32::from_rgb(0x0f, 0x11, 0x14),
@@ -1499,17 +1552,25 @@ mod tests {
     // -------------------------------------------------------------------------
 
     /// 🚨 **Every hex the spec names, on the field the spec names it for.** These are not
-    /// derived values and there is nothing to reason about: a spec said `#ffffff` is the page,
-    /// so `term_bg` is `#ffffff` or the palette is not the one that was asked for. A wrong
-    /// colour compiles and draws, and nobody has opened a window on any of these — this test
-    /// is the only thing standing between "typed correctly" and "typed".
+    /// derived values and there is nothing to reason about: a spec said `#f7f8f9` is the panel,
+    /// so `strip_fill` is `#f7f8f9` or the palette is not the one that was asked for. A wrong
+    /// colour compiles and draws — this test is the only thing standing between "typed
+    /// correctly" and "typed".
+    ///
+    /// ⚠️ **One row is deliberately no longer the spec's, and it is asserted *as* a deviation
+    /// rather than quietly relaxed.** The light page was `#ffffff`; James asked for it turned
+    /// down after seeing it on a real display, so it is [`Theme::LIGHT_PAGE`] now. The pin did
+    /// not weaken — it still fails on any value nobody chose — but it now names an instruction
+    /// instead of a specification, and `the_light_page_stays_a_step_above_the_panel` below is
+    /// the guard the *spec* used to provide for free by being pure white.
     #[test]
     fn the_specified_hexes_land_on_the_fields_they_were_specified_for() {
         let t = Theme::light();
         // page · panel/input · primary · secondary · faint · hairline · strong · accent ·
         // success · error
-        assert_eq!(t.term_bg, Color32::from_rgb(0xff, 0xff, 0xff), "light page");
-        assert_eq!(t.term_scrim_tint, Color32::from_rgb(0xff, 0xff, 0xff), "light scrim tint");
+        assert_eq!(t.term_bg, Theme::LIGHT_PAGE, "light page — James's value, not the spec's");
+        assert_eq!(Theme::LIGHT_PAGE, Color32::from_rgb(0xfa, 0xfb, 0xfc), "and it is #fafbfc");
+        assert_eq!(t.term_scrim_tint, Theme::LIGHT_PAGE, "light scrim tint tracks the page");
         assert_eq!(t.composer_fill, Color32::from_rgb(0xf7, 0xf8, 0xf9), "light input plate");
         assert_eq!(t.strip_fill, Color32::from_rgb(0xf7, 0xf8, 0xf9), "light panel");
         assert_eq!(t.prose, Color32::from_rgb(0x0f, 0x11, 0x14), "light primary text");
@@ -1534,7 +1595,8 @@ mod tests {
             ("tab_active", t.tab_active),
             ("panel_edge", t.panel_edge),
         ] {
-            // Widened, because `#ffffff` is one of these and `255 + 8` is not a `u8`.
+            // Widened, because the near-white page is one of these and `252 + 8` is not a
+            // `u8`. (It was `255 + 8` while the page was `#ffffff`; the overflow is the same.)
             let (r, g, b) = (c.r() as i32, c.g() as i32, c.b() as i32);
             assert!(
                 !(g > r + 8 && g > b + 8),
@@ -1580,6 +1642,72 @@ mod tests {
         // 🚨 The spec's own sentence, as an assertion: the WORD `ok` is the secondary grey.
         // `conversation_view` draws that word from `theme.ok`, so this is the field it names.
         assert_eq!(t.ok, Color32::from_rgb(0x8f, 0x8f, 0x8f), "the word `ok` is NOT green");
+    }
+
+    /// 🚨 **The light surface ladder still climbs, and the page is still the top of it.**
+    ///
+    /// This is the guard that became necessary the moment the page stopped being `#ffffff`.
+    /// While it was pure white the ordering was free — nothing can be brighter than white, so
+    /// "the page is above the panel" could not be broken by editing the page. It can now, and
+    /// the failure is silent and *inverting*: a page darker than the panel makes every plate
+    /// drawn on it — the composer, the status strip, a bubble — read as **raised out of** the
+    /// paper rather than recessed into it, which is the opposite of the printed-publication
+    /// metaphor the whole palette is built on. It compiles, it draws, and it looks like a
+    /// theme rather than like a bug.
+    ///
+    /// ⚠️ **The trap is live, not hypothetical.** The brief that commissioned this change
+    /// suggested `#f4f5f6` as a starting point "which keeps a visible step above panel";
+    /// `0xf4` is **244** and the panel's `0xf7` is **247**, so that value sits three units
+    /// *below* the panel and would have inverted the first step. The arithmetic is what
+    /// settles it — the eye cannot judge three units of grey from a hex string.
+    #[test]
+    fn the_light_page_stays_a_step_above_the_panel() {
+        let t = Theme::light();
+        // The four steps, brightest first: page → panel → hairline → strong.
+        let ladder = [
+            ("page", t.term_bg),
+            ("panel", t.strip_fill),
+            ("hairline", t.strip_edge),
+            ("strong", t.model_edge),
+        ];
+        for pair in ladder.windows(2) {
+            let ((up, a), (down, b)) = (pair[0], pair[1]);
+            for (ch, x, y) in [("r", a.r(), b.r()), ("g", a.g(), b.g()), ("b", a.b(), b.b())] {
+                assert!(x > y, "the light ladder inverted at {up} → {down} on {ch}: {x} vs {y}");
+            }
+        }
+
+        // The step itself, not merely its sign. Three units is what `LIGHT_PAGE` chose —
+        // about half the 8/7/6 the spec's pure white had — and below roughly this the step
+        // stops surviving a display's own gamma and the ladder has lost a distinction it was
+        // built around, without any test noticing.
+        let (page, panel) = (t.term_bg, t.strip_fill);
+        for (ch, p, q) in
+            [("r", page.r(), panel.r()), ("g", page.g(), panel.g()), ("b", page.b(), panel.b())]
+        {
+            assert!(p - q >= 3, "the page→panel step collapsed to {} on {ch}", p - q);
+        }
+
+        // 🚨 The stated derivation, as arithmetic rather than as a comment claiming it: the
+        // page is *the panel plus a uniform offset*. Uniform is the whole point — it carries
+        // the panel's own cool tilt (+1 green, +2 blue) up to the page instead of dropping a
+        // neutral into a ladder where every other step is tilted. A page edited by eye would
+        // pass every assertion above and quietly break this one.
+        let step = page.r() - panel.r();
+        assert_eq!(page.g() - panel.g(), step, "the page's offset from the panel is not uniform");
+        assert_eq!(page.b() - panel.b(), step, "the page's offset from the panel is not uniform");
+
+        // …and `panel_fill` is rule 4's function *of that page*, so it moved with it. `0xe6`
+        // is `organon`'s alpha and does not move; the three channels are the page carrying it.
+        assert_eq!(t.panel_fill.a(), 0xe6, "rule 4's alpha is `organon`'s own");
+        for (ch, got, src) in [
+            ("r", t.panel_fill.r(), page.r()),
+            ("g", t.panel_fill.g(), page.g()),
+            ("b", t.panel_fill.b(), page.b()),
+        ] {
+            let want = ((src as u32 * 0xe6 + 127) / 0xff) as u8;
+            assert_eq!(got, want, "panel_fill.{ch} is not the page premultiplied at 0xe6");
+        }
     }
 
     /// 🚨 **Chocolate's surface ladder is its spine, and every neutral in it is neutral.**
