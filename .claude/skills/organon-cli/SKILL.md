@@ -80,6 +80,8 @@ organon console background <name>    # the surface behind the glyphs
 organon console rig <name>           # how that surface is lit
 organon console theme <name>         # every colour the console paints — live, and remembered
 organon console posture <word>       # how it holds itself: terminal-tight or desktop-open
+organon console screen <state>       # whether the window covers the display (F11 flips it)
+organon console viewport <region> <content>   # divide the pane; `off` empties a region
 organon console block <rows>         # reserve blank rows in the transcript
 organon console patch --up N --rows M --kind <kind>   # claim a gap you already printed
 organon console portal <state>       # float a live window onto the world over the transcript
@@ -93,18 +95,27 @@ Console is running, and it changes nothing a `snap` would show. `--help` lists t
 accepted names and the row bound — ask it rather than guessing, exactly as with
 parameters.
 
-`theme` and `posture` are the two that change **the console itself** rather than the
-surface behind it — `background` and `rig` say what is *behind* the glyphs, these say what
-the glyphs and their chrome are made of and how they are arranged. Both take effect on the
-next frame; ask `--help` for the palettes and the posture words this build has, and expect
-an unknown name to be refused with the known set rather than approximated.
+`theme`, `posture`, `screen` and `viewport` are the four that change **the console itself**
+rather than the surface behind it, and the last three are **orthogonal axes** — a posture is
+how tight the form is, a screen state is the rectangle the window occupies, and a viewport is
+how the pane inside it is divided. Every combination is a real console, so none of them is a
+value of another. ⚠️ `viewport` takes **two** words (a region and a content) and refuses an
+assignment the current layout cannot hold — an overlap it cannot draw, or one that would leave
+no `agent` region at all. `organon console viewport full agent` is the way back from any split.
+`background` and `rig` say what is *behind* the glyphs; these four say what the glyphs and
+their chrome are made of, how they are arranged, and how much room they get. All take effect
+on the next frame; ask `--help` for the palettes, posture words, screen states and region
+words this build has, and expect an unknown name to be refused with the known set rather than
+approximated.
 
-Two differences between them are worth knowing before you use either. **`theme` is
-remembered** — it is written to the console's preferences file, so it is still there at the
-next launch, which makes it a *choice on the user's behalf*: change it when asked, not to
-suit yourself. **`posture` is not remembered and it snaps** — no animation, and closing the
+What is remembered across a launch is worth knowing before you use any of them. **`theme` is
+the only one that is** — it is written to the console's preferences file, so it is still there
+at the next launch, which makes it a *choice on the user's behalf*: change it when asked, not
+to suit yourself. **`posture` is not remembered and it snaps** — no animation, and closing the
 console puts it back at `terminal`. `posture` also takes a bare number from 0 to 1 if you
 want somewhere between the two ends; the two words are what you want almost always.
+**`screen` and `viewport` are not remembered either**: the console opens windowed and
+undivided however you left it.
 
 `block` opens its rows in the **active tab**, just below the cursor, and the next
 prompt lands underneath them. They are ordinary scrollback rows, so they scroll away

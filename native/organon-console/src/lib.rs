@@ -109,6 +109,7 @@ pub mod platform;
 pub mod portal;
 pub mod posture;
 pub mod prefs;
+pub mod region;
 pub mod registry;
 pub mod screen;
 pub mod scroll_anchor;
