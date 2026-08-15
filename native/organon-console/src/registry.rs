@@ -108,6 +108,22 @@ pub const VERB_SURFACE: &str = "view.surface";
 /// first.
 pub const VERB_HELP: &str = "view.help";
 
+/// `console.theme` — the palette verb, and the one console-lane name this crate has to
+/// **recognise** rather than merely forward.
+///
+/// ⚠️ **It is spelled here and imported by `console_main`, not spelled in both.** Almost all of
+/// `/theme`'s work is console-lane and dispatches like any other verb; two of its argument
+/// values (`edit`, `adjust` — [`crate::theme_edit::EDIT_WORDS`]) instead open a surface in
+/// *this* transcript, so the conversation view has to be able to tell that this particular verb
+/// arrived. A second spelling of the string on this side is a comparison that silently stops
+/// matching the day somebody renames the verb, and the symptom would be `/theme edit` quietly
+/// dispatching to the console as an unknown palette name.
+pub const VERB_THEME: &str = "console.theme";
+
+/// The argument name `console.theme` carries its value in. Same rule as [`VERB_THEME`]: read
+/// out of the dispatch payload on this side, declared by `console_main`'s spec on the other.
+pub const THEME_ARG: &str = "name";
+
 /// One verb, as a hierarchy rather than as a dotted string.
 ///
 /// ⚠️ **[`CommandSpec::target`] is deliberately not carried.** That field names which

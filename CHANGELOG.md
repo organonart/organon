@@ -132,6 +132,60 @@ of the drawing, which is an artwork decision.
 products with their own identity; the mechanism would work for them and is deliberately not
 wired up. The **executable** icon (Explorer, pinned shortcuts) is a different mechanism — a
 Win32 resource and a `.ico` — and is not done.
+### Tune the palette while looking at it — `/theme edit`
+
+`/theme edit` (or `/theme adjust` — James named both and neither is the alias) opens a live
+colour editor in the band above the composer, the region the command palette already owns.
+It shows the palette one group at a time — the transcript, cards, the status strip, the
+composer, the terminal, patch panels, the timeline, the tab strip — with a swatch, the field's
+own name, and **an H/S/V editor on every row**. Tab moves between groups, the arrows pick a
+colour, Escape closes. Every drag repaints immediately.
+
+The loop it replaces was: edit a hex literal in `theme.rs`, rebuild, relaunch, look — about
+seven minutes to evaluate a change that takes a second to judge. The immediate case was
+`light`'s whitest white being too bright, but the point is the class, not the colour.
+
+🚨 **The sixty-eight colours are enumerated in exactly one place.** `theme.rs`'s
+`colour_fields!` macro generates `Theme::fields`, `fields_mut`, `SCALAR_FIELDS` and `GROUPS`
+from a single grouped list, so a colour added later is editable, storable and on a ring
+without anyone remembering to add it three more times. Rust has no reflection, so the list is
+hand-written — which makes the guard the real work:
+`every_colour_a_palette_can_differ_in_is_reachable` copies field-by-field through the accessor
+between **every ordered pair** of the four palettes and demands the result equal the source, so
+a missing field fails by name. Its one blind spot — a colour all four palettes agree on to the
+byte — is stated in the test rather than left to be discovered.
+
+🚨 **HSV is the truth while the editor is open, not the RGB.** RGB → HSV → RGB does not
+round-trip, and not as a rounding error: a grey has no hue at all, so an editor re-deriving HSV
+each frame would show red the instant a colour went neutral, and dragging saturation back up
+would return red rather than the blue it had been. The editor holds the `Hsva` of every field a
+hand has touched, keyed **by field**. ⚠️ That is also why it does not use egui's own
+`color_picker_color32`, which solves the same problem with a cache keyed by *colour value* —
+and this palette deliberately has four fields holding `#c8e6c8` on purpose, which that cache
+would weld together.
+
+📌 **What persistence means, said out loud.** Three things, deliberately not gated on each
+other: every drag **repaints** and writes nothing; **save** stores the *difference* from the
+compiled palette, filed under that palette's name; **revert** drops the overrides and returns
+to the palette this build ships. The head row carries an `unsaved` count whenever the working
+palette differs from the store — a tuning session that evaporates at exit without having said
+so is worse than no editor.
+
+⚠️ Overrides are stored **per palette** (`preferences.json`'s new `theme_overrides`), because
+"`light`'s white is too bright" says nothing about `chocolate`'s graphite; a flat map would
+apply one palette's correction to another and the result would read as the palette being
+broken. Only the tuned colours are written, so a later build that improves a shade nobody
+touched still reaches you. A stored colour naming a field this build lacks is **skipped with a
+line**, never a refusal of the whole file.
+
+⚠️ `edit` and `adjust` are **values of `/theme`'s existing argument**, not a verb of their own,
+which is what makes them complete for free from the same `Choice` the palette names come from.
+On the CLI and the MCP lane they are refused by name, saying where the surface actually lives —
+neither has a band above a composer to draw a dialog in.
+
+🚨 **Nobody has seen it.** `cargo test -p organon-console --lib` is 630 green and all four
+checks pass; that is the whole claim. Whether an H/S/V row is enough to judge a colour by, and
+whether eight rows is the right window, are questions about a running window.
 
 ### A command palette above the composer — see your choices while you type
 
