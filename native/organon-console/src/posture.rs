@@ -8,6 +8,15 @@
 //! "the phosphor look, but roomier" unsayable, which is precisely the request this axis
 //! exists to answer.
 //!
+//! ⚠️ **There is now a THIRD axis beside these two, and it was very nearly folded into this
+//! one.** [`crate::screen`] — whether the window covers the display — was asked for as *"a new
+//! posture, which is full screen"*, and the answer is the same argument this file opens with,
+//! applied a second time: a full-screen terminal and a full-screen desktop document are both
+//! real, so neither is a variant of the other and neither is a *point* between them. It could
+//! not have been one anyway, for the reason the next section gives: there are no slots on this
+//! axis to add a third to. That module's header owns the full argument, including why the
+//! window's width is deliberately not allowed to feed back into a [`Form`].
+//!
 //! # Why a scalar rather than two modes
 //!
 //! **Every form token here is a scalar, and scalars lerp.** The desktop state is not a

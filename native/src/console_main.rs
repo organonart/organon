@@ -395,6 +395,17 @@ const CMD_RIG: &str = "console.rig";
 const CMD_THEME: &str = organon_console::registry::VERB_THEME;
 /// See [`CMD_BACKGROUND`]. #38: how the console holds itself, on the terminal↔desktop axis.
 const CMD_POSTURE: &str = "console.posture";
+/// See [`CMD_BACKGROUND`]. Whether the window covers the display — **a third axis, orthogonal
+/// to [`CMD_POSTURE`]**, not a value of it. `organon_console::screen`'s header owns the
+/// argument; the one-line form is that a posture is a set of form tokens and full screen moves
+/// none of them.
+///
+/// ⚠️ **Named for the WINDOW's state, and deliberately not "fullscreen".**
+/// `CONSOLE_ARCHITECTURE.md` §2's seams table reserves the phrase *full screen* for a portal state
+/// that is still unbuilt — the portal taking the whole window, after `immersive` and before the
+/// animated grow. Two different rectangles can each be described as going full screen, so this
+/// verb says which one it moves.
+const CMD_SCREEN: &str = "console.screen";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
@@ -537,6 +548,24 @@ fn console_specs() -> Vec<CommandSpec> {
                 required: true,
             }],
         },
+        // 📌 **A `Choice` with no scalar beside it, which is the posture verb's caveat NOT
+        // applying** — and the contrast is worth reading, because the two verbs sit next to
+        // each other and look alike. A posture's value space is two words *or* a number, so
+        // its schema is deliberately narrower than its CLI. A screen state has three words and
+        // nothing between them: a window either covers the display or it does not. So here the
+        // schema states the whole value space, and an agent gets the complete vocabulary.
+        CommandSpec {
+            name: CMD_SCREEN.into(),
+            doc: "Whether the window covers the display. F11 flips it from inside".into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: CMD_STATE.into(),
+                kind: ArgKind::Choice(
+                    organon_console::screen::SCREEN_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                ),
+                required: true,
+            }],
+        },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
         // therefore lives in TWO places that are both real gates rather than one that is
@@ -674,6 +703,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Rig(_) => CMD_RIG,
         cli::ConsoleOp::Theme(_) => CMD_THEME,
         cli::ConsoleOp::Posture(_) => CMD_POSTURE,
+        cli::ConsoleOp::Screen(_) => CMD_SCREEN,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -729,6 +759,14 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             let w = word(CMD_ARG)?;
             organon_console::posture::Posture::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Posture(w))
+        }
+        // `resolve` and the answer thrown away, on `CMD_THEME`'s rule: membership was settled
+        // by `validate_args` against the `Choice` above, so this is the belt that catches a
+        // line reaching the service by a route that skipped the schema.
+        CMD_SCREEN => {
+            let w = word(CMD_STATE)?;
+            organon_console::screen::ScreenCmd::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Screen(w))
         }
         CMD_BLOCK => {
             let n = args
@@ -851,6 +889,12 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
             json!({ CMD_UP: up, CMD_ROWS: rows, CMD_KIND: kind.as_word() })
         }
         cli::ConsoleOp::Portal(cmd) => json!({ CMD_STATE: cmd.as_word() }),
+        // `CMD_STATE`, with the portal rather than with the four `CMD_ARG` verbs above, and
+        // the slot name is the schema's — `console_specs` declares it, so the two must agree
+        // or `validate_args` refuses every dispatch this produces. Both verbs name a *state*
+        // rather than a thing; a screen state is a `String` here because that is what crossed
+        // the lane, and it has already been resolved once by `op_from`.
+        cli::ConsoleOp::Screen(word) => json!({ CMD_STATE: word }),
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
         // optional argument and `op_from` maps straight back to `None`. Omitting the key
         // entirely would do the same thing; spelling it keeps the dispatch record — which is
@@ -1044,12 +1088,20 @@ fn console_step(
         // of the substrate, and neither belongs in the Tier-4 epoch ledger this function's
         // caller feeds — a band of scrollback records what was behind it, and nothing behind
         // it moved. `Console::apply_console` routes both first, for that reason in full.
+        //
+        // **A screen state is not a look either, and it is the furthest of all of them from
+        // being one**: it changes nothing the console *draws*. It resizes the window and lets
+        // the next frame lay out into whatever rectangle it was given — the substrate behind
+        // the glyphs is re-rendered at a new size, wearing the identical dressing. Banding the
+        // transcript here would mark a look change at a moment the look demonstrably did not
+        // change.
         cli::ConsoleOp::Block(_)
         | cli::ConsoleOp::Patch { .. }
         | cli::ConsoleOp::Portal(_)
         | cli::ConsoleOp::Camera(_)
         | cli::ConsoleOp::Theme(_)
-        | cli::ConsoleOp::Posture(_) => return None,
+        | cli::ConsoleOp::Posture(_)
+        | cli::ConsoleOp::Screen(_) => return None,
     }
     Some((source, look))
 }
@@ -2312,6 +2364,13 @@ impl Console {
             self.set_posture(word);
             return;
         }
+        // Above the ledger for the same reason, and one more of its own: this changes no pixel
+        // *behind* the glyphs, and it does not even change the console's drawing — it resizes
+        // the window and lets the next frame lay out into whatever it got.
+        if let cli::ConsoleOp::Screen(word) = op {
+            self.set_screen(word);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -2506,6 +2565,65 @@ impl Console {
             Err(e) => eprintln!("organon-console: {e} — ignored"),
             Ok(p) => self.posture = p,
         }
+    }
+
+    /// Fill the display, or give the window its edges back.
+    ///
+    /// 🚨 **The window is asked where it is, rather than a remembered copy being consulted** —
+    /// and that is the whole reason `Console` has no `screen` field. `Window::fullscreen()`
+    /// *is* the state; anything beside it would be a second answer to a one-bit question, and
+    /// the two can genuinely disagree, because this verb is not the only way a window gets
+    /// resized (macOS's green button, a tiling window manager, the platform restoring a
+    /// session). After such a divergence a remembered `Windowed` would make `toggle` send a
+    /// full-screen window *into* full screen, so the one word whose entire meaning is "the
+    /// other one" would do nothing visible and report nothing. `organon_console::screen`'s
+    /// header records this as the failure the arrangement forecloses.
+    ///
+    /// ⚠️ **Borderless, and on the window's current monitor** — `Fullscreen::Borderless(None)`,
+    /// which is `organon-visual`'s call. Never `Exclusive`: that takes a video mode from the
+    /// display and is a projector's business, not a workstation window's, and it is the variety
+    /// that makes alt-tab expensive. Only the *discipline* is shared with that file's
+    /// `sync_fullscreen` — touch the window only on a real change — and the **two differ
+    /// exactly where it matters**: it holds a `fullscreen_applied` bool and compares against
+    /// it, because its intent arrives from `World::wants_fullscreen` every frame and it needs
+    /// an edge; this has no periodic intent to debounce, so it asks the window and keeps no
+    /// bool at all. **No code is shared, deliberately**: `World::wants_fullscreen` travels in
+    /// `Shared` and is written by the visual's own `F` key and its projector launch logic, and
+    /// the console's `World` renders only into a backdrop texture and never owns a swapchain —
+    /// so reaching for it would mean the console writing into the visual's IPC state to set a
+    /// flag on its own window. Two lines of winit is a far smaller price than that coupling.
+    ///
+    /// ⚠️ **Nothing is stored across launches**, on [`Console::set_posture`]'s rule: the
+    /// console opens windowed however you left it. A window that reopens covering the display,
+    /// with no title bar, is the state that most needs an undo and has the fewest ways to get
+    /// one.
+    fn set_screen(&mut self, word: &str) {
+        use organon_console::screen::{Screen, ScreenCmd};
+        let cmd = match ScreenCmd::resolve(word) {
+            // Refused rather than approximated — `Posture::resolve`'s rule: an unrecognised
+            // word must not resize a window somebody is looking at.
+            Err(e) => {
+                eprintln!("organon-console: {e} — ignored");
+                return;
+            }
+            Ok(cmd) => cmd,
+        };
+        let Some(window) = self.window.as_ref() else {
+            // Only reachable if the lane were ever drained before `resumed`, which it is not —
+            // `drain_console` runs inside the frame path. Said out loud rather than silently
+            // skipped, because a command that vanishes is the failure this whole lane's
+            // forward-compatibility story tries to make legible.
+            eprintln!(
+                "organon-console: `screen {word}` arrived before there was a window — ignored"
+            );
+            return;
+        };
+        let now = Screen::from_is_full(window.fullscreen().is_some());
+        let want = cmd.apply_to(now);
+        if want == now {
+            return;
+        }
+        window.set_fullscreen(want.is_full().then(|| winit::window::Fullscreen::Borderless(None)));
     }
 
     /// Move the viewer's viewpoint — **unless a hand is on it**.
@@ -3540,6 +3658,10 @@ impl Console {
         let sessions = &mut self.sessions;
         let pane_looks = &mut self.pane_looks;
         let mut action: Option<TabAction> = None;
+        // The full-screen chord, collected out of the closure exactly as `action` is and for
+        // the same reason: `Console::set_screen` needs `&mut self`, and `self` is split into
+        // disjoint borrows for the duration of `egui_ctx.run`.
+        let mut screen_cmd: Option<organon_console::screen::ScreenCmd> = None;
         // Buttons pressed inside a patch's panel this frame, collected out of the closure the
         // same way `action` is and for the same reason: applying one needs `&mut self`, and
         // `self` is split into disjoint borrows for the duration of `egui_ctx.run`.
@@ -3590,12 +3712,51 @@ impl Console {
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
+            // `repeat` is forwarded rather than filtered here: which chords a held
+            // key may stream is `command_key_action`'s decision, taken per action
+            // and tested there. `action.is_none()` bounds this to one per frame,
+            // which is a rate and not a total — autorepeat is slower than the frame
+            // rate, so every repeat that arrives gets its own frame to act in.
             ctx.input(|i| {
                 for ev in &i.events {
-                    if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+                    if let egui::Event::Key { key, pressed: true, repeat, modifiers, .. } = ev {
                         if action.is_none() {
-                            action =
-                                tabs::command_key_action(*key, *modifiers, strip, default_harness);
+                            action = tabs::command_key_action(
+                                *key,
+                                *modifiers,
+                                *repeat,
+                                strip,
+                                default_harness,
+                            );
+                        }
+                        // 🚨 **Read here — beside the ⌘ chords, from the raw frame events,
+                        // before a single panel is laid out — and that placement is what makes
+                        // it the way OUT of full screen rather than a key that works when
+                        // nothing has focus.** A window with no title bar has no close button,
+                        // so the escape hatch cannot be conditional on which pane is active or
+                        // on whether the composer has the caret. This site sees every keystroke
+                        // regardless of both, which is exactly why ⌘T works while you are
+                        // typing.
+                        //
+                        // ⚠️ Deliberately **not** consumed out of `i.events`, unlike the state-
+                        // conditional Escape ownership §2's portal row reserves. Nothing downstream
+                        // wants this key: `term::encode_key` returns `None` for every function
+                        // key, so the PTY receives nothing whether or not it is removed, and
+                        // both conversation-side key tables answer `Ignore`. All three are
+                        // pinned by tests in `organon_console::screen`, so a future mapping that
+                        // did want F11 would fail there rather than fight silently here.
+                        //
+                        // ⚠️ **`repeat` is passed and is not decoration.** Holding a key streams
+                        // `pressed: true` events, so without it a resting finger would flip the
+                        // window once per repeat and the state on release would come down to
+                        // parity. `screen_key` refuses them; its own doc says why this chord
+                        // needs it more than the `⌘` ones above — which now take the flag too,
+                        // and answer it differently: `command_key_action` streams `Switch` on
+                        // repeat and refuses it only for `New`/`Close`. Two key tables, one
+                        // event, opposite right answers, which is why they resolve separately.
+                        if screen_cmd.is_none() {
+                            screen_cmd =
+                                organon_console::screen::screen_key(*key, *modifiers, *repeat);
                         }
                     }
                 }
@@ -3783,6 +3944,14 @@ impl Console {
         });
         if let Some(action) = action {
             self.apply(action);
+        }
+        // The chord and `organon console screen toggle` are the **same call** from here on —
+        // one word, resolved once, so the key can never drift from the verb. Spelled back into
+        // its word rather than passed as a value, which is the arrangement `apply_console` uses
+        // for a button in the scrollback: it costs a three-way match and it means there is
+        // exactly one path a screen change can take.
+        if let Some(cmd) = screen_cmd {
+            self.set_screen(cmd.as_word());
         }
         // A button pressed inside the scrollback and the same word typed at a prompt are the
         // **same call** from here on — `apply_console` is exactly where `organon console
@@ -3980,7 +4149,8 @@ fn help_text() -> String {
              organon console background <{backgrounds}>\n    \
              organon console rig <{rigs}>\n    \
              organon console theme <{themes}>       live, and stored as a preference\n    \
-             organon console posture <{postures}|0.0-1.0>  snaps; not remembered\n\
+             organon console posture <{postures}|0.0-1.0>  snaps; not remembered\n    \
+             organon console screen <{screens}>     the window, not the form; F11 flips it\n\
          \n\
          Docs: SHELL_ARCHITECTURE.md\n",
         substrate = BACKDROP_SUBSTRATE,
@@ -4004,6 +4174,7 @@ fn help_text() -> String {
             .join("|"),
         themes = Theme::NAMES.join("|"),
         postures = organon_console::posture::POSTURE_WORDS.join("|"),
+        screens = organon_console::screen::SCREEN_WORDS.join("|"),
         // Quoted from the tables the drain resolves against, never restated — the discipline
         // the scrim line already earned here, and the reason `--help` cannot advertise a
         // material this build cannot draw.
@@ -4109,6 +4280,19 @@ mod cli_tests {
         for word in organon_console::posture::POSTURE_WORDS {
             assert!(h.contains(word), "`{word}` is a posture `--help` never mentions");
         }
+        assert!(h.contains("organon console screen"), "the screen verb is unlisted");
+        for word in organon_console::screen::SCREEN_WORDS {
+            assert!(h.contains(word), "`{word}` is a screen state `--help` never mentions");
+        }
+        // 🚨 **The chord is documented where somebody stuck in full screen would look**, and
+        // that is the one part of this verb whose absence is not a documentation gap but a
+        // trap: a borderless window has no close button, so a person who does not know the key
+        // and does not remember the verb has no way back inside the app. It is asserted rather
+        // than trusted for exactly that reason.
+        assert!(
+            h.contains(&format!("{:?}", organon_console::screen::CHORD)),
+            "the way OUT of full screen is not in `--help`"
+        );
     }
 
     /// 🚨 CONTRACT: **the slot `/theme` carries its value in is the slot the conversation view
@@ -4644,6 +4828,13 @@ mod cli_tests {
                 CMD_POSTURE => {
                     json!({ CMD_ARG: organon_console::posture::POSTURE_WORDS[0] })
                 }
+                // `SCREEN_WORDS[0]` the way the two dressing verbs reach for `v[0]`, and safe
+                // to do so where `CMD_THEME` is not: this `Choice` carries no word that is
+                // legal in the schema and illegal on the lane, because every screen state is
+                // reachable from here. If one ever is not, this must stop being an index.
+                CMD_SCREEN => {
+                    json!({ CMD_STATE: organon_console::screen::SCREEN_WORDS[0] })
+                }
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -4848,9 +5039,12 @@ mod cli_tests {
     ///
     /// ⚠️ James's own sketch of the row named eight verbs
     /// (`surface|theme|posture|background|rig|patch|portal|camera`). The panel deliberately
-    /// shows the **true** list, which is eleven: `block`, `camera.read` and `help` are
+    /// shows the **true** list, which is thirteen: `block`, `camera.read` and `help` are
     /// typeable, so hiding them would be the surface disagreeing with the registry — a
-    /// second vocabulary, in the one place that exists to prevent one.
+    /// second vocabulary, in the one place that exists to prevent one. `screen` and `organon`
+    /// are the twelfth and thirteenth, each earning its place the moment it became typeable —
+    /// and they arrived on separate branches, which is what made the hidden count below merge
+    /// wrong. Update the number here in the same breath as the assertions.
     ///
     /// ⚠️ `cargo check --tests --features console-edition` only in this session; CI executes
     /// it — the same standing caveat the sibling test above carries.
@@ -4863,13 +5057,20 @@ mod cli_tests {
         let all = registry.candidates("/").expect("a bare slash opens the whole table");
         assert_eq!(
             compact_line(&all, 0, 200),
-            "[background] | rig | theme | posture | block | patch | portal | camera | \
+            "[background] | rig | theme | posture | screen | block | patch | portal | camera | \
              camera.read | surface | help | organon"
         );
-        // 111 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 111);
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +10");
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 120);
+        // 🚨 **This line is why the test is a witness rather than a specification, and it very
+        // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
+        // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
+        // to look at, while the combined table is thirteen verbs and the true answer is `+11`.
+        // A hidden count is the one assertion here that a merge can silently invalidate: the
+        // row above conflicts loudly because both sides edited the same words, and this one
+        // does not because both sides happened to write the same number for different reasons.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +11");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.

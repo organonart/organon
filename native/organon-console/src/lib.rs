@@ -110,6 +110,7 @@ pub mod portal;
 pub mod posture;
 pub mod prefs;
 pub mod registry;
+pub mod screen;
 pub mod scroll_anchor;
 pub mod session;
 pub mod tabs;

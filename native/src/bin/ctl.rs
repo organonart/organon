@@ -20,7 +20,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use organic_math_native::{agent, cli, ipc, scene_input};
 use organon_core::kind;
-use organon_console::{posture, theme};
+use organon_console::{posture, screen, theme};
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -84,6 +84,19 @@ fn rig_names() -> clap::builder::PossibleValuesParser {
 /// copy is how a CLI comes to offer a colour nothing can paint.
 fn theme_names() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(theme::Theme::NAMES.iter().copied())
+}
+
+/// Possible-values parser for `console screen <STATE>`. Built from
+/// `organon_console::screen::SCREEN_WORDS`, on [`patch_kinds`]' rule and for its reason.
+///
+/// 📌 **Unlike `console posture`, this one CAN be a `PossibleValuesParser`, and the contrast
+/// is the design showing through the CLI.** A posture's value space is two words *or* a
+/// scalar, which clap cannot state — so its gate has to move to `run_console` and its words do
+/// not tab-complete. A screen state has three words and nothing between them, because a window
+/// either covers the display or it does not. So the check lands at the clap boundary, where the
+/// error is best, and the words complete for free.
+fn screen_words() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(screen::SCREEN_WORDS.iter().copied())
 }
 
 /// Possible-values parser for `console patch --kind <KIND>`.
@@ -358,6 +371,28 @@ enum ConsoleAction {
         /// refusal that names them. The cost is real and worth stating: `<POSTURE>` does not
         /// tab-complete the two words, which is why `--help` lists them twice over.
         word: String,
+    },
+    /// Fill the display with the console's window, or give it its edges back
+    #[command(after_help = "`full` is borderless full screen on the display the window is \
+                            already on; `windowed` is the ordinary window it opened as; \
+                            `toggle` is whichever it is not.\n\n\
+                            ⚠️ This is NOT a posture, and the distinction is load-bearing \
+                            rather than pedantic. A posture is a set of form tokens — margins, \
+                            corners, padding, line height — and full screen changes none of \
+                            them. The two are orthogonal: full screen at `terminal` posture and \
+                            full screen at `desktop` posture are both real consoles, and every \
+                            combination of the two verbs means exactly what it says.\n\n\
+                            📌 F11 flips it from inside the window, at any time, in any tab. \
+                            That is the way out, and it is a real one: no title bar means no \
+                            close button, and the function keys are the one band the terminal \
+                            has never sent to a child — so unlike Escape, claiming it takes \
+                            nothing away from `vim`.\n\n\
+                            ⚠️ It is NOT remembered, on `posture`'s rule: the console opens \
+                            windowed however you left it.")]
+    Screen {
+        /// full, windowed, or toggle
+        #[arg(value_parser = screen_words())]
+        state: String,
     },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
@@ -655,6 +690,11 @@ fn run_console(action: ConsoleAction) -> ! {
                 std::process::exit(2);
             }
         },
+        // clap has already restricted this to `SCREEN_WORDS`, so it travels as typed — the
+        // `Theme` arm's arrangement, not the `Posture` arm's, because this value space is a
+        // closed list and `PossibleValuesParser` can say so. The console resolves it again on
+        // arrival, which is the gate for a line written straight onto the sidecar by hand.
+        ConsoleAction::Screen { state } => cli::ConsoleOp::Screen(state),
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
         // here; the fallback rather than an `expect` because it is not a guess — it is the
@@ -1119,6 +1159,38 @@ mod tests {
         // way, which is all that matters — but by a different gate, so it is asserted apart.
         assert!(posture::Posture::resolve("-0.1").is_err());
         assert!(parse(&["console", "posture"]).is_err(), "a posture verb with no posture");
+    }
+
+    /// CONTRACT: **`console screen` is gated by clap itself, which is the contrast the verb
+    /// above exists to be read against.** A posture's value space is two words *or* a scalar,
+    /// so `PossibleValuesParser` cannot state it and the gate has to move to `run_console`. A
+    /// screen state is three words and nothing between them — a window either covers the
+    /// display or it does not — so the whole value space is expressible, the check happens
+    /// before a byte is written, and the words tab-complete.
+    ///
+    /// ⚠️ The refusals below are asserted at the **clap** boundary, not the resolver's. That is
+    /// the point: `screen sideways` must never reach the sidecar at all, whereas
+    /// `posture sideways` does reach `run_console` and is stopped there.
+    #[test]
+    fn console_screen_is_a_closed_word_list_clap_can_state() {
+        for word in screen::SCREEN_WORDS.iter().copied() {
+            let c = parse(&["console", "screen", word]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Screen { state: got } } => {
+                    assert_eq!(got, word)
+                }
+                _ => panic!("`console screen {word}` parsed as something else"),
+            }
+            assert!(screen::ScreenCmd::resolve(word).is_ok(), "`{word}` must resolve");
+        }
+        // Refused by clap, unlike the posture verb's equivalents. `fullscreen` is the case
+        // worth naming: it is the word somebody reaches for first, and the console reserves
+        // that phrase for a portal state, so it must fail loudly rather than near-match.
+        for bad in ["fullscreen", "on", "off", "Full", "0", "sideways"] {
+            assert!(parse(&["console", "screen", bad]).is_err(), "clap must gate `{bad}`");
+            assert!(screen::ScreenCmd::resolve(bad).is_err(), "`{bad}` must be refused");
+        }
+        assert!(parse(&["console", "screen"]).is_err(), "a screen verb with no state");
     }
 
     /// **`console block` is bounded at the clap boundary, which is the only place a row count
