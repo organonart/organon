@@ -250,6 +250,7 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         palette_selected: 0,
         palette_dismissed: false,
         composer_seen: String::new(),
+        completion_held: false,
         history: std::collections::VecDeque::new(),
         history_at: None,
         want_caret: false,

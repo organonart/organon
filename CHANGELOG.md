@@ -11,6 +11,48 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Backspace works again, and a finished command says Enter would run it
+
+Two defects James found in minutes on a running build, both in the command panel that had not
+yet been released.
+
+- 🚨 **You could not delete your way out of a command line.** *"Once I have typed slash
+  surface, I am no longer able to backspace out of it."* Deleting from `/surface` leaves
+  `/surfac`, whose only candidate is still `surface`, whose completion is `/surface` — so the
+  deletion was undone on the frame it happened. Every verb with a unique prefix was a trap
+  (`/background`, `/rig`, `/theme`, `/posture`, `/help`), as was every value once its prefix
+  was unique, and select-all-and-retype was the only way to correct a typo. ⚠️ **Worse than an
+  undo**: accepting rewrites the whole line and puts the caret at its end, so the characters
+  that did come out came from the middle of the word — eight backspaces on `/surface`,
+  measured through real frames, gave `/surface`, `/surfae`, `/surface`, `/surfce`, `/surfc`,
+  `/surface`, `/surace`, `/surac`.
+
+  **The rule is now the one every editor uses: complete on insertion, never on deletion.**
+  Insertion completes exactly as before — that is what opens `/portal`'s argument ring at all
+  — and it is a **latch rather than a per-frame test**, because the frame *after* a backspace
+  is a frame in which nothing changed, so refusing only shrinking frames would re-complete one
+  frame later: the same bug at 60 Hz, presenting as a flicker and invisible to a single-frame
+  test. ⚠️ `Palette::autorun` obeys it too, where the stake is higher — with that switch on,
+  the backspace would have **run** the command it was erasing. ⚠️ The measure is the line's
+  length, so a paste that shortens the line and select-all-then-type both read as deletions;
+  neither can stick, since the next inserted character releases the latch. Pinned by
+  backspacing `/surface` to empty one character at a time through real frames.
+
+- 🚨 **A runnable line said nothing, and a blank panel reads as a broken one.** *"Slash
+  surface shows no options."* `surface` takes no arguments, so there genuinely are none — and
+  `/surface` drew an empty row while `/surface ` made the panel vanish outright. The row now
+  leads with **`Enter runs`** whenever the line as it stands resolves: `Enter runs` for
+  `/surface`, `Enter runs | [reset] | yaw | distance` for `/camera `. `Palette::runnable` has
+  existed since the registry was written and no renderer had ever read it. ⚠️ It leads rather
+  than trails because the row drops from the tail when it does not fit. ⚠️ The fix for the
+  vanishing panel is a third term in `Palette::is_empty` — nothing to offer, nothing to hint,
+  **and nothing to run** — so it cannot be missed by the next surface, the same way `hint()`
+  already could not. Prose still opens no panel at all.
+
+`cargo test -p organon-console --lib` 646 green (640 before); `cargo test -p organon-core` 556
+green; both `--features console-edition` checks clean. ⚠️ **Still nobody has typed into the
+fixed panel** — every claim here is a claim about code and about frames driven headlessly.
+
 ### The command panel becomes one row, and the line finishes itself
 
 James used the panel the day it landed and asked for it a tenth the height: *"I want the

@@ -3110,6 +3110,23 @@ rather than looked at.
 distance `. `Palette::hint` was written for exactly the kinds with no closed value space
 (`Float`, `Int`, `Text`) and the compact row is the first surface to draw it.
 
+🚨 **A line Enter would run says so, because a blank row reads as a broken one.** James, on a
+running build: *"slash surface shows no options."* `surface` takes no arguments, so there
+genuinely are none — and the panel said nothing at all, which is indistinguishable from a
+panel that has failed. The row now leads with **`Enter runs`** whenever `Palette::runnable`
+holds: `Enter runs` alone for `/surface`, `Enter runs | [reset] | yaw | distance` for
+`/camera `. ⚠️ It leads rather than trails because `compact_fit` drops from the tail, so last
+would be the first thing a narrow pane hid. ⚠️ **Two spellings failed differently and both are
+pinned**: `/surface` had a redundant one-item list the renderer dropped, leaving an empty row,
+while `/surface ` had no candidates at all, so `Palette::is_empty` was true and there was no
+panel to draw — that third term (`&& !runnable`) now lives in `is_empty` rather than at the
+call site, exactly as `hint()` already did. The `None` path is untouched: a line that is not a
+command line still opens nothing, so nothing pops up over prose. ⚠️ **One consequence worth
+stating**: a panel being open is what gives the arrow keys to the panel (`arrow_owner`), so on
+a runnable line with no candidates Up and Down now move a highlight that is not there instead
+of the caret — which is already what they do on a hint-only line like `/block `, and on a
+one-line command there is no other row for the caret to reach.
+
 ⚠️ **The row counts what it could not fit rather than truncating it** (`… | +9`).
 `compact_fit` measures in **characters**, which is exact because the row is drawn entirely in
 the mono face, and it is a count rather than an ellipsis because egui's own truncation
@@ -3129,7 +3146,11 @@ that is also where he talks to an agent. Which key it eventually gets is his.
 show me the single choice like you currently do. Simply complete the completion because it's
 the only option."* `Palette::sole_completion` is that rule, and `palette_complete` is the
 loop; the panel additionally declines to draw a one-item list whose candidate is already the
-whole line, which is the same statement seen from the drawing side.
+whole line, which is the same statement seen from the drawing side —
+`conversation_view::drawn_palette`, one pure function so the row a test reads and the row a
+human sees cannot be two derivations. ⚠️ Dropping the redundant *word* is not the same as
+dropping the *row*: `/surface` is this case and also a whole command, so what survives is the
+`Enter runs` marker above.
 
 🚨 **Completing is not running, and they have separate switches.** Completion is **on by
 default** and only ever rewrites the composer — a line in the box is not an action.
@@ -3159,6 +3180,38 @@ above it.
 ⚠️ **Escape suppresses it, for free and correctly.** `ConversationPane::palette` answers
 `None` while the panel is dismissed, so a human who has shut the panel is not having their
 line rewritten behind it.
+
+🚨 **THE RULE: complete on insertion, NEVER on deletion — and a reader who does not know it
+will reintroduce the worst defect this panel has had.** James, on a running build:
+*"once I have typed slash surface, I am no longer able to backspace out of it."* Deleting
+from `/surface` leaves `/surfac`, whose only candidate is still `surface`, whose completion
+is `/surface` — so the deletion was undone on the frame it happened. Every verb with a unique
+prefix was a trap (`/background`, `/rig`, `/theme`, `/posture`, `/help`) and so was every
+value once its prefix was unique, and select-all-and-retype was the only way out of a typo.
+⚠️ It was worse than an undo: accepting rewrites the whole line and puts the caret at its end,
+so the characters that *did* come out came from the middle of the word — measured through real
+frames, eight backspaces on `/surface` gave `/surface`, `/surfae`, `/surface`, `/surfce`,
+`/surfc`, `/surface`, `/surace`, `/surac`.
+
+`conversation_view::completion_held` is the rule and it is a **latch, not a per-frame test**.
+The frame *after* a backspace is a frame in which nothing changed at all, so refusing only
+*shrinking* frames would re-complete on that next one — the same bug at 60 Hz, presenting as a
+flicker rather than as a line that will not shorten, and invisible to any single-frame test.
+A deletion therefore holds completion off until an **insertion** lets it go. It reads the
+shadow copy `notice_edit` already keeps (`composer_seen`, the line at the start of the frame)
+against the line the `TextEdit` has just written — one source of truth, no second observer.
+⚠️ **`Palette::autorun` obeys the same latch**, where the stake is higher: with that switch on,
+backspacing `/surface` to `/surfac` leaves one candidate that *completes*, so the keystroke
+trying to erase the command would have executed it.
+
+⚠️ **What the rule measures is the line's length in bytes**, which answers *"did this frame
+add text"* and nothing finer. Three cases are therefore classified by their effect rather than
+their intent, each stated rather than defended: a **paste that replaces a long line with a
+short one** reads as a deletion; **select-all then type one character** reads as a deletion;
+a **same-length replacement** leaves the latch as it was. None can get stuck — the next
+inserted character releases it, so the cost is bounded at one keystroke — and a composer set
+wholesale (a test, a history recall) arrives unchanged within its frame and completes as
+before.
 
 ⚠️ **One frame of exposure, stated rather than papered over.** The completion runs *after*
 the `TextEdit` has taken this frame's keystroke, so the caret is put back at the end of the
@@ -3636,7 +3689,7 @@ path silently breaks the three-products-simultaneously guarantee that
   refused to reappear after an Escape, offered no arguments for `/portal`, and wrote a check
   mark that drew as an empty box. Those are fixed and each is pinned; the row that replaced it
   has still only been read as a string in a test. Everything §1.9 asserts is a claim about
-  code: `cargo test -p organon-console --lib` is **613 green** (604 before), `cargo test -p
+  code: `cargo test -p organon-console --lib` is **646 green** (640 before), `cargo test -p
   organon-core` is **556 green**, `cargo check --features console-edition --bin
   organon-console` is clean, and `cargo check --tests -p organic-math-native --features
   console-edition` is clean. **That is the whole claim: it compiles and the tests pass.** What
@@ -3656,7 +3709,15 @@ path silently breaks the three-products-simultaneously guarantee that
   `ORGANON_PALETTE_AUTORUN=1` and typing `/s`. ⚠️ **The command history has never been walked
   by a hand either** — `arrow_owner`'s four cases are pinned as a pure function and driven
   through real frames, but "Up did what I expected" is exactly the kind of claim a test cannot
-  make.
+  make. ✏️ **Correcting this entry, because what it recorded as completion's cost was the
+  smaller half of it.** The one-frame caret window was named here as the known price of
+  self-completion, and it was true; what went unrecorded is that **deletion was impossible** —
+  every backspace on a uniquely-prefixed verb was undone on the frame it happened, and a
+  mistyped command could only be corrected by selecting the whole line. James found it in
+  minutes on the first running build (*"once I have typed slash surface, I am no longer able to
+  backspace out of it"*). It is fixed and pinned (§1.9's insertion-only rule); the lesson worth
+  keeping is that the ledger listed the defect that had been *reasoned about* and missed the one
+  a hand meets first, which is the failure mode a ledger written without a user exists to have.
 - 🚨 **Nobody has seen the colour editor, and it is a tool for judging colours by eye — so the
   one thing it exists to do is exactly the thing not verified.** Everything §1.10 asserts is a
   claim about code. What it does not establish, in order of how much it matters:

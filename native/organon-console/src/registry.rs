@@ -651,9 +651,22 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// Nothing to show: no continuations, and nothing to say about the slot either.
+    /// Nothing to show: no continuations, nothing to say about the slot, **and nothing true
+    /// about the line as it stands**.
+    ///
+    /// ⚠️ **Three terms, and the third was missing.** `/surface ` takes no arguments, so it
+    /// lands in [`Slot::Keyword`] with no candidates and no hint — and the panel therefore
+    /// vanished outright, which is indistinguishable from a panel that is broken. James, on a
+    /// running build: *"slash surface shows no options."* There genuinely are none; what there
+    /// is, is the fact that Enter would run the line, and [`Palette::runnable`] is that fact.
+    /// A renderer that draws it needs the palette to survive this test to draw anything at all,
+    /// so the term belongs here rather than at the call site — the same way `hint` does.
+    ///
+    /// ⚠️ The `None` path above this is untouched and must stay so: [`Registry::candidates`]
+    /// answers `None` for a line that is not a command line, and a panel must never open over
+    /// prose. This only ever turns a *drawn-as-blank* panel into one with a sentence in it.
     pub fn is_empty(&self) -> bool {
-        self.candidates.is_empty() && self.hint().is_none()
+        self.candidates.is_empty() && self.hint().is_none() && !self.runnable
     }
 
     /// What to type when there is nothing to choose from — the one case a list cannot answer.
@@ -1401,6 +1414,28 @@ mod tests {
         assert!(palette("/background slate").runnable);
         assert!(palette("/camera").runnable, "every axis optional, so the bare verb runs");
         assert!(!palette("/camera distance").runnable, "…but a keyword without its value does not");
+    }
+
+    /// 🚨 CONTRACT: **a line Enter would run is never nothing to say**, which is the term
+    /// [`Palette::is_empty`] was missing.
+    ///
+    /// `/surface ` has no candidates and no hint: every earlier reading of "empty" was true of
+    /// it, so the panel disappeared the moment a complete command had a space typed after it —
+    /// and a panel that vanishes is read as a broken one. The fact that survives is
+    /// [`Palette::runnable`].
+    #[test]
+    fn a_runnable_line_is_never_empty_even_with_nothing_left_to_offer() {
+        let settled = palette("/surface ");
+        assert!(settled.candidates.is_empty(), "`surface` takes nothing, so there is no list");
+        assert_eq!(settled.hint(), None, "and no slot to describe either");
+        assert!(settled.runnable, "…but Enter would run it");
+        assert!(!settled.is_empty(), "so the panel has something true to say");
+
+        // The other half, unchanged: a line with nothing to offer AND nothing to run stays
+        // empty, so no panel opens for it.
+        let stuck = palette("/camera sideways ");
+        assert!(stuck.candidates.is_empty() && stuck.hint().is_none() && !stuck.runnable);
+        assert!(stuck.is_empty(), "a word naming no argument leaves the panel with nothing");
     }
 
     /// 🚨 **The auto-execute guard, and the case it must refuse.**
