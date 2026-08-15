@@ -97,6 +97,25 @@ pub enum ConsoleOp {
     /// and the refusal that names its words live in the console's crate, and parsing here would
     /// put half of that knowledge on the wire side of the lane.
     Screen(String),
+    /// **How the pane inside the window is divided, and what each part holds** — a region word
+    /// (`organon_console::region::REGION_WORDS`) and a content word (`…::CONTENT_WORDS`).
+    ///
+    /// 🚨 **A FOURTH axis, orthogonal to [`ConsoleOp::Posture`] and [`ConsoleOp::Screen`] both**,
+    /// and the separation is the design rather than an arrangement — the argument `screen`'s doc
+    /// makes against folding itself into `posture` applies here word for word. A posture is a set
+    /// of *form tokens* and a split changes none of them; a screen state is the rectangle the
+    /// **window** occupies and a split divides the rectangle **inside** it. All three compose,
+    /// and every combination is a console somebody would want.
+    ///
+    /// Two `String`s rather than parsed values, for [`ConsoleOp::Posture`]'s reason: the region
+    /// and content vocabularies, and the refusals that name them, live in the console's own
+    /// crate. Parsing here would put half of that knowledge on the wire side of the lane.
+    ///
+    /// 📌 **Both words are required, and neither has a default.** Unlike `patch`'s `kind` there
+    /// is no older spelling of this line to stay compatible with, so a half-written one is
+    /// malformed rather than a command with defaults — and guessing would rearrange a window
+    /// somebody is looking at.
+    Viewport { region: String, content: String },
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -341,6 +360,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Theme(name) => format!("theme {name}"),
         ConsoleOp::Posture(word) => format!("posture {word}"),
         ConsoleOp::Screen(word) => format!("screen {word}"),
+        ConsoleOp::Viewport { region, content } => format!("viewport {region} {content}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
@@ -372,6 +392,16 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
         // Unvalidated for the same reason, and the vocabulary is `screen::SCREEN_WORDS` —
         // three words, in the console's crate, refused there by name.
         "screen" => Some(ConsoleOp::Screen(it.next()?.to_string())),
+        // Two words, both required and both unvalidated — the `screen` arm's rule for the
+        // payloads, and `patch`'s rule for the arity: a line missing its second word is
+        // malformed, not a command with a default. There has never been a one-word `viewport`
+        // line, so a bare one is not an older spelling of anything and guessing would rearrange
+        // a window somebody is looking at.
+        "viewport" => {
+            let region = it.next()?.to_string();
+            let content = it.next()?.to_string();
+            Some(ConsoleOp::Viewport { region, content })
+        }
         // A row count that does not parse — or does not fit — is a malformed line, and a
         // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/
         // `Theme`/`Posture` arms take their payload unvalidated because a *name* is only
@@ -478,6 +508,14 @@ mod tests {
                 ConsoleOp::Screen("full".into()),
                 ConsoleOp::Screen("windowed".into()),
                 ConsoleOp::Screen("toggle".into()),
+                // A FOURTH axis, and the first op on this lane carrying **two** words. Both a
+                // real content kind and the clearing word ride the trip: `off` is the only way
+                // back from a split, so one that survived a single direction would be a console
+                // somebody cannot un-divide.
+                ConsoleOp::Viewport { region: "full".into(), content: "agent".into() },
+                ConsoleOp::Viewport { region: "left".into(), content: "agent".into() },
+                ConsoleOp::Viewport { region: "bottomright".into(), content: "panel".into() },
+                ConsoleOp::Viewport { region: "right".into(), content: "off".into() },
                 // Tier 5: the payload is a count, not a name — the first op on this lane whose
                 // argument is not a word.
                 ConsoleOp::Block(1),
@@ -519,6 +557,13 @@ mod tests {
             assert_eq!(
                 console_op_to_line(&ConsoleOp::Screen("full".into())),
                 "screen full"
+            );
+            assert_eq!(
+                console_op_to_line(&ConsoleOp::Viewport {
+                    region: "topright".into(),
+                    content: "panel".into()
+                }),
+                "viewport topright panel"
             );
             assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
             assert_eq!(
@@ -579,6 +624,17 @@ mod tests {
             assert_eq!(parse_console_op("rig"), None);
             assert_eq!(parse_console_op("theme"), None);
             assert_eq!(parse_console_op("posture"), None);
+            // Both of `viewport`'s words are required. ⚠️ A one-word line is the interesting
+            // case: `viewport left` looks like a command and is not one, and defaulting the
+            // content would rearrange a window from half a sentence.
+            assert_eq!(parse_console_op("viewport"), None);
+            assert_eq!(parse_console_op("viewport left"), None, "half a command is not a command");
+            // …and an unknown region or content word is NOT skipped, on the `theme` rule below:
+            // only the console holds those tables, and only it can refuse them out loud.
+            assert_eq!(
+                parse_console_op("viewport middle agent"),
+                Some(ConsoleOp::Viewport { region: "middle".into(), content: "agent".into() })
+            );
             // ⚠️ An unknown palette or posture is NOT skipped here, and that is the one place
             // this lane deliberately parses something it cannot use. `theme phosphor` is a
             // well-formed line naming a palette this build has no way to paint, and the console

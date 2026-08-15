@@ -4375,6 +4375,172 @@ are scaled to a 2048 px long edge before upload (a phone photograph is 4000 px a
 **before** the decoder sees it, because a decoder handed a 500 MB PNG allocates its full pixel
 buffer before anything can object.
 
+### 1.14 Regions — how the one pane is divided, on a FOURTH axis
+
+**`organon-console/src/region.rs`**, plus the walk in `console_main.rs`'s `draw_regions`.
+`organon console viewport <region> <content>` — `/viewport` in a conversation composer — divides
+the console's single pane into up to four rectangles and says what each one holds. James asked
+for *"split the viewports … into four or two and two or one on one side and two on the other"*,
+and those three shapes are the module's own acceptance test.
+
+**Tier 1 is the model, the geometry, the lane and the seam. It is not yet the content.** Only
+`agent` draws something live — the tab the console is already showing. `panel` is a **named
+placeholder**: the region says an Organon editor panel belongs there and that a later tier gives
+it a body. `3d` and `media` are not in the vocabulary at all. What this tier buys is the thing
+only a hand can judge — whether a half-height conversation is any good — and it buys it without
+touching the engine.
+
+#### 🚨 A fourth axis, and the argument is §1.12's word for word
+
+James's earlier framing folded this into the posture, and he changed his mind to this explicitly.
+The reasons are the ones §1.12 already had to make for the screen. `Posture` is a **scalar**, so
+there is no third slot to add — there is an axis, and `organon console posture 0.5` is a real
+drawable console. And a split is not a point on it: every one of `Form`'s tokens is a margin, a
+corner, a padding, a line height, a gap, a tracking, or the presence of a border, and **a split
+changes none of them**. It changes how many rectangles there are.
+
+It passes §1.6's orthogonality test verbatim — a split terminal-posture console and a split
+desktop-posture one are both real, and neither is a variant of the other — so this is a fourth
+orthogonal state. All (posture × screen × layout) combinations are consoles somebody would want,
+and each of the three verbs means exactly what it says in every one of them.
+
+#### 🚨 Flat, never nested — and the reason is the vocabulary, not the geometry
+
+`Region` is nine words over a 2×2 grid: `full`, the four halves, the four quarters. **A region
+holds one thing and never splits again.** The tree is the obvious model and it is the wrong one
+here because **a tree has no names**. `/viewport left agent` is a sentence a person says and an
+agent writes; the same intent in a tree is a path through splits that must already exist, and the
+console lane is fire-and-forget with no return path (`console_ops::console_cmd_path`) — so a
+caller cannot ask what the tree currently looks like in order to describe a place in it. Nine
+fixed words are addressable from a line that gets no answer, which is the only transport this
+verb has.
+
+What that costs is stated rather than hidden: **no thirds, no uneven splits, no dragging a
+divider.** Those are real wants and they are a later tier's. The seam for them is that
+`region_rect` is the only place a rectangle is computed.
+
+#### The overlap rule, which is a bitmask and nothing else
+
+Every region is a set of the four **quadrants**. Two may be held at once **iff their quadrant
+sets are disjoint** — that is the whole geometry model, so there is no layout arithmetic to get
+wrong. An assignment that meets something already held is resolved by containment:
+
+| Relation | Answer |
+|---|---|
+| Disjoint | both stand — `left` and `right`, or the four corners |
+| One contains the other | the other **gives up its place**, and the displacement is reported |
+| Partial overlap | **refused by name**, quoting both regions |
+
+⚠️ **The containment arm is the one place this module acts rather than refusing, and it is not a
+convenience.** The console opens holding `full`, so a rule that refused every overlap would
+refuse the first word of every split — and `full off` cannot be the way out, because it is
+refused by the last-agent rule below. Measured in `region.rs`'s tests: without it, no split is
+reachable at all. It is safe where a partial overlap is not, because containment has exactly one
+reading — `left` is the only held region `topleft` can be displacing, and it is displaced whole.
+A partial overlap (`top` asked for while `left` is held) has no unambiguous thing to take away,
+so it is refused, and the refusal names both. **`left` and `topleft` can therefore never both be
+held**, which is the invalid state the whole rule exists to prevent; a test walks every ordered
+pair of assignments and asserts no two held regions overlap by any route.
+
+#### 🚨 Two refusals about meaning rather than geometry
+
+**The last `agent` region cannot be evicted.** A console with no agent region is a window with
+nothing to talk to, and the way back is not obvious from inside it because the verb that would
+fix it is typed *at* an agent. So any command whose **result** would hold no agent is refused —
+`full off`, `full panel` and `left panel` from a default console are all the same eviction by
+different names, and one invariant checked once on the resulting layout closes all three. That
+shape is deliberate: a per-verb special case is how the second route comes to be the one nobody
+remembered.
+
+**A region that already holds nothing cannot be cleared.** A command that changes nothing and
+says nothing is indistinguishable from one that never arrived.
+
+#### 📌 The uniqueness rule, stated where Tier 2 will need it
+
+A content kind that may exist **only once** is, on a second assignment, **refused by name, saying
+what already holds it** — never moved. That follows §1.3's "refused, not clamped": moving a thing
+somebody can see because they named a second place for it is a guess about which of the two they
+meant. Nothing in this tier is unique, so there is **no machinery for it** — an unreachable arm
+is an untested branch pretending to be a design. `3d` is the kind that will need it: at most one
+region can hold the live World, because `engine_plan` renders it at most once per frame and the
+two targets share `frame_index` and the TAA jitter phase riding on it.
+
+#### ⚠️ Unassigned space is a sentence, never a blank
+
+`plan` returns every occupied region **and every unassigned one**, each with its rectangle.
+§1.9's `Ring::Empty` argument at the scale of a quarter of a window: a region that draws nothing
+is indistinguishable from one that is broken. Vacancy is **coalesced largest-first**, so a layout
+holding only `left` reports one vacant `right` rather than two vacant corners — the word in the
+notice is then the word a person would type. A pane too small for the layout (any region under
+`MIN_SIDE`) yields no plan at all, and the console says so across the whole pane with the command
+that undoes it, rather than drawing slivers.
+
+#### ⚠️ Only one region shows the live tab, and that is the borrow checker
+
+`conversation_view::draw` takes the pane `&mut`, so a second live copy of one tab is not
+something this seam *declines* to draw — it is something it cannot express. A second `agent`
+region therefore says so and names what would fix it (Tier 2's per-region tab). Recording it here
+because it reads like a limitation and is really a property: the first agent region in
+`Region::ALL` order gets the tab, deterministically.
+
+#### The seam, and why invariant #4 is structural here
+
+The whole shipping layout is one `CentralPanel` whose first act is
+`ui.available_rect_before_wrap()`, then a `match` on the active pane, then `paint_portal` last in
+the same layer. **That `match` — one active pane filling one rect — was the single-column
+assumption.** It is now a closure called at most once, and the pane walk chooses where.
+
+🚨 **A console that has had no `/viewport` typed runs the identical code**, not merely equivalent
+code: `redraw` compares the layout against `region::Layout::default()` — the value `Console::new`
+starts from — and on a match calls the closure with the `CentralPanel`'s own `ui`. No child
+`Ui`, no id salt, no clip rect, no separator. And `region_rect(pane, Full)` returns the pane bit
+for bit, so nothing about that claim rests on a float comparison.
+
+Three things the split deliberately does **not** touch. The **backdrop** is still rendered once
+at the whole pane's size and every region is drawn over the same picture — which is also why a
+`viewport` op folds into no look and opens no Tier-4 epoch (§1.12's argument, one level in). The
+**portal** is still screen-anchored to the whole pane and floats over everything. And the layout
+is **not** written to `preferences.json`, on the posture's rule: a console opens undivided however
+it was left, so a stored layout can never make a launch look broken with no command having been
+typed.
+
+#### ⚠️ What a split does NOT yet change: where input goes
+
+`term_view` reads the wheel and every key from **raw input**, which §1.2 already records as the
+reason the portal needs an explicit rect test rather than egui's layer order. That property does
+not become wrong under a split, but it does become *visible*: a wheel anywhere in the window
+still reaches the live tab, because nothing tells it which region the pointer is in. The clip
+rect on each child `Ui` bounds what is **painted** and what egui's own widgets reach; it does not
+bound a reader of raw events.
+
+Nothing in this tier needed to fix that — there is exactly one live tab, so there is no second
+consumer for the wheel to be stolen from. It becomes real the moment a region holds something
+scrollable, and the mechanism is already built and tested: `block_panel::pointer_inside` and
+`portal::pointer_inside` are the two precedents, and a region test is the same shape.
+
+#### The lane
+
+Full console lane, not the view lane — `/organon`'s shape would not do, because Tier 2 must
+change `engine_plan`, which lives in the root crate while `organon-console` is the lower one. So:
+`CommandSpec` in `console_specs()` → `ConsoleOp::Viewport { region, content }` → the
+`viewport <region> <content>` sidecar line → clap's `Viewport` subcommand → `spec_name`/`op_from`
+→ `Console::set_viewport`. Both arguments are `ArgKind::Choice` built from `region.rs`'s own two
+tables, so the MCP schema, the slash palette's two rings, the CLI's `--help` and tab completion
+are four renderings of one vocabulary.
+
+⚠️ **`off` is a content *word* and not a content *kind*.** It empties a region; no region holds
+it, and giving `Content` such a variant would put a value in the enum the draw path must then
+match and refuse to draw. The precedent for a clearing word riding the same argument as the real
+values is `console.background`, whose `Choice` carries the three backdrop *sources* beside the
+materials.
+
+🚨 **`set_viewport` is the only gate on an assignment, and it has to be.** clap restricts both
+words and `op_from` resolves them again, but neither can answer the question that decides the
+command: *may this region hold this, given what the console is holding right now?* Overlap, the
+last agent and "there is nothing there to clear" are facts about the **current layout**, which
+lives on `Console` and nowhere else — and the lane gets no answer back, so a caller cannot read
+it before writing. Every refusal is therefore spoken at the console end, by name.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -4390,6 +4556,7 @@ buffer before anything can object.
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
+| Regions, Tier 2 — the content | §1.14 landed the axis: the nine-word vocabulary, the quadrant overlap rule, the two refusals, the lane, and the per-region walk that replaced the single-pane `match`. What is left is what a region **holds**. In order: **`3d`**, which is the crux and is genuinely hard — `engine_plan(portal_open, …)` cannot express *which region* holds the live World, and the portal's justification for taking the frame (**temporary and dismissable**) has to be **rebuilt, not renamed**, for something persistent that sits beside the transcript all session. That is also where §1.14's stated-but-unbuilt uniqueness rule first fires: at most one region may hold the World, because the two targets share `frame_index` and the TAA jitter phase. Then **`panel`**, today a named placeholder — the body exists (`OrganonPanels::draw`, §1.11) and what is missing is a *third* word naming which panel, since two rings cannot say it. Then **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before those three — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does | §1.14 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
@@ -4398,6 +4565,41 @@ path silently breaks the three-products-simultaneously guarantee that
 `edition.rs`'s pairwise-distinct-namespace test pins.
 
 ## 3. Honesty ledger
+
+- 🚨 **The regions (§1.14) have never been seen split.** Every claim in that section is about a
+  model, a rectangle arithmetic and a command lane — all of which are green — and **none of it is
+  about how a divided console looks or feels.** No GPU and no hand were available: the console
+  was not launched, no `/viewport` was ever typed at a running window, and no frame was captured.
+  Concretely, this is what a green bar does **not** cover. Whether a half-height conversation is
+  usable is the question the tier exists to let James answer, and it is unanswered. Whether the
+  hairline separators read as separators at 225 % scaling, or as artifacts, is unknown. Whether
+  `term_view`'s glyph grid lays out correctly in a child `Ui` with a clip rect — rather than
+  merely compiling — has not been observed; the grid is sized from
+  `available_rect_before_wrap()`, which the child answers with the region's rect, and that is an
+  argument rather than a measurement. Whether the portal, which still floats over the **whole**
+  pane, looks right straddling two regions is likewise unknown, and is a taste call as much as a
+  correctness one. **The wheel is not region-aware** — `term_view` reads it from raw input, so it
+  reaches the live tab from anywhere in the window; §1.14 records why that is inert today and
+  what closes it. Nothing here should be read as "verified working"; it is **green and ready to
+  deploy**, which is a different sentence.
+  ✅ What *is* measured: `organon-console --lib` is **696 passed, 3 ignored** (684 before — the
+  twelve are `region`'s), `organon-core` is **593** unchanged (the new wire assertions live inside
+  existing tests), the console bin target is **60 passed** (59 before) and the CLI's own bin is
+  **15 passed** (14 before). Both `cargo check` legs are clean.
+  ⚠️ **Four root-crate tests were edited, and the ledger entry below is why that is worth
+  flagging rather than mentioning.** `the_compact_panel_shows_the_real_table` (its string, its
+  character count and its hidden `+N`), `the_real_table_says_which_verbs_may_run_without_an_enter`
+  (the reversal column of the whole vocabulary), `a_capability_call_becomes_the_sidecar_line_the_
+  cli_would_have_written` (an args exemplar) and `every_op_round_trips_through_its_catalog_name`.
+  All four live in the bin target that the four-leg bar only *type-checks*, so they were **run**
+  rather than trusted. The two list-shaped ones were re-derived from the tables, never appended
+  to — the discipline the entry below paid for.
+  📌 **`panel` content is a labelled placeholder and says so on screen**, which is the honest
+  shape for a tier that divides the pane before it has things to put in it. It is not a stub
+  pretending to be a feature: the region names itself, names what belongs there, and names that a
+  later tier fills it. `3d` and `media` are absent from the vocabulary entirely rather than
+  present and inert, because a word an agent can type and nothing can honour is worse than a word
+  that is refused with the list that would have worked.
 
 - 🚨 **`main` @ `2018d41` did not compile, and it stayed that way until somebody built it.**
   Not a test and not an edition — the `organon-console` **library**, on

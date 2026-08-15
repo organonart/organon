@@ -410,6 +410,11 @@ const CMD_POSTURE: &str = "console.posture";
 /// animated grow. Two different rectangles can each be described as going full screen, so this
 /// verb says which one it moves.
 const CMD_SCREEN: &str = "console.screen";
+/// See [`CMD_BACKGROUND`]. **How the pane inside the window is divided, and what each part
+/// holds** — a fourth axis, orthogonal to the posture and the screen both. `organon_console::
+/// region`'s header owns the argument; the short of it is that a split changes none of `Form`'s
+/// tokens and does not move the window, so it is neither of the two verbs beside it.
+const CMD_VIEWPORT: &str = "console.viewport";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
@@ -447,6 +452,15 @@ const CMD_KIND: &str = "kind";
 /// wrong thing. The `Choice` is built from `cli::PORTAL_WORDS`, so the schema, the CLI's
 /// `--help` and the parser are three renderings of one table.
 const CMD_STATE: &str = "state";
+/// [`CMD_VIEWPORT`]'s two slots. **Two named slots rather than one `Choice` of nine × three
+/// pairs**, because they are two independent value spaces and a palette that offered
+/// `left-agent` as a word would be describing a thing neither table contains — and the second
+/// ring is what makes the verb completable: `/viewport left ` then narrows to what a region can
+/// hold. Neither is [`CMD_ARG`] or [`CMD_STATE`], on [`CMD_ROWS`]' rule: a region is not a
+/// `name`, and `agent` is not a *state* the way `open` and `full` are.
+const CMD_REGION: &str = "region";
+/// See [`CMD_REGION`].
+const CMD_CONTENT: &str = "content";
 /// [`CMD_CAMERA`]'s four slots. Named per axis rather than as one `axis` + `value` pair,
 /// because framing a shot is **one intent**: a caller that wants to be closer *and* a little
 /// above says so once and the viewpoint moves once, instead of travelling through an
@@ -581,6 +595,42 @@ fn console_specs() -> Vec<CommandSpec> {
             // ⚠️ The one that looks alarming and is not. A window that covered the display
             // uncovers it again with the opposite word — and F11 does it from inside without
             // any command at all, which is the definition of recoverable.
+            reversal: Reversal::Recoverable,
+        },
+        // 📌 **Two `Choice`s, so the whole value space is stated and both rings complete** —
+        // `screen`'s case rather than `posture`'s, and for the same reason: each table is a
+        // closed list with nothing between its words. What the schema cannot say is the part
+        // that depends on *state* — whether this region may hold this content given what the
+        // console is holding right now — and that is not a shortcoming to be worked around: it
+        // is [`Console::set_viewport`]'s job, because the layout is the console's and the
+        // refusal it produces names the region that stood in the way.
+        CommandSpec {
+            name: CMD_VIEWPORT.into(),
+            doc: "Divide the pane into regions and say what each one holds".into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: CMD_REGION.into(),
+                    kind: ArgKind::Choice(
+                        organon_console::region::REGION_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec {
+                    name: CMD_CONTENT.into(),
+                    kind: ArgKind::Choice(
+                        organon_console::region::CONTENT_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
+            ],
+            // ⚠️ **Recoverable, and the argument is `screen`'s exactly**: `viewport full agent`
+            // restores the undivided console from any layout, in one command, and it is in the
+            // same ring as everything that got you away from it. Nothing lands in the transcript
+            // and nothing is remembered across a launch.
+            //
+            // 📌 That makes it *eligible* for autorun rather than a candidate for it: the rule
+            // fires on a lone completion, and two rings of nine and three words never leave one.
             reversal: Reversal::Recoverable,
         },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
@@ -737,6 +787,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Theme(_) => CMD_THEME,
         cli::ConsoleOp::Posture(_) => CMD_POSTURE,
         cli::ConsoleOp::Screen(_) => CMD_SCREEN,
+        cli::ConsoleOp::Viewport { .. } => CMD_VIEWPORT,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -800,6 +851,22 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             let w = word(CMD_STATE)?;
             organon_console::screen::ScreenCmd::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Screen(w))
+        }
+        // Both words resolved and both answers thrown away, on `CMD_SCREEN`'s rule: membership
+        // was settled by `validate_args` against the two `Choice`s, so this is the belt that
+        // catches a call reaching the service by a route that skipped the schema.
+        //
+        // 🚨 **What is deliberately NOT checked here is whether the assignment is legal.** That
+        // depends on the layout the console is holding *at the moment the op is drained*, and
+        // this function runs at dispatch — a gate here would be answering with a layout that may
+        // have moved by the time the op lands. The one gate is [`Console::set_viewport`], which
+        // has the layout in hand and refuses by name.
+        CMD_VIEWPORT => {
+            let r = word(CMD_REGION)?;
+            let c = word(CMD_CONTENT)?;
+            organon_console::region::Region::resolve(&r).map_err(|e| format!("{name}: {e}"))?;
+            organon_console::region::ContentCmd::resolve(&c).map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Viewport { region: r, content: c })
         }
         CMD_BLOCK => {
             let n = args
@@ -928,6 +995,11 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         // rather than a thing; a screen state is a `String` here because that is what crossed
         // the lane, and it has already been resolved once by `op_from`.
         cli::ConsoleOp::Screen(word) => json!({ CMD_STATE: word }),
+        // Two slots of its own rather than either name above — `console_specs` declares them,
+        // so the two must agree or `validate_args` refuses every dispatch this produces.
+        cli::ConsoleOp::Viewport { region, content } => {
+            json!({ CMD_REGION: region, CMD_CONTENT: content })
+        }
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
         // optional argument and `op_from` maps straight back to `None`. Omitting the key
         // entirely would do the same thing; spelling it keeps the dispatch record — which is
@@ -1128,13 +1200,22 @@ fn console_step(
         // the glyphs is re-rendered at a new size, wearing the identical dressing. Banding the
         // transcript here would mark a look change at a moment the look demonstrably did not
         // change.
+        //
+        // **A division of the pane is not a look, and it is the case most likely to be argued
+        // the other way** — a split does change what is on the screen, dramatically. But what it
+        // changes is *how many rectangles the glyphs are drawn into*, not what is behind them:
+        // the backdrop is still rendered once, at the whole pane's size, wearing the identical
+        // dressing, and every region is drawn over the same picture. So banding the transcript
+        // here would mark a look change at a moment the look did not change — `screen`'s
+        // argument exactly, one level in.
         cli::ConsoleOp::Block(_)
         | cli::ConsoleOp::Patch { .. }
         | cli::ConsoleOp::Portal(_)
         | cli::ConsoleOp::Camera(_)
         | cli::ConsoleOp::Theme(_)
         | cli::ConsoleOp::Posture(_)
-        | cli::ConsoleOp::Screen(_) => return None,
+        | cli::ConsoleOp::Screen(_)
+        | cli::ConsoleOp::Viewport { .. } => return None,
     }
     Some((source, look))
 }
@@ -1733,6 +1814,21 @@ struct Console {
     /// Whether the portal is on screen. Moved only by [`Console::apply_console`], through
     /// [`portal::step`].
     portal_state: PortalState,
+    /// **How the pane is divided, and what each part holds.** Moved only by
+    /// [`Console::set_viewport`], through `region::Layout::assign`.
+    ///
+    /// ⚠️ **Held rather than derived, unlike [`organon_console::screen::Screen`]** — and the
+    /// contrast is worth reading, because that module argues hard *against* keeping a copy. Its
+    /// reason is that the window itself knows whether it is full screen, so a remembered bool
+    /// would be a second source of truth for a fact the platform already owns. Nothing owns this
+    /// one: egui has no notion of a region, the rectangles are recomputed from the pane every
+    /// frame and remembered nowhere, and there is no second authority for a stored layout to
+    /// disagree with.
+    ///
+    /// 📌 **Not written to `preferences.json`, on the posture's rule**: a console opens
+    /// undivided however it was left. A stored layout would be the first thing that could make
+    /// a launch look broken with no command having been typed.
+    layout: organon_console::region::Layout,
     /// The portal's render target.
     ///
     /// ⚠️ **A field beside [`Console::backdrop`], NOT a [`SurfaceKey`] variant**, and the reason
@@ -1896,6 +1992,156 @@ fn paint_portal(
         egui::StrokeKind::Inside,
     );
 }
+
+/// Draw a **divided** pane: one region per rectangle, and a notice in every region that holds
+/// nothing yet.
+///
+/// Only reached when the layout is not the default — `redraw`'s fast path draws an undivided
+/// console through exactly the code it always did (invariant #4). Everything here is the
+/// consequence of `organon_console::region::plan`'s answer; no rectangle is computed at this
+/// site, which is what keeps the geometry headlessly testable.
+///
+/// # 🚨 The live tab is drawn at most once, and that is structural rather than a rule
+///
+/// `draw_active_pane` is `&mut dyn FnMut`, so calling it twice would need two simultaneous
+/// `&mut` borrows of the same pane — `conversation_view::draw` takes one. A second `agent`
+/// region therefore **cannot** show a second copy of the tab, and rather than leave that as a
+/// silent blank it says so and names what would fix it. Tier 2's per-region tab is the fix.
+///
+/// # ⚠️ A pane too small for the layout says so rather than drawing slivers
+///
+/// `plan` answers `None` when any region falls under `region::MIN_SIDE`. The console is then
+/// showing nothing at all, which is the one state that absolutely must not be quiet — so the
+/// whole pane carries the sentence and the command that undoes it.
+fn draw_regions(
+    ui: &mut egui::Ui,
+    pane: Option<egui::Rect>,
+    layout: &organon_console::region::Layout,
+    theme: &Theme,
+    draw_active_pane: &mut dyn FnMut(&mut egui::Ui),
+) {
+    use organon_console::region::{plan, Content};
+    let Some(placed) = pane.and_then(|p| plan(p, layout)) else {
+        ui.centered_and_justified(|ui| {
+            ui.monospace(
+                "the window is too small for this layout — `organon console viewport full agent`",
+            );
+        });
+        return;
+    };
+    let mut live_tab_taken = false;
+    for slot in &placed {
+        // A child `Ui` per region, salted by the region's own word so two regions cannot share
+        // an egui id — and clipped, which is both meanings at once (`block_panel`'s comment):
+        // what is painted, and what the pointer reaches.
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("organon-viewport", slot.region.as_word()))
+                .max_rect(slot.rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(slot.rect.intersect(ui.clip_rect()));
+        match slot.content {
+            Some(Content::Agent) if !live_tab_taken => {
+                live_tab_taken = true;
+                draw_active_pane(&mut child);
+            }
+            Some(Content::Agent) => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "agent — waiting for a tab of its own. The live tab is drawn in the first agent \
+                 region; a second one needs Tier 2's per-region tab",
+                theme,
+            ),
+            Some(Content::Panel) => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "panel — an Organon editor panel belongs here. Tier 2 gives it a body; this tier \
+                 divides the pane and says what each part is for",
+                theme,
+            ),
+            // 🚨 **Vacant is a sentence, never a blank.** §1.9's `Ring::Empty` argument at the
+            // scale of a quarter of a window: a region that draws nothing is indistinguishable
+            // from one that is broken, and the console's running tally of "it knew and said
+            // nothing" defects is long enough.
+            None => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "empty — `organon console viewport <region> agent` or `… panel` fills it",
+                theme,
+            ),
+        }
+    }
+    paint_region_edges(ui, pane, &placed, theme);
+}
+
+/// What a region says when it is not the live tab: its own word, then what belongs there.
+///
+/// Filled rather than left transparent, on [`paint_portal`]'s rule and for its reason — an
+/// outline over whatever the backdrop is painting reads as a rendering failure, which is the
+/// confusion the surface path's `rendering…` placeholder already exists to prevent.
+fn paint_region_notice(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    heading: &str,
+    body: &str,
+    theme: &Theme,
+) {
+    ui.painter().rect_filled(rect, 0.0, theme.panel_fill);
+    // The inset is the notice's own, not the region's: the rectangle a region owns is exact
+    // (`region_rect` reserves no gutter), so the breathing room is drawn inside it.
+    let inner = rect.shrink(REGION_NOTICE_PAD);
+    let mut text = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(("organon-viewport-notice", heading))
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    text.set_clip_rect(inner.intersect(ui.clip_rect()));
+    text.label(egui::RichText::new(heading).monospace().strong().color(theme.panel_title));
+    text.label(egui::RichText::new(body).monospace().color(theme.panel_text));
+}
+
+/// The hairlines **between** regions — and only between them.
+///
+/// ⚠️ **Every edge that lies on the pane's own boundary is skipped**, which is what stops a
+/// divided console from growing a border it never had: the outer frame of the window is not a
+/// separator, and drawing one there would be a visible change to a console that only asked for
+/// a split. Duplicate segments (two regions sharing an edge) are drawn twice at the same
+/// coordinates, which costs one more line and cannot be seen — cheaper than deduplicating.
+fn paint_region_edges(
+    ui: &mut egui::Ui,
+    pane: Option<egui::Rect>,
+    placed: &[organon_console::region::Placed],
+    theme: &Theme,
+) {
+    let Some(pane) = pane else { return };
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.0_f32, theme.panel_edge);
+    let inside = |a: f32, b: f32| (a - b).abs() > 0.5;
+    for slot in placed {
+        let r = slot.rect;
+        if inside(r.left(), pane.left()) {
+            painter.line_segment([r.left_top(), r.left_bottom()], stroke);
+        }
+        if inside(r.right(), pane.right()) {
+            painter.line_segment([r.right_top(), r.right_bottom()], stroke);
+        }
+        if inside(r.top(), pane.top()) {
+            painter.line_segment([r.left_top(), r.right_top()], stroke);
+        }
+        if inside(r.bottom(), pane.bottom()) {
+            painter.line_segment([r.left_bottom(), r.right_bottom()], stroke);
+        }
+    }
+}
+
+/// The inset a region's notice text sits at, in points. The patch panel's `PAD`, so a notice
+/// and a panel in adjacent regions line up rather than each having their own idea of a margin.
+const REGION_NOTICE_PAD: f32 = 8.0;
 
 /// What the engine is asked to draw this frame: the backdrop's source, and whether the portal
 /// renders — **pure**, so the invariant below is a test rather than a promise.
@@ -2079,6 +2325,9 @@ impl Console {
             // that opened with a window already floating in it would be back in the state that
             // ruling forbids, by a new route.
             portal_state: PortalState::Closed,
+            // One region, `Full`, holding the agent — invariant #4, and `redraw` compares
+            // against this exact value to take the pre-region path unchanged.
+            layout: organon_console::region::Layout::default(),
             portal: None,
             portal_input: scene_input::SceneInput::default(),
             portal_points: None,
@@ -2599,6 +2848,14 @@ impl Console {
             self.set_screen(word);
             return;
         }
+        // Above the ledger for the same reason as the screen, and for one more of its own: the
+        // backdrop is still rendered once at the whole pane's size and every region is drawn
+        // over the same picture, so nothing *behind* the glyphs moved. See `console_step`'s
+        // `Viewport` arm, which is where that argument is written out.
+        if let cli::ConsoleOp::Viewport { region, content } = op {
+            self.set_viewport(region, content);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -2852,6 +3109,61 @@ impl Console {
             return;
         }
         window.set_fullscreen(want.is_full().then(|| winit::window::Fullscreen::Borderless(None)));
+    }
+
+    /// Put a content kind in a region of the pane — **or say, out loud, why not**.
+    ///
+    /// # 🚨 This is the ONLY gate on an assignment, and it has to be
+    ///
+    /// `bin/ctl.rs` restricts both words at the clap boundary and [`op_from`] resolves them
+    /// again, but neither can answer the question that actually decides a `/viewport` command:
+    /// *may this region hold this, given what the console is holding right now?* Overlap, the
+    /// last-agent rule and "there is nothing there to clear" are all facts about the **current
+    /// layout**, which lives here and nowhere else — and the lane is fire-and-forget, so a
+    /// caller cannot read it before writing. Every refusal therefore has to be spoken at this
+    /// end, by name, with the region that stood in the way.
+    ///
+    /// # ⚠️ A displacement is reported, because nobody asked for it in so many words
+    ///
+    /// `region::Layout::assign` displaces a region that *contains* the one being asked for, or
+    /// is contained by it — which is what makes `viewport left agent` work from a console
+    /// holding `full`. That is a change to the screen the command did not name, so it is said
+    /// rather than swallowed. The alternative — refusing every overlap — makes the first word
+    /// of every split a refusal, since the console opens holding `full` and `full off` is
+    /// refused by the last-agent rule; `region`'s header has the measurement.
+    fn set_viewport(&mut self, region_word: &str, content_word: &str) {
+        use organon_console::region::{ContentCmd, Region};
+        // Refused rather than approximated — `Posture::resolve`'s rule, and here the cost of an
+        // approximation is a window rearranged into a shape nobody named.
+        let region = match Region::resolve(region_word) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("organon-console: {e} — ignored");
+                return;
+            }
+        };
+        let cmd = match ContentCmd::resolve(content_word) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("organon-console: {e} — ignored");
+                return;
+            }
+        };
+        match self.layout.assign(region, cmd) {
+            Ok(change) => {
+                for gone in &change.displaced {
+                    eprintln!(
+                        "organon-console: `{}` gave up its place to `{}`",
+                        gone.as_word(),
+                        region.as_word()
+                    );
+                }
+                self.layout = change.layout;
+            }
+            // The layout is untouched — `assign` is pure, so there is no half-applied state to
+            // unwind and the console goes on drawing exactly what it was.
+            Err(refusal) => eprintln!("organon-console: {refusal}"),
+        }
     }
 
     /// Move the viewer's viewpoint — **unless a hand is on it**.
@@ -4142,6 +4454,11 @@ impl Console {
         // the tearing a tween would make visible.
         let form = &self.posture.form();
         let mut portal_rect: Option<egui::Rect> = None;
+        // How the pane is divided this frame, borrowed exactly as the palette is. Read only —
+        // the layout is moved by `set_viewport`, which has already run in `drain_console` at the
+        // top of this function, so the division a frame draws is the one every command issued
+        // before it asked for.
+        let layout = self.layout;
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
@@ -4218,83 +4535,103 @@ impl Console {
                     portal_rect = pane_rect
                         .filter(|_| portal_open)
                         .and_then(organon_console::portal::portal_rect);
+                    // 🚨 **The live tab, drawn into whatever rectangle it is given.** This was
+                    // the body of the `CentralPanel` closure and is now a closure of its own,
+                    // called **at most once per frame** — see the region walk below for why at
+                    // most, and `region.rs`'s header for why that is a fact about the borrow
+                    // checker rather than a policy: `conversation_view::draw` takes the pane
+                    // `&mut`, so a second live copy of one tab is not something this seam
+                    // *declines* to draw, it is something it cannot express.
+                    //
                     // §5.9's fork, at the one place it shows: the same panel, the same
                     // window, two renderings. The terminal branch is what it was — Tier 5's
                     // patch ledger and the actions its panels return included; a conversation
                     // tab has neither because it has no transcript of terminal lines to claim
                     // a rectangle in.
-                    match (sessions.get_mut(active), pane_looks.get_mut(active)) {
-                        (Some(Pane::Term(session)), Some(pane)) => {
-                            // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of
-                            // the same pane, which is exactly why the patch ledger lives on
-                            // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
-                            // `Console` that would have to be indexed in step with it. The ledger
-                            // is `&mut` because a panel's sliders are real: a value dragged this
-                            // frame has to still be there on the next one.
-                            block_actions = term_view::draw(
-                                ui,
-                                session,
-                                &mut pane.anchor,
-                                bands.as_ref().map(|(boundaries, textures)| BandedBackdrop {
-                                    boundaries,
-                                    textures,
-                                }),
-                                &mut pane.blocks,
-                                patch_image,
-                                // 🚨 The wheel arbitration, and the only thing this crate does
-                                // with the rect. The terminal reads the wheel from **raw
-                                // input**, so registering the portal after it — or as an
-                                // `Area`, or as a modal — would not keep a scroll over the
-                                // portal out of the scrollback. Nothing but an explicit rect
-                                // test can, which is why `block_panel::pointer_inside` exists
-                                // and why this copies it.
-                                portal_rect,
-                                theme,
-                            );
+                    let mut draw_active_pane = |ui: &mut egui::Ui| {
+                        match (sessions.get_mut(active), pane_looks.get_mut(active)) {
+                            (Some(Pane::Term(session)), Some(pane)) => {
+                                // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of
+                                // the same pane, which is exactly why the patch ledger lives on
+                                // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
+                                // `Console` that would have to be indexed in step with it. The
+                                // ledger is `&mut` because a panel's sliders are real: a value
+                                // dragged this frame has to still be there on the next one.
+                                block_actions = term_view::draw(
+                                    ui,
+                                    session,
+                                    &mut pane.anchor,
+                                    bands.as_ref().map(|(boundaries, textures)| BandedBackdrop {
+                                        boundaries,
+                                        textures,
+                                    }),
+                                    &mut pane.blocks,
+                                    patch_image,
+                                    // 🚨 The wheel arbitration, and the only thing this crate
+                                    // does with the rect. The terminal reads the wheel from **raw
+                                    // input**, so registering the portal after it — or as an
+                                    // `Area`, or as a modal — would not keep a scroll over the
+                                    // portal out of the scrollback. Nothing but an explicit rect
+                                    // test can, which is why `block_panel::pointer_inside` exists
+                                    // and why this copies it.
+                                    portal_rect,
+                                    theme,
+                                );
+                            }
+                            (Some(Pane::Conversation(chat)), _) => {
+                                // No PTY, so no patch ledger and no block actions: `block_actions`
+                                // stays the empty `Vec` it was initialised to and the loop below
+                                // does nothing. An inline artifact needs none of that machinery —
+                                // it is an element in a flow that draws itself — so what comes
+                                // back is where its surfaces ended up, and nothing else.
+                                let out = conversation_view::draw(
+                                    ui,
+                                    chat,
+                                    &surface_images,
+                                    &exhibit_contents,
+                                    theme,
+                                    theme_name,
+                                    form,
+                                    // 🚨 **The seam, and this crate is the only one that could
+                                    // fill it** — [`conversation_view::OrganonDraw`] is where an
+                                    // Organon editor panel's body comes from, and the console lib
+                                    // cannot see `OrganicMathParams` because it is the *lower*
+                                    // crate of the two. Reached for every panel the table marks
+                                    // `Status::Live`, which today is Look ▸ Surface and nothing
+                                    // else; a `Declared` panel never gets here and the view says
+                                    // so where its controls would be.
+                                    //
+                                    // What a control writes is a `PresetValues` mirror rather than
+                                    // a parameter, because a parameter cannot be written from
+                                    // outside `nih_plug` at all —
+                                    // `organic_math_native::param_sink` owns that account, and
+                                    // `OrganonPanels::overlay` is where the mirror reaches the
+                                    // world.
+                                    &mut |ui, panel| organon_panels.draw(ui, panel),
+                                );
+                                surface_requests = out.surfaces;
+                                exhibit_requests = out.exhibits;
+                                // Applied after the frame, not here: `theme` is borrowed from
+                                // `self` for the whole of this closure, so assigning it now is a
+                                // borrow error rather than a style choice.
+                                theme_change = out.theme;
+                            }
+                            _ => {
+                                ui.centered_and_justified(|ui| {
+                                    ui.monospace("no live tab — ⌘T opens one");
+                                });
+                            }
                         }
-                        (Some(Pane::Conversation(chat)), _) => {
-                            // No PTY, so no patch ledger and no block actions: `block_actions`
-                            // stays the empty `Vec` it was initialised to and the loop below
-                            // does nothing. An inline artifact needs none of that machinery —
-                            // it is an element in a flow that draws itself — so what comes
-                            // back is where its surfaces ended up, and nothing else.
-                            let out = conversation_view::draw(
-                                ui,
-                                chat,
-                                &surface_images,
-                                &exhibit_contents,
-                                theme,
-                                theme_name,
-                                form,
-                                // 🚨 **The seam, and this crate is the only one that could
-                                // fill it** — [`conversation_view::OrganonDraw`] is where an
-                                // Organon editor panel's body comes from, and the console lib
-                                // cannot see `OrganicMathParams` because it is the *lower*
-                                // crate of the two. Reached for every panel the table marks
-                                // `Status::Live`, which today is Look ▸ Surface and nothing
-                                // else; a `Declared` panel never gets here and the view says
-                                // so where its controls would be.
-                                //
-                                // What a control writes is a `PresetValues` mirror rather than
-                                // a parameter, because a parameter cannot be written from
-                                // outside `nih_plug` at all —
-                                // `organic_math_native::param_sink` owns that account, and
-                                // `OrganonPanels::overlay` is where the mirror reaches the
-                                // world.
-                                &mut |ui, panel| organon_panels.draw(ui, panel),
-                            );
-                            surface_requests = out.surfaces;
-                            exhibit_requests = out.exhibits;
-                            // Applied after the frame, not here: `theme` is borrowed from
-                            // `self` for the whole of this closure, so assigning it now is a
-                            // borrow error rather than a style choice.
-                            theme_change = out.theme;
-                        }
-                        _ => {
-                            ui.centered_and_justified(|ui| {
-                                ui.monospace("no live tab — ⌘T opens one");
-                            });
-                        }
+                    };
+                    // 🚨 **The single-region fast path, and it is the whole of invariant #4.**
+                    // A console that has had no `/viewport` typed does not merely *look* like
+                    // the one built before this module existed — it runs the identical code:
+                    // no child `Ui`, no id salt, no clip rect, no separator. The comparison is
+                    // against the value `Console::new` starts from, so the two cannot drift.
+                    if layout == organon_console::region::Layout::default() {
+                        draw_active_pane(ui);
+                    } else {
+                        draw_regions(ui, pane_rect, &layout, theme, &mut draw_active_pane);
                     }
                     // The portal, over whichever front-end just drew. **After the content and
                     // inside the same layer**, which buys both halves at once: within one layer
@@ -4586,7 +4923,9 @@ fn help_text() -> String {
              organon console rig <{rigs}>\n    \
              organon console theme <{themes}>       live, and stored as a preference\n    \
              organon console posture <{postures}|0.0-1.0>  snaps; not remembered\n    \
-             organon console screen <{screens}>     the window, not the form; F11 flips it\n\
+             organon console screen <{screens}>     the window, not the form; F11 flips it\n    \
+             organon console viewport <{regions}>\n                              \
+             <{contents}>  divide the pane; `off` empties a region\n\
          \n\
          Docs: SHELL_ARCHITECTURE.md\n",
         substrate = BACKDROP_SUBSTRATE,
@@ -4611,6 +4950,11 @@ fn help_text() -> String {
         themes = Theme::NAMES.join("|"),
         postures = organon_console::posture::POSTURE_WORDS.join("|"),
         screens = organon_console::screen::SCREEN_WORDS.join("|"),
+        // Both quoted from `region`'s own tables, on the `backgrounds` rule below: `--help`
+        // must not be able to offer a region the console cannot divide into, nor a content
+        // word nothing resolves.
+        regions = organon_console::region::REGION_WORDS.join("|"),
+        contents = organon_console::region::CONTENT_WORDS.join("|"),
         // Quoted from the tables the drain resolves against, never restated — the discipline
         // the scrim line already earned here, and the reason `--help` cannot advertise a
         // material this build cannot draw.
@@ -5271,6 +5615,14 @@ mod cli_tests {
                 CMD_SCREEN => {
                     json!({ CMD_STATE: organon_console::screen::SCREEN_WORDS[0] })
                 }
+                // 🚨 **Named words, not `v[0]` from either `Choice`** — and this is the
+                // `CMD_THEME` caveat arriving on a second verb rather than the two dressing
+                // verbs' shortcut. `CONTENT_WORDS[2]` is `off`, which is legal in the schema
+                // and is a *refusal* on a default console (it would evict the last agent), so
+                // indexing would be one reordering away from asserting that a clearing word
+                // writes a line the console then refuses. `full agent` is the one pair that is
+                // always accepted, because it is the layout the console opens in.
+                CMD_VIEWPORT => json!({ CMD_REGION: "full", CMD_CONTENT: "agent" }),
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -5493,12 +5845,15 @@ mod cli_tests {
         let all = registry.candidates("/").expect("a bare slash opens the whole table");
         assert_eq!(
             compact_line(&all, 0, 200),
-            "[background] | rig | theme | posture | screen | block | patch | portal | camera | \
-             camera.read | surface | help | media | organon"
+            "[background] | rig | theme | posture | screen | viewport | block | patch | portal | \
+             camera | camera.read | surface | help | media | organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 128);
+        // ✏️ **139 with `viewport`** (§1.14), which is the fifteenth verb and the fourth to move
+        // this line. Re-derived from the string above rather than nudged, on the paragraph
+        // below's rule.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 139);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -5511,7 +5866,10 @@ mod cli_tests {
         // shown at this width and `mcp_specs()` yields fourteen, so twelve are hidden. The
         // paragraph above is why that sentence is written out instead of the number simply
         // being incremented.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +12");
+        // ✏️ **Fifteen verbs now, so `+13`** — `viewport` (§1.14) is the fourth verb to move this
+        // line, and the count was re-derived rather than incremented: two verbs are shown at
+        // this width and `mcp_specs()` plus the view lane yield fifteen, so thirteen are hidden.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +13");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -5552,6 +5910,12 @@ mod cli_tests {
                 ("theme", true),
                 ("posture", true),
                 ("screen", true),
+                // ✏️ **`viewport` sits with the settings and not with the two below it**, which
+                // is the classification worth stating rather than assuming: a split changes the
+                // window dramatically and puts nothing in the transcript, and
+                // `viewport full agent` restores the undivided console from any layout in one
+                // command. Wrong is one command away from right, which is the whole test.
+                ("viewport", true),
                 // Rows in the transcript, and a rectangle claimed in somebody else's output.
                 ("block", false),
                 ("patch", false),
@@ -5609,6 +5973,62 @@ mod cli_tests {
         }
         assert!(op_from(CMD_BLOCK, &json!({ CMD_ROWS: "twelve" })).is_err());
         assert!(op_from(CMD_BLOCK, &json!({})).is_err(), "a missing count is not zero");
+    }
+
+    /// **The viewport verb's two rings are the region module's own two tables**, quoted rather
+    /// than restated — so a tenth region or a third content kind reaches the MCP schema, the
+    /// slash palette and the CLI's `--help` in the commit that adds it.
+    ///
+    /// ⚠️ It also pins the one thing this verb does **not** check at dispatch: whether the
+    /// assignment is legal. `full off` passes every gate here and is refused by
+    /// [`Console::set_viewport`], because "is there another agent region" is a fact about the
+    /// layout the console is holding when the op lands, and this function runs before that.
+    #[test]
+    fn the_viewport_verbs_rings_are_the_region_tables_and_it_checks_words_not_layouts() {
+        use organon_console::region::{CONTENT_WORDS, REGION_WORDS};
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_VIEWPORT)
+            .expect("console.viewport is registered");
+        assert_eq!(spec.target, TargetKind::Viewport, "dividing the pane is the viewport");
+        assert_eq!(spec.args.len(), 2, "a region and a content, never one fused word");
+        let ring = |slot: &str| -> Vec<String> {
+            match &spec.args.iter().find(|a| a.name == slot).expect("the slot").kind {
+                ArgKind::Choice(v) => v.clone(),
+                other => panic!("{slot} is {other:?}, not a Choice"),
+            }
+        };
+        assert_eq!(ring(CMD_REGION), REGION_WORDS.to_vec());
+        assert_eq!(ring(CMD_CONTENT), CONTENT_WORDS.to_vec());
+        for a in &spec.args {
+            assert!(a.required, "`{}` is not optional — half a command is not a command", a.name);
+        }
+
+        // Every pair the schema offers converts, and every one of those lines is one the drain
+        // reads back — the cross product, because the failure of a pair that survives one
+        // direction only is a command the console skips in silence.
+        for r in REGION_WORDS {
+            for c in CONTENT_WORDS {
+                let op = op_from(CMD_VIEWPORT, &json!({ CMD_REGION: r, CMD_CONTENT: c }))
+                    .unwrap_or_else(|e| panic!("`{r} {c}`: {e}"));
+                assert_eq!(
+                    op,
+                    cli::ConsoleOp::Viewport { region: (*r).into(), content: (*c).into() }
+                );
+                let line = cli::console_op_to_line(&op);
+                assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
+            }
+        }
+        // 🚨 The slots are not interchangeable, and a swapped call is refused by name rather
+        // than half-understood — `agent` is not a region and `left` is not a content.
+        let e = op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "agent", CMD_CONTENT: "left" }))
+            .expect_err("the words are in the wrong slots");
+        assert!(e.contains("agent"), "the refusal must quote what was typed: {e}");
+        assert!(e.contains("region"), "…and which table it was read against: {e}");
+        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "middle", CMD_CONTENT: "agent" })).is_err());
+        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left", CMD_CONTENT: "3d" })).is_err());
+        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left" })).is_err(), "no default");
+        assert!(op_from(CMD_VIEWPORT, &json!({})).is_err());
     }
 
     /// A block is not a look, and `console_step` must say so rather than quietly folding it
@@ -6050,6 +6470,13 @@ mod cli_tests {
             cli::ConsoleOp::Portal(cli::PortalCmd::Open),
             cli::ConsoleOp::Portal(cli::PortalCmd::Close),
             cli::ConsoleOp::Portal(cli::PortalCmd::Toggle),
+            // The first op on this lane carrying two words, so the round trip has a way to be
+            // wrong the others do not: swapping the slots. Both orders of meaning are covered —
+            // a region word in the region slot and a content word in the content slot — and the
+            // clearing word rides along, since `off` is the only way back from a split.
+            cli::ConsoleOp::Viewport { region: "full".into(), content: "agent".into() },
+            cli::ConsoleOp::Viewport { region: "topleft".into(), content: "panel".into() },
+            cli::ConsoleOp::Viewport { region: "right".into(), content: "off".into() },
             cli::ConsoleOp::Camera(cli::CameraFraming { reset: true, ..Default::default() }),
             cli::ConsoleOp::Camera(cli::CameraFraming {
                 distance: Some(40.0),

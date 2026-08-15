@@ -20,7 +20,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use organic_math_native::{agent, cli, ipc, scene_input};
 use organon_core::kind;
-use organon_console::{posture, screen, theme};
+use organon_console::{posture, region, screen, theme};
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -97,6 +97,23 @@ fn theme_names() -> clap::builder::PossibleValuesParser {
 /// error is best, and the words complete for free.
 fn screen_words() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(screen::SCREEN_WORDS.iter().copied())
+}
+
+/// Possible-values parsers for `console viewport <REGION> <CONTENT>`. Built from
+/// `organon_console::region`'s own two tables, on [`patch_kinds`]' rule and for its reason.
+///
+/// 📌 Both are closed lists with nothing between the words, so — like `screen` and unlike
+/// `posture` — the check lands at the clap boundary where the error is best, and both rings tab
+/// complete for free.
+fn region_words() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(region::REGION_WORDS.iter().copied())
+}
+
+/// See [`region_words`]. ⚠️ This list carries `off`, which is **not** a content kind — it
+/// empties the region. `region::CONTENT_WORDS` is the one table that says so, and this reads it
+/// rather than restating it, so a kind added there reaches `--help` and completion together.
+fn content_words() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(region::CONTENT_WORDS.iter().copied())
 }
 
 /// Possible-values parser for `console patch --kind <KIND>`.
@@ -393,6 +410,35 @@ enum ConsoleAction {
         /// full, windowed, or toggle
         #[arg(value_parser = screen_words())]
         state: String,
+    },
+    /// Divide the pane into regions and say what each one holds
+    #[command(after_help = "The window's ONE pane becomes up to four, and each region holds one \
+                            kind of thing. `full` is the whole pane — what the console opens \
+                            holding — then `left`/`right`/`top`/`bottom` are halves and \
+                            `topleft`/`topright`/`bottomleft`/`bottomright` are quarters. A \
+                            region never splits again: to get quarters, name the quarters.\n\n\
+                            Assigning a region that CONTAINS one already held, or is contained \
+                            by one, displaces it and says so — that is how `/viewport left \
+                            agent` works from a console holding `full`. An assignment that only \
+                            PARTLY overlaps (`top` while `left` is held) is refused by name: \
+                            neither contains the other, so there is nothing unambiguous to take \
+                            away.\n\n`off` empties a region. It is refused on a region that \
+                            already holds nothing, and refused on the last region holding an \
+                            `agent` — a console with nothing to talk to has no obvious way \
+                            back, since the verb that would fix it is typed at an agent.\n\n\
+                            ⚠️ `panel` is a NAMED PLACEHOLDER in this tier: the region says what \
+                            belongs there and Tier 2 gives it a body. `3d` and `media` are not \
+                            in the vocabulary yet. ⚠️ Only one region can show the live tab — \
+                            a second `agent` region says so rather than drawing it twice.\n\n\
+                            📌 Orthogonal to `posture` and `screen` both, and it is NOT \
+                            remembered: the console opens undivided however you left it.")]
+    Viewport {
+        /// Which part of the pane (see the value list above)
+        #[arg(value_parser = region_words())]
+        region: String,
+        /// What it holds: agent, panel, or off to empty it
+        #[arg(value_parser = content_words())]
+        content: String,
     },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
@@ -695,6 +741,15 @@ fn run_console(action: ConsoleAction) -> ! {
         // closed list and `PossibleValuesParser` can say so. The console resolves it again on
         // arrival, which is the gate for a line written straight onto the sidecar by hand.
         ConsoleAction::Screen { state } => cli::ConsoleOp::Screen(state),
+        // Both words travel as typed, the `Screen` arm's arrangement: clap has already
+        // restricted each to its own closed table, and the console resolves them again on
+        // arrival — which is the gate that matters for a line written straight onto the
+        // sidecar by hand. Nothing is checked *between* them here on purpose: whether this
+        // region may hold this content depends on what the console is holding right now, which
+        // is state only the console has.
+        ConsoleAction::Viewport { region, content } => {
+            cli::ConsoleOp::Viewport { region, content }
+        }
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
         // here; the fallback rather than an `expect` because it is not a guess — it is the
@@ -1292,6 +1347,47 @@ mod tests {
         assert!(parse(&["console", "portal"]).is_err(), "there is no default state");
         assert!(parse(&["console", "portal", "ajar"]).is_err(), "an unknown state");
         assert!(parse(&["console", "portal", "open", "close"]).is_err(), "one state, not two");
+    }
+
+    /// **`console viewport` takes two words and neither is optional.** Every region word crosses
+    /// with every content word, reaches an op, and round-trips through the sidecar's own line
+    /// form — the whole cross product rather than a sample, because the cost of a pair that
+    /// survives one direction only is a command the console skips in silence, which looks
+    /// exactly like a split that failed to draw.
+    ///
+    /// ⚠️ **The bare and half-written cases are what this pins hardest.** `console viewport
+    /// left` looks like a command; there is no content it silently means, so it must fail here
+    /// where the error can name what is missing — not on the wire, where the answer is to drop
+    /// the line.
+    #[test]
+    fn console_viewport_takes_a_region_and_a_content_and_defaults_neither() {
+        for r in region::REGION_WORDS {
+            for w in region::CONTENT_WORDS {
+                let c = parse(&["console", "viewport", r, w]).unwrap();
+                match c.cmd {
+                    Cmd::Console { action: ConsoleAction::Viewport { region, content } } => {
+                        assert_eq!(&region, r);
+                        assert_eq!(&content, w);
+                        let op = cli::ConsoleOp::Viewport { region, content };
+                        assert_eq!(
+                            cli::parse_console_op(&cli::console_op_to_line(&op)),
+                            Some(op),
+                            "`viewport {r} {w}` must survive the sidecar round trip"
+                        );
+                    }
+                    _ => panic!("`console viewport {r} {w}` parsed as something else"),
+                }
+            }
+            assert!(parse(&["console", "viewport", r]).is_err(), "`{r}` alone is half a command");
+        }
+        assert!(parse(&["console", "viewport"]).is_err(), "neither word has a default");
+        assert!(parse(&["console", "viewport", "middle", "agent"]).is_err(), "no such region");
+        assert!(parse(&["console", "viewport", "left", "3d"]).is_err(), "not in this tier");
+        assert!(parse(&["console", "viewport", "left", "agent", "right"]).is_err(), "one pair");
+        // 🚨 The clap gate is the *word* tables and nothing more — whether a region MAY hold a
+        // content depends on what the console is holding right now, which this process cannot
+        // see. `left off` is a legal line and a refusal waiting to happen at the other end.
+        assert!(parse(&["console", "viewport", "left", "off"]).is_ok());
     }
 
     /// **`console camera` takes any subset of four flags and round-trips through the sidecar.**
