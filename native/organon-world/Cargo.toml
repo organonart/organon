@@ -1,0 +1,79 @@
+# organon-world — the egui / wgpu / winit layer, below the plugin (organon#49 T4b).
+#
+# ⚠️ NO nih_plug. `cargo tree -p organon-world | grep nih_plug` must be empty — the same
+# bar `organon-core`, `organon-scene`, `organon-render` and `organon-mind` each hold. It
+# is the only one that matters here: this crate deliberately DOES carry egui, and takes
+# wgpu + winit when `world.rs` arrives in T4c, so the "no UI toolkit" half of core's rule
+# does not apply to it.
+#
+# 📌 TODAY IT CARRIES egui AND NOTHING HEAVIER. The T4b membership (below) turned out not
+# to need wgpu at all — see the `recorder` note — so the manifest names egui, memmap2 and
+# bytemuck and stops there. Do not add wgpu "because T4c will want it": an unused
+# dependency is silent, and organon-mind's manifest already records what that costs.
+#
+# 🎯 WHY A NEW CRATE, AND WHY THIS ONE IS UNAVOIDABLE.
+#
+# `world.rs` needs egui, wgpu AND winit together, and no existing crate can take it:
+#
+#   organon-core    forbids wgpu, egui, winit  (host-free spine, published to crates.io)
+#   organon-scene   forbids wgpu, egui, winit  (scene state, not drawing)
+#   organon-render  forbids egui and winit     — and its manifest argues at length that
+#                   it is `world::render`, NOT the world
+#   organon-console forbids nih_plug permanently, and is the compositor, not the engine
+#
+# The docs anticipated exactly this and declined to name it: organon-scene's manifest says
+# `scene_input` "travels with `world.rs` in Tier 4, to whatever crate hosts the
+# egui/wgpu/winit layer". This is that crate.
+#
+# 📌 THE NAME IS THE CHEAPEST THING HERE. Nothing outside the workspace reads it — no wire
+# format, no saved state, no installed path, no host identity. If a better name turns up,
+# renaming is a workspace-local find-and-replace, unlike every identifier CLAUDE.md's
+# naming section protects. It was chosen rather than deferred because deferring it blocks
+# T4c, and the cost of being wrong is a `git mv`.
+#
+# 📌 ONE CRATE, NOT TWO. Splitting "the input/window layer" from "the world" would put
+# `winit` on one side of a boundary and everything else on the other — a distinction
+# without a seam, since `world.rs` is the only consumer of both halves. T4c adds `world.rs`
+# and its submodules here rather than to a sixth crate.
+#
+# WHAT IS HERE (T4b — the leaves; `world.rs` itself follows in T4c):
+#   scene_input     the viewport's camera input: egui gestures → `CameraInput`
+#   egui_platform   the egui platform seam — `WindowGeometry`, input without naming a window
+#   frame_ring      the frame mmap ring the visual publishes to
+#   audio_ring      the audio mmap ring the plugin publishes to (frame_ring reads it)
+#
+# 🚨 `recorder` LOOKED LIKE A MEMBER AND IS NOT ONE — it is `world::recorder`.
+#
+# `world.rs` declares nine submodules by `#[path]` (`capture`, `overlay`, `rt`,
+# `metal_island`, `gpu_timer`, `recorder`, `snap`, `ui_layer`, `winit_platform`), and
+# `bin/visual.rs` in turn includes `world.rs` by `#[path = "../world.rs"]`. So
+# `#[path = "recorder.rs"]` resolves relative to *the includer's* directory: from the
+# binary it reads `src/bin/../recorder.rs`. Move the file and that path breaks, with an
+# error the LIBRARY build never shows — `cargo check --lib` does not build binaries.
+#
+# It was moved here first and reverted. A `#[path]` submodule cannot travel without its
+# parent, so `recorder` goes in T4c with `world.rs`. Reverting it is also what took wgpu,
+# half and dirs back out of this manifest.
+#
+# ⚠️ These four are what `world.rs` reaches for that had nowhere else to go. `agent` and
+# `cli` are NOT here and must not drift in: they carry `param_table` and `preset`, which
+# are the plugin's own automation surface. T4c has to answer them separately.
+[package]
+name = "organon-world"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Organon's window layer: viewport input, the egui platform seam and the frame/audio IPC rings."
+repository = "https://github.com/organonart/organon"
+
+[dependencies]
+organon-core = { path = "../organon-core" }
+# `egui_platform` reaches `mind_shell::PointerTarget`. Dependency direction is the one
+# organon-mind's manifest records: consumers depend on Mind, never the reverse.
+organon-mind = { path = "../organon-mind" }
+# `scene_input` (82 refs) and `egui_platform` (13). Pinned to the one egui in the tree —
+# see the root manifest's #541 note; two egui versions make `Context` two types.
+egui = "0.33.3"
+# `frame_ring` / `audio_ring` map the IPC rings.
+memmap2 = "0.9"
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }

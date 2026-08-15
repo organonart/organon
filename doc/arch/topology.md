@@ -79,14 +79,19 @@ dance*, which is paid per unit of work, not per intermediate commit on a branch.
 
 ## The crate graph — who may depend on what
 
-**Read from the manifests, not from memory** (`cargo tree -p <crate> --depth 1 -e normal`,
-re-run 2026-08-13 at the Console rename). Five workspace members plus the root package:
+**Read from the manifests, not from memory** (`cargo tree -p <crate> --depth 1 -e normal`).
+⚠️ **Do not trust a count in this prose either — ask `native/Cargo.toml`'s `members`.** This
+paragraph said "five workspace members" through two crates being added, because a hand-written
+tally is a second copy of a fact the manifest already states. Six members plus the root package
+as of organon#49 Tier 4b:
 
 ```
 organic-math-native  (root: plugin cdylib + 6 bins, GPL-3.0-or-later)
   ├── organon-core ────────── the host-free spine
   ├── organon-render ──┐
-  ├── organon-mind ────┼───── each depends on organon-core, and on NOTHING else here
+  ├── organon-scene ───┤
+  ├── organon-mind ────┼───── all depend on organon-core; only organon-world
+  ├── organon-world ───┤      depends on another member (organon-mind)
   └── organon-console ─┘
 xtask                          (build tooling; depends on no member)
 ```
@@ -95,14 +100,17 @@ xtask                          (build tooling; depends on no member)
 |---|---|---|
 | `organon-core` | `bytemuck`, `glam`, `half`, `memmap2`, `serde`, `serde_json` | **no `nih_plug`, no `wgpu`, no `egui`** — `cargo tree -p organon-core` is the acceptance test |
 | `organon-render` | `organon-core`, `bytemuck`, `glam`, `half`, `image`, `wgpu` | no `nih_plug`, no `egui`, no `winit` |
+| `organon-scene` | `organon-core`, `bytemuck`, `glam` | no `nih_plug`, no `wgpu`, no `egui` — the substrate's own arithmetic, host-free like core |
 | `organon-mind` | `organon-core`, `bytemuck`, `dirs`, `egui`, `memmap2` | no `nih_plug` |
+| `organon-world` | `organon-core`, `organon-mind`, `bytemuck`, `egui` | no `nih_plug` — the window layer; `cargo tree -p organon-world` is its acceptance test |
 | `organon-console` | `organon-core`, `alacritty_terminal`, `dirs`, `egui`, `portable-pty`, `serde`, `serde_json` | **no `nih_plug`, ever** — standalone-only permanently, so any `nih_plug` in this graph is a loaded gun pointed at Organon's VST3 class ID |
 
-⚠️ **The three leaf crates are siblings, not a stack.** None of `organon-render`,
-`organon-mind`, `organon-console` depends on either of the others; every edge between them
-would have to go through the root crate, which is why the console's binary lives in the
-root package (it renders `World`) while its compositor lib does not (that would drag
-`nih_plug` into a package forbidden to have it).
+⚠️ **The leaf crates are siblings, not a stack — with exactly one edge between them.**
+`organon-world` depends on `organon-mind` (`egui_platform` reaches `mind_shell::PointerTarget`),
+and that direction is the one Mind's own manifest records: consumers depend on Mind, never the
+reverse. Every *other* edge between leaves would have to go through the root crate, which is why
+the console's binary lives in the root package (it renders `World`) while its compositor lib does
+not — that would drag `nih_plug` into a package forbidden to have it.
 
 ⚠️ **`nih_plug` and the whole window stack — `winit`, `wgpu`'s surface, the vendored
 `egui-wgpu` — belong to the ROOT crate alone.** That is what keeps the four members

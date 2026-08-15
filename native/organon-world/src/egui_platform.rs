@@ -46,7 +46,7 @@
 //! - **baseview** — `baseview_input::State` (#599) satisfies this trait **unedited**; the arm
 //!   is #593 Tier 2's, together with the window that produces the events.
 //!
-//! [router]: crate::mind_shell::PointerRouter
+//! [router]: organon_mind::mind_shell::PointerRouter
 
 /// The window facts egui reads, as data.
 ///
@@ -102,7 +102,7 @@ impl WindowGeometry {
 /// scroll, and everything else — keys, focus, lifecycle — is [`Other`](Self::Other), which the
 /// layer resolves against egui's keyboard focus exactly as it did before.
 ///
-/// [router]: crate::mind_shell::PointerRouter
+/// [router]: organon_mind::mind_shell::PointerRouter
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PointerPhase {
     /// A pointer button went down.

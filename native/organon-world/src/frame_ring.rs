@@ -33,7 +33,7 @@
 //!
 //! # Why a separate mmap, not `Shared`
 //!
-//! Same reason as [`crate::mind_ring`] and [`crate::audio_ring`], and the rule is worth stating
+//! Same reason as [`organon_mind::mind_ring`] and [`crate::audio_ring`], and the rule is worth stating
 //! once more because it is the one that keeps `Shared` usable: **`Shared` is a control-rate
 //! snapshot with byte-offset compatibility across every saved Ableton set.** A ~0.9 MB frame at
 //! 15 Hz is neither control-rate nor small. It gets its own file, and `Shared` gains nothing but
@@ -66,7 +66,7 @@
 //! ever serves frames written *after* it started watching. A corpse's `write_seq` never advances;
 //! a live writer advances within a frame or two of its ~15 Hz clock.
 //!
-//! [`crate::ipc::Reader::is_live`] solves the same problem for `Shared` by sleeping up to
+//! [`organon_core::ipc::Reader::is_live`] solves the same problem for `Shared` by sleeping up to
 //! 6 × 25 ms probing for a `seq` advance. That is right for a one-off startup check and wrong on
 //! the editor's paint path. Deleting the file on shutdown would not be enough either: a crash or a
 //! kill leaves it behind, which is exactly when a stale picture presented as live misleads most.
@@ -113,7 +113,7 @@ const SLOTS: usize = HEADER;
 
 /// Frames in flight.
 ///
-/// Three, matching [`crate::mind_ring`]. One would tear constantly; two lets a reader mid-copy
+/// Three, matching [`organon_mind::mind_ring`]. One would tear constantly; two lets a reader mid-copy
 /// be lapped by a writer publishing the next; three gives a full frame of slack, which at the
 /// rates involved (a 15 Hz writer against a ~60 Hz editor) is ample. More would only add
 /// resident memory for staleness nobody wants.
@@ -139,7 +139,7 @@ pub const RING_SIZE: usize = SLOTS + SLOT_COUNT * SLOT_STRIDE;
 /// `$TMPDIR/<namespace>-frame.bin` — the mirror channel, namespaced like every other IPC file so
 /// an Organon session and an Organon Mind session cannot stomp each other.
 pub fn frame_ring_path() -> PathBuf {
-    crate::ipc::ns_file("frame.bin")
+    organon_core::ipc::ns_file("frame.bin")
 }
 
 /// **Should the visual publish mirror frames?** (#609) — the rule behind `Shared.mindview[3]`,
