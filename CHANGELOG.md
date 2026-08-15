@@ -49,6 +49,7 @@ collecting — so CI named `console.theme` and said nothing whatever about
 `console.posture` until that one was fixed. Anyone acting on this check has to re-run
 until it is silent instead of trusting the single name it offered; the test now says so
 where the arm is.
+
 ### A command palette above the composer — see your choices while you type
 
 `/` now opens a full-width panel listing every verb with its description; a keystroke narrows
