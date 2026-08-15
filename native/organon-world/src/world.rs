@@ -12443,6 +12443,43 @@ mod tests {
     // reaches the same function through `scene_input::SceneGesture`, provably moves the same
     // camera rather than a parallel one.
 
+    // -----------------------------------------------------------------------
+    // The Performer's catalog gate (organon#49 T5b)
+    // -----------------------------------------------------------------------
+
+    /// 🚨 **The guard that exists to stop a silent failure, pinned so it cannot silently
+    /// regress.** `ensure_agent_worker` refuses an empty catalog rather than prompting the
+    /// model with no vocabulary to actuate — the failure `organon-visual`'s manifest calls
+    /// "a failure with no error attached to it".
+    ///
+    /// Both directions are asserted on purpose. The empty case alone would catch the check
+    /// being **dropped** *or* **inverted** (an inverted check spawns on empty and fails this
+    /// assertion) — but it would say nothing about the guard having been widened until it
+    /// refuses everything, which is the same outage arriving from the other side. Two
+    /// assertions, two ways to be wrong.
+    ///
+    /// ⚠️ No network here. The spawned worker blocks on its channel immediately; it reaches
+    /// the localhost client only once a message is sent, and the `World` drop closes the
+    /// sender, which ends the thread.
+    #[test]
+    fn an_empty_catalog_refuses_the_agent_worker_and_a_real_one_does_not() {
+        let mut empty = World::new(Vec::new());
+        empty.performer.ensure_agent_worker();
+        assert!(
+            empty.performer.tx.is_none(),
+            "an empty catalog must not spawn a worker — a Performer with no vocabulary is \
+             the silent failure this guard exists to prevent"
+        );
+
+        let mut stocked = World::new(vec![agent::CatSlot::num("glow")]);
+        stocked.performer.ensure_agent_worker();
+        assert!(
+            stocked.performer.tx.is_some(),
+            "a non-empty catalog must still spawn — the guard is a refusal for catalog-less \
+             hosts, not a disabling of the Performer"
+        );
+    }
+
     #[test]
     fn a_drag_orbits_yaw_and_pitch() {
         let mut w = World::new(Vec::new());
