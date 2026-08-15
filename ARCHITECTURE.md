@@ -1712,9 +1712,10 @@ each has its own `README`.
 
 ### 19.0 The crate map (#626 Tier 3)
 
-`native/` is a **cargo workspace**, not one crate. Six members carry engine or product code
-(`xtask` is the VST3/CLAP bundler and is not part of the engine). Read the count off
-`native/Cargo.toml`'s `members` list rather than this sentence — it has gone stale once:
+`native/` is a **cargo workspace**, not one crate. Several members carry engine or product
+code (`xtask` is the VST3/CLAP bundler and is not part of the engine). Read the roster off
+`native/Cargo.toml`'s `members` list rather than counting this table — the sentence that
+used to state a number here went stale twice:
 
 | Crate | Path | Depends on | What it is |
 |---|---|---|---|
@@ -1722,6 +1723,7 @@ each has its own `README`.
 | **`organon-mind`** | `native/organon-mind` | `organon-core`, `egui`, `bytemuck`, `memmap2` — **and nothing else** | **T4** — the interpretability instrument: the activation ring, Mind UI, model shell. **No nih-plug.** |
 | **`organon-render`** | `native/organon-render` | `organon-core`, `wgpu`, `glam`, `bytemuck`, `image`, `half` | **T4** — the renderer: `render` + its 36 surface submodules, plus `axes`/`chamber`, and **50 shaders**. **No nih-plug, no egui, no winit.** |
 | **`organon-scene`** | `native/organon-scene` | `organon-core`, `glam`, `bytemuck` | **organon#49 T3** — the **substrate**: `substrate_scene` / `substrate_materials` / `substrate_camera` / `substrate_epochs` + `overlay_meta`. Scene *state*, not drawing. **No nih-plug, no wgpu, no egui, no winit.** |
+| **`organon-agent`** | `native/organon-agent` | `organon-core`, `serde`, `serde_json` — **and nothing else** | **organon#49 T4c-i** — the **AI Performer**: action set, override lane, actuation vocabulary, tool-call protocol, localhost chat client. **No nih-plug.** ⚠️ `core_catalog` and `scene_features` did *not* come — they read `param_table` / `preset`, so `src/agent.rs` is a host adapter over this crate |
 | **`organon-world`** | `native/organon-world` | `organon-core`, `organon-mind`, `egui`, `memmap2`, `bytemuck` | **organon#49 T4b** — the **window layer**: `scene_input` / `egui_platform` / `frame_ring` / `audio_ring`. Carries egui **on purpose** (wgpu + winit arrive with `world.rs` in T4c); the one bar it holds is **no nih-plug**. ⚠️ `recorder` is NOT here — it is a `world.rs` `#[path]` submodule and cannot travel without its parent |
 | **`organon-console`** | `native/organon-console` | `organon-core`, `egui`, `serde`, `serde_json`, `dirs`, `portable-pty`, `alacritty_terminal` | Console #3 T1 — the **compositor UI** for Organon Console. **No nih-plug, permanently** — it is the one crate whose bar is a lifetime commitment rather than a boundary |
 | `organic-math-native` | `native/` | every sibling above | everything else — the plugin, the visual, the editor, **`world.rs`** |
@@ -1758,6 +1760,8 @@ number out of the script, and Tier 5's open questions.
 ```bash
 cargo tree -p organon-core     # must contain NO nih_plug, NO wgpu, NO egui, NO winit
 cargo tree -p organon-scene    # same bar, one layer up (organon#49 T3)
+cargo tree -p organon-agent    # organon#49 T4c-i — holds the FULL bar and cheaply:
+                               # its only deps are organon-core, serde and serde_json
 cargo tree -p organon-world    # organon#49 T4b — only the nih_plug half applies:
                                # this crate carries egui deliberately
 ```

@@ -13,6 +13,7 @@ members = [
     "organon-mind",
     "organon-render",
     "organon-scene",
+    "organon-agent",
     "organon-world",
     "organon-console",
 ]
@@ -142,6 +143,10 @@ organon-render = { path = "organon-render" }
 # organon#49 T3 — the substrate: scene look/materials/camera/epochs + overlay metadata,
 # below the plugin. Unconditional like its siblings; carries no nih_plug, wgpu or egui.
 organon-scene = { path = "organon-scene" }
+# organon#49 T4c-i — the AI Performer: action set, override lane, tool-call protocol and
+# the localhost chat client. `src/agent.rs` re-exports it and adds back the two functions
+# that read `param_table` / `preset`, so every `crate::agent::…` path still resolves.
+organon-agent = { path = "organon-agent" }
 # organon#49 T4b — the window layer: viewport input, the egui platform seam and the
 # two IPC rings. Carries egui on purpose (and wgpu + winit from T4c); carries no
 # nih_plug, which is the bar that matters for it.
