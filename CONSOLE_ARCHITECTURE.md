@@ -4451,11 +4451,36 @@ path silently breaks the three-products-simultaneously guarantee that
   (§1.13). The consequence is that there is no headless route to summon an exhibit — the first
   real test is a hand in a window, and that is the cost of the security property rather than a
   gap in the tests.
-  📌 Specifically **unverified**: that a decoded picture is the right way up and the right colour
-  (the sRGB storage / UNORM sample pair is matched to `make_surface_texture` by reading, not by
-  looking); that the eviction line fires at the cap in a real session; that `reading...` is brief
-  enough to feel like loading rather than breakage; and that Markdown's four line kinds are
-  legible at `EXHIBIT_HEIGHT` in a real card.
+  ✏️ **Measured since, and the decoder is off the unverified list.** `exhibit_formats.rs` is now
+  **6 green** (2 before): a **64 × 48** four-quadrant fixture — red top-left, blue top-right,
+  green bottom-left, an amber with alpha 128 bottom-right — is encoded to every extension in
+  `IMAGE_EXTENSIONS`, written to a temp file, and read back through `image::open` → `to_rgba8()`,
+  the console's own two calls. Each corner's colour lands at each corner's coordinates, the raw
+  buffer's first and last four bytes are the top-left and bottom-right pixels, the `thumbnail`
+  branch above `MAX_EXHIBIT_EDGE` is checked too, and the sRGB-storage / UNORM-sample pair is
+  pinned rather than merely commented. ⚠️ **The 2×2 test that was already here could not have
+  caught either failure**: a fixture symmetric under a flip cannot detect a flip, and one read
+  only as a *length* cannot detect a channel swap — it would have passed just as green against a
+  decoder returning the picture upside down in BGRA. Verified by mutation rather than assumed: a
+  vertical flip injected after the decode fails three of the six, a red/blue swap fails the same
+  three, and a crossed storage/view spelling fails the pin alone. JPEG's tolerance is **measured**
+  — worst channel drift 1, bar set at 2 — and JPEG *discards* alpha rather than compositing, so
+  the alpha assertion there is 255 by the format's own rule. Dimensions differ on purpose (a
+  transpose changes them); the probes sit at quadrant centres because JPEG's 16 × 16 chroma block
+  makes the boundary pixel the dishonest place to sample.
+  🚨 **This is the decoder and nothing after it, and the sentence above still stands.** What is
+  measured ends at the RGBA buffer `ExhibitLoad::Picture` carries. `upload_exhibit`'s
+  `write_texture` row order, `register_native_texture`, the `(0,0)–(1,1)` UV rect at the paint
+  site and every GPU sampling behaviour are all downstream: **a flip introduced after
+  `to_rgba8()` passes all six.** And pinning that the two format constants agree is **not** a
+  measurement of gamma — whether sRGB storage sampled through a UNORM view linearizes exactly
+  once is a property of a GPU, and none was run. The pin is a source-text one because the
+  constants live in a `[[bin]]` and `doc/arch/topology.md` forbids `organon-console` `wgpu`
+  outright, so a library that both could import is not available.
+  📌 Still specifically **unverified**: that a decoded picture *looks* right on a screen — its
+  gamma, and every link between the buffer and the glass; that the eviction line fires at the cap
+  in a real session; that `reading...` is brief enough to feel like loading rather than breakage;
+  and that Markdown's four line kinds are legible at `EXHIBIT_HEIGHT` in a real card.
 
 - 🚨 **`/organon look surface` opens Organon's real Surface controls; the other twenty-four
   panels still open a line saying they have not been transplanted.** ✏️ **Corrects the entry
