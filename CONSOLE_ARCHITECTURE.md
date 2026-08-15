@@ -3296,13 +3296,29 @@ inserted character releases it, so the cost is bounded at one keystroke — and 
 wholesale (a test, a history recall) arrives unchanged within its frame and completes as
 before.
 
-⚠️ **One frame of exposure, stated rather than papered over.** The completion runs *after*
-the `TextEdit` has taken this frame's keystroke, so the caret is put back at the end of the
-line on the following frame. A keystroke arriving inside that window — under ~16 ms at 60 fps,
-faster than any measured human burst — lands at the old caret index, mid-word. Closing it
-entirely would mean setting egui's cursor state *before* the widget runs, which needs the
-`TextEdit`'s id outside `composer_box` and entangles the box with the registry it was
-deliberately split from.
+🚨 **The caret moves on the same frame as the rewrite, and it did not always.** This used to
+be a one-frame window recorded here as a known price: typing `/`, then `h`, completed the line
+to `/help` — and the next character produced **`/hxelp`**. `ConversationPane::want_caret` was
+drained by `composer_box`, which runs *before* the completion does, so the box could only ever
+honour the *previous* frame's request, and by the time it ran, that frame's keystroke had
+already been placed at the stale index after `/h`. The window was one frame — ~16 ms at 60 fps,
+inside a fast burst.
+
+**It is closed by an ordering, not by a second flag.** `want_caret` is drained at the **end**
+of `conversation_view::composer`, after `palette_complete` and `palette_autorun` have both had
+their say, and `put_caret_at_end` writes egui's cursor state there. Writing it *after* the
+widget has stored its own is what makes it stick: the next frame's `TextEdit` loads a caret
+already at the end, so the next character appends. ⚠️ The earlier note here said closing the
+window would mean setting the cursor *before* the widget runs, and would entangle the box with
+the registry — **both halves of that were wrong**. Before is the one place it cannot go, since
+the widget overwrites it; and `composer_box` only has to hand back its `egui::Id`, which is the
+one fact about the widget its caller cannot derive. The box still knows nothing about
+completions.
+
+⚠️ **One flag serves four rewrite sites on either side of the box** — the arrows' history walk
+and Tab's accept before it, self-completion and autorun's accept after it — precisely *because*
+the drain is last. `want_caret` therefore never survives a frame; a request that outlived its
+frame is exactly what `/hxelp` was.
 
 #### The candidate model, and the three renderers of it
 
@@ -3494,18 +3510,23 @@ this; the marker introduced for `/surface` showing an empty panel turned out to 
 `edited` — whether the composer changed on *this* frame, read before `palette_complete`
 rewrites it — and refuses while it is true, so the earliest a fire can happen is the first
 frame in which nothing was typed. Two reasons, the second the larger: the completed line is
-**drawn at least once** before it disappears, and the one-frame caret window above becomes a
-window in which a keystroke **cancels** the fire rather than racing it. ⚠️ **A settled frame
+**drawn at least once** before it disappears, and a keystroke arriving while a fire is pending
+**cancels** it rather than racing it. ⚠️ **A settled frame
 has to be made to happen** — egui repaints on input, so a deferred fire explicitly
 `request_repaint`s; without that the command would run whenever something else next moved the
 mouse, which is worse than either extreme. It is requested only when a fire is pending, never
 unconditionally. ⚠️ A composer set **wholesale** (a test, a history recall) is settled already
 by this definition: nothing was typed, so there is no hand to wait for.
 
-⚠️ **Measured while pinning it, and it is completion's price rather than autorun's**: typing
-`h` on `/` completes to `/help`, and a character arriving on the very next frame lands at the
-caret index the completion has not yet moved — `/hxelp`, not `/helpx`. The wait does not fix
-that (nothing here does); what it fixes is that `/hxelp` then runs nothing at all.
+✏️ **Correcting what pinning this once measured.** Typing `h` on `/` completes to `/help`, and
+a character arriving on the very next frame used to land at the caret index the completion had
+not yet moved — `/hxelp`, not `/helpx`. The wait was recorded here as not fixing that, which
+was true and remains true: what it fixed was that `/hxelp` then ran nothing at all. **The
+window itself is now closed** — the caret moves on the rewrite's own frame, so the character
+lands as `/helpx` — and the two mechanisms stay separate on purpose. The wait is about *when a
+command runs*; the drain is about *where the next character goes*. `a_command_waits_for_one_
+frame_in_which_nothing_was_typed` reads `/helpx` today and still asserts the same thing it
+always did about the receipt.
 
 ⚠️ **`Palette::autorun` still obeys `completion_held`**, where the stake is higher than a
 rewritten line: backspacing `/theme dark` to `/theme dar` leaves one candidate that completes
@@ -4557,17 +4578,22 @@ path silently breaks the three-products-simultaneously guarantee that
   refused to reappear after an Escape, offered no arguments for `/portal`, and wrote a check
   mark that drew as an empty box. Those are fixed and each is pinned; the row that replaced it
   has still only been read as a string in a test. Everything §1.9 asserts is a claim about
-  code: `cargo test -p organon-console --lib` is **646 green** (640 before), `cargo test -p
-  organon-core` is **556 green**, `cargo check --features console-edition --bin
+  code: as of 2026-08-15 `cargo test -p organon-console --lib` is **683 green** (3 ignored),
+  `cargo test -p organon-core` is **593 green**, `cargo check --features console-edition --bin
   organon-console` is clean, and `cargo check --tests -p organic-math-native --features
-  console-edition` is clean. **That is the whole claim: it compiles and the tests pass.** What
+  console-edition` is clean. **That is the whole claim: it compiles and the tests pass.**
+  ⚠️ **That includes the caret fix**, which is the one thing in §1.9 whose *symptom* a human
+  reported (`/hxelp`) and whose *cure* no human has typed at: the ordering is pinned by three
+  tests driving egui's real `TextEdit`, and nobody has watched a character land after a
+  completion in a running window. What
   it does not establish, in order of how much it matters: (1) that eleven verbs in one row is
   legible at a glance rather than a wall of words — which-key is fast because the panel is
   glanced at and then outrun, and a row that has to be *read* is slower than the list it
   replaced; (2) that the brackets read as a selection rather than as punctuation, which
   matters because Tab still takes what they mark; (3) that a line completing itself under the
-  hand feels like help rather than like interference — the one-frame caret window §1.9 states
-  is arithmetic, but "the box moved while I was typing" is a feeling; (4) whether `+9` at a
+  hand feels like help rather than like interference — where the caret ends up is arithmetic
+  and §1.9 now settles it, but "the box moved while I was typing" is a feeling; (4) whether
+  `+9` at a
   narrow width is useful or merely honest, since nobody has seen the row at a width that
   cannot hold it. ✏️ The old ledger's second worry — a band whose height changes with the list,
   jumping the transcript on every keystroke — is **closed by construction**: the compact row is
@@ -4592,7 +4618,10 @@ path silently breaks the three-products-simultaneously guarantee that
   through real frames, but "Up did what I expected" is exactly the kind of claim a test cannot
   make. ✏️ **Correcting this entry, because what it recorded as completion's cost was the
   smaller half of it.** The one-frame caret window was named here as the known price of
-  self-completion, and it was true; what went unrecorded is that **deletion was impossible** —
+  self-completion, and it was true — ✏️ it is **now closed** (§1.9: the caret moves on the
+  rewrite's own frame, so `/help` then `x` gives `/helpx`), which is worth saying because the
+  entry twice called it a price worth paying and it turned out to be one nobody had to pay.
+  What went unrecorded is that **deletion was impossible** —
   every backspace on a uniquely-prefixed verb was undone on the frame it happened, and a
   mistyped command could only be corrected by selecting the whole line. James found it in
   minutes on the first running build (*"once I have typed slash surface, I am no longer able to
