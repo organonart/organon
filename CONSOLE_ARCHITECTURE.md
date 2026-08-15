@@ -4356,6 +4356,26 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **`main` @ `2018d41` did not compile, and it stayed that way until somebody built it.**
+  Not a test and not an edition — the `organon-console` **library**, on
+  `error[E0063]: missing field reversal` at `registry.rs:544`. Two of the bar's four legs were
+  red on it, so every branch cut from `main` inherited a tree that would not build.
+  ⚠️ **Neither contributing branch was wrong, and neither could have been red.** `/media`
+  joined `view_entries()` on the exhibit branch (`94e26c7`); `Entry::reversal` was added to
+  every entry *that existed at the time* on the autorun branch (`8307e5c`). The hunks are a few
+  lines apart in one `vec![]`, so git merged them with no conflict to review and produced an
+  initializer missing a field that did not exist when it was written. The defect exists only in
+  the combination and was authored by the merge.
+  📌 **The gap was not a missing test — it was that nobody built after merging.** A missing
+  struct field is a compile error; no test catches it earlier or better. Every count this ledger
+  carried above was therefore a claim about some branch, never about `main`: measured on the
+  repaired tree, `organon-console --lib` is **682 passed, 3 ignored** and `organon-core` is
+  **593 passed**. The `675`/`580` pair in circulation before this was stale on both halves.
+  ✅ What a test *can* add is the value rather than the presence, and
+  `the_view_lane_states_what_can_be_taken_back_and_an_exhibit_cannot` now pins all four
+  view-lane verbs. A missing field is loud; a wrong one is silent, and the wrong one here would
+  have let a keystroke place an exhibit unasked.
+
 - 🚨 **The exhibit (§1.13) is code that compiles, runs, and has never been looked at.**
   `cargo test -p organon-console --lib` is **678 green** (672 before), `cargo test -p organon-core`
   is **593 green** (580 before), `native/tests/exhibit_formats.rs` adds 2, and both `cargo check`

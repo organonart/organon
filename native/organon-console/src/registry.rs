@@ -557,6 +557,11 @@ fn view_entries() -> Vec<Entry> {
             // file and says what would have worked.
             args: vec![ArgSpec { name: MEDIA_ARG.into(), kind: ArgKind::Text, required: true }],
             lane: Lane::View,
+            // An exhibit is an element in the transcript, exactly as `/surface`'s is, and no
+            // verb takes one out. ⚠️ It could not be `Recoverable` even if something did: a
+            // path is `Text`, so the panel never has a lone candidate to complete, and a verb
+            // autorun can never reach is one whose answer here is about the transcript alone.
+            reversal: Reversal::Permanent,
             narrow: None,
         },
         Entry {
@@ -1917,6 +1922,47 @@ mod tests {
         assert!(only.completes, "every required argument is filled");
         assert!(!only.fires, "…and a claimed rectangle is not something a second command undoes");
         assert_eq!(patch.autorun(true), None);
+    }
+
+    /// 🚨 CONTRACT: **every verb the conversation view answers states whether it can be taken
+    /// back**, and the four answers are pinned here rather than left to a comment.
+    ///
+    /// ⚠️ **This test exists because that table was BROKEN on `main` @ 2018d41 and the tree did
+    /// not compile at all.** `/media` arrived in `view_entries` on one branch (`94e26c7`) and
+    /// `Entry::reversal` on another (`8307e5c`); the two hunks are lines apart, so git merged
+    /// them with no conflict into an initializer missing a field that did not exist when it was
+    /// written. Neither branch was wrong, and neither branch's tests could have been red.
+    ///
+    /// 📌 **What this adds beyond the compiler is the VALUE, not the presence.** A missing field
+    /// is `E0063` and needs no test; a *wrong* one is silent, and the wrong one here would let a
+    /// keystroke put an exhibit in the transcript. The absence is caught by anyone who builds —
+    /// which is the actual lesson, and it belongs to the merge, not to this file.
+    #[test]
+    fn the_view_lane_states_what_can_be_taken_back_and_an_exhibit_cannot() {
+        let reversal = |verb: &str| {
+            view_entries()
+                .into_iter()
+                .find(|e| e.name == verb)
+                .unwrap_or_else(|| panic!("`{verb}` is a view-lane verb"))
+                .reversal
+        };
+
+        // The three that leave an element behind. No verb in this table takes one out.
+        for verb in [VERB_SURFACE, VERB_MEDIA, VERB_ORGANON] {
+            assert_eq!(
+                reversal(verb),
+                Reversal::Permanent,
+                "`/{verb}` puts an element in the transcript, so no keystroke may place one"
+            );
+        }
+
+        // The one that reads a table and changes nothing — the pair is what stops the rule
+        // being misread as "view-lane verbs are dangerous".
+        assert_eq!(
+            reversal(VERB_HELP),
+            Reversal::Recoverable,
+            "reading a table is the cleanest recoverable case there is"
+        );
     }
 
     /// 🚨 CONTRACT: **completing a lone candidate and running one are different questions
