@@ -197,7 +197,7 @@ struct VisualApp {
 
 impl VisualApp {
     fn new() -> Self {
-        VisualApp { world: World::new(), gfx: None, fullscreen_applied: false }
+        VisualApp { world: World::new(organic_math_native::agent::core_catalog()), gfx: None, fullscreen_applied: false }
     }
 
     /// Re-assert HDR output and re-read the display's headroom. Cheap enough to call after any

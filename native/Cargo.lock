@@ -2915,6 +2915,7 @@ dependencies = [
  "nih_plug",
  "nih_plug_egui",
  "objc",
+ "organon-agent",
  "organon-console",
  "organon-core",
  "organon-mind",
@@ -2930,6 +2931,15 @@ dependencies = [
  "wgpu",
  "windows-sys 0.61.2",
  "winit",
+]
+
+[[package]]
+name = "organon-agent"
+version = "0.1.0"
+dependencies = [
+ "organon-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

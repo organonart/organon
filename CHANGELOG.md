@@ -11,6 +11,66 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### `organon-agent`, and `world.rs` runs out of upward edges
+
+organon#49 Tier 4c-i. After Tier 4b, `world.rs` reached above the plugin crate in exactly
+**two** places — `agent` and `cli`. Both are answered here, and neither the way the issue
+expected.
+
+**`agent.rs` becomes `organon-agent`.** Measured rather than assumed, its entire coupling
+to the plugin was **two functions**:
+
+| Stays in `src/agent.rs` | Reads |
+|---|---|
+| `core_catalog()` | `param_table::pack_*::catalog` — 9 references |
+| `scene_features()` | `preset::{PresetValues, PresetScope, EditorTab}` — 4 |
+
+Everything else — the action set, the override lane, the actuation vocabulary, the
+tool-call parser, the localhost chat client — needed nothing above `organon-core`. The
+crate's **only** dependencies are `organon-core`, `serde` and `serde_json`.
+
+`src/agent.rs` is now a **host adapter**: `pub use organon_agent::*;` plus those two
+functions and the three private helpers (`cam_speed_word`, `hue_word`, `enum_name`) that
+nothing but `scene_features` calls — which is why they travelled with it rather than being
+made `pub` below just to stay reachable. **Every `crate::agent::…` path in the tree still
+resolves**, so no caller moved. That is #626 T3's `HostFuncName` shape for the fifth time
+in this issue.
+
+⚠️ **`param_table` and `preset` could not have descended instead.** They are 3 734 and
+7 383 lines, `preset` names `param_table` 159 times, and `param_table` names `agent`
+*back* — moving them would have dragged the plugin's whole automation surface down and
+turned a two-function seam into a cycle.
+
+📌 **A new crate rather than folding into `organon-core`, on identity not dependencies.**
+Core would have taken it without adding a single dependency. But core is the spine and is
+the crate published to crates.io, so its public API is a standing commitment; an
+OpenAI-compatible chat client is not the spine. Same rule `organon-scene` was drawn by.
+
+**`cli::EyesReq` becomes `organon_core::eyes`.** `world.rs` needed only the `snap`/`record`
+wire format, which reaches *nothing* — no plugin types, no params, not even serde — and
+now sits beside the `ipc::eyes_cmd_path` / `eyes_reply_path` functions it is the format
+**of**, whose doc comment already pointed at it. A separate module rather than more of
+`ipc.rs`, because that file owns the append-only `Shared` layout and a text protocol with
+no layout does not belong inside that invariant. `cli.rs` re-exports; `bin/ctl.rs` is
+untouched. `cli.rs` itself stays put — it reaches `recipe`, `clip` and `preset`.
+
+**`World::new` now takes the catalog.** `world.rs` called `agent::core_catalog()` in one
+place; it receives a `Vec<CatSlot>` instead, and the three construction sites
+(`bin/visual.rs`, `wgpu_editor.rs`, `console_main.rs`) pass `agent::core_catalog()`. That
+is what leaves `world.rs` with **no upward edge at all** for T4c-ii to answer.
+
+⚠️ **The eyes test moved down with the code.** It was testing `EyesReq` from `cli.rs`; left
+there, `cargo test -p organon-core` would never have run it — the exact coverage hole
+`--workspace` exists to close. `organon-core` goes 556 → **557**.
+
+🚨 **A guard fired on prose and it was right to be fixed rather than worked around.**
+Tier 2's `cli_and_agent_are_free_of_nih_plug_outside_tests` substring-scans both files —
+and the new `agent.rs` module doc, whose entire subject is that the code below carries no
+plugin binding, **tripped its own guard by naming it**. The scan now skips comment lines,
+matching `every_param_type_world_names_is_in_core` directly above it, which already did.
+A comment reaches nothing, and a check that fires where there is no defect is a check
+people learn to dismiss. A *trailing* comment on a code line still counts, deliberately:
+a false positive costs a reworded line, a false negative costs a tier.
 ### Backspace works again, and a finished command says Enter would run it
 
 Two defects James found in minutes on a running build, both in the command panel that had not
