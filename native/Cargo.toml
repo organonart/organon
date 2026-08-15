@@ -309,7 +309,12 @@ egui = "0.33.3"
 rfd = "0.17"
 # Radiance .hdr decode (→ linear f32 RGBA); "png" decodes the bundled #135 overlay
 # formula images (assets/overlay → src/overlay/formula_*.png).
-image = { version = "0.25", default-features = false, features = ["hdr", "png"] }
+# ⚠️ **"jpeg" is the Console's exhibit decoder, and the feature list is the real gate** — this
+# crate builds `image` with `default-features = false`, so a format absent here fails at run
+# time no matter what `organon_core::exhibit::IMAGE_EXTENSIONS` offers. Those two tables are a
+# pair: adding a format means adding it in both, in one change. `exhibit`'s own doc says so
+# from the other side, and `native/tests/exhibit_formats.rs` fails the build if they disagree.
+image = { version = "0.25", default-features = false, features = ["hdr", "png", "jpeg"] }
 # f32 → f16 conversion for the Rgba16Float env texture upload (bytemuck cast_slice).
 half = { version = "2", features = ["bytemuck"] }
 # CPU glyph rasterizer for the #135 capture-overlay text atlas (already in the tree

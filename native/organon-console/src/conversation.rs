@@ -153,6 +153,7 @@
 //! that ever needs a limit it belongs next to `max_elements`, with its own counter, not as
 //! a quiet `truncate()`.
 
+use organon_core::exhibit::{Exhibit, Item};
 use organon_core::kind::Kind;
 use std::collections::{HashMap, VecDeque};
 
@@ -681,6 +682,58 @@ pub enum ArtifactContent {
     Panel(PanelSpec),
     /// A rendered surface — a picture the engine draws, living in the flow.
     Surface(SurfaceSpec),
+    /// One or more pictures from files the human named, decoded off the frame thread.
+    Image(ExhibitSpec),
+    /// One or more Markdown documents from files the human named, drawn as text.
+    Markdown(ExhibitSpec),
+}
+
+/// The items an exhibit shows, as this front-end places them.
+///
+/// 🚨 **The arm names the kind; this carries only the items.** [`ArtifactContent`]'s arms are
+/// one per [`Kind`] and a spec holding its own `kind` field would break that — two arms could
+/// then answer one kind, or one arm two, and the renderer would switch on a field instead of
+/// on the thing the compiler checks. `organon_core::exhibit::Exhibit` *does* carry its kind,
+/// because it is the **resolution** result — what a typed path becomes before anyone has
+/// decided where to put it. [`ExhibitSpec::place`] is the one seam between the two shapes, and
+/// switching on the kind exactly once, there, is what keeps it one switch.
+///
+/// ⚠️ **A reference, never bytes** — see `organon_core::exhibit`. An item is a path, so a
+/// texture the budget evicts is re-decoded rather than lost, and this crate never holds a
+/// pixel. It could not: it has no decoder and must not gain one (`doc/arch/topology.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExhibitSpec {
+    /// At least one, in the order the human named them. Non-empty by construction —
+    /// `Exhibit::resolve` refuses an empty list before one of these is ever built.
+    pub items: Vec<Item>,
+}
+
+impl ExhibitSpec {
+    /// Turn a resolved exhibit into the arm that places it.
+    ///
+    /// The one place `Kind` → `ArtifactContent` is switched on for media. Every other consumer
+    /// reads the arm, which the compiler checks.
+    pub fn place(exhibit: Exhibit) -> ArtifactContent {
+        let spec = ExhibitSpec { items: exhibit.items };
+        match exhibit.kind {
+            Kind::Image => ArtifactContent::Image(spec),
+            Kind::Markdown => ArtifactContent::Markdown(spec),
+            // 🚨 Unreachable through `Exhibit::resolve`, which only ever answers a media kind —
+            // and a panic here would be a crash on a typed command. A scene is the console's
+            // own picture and the honest thing to fall back to when a future kind reaches this
+            // seam before its arm does.
+            Kind::Scene | Kind::Panel => ArtifactContent::Surface(SurfaceSpec::default()),
+        }
+    }
+
+    /// The single item, when there is exactly one — the common case, and the one the view
+    /// draws without a gallery.
+    pub fn single(&self) -> Option<&Item> {
+        match self.items.as_slice() {
+            [only] => Some(only),
+            _ => None,
+        }
+    }
 }
 
 impl ArtifactContent {
@@ -699,6 +752,8 @@ impl ArtifactContent {
         match self {
             ArtifactContent::Panel(_) => Kind::Panel,
             ArtifactContent::Surface(_) => Kind::Scene,
+            ArtifactContent::Image(_) => Kind::Image,
+            ArtifactContent::Markdown(_) => Kind::Markdown,
         }
     }
 }
@@ -2425,6 +2480,8 @@ mod tests {
                 drives: ElementId(0),
             }),
             ArtifactContent::Surface(SurfaceSpec::default()),
+            ArtifactContent::Image(ExhibitSpec { items: vec![Item::new("/a.png")] }),
+            ArtifactContent::Markdown(ExhibitSpec { items: vec![Item::new("/a.md")] }),
         ];
         let mut covered: Vec<Kind> = arms.iter().map(ArtifactContent::kind).collect();
         covered.sort_by_key(|k| k.as_word());

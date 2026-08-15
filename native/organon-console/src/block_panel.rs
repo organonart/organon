@@ -90,6 +90,12 @@ pub enum PatchContent {
     Scene,
     /// A live control panel, with its own widget state.
     Panel(BlockPanel),
+    /// A picture exhibit, claimed in a terminal pane — **a notice, not the picture**. See
+    /// [`PatchContent::media_notice`].
+    Image,
+    /// A Markdown exhibit, claimed in a terminal pane — a notice, for [`PatchContent::Image`]'s
+    /// reason.
+    Markdown,
 }
 
 impl PatchContent {
@@ -98,6 +104,38 @@ impl PatchContent {
         match self {
             PatchContent::Scene => Kind::Scene,
             PatchContent::Panel(_) => Kind::Panel,
+            PatchContent::Image => Kind::Image,
+            PatchContent::Markdown => Kind::Markdown,
+        }
+    }
+
+    /// What a media patch says in the rows it claimed, or `None` for a kind that draws itself.
+    ///
+    /// 🚨 **This arm is honest rather than complete, and the distinction is the point.** The
+    /// invariant its sibling test defends is that the CLI cannot accept a kind word this
+    /// front-end then *silently* ignores — "dispatches, records a success, and paints nothing".
+    /// A notice drawn in the claimed rows is not that failure: the rows say what the console
+    /// did and where the picture is instead.
+    ///
+    /// **Why not the picture.** A scene patch works because there is exactly *one* scene
+    /// texture and every scene quad samples it (`term_view::draw`'s `patch_image`). An exhibit
+    /// has a texture per item, so painting one here means a per-patch texture map, a second
+    /// eviction budget keyed on something a terminal pane does not have (there is no
+    /// `ElementId` in a character grid), and a `draw` signature change. That is #56 T5/T6 work.
+    /// #56 T4's bar is *"an image and a markdown document render inline in a conversation
+    /// tab"*, and the conversation front-end is where this tier renders them for real.
+    ///
+    /// ⚠️ **ASCII, because it is drawn.** `conversation_view`'s glyph allowlist is the rule and
+    /// egui's bundled fonts are the reason.
+    pub fn media_notice(&self) -> Option<&'static str> {
+        match self {
+            PatchContent::Image => {
+                Some("[organon] an image exhibit is shown in a conversation tab, not a terminal patch")
+            }
+            PatchContent::Markdown => {
+                Some("[organon] a markdown exhibit is shown in a conversation tab, not a terminal patch")
+            }
+            PatchContent::Scene | PatchContent::Panel(_) => None,
         }
     }
 }
@@ -479,6 +517,8 @@ mod tests {
         let arms = [
             PatchContent::Scene,
             PatchContent::Panel(BlockPanel::new("t", vec!["metal".into()])),
+            PatchContent::Image,
+            PatchContent::Markdown,
         ];
         let mut covered: Vec<Kind> = arms.iter().map(PatchContent::kind).collect();
         covered.sort_by_key(|k| k.as_word());
@@ -500,5 +540,43 @@ mod tests {
         let p = Patch::panel(blk(0, 1), BlockPanel::new("t", vec![]));
         assert!(!p.is_scene());
         assert_eq!(p.content.kind(), Kind::Panel);
+        // A media kind is not a scene, so it must never reach the one texture every scene quad
+        // samples — `is_scene` is what that paint site asks, and a `true` here would paint the
+        // rendered world into rows a person asked for a picture in.
+        assert!(!Patch { block: blk(0, 1), content: PatchContent::Image }.is_scene());
+        assert!(!Patch { block: blk(0, 1), content: PatchContent::Markdown }.is_scene());
+    }
+
+    /// 🚨 **The claim that keeps the honest arm honest**: every kind this front-end cannot
+    /// paint has something to *say* in the rows it took. A media arm that answered `None` here
+    /// would claim rows and draw nothing in them, which is precisely the silent success the
+    /// test above exists to prevent — the invariant would be satisfied on paper and broken in
+    /// the pane.
+    #[test]
+    fn every_kind_either_draws_itself_or_says_why_not() {
+        let arms = [
+            PatchContent::Scene,
+            PatchContent::Panel(BlockPanel::new("t", vec![])),
+            PatchContent::Image,
+            PatchContent::Markdown,
+        ];
+        for arm in &arms {
+            match arm {
+                // The two that draw. A notice here would be a caption on a picture.
+                PatchContent::Scene | PatchContent::Panel(_) => {
+                    assert_eq!(arm.media_notice(), None, "{:?} draws itself", arm.kind());
+                }
+                PatchContent::Image | PatchContent::Markdown => {
+                    let notice = arm
+                        .media_notice()
+                        .unwrap_or_else(|| panic!("`{}` claims rows in silence", arm.kind().as_word()));
+                    assert!(notice.is_ascii(), "a drawn notice is ASCII: {notice}");
+                    assert!(
+                        notice.contains("conversation"),
+                        "it says where the exhibit IS shown: {notice}"
+                    );
+                }
+            }
+        }
     }
 }

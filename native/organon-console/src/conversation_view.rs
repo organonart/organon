@@ -43,7 +43,7 @@ use crate::approval::{
 use crate::block_panel::{DEFAULT_SLIDERS, SLIDER_WIDTH};
 use crate::card_density::{self, DensityMap, Row};
 use crate::command::CommandSpec;
-use crate::conversation::{
+use crate::conversation::{ExhibitSpec, 
     AgentEvent, Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock,
     ArtifactContent, Body, Change, Element, ElementId, Ignored, OrganonBlock, PanelSpec,
     ResultDetail,
@@ -158,6 +158,61 @@ pub struct SurfaceRequest {
     pub size_points: (f32, f32),
 }
 
+/// One exhibit item this frame wants a picture for.
+///
+/// 🚨 **The opposite shape to [`SurfaceRequest`] in exactly one way, and it is the important
+/// one: this carries a path.** A surface names a *look* and the console renders the world; an
+/// exhibit names a **file** and the console decodes it. That makes this the only request in
+/// this crate that can cause a read of the filesystem, so where the path came from is a
+/// property of the whole design rather than of the decoder: it reached here from
+/// `organon_core::exhibit::Exhibit::resolve`, which is reached from a human's typed `/media`
+/// line and from nothing else. See that module's "where a path may come from".
+///
+/// ⚠️ **Points, not pixels** — [`SurfaceRequest`]'s rule and its reason, unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExhibitRequest {
+    pub element: ElementId,
+    /// Which item of the exhibit — the index into [`crate::conversation::ExhibitSpec::items`].
+    /// Part of the key because a three-item exhibit is three textures, not one.
+    pub item: usize,
+    /// The file to decode, exactly as the human typed it.
+    pub path: std::path::PathBuf,
+    /// The rect to fill, in points.
+    pub size_points: (f32, f32),
+}
+
+/// What the console has to say about one exhibit item.
+///
+/// 🚨 **Absence is a state, and `Failed` is a different one.** *Absent* means the read has not
+/// finished; `Picture`/`Document` are the answer; `Failed` is a file that will never load. A
+/// blank rectangle and a failed decode must not look alike (#56 T4) — collapse `Failed` into
+/// absent and a broken file reads as "still loading" forever, which is the single most common
+/// way a media viewer lies to the person using it.
+///
+/// ⚠️ **One seam for both media kinds, not a texture seam and a text seam.** They differ in
+/// what they carry and agree in everything that matters here: both are the result of touching
+/// a file, both are produced off the frame thread, both are keyed by item, and both are freed
+/// under one budget. Two maps would mean two eviction policies for one GPU.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExhibitContent {
+    /// Decoded and uploaded, with the pixel size the aspect ratio comes from.
+    Picture { texture: egui::TextureId, size: (u32, u32) },
+    /// A Markdown document's source text, read off the frame thread. Rendered by
+    /// [`markdown_body`] — this crate holds the text and never the pixels.
+    Document(String),
+    /// It will not load, in a sentence that **names the file** rather than quoting a decoder's
+    /// internal error — `organon_core::exhibit::ExhibitError`'s rule, applied one stage later,
+    /// where the failure is about bytes instead of about a name.
+    Failed(String),
+}
+
+/// What the console has ready for each exhibit item.
+///
+/// Keyed on `(element, item)` rather than [`ElementId`] alone — the difference between a
+/// gallery and a single picture is a key, and choosing the wrong one here is what "retrofitting
+/// several items onto a single-item exhibit" would have meant.
+pub type ExhibitContents = HashMap<(ElementId, usize), ExhibitContent>;
+
 /// Everything one frame of [`draw`] hands back.
 ///
 /// Still a struct rather than a bare `Vec`, because what it carries is a *render list for
@@ -171,6 +226,9 @@ pub struct SurfaceRequest {
 pub struct ConversationOutput {
     /// The **visible** surfaces this frame, in transcript order.
     pub surfaces: Vec<SurfaceRequest>,
+    /// The **visible** exhibit items this frame, in transcript order. Same visibility rule as
+    /// `surfaces` and the same reason: an off-screen picture costs a texture nobody sees.
+    pub exhibits: Vec<ExhibitRequest>,
     /// A palette the live editor changed this frame, and what to do with the store.
     ///
     /// 🚨 **`Some` only on the frames something actually moved.** This crate is handed
@@ -1279,6 +1337,52 @@ impl ConversationPane {
         self.summon_panel(id);
     }
 
+    /// Put a file from disk in the flow, or say why not.
+    ///
+    /// 🚨 **The only door a path enters the console by.** Everything downstream — the request,
+    /// the off-thread read, the decoder — trusts that whatever reaches it came from a human's
+    /// keystrokes, and this is the function that makes that true. It is reached from the
+    /// composer's view lane and from nothing else; `organon_core::exhibit`'s module doc owns
+    /// the argument, and `registry::VERB_MEDIA` records why the verb is not in the MCP catalog.
+    ///
+    /// ⚠️ **The path is not resolved, not canonicalised and not checked for existence here.**
+    /// Existence is the reader's answer to give — it is IO, and it belongs off the frame thread
+    /// with every other touch of the disk. What a nonexistent file earns is
+    /// `ExhibitContent::Failed` naming it, which is the same plate a corrupt file earns and the
+    /// right one for both: the person typed a name, and the name is what they need back.
+    fn summon_media(&mut self, args: &serde_json::Value, typed: &str) -> Receipt {
+        let raw = args.get(registry::MEDIA_ARG).and_then(|v| v.as_str()).unwrap_or_default();
+        // Split on whitespace, which is what makes `/media a.png b.png c.png` one exhibit of
+        // three. ⚠️ It is also why a path *containing* a space cannot be typed here — a real
+        // limit, stated rather than hidden, and the reason the refusal below quotes the pieces
+        // it actually tried.
+        let paths: Vec<std::path::PathBuf> =
+            raw.split_whitespace().map(std::path::PathBuf::from).collect();
+        let exhibit = match organon_core::exhibit::Exhibit::resolve(&paths) {
+            Ok(exhibit) => exhibit,
+            Err(why) => {
+                // The refusal is the product here — it names the file and what would have
+                // worked. `note` puts it in the pane's log, where a command's answer goes.
+                let message = why.to_string();
+                self.note(message.clone());
+                return Receipt { ok: false, text: message };
+            }
+        };
+        let count = exhibit.len();
+        let title = format!("◈ organon · {}", exhibit.kind.as_word());
+        let content = ExhibitSpec::place(exhibit);
+        match self.transcript.insert_artifact(ArtifactBlock { title, content }) {
+            Change::Appended(_) => Receipt { ok: true, text: typed.to_string() },
+            // `insert_artifact` appends unconditionally, so this is a contract change in the
+            // transcript rather than something a person did — said out loud for that reason.
+            _ => {
+                let message = format!("{count} item(s) could not be placed in the transcript");
+                self.note(message.clone());
+                Receipt { ok: false, text: message }
+            }
+        }
+    }
+
     /// Put one of Organon's editor panels in the flow, or say why not.
     ///
     /// 🚨 **This is the second gate on the `(tab, panel)` pair, and the last one.** The command
@@ -1402,6 +1506,7 @@ impl ConversationPane {
                     Receipt { ok: true, text: typed.to_string() }
                 }
                 registry::VERB_ORGANON => self.summon_organon(&args, typed),
+                registry::VERB_MEDIA => self.summon_media(&args, typed),
                 registry::VERB_HELP => {
                     // Collected first: `help_lines` borrows the registry and `note` wants the
                     // pane.
@@ -1694,6 +1799,7 @@ pub fn draw(
     ui: &mut egui::Ui,
     pane: &mut ConversationPane,
     images: &SurfaceImages,
+    exhibits: &ExhibitContents,
     theme: &Theme,
     theme_name: &str,
     form: &Form,
@@ -1724,7 +1830,7 @@ pub fn draw(
         ui.add_space(4.0);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            out = scrollback(ui, pane, images, theme, form, organon);
+            out = scrollback(ui, pane, images, exhibits, theme, form, organon);
         });
     });
     out.theme = theme_change;
@@ -1822,6 +1928,7 @@ fn scrollback(
     ui: &mut egui::Ui,
     pane: &mut ConversationPane,
     images: &SurfaceImages,
+    exhibits: &ExhibitContents,
     theme: &Theme,
     form: &Form,
     organon: OrganonDraw,
@@ -1831,6 +1938,7 @@ fn scrollback(
     // adjacency — so the join happens once the whole list has been seen rather than by
     // reaching backwards mid-loop.
     let mut laid_out: Vec<LaidOutSurface> = Vec::new();
+    let mut wanted_exhibits: Vec<ExhibitRequest> = Vec::new();
     let mut drives: Vec<PanelDrive> = Vec::new();
     // The transcript is walked immutably, so a decision taken mid-walk is applied after it.
     // The *agent* is not made to wait for that: the verdict goes back on the wire inside the
@@ -1959,6 +2067,47 @@ fn scrollback(
                                         look: spec.look.clone(),
                                         size_points: (rect.width(), rect.height()),
                                     });
+                                }
+                            }
+                            // The two media arms share a renderer and differ by one flag: what
+                            // they place is the same card with the same items and the same
+                            // per-item states, and only the body of an item differs. A second
+                            // function would have been the same code twice with one `match`
+                            // moved into it.
+                            ArtifactContent::Image(spec) | ArtifactContent::Markdown(spec) => {
+                                let picture =
+                                    matches!(artifact.content, ArtifactContent::Image(_));
+                                let rects = exhibit_element(
+                                    ui, element.id, artifact, spec, picture, exhibits, theme,
+                                    form,
+                                );
+                                // Only pictures are requested: a document's rect is `ZERO` by
+                                // contract, and asking for one would be asking the console to
+                                // decode a texture nothing draws.
+                                if picture {
+                                    for (i, rect) in rects.iter().enumerate() {
+                                        if surface_visible(*rect, viewport) {
+                                            wanted_exhibits.push(ExhibitRequest {
+                                                element: element.id,
+                                                item: i,
+                                                path: spec.items[i].path.clone(),
+                                                size_points: (rect.width(), rect.height()),
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    // A document still has to be *read*, and the read is the
+                                    // console's off-thread job exactly as a decode is. The
+                                    // request carries a zero size, which is what tells the
+                                    // reader it wants bytes rather than a texture.
+                                    for (i, item) in spec.items.iter().enumerate() {
+                                        wanted_exhibits.push(ExhibitRequest {
+                                            element: element.id,
+                                            item: i,
+                                            path: item.path.clone(),
+                                            size_points: (0.0, 0.0),
+                                        });
+                                    }
                                 }
                             }
                         },
@@ -2095,7 +2244,11 @@ fn scrollback(
     density_map.retain(|id| transcript.get(id).is_some());
     // The scrollback cannot change the palette — only the editor above the composer can, and
     // `draw` assigns that field from `command_panel`'s answer.
-    ConversationOutput { surfaces: join_drives(laid_out, drives), theme: None }
+    ConversationOutput {
+        surfaces: join_drives(laid_out, drives),
+        exhibits: wanted_exhibits,
+        theme: None,
+    }
 }
 
 /// Fold each driving panel's state into the surface it names.
@@ -3036,6 +3189,259 @@ fn surface_element(
         framed.inner
     })
     .inner
+}
+
+/// How tall one picture in an exhibit is allowed to be, in points.
+///
+/// The same figure as [`SURFACE_HEIGHT`] and for the same reason: a card in a flowing
+/// transcript has to leave the flow readable, so a picture gets a band rather than its natural
+/// size. The *width* is the card's and the aspect ratio is honoured inside it — see
+/// [`fit_within`], which is what stops a wide screenshot being stretched to a square.
+const EXHIBIT_HEIGHT: f32 = SURFACE_HEIGHT;
+
+/// The largest Markdown document drawn in full, in bytes.
+///
+/// 🚨 **A bound on what is *drawn*, not on what is read.** §1.7's measurement is the reason:
+/// the transcript is not virtualised, so every element's galley is laid out on every frame
+/// whether or not it is on screen, and layout is linear in text length. A 2 MB README dropped
+/// into a conversation would therefore cost its full layout on every frame for the rest of the
+/// session — not once. 64 KB is a long document and roughly the point at which one element
+/// starts to dominate a frame.
+///
+/// ⚠️ **Truncation is stated in the card**, never silent, on `text_diff`'s rule: a document
+/// that quietly stops half way is indistinguishable from a document that ends there.
+const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+
+/// The rect a picture of `size` fills inside `bounds`, centred, preserving aspect ratio.
+///
+/// ⚠️ **Never `bounds` itself.** Painting a texture into the whole band stretches it, and a
+/// stretched screenshot is a subtly wrong picture rather than an obviously missing one — the
+/// failure mode that survives review because it looks fine until you know the source.
+fn fit_within(bounds: egui::Rect, size: (u32, u32)) -> egui::Rect {
+    let (w, h) = (size.0.max(1) as f32, size.1.max(1) as f32);
+    let scale = (bounds.width() / w).min(bounds.height() / h);
+    let fitted = egui::vec2(w * scale, h * scale);
+    egui::Rect::from_center_size(bounds.center(), fitted)
+}
+
+/// One exhibit, drawn as a card: a title, then every item with its label.
+///
+/// Returns the rect each item was given, in transcript order, so the caller can build the
+/// [`ExhibitRequest`]s — the same shape [`surface_element`] uses, and for the same reason: the
+/// size is only known once egui has laid the card out, and the picture arrives next frame.
+#[allow(clippy::too_many_arguments)]
+fn exhibit_element(
+    ui: &mut egui::Ui,
+    id: ElementId,
+    artifact: &ArtifactBlock,
+    spec: &ExhibitSpec,
+    picture: bool,
+    contents: &ExhibitContents,
+    theme: &Theme,
+    form: &Form,
+) -> Vec<egui::Rect> {
+    ui.push_id(id.0, |ui| {
+        let mut framed = Frame::new()
+            .fill(theme.panel_fill)
+            .corner_radius(form.card_corner())
+            .inner_margin(form.card_margin());
+        if let Some(stroke) = form.card_stroke(theme.panel_edge) {
+            framed = framed.stroke(stroke);
+        }
+        let framed = framed.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(&artifact.title).monospace().strong().color(theme.panel_title));
+            // The count is stated only when there is more than one, so the common case reads as
+            // a picture rather than as a gallery of one.
+            if spec.items.len() > 1 {
+                ui.label(
+                    RichText::new(format!("{} items", spec.items.len()))
+                        .monospace()
+                        .small()
+                        .color(theme.dim),
+                );
+            }
+            ui.add_space(4.0);
+            let mut rects = Vec::with_capacity(spec.items.len());
+            for (i, item) in spec.items.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(6.0);
+                }
+                ui.label(RichText::new(&item.label).monospace().small().color(theme.dim));
+                let state = contents.get(&(id, i));
+                if picture {
+                    rects.push(picture_item(ui, state, theme, form));
+                } else {
+                    document_item(ui, state, theme);
+                    // A document has no texture and so no rect to report — but the vector is
+                    // index-aligned with the items by contract, so it gets a degenerate one
+                    // rather than a hole. `ZERO` is what the caller tests to skip it.
+                    rects.push(egui::Rect::ZERO);
+                }
+            }
+            rects
+        });
+        card_left_rule(ui, framed.response.rect, theme, form);
+        framed.inner
+    })
+    .inner
+}
+
+/// One picture, in whichever of its four states it is in. Returns the band it was allotted —
+/// the size the console is being asked to decode into.
+fn picture_item(
+    ui: &mut egui::Ui,
+    state: Option<&ExhibitContent>,
+    theme: &Theme,
+    form: &Form,
+) -> egui::Rect {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, EXHIBIT_HEIGHT), egui::Sense::hover());
+    match state {
+        Some(ExhibitContent::Picture { texture, size }) => {
+            ui.painter().rect_filled(rect, form.nested_corner(), theme.surface_empty);
+            ui.painter().image(
+                *texture,
+                fit_within(rect, *size),
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                // The identity multiplier — a theme tinting a person's own photograph would be
+                // repainting the thing they asked to look at.
+                Color32::WHITE,
+            );
+        }
+        Some(ExhibitContent::Failed(why)) => failed_plate(ui, rect, why, theme, form),
+        // A document's content in a picture's slot cannot happen through `place`, but it is a
+        // `HashMap` lookup rather than a proof — so it says so instead of drawing nothing.
+        Some(ExhibitContent::Document(_)) => {
+            failed_plate(ui, rect, "not a picture", theme, form);
+        }
+        None => {
+            ui.painter().rect_filled(rect, form.nested_corner(), theme.surface_empty);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "reading...",
+                egui::FontId::monospace(12.0),
+                theme.dim,
+            );
+        }
+    }
+    rect
+}
+
+/// The plate a picture that will never arrive shows.
+///
+/// 🚨 **Deliberately unlike the "reading..." plate** — a different word, and the failure text
+/// under it. The two states are one frame apart and permanent respectively, and the whole point
+/// of `ExhibitContent::Failed` is lost if they look the same.
+fn failed_plate(ui: &mut egui::Ui, rect: egui::Rect, why: &str, theme: &Theme, form: &Form) {
+    ui.painter().rect_filled(rect, form.nested_corner(), theme.surface_empty);
+    ui.painter().text(
+        rect.center() - egui::vec2(0.0, 8.0),
+        egui::Align2::CENTER_CENTER,
+        "cannot show this file",
+        egui::FontId::monospace(12.0),
+        theme.bad,
+    );
+    ui.painter().text(
+        rect.center() + egui::vec2(0.0, 8.0),
+        egui::Align2::CENTER_CENTER,
+        why,
+        egui::FontId::monospace(11.0),
+        theme.dim,
+    );
+}
+
+/// One document, in whichever of its three states it is in.
+fn document_item(ui: &mut egui::Ui, state: Option<&ExhibitContent>, theme: &Theme) {
+    match state {
+        Some(ExhibitContent::Document(text)) => markdown_body(ui, text, theme),
+        Some(ExhibitContent::Failed(why)) => {
+            ui.label(RichText::new("cannot show this file").monospace().color(theme.bad));
+            ui.label(RichText::new(why).monospace().small().color(theme.dim));
+        }
+        Some(ExhibitContent::Picture { .. }) => {
+            ui.label(RichText::new("cannot show this file").monospace().color(theme.bad));
+            ui.label(RichText::new("not a document").monospace().small().color(theme.dim));
+        }
+        None => {
+            ui.label(RichText::new("reading...").monospace().italics().color(theme.dim));
+        }
+    }
+}
+
+/// Markdown, drawn as text — headings, bullets, fenced code and paragraphs.
+///
+/// 🚨 **A subset, on purpose, and with no dependency.** `organon-console`'s manifest is
+/// deliberately spare and every entry is argued (`doc/arch/topology.md`); a Markdown crate
+/// would be a parser, an AST and an HTML model pulled in to make four kinds of line look
+/// different in a card. What is *not* rendered — tables, links as links, images, nested
+/// emphasis — is shown as its own source text, which is readable and honest, rather than
+/// silently swallowed.
+///
+/// ⚠️ **Every line is drawn `.monospace()`**, which is the tofu fix this file applies
+/// everywhere: a document from disk can hold any codepoint, and Hack is the widest of the four
+/// bundled faces. A character none of them has is still a box — that is a property of egui's
+/// bundled fonts, not something this function can fix, and it is why the *labels* the console
+/// derives are ASCII-folded upstream (`organon_core::exhibit::Item::new`) while a document's
+/// own body is passed through as written.
+fn markdown_body(ui: &mut egui::Ui, text: &str, theme: &Theme) {
+    let (shown, truncated) = match text.char_indices().nth(MAX_DOCUMENT_BYTES) {
+        Some((at, _)) => (&text[..at], true),
+        None => (text, false),
+    };
+    let mut in_code = false;
+    for line in shown.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            ui.label(RichText::new(line).monospace().small().color(theme.prose));
+            continue;
+        }
+        let heading = trimmed.chars().take_while(|c| *c == '#').count();
+        if heading > 0 && heading <= 6 && trimmed.chars().nth(heading) == Some(' ') {
+            let body = trimmed[heading + 1..].trim();
+            // Two sizes, not six: past the second, a deeper heading in a card this size reads
+            // as body text with extra weight, and the weight is what carries the level.
+            let size = if heading == 1 { 15.0 } else { 13.0 };
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(body).monospace().strong().size(size).color(theme.panel_title),
+            );
+            continue;
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "))
+        {
+            // An ASCII hyphen, not a bullet character. `•` U+2022 is in the allowlist, but the
+            // body of a document is already monospace and a hyphen is what its source says.
+            ui.label(RichText::new(format!("  - {rest}")).monospace().color(theme.prose));
+            continue;
+        }
+        if trimmed.is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+        ui.label(RichText::new(line).monospace().color(theme.prose));
+    }
+    if truncated {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(format!(
+                "-- shown to {} KB; the file continues --",
+                MAX_DOCUMENT_BYTES / 1024
+            ))
+            .monospace()
+            .small()
+            .italics()
+            .color(theme.dim),
+        );
+    }
 }
 
 fn arguments_body(ui: &mut egui::Ui, args: &Arguments, theme: &Theme) {
@@ -6387,6 +6793,97 @@ mod tests {
         assert_eq!(*block.panel, organon_core::panels::LOOK_SURFACE);
     }
 
+    /// `/media` with one picture puts an image exhibit in the flow.
+    #[test]
+    fn media_summons_an_image_exhibit() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        let receipt =
+            pane.summon_media(&serde_json::json!({ "path": "/x/shot.png" }), "/media /x/shot.png");
+        assert!(receipt.ok, "{}", receipt.text);
+        let last = pane.transcript.elements().back().expect("an element landed");
+        let Body::Artifact(artifact) = &last.body else { panic!("not an artifact") };
+        let ArtifactContent::Image(spec) = &artifact.content else {
+            panic!("not an image exhibit: {:?}", artifact.content)
+        };
+        assert_eq!(spec.items.len(), 1);
+        assert_eq!(spec.single().expect("exactly one").label, "shot.png");
+        assert_eq!(artifact.content.kind(), organon_core::kind::Kind::Image);
+    }
+
+    /// ⚠️ **Several paths are ONE exhibit, not one artifact each.** The distinction is the
+    /// whole of "collections from day one": three candidates the agent generated are one thing
+    /// a person looks through, and three separate cards would make the gallery a later feature
+    /// instead of a later *placement*.
+    #[test]
+    fn several_paths_are_one_exhibit_with_several_items() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        let before = pane.transcript.elements().len();
+        let receipt = pane.summon_media(
+            &serde_json::json!({ "path": "/x/a.png /x/b.png /x/c.jpg" }),
+            "/media /x/a.png /x/b.png /x/c.jpg",
+        );
+        assert!(receipt.ok, "{}", receipt.text);
+        assert_eq!(
+            pane.transcript.elements().len(),
+            before + 1,
+            "three pictures are one element, not three"
+        );
+        let Body::Artifact(artifact) = &pane.transcript.elements().back().unwrap().body else {
+            panic!("not an artifact")
+        };
+        let ArtifactContent::Image(spec) = &artifact.content else { panic!("not an image") };
+        assert_eq!(spec.items.len(), 3);
+        assert_eq!(spec.single(), None, "a gallery has no single item");
+    }
+
+    /// A markdown path lands on the *other* arm — the falsification test #56 T4 asks for,
+    /// at the placement seam: one switch, two destinations.
+    #[test]
+    fn a_markdown_path_lands_on_the_markdown_arm() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        assert!(pane.summon_media(&serde_json::json!({ "path": "/x/notes.md" }), "/media").ok);
+        let Body::Artifact(artifact) = &pane.transcript.elements().back().unwrap().body else {
+            panic!("not an artifact")
+        };
+        assert!(matches!(artifact.content, ArtifactContent::Markdown(_)));
+        assert_eq!(artifact.content.kind(), organon_core::kind::Kind::Markdown);
+    }
+
+    /// 🚨 **A refused path leaves NOTHING in the transcript**, and says why in the log. A card
+    /// that appeared and then showed an error would be a permanent monument to a typo, in a
+    /// flow a person cannot edit — the refusal belongs in the command's own answer, which is
+    /// where every other refused verb puts it.
+    #[test]
+    fn a_refused_path_places_no_card_and_says_why() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        let before = pane.transcript.elements().len();
+        let receipt =
+            pane.summon_media(&serde_json::json!({ "path": "/music/take.mp3" }), "/media");
+        assert!(!receipt.ok, "an mp3 is refused in this build");
+        assert_eq!(pane.transcript.elements().len(), before, "nothing was placed");
+        assert!(receipt.text.contains("take.mp3"), "it names the file: {}", receipt.text);
+        assert!(
+            receipt.text.contains("playback device"),
+            "with the real reason, not a generic one: {}",
+            receipt.text
+        );
+        assert!(
+            pane.log.iter().any(|l| l.contains("take.mp3")),
+            "and the person can read it in the log: {:?}",
+            pane.log
+        );
+    }
+
+    /// The empty case, which `ArgKind::Text` cannot refuse for us — a required argument stops
+    /// `/media` with no word at all, but `/media " "` reaches here with nothing in it.
+    #[test]
+    fn media_with_no_usable_path_is_refused_rather_than_placing_an_empty_card() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        let receipt = pane.summon_media(&serde_json::json!({ "path": "   " }), "/media");
+        assert!(!receipt.ok);
+        assert!(pane.transcript.elements().is_empty(), "an empty exhibit is not a card");
+    }
+
     /// 🚨 **The pair, checked at the door a typed line does not use.** `surface` is a real slug,
     /// so the command *schema* cannot refuse `/organon motion surface` — the declared value
     /// space is the union across tabs ([`crate::registry::NarrowFn`]). A composer line is
@@ -7980,6 +8477,45 @@ mod tests {
             check("the theme editor", &text);
         }
 
+        // The exhibit's own drawn strings (§1.13). Every one of these is a *plate* rather than
+        // prose — a person sees them exactly when something is missing or wrong, which is the
+        // worst moment for a tofu box to appear and suggest the console itself is broken.
+        for plate in ["reading...", "cannot show this file", "not a picture", "not a document"] {
+            check("an exhibit plate", plate);
+        }
+        check(
+            "the document truncation note",
+            &format!("-- shown to {} KB; the file continues --", MAX_DOCUMENT_BYTES / 1024),
+        );
+        // The terminal placement's notice, from `block_panel` — a string built in one module
+        // and drawn in another, which is the exact shape of the hole named above.
+        for content in [crate::block_panel::PatchContent::Image, crate::block_panel::PatchContent::Markdown] {
+            check("a media patch notice", content.media_notice().expect("a media arm speaks"));
+        }
+        // 🚨 **The refusals, from `organon_core::exhibit`** — the largest new family of drawn
+        // strings and the one most likely to grow. They are built in *another crate* from a
+        // path a person typed, so they are checked here, where they are drawn. Note the last
+        // case: a non-ASCII **file name** must not reach a plate un-folded, and `Item::new` is
+        // what folds it.
+        {
+            use organon_core::exhibit::{Exhibit, ExhibitError, Item, KNOWN_UNBUILT};
+            use std::path::PathBuf;
+            for (ext, _) in KNOWN_UNBUILT {
+                let err = Exhibit::resolve(&[PathBuf::from(format!("/x/f.{ext}"))])
+                    .expect_err("a known-unbuilt kind refuses");
+                check("an exhibit refusal", &err.to_string());
+            }
+            for err in [
+                Exhibit::resolve(&[]).unwrap_err(),
+                Exhibit::resolve(&[PathBuf::from("/x/f.qqq")]).unwrap_err(),
+                Exhibit::resolve(&[PathBuf::from("/a.png"), PathBuf::from("/b.md")]).unwrap_err(),
+                ExhibitError::NotYet { path: PathBuf::from("/a.mp3"), why: "reason".into() },
+            ] {
+                check("an exhibit refusal", &err.to_string());
+            }
+            check("an item label", &Item::new("/x/\u{8272}\u{5f69}.png").label);
+        }
+
         assert!(checked >= 30, "the guard must actually have looked at something: {checked}");
     }
 
@@ -8525,8 +9061,8 @@ mod tests {
         // Everything, with the word Tab would take marked. ⚠️ `organon` is here because the
         // fixture's registry gained it with §1.11's ring — the row is the registry's own
         // words, so a verb added anywhere lands in this string without anyone editing it.
-        assert_eq!(row("/", 0), "[theme] | camera | camera.read | surface | help | organon");
-        assert_eq!(row("/", 2), "theme | camera | [camera.read] | surface | help | organon");
+        assert_eq!(row("/", 0), "[theme] | camera | camera.read | surface | help | media | organon");
+        assert_eq!(row("/", 2), "theme | camera | [camera.read] | surface | help | media | organon");
         // …and it narrows, because the generator does.
         assert_eq!(row("/c", 0), "[camera] | camera.read");
         // The value ring is the same row: an `ArgKind::Choice` IS a list of words.
@@ -8560,7 +9096,7 @@ mod tests {
         assert_eq!(compact_fit(&[], 40), (0, 0), "nothing to fit and nothing hidden");
         let registry = Registry::new(&palette_specs());
         let palette = registry.candidates("/").expect("a command line");
-        assert_eq!(compact_line(&palette, 0, 24), "[theme] | camera | +4");
+        assert_eq!(compact_line(&palette, 0, 24), "[theme] | camera | +5");
     }
 
     /// The list is capped rather than scrolled — see [`PALETTE_MAX_ROWS`] for the measured
