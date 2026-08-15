@@ -17,6 +17,16 @@ pub mod audio_ring;
 pub mod cli;
 pub mod clip;
 pub mod console_catalog;
+
+/// The Console's window icon (the aperture mark), embedded as PNG bytes.
+///
+/// Gated on `console-edition` for the reason every other gate in this file exists: the
+/// module is only ever reached from `console_main.rs`, and the shipping plugin cdylib
+/// should not carry 19 KB of icon it can never draw. The gate also keeps `winit`'s
+/// Windows platform extension off the plugin's compile path.
+#[cfg(feature = "console-edition")]
+pub mod console_icon;
+
 mod controller;
 
 /// #626 Tier 3 — **`organon-core`'s modules, re-exported so `crate::` paths still resolve.**

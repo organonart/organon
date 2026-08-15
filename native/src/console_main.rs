@@ -56,6 +56,7 @@ use std::sync::Arc;
 
 use organic_math_native::agent;
 use organic_math_native::cli;
+use organic_math_native::console_icon;
 use organic_math_native::params::OrganicMathParams;
 use organic_math_native::scene_input;
 use organic_math_native::substrate_camera::SubstrateRig;
@@ -3812,9 +3813,14 @@ impl ApplicationHandler for Console {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
-            .with_title(PRODUCT_NAME)
-            .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
+        // The icon is hung on by `console_icon::apply` rather than inline, because the
+        // title-bar icon and the taskbar icon are two different slots set by two
+        // different APIs — only one of which is portable. See that module.
+        let attrs = console_icon::apply(
+            Window::default_attributes()
+                .with_title(PRODUCT_NAME)
+                .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0)),
+        );
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.init_gpu(window);
     }
@@ -4155,16 +4161,22 @@ mod cli_tests {
         assert!(h.contains("0/unset off"), "help does not say what unset means");
     }
 
-    /// **The binary introduces itself as what you launched.** `--help`'s header and usage line
-    /// are the console's front door, and they are the one place the rename is *visible*: the
-    /// artifact is `organon-console`, so a header reading "Organon Console" would name a product
-    /// that is not what ran. This is a real regression risk rather than a hypothetical —
-    /// [`PRODUCT_NAME`] deliberately shadows `EDITION.product_name()`, which still answers
-    /// "Organon Console" and will keep tempting a future tidy-up back onto it.
+    /// **The binary introduces itself as what you launched, and never as the *shell*.**
+    /// `--help`'s header and usage line are the console's front door.
+    ///
+    /// ⚠️ **This test used to assert the opposite of what it asserts now, and the inversion was
+    /// a deliberate product decision rather than a drift.** It was written when
+    /// [`PRODUCT_NAME`] was the artifact string and carried
+    /// `assert!(!h.contains("Organon Console"))` — on the reasoning that a header naming the
+    /// product rather than the binary would name "a product that is not what ran". `474e8cd`
+    /// ("Give the console its own name everywhere the name is ours to give") then set
+    /// `PRODUCT_NAME` to `"Organon Console"` on purpose, which made that assertion contradict
+    /// the `starts_with` on the line above it — the two could not both hold, and the console
+    /// edition's test leg went red the moment they met. The surviving intent is the *shell*
+    /// half, which is what the name of this test was always about.
     ///
     /// ⚠️ The **variable names** below are the opposite case: `ORGANON_SHELL_*` is a shipped
-    /// flag surface and stays. Presentation renames, identifiers do not — that split is the
-    /// whole content of this change.
+    /// flag surface and stays. Presentation renames, identifiers do not.
     #[test]
     fn the_console_does_not_introduce_itself_as_the_shell() {
         let h = help_text();
@@ -4173,7 +4185,7 @@ mod cli_tests {
             h.contains(&format!("Usage: {INVOCATION_NAME}")),
             "usage line names the wrong command"
         );
-        assert!(!h.contains("Organon Console"), "the console must not present as Organon Console");
+        assert!(!h.contains("Organon Shell"), "the console must not present as Organon Shell");
         assert!(!h.contains("organon-shell "), "the usage line still names the old binary");
         // …and the environment variables are untouched by all of the above.
         assert!(h.contains("ORGANON_SHELL_BACKDROP"), "the flag surface is NOT renamed");
@@ -4571,6 +4583,16 @@ mod cli_tests {
                 CMD_CAMERA => {
                     json!({ CMD_RESET: false, CMD_YAW: null, CMD_PITCH: null, CMD_DISTANCE: 40.0 })
                 }
+                // 🚨 **A palette NAME, taken from `Theme::NAMES` rather than from the spec's
+                // own `Choice`.** That `Choice` also carries `edit`/`adjust`, which open the
+                // live editor and are refused on this lane by design (§1.10) — so reaching for
+                // `v[0]` the way the two dressing verbs above do would be one reordering away
+                // from this test asserting that an editor word writes a sidecar line, which is
+                // exactly what must never happen.
+                CMD_THEME => json!({ CMD_ARG: Theme::NAMES[0] }),
+                CMD_POSTURE => {
+                    json!({ CMD_ARG: organon_console::posture::POSTURE_WORDS[0] })
+                }
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -4759,6 +4781,52 @@ mod cli_tests {
             op_from(&name, &args).is_err(),
             "a read must never convert into a line written onto a fire-and-forget channel"
         );
+    }
+
+    /// 🚨 **The row a person actually sees when they type `/`, pinned against the real
+    /// table.**
+    ///
+    /// The compact command panel is generated from [`Registry::candidates`], so nothing in
+    /// the console restates the verb list — which is right, and which also means the thing
+    /// James looks at exists nowhere as a string that could be read. It does now, here,
+    /// because this is the only module that can see the real catalog.
+    ///
+    /// ⚠️ **This test is a *witness*, not a specification.** It must be updated whenever a
+    /// verb is added — that is the point: a diff to this line is what tells a reviewer the
+    /// surface changed, and it is far cheaper than noticing on a running console.
+    ///
+    /// ⚠️ James's own sketch of the row named eight verbs
+    /// (`surface|theme|posture|background|rig|patch|portal|camera`). The panel deliberately
+    /// shows the **true** list, which is eleven: `block`, `camera.read` and `help` are
+    /// typeable, so hiding them would be the surface disagreeing with the registry — a
+    /// second vocabulary, in the one place that exists to prevent one.
+    ///
+    /// ⚠️ `cargo check --tests --features console-edition` only in this session; CI executes
+    /// it — the same standing caveat the sibling test above carries.
+    #[test]
+    fn the_compact_panel_shows_the_real_table() {
+        use organon_console::conversation_view::compact_line;
+        use organon_console::registry::Registry;
+
+        let registry = Registry::new(&mcp_specs());
+        let all = registry.candidates("/").expect("a bare slash opens the whole table");
+        assert_eq!(
+            compact_line(&all, 0, 200),
+            "[background] | rig | theme | posture | block | patch | portal | camera | \
+             camera.read | surface | help"
+        );
+        // 101 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // count rather than an ellipsis when it does not.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 101);
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +9");
+
+        // The value ring of the verb James found offering nothing: `/portal` completes to
+        // `/portal ` on its own (one candidate), and that is what opens this.
+        let portal = registry.candidates("/portal ").expect("the value ring");
+        assert_eq!(compact_line(&portal, 0, 200), "[open] | close | toggle");
+        // …and an argument with no closed value space says what it wants instead.
+        let block = registry.candidates("/block ").expect("the value ring");
+        assert_eq!(compact_line(&block, 0, 200), "rows: a whole number");
     }
 
     /// **The block verb's row range is a gate on both sides of the sidecar, and this is the
