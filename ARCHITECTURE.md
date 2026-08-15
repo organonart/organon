@@ -405,6 +405,23 @@ The heart of the two-process design.
   > `a_concurrent_reader_never_observes_a_blend` reproduces a real tear against the
   > pre-Tier-0a writer in well under a second.
   The `layout_version` check remains, unchanged, doing the job it always did.
+- **Composing two snapshots: `overlay_changed(dst, base, mine)`** (Console #7). Copies into
+  `dst` every lane in which `mine` disagrees with `base`, and nothing else. It exists for a
+  front-end that owns only *part* of a look — Organon Console drawing one of the editor's
+  panels — and has to put that part on top of a snapshot somebody else composed. `base` is what
+  the caller's values were before anyone touched them, so the difference between it and `mine`
+  **is** the set of lanes the caller has an opinion about; no hand-written lane manifest exists
+  to fall out of date when a param is added.
+  🚨 **`base == mine` writes nothing**, so a caller that has changed nothing is byte-inert over
+  any `dst` whatsoever — invariant #4 made structural rather than checked.
+  ⚠️ **Lane granularity, never byte granularity.** A changed `f32` differs in one to four of its
+  bytes, and copying only the differing ones would splice two floats into a value neither side
+  held. Every `Shared` field is a `u32`, an `f32` or an array of them, and the struct is `Pod`,
+  so `bytemuck` hands the whole thing over as `[u32]` and a 4-byte word *is* a lane —
+  `shared_is_a_whole_number_of_lanes` fails rather than corrupting one if a field of another
+  width is ever added. `seq` and `layout_version` are lanes like any other and are safe by
+  construction: both are equal on any two snapshots from the same build, so neither can ever be
+  in the differing set, and `Writer::write` stamps `seq` afterwards regardless.
 - **Two runtime-written blocks** are stamped by the plugin's `process()` each block,
   not by params: `transport[4]` (host playing/beat-pos/tempo) and `audio[8]` (live
   band envelopes; `audio[5]` = the smoothed broadband RMS level, #248 Tier 1 — the
@@ -1922,7 +1939,9 @@ guard fails the run outright rather than shipping the broken manifest.
 | `recipe.rs` | #452 Layer 3 — the **recipe library**: named starting-points applied with one command, so something beautiful is reachable with no saved presets. Compile-time data, **not** saved state |
 | `snap.rs` | #452 Tier 3 ("the eyes") — single-frame PNG of the **production texture** (the same one the recorder reads). Closes the see→act→see loop for an external agent |
 | `agent.rs` | #317 Tier 1 **AI Performer** — the internal agent that *plays* Organon. Runtime lives in the **visual** (it owns the frame + look-application); the plugin only stamps the request block |
-| `preset.rs` | `PresetValues` capture/apply + JSON store |
+| `preset.rs` | `PresetValues` capture/apply + JSON store. ⚠️ Also, since Console #7, the **writable mirror** an Organon panel drawn outside a host writes into — see `param_sink.rs` |
+| `param_sink.rs` | Console #7 — **where a panel control's write goes**: `Sink::Host(&ParamSetter)` for Organon's editor, `Sink::Mirror(&mut PresetValues)` for Organon Console, and the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` macros that name a field once so both sides are compile-checked. Read its module doc before converting a panel — the wall it works round belongs to `nih_plug` |
+| `panel_surface.rs` | Console #7 — the **Look ▸ Surface** card's body, the first of Organon's 25 editor panels lifted out of `editor_ui`'s one long pass so the Console can call it too, plus `OrganonPanels` (the Console's mirror + its difference-not-snapshot route into `Shared`) |
 | `clip.rs` / `keymap.rs` | MIDI CC clip map / note→preset Key Map |
 | `controller.rs` | #356 T1 **four-quadrant performance controller** — a Launchpad-style 8×8 RGB pad surface (default: Novation Launchpad Mini MK3) as a hardware front-end to the #354 preset system |
 | `audio.rs` | input band analysis (audio-reactive) |

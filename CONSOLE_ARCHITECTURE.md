@@ -2479,30 +2479,79 @@ written at the site, never by an invented pigment, and the rules are four:
    page. (`chocolate` names all four of its steps — `#191919 → #1F1F1F → #262626 → #303030` —
    so none of this applies to it.)
 
-   🚨 **`light`'s page is the one role in any palette that is NOT its spec's value.** The spec
-   says `#ffffff`; `Theme::LIGHT_PAGE` is **`#fafbfc`**, because James looked at the palette in
-   a running console on 2026-08-14 and asked for the whitest white turned down. It is a named
-   constant rather than two literals because `term_bg` and `term_scrim_tint` both take it and
-   must track: the scrim is laid over the live backdrop at up to `SCRIM_FLOOR_LIGHT`, so a
-   scrim left white would cover a *larger* area than the terminal with the exact value being
-   complained about, and a scrimmed region would read brighter than the page it borders. The
-   fields stay separate — the struct never merges roles by value — but the value is stated once.
+   🚨 **`light`'s whole surface ladder is NOT its spec's, and this is the one place in any
+   palette where that is true.** The spec's ladder is `#ffffff → #f7f8f9 → #e2e5e9 → #c9ced6`.
+   It has been moved down twice, both times on James's instruction after looking at a running
+   console, and the second move is a **correction of the first, not a contradiction of it**:
 
-   ⚠️ **The room inside the ladder is far smaller than the request implies, and this is the
-   number to know before touching it again.** Light's steps are 8/7/6 (page→panel), 21/19/16
-   (panel→hairline) and 25/23/19 (hairline→strong): the page's own step was *already* the
-   whisper of the four. So a page may fall **6 units on the tightest channel — 2.35 % of HSV
-   value — before it collides with the panel it must sit above**; the tightest is *blue*,
-   where the panel is coolest. `#fafbfc` is the panel plus a uniform 3, which spends 3 of
-   those 6 and keeps a 3-unit step; uniform because that
-   carries the panel's `+1` green / `+2` blue tilt up to the page, and pure white was the only
-   step in the ladder with no tilt at all. **"A few percent" is not reachable without moving
-   the panel as well**, which is four more spec roles and a decision for James, not a
-   derivation. `the_light_page_stays_a_step_above_the_panel` pins the ordering, the minimum
-   step, the uniform offset and rule 4's premultiply — the ordering needed no guard while the
-   page was `#ffffff`, since nothing can be brighter than white, and its failure now is silent
-   and *inverting*: a page darker than its panel makes every plate drawn on it read as raised
-   out of the paper rather than recessed into it.
+   | step | spec | 2026-08-14 · the page | 2026-08-14 later · the ladder | V now |
+   |---|---|---|---|---|
+   | page (`LIGHT_PAGE`) | `#ffffff` | `#fafbfc` | **`#d7d8d9`** | **0.851** |
+   | panel (`LIGHT_PANEL`) | `#f7f8f9` | `#f7f8f9` | **`#d4d5d6`** | 0.839 |
+   | hairline (`LIGHT_HAIRLINE`) | `#e2e5e9` | `#e2e5e9` | **`#bfc2c6`** | 0.776 |
+   | strong (`LIGHT_STRONG`) | `#c9ced6` | `#c9ced6` | **`#a6abb3`** | 0.702 |
+
+   The first move turned the page down 1.18 % of HSV value; James looked at it and said *"the
+   white part is too white. Move it down to about a 0.85 V in the HSV system"*. 🚨 **The result
+   is a light GREY page, not a white one** — `V = 0.851` is pale grey card stock, and that is
+   what was asked for. Do not "fix" it back toward white because it stopped looking like paper.
+
+   ⚠️ **The page could not move alone.** The steps are 3/3/3 (page→panel), 21/19/16
+   (panel→hairline) and 25/23/19 (hairline→strong) — the page's own step is the whisper of the
+   four, so a page dropped to `217` against a panel of `249` sits **32 units below it** and
+   *inverts* the ladder. The failure is silent: every plate drawn on the page — the composer,
+   the status strip, a bubble — would read as raised **out of** the paper rather than recessed
+   into it, which is the opposite of the printed-publication metaphor. So the move is a
+   **uniform −35 on every channel of every step**: all three inter-step distances survive to
+   the unit, every step keeps its own cool tilt, and `217/255 = 0.8510` is the nearest a `u8`
+   gets to `0.85 × 255 = 216.75`.
+
+   ⚠️ **Uniform subtraction does not weaken the ladder — it strengthens it slightly**, because
+   sRGB's transfer curve makes an equal code-value step a larger luminance ratio lower down.
+   Measured WCAG contrast between adjacent steps *rises*: panel-on-page 1.026 → 1.030,
+   hairline-on-page 1.220 → 1.253, strong-on-page 1.526 → 1.617. `strong` at `#a6abb3` is a
+   more visible border than `#c9ced6` was, not a mid-grey one — the "floor" worry does not bite.
+
+   🚨 **What the move genuinely costs is the TEXT ladder, which deliberately did not move, and
+   nothing in the surface ladder can repay it.** `primary #0f1114` is untouched and still
+   13.3:1 on the new page. The two weaker text roles are not:
+
+   | foreground | on | before | after |
+   |---|---|---|---|
+   | `primary #0f1114` | page | 18.25 | **13.25** |
+   | `secondary #5d636c` | panel | 5.70 | **4.12** ⚠️ under AA 4.5 |
+   | `faint #8b919b` | page | 3.06 | **2.22** ⚠️ |
+   | `faint #8b919b` (`tab_menu_missing`) | hairline plate | 2.51 | **1.77** ⚠️ |
+   | `success #1a6b46` | page | 6.26 | 4.55 |
+   | `error #a32020` | page | 7.28 | 5.28 |
+   | `accent #1440c4` | page | 7.92 | 5.75 |
+
+   These numbers are set by a page James asked to lower against text he did not ask to darken,
+   so **there is no compression of the surface ladder that fixes them** — the only repair is to
+   darken the text ladder, which is three more spec roles and his call. Costed but not taken:
+   `#737983` (a uniform −24 on `faint`) is what would restore `dim` to its old 3.06:1.
+
+   **Four fields are functions of these steps and moved with them** (rule 4 below).
+   ⚠️ **Two of them had already gone stale**: `composer_edge_dead` and `timeline_scripted_fill`
+   are mixes "into the page", were computed against the spec's `#ffffff`, and the first
+   correction left them behind — a written derivation quietly false for a day. `panel_fill`
+   moved only because a test pinned it. New test
+   `every_light_plate_mixed_from_a_surface_is_recomputed_from_it` pins all three of the mixes
+   *and* the invariant that would have caught them without re-deriving anything: a plate mixed
+   into a surface may never be brighter than that surface.
+
+   **They are named constants rather than fifteen repeated literals.** The panel is five
+   fields, the hairline six, the strong border four; a third correction spelled as fifteen
+   hand-edits is a correction that lands on fourteen of them. Sharing a constant welds nothing
+   — every field still assigns independently and a fifth palette can part any of them — it only
+   stops one *step* of one ladder being two colours by accident. `term_bg` and
+   `term_scrim_tint` are the original reason the pattern exists: the scrim is laid over the
+   live backdrop at up to `SCRIM_FLOOR_LIGHT`, so a scrim left brighter than the page would
+   cover a *larger* area than the terminal with the exact glare being removed.
+
+   `the_light_page_stays_a_step_above_the_panel` pins the ordering, the minimum step, the
+   uniform offset and rule 4's premultiply; the ordering needed no guard while the page was
+   `#ffffff`, since nothing can be brighter than white.
 2. **States.** A state the spec names takes its named colour; a state it does not name comes
    from the palette's **text ladder**, never from a hue the spec never introduced. ⚠️ That is
    why **none of the three has an amber**: "a tool is running" is primary text, not
@@ -3688,6 +3737,269 @@ rather than enumerating is how `✓` reached a third draw site.
 registry can build. It exists because landing on a named colour is a one-line change the moment
 a second argument is worth adding. Nothing claims the command exists.
 
+### 1.11 `/organon` — the console's rings ARE Organon's UI hierarchy
+
+James's framing, and the whole design in one sentence: *"the first thing we will see is the
+choices `generator | motion | environment | look | synth | audio | settings | mind` because
+those are the top level tabs… and these choices will map to the panels that are available in
+Organon."* Not a command tree beside the instrument — **the instrument's own shape, walked from
+the composer.**
+
+`/organon` → the eight tabs. `/organon look` → the Look tab's twenty-five panels. `/organon
+look surface` → that panel, as an element in the flow.
+
+**Neither ring is a list this console wrote.** The tabs are `organon_core::tabs::UiTab::ALL`,
+which that module already calls "the single source of truth the editor's tab bar iterates". The
+panels are the new `organon_core::panels::PANELS` — and the arrow between it and the editor
+points the way that cannot rot: **`lib.rs` reads its card headings out of the table**, written
+`card(&mut c[0], panels::LOOK_SURFACE.title, |ui| …)` at all twenty-five Look-tab call sites. A
+renamed panel is one edit and the compiler finds the other end. ⚠️ **Only the Look tab is joined
+that way**; the other seven are *absent* from the table rather than transcribed into it, because
+an entry whose title nothing reads is exactly the un-joined copy the table exists to prevent. A
+tab joins by converting its `card()` sites, one tab at a time.
+
+#### 🚨 Seven of the eight tabs lead nowhere, and the ring says so in its own line
+
+James typed `/organon generator 2` on a running build and was told *"`2` is not one of surface |
+colour | material | …"* — the Look tab's twenty-five panels, on a line that said `generator`.
+He read it as the console failing to register the word, which is the only reading available: a
+Look-shaped answer to a Generator-shaped question. Two separate defects made that one sentence,
+and both are the same failure — **a surface that knew and did not say**.
+
+**The tabs stay, all eight, and the empty ones are marked.** The alternative was to offer only
+the tabs with panels, which is honest and self-maintaining and was rejected: `UiTab::ALL` *is*
+Organon's hierarchy, and a first ring showing one wedge of it would misrepresent the product as
+having one section. So `look` carries `25 panels` and the other seven carry `not mapped yet — no
+panels in the table`, **counted off `panels::in_tab` rather than listed**, so a tab stops being
+marked on the day its `card()` sites are converted and no line here changes. That is the same
+honesty `Status::Declared` already uses one ring down: named, offered, and truthful about what
+choosing it opens.
+
+⚠️ **An empty ring must never be silent, and the type is what enforces it.** `NarrowFn` answered
+`Option<Vec<(label, doc)>>`, so a tab with no panels answered `Some(vec![])` — truthful, and
+invisible: the band drew empty, which is indistinguishable from a band that is broken, and
+`Palette::is_empty` then threw the panel away entirely. The hook now answers a `Ring`, whose
+`Empty` arm **cannot be constructed without the sentence that explains it**. That sentence is
+`registry::unmapped_tab`, written once and read three times — by the band (through
+`Palette::hint`, so both renderers already draw it), by the refusal, and by the view lane.
+
+⚠️ **The refusal consults the hook, so it names the ring it is refusing against.** `coerce`
+refused against the declared `Choice`, which for a dependent argument is the union across tabs —
+hence twenty-five slugs for a tab that has none. It now asks the hook first wherever the parent
+word is in hand: `/organon generator 2` answers with the unmapped-tab sentence, and `/organon
+look 2` answers *"`/organon look`: `2` is not one of surface | colour | …"*, the head carrying
+the words that **chose** that list. ⚠️ **This does not fix itself as tabs are joined — it gets
+worse**: the union today happens to be Look's, and a second joined tab would have that refusal
+reading out two tabs' panels at once.
+
+**Slug and title are different words**, and the rule that binds them is not cosmetic: no slug
+may be a prefix of another slug on the same tab (`panels::no_slug_is_a_prefix_of_another`).
+`Palette::autorun` completes a lone remaining candidate, so `surface` alongside a `surface-fx`
+would make the shorter one permanently ambiguous — the second panel would silently switch the
+first one's auto-completion off. `fx` is the answer, not a longer prefix.
+
+#### The one registry extension: a ring that depends on the ring above it
+
+`Registry::candidates` was already the whole machine — `Candidate::completion` is the *entire
+line*, so accepting one and asking again yields the next ring, which is how `/organon look
+surface` falls out of what shipped in §1.8 with no new walk. What it could not do is make ring
+two a function of ring one: `ArgKind::Choice(Vec<String>)` is fixed when the table is built.
+
+⚠️ **The obvious fix — a dependent `ArgKind` variant — was rejected on measurement.** That enum
+is matched exhaustively at **~30 sites** across `command.rs`, `mcp.rs`, `conversation_view.rs`
+and `registry.rs`, so a new arm is a change to the MCP schema generator, the dispatch validator
+and three renderers, for one verb. Instead an `Entry` may carry a `NarrowFn` — a plain `fn`
+pointer, `fn(arg, positional) -> Option<Ring>` — consulted by `value_candidates` **and by
+`coerce`**, and by nothing else. `CommandSpec` is untouched, so a console verb still cannot have
+one and the agent-facing vocabulary is unchanged.
+
+Three consequences worth stating:
+
+- **`Ring::Empty` beats `None` for an unjoined tab, and beats an empty list.** `None` falls
+  through to the declared `Choice`, which would offer *every* slug on a tab that has none of
+  them; an empty list draws a blank band and refuses with nothing to say. `Empty` carries the
+  reason, and the enum is what makes carrying it unavoidable.
+- **`Entry`'s `PartialEq` is hand-written now**, to exclude the hook. `derive` compared it and
+  rustc warns that function-pointer equality is not meaningful. Excluding it is also the right
+  meaning: an entry is its vocabulary, and the hook is how a ring is drawn.
+- 🚨 **The declared value space is still the union across tabs, and stays so.** It is what the
+  MCP schema and `/help` are generated from, and neither has a parent word in hand — one value
+  list per argument is all a schema has. What changed is that the two paths *with* a parent word
+  in hand now use it: a **typed** `/organon motion surface` is refused in the composer, naming
+  the tab. The `(tab, panel)` check in `summon_organon` is therefore no longer the only gate,
+  but it is not dead either — it is the door a caller that never touched the composer arrives
+  through, and it is pinned by a test that calls it directly.
+
+#### The element, and why it is not an artifact
+
+`Body::Organon(OrganonBlock)`, a sixth body — **not** a third `ArtifactContent` arm. That enum
+is one arm per `organon_core::kind::Kind`, pinned by
+`every_shared_kind_has_exactly_one_artifact_arm`, and an Organon panel is not in that vocabulary
+because it *cannot* be: a `Kind` has to be placeable on a text lane, and this is a live egui
+panel with dropdowns and typed numeric entry. Forcing it in would have meant two arms answering
+`Kind::Panel` — which that test calls "a kind this view cannot address" — or widening the shared
+kinds with one the terminal front-end can never honour. **Being unable to be an artifact is the
+evidence that it is its own body.**
+
+The block carries the panel **resolved**, as a `&'static Panel`, not as a `(tab, slug)` pair: the
+pair is checked once, at the command, and an element holding it would push that check into every
+frame that draws it.
+
+#### The seam: a callback, not a render list
+
+`conversation_view::OrganonDraw` — `&mut dyn FnMut(&mut egui::Ui, &'static Panel)`, passed into
+`draw`. **The opposite shape to `SurfaceRequest`, and the difference is forced.** A surface is a
+*picture*: the view says what it laid out, `console_main` renders into a texture, the answer
+arrives next frame, and deferral costs one frame of "rendering…". A panel is *widgets*: a
+dropdown must open where it was clicked and a drag must be read in the pass it was drawn. There
+is no texture to hand back later, so the console's drawing has to happen **inside** this crate's
+layout, at the point in the flow the element occupies.
+
+The contract is otherwise identical and deliberately so: `organon-console` knows a panel by its
+tab, slug and title, and cannot see `OrganicMathParams`, a `ParamSetter` or a `World`.
+
+#### 🚨 The wall: an Organon parameter cannot be written from outside `nih_plug`
+
+**Look ▸ Surface is `Status::Live` and every other panel is `Status::Declared`.** The ring lists
+them all; Surface opens Organon's real controls, the other twenty-four open a line saying they
+have not been transplanted yet. What follows is why that took a mirror rather than a setter, and
+it is a property of `nih_plug` rather than a gap in this crate.
+
+Every panel widget is `srow(ui, w, "node bevel", &params.bevel, setter)` over a `ParamSetter`,
+which calls `GuiContext::raw_set_parameter_normalized(ParamPtr, f32)`. Implementing `GuiContext`
+is trivial; **honouring it is impossible**. Checked, not assumed:
+
+| Route | Verdict |
+|---|---|
+| `ParamPtr::set_normalized_value` | `pub(crate)` (`params/internals.rs:77`) |
+| the `ParamMut` trait — every setter | `pub(crate)`, and its doc says so on purpose |
+| `FloatParam`'s value fields | private; only `pub smoothed` is reachable |
+| `Params::deserialize_fields` | `#[persist]` fields only, not params |
+| `wrapper::state::deserialize_object` | `pub(crate)` |
+| nih-plug's standalone `Wrapper` (the one non-host `GuiContext`) | in a **private** module inside `wrapper/standalone.rs` |
+
+`nih_plug` is an upstream git dependency, not a fork. **A panel drawn without a write path is a
+panel whose knobs do nothing — which is precisely why `/panel` was retired** ("its controls
+changed something you could not see"). So the panel needed a different place for its writes to
+land before it could be drawn at all.
+
+#### The way through: a writable mirror, and an identity join at the widget
+
+Three facts, none of them guessed, and all three now load-bearing:
+
+1. **The console already owns a `World` in-process** (`console_main.rs`), and every picture —
+   backdrop, surface, portal — is that one World rendered into a different target from a
+   `Shared` the frame path publishes. **So there is no second process and no IPC bridge**: a
+   panel that can produce a `Shared` drives what you are looking at, immediately.
+2. **`look_shared` builds its snapshot from `OrganicMathParams::default().to_shared()`** — 1372
+   params constructed headlessly, with no host, no audio thread and no GPU. So a console-owned
+   params object is free, and that is what the panel reads its ranges, units, value strings and
+   enum variant names off. **It is metadata and is never written.**
+3. 🚨 **`PresetValues` is a plain, freely-writable mirror of the params with a `to_shared()`**,
+   and `param_table.rs`'s macro states the convention that makes it usable: *"the param-side
+   field and the preset-side field are assumed to share the same identifier."*
+
+⚠️ **What was actually missing was not a writer — it was an identity.** `&params.bevel` is a
+`&FloatParam`; nothing about it tells a writer that its mirror is `pv.bevel`. `param_sink.rs`
+supplies that join by naming the field **once**: `srow!(ui, w2, "node bevel", sink, p, bevel)`
+expands to both `&p.bevel` and `|pv| &mut pv.bevel`. A rename on either side is a compile error,
+the same way `param_table!`'s slot lists are.
+
+`Sink` is the two-armed destination — `Host(&ParamSetter)` for Organon's editor, gesture-wrapped
+and automation-recordable exactly as before, and `Mirror(&mut PresetValues)` for the console.
+Five row helpers branch on it (`scalar_row`, `check_row`, `choice_row`, plus `read`/`write` for
+values a panel computes rather than drags), and `Mirrored` converts a mirror field to and from
+the normalized 0..1 domain through the param's *own* `preview_normalized`/`preview_plain`, so a
+skewed float, an integer's rounding and an enum's variant index all stay the engine's
+arithmetic.
+
+⚠️ **The field accessor is a `fn(&mut PresetValues) -> &mut T`, not a `&mut`, and that is
+forced.** The field lives *inside* the sink, so passing `&mut Sink` and `&mut pv.bevel` together
+is two mutable borrows of one value. Handing the row a way to *take* the borrow, at the moment
+it needs it, is the shape that compiles.
+
+#### What landed, and the two costs of it
+
+**Look ▸ Surface is one function.** `panel_surface::surface_card` — `lib.rs`'s Look tab calls it
+and so does `console_main` through `OrganonDraw`. There is no second rendering to keep in step,
+which is the point: `/organon`'s claim is *this is the same instrument*, and a copied body would
+make that false within a week.
+
+⚠️ **The extraction was the work, not the plumbing.** `editor_ui` is one ~4,700-line pass over
+105 cards and a card in the middle of it cannot be called from anywhere else; lifting one out is
+what "transplanting a panel" consists of. Measured on Surface exactly as it stood: 457 lines, 190
+helper call sites, 24 conditional `.value()` reads. **Every one of its 167 distinct parameter
+fields exists in `PresetValues`** — checked field by field before any of this was written, since
+one that did not would have been a control with no writable mirror and a reason to stop.
+
+**The mirror reaches the world as a diff, not as a snapshot.** `OrganonPanels::overlay` compares
+`mirror.to_shared()` against the mirror's own *starting* snapshot and copies only the lanes that
+disagree, through `organon_core::ipc::overlay_changed`. Two things follow, and both are why it is
+a diff:
+
+- 🚨 **An untouched panel is byte-inert over any snapshot whatsoever** — invariant #4 made
+  structural rather than checked. A console in which nobody opens a panel publishes the bytes it
+  published before this existed, and `overlay_changed_is_inert_when_nothing_moved` pins it.
+- 🚨 **No lane manifest.** Naming which lanes the Surface card owns would be a second list
+  beside the panel body, and the failure mode is the quiet one: a param added to the card would
+  keep working in the editor and silently stop reaching the world here. The difference between
+  two snapshots is that list, derived rather than maintained.
+
+⚠️ **Lane granularity, not byte granularity.** A changed `f32` differs in one to four of its
+bytes; copying only the differing ones would splice two floats into a value neither side held.
+`Shared` is `Pod` and every field is a `u32`, an `f32` or an array of them, so a 4-byte word
+*is* a lane — and `shared_is_a_whole_number_of_lanes` fails rather than corrupting one if that
+ever stops being true.
+
+⚠️ **The panel opens on Organon's defaults, not on the console's current look.** Against
+`BackdropSource::World` — the portal, and the backdrop when it is showing the world — that is
+*exactly* faithful, because the console's snapshot there is those same defaults. Against a
+dressed substrate it is faithful only about what it has been told: a row reading `0.35` while
+the substrate renders something else is saying **"I have not asked"**, not "the world is at
+0.35". There is no honest alternative available — `Shared` → `PresetValues` is not invertible,
+so the panel cannot be seeded from what is on screen.
+
+⚠️ **`material_gen` does not ride the mirror**, because a preset stores the material's *path*
+rather than a counter. "Load Material…" bumps an `AtomicU32` on a background thread and
+`overlay` folds it into the published snapshot by hand; without that the folder picker writes a
+sidecar the renderer never re-reads.
+
+⚠️ **One mirror per console, not one per element.** Two `/organon look surface` cards in a
+transcript are two views of one instrument; reading different values off each would make the
+claim the command exists to make false on sight.
+
+⚠️ **The write lands one frame later**, because the conversation is drawn after the snapshot is
+published. That is the same arrangement `surface_requests` and `pane_points` already use, for
+the same reason, and the alternative is publishing twice per frame.
+
+#### ⚠️ Where the Console's Surface panel is not the editor's
+
+Faithful: every range, unit, value string, enum variant name, help text and grid line, all read
+off the real `OrganicMathParams`; and the disclosure logic — which rows appear under which
+surface mode — because those conditions route through `param_sink::read` rather than through
+`params.….value()`.
+
+Two differences, both consequences rather than choices:
+
+- **The slider fill.** `Sink::Host` draws nih-plug's `ParamSlider`; `Sink::Mirror` draws an
+  `egui::Slider` over the same domain with the same formatter. `ParamSlider` takes a
+  `ParamSetter` in its constructor — writing is not something it does, it is something it *is* —
+  so no mirror can drive one. Same grid lines, same readout, different bar.
+- **↑/↓ inside an open dropdown.** The editor's combo live-applies as you move, so the look
+  scrubs; the shared one commits on the following frame. The popup borrows the child `Ui` while
+  a write needs the sink, so the choice has to come back out of the closure.
+
+#### The pattern, for the other twenty-four
+
+A panel converts in four mechanical steps, and the compiler checks three of them: lift the
+`card()` body into its own module; turn each helper call into the matching macro (`srow!`,
+`crow!`, `combo!`); turn each `params.x.value()` into `rd!`; flip its `panels::Status` to `Live`
+and add its slug to `only_the_transplanted_panels_are_live`. ⚠️ **The `.value()` reads are the
+half that fails silently** — a missed one compiles perfectly and pins the Console's panel to
+Organon's defaults, so the checkbox ticks and the rows underneath it never appear. ⚠️ And each
+panel's fields must be checked against `PresetValues` first: Surface's 167 were all present, but
+that is a measurement of Surface, not a property of the editor.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -3702,6 +4014,7 @@ a second argument is worth adding. Nothing claims the command exists.
 | A **read** path for the console's own state | **The camera half has landed, on the MCP lane only** — `console.camera.read` (§1.3, "Reading it back"), answered in-process from the viewpoint `redraw` publishes. What is left is the *other* transport and the *other* verbs. `organon console …` is still fire-and-forget with no return path, so the CLI reads nothing; the honest fix there is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs. ⚠️ **Do not generalise the camera's shape to reach it.** A published cell works because the camera is one small `Copy` tuple owned by the frame path; "the console's state" at large is panes, transcripts and textures, and a cell per fact is a second state tree that will drift from the first. ⚠️ The other tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
+| The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
@@ -3711,6 +4024,106 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **`/organon look surface` opens Organon's real Surface controls; the other twenty-four
+  panels still open a line saying they have not been transplanted.** ✏️ **Corrects the entry
+  this replaces, which said `/organon` opens none of them.** §1.11 carries the mechanism: a
+  parameter still cannot be written from outside `nih_plug`, so the panel writes a
+  `PresetValues` mirror and the world is driven from the difference between it and its own
+  starting state. What is verified is code: `cargo test -p organon-console --lib` is **659
+  green** and `cargo test -p organon-core` is **570 green** (565 before, plus five on
+  `ipc::overlay_changed`); both `cargo check` legs are clean.
+  🚨 **A green build proves the widgets compile, not that dragging one moves the picture.** That
+  needs a GPU and a hand, and this session had neither.
+  **That is the whole claim: it compiles and the tests pass.** What it does not establish, in
+  order of how much it matters: (0) 🚨 **that a Surface control moves the picture** — nothing
+  below is worth much if it does not, and the check is one motion: open the portal (`engine_plan`
+  forces the backdrop `Off` while it is open, so a substrate backdrop proves nothing), type
+  `/organon look surface`, drag `node bevel`, watch the cubes round; (1) **that the two rings
+  feel like Organon's own hierarchy when
+  a hand walks them** — James described `l` → `look` completing while the ring beneath it
+  changes as one motion, and whether twenty-five candidates in the second ring reads as a menu
+  or as a wall is a question about a running window; (2) that the slugs are the words a person
+  reaches for — `lmat` for Liquid Material and `fx` for Surface FX exist to satisfy the
+  no-prefix rule, and a slug nobody guesses is worse than a longer one; (3) that the remaining
+  twenty-four panels' "not transplanted yet" line reads as *honest* rather than as broken —
+  sharper now that it sits beside a panel which **is** transplanted, since the contrast is
+  either reassuring or damning and nobody has seen which; (4) that §1.9's eight-row candidate cap
+  is survivable at twenty-five — the Look ring overflows it by seventeen and nobody has seen
+  "+N more" against a list that long.
+- ✏️ **`OrganonDraw` carries a widget now.** It was retained through the tier that built it as a
+  seam nothing filled — `console_main` passed a closure that ignored its arguments, and the
+  `Status::Live` branch beside the placeholder had never been reached. Both are live:
+  `console_main` passes `|ui, panel| organon_panels.draw(ui, panel)`, and Surface routes through
+  it. ⚠️ **Reached, not *seen*** — no human has looked at a panel drawn through this seam, so
+  whether an editor card reads as an element in a conversation flow is untested. The two
+  frames are deliberately different objects drawn to the same spec, and that is exactly the
+  kind of claim only a screen settles.
+- ✏️ **The `PresetValues` route is built and the counts are confirmed.** It was recorded as *"a
+  reading of the code, not a working path"* with the caveat that no field had been checked for
+  preset capture. All 167 of Surface's distinct parameter fields are present in `PresetValues`,
+  checked field by field before anything was written; the 457-line, 190-call-site,
+  24-conditional-read measurements held. ⚠️ **That is a measurement of Surface, not a property
+  of the editor** — the next panel needs its own census, and a Look-tab param with no
+  `PresetValues` counterpart is still a control that cannot be driven this way.
+- ⚠️ **Two things about the Console's Surface panel are known not to match the editor's**, both
+  consequences rather than choices, both argued in §1.11: the slider *fill* (nih-plug's
+  `ParamSlider` cannot be driven by anything but a `ParamSetter`), and ↑/↓ inside an open
+  dropdown committing on the next frame instead of live-scrubbing. Everything else — ranges,
+  units, value strings, variant names, help text, grid lines, and which rows appear under which
+  surface mode — is read off the real params and is the same by construction.
+- ⚠️ **The panel opens on Organon's defaults, and against a dressed substrate that is a real
+  gap.** Its untouched rows report "I have not asked", not what the world is showing; only
+  against `BackdropSource::World` are the two the same thing. `Shared` → `PresetValues` is not
+  invertible, so seeding the panel from what is on screen is not available today — this is a
+  limitation with a known cause, not an oversight.
+- ✏️ **Two egui-id collisions between duplicate panel elements were latent and became
+  reachable, and both are fixed.** `organon_element` scoped its widgets by the panel's *slug*,
+  which separates two different panels — something that could never have collided — while
+  putting two `/organon look surface` elements, the case that can, in one namespace; it uses the
+  element id now. And the typed-value box's key was absolute (`Id::new("om_value_edit")` plus
+  the param pointer), which is correct in the editor, where a param appears in exactly one card,
+  and wrong in a console holding two Surface elements over one params instance: clicking a value
+  box would open a text field in both. `param_sink`'s copy folds in `ui.id()`; `lib.rs`'s is
+  deliberately unchanged. ⚠️ Neither was *found* by running anything — both were read out of the
+  code while checking what "drawing widgets for the first time" newly exposed, so the fixes are
+  reasoned rather than reproduced.
+- ⚠️ **`every_branch_of_the_card_reaches_the_snapshot` is a spot-check, one field per
+  disclosure branch, not per field.** Rust cannot enumerate a struct's fields, so per-field
+  coverage would mean a 167-name list beside the panel body — the second copy this repo keeps
+  learning to avoid. It catches a whole region falling out of the packers, which is how this
+  breaks in practice; it would not catch a single field.
+- ⚠️ **`cargo check --tests` does not catch everything `cargo test` does, and this change found
+  it twice.** An out-of-bounds constant index into a `Shared` array (`s.membrane[5]`, length 4)
+  type-checked clean on the local bar's fourth leg and failed the real build with
+  `deny(unconditional_panic)` — that lint fires during codegen, which `check` skips. And three
+  *in-bounds but wrong* lane indices in the same test were found only by reading them back
+  against `param_table!`'s slot lists by hand: `mat_scale` is `material[2]` not `[1]`,
+  `splat_radius` is `splat[0]` not `[1]`, and `tube_profile` is a tail-appended scalar rather
+  than a member of `tube[4]` at all. All three compile, and all three would have asserted
+  against a lane nobody moved. ⚠️ **The perturbations are deltas (`+= 1.0`), never literals** —
+  a chosen constant silently tests nothing on the day it equals the field's default.
+- ⚠️ **The root crate's own tests were never *run* on this machine**, only type-checked.
+  `cargo test -p organic-math-native --lib` was started and abandoned after ~25 minutes with a
+  single 3 GB `rustc` still going; the bar names that trap and CI is where those nine tests
+  (six in `panel_surface`, three in `param_sink`) first execute. Everything above about them is
+  a claim about code that compiles and has been read, not about a green run.
+- ⚠️ **Only the Look tab's twenty-five `card()` titles are joined to `panels::PANELS`.** The
+  other seven tabs draw string literals as before, so the table cannot yet claim to be Organon's
+  whole panel taxonomy — and `panels::the_look_tab_is_whole` guards a count, not a join: a
+  twenty-sixth Look card added without a table entry fails that test, but a *renamed* title on
+  any other tab is invisible to everything here.
+  ✏️ **What has changed is what the surface says about it, not how much of it is joined.** The
+  first ring still offers all eight tabs; the seven unjoined ones are marked `not mapped yet — no
+  panels in the table`, their second ring carries the sentence `registry::unmapped_tab` writes
+  instead of drawing blank, and a refusal names the tab that was given rather than the union
+  (§1.11). James found both halves within a minute of first use — a Look-shaped refusal to a
+  `generator` query, and an empty band under `/organon generator ` — which is the sixth
+  the-console-knew-and-said-nothing defect this surface has produced. **The fix is the saying,
+  not the mapping**; seven tabs are still dead ends and now admit it in three places.
+  ⚠️ **Unverified in the same way everything else here is**: the marked ring and both refusal
+  sentences exist as strings pinned by test. Nobody has read them on a running console, and
+  whether "not mapped yet" reads as honest or as broken is the same open question the element's
+  "not transplanted yet" line already carries.
 - 🚨 **Nobody has seen the compact command panel, so whether it *feels* fast is unverified —
   and "fast" is the entire claim being made for it.** ✏️ **The verbose panel HAS now been
   seen**, which is where the compact one came from and what the six defects §1.9 records were
@@ -3795,28 +4208,55 @@ path silently breaks the three-products-simultaneously guarantee that
   direct render at that size, and Windows' own downscaler was never watched do it. The one
   thing that *is* measured rather than argued: the 16 px render was produced, magnified 16×
   and looked at, and it is not recognisable as the aperture mark.
-- 🚨 **Nobody has seen `#fafbfc` on James's display, and he is the only person who can say
-  whether it fixes what he was looking at.** The light page came down from `#ffffff` because
-  he saw glare in a running console; the replacement was **reasoned, not observed**. Everything
-  claimed for it is a claim about code: `cargo test -p organon-console --lib` is **605 green**
-  (604 before, plus `the_light_page_stays_a_step_above_the_panel`), `cargo test -p organon-core`
-  is **556 green**, `cargo check --features console-edition --bin organon-console` is clean, and
+- ✅ **The `#fafbfc` prediction came true, and it is worth recording as a hit rather than
+  quietly deleting.** That entry said: *"what it most likely does not establish is that the
+  change is big enough to matter … if James still sees glare, the honest answer is not to
+  squeeze the remaining units but to take the whole light ladder down together, which is a
+  re-spec of four roles he named and therefore his call."* He looked at it the same day and
+  said *"the white part is too white. Move it down to about a 0.85 V in the HSV system"* — the
+  exact remedy the ledger had named, at the exact scale it had declined to choose. The ledger
+  was right about the **direction** and right to leave the decision with him; what it got wrong
+  was the framing that made "2.35 % of HSV value" sound like a budget. It was never a budget on
+  the *page* — it was the distance to the panel, and the panel was always free to move.
+  ⚠️ **The general lesson: a headroom figure computed against a fixed neighbour is a fact about
+  the neighbour, not a limit on the thing being measured.** Quoting it as "the room available"
+  is what made a 1.18 % move look like half of everything possible when it was 3 % of what was
+  actually wanted.
+- 🚨 **Nobody has seen `#d7d8d9` on James's display either, and he is the only person who can
+  say whether it is right.** The whole light ladder is down a uniform 35 per channel, the page
+  landing at **V = 0.851**. Unlike `#fafbfc` this is arithmetic against a number he named
+  rather than a value someone reasoned toward, which is a better starting point and still not
+  an observation. Everything claimed for it is a claim about code: `cargo test -p
+  organon-console --lib` is **647 green** (646 before, plus
+  `every_light_plate_mixed_from_a_surface_is_recomputed_from_it`), `cargo test -p organon-core`
+  is **557 green**, `cargo check --features console-edition --bin organon-console` is clean, and
   `cargo check --tests -p organic-math-native --features console-edition` is clean. **That is
-  the whole claim: it compiles and the tests pass.** ⚠️ **What it most likely does not establish
-  is that the change is big enough to matter.** The ladder allows the page to fall only 2.35 %
-  of HSV value before it collides with the panel, and this spends about half of that — a
-  **1.18 %** reduction. If James still sees glare, the honest answer is not to squeeze the
-  remaining units (the step is already halved) but to take the whole light ladder down
-  together, which is a re-spec of four roles he named and therefore his call. Worked numbers
-  for that option, preserving today's gaps exactly, are in the PR that made this change. Also
-  unverified: (1) that the 3-unit page→panel step survives a real display's gamma and the
-  composer plate and status strip still read as sitting *on* the page rather than merging into
-  it — they carry `#e2e5e9` hairlines doing most of that work, but the fill step is the
-  reinforcement and nobody has looked; (2) that `panel_fill`'s matching move is invisible,
-  since a Tier 5 patch panel only appears over a live backdrop and none was running; (3) that a
-  TUI's own light colour scheme still reads correctly against a page that is no longer the pure
-  white `ansi16`'s GitHub Light lineage was chosen against — the shift is 3 units and the
-  foregrounds did not move, so this is noted rather than suspected.
+  the whole claim: it compiles and the tests pass.**
+
+  ⚠️ **The most likely complaint this time is the opposite one: that the page reads as grey
+  rather than as paper.** `V = 0.851` is pale grey card stock, not white, and §1.4 says so in
+  as many words so that nobody later "fixes" it back toward white. If it is too far, the number
+  to move is `LIGHT_PAGE` and the other three follow by the same offset — the constants exist
+  for exactly that.
+
+  ⚠️ **The one thing that is measured and unfavourable is text contrast**, and it is recorded
+  in §1.4 as a table rather than left to be discovered. `secondary #5d636c` on the panel falls
+  5.70 → **4.12**, under AA's 4.5 for normal text; `faint #8b919b` falls 3.06 → **2.22** on the
+  page and 2.51 → **1.77** on a hairline plate (it was already sub-AA before this change).
+  Primary text is unaffected at 13.3:1. **This cannot be fixed from the surface side** — the
+  repair is a darker text ladder, which is three more roles James specified, so it is named
+  here and not taken. `#737983` is what would restore `faint` to what it had.
+
+  Also unverified: (1) that the 3-unit page→panel step, unchanged in absolute terms, still
+  reads on a real display now that both sides are darker — the arithmetic says the *ratio*
+  improved (1.026 → 1.030) but nobody has looked; (2) that `panel_fill`'s matching move is
+  invisible, since a Tier 5 patch panel only appears over a live backdrop and none was running;
+  (3) that a TUI's own light colour scheme still reads correctly against a page 35 units below
+  the pure white `ansi16`'s GitHub Light lineage was chosen against — the foregrounds did not
+  move, and this shift is an order larger than the 3 units the last entry called negligible, so
+  here it is a genuine open question rather than a note; (4) that the recomputed
+  `timeline_scripted_fill` still reads as a warning banner — its mark's contrast falls
+  5.30 → 3.84 against it.
 - 🚨 **Nobody has seen a collapsed transcript, so whether it actually *reads* better is
   unverified — and that is the entire point of the change.** Card density was designed against
   a screenshot and a sentence, and everything claimed for it here is a claim about code:

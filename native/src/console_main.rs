@@ -57,6 +57,7 @@ use std::sync::Arc;
 use organic_math_native::agent;
 use organic_math_native::cli;
 use organic_math_native::console_icon;
+use organic_math_native::panel_surface::OrganonPanels;
 use organic_math_native::params::OrganicMathParams;
 use organic_math_native::scene_input;
 use organic_math_native::substrate_camera::SubstrateRig;
@@ -373,7 +374,6 @@ fn look_shared(source: BackdropSource, look: &ConsoleLook) -> Box<ipc::Shared> {
 fn initial_shared(source: BackdropSource) -> Box<ipc::Shared> {
     look_shared(source, &ConsoleLook::default())
 }
-
 // ---------------------------------------------------------------------------
 // The console command lane (#4 Tier 2)
 // ---------------------------------------------------------------------------
@@ -1430,6 +1430,11 @@ struct Console {
     /// exactly as it does against the standalone visual.
     shared_writer: Option<ipc::Writer>,
     shared: Box<ipc::Shared>,
+    /// **What an Organon editor panel drawn in a conversation has asked for** (Console #7).
+    /// One per console, not one per element: two `/organon look surface` cards in a transcript
+    /// are two views of one instrument, and reading different values off each would make the
+    /// claim `/organon` exists to make — *this is the same panel* — false on sight.
+    organon_panels: OrganonPanels,
     /// True while the surface acquires as `Occluded` — gates the redraw re-arm
     /// (the measured ~98%-CPU-drawing-nothing spin, fixed on the v2 branch).
     occluded: bool,
@@ -1747,7 +1752,21 @@ impl Console {
             default_harness: String::new(),
             plus_open: false,
             quit: false,
-            world: World::new(organic_math_native::agent::core_catalog()),
+            // organon#49 T5b — **the Console does not run the AI Performer**, so it has no
+            // catalog to give and says so by giving none. Measured, not assumed: this file
+            // contains zero references to `agent::dispatch`, `AgentLane`, `ChatMessage`,
+            // `HttpChatClient` or `system_prompt`, and nothing here ever bumps `Shared.agent[1]`
+            // — the counter whose movement is the only thing that reaches `ensure_agent_worker`.
+            //
+            // ⚠️ This is NOT the silent-empty-catalog bug `organon-visual`'s manifest warns
+            // about. That bug is a host which *does* run the Performer handing it nothing;
+            // `World::ensure_agent_worker` now refuses an empty catalog outright and logs why
+            // (T5b), so the two cases cannot be confused at runtime.
+            //
+            // 📌 It is also the last thing tying this file to `param_table`: `core_catalog()`
+            // reads the plugin's automation surface and cannot descend, so passing it here is
+            // what would have forced `organon-console` to depend upward on the plugin crate.
+            world: World::new(Vec::new()),
             backdrop: None,
             backdrop_source: source,
             console_look: ConsoleLook::default(),
@@ -1759,6 +1778,7 @@ impl Console {
             pane_resized: false,
             shared_writer: None,
             shared,
+            organon_panels: OrganonPanels::new(),
             occluded: false,
             surfaces: HashMap::new(),
             surface_requests: Vec::new(),
@@ -3409,11 +3429,26 @@ impl Console {
         // When a patch is being rendered against an `off` backdrop, the snapshot has to
         // describe the substrate the patch will show — the World draws what this says, and it
         // has no other way to learn that anything wants a picture this frame.
-        let published = if self.render_source() == self.backdrop_source {
+        let mut published = if self.render_source() == self.backdrop_source {
             *self.shared
         } else {
             *look_shared(self.render_source(), &self.console_look)
         };
+        // …and then whatever an Organon editor panel in a conversation has asked for, on top
+        // (Console #7). **Here rather than inside `look_shared`** for two reasons: that
+        // function is recomputed-from-scratch by design and is shared with the per-surface
+        // path, which is deliberately answerable only to the controls beside it; and a panel's
+        // opinion is a *later* statement than the backdrop's dressing, so it composes on top
+        // rather than being part of the look. Inert until a control is moved — see
+        // [`OrganonPanels::overlay`].
+        //
+        // ⚠️ **One frame behind, and that is the same arrangement everything else here uses.**
+        // The conversation is drawn further down this function, so a drag this frame lands in
+        // next frame's snapshot — exactly as `surface_requests` and `pane_points` are recorded
+        // now and consumed next time. At redraw rates it is not perceptible, and the
+        // alternative is publishing twice per frame.
+        self.organon_panels.overlay(&mut published);
+        let published = published;
         if let Some(w) = self.shared_writer.as_mut() {
             w.write(published);
         }
@@ -3524,6 +3559,11 @@ impl Console {
         // to be remembered for the next frame's `render_portal`.
         let portal_open = self.portal_state.is_open();
         let portal_input = &mut self.portal_input;
+        // Organon's editor panels, split out of `self` exactly as everything else here is —
+        // mutably, because the whole point is that a control inside the conversation writes
+        // to it. Its snapshot is read at the *top* of the next frame, so nothing has to come
+        // back out of the closure.
+        let organon_panels = &mut self.organon_panels;
         // The palette, split out of `self` exactly as everything else here is — one shared
         // borrow that every draw call inside the closure passes down.
         let theme = &self.theme;
@@ -3632,6 +3672,22 @@ impl Console {
                                 theme,
                                 theme_name,
                                 form,
+                                // 🚨 **The seam, and this crate is the only one that could
+                                // fill it** — [`conversation_view::OrganonDraw`] is where an
+                                // Organon editor panel's body comes from, and the console lib
+                                // cannot see `OrganicMathParams` because it is the *lower*
+                                // crate of the two. Reached for every panel the table marks
+                                // `Status::Live`, which today is Look ▸ Surface and nothing
+                                // else; a `Declared` panel never gets here and the view says
+                                // so where its controls would be.
+                                //
+                                // What a control writes is a `PresetValues` mirror rather than
+                                // a parameter, because a parameter cannot be written from
+                                // outside `nih_plug` at all —
+                                // `organic_math_native::param_sink` owns that account, and
+                                // `OrganonPanels::overlay` is where the mirror reaches the
+                                // world.
+                                &mut |ui, panel| organon_panels.draw(ui, panel),
                             );
                             surface_requests = out.surfaces;
                             // Applied after the frame, not here: `theme` is borrowed from
@@ -4809,12 +4865,12 @@ mod cli_tests {
         assert_eq!(
             compact_line(&all, 0, 200),
             "[background] | rig | theme | posture | block | patch | portal | camera | \
-             camera.read | surface | help"
+             camera.read | surface | help | organon"
         );
-        // 101 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // 111 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 101);
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +9");
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 111);
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +10");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
