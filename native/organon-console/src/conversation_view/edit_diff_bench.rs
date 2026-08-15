@@ -500,7 +500,7 @@ pub(super) fn frame(
             // every card would wrap at a width nothing here names — and posture is not what
             // this bench varies. Holding it equal to the other bench's also keeps the two
             // documents' figures on one footing.
-            let _ = scrollback(ui, pane, images, theme, &Form::TERMINAL);
+            let _ = scrollback(ui, pane, images, theme, &Form::TERMINAL, &mut |_, _| {});
         });
     });
     (start.elapsed(), out.platform_output.num_completed_passes as u8)

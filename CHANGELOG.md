@@ -99,6 +99,71 @@ copy steps are untouched. Only their `cargo build` lines gained `-p organon-visu
 `doc/arch/render.md`'s rule would have silently stopped firing for every moved file. Its
 list is repointed, and `doc/arch/topology.md`'s — which had never listed `organon-scene`,
 `organon-agent` or `organon-world` — gains the four manifests it was missing.
+### The light theme's whole surface ladder comes down to V ≈ 0.85
+
+James looked at the corrected `#fafbfc` page in a running console and said *"the white part is
+too white. Move it down to about a 0.85 V in the HSV system."* **This is the second, larger
+correction of the same complaint, not a contradiction of the first** — `CONSOLE_ARCHITECTURE.md`
+§3's ledger had already predicted that a 1.18 % reduction "may not be enough" and named this
+exact remedy.
+
+🚨 **The result is a light GREY page, not a white one, and that is what was asked for.**
+`V = 0.851` reads as pale grey card stock. §1.4 says so in as many words so that nobody later
+"fixes" it back toward white.
+
+⚠️ **The page could not move alone.** Light's surfaces climb away from the page by darkening,
+and the page→panel step is the whisper of the four — 3/3/3 per channel against panel→hairline's
+21/19/16 and hairline→strong's 25/23/19. A page dropped to `217` against a panel of `249` sits
+**32 units below it** and *inverts* the ladder: every plate drawn on the page would read as
+raised **out of** the paper instead of recessed into it.
+`the_light_page_stays_a_step_above_the_panel` already pinned that and fails on it.
+
+So the move is a **uniform −35 on every channel of every step**, which keeps all three
+inter-step distances to the unit and keeps each step's cool tilt:
+
+| step | before | after | V before → after |
+|---|---|---|---|
+| page (`LIGHT_PAGE`) | `#fafbfc` | **`#d7d8d9`** | 0.988 → **0.851** |
+| panel (`LIGHT_PANEL`) | `#f7f8f9` | **`#d4d5d6`** | 0.976 → 0.839 |
+| hairline (`LIGHT_HAIRLINE`) | `#e2e5e9` | **`#bfc2c6`** | 0.914 → 0.776 |
+| strong (`LIGHT_STRONG`) | `#c9ced6` | **`#a6abb3`** | 0.839 → 0.702 |
+| `panel_fill` | `#e1e2e3e6` | **`#c2c3c4e6`** | rule 4: the page at `0xe6` |
+| `composer_edge_dead` | `#d19090` | **`#bd7c7d`** | rule 4: error 1:1 into the page |
+| `timeline_scripted_fill` | `#edd2d2` | **`#cdb3b4`** | rule 4: error 20 % over the page |
+| `timeline_bubble_user` | `#d1d9f0` | **`#b4bcd3`** | rule 4: accent 1:5 over the panel |
+
+`217/255 = 0.8510` is the nearest a `u8` gets to `0.85 × 255 = 216.75`. The three earlier
+figures — 8/7/6 of headroom, 2.35 % of HSV value, the 1.18 % spent — are historical: they
+measured the distance to a panel that was never obliged to hold still.
+
+⚠️ **Uniform subtraction does not weaken the ladder, it strengthens it slightly.** sRGB's
+transfer curve makes an equal code-value step a larger luminance ratio lower down, so contrast
+between adjacent steps *rises*: panel-on-page 1.026 → 1.030, hairline-on-page 1.220 → 1.253,
+strong-on-page 1.526 → 1.617. `strong` at `#a6abb3` is a more visible border than `#c9ced6`.
+
+🚨 **What it costs is the text ladder, which deliberately did not move.** `primary #0f1114` is
+untouched at 13.3:1 on the new page, but `secondary #5d636c` falls 5.70 → **4.12** on the panel
+(under AA's 4.5) and `faint #8b919b` falls 3.06 → **2.22** on the page and 2.51 → **1.77** on a
+hairline plate. **No compression of the surface ladder repairs this** — the only fix is a
+darker text ladder, three more roles James specified, so it is costed in §1.4 and not taken
+(`#737983` would restore `faint`).
+
+⚠️ **Two rule-4 derivations had already gone stale and are repaired here.**
+`composer_edge_dead` and `timeline_scripted_fill` are mixes "into the page", were computed
+against the spec's `#ffffff`, and the first correction left them behind — a written rule
+quietly false for a day. `panel_fill` moved only because a test pinned it. New test
+`every_light_plate_mixed_from_a_surface_is_recomputed_from_it` pins all three mixes and the
+invariant that would have caught them for free: **a plate mixed into a surface may never be
+brighter than that surface.**
+
+The four steps are now named constants rather than fifteen repeated literals — the panel is
+five fields, the hairline six, the strong border four, and a third correction spelled as
+fifteen hand-edits is one that lands on fourteen of them. Sharing a constant welds nothing:
+every field still assigns independently.
+
+`cargo test -p organon-console --lib` 647 green (646 before); `cargo test -p organon-core` 557
+green; both `--features console-edition` checks clean. 🚨 **Nobody has seen this ladder on a
+display** — see `CONSOLE_ARCHITECTURE.md` §3.
 
 ### `organon-world` — the window layer leaves the plugin crate
 
@@ -142,6 +207,60 @@ alongside these five. They carry `param_table` and `preset`, the plugin's own au
 surface. The membership rule is the one `organon-scene` was drawn by — a module comes only
 if its shipped code names nothing above it — and widening the crate to swallow them would
 be answering T4c's hard question by pretending it is easy.
+### `/organon` tells the truth about the seven tabs it cannot open
+
+Two defects James hit within a minute of first use, both of the same kind — the console knew
+and did not say. He typed `/organon generator 2` and was refused with *"`2` is not one of
+surface | colour | material | …"*: the **Look** tab's twenty-five panels, on a line that said
+`generator`. The only available reading is that the word `generator` had not registered. It had.
+
+**A refusal now names the ring it is refusing against.** The panel argument is declared as the
+union of every slug on every tab — a command schema has one value list per argument and no
+notion of a dependent one — and the refusal read that declaration even when the tab was sitting
+in the same line. It asks the narrowing hook first now, so `/organon look 2` answers *"`/organon
+look`: `2` is not one of surface | colour | …"* with the head carrying the words that chose that
+list, and a wrong pair (`/organon motion surface`, a real slug on the wrong tab) is refused in
+the composer instead of a ring further in. The declared union is unchanged: `/help` and the MCP
+schema have no tab in hand, and the union is the honest answer there.
+
+**And an empty ring can no longer be silent.** Only the Look tab's cards are joined to the panel
+table, so the other seven offered a band with nothing in it — indistinguishable from a broken
+one. All eight tabs are still offered, because `UiTab::ALL` is Organon's real hierarchy and
+hiding seven of it would misrepresent the product; the unjoined ones are **marked** `not mapped
+yet — no panels in the table`, counted off the table so a tab stops being marked the day it is
+joined. The narrowing hook's return type carries the change: an empty result now has to arrive
+as `Ring::Empty(reason)`, so the ring, the hint and the refusal read one sentence and a future
+empty ring cannot be built without one.
+
+Seven tabs are still dead ends. What changed is that they say so, in three places.
+
+### `/organon` — the console's rings are Organon's own UI hierarchy
+
+Typing `/organon` in a conversation offers Organon's eight tabs — generator, motion,
+environment, look, synth, audio, settings, mind. Typing `l` settles on `look` on its own and
+the ring underneath changes to that tab's twenty-five panels; `/organon look surface` puts that
+panel into the flow as an element.
+
+Neither ring is a list the console wrote. The tabs come from `UiTab::ALL`, the editor's own tab
+bar. The panels come from a new `organon_core::panels` table, and the arrow points the way that
+cannot rot: Organon's editor now reads its Look-tab card headings *out of* that table, at all
+twenty-five call sites, so a renamed panel is one edit and the compiler finds the other end.
+
+One addition to the command registry made it possible: an entry may carry a narrowing hook, so
+a ring can depend on the ring above it. `ArgKind` is untouched — a dependent variant would have
+been a change at ~30 exhaustive match sites, across the MCP schema generator and the dispatch
+validator, for one verb.
+
+🚨 **Every panel is declared, not live: the ring lists them and the element says it has not
+been transplanted yet.** The blocker is not drawing — it is that **there is no public way to
+write an Organon parameter from outside `nih_plug`**. Every panel widget writes through a
+`ParamSetter`, and `ParamMut`, `ParamPtr::set_normalized_value`, `FloatParam`'s value fields and
+nih-plug's own standalone `Wrapper` are each `pub(crate)` or in a private module. A panel drawn
+without a write path is a panel whose knobs do nothing, which is precisely why `/panel` was
+retired, so none is claimed. `CONSOLE_ARCHITECTURE.md` §1.11 records the wall and the measured
+way through it — the console already owns a `World` in-process, so no second process or IPC
+bridge is involved, and `PresetValues` is a freely-writable mirror of the params with a
+`to_shared()`; what is missing is the identity join at the widget.
 
 ### `organon-agent`, and `world.rs` runs out of upward edges
 

@@ -100,6 +100,7 @@ pub mod ipc;
 pub mod gguf_data;
 pub mod kind;
 pub mod math;
+pub mod panels;
 pub mod params;
 pub mod tabs;
 /// organon#49 T5a — the viewpoint's band and origin. Named for the word the code already
