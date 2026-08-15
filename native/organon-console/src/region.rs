@@ -300,18 +300,18 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Refusal::Overlap { asked, with } => {
-                let names: Vec<&str> = with.iter().map(|r| r.as_word()).collect();
+                // Bound once and named twice — the sentence needs the obstacle list in both
+                // clauses, and building it twice is how the two come to differ.
+                let names = with
+                    .iter()
+                    .map(|r| format!("`{}`", r.as_word()))
+                    .collect::<Vec<_>>()
+                    .join(" and ");
                 write!(
                     f,
-                    "`{}` overlaps {} and neither contains the other, so the grid it asks for \
-                     cannot be drawn — clear {} first, or say `full` and start again",
+                    "`{}` overlaps {names} and neither contains the other, so the grid it asks \
+                     for cannot be drawn — clear {names} first, or say `full` and start again",
                     asked.as_word(),
-                    names
-                        .iter()
-                        .map(|n| format!("`{n}`"))
-                        .collect::<Vec<_>>()
-                        .join(" and "),
-                    names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(" and ")
                 )
             }
             Refusal::AlreadyEmpty { asked } => {
@@ -384,11 +384,6 @@ impl Layout {
             .copied()
             .filter_map(|r| self.get(r).map(|c| (r, c)))
             .collect()
-    }
-
-    /// The quadrants covered by something.
-    fn covered(&self) -> u8 {
-        self.occupied().iter().fold(0, |acc, (r, _)| acc | r.quadrants())
     }
 
     /// Does anything hold an agent? The invariant every command's *result* must satisfy.
