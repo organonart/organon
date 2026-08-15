@@ -1967,7 +1967,9 @@ fn scrollback(
                         // the body comes from `console_main` through [`OrganonDraw`], and it
                         // has to run inside this layout because a dropdown opens where it was
                         // clicked. That type's doc owns the argument.
-                        Body::Organon(block) => organon_element(ui, block, theme, form, organon),
+                        Body::Organon(block) => {
+                            organon_element(ui, element.id, block, theme, form, organon)
+                        }
                         // The second body drawn here rather than in `draw_element`, and for a
                         // sharper version of the same reason: answering one needs the question
                         // the pane is holding, which `draw_element` has no access to.
@@ -2869,20 +2871,28 @@ fn panel_element(
 /// ⚠️ **`push_id` for [`panel_element`]'s reason, and it matters more here.** Organon's own
 /// widgets are built with egui's positional auto-ids, so two Surface panels in one transcript
 /// would collide on every dropdown and every drag — a knob handing its neighbour's drag state
-/// across, which reads as a panel that fights the hand. The element id makes each one its own
-/// namespace.
+/// across, which reads as a panel that fights the hand.
+///
+/// 🚨 **The namespace is the ELEMENT's id, not the panel's slug.** It was the slug until the
+/// first panel went `Status::Live`, and the slug is exactly the wrong choice: two `/organon
+/// look surface` cards in one transcript are two elements with *one* slug, so they would land
+/// in the same namespace and produce the collision this call exists to prevent — while two
+/// *different* panels, which the slug does separate, could never have collided anyway. The bug
+/// was unreachable while every panel drew a single label; it became reachable the moment one
+/// drew widgets.
 ///
 /// ⚠️ **A [`Status::Declared`] panel says so where the controls would be, rather than drawing
 /// an empty box.** `/organon` lists every panel of a joined tab and only some are transplanted;
 /// an element that opened to nothing at all would be indistinguishable from one that failed.
 fn organon_element(
     ui: &mut egui::Ui,
+    id: ElementId,
     block: &OrganonBlock,
     theme: &Theme,
     form: &Form,
     organon: OrganonDraw,
 ) {
-    ui.push_id(block.panel.slug, |ui| {
+    ui.push_id(id, |ui| {
         let mut framed = Frame::new()
             .fill(theme.panel_fill)
             .corner_radius(form.card_corner())
