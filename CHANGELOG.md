@@ -207,6 +207,48 @@ alongside these five. They carry `param_table` and `preset`, the plugin's own au
 surface. The membership rule is the one `organon-scene` was drawn by — a module comes only
 if its shipped code names nothing above it — and widening the crate to swallow them would
 be answering T4c's hard question by pretending it is easy.
+### One Organon panel is live inside Organon Console: Look ▸ Surface
+
+`/organon look surface` used to open an element that said *"this panel is named in Organon's
+editor but has not been transplanted into the console yet"*. It now opens Organon's real Surface
+controls — mode, palette, node bevel, the material maps, the procedural noise layers, and the
+per-surface-mode dials for Metaball, Splat, Swept Tubes, Voxel, Volume, Membrane, Neural Tissue
+and Plexus — driving the World the console is already rendering, with no second process and no
+IPC bridge.
+
+**It is one function, called twice.** `panel_surface::surface_card` is the Surface card;
+`lib.rs`'s Look tab calls it and so does the console. There is no second rendering to keep in
+step, which is the whole claim `/organon` makes: this is the same instrument, not a
+console-flavoured imitation.
+
+**The obstacle was writing a parameter, not drawing one.** There is no public way to write an
+Organon parameter from outside `nih_plug` — `ParamMut` and every setter on it are `pub(crate)`,
+and the one non-host type implementing `GuiContext` lives in a private module of an upstream git
+dependency. The way through is `PresetValues`, a freely writable mirror of the parameter set
+whose fields share their identifiers with `OrganicMathParams` and which has its own
+`to_shared()`. What was actually missing was the *identity* at the widget: `&params.bevel` does
+not tell a writer that it is `pv.bevel`. `param_sink`'s macros supply it by naming the field
+once, so a rename on either side is a compile error.
+
+**The mirror reaches the world as a difference, not as a snapshot.** Only the lanes where the
+panel disagrees with its own starting state are written, so an untouched panel is byte-inert
+over whatever the console had already composed — and no hand-written list of "which lanes the
+Surface card owns" exists to fall out of date. A param added to the card reaches the world for
+free.
+
+Nothing else moved: the editor's Surface card is the same card, its writes still go through the
+host setter gesture-wrapped and automation-recordable, and a console in which nobody opens a
+panel publishes the bytes it published before.
+
+Two known differences from the editor's rendering, both consequences rather than choices: the
+slider *fill* is egui's rather than nih-plug's `ParamSlider` (that widget takes a `ParamSetter`
+in its constructor, so no mirror can drive one), and ↑/↓ inside an open dropdown commits on the
+following frame instead of scrubbing live. Ranges, units, value strings, variant names, help
+text, grid lines and the disclosure logic are all read off the real parameters and are the same
+by construction.
+
+The remaining twenty-four panels are unchanged and still say so.
+
 ### `/organon` tells the truth about the seven tabs it cannot open
 
 Two defects James hit within a minute of first use, both of the same kind — the console knew

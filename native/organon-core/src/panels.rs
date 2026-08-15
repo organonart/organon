@@ -47,19 +47,29 @@ use crate::tabs::UiTab;
 /// in the candidate's own line, rather than after.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
-    /// The Console has a body for this panel and draws it.
+    /// The Console has a body for this panel and draws it. **[`LOOK_SURFACE`] alone, today.**
     ///
-    /// 🚨 **Nothing is `Live` yet, and the blocker is writing a parameter rather than drawing
-    /// one.** Organon's panels are `card(&mut c[0], "Surface", |ui| …)` closures over
-    /// `&params.bevel` and a `nih_plug::ParamSetter`, and **there is no public way to write a
-    /// param from outside `nih_plug`**: `ParamMut` and every setter on it are `pub(crate)`,
-    /// `FloatParam`'s value fields are private, and nih-plug's own standalone `Wrapper` — the
-    /// one type outside a host that implements `GuiContext` — lives in a private module. A
-    /// panel drawn without that write path is a panel whose knobs do nothing, which is
-    /// precisely why `/panel` was retired. `CONSOLE_ARCHITECTURE.md` records the measured way
-    /// through.
+    /// 🚨 **What made this hard was writing a parameter, not drawing one.** Organon's panels
+    /// are `card(&mut c[0], "Surface", |ui| …)` closures over `&params.bevel` and a
+    /// `nih_plug::ParamSetter`, and **there is no public way to write a param from outside
+    /// `nih_plug`**: `ParamMut` and every setter on it are `pub(crate)`, `FloatParam`'s value
+    /// fields are private, and nih-plug's own standalone `Wrapper` — the one type outside a
+    /// host that implements `GuiContext` — lives in a private module of an upstream git
+    /// dependency. A panel drawn without a write path is a panel whose knobs do nothing, which
+    /// is precisely why `/panel` was retired.
+    ///
+    /// The way through is a **writable mirror**: `PresetValues` shares its field identifiers
+    /// with `OrganicMathParams` and has its own `to_shared()`, so the Console holds one, the
+    /// controls write it, and the world is driven from the difference between it and its
+    /// starting state. `organic-math-native`'s `param_sink` module owns the mechanism and
+    /// `CONSOLE_ARCHITECTURE.md` §1.11 owns what it costs.
+    ///
+    /// ⚠️ **Going `Live` is a claim about a body existing, and only that.** It does not
+    /// promise the panel is pixel-identical to the editor's; §3's ledger records where the two
+    /// differ.
     Live,
-    /// Real, named, and in the ring — but the Console cannot draw it yet. Every panel today.
+    /// Real, named, and in the ring — but the Console cannot draw it yet. Every panel but
+    /// [`LOOK_SURFACE`].
     Declared,
 }
 
@@ -92,10 +102,11 @@ const fn look(slug: &'static str, title: &'static str, status: Status) -> Panel 
 // The Look tab, in the editor's own column-then-row order
 // ---------------------------------------------------------------------------
 
-/// Node geometry, palette and the material maps — the panel James named, and the one the
-/// transplant is aimed at. ⚠️ Still [`Status::Declared`]: see [`Status::Live`] for what is
-/// missing, which is a way to *write* a parameter and not a way to draw one.
-pub const LOOK_SURFACE: Panel = look("surface", "Surface", Status::Declared);
+/// Node geometry, palette and the material maps — **the first panel to be transplanted**, and
+/// the only [`Status::Live`] entry in this table. Its body is
+/// `organic-math-native`'s `panel_surface::surface_card`, called by Organon's editor and by
+/// the Console alike.
+pub const LOOK_SURFACE: Panel = look("surface", "Surface", Status::Live);
 pub const LOOK_COLOUR: Panel = look("colour", "Calibrated Colour (#349)", Status::Declared);
 pub const LOOK_MATERIAL: Panel = look("material", "Material", Status::Declared);
 pub const LOOK_SURFACE_FX: Panel = look("fx", "Surface FX", Status::Declared);
@@ -238,15 +249,18 @@ mod tests {
         assert_eq!(find(UiTab::Look, "nonesuch"), None);
     }
 
-    /// 🚨 **No panel is drawable yet**, and this test is what stops that becoming a quiet
-    /// claim. A panel goes [`Status::Live`] in the *same change* that gives the Console a body
-    /// for it, and this assertion has to be edited to let that happen — so the honesty ledger
+    /// 🚨 **Exactly which panels claim to be drawable**, spelled out rather than counted. A
+    /// panel goes [`Status::Live`] in the *same change* that gives the Console a body for it,
+    /// and this assertion has to be edited by name to let that happen — so the honesty ledger
     /// in `CONSOLE_ARCHITECTURE.md` cannot fall behind the code without a failing test.
+    ///
+    /// It was `no_panel_is_live_yet` and asserted the list was empty; Console #7 transplanted
+    /// Look ▸ Surface, so the test that guards the claim becomes the list itself.
     #[test]
-    fn no_panel_is_live_yet() {
+    fn only_the_transplanted_panels_are_live() {
         let live: Vec<&str> =
             PANELS.iter().filter(|p| p.status == Status::Live).map(|p| p.slug).collect();
-        assert!(live.is_empty(), "these claim to be drawable: {live:?}");
+        assert_eq!(live, vec!["surface"], "the live set changed without this test being told");
     }
 
     #[test]
