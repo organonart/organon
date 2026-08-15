@@ -7,9 +7,16 @@ the issue numbers they reference, stayed private with the original.
 
 From here on, this file gets an entry per meaningful change, newest first.
 
+**New entries are not written into this file.** They are one Markdown file each in
+[`changelog.d/`](changelog.d/README.md), concatenated in here at release time — because a
+single shared insertion point made every pair of open branches conflict by construction.
+`changelog.d/README.md` is the how; `.gitattributes`' `CHANGELOG.md` block is the why.
+
 ---
 
 ## Unreleased
+
+<!-- Normally empty. New entries are one file each in `changelog.d/`; see `changelog.d/README.md`. Anything that does land here is absorbed by the next release. -->
 
 ### The Console stops needing the Performer's catalog, and an empty catalog now refuses
 
