@@ -2880,7 +2880,10 @@ own constants: they are chrome, not cards, and a tier that wants them to breathe
 so out loud rather than inherit it from a token named "card". And the **margins' contents**:
 this tier claims the two 90-point columns and leaves both empty, because the reflow is the
 part that can be wrong and is worth seeing on its own before Tier D draws turn ordinals into
-the left one.
+the left one. And, since §1.11, **whether the window covers the display**: that is a third
+orthogonal axis, not a third value on this one, and this axis could not have expressed it
+anyway — it has no slots to add to. §1.11 owns the argument, including why a full-screen
+window's extra width is deliberately not allowed to feed back into a `Form`.
 
 ⚠️ **`Posture::new` and `Form::at` clamp, and NaN resolves to the terminal end.** These
 numbers reach `Margin`'s `i8` and `CornerRadius`'s `u8` through `as` casts, where a `NaN`
@@ -3659,6 +3662,118 @@ rather than enumerating is how `✓` reached a third draw site.
 registry can build. It exists because landing on a named colour is a one-line change the moment
 a second argument is worth adding. Nothing claims the command exists.
 
+### 1.11 The screen — whether the window covers the display, on a THIRD axis
+
+**`organon-console/src/screen.rs`.** `organon console screen <full|windowed|toggle>` puts the
+console's window into borderless full screen and back, and **F11 flips it from inside the
+window**. That is the whole feature; almost everything below is about why it is a third thing
+rather than a value of an existing one.
+
+#### 🚨 It was asked for as a posture, and it cannot be one
+
+James's words were *"adds a new posture, which is full screen"*. The obvious implementation —
+a third slot beside `terminal` and `desktop` — **is not available**, and the reason is §1.6's
+own design: `Posture` is a **scalar**, not an enum. `Form::at(t)` lerps componentwise between
+two ends and `Posture::from_scalar` accepts anything between them, so `organon console posture
+0.5` is a real drawable console and the CLI takes it. There are no slots to add a third to;
+there is an axis.
+
+And full screen is not a point on it. Every one of `Form`'s fourteen tokens is a margin, a
+corner, a padding, a line height, a gap, a tracking, or the presence of a border, a rule or a
+tick. **Full screen changes none of them.** It changes the rectangle the window occupies, which
+no token in that struct describes.
+
+It also passes §1.6's own orthogonality test verbatim. That section argues theme and posture are
+orthogonal because *"`organon` at desktop posture and a light palette at terminal posture are
+both real things, and neither is a variant of the other"*. Apply it here: a **full-screen
+terminal** is the oldest thing in computing and a **full-screen desktop document** is what every
+reader app opens into. Both are real. So this is a third orthogonal state, and all four
+(posture × screen) combinations are consoles somebody would want.
+
+#### ⚠️ Why the form is NOT nudged when the window fills the display
+
+The tempting version — full screen also opens the margins out, because a 2560-wide window wants
+more air than an 1100-wide one — couples to the **wrong variable**, and that is worth stating
+precisely because the argument *for* it is a good one. A **maximized** 2560-wide window and a
+**full-screen** 2560-wide window are the same width and want the same margins. A full-screen
+window on a 1280-wide laptop is *narrower* than a maximized one on this workstation's display,
+and wants today's desktop margins unchanged. "Is it full screen" is simply not the question the
+margin wanted asked — "how wide is it" is. If width-responsive form is ever wanted, its input is
+`available_width`, and it is a change to how a `Form` is *resolved* rather than a third state
+feeding into it.
+
+The coupling would also be the part that is regretted: with it, `organon console posture
+terminal` typed while full screen either draws something that is not the terminal posture, or is
+refused. A person who typed a posture would not get the posture they typed.
+
+#### ⚠️ No state is held — the window is the answer
+
+**There is no `screen` field on `Console`.** `winit::window::Window::fullscreen()` *is* the
+state, so `Screen` is derived from the window at the moment a command arrives rather than
+remembered beside it. A remembered copy would be a second source of truth for one boolean, and
+the failure it forecloses is concrete rather than hypothetical: this verb is not the only way a
+window gets resized (macOS's green button, a tiling window manager, a platform restoring a
+session), and after such a divergence a remembered `Windowed` would make `toggle` send an
+already-full-screen window *into* full screen — the one word whose entire meaning is "the other
+one" doing nothing visible and reporting nothing.
+
+`Fullscreen::Borderless(None)` — the window's current monitor — and never `Exclusive`, which
+takes a video mode from the display and is a projector's business. Only the *discipline* is
+shared with `bin/visual.rs`'s `sync_fullscreen` — touch the window only on a real change — and
+the **two differ exactly where it matters**: that one holds a `fullscreen_applied` bool and
+compares against it, because its intent arrives from `World::wants_fullscreen` on every frame
+and it needs an edge; this one has no periodic intent to debounce, so it can ask the window and
+avoid keeping the bool at all. **No code is shared, deliberately.** `World::wants_fullscreen` is
+a field that travels in `Shared`, written by the visual's own `F` key and its projector launch
+logic; the console's `World` renders only into a backdrop texture and never owns a swapchain, so
+reaching for it would mean the console writing into the visual's IPC state to set a flag on its
+own window. Two lines of winit is a far smaller price than that coupling.
+
+**Not remembered across launches**, on §1.6's rule for posture — the console opens windowed
+however you left it. A window that reopens covering the display with no title bar is the state
+that most needs an undo and has the fewest ways to get one.
+
+#### 🚨 The way out is F11, and choosing it needed an argument
+
+A borderless window has no close button, so a full-screen console with no key would be a trap.
+The verb is reachable — the console is full of terminals — but that is a way out for somebody
+who remembers the verb.
+
+**Escape is not available**, and §1.2 owns why: in a terminal tab the keyboard is the child's,
+`vim` needs Escape, and taking it would have to be conditional on state — unbuilt work with a
+designed mechanism reserved for it (§2's portal row: `consume_key` `retain`ing out of the same
+`i.events` vector `term_view` clones). Spending that here would be borrowing a subsystem to pay
+for one window flag.
+
+**F11 is free, and that is measured rather than assumed.** `term::encode_key` returns `None` for
+every function key, so the console has never sent it to a child under any modifiers;
+`conversation_view::palette_key` and `theme_edit::edit_key` both answer `Ignore` for it. All
+three are pinned by tests in `screen.rs`, so the day one stops being true it fails there rather
+than fighting silently. Claiming it takes nothing from anybody — exactly what Escape could not
+say — and it is the convention every full-screen window on this platform already uses.
+
+The claim is therefore **unconditional** (every tab, every state, whatever has focus) and needs
+none of the state-dependent machinery Escape would. It is read at the same site as `⌘T`/`⌘W`/
+`⌘1-9` — `redraw`'s raw frame events, before any panel is laid out — which is what makes it
+work while the composer has focus, and it is **not** consumed out of `i.events`, because nothing
+downstream wants it. The chord and `organon console screen toggle` funnel into one call, so the
+key cannot drift from the verb.
+
+#### Reaching it, and why the schema can state the whole value space here
+
+Three words, no scalar: a window either covers the display or it does not, and there is nothing
+between for a number to address. That is the one place this verb is *simpler* than posture and
+it shows up in the CLI — `console posture` cannot be a clap `PossibleValuesParser` (its value
+space is two words **or** a float, which clap cannot state, so its gate moves to `run_console`
+and its words do not tab-complete), while `console screen` can be, and is. `SCREEN_WORDS` is the
+one table read by `bin/ctl.rs`, by `console_specs()` and by `ScreenCmd::resolve`'s refusal —
+`POSTURE_WORDS`' arrangement, for its reason.
+
+⚠️ **The verb is named for the window it moves, and not "fullscreen", on purpose.** §2's portal
+row reserves the phrase *full screen* for a still-unbuilt portal state — the portal taking the
+whole window, after `immersive`. Two different rectangles can each be described as going full
+screen, so this one says which.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -3669,7 +3784,7 @@ a second argument is worth adding. Nothing claims the command exists.
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Console #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `ConsoleDispatch` onto the audited drain, plus the one in-process read §1.3 adds) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
-| The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md` — the site-by-site investigation these follow from, now merged, carrying this correction as its own §1.1 amendment so the two cannot drift apart |
+| The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. ⚠️ **This "full screen" is the PORTAL's, and it is not what §1.11 landed** — that is the *window* covering the display, which suppresses nothing inside it and shares no code with this. The two are independent and compose: a full-screen portal inside a full-screen window is the state this row is ultimately reaching for. §1.11's verb is named `console screen` rather than `console fullscreen` precisely so this row keeps the phrase. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md` — the site-by-site investigation these follow from, now merged, carrying this correction as its own §1.1 amendment so the two cannot drift apart |
 | A **read** path for the console's own state | **The camera half has landed, on the MCP lane only** — `console.camera.read` (§1.3, "Reading it back"), answered in-process from the viewpoint `redraw` publishes. What is left is the *other* transport and the *other* verbs. `organon console …` is still fire-and-forget with no return path, so the CLI reads nothing; the honest fix there is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs. ⚠️ **Do not generalise the camera's shape to reach it.** A published cell works because the camera is one small `Copy` tuple owned by the frame path; "the console's state" at large is panes, transcripts and textures, and a cell per fact is a second state tree that will drift from the first. ⚠️ The other tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
@@ -3682,6 +3797,32 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **Nothing has been seen full screen, and "the window fills the display" is a claim no
+  test on this machine can make.** §1.11 was written and verified in a session with no way to
+  open a window: `cargo test -p organon-console --lib` is **654 green** (646 before — the eight
+  new ones are `screen.rs`'s), `cargo test -p organon-core` is green, `cargo check --features
+  console-edition --bin organon-console` is clean, and `cargo check --tests -p
+  organic-math-native --features console-edition` is clean. **That is the whole claim: it
+  compiles and the tests pass.** What is unverified, in order of how much it matters: (1) that
+  `set_fullscreen(Borderless(None))` actually fills the display on this Windows box rather than
+  producing a maximized-but-bordered window or a black band — and **full-screen behaviour is
+  exactly the kind that differs between one display and two**, which is the configuration James
+  runs; (2) that **F11 arrives**, which is the only part whose failure is a trap rather than a
+  disappointment. The three tests prove only that nothing else in this crate *claims* the key.
+  ✏️ The **translation layer has since been read and is not a risk**: `egui-winit` 0.33.3 maps
+  both `NamedKey::F11` and `KeyCode::F11` to `egui::Key::F11` (`src/lib.rs:1160`, `:1284`), so
+  a keystroke that reaches winit reaches this code as the key the chord tests. What is still
+  unverified is everything *upstream* of winit — whether Windows or another resident hook eats
+  it first, which is a live concern on this machine specifically: it runs push-to-talk tools
+  that install `WH_KEYBOARD_LL` hooks, and a low-level hook decides before delivery. If it does
+  not arrive, the way out is
+  `organon console screen windowed` typed in any tab, and that should be the first thing tried
+  before anything is diagnosed; (3) that the **tab strip and the scrim look right** at a
+  display's full width, since neither has been drawn wider than a 1100-point window; (4) that a
+  **posture change while full screen** does what §1.11 argues it does — the two axes are
+  independent in the code and have never been moved at once with anyone watching. Both
+  behaviours the two `⚠️`s in §1.11 describe (the divergence `toggle` recovers from, the
+  platform putting the window full screen by another route) are reasoned, not observed.
 - 🚨 **Nobody has seen the compact command panel, so whether it *feels* fast is unverified —
   and "fast" is the entire claim being made for it.** ✏️ **The verbose panel HAS now been
   seen**, which is where the compact one came from and what the six defects §1.9 records were

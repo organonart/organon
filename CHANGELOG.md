@@ -11,6 +11,52 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### Organon Console — full screen, on a third axis rather than as a third posture
+
+`organon console screen <full|windowed|toggle>` puts the console's window into borderless
+full screen and back, and **F11 flips it from inside**. New module
+`organon-console/src/screen.rs`; `CONSOLE_ARCHITECTURE.md` §1.11 owns the reasoning.
+
+🚨 **It was asked for as "a new posture, which is full screen", and it could not be one.**
+`Posture` is a **scalar**, not an enum — `Form::at(t)` lerps componentwise between two ends
+and `organon console posture 0.5` is a real drawable console — so there is no third slot to
+add; there is an axis. And full screen is not a point on it: every one of `Form`'s fourteen
+tokens is a margin, a corner, a padding, a gap or the presence of a border, and full screen
+moves none of them. It also passes `posture.rs`'s own orthogonality test verbatim — a
+full-screen terminal and a full-screen desktop document are both real, and neither is a
+variant of the other — so it is a third orthogonal state, and all four (posture × screen)
+combinations are consoles somebody would want.
+
+⚠️ **The form is deliberately NOT nudged when the window fills the display**, and the
+argument for nudging it is a good one, which is why it is answered rather than ignored: a
+2560-wide *maximized* window and a 2560-wide *full-screen* one want identical margins, and a
+full-screen window on a 1280-wide laptop wants today's desktop margins unchanged. "Is it full
+screen" is not the question the margin wanted asked — "how wide is it" is. Coupling them would
+also mean `organon console posture terminal`, typed while full screen, not giving the person
+the posture they typed.
+
+⚠️ **No state is held.** `Window::fullscreen()` *is* the answer, so `Screen` is derived at the
+moment a command arrives rather than remembered beside it — which forecloses a concrete
+failure: after a window is put full screen by some other route (a platform's own control, a
+tiling manager), a remembered `Windowed` would make `toggle` send it *into* full screen, so
+the one word whose entire meaning is "the other one" would do nothing and report nothing.
+
+🚨 **F11 is the way out, and the choice is measured rather than assumed.** A borderless window
+has no close button. Escape is unavailable — in a terminal tab the keyboard is the child's and
+`vim` needs it, so claiming it requires state-conditional ownership the console has not built.
+F11 is free: `term::encode_key` returns `None` for every function key, and both conversation-side
+key tables answer `Ignore` for it. All three facts are pinned by tests, so the day one stops
+being true it fails there rather than fighting silently. The chord and the verb funnel into one
+call, so they cannot drift.
+
+⚠️ **Named `screen`, not `fullscreen`, because two different rectangles can go full screen.**
+§2's ledger reserves that phrase for a still-unbuilt *portal* state — the portal taking the whole
+window. This verb says which rectangle it moves.
+
+📌 Not remembered across launches, on posture's rule. 🚨 **Nothing has been seen full screen** —
+the whole claim is that it compiles and 654 lib tests pass (646 before); §3's ledger states
+what that does and does not establish, F11 actually arriving first among them.
+
 ### `organon-world` — the window layer leaves the plugin crate
 
 organon#49 Tier 4b. `scene_input`, `egui_platform`, `frame_ring` and `audio_ring` —
