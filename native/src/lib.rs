@@ -174,8 +174,17 @@ pub mod theme_config;
 // third consumer of the world, and like Mind it ships no plugin, so the cdylib measurement
 // above still holds for the only build that has one (the default, where both features are
 // off and this module still does not exist).
+///
+/// ⚠️ **organon#49 T4c-ii — this is a RE-EXPORT now, and the gate did not move, only the
+/// manifest that states it.** `world.rs` and its nine `#[path]` submodules live in
+/// `organon-world` behind that crate's `world` feature, which this crate's `mind-edition` /
+/// `console-edition` forward. The `#[cfg]` here is therefore redundant with the feature —
+/// and kept anyway, because it is what makes `crate::world` fail to resolve in a default
+/// build, which is the property the +490 KB measurement above is really about. Without it a
+/// default build would still compile (the feature is off, so the module is absent) but the
+/// error would name a missing *feature* rather than a deliberate absence.
 #[cfg(any(feature = "mind-edition", feature = "console-edition"))]
-pub mod world;
+pub use organon_world::world;
 /// #520 Tier 2 — making the **standalone**'s window resizable. baseview opens it
 /// with no `Resizable` style bit and offers no API to change that, so this reaches
 /// the `NSWindow` through objc, the way `hdr_macos.rs` reaches wgpu's

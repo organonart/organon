@@ -64,6 +64,44 @@ window. This verb says which rectangle it moves.
 📌 Not remembered across launches, on posture's rule. 🚨 **Nothing has been seen full screen** —
 the whole claim is that it compiles and 654 lib tests pass (646 before); §3's ledger states
 what that does and does not establish, F11 actually arriving first among them.
+### `world.rs` leaves the plugin crate — and stops being compiled twice
+
+organon#49 Tier 4c-ii. **`world.rs` (13 509 lines)**, its nine `#[path]` submodules
+(`capture`, `overlay`, `rt`, `metal_island`, `gpu_timer`, `recorder`, `snap`, `ui_layer`,
+`winit_platform`), the `overlay/` asset directory and three shaders move to
+`organon-world`, behind that crate's new **default-off `world` feature**. The visual
+binary moves too, to a package of its own: **`organon-visual`**.
+
+**Why the world needed a feature.** `native/src/lib.rs` gated `pub mod world` on
+`any(mind-edition, console-edition)` for a measured reason — ungated it grows the shipping
+plugin cdylib by **+490 KB** (12 749 728 → 13 250 704 bytes). `organon-world` is an
+*unconditional* dependency of the plugin crate, so an always-public `world` module there
+would put those bytes straight back. The gate did not change; only the manifest that
+states it.
+
+**Why the binary needed its own package.** `bin/visual.rs` never used the library's
+`world` module — it `#[path]`-*included* `world.rs`'s source, compiling the same 13.5k
+lines a second time. That was the mechanism, not redundancy: a `#[path]` include is not a
+cargo feature, so it gave the visual a world the cdylib did not get. It could not descend
+into `organon-world` either, because the visual is the process that runs the AI
+Performer's worker and so needs `agent::core_catalog()`, which reads `param_table` and
+cannot descend. And it could not stay, because **cargo features unify across every target
+of a package** — the cdylib beside it would have got `world` too. `organon-visual` depends
+on both sides (the plugin crate is `crate-type = ["cdylib", "lib"]`), which makes the
+shipping cdylib unchanged **by construction** rather than by measurement.
+
+✅ **The dual compilation is gone, not relocated** — the world compiles once now. That
+also retires the reason `render.rs` / `rt.rs` had to spell siblings `super::`.
+
+**Unchanged on purpose:** the binary is still named `organic-math-visual` and still builds
+to `target/release/organic-math-visual`, so `spawn_visual()`'s probe and the bundlers'
+copy steps are untouched. Only their `cargo build` lines gained `-p organon-visual`
+(`bundle.sh`, `bundle.ps1`, `verify.sh`).
+
+**Also fixed:** `.claude/hooks/doc-rules.sh` matches trigger paths literally, so
+`doc/arch/render.md`'s rule would have silently stopped firing for every moved file. Its
+list is repointed, and `doc/arch/topology.md`'s — which had never listed `organon-scene`,
+`organon-agent` or `organon-world` — gains the four manifests it was missing.
 
 ### `organon-world` — the window layer leaves the plugin crate
 

@@ -50,7 +50,7 @@
 //!
 //! Stage 3 left exactly one: `FrameTarget::ui_window` was still a `&winit::Window`, because
 //! `ui_layer` translated input through `egui-winit`. Tier 3 replaced it. `ui_layer` is now
-//! generic over [`EguiPlatform`](organic_math_native::egui_platform::EguiPlatform) — the winit
+//! generic over [`EguiPlatform`](crate::egui_platform::EguiPlatform) — the winit
 //! arm is `winit_platform`, the baseview arm is route C's — and the frame states
 //! [`FrameTarget::ui_scale_factor`] instead of handing over a window.
 //!
@@ -58,25 +58,28 @@
 //! in [`on_window_event`](World::on_window_event), and that is deliberate: it is the *winit
 //! host's* entry point, carrying the visual's keymap. A baseview host never calls it.
 //!
-//! # Why `super::` and not `crate::` inside `render.rs`
+//! # ✅ THIS FILE IS COMPILED ONCE (organon#49 T4c-ii) — the old duality is retired
 //!
-//! `render.rs` is compiled **twice** while stage 3 is outstanding: once as a module of this
-//! tree, once as a `#[path]` module of `bin/visual.rs` (which now includes *this file*, so the
-//! whole tree comes with it). It refers to two siblings, `axes` and `chamber`; `super::` is the
-//! one spelling that resolves in both hosts, which is what lets the file stay byte-identical
-//! between them rather than forking 6 000 lines. `rt.rs` was moved to the same spelling in this
-//! change, for the same reason — it used to say `crate::render`, which only resolved while
-//! `render` sat at the binary's crate root.
+//! It used to be compiled **twice**: once as `organic-math-native`'s cfg-gated `pub mod
+//! world`, and once as a `#[path]` module of `bin/visual.rs`. That was not redundancy, it
+//! was the mechanism — a `#[path]` include is not a cargo feature, so including the *source*
+//! was how the visual binary got a world the shipping cdylib did not get.
 //!
-//! `crate::math` needs no such care: it resolves to the library's `math` in this host, and to
-//! the binary's root `use organic_math_native::math` in the other — which is why that import
-//! stays in `bin/visual.rs` even though the binary itself no longer names `math`. The
-//! `organic_math_native::` paths throughout work here because `lib.rs` declares `extern crate
-//! self as organic_math_native`.
+//! T4c-ii replaced the mechanism rather than the intent: this file lives in `organon-world`
+//! behind its `world` feature, and the visual is `organon-visual`, a package of its own that
+//! turns the feature on. The plugin crate leaves it off except under `mind-edition` /
+//! `console-edition`. Same gate, one compilation.
 //!
-//! # Why this whole module is gated on `mind-edition`
+//! **What that retires, concretely.** Nothing here needs a spelling that resolves in two
+//! different crate roots any more. `render.rs`'s `super::axes` / `super::chamber` are now
+//! plain siblings inside `organon-render`; the `use organon_core::math` shim that had to sit
+//! at `bin/visual.rs`'s root — load-bearing only because `crate::` meant *the binary* there —
+//! is gone. If you are about to preserve a spelling "because this file is compiled twice",
+//! check first: it is not.
 //!
-//! Measured, not assumed. Ungated, `pub mod world` grows the plugin cdylib from 12 749 728 to
+//! # Why this whole module is behind the `world` feature
+//!
+//! Measured, not assumed. Ungated, `pub mod world` grew the plugin cdylib from 12 749 728 to
 //! 13 250 704 bytes (+490 KB), with **zero** wgpu/naga dynamic symbols either way — nothing new
 //! becomes *reachable*, but a shipping VST3 that changes size for no user-visible reason is
 //! exactly what "full Organon is untouched" rules out. Organon Mind ships no VST3 (#483), so
@@ -164,15 +167,15 @@ use glam::{DVec3, Mat3, Mat4, Vec2, Vec3, Vec4};
 // `bin/visual.rs`'s `#[path]` copy, which ships in both editions and keeps the mirror in the
 // default build that produces full Organon's projector.
 #[cfg(not(feature = "mind-edition"))]
-use organic_math_native::frame_ring;
-use organic_math_native::ipc;
+use crate::frame_ring;
+use organon_core::ipc;
 use organon_agent as agent;
 use organon_agent::ChatClient; // bring the trait into scope for client.complete()
-use organic_math_native::math;
-use organic_math_native::mind_log;
-use organic_math_native::mind_ring;
+use organon_core::math;
+use organon_mind::mind_log;
+use organon_mind::mind_ring;
 // #554 Tier 4 — the routing verdict for every pointer event (see `ui_layer`).
-use organic_math_native::mind_shell::PointerTarget;
+use organon_mind::mind_shell::PointerTarget;
 // #621 — the camera's backend-neutral input. In the library it is `crate::scene_input`; in
 // `bin/visual.rs`'s `#[path]` copy of this file it is the same module reached through the crate
 // name, which is why the import is spelled this way like every other one above.
@@ -182,17 +185,17 @@ use organic_math_native::mind_shell::PointerTarget;
 // of those compilations — it would be permanently dead in the visual's, which is how a
 // blanket `allow(dead_code)` gets added and then stops reporting a reader that really did go
 // away. The editor loops over `SceneGesture::inputs()` at its own call site instead.
-use organic_math_native::scene_input;
-use organic_math_native::scene_input::CameraInput;
-use organic_math_native::overlay_meta;
-use organic_math_native::params::{BoidsForm, FuncName, GeneratorMode, OscDivision, ParamValues};
+use crate::scene_input;
+use crate::scene_input::CameraInput;
+use organon_scene::overlay_meta;
+use organon_core::params::{BoidsForm, FuncName, GeneratorMode, OscDivision, ParamValues};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::time::Instant;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 // #593 Tier 3 — the window's geometry as data, which is what replaced `&winit::Window` here.
-use organic_math_native::egui_platform::WindowGeometry;
+use crate::egui_platform::WindowGeometry;
 
 
 // No node cap: the field builds every x·y·z·q node the params ask for. The GPU
@@ -1129,7 +1132,7 @@ impl Fdtd {
             self.fdtd.as_mut().unwrap().set_sponge(sponge, 6.0);
             self.fdtd_sponge = sponge;
         }
-        let source_mode = organic_math_native::params::FdtdSource::from_u32(f[2] as u32);
+        let source_mode = organon_core::params::FdtdSource::from_u32(f[2] as u32);
         let omega = f[3].max(0.0);
         let drive = f[4].max(0.0);
         let substeps = (f[5] as usize).clamp(1, 64);
@@ -1156,8 +1159,8 @@ impl Fdtd {
                 // the oscillation; a pulse offset shifts its arrival time by phase/ω.
                 for src in &sources {
                     let shape = match source_mode {
-                        organic_math_native::params::FdtdSource::Cw => (omega * t + src.phase).sin(),
-                        organic_math_native::params::FdtdSource::Pulse => {
+                        organon_core::params::FdtdSource::Cw => (omega * t + src.phase).sin(),
+                        organon_core::params::FdtdSource::Pulse => {
                             let ts = if omega > 1.0e-3 { t + src.phase / omega } else { t };
                             math::fdtd_gaussian_pulse(ts % period, period * 0.5, tau)
                         }
@@ -1293,7 +1296,7 @@ pub struct World {
     // `.gguf`, kept so switching the Mind topology (`mind[2]`) between Specimen and
     // Galaxy can rebuild the graph WITHOUT re-picking the model. `None` until a model
     // loads (and cleared again on a failed load, like `neural_loaded`).
-    mind_model: Option<(String, organic_math_native::gguf::GgufHeader)>,
+    mind_model: Option<(String, organon_core::gguf::GgufHeader)>,
     // Last-seen `mind[2]` view mode — **0 = architecture specimen, 1 = embedding galaxy**
     // — so a change rebuilds the graph once. Starts at 0 = the default, so with nothing
     // set this seam never fires and the output is byte-identical to today.
@@ -1306,7 +1309,7 @@ pub struct World {
     // #520 — the projected embedding cloud, cached so moving `extent` (or switching
     // back to Galaxy) rescales the graph from memory instead of re-reading and
     // re-projecting the .gguf, which takes seconds. Cleared with `mind_model`.
-    mind_galaxy: Option<organic_math_native::gguf_data::GalaxyProjection>,
+    mind_galaxy: Option<organon_core::gguf_data::GalaxyProjection>,
     // Last `neural_net[6]` (extent) the loaded mind graph was BUILT at. `extent` is
     // baked into the graph at build time, so without this a slider move did nothing to
     // an already-loaded specimen/galaxy — the bug #520 fixes.
@@ -1504,7 +1507,7 @@ pub struct World {
     // enabled; rebuilt when the seed/omega change. `nrc_key` = the (seed, omega)
     // the current cache was built with (edge-detect a rebuild). `nrc_loss` /
     // `nrc_state` are the smoothed training telemetry the editor shows.
-    nrc_cache: Option<crate::math::RadianceCache>,
+    nrc_cache: Option<organon_core::math::RadianceCache>,
     nrc_key: (u32, u32),
     nrc_loss: f32,
     nrc_state: u32,
@@ -2503,7 +2506,7 @@ impl World {
             // as if the new model had loaded. The Mind→"Model / Specimen" card surfaces
             // the failure via the editor's own parse ("parse failed: …").
             let load_result = match path.as_deref() {
-                Some(p) => organic_math_native::gguf::parse_file(p)
+                Some(p) => organon_core::gguf::parse_file(p)
                     .map(|h| (p.to_string(), h))
                     .map_err(|e| e.to_string()),
                 None => Err("no model path (sidecar missing or empty)".to_string()),
@@ -3267,8 +3270,8 @@ impl World {
                     // warm) + the B field (blend 1, cool) — flowing over each other, the
                     // tube-mode structure as a volumetric filament cloud. Colours = the LUT
                     // warm/cool ends when Calibrated colour is on, else ember/indigo.
-                    let cm = organic_math_native::params::ColourMode::from_u32(s.colour[0] as u32);
-                    let (ca, cb) = if matches!(cm, organic_math_native::params::ColourMode::Calibrated) {
+                    let cm = organon_core::params::ColourMode::from_u32(s.colour[0] as u32);
+                    let (ca, cb) = if matches!(cm, organon_core::params::ColourMode::Calibrated) {
                         let lut = s.colour[3] as u32;
                         let e = math::calibrated_colour(0.85, lut);
                         let b = math::calibrated_colour(0.12, lut);
@@ -3442,8 +3445,8 @@ impl World {
                     };
                     // Channel colours: the LUT's warm/cool ends when Calibrated colour is on,
                     // else the ember/indigo Duo-Field native tints.
-                    let cm = organic_math_native::params::ColourMode::from_u32(s.colour[0] as u32);
-                    let (ca, cb) = if matches!(cm, organic_math_native::params::ColourMode::Calibrated) {
+                    let cm = organon_core::params::ColourMode::from_u32(s.colour[0] as u32);
+                    let (ca, cb) = if matches!(cm, organon_core::params::ColourMode::Calibrated) {
                         let lut = s.colour[3] as u32;
                         let p = math::calibrated_colour(0.85, lut);
                         let v = math::calibrated_colour(0.12, lut);
@@ -4162,7 +4165,7 @@ impl World {
                 // Scalar → a density/height glyph lattice; Complex → |ψ|² density
                 // tinted by phase arg ψ. Streamlines topology, so every surface mode
                 // reads it.
-                use organic_math_native::params::FieldKind;
+                use organon_core::params::FieldKind;
                 // #381 Tier 3: when a PDE preset is selected, march a live grid sim
                 // off the PLL beat clock and render its state instead of the static
                 // analytic field. `Off` (default) falls through to Tier 1/2 unchanged.
@@ -5387,7 +5390,7 @@ impl World {
                 // each node's `pos.w` as the influence radius (NOT meta_params.radius), so the
                 // widening MUST be applied here too, matching the `meta_params.radius` scale
                 // below — else SmoothedNode stays as scraggly as Legacy. (Bugbot #5)
-                use organic_math_native::params::FieldVolSource;
+                use organon_core::params::FieldVolSource;
                 let src = FieldVolSource::from_u32(s.fieldvol[0] as u32);
                 let is_field = generator == GeneratorMode::MaxwellField
                     || generator == GeneratorMode::Acoustic;
@@ -5432,22 +5435,22 @@ impl World {
         // Legacy (0, the DEFAULT) is byte-identical: no smoothing widen, no bake, and
         // the exposure/gain/calibrate multiplier collapses to 1.0 at defaults. Only the
         // opt-in sources change the bake; the exposure hook is inert until touched.
-        let fv_source = organic_math_native::params::FieldVolSource::from_u32(s.fieldvol[0] as u32);
+        let fv_source = organon_core::params::FieldVolSource::from_u32(s.fieldvol[0] as u32);
         // Auto dispatches by generator: the field generators (Maxwell/Acoustic) get the
         // analytic field-energy bake, everything else gets the smoothed node bake.
         let fv_is_field_gen =
             generator == GeneratorMode::MaxwellField || generator == GeneratorMode::Acoustic;
-        let want_field_baked = matches!(fv_source, organic_math_native::params::FieldVolSource::FieldBaked)
-            || (matches!(fv_source, organic_math_native::params::FieldVolSource::Auto) && fv_is_field_gen);
+        let want_field_baked = matches!(fv_source, organon_core::params::FieldVolSource::FieldBaked)
+            || (matches!(fv_source, organon_core::params::FieldVolSource::Auto) && fv_is_field_gen);
         // A node generator has no analytic field to bake, so FieldBaked there can't do a
         // true energy bake — give it the smoothed-node CLOUD (the closest thing) rather
         // than silently falling back to the Legacy scraggle (Bugbot). SmoothedNode always
         // smooths; Auto smooths every non-field generator.
-        let want_smoothed_node = matches!(fv_source, organic_math_native::params::FieldVolSource::SmoothedNode)
+        let want_smoothed_node = matches!(fv_source, organon_core::params::FieldVolSource::SmoothedNode)
             || (matches!(
                 fv_source,
-                organic_math_native::params::FieldVolSource::Auto
-                    | organic_math_native::params::FieldVolSource::FieldBaked
+                organon_core::params::FieldVolSource::Auto
+                    | organon_core::params::FieldVolSource::FieldBaked
             ) && !fv_is_field_gen);
         // The analytic field-energy bake only applies to Volume on a field generator;
         // otherwise fall back to the node bake (byte-identical to Legacy when the
@@ -5468,13 +5471,13 @@ impl World {
                 _ => false,
             }
             && {
-                let cm = organic_math_native::params::ColourMode::from_u32(s.colour[0] as u32);
-                let cs = organic_math_native::params::CalColourSource::from_u32(s.colour[4] as u32);
-                matches!(cm, organic_math_native::params::ColourMode::Calibrated)
+                let cm = organon_core::params::ColourMode::from_u32(s.colour[0] as u32);
+                let cs = organon_core::params::CalColourSource::from_u32(s.colour[4] as u32);
+                matches!(cm, organon_core::params::ColourMode::Calibrated)
                     && matches!(
                         cs,
-                        organic_math_native::params::CalColourSource::Auto
-                            | organic_math_native::params::CalColourSource::Band
+                        organon_core::params::CalColourSource::Auto
+                            | organon_core::params::CalColourSource::Band
                     )
             };
 
@@ -7399,9 +7402,9 @@ impl World {
                         // method call would re-borrow all of `self` while `gfx` is
                         // held.
                         let f = &s.field;
-                        let is_vector = match organic_math_native::params::FieldKind::from_u32(f[0] as u32) {
-                            organic_math_native::params::FieldKind::Vector => true,
-                            organic_math_native::params::FieldKind::Auto => self
+                        let is_vector = match organon_core::params::FieldKind::from_u32(f[0] as u32) {
+                            organon_core::params::FieldKind::Vector => true,
+                            organon_core::params::FieldKind::Auto => self
                                 .field_prog.field_program
                                 .as_ref()
                                 .map(|p| p.kind() == math::FieldValKind::Vector)
@@ -8426,7 +8429,7 @@ impl World {
             let seed = (s.nrc[6].max(1.0)) as u32;
             // Rebuild the cache on a seed / frequency change (a fresh network).
             if self.nrc_cache.is_none() || self.nrc_key != (seed, nrc_omega.to_bits()) {
-                self.nrc_cache = Some(crate::math::RadianceCache::new(seed, nrc_omega));
+                self.nrc_cache = Some(organon_core::math::RadianceCache::new(seed, nrc_omega));
                 self.nrc_key = (seed, nrc_omega.to_bits());
                 self.nrc_loss = 0.0;
                 self.nrc_state = 1;
@@ -8442,10 +8445,10 @@ impl World {
             if let Some(cache) = self.nrc_cache.as_mut() {
                 // Deterministic per-frame sample batch (reproducible via the sample count).
                 let fseed = self.pathtrace_spp.wrapping_mul(2_654_435_761).wrapping_add(seed);
-                let mut batch: Vec<([f32; crate::math::NRC_IN], [f32; crate::math::NRC_OUT])> =
+                let mut batch: Vec<([f32; organon_core::math::NRC_IN], [f32; organon_core::math::NRC_OUT])> =
                     Vec::with_capacity(n as usize);
                 for k in 0..n {
-                    let r = |c: u32| crate::math::mlp_rand(fseed.wrapping_add(k.wrapping_mul(7)), c);
+                    let r = |c: u32| organon_core::math::mlp_rand(fseed.wrapping_add(k.wrapping_mul(7)), c);
                     let p = [
                         bmin[0] + (r(0) * 0.5 + 0.5) * (bmax[0] - bmin[0]),
                         bmin[1] + (r(1) * 0.5 + 0.5) * (bmax[1] - bmin[1]),
@@ -8454,8 +8457,8 @@ impl World {
                     let dv = [r(3), r(4), r(5)];
                     let dl = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt().max(1e-4);
                     let d = [dv[0] / dl, dv[1] / dl, dv[2] / dl];
-                    let x = crate::math::RadianceCache::encode(p, bmin, bmax, d);
-                    let t = crate::math::nrc_sky_radiance(d, env_int, tint, key_dir, key_int);
+                    let x = organon_core::math::RadianceCache::encode(p, bmin, bmax, d);
+                    let t = organon_core::math::nrc_sky_radiance(d, env_int, tint, key_dir, key_int);
                     batch.push((x, t));
                 }
                 if n > 0 {
@@ -9435,7 +9438,7 @@ impl World {
                         }
                         if inst[8] > 0.5 {
                             let center = Vec3::new(inst[9], inst[10], inst[11]);
-                            let axis = organic_math_native::params::FluxAxis::from_u32(inst[13] as u32);
+                            let axis = organon_core::params::FluxAxis::from_u32(inst[13] as u32);
                             let flux = if fdtd_active {
                                 self.fdtd_sim.fdtd.as_ref().unwrap().poynting_flux_through_plane(
                                     center, axis.normal(center), inst[12].max(0.05), inst[14] as u32,
@@ -11051,10 +11054,10 @@ fn jelly_stroke(x: f32) -> f32 {
 /// deliberate user action, not per frame).
 fn build_mind_graph(
     path: &str,
-    h: &organic_math_native::gguf::GgufHeader,
+    h: &organon_core::gguf::GgufHeader,
     view: u32,
     extent: f32,
-    cache: &mut Option<organic_math_native::gguf_data::GalaxyProjection>,
+    cache: &mut Option<organon_core::gguf_data::GalaxyProjection>,
 ) -> Option<math::NeuralGraph> {
     if view == 1 {
         // Reuse the cached projection when we have one: rescaling to a new `extent` is
@@ -11064,10 +11067,10 @@ fn build_mind_graph(
             return Some(math::embedding_galaxy_graph(&p.points, &p.norms, extent));
         }
         let t0 = std::time::Instant::now();
-        return match organic_math_native::gguf_data::project_embedding_galaxy(
+        return match organon_core::gguf_data::project_embedding_galaxy(
             std::path::Path::new(path),
             h,
-            organic_math_native::gguf_data::GALAXY_MAX_POINTS,
+            organon_core::gguf_data::GALAXY_MAX_POINTS,
         ) {
             Ok(p) => {
                 let g = math::embedding_galaxy_graph(&p.points, &p.norms, extent);
@@ -11304,7 +11307,7 @@ fn momentary_lufs(s: &ipc::Shared) -> f32 {
 }
 
 fn calibrated_colour_t(s: &ipc::Shared) -> f32 {
-    use organic_math_native::params::CalColourSource;
+    use organon_core::params::CalColourSource;
     let lo_db = s.colour[1];
     let hi_db = s.colour[2];
     let source = CalColourSource::from_u32(s.colour[4] as u32);

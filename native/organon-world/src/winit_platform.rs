@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use organic_math_native::egui_platform::{EguiPlatform, PointerPhase, WindowGeometry};
+use crate::egui_platform::{EguiPlatform, PointerPhase, WindowGeometry};
 use winit::event::WindowEvent;
 use winit::window::Window;
 

@@ -1,0 +1,94 @@
+# organon-visual — the separate-process visual window (organon#49 T4c-ii).
+#
+# A package that exists for ONE reason: to hold `[[bin]] organic-math-visual` somewhere
+# that is not `organic-math-native`.
+#
+# 🚨 WHY A WHOLE PACKAGE FOR ONE BINARY.
+#
+# The visual needs two things that live on opposite sides of the plugin boundary:
+#
+#   `organon_world::world::World`   the world it renders — now below the plugin (T4c-ii)
+#   `agent::core_catalog()`         the Performer's param vocabulary — ABOVE it, because
+#                                   it reads `param_table`, and cannot descend
+#
+# The second one is easy to miss. The visual is not just a projector: it is the process
+# that runs the AI Performer's worker. The editor appends each Send to the chat sidecar and
+# bumps `Shared.agent[1]`; `world.rs` sees the counter move, drains the sidecar and calls
+# `ensure_agent_worker`, which builds the system prompt from the catalog. Handing it an
+# empty catalog would compile, run, and silently gut the agent's prompt — a failure with no
+# error attached to it.
+#
+# So the binary cannot descend into `organon-world` (it would lose `core_catalog`), and it
+# cannot stay in `organic-math-native` (it would need `organon-world/world`, and **cargo
+# features unify across every target of a package** — the cdylib beside it would get the
+# feature too, which is the +490 KB `organon-world`'s manifest documents). A third package
+# depending on both is the only arrangement where neither of those is true.
+#
+# 📌 THE CDYLIB IS UNCHANGED **BY CONSTRUCTION**, NOT BY MEASUREMENT. Feature unification
+# cannot reach a package that does not contain the target. `organic-math-native`'s own
+# feature set is untouched by this file existing, so the shipping VST3 cannot move.
+#
+# 🔒 THE BINARY NAME IS LOAD-BEARING — the package is `organon-visual`, the binary stays
+# `organic-math-visual`. `lib.rs::spawn_visual()` probes the filesystem for that filename
+# and `bundle.sh` / `bundle.ps1` copy it into `Organon.vst3/Contents/MacOS/` by it.
+# CLAUDE.md draws the line exactly here: a binary's file name is read by whatever launches
+# it, and something launches this one. The PACKAGE name is read by nobody outside the
+# workspace, which is why it gets the product spelling.
+#
+# 📌 THE BUILT PATH DOES NOT MOVE. A cargo workspace shares one `target/`, so this is still
+# `target/release/organic-math-visual` — which is why `bundle.sh`, `bundle.ps1` and
+# `verify.sh` needed only their `cargo build` line changed, never their copy step.
+#
+# ⚠️ THIS PACKAGE IS GPL-3.0-or-later, and that is correct rather than a compromise. It
+# depends on `organic-math-native`, so it inherits the licence that crate is forced into by
+# `nih_export_vst3!` (see the root manifest's 🔒 note). Nothing is lost: Organon Console
+# does not launch the visual — its embedded viewport renders `World` directly — so the
+# permissively-licensed path Tier 5 needs runs through `organon-world`, not through here.
+[package]
+name = "organon-visual"
+version = "0.1.0"
+edition = "2021"
+# Forced, not chosen — see the ⚠️ above. `LICENSING.md` owns the reasoning.
+license = "GPL-3.0-or-later"
+description = "Organon's separate-process visual window: winit + wgpu, driven by the shared-memory parameter snapshot."
+repository = "https://github.com/organonart/organon"
+
+[[bin]]
+name = "organic-math-visual"
+path = "src/main.rs"
+
+[dependencies]
+# The world it renders. `world` is this package's whole reason for turning that feature on;
+# `organic-math-native` turns it on only under mind-/console-edition.
+organon-world = { path = "../organon-world", features = ["world"] }
+# `Shared` (the parameter snapshot it reads every frame) and `math`.
+organon-core = { path = "../organon-core" }
+# ⚠️ **The upward edge, and the only one.** `agent::core_catalog()` reads `param_table`.
+# The plugin crate is `crate-type = ["cdylib", "lib"]`, so this resolves to its rlib like
+# any ordinary library dependency. Do not try to remove this by passing an empty catalog —
+# see the header for what that silently breaks.
+organic-math-native = { path = ".." }
+
+wgpu = "30"
+winit = "0.30"
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# `hdr_macos` reaches the `CAMetalLayer` through objc; `launch_macos` reads a raw window
+# handle for the #588 launch watchdog.
+objc = "0.2"
+raw-window-handle = "0.6"
+
+[features]
+# organon#49 T4c-ii — a cfg PASSTHROUGH, selecting nothing on its own.
+#
+# `main.rs` carries `#[cfg(not(feature = "mind-edition"))]` on its `pump_mirror_after_frame`
+# call — the #593 Tier 4 frame-mirror gate. A `feature` cfg is resolved against the crate
+# being compiled, so when the file moved out of `organic-math-native` that cfg started asking
+# THIS manifest and silently answered "not mind-edition" in every build, including a
+# mind-edition one where `organon-world` really has removed the method. That is a compile
+# error rather than a silent wrong answer only because the method disappears too — which is
+# exactly the #593 completion test working as designed.
+#
+# Forwarded on, so the two crates cannot disagree about what edition they are compiling.
+mind-edition = ["organon-world/mind-edition"]

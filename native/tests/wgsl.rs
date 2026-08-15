@@ -27,12 +27,12 @@ fn nca_shader_is_valid() {
 
 #[test]
 fn capture_shader_is_valid() {
-    validate("capture.wgsl", include_str!("../src/capture.wgsl"));
+    validate("capture.wgsl", include_str!("../organon-world/src/capture.wgsl"));
 }
 
 #[test]
 fn overlay_shader_is_valid() {
-    validate("overlay.wgsl", include_str!("../src/overlay.wgsl"));
+    validate("overlay.wgsl", include_str!("../organon-world/src/overlay.wgsl"));
 }
 
 #[test]
@@ -40,5 +40,5 @@ fn rt_debug_shader_is_valid() {
     // Hardware-RT debug view (#195 Tier 0): fullscreen ray query against the
     // TLAS. `Capabilities::all()` includes RAY_QUERY, so the `enable
     // wgpu_ray_query;` extension validates offline like every other shader.
-    validate("rt_debug.wgsl", include_str!("../src/rt_debug.wgsl"));
+    validate("rt_debug.wgsl", include_str!("../organon-world/src/rt_debug.wgsl"));
 }

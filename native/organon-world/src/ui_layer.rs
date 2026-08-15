@@ -61,8 +61,8 @@
 //! a baseview one, where there is no winit anywhere in the process. The default type parameter
 //! is the winit arm, so a host that has a window spells the type exactly as before.
 
-use organic_math_native::egui_platform::{EguiPlatform, PointerPhase, WindowGeometry};
-use organic_math_native::mind_shell::{PointerContext, PointerRouter, PointerTarget, Rect};
+use crate::egui_platform::{EguiPlatform, PointerPhase, WindowGeometry};
+use organon_mind::mind_shell::{PointerContext, PointerRouter, PointerTarget, Rect};
 
 /// What the layer decided about one platform event.
 ///
@@ -131,7 +131,7 @@ impl<P: EguiPlatform> UiLayer<P> {
             platform,
             format,
             router: PointerRouter::new(),
-            visible: organic_math_native::edition::EDITION.is_mind(),
+            visible: organon_core::edition::EDITION.is_mind(),
         }
     }
 
@@ -352,7 +352,7 @@ impl<P: EguiPlatform> UiLayer<P> {
 /// whether HDR is on and how much headroom the display gave us, since that is the exact
 /// condition under which the UI's colour encoding could be wrong.
 pub fn hud(ctx: &egui::Context, meta: HudState) {
-    egui::Window::new(organic_math_native::edition::EDITION.product_name())
+    egui::Window::new(organon_core::edition::EDITION.product_name())
         .default_pos(egui::pos2(16.0, 16.0))
         .resizable(false)
         .collapsible(true)
@@ -416,7 +416,7 @@ pub fn needs_rebuild(current: wgpu::TextureFormat, incoming: wgpu::TextureFormat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use organic_math_native::mind_shell::{PointerContext, PointerRouter, PointerTarget, Rect};
+    use organon_mind::mind_shell::{PointerContext, PointerRouter, PointerTarget, Rect};
 
     fn viewport() -> Rect {
         Rect { x: 0.0, y: 0.0, w: 1280.0, h: 860.0 }

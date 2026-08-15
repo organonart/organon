@@ -8,7 +8,7 @@
 //! layout maths is unit-tested; the metadata + live values come from `overlay_meta.rs`.
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
-use organic_math_native::overlay_meta::{OverlayMeta, Values, LIVE_SLOT};
+use organon_scene::overlay_meta::{OverlayMeta, Values, LIVE_SLOT};
 
 // --- bundled assets ---------------------------------------------------------
 const FONT_REGULAR: &[u8] = include_bytes!("overlay/font_regular.ttf");
@@ -40,8 +40,8 @@ const FORMULA_PNGS: [&[u8]; 19] = [
     F_SYNCHROTRON, F_VECFIELD, F_RAILS, F_AXON,
 ];
 
-fn formula_index(f: organic_math_native::overlay_meta::FormulaId) -> usize {
-    use organic_math_native::overlay_meta::FormulaId::*;
+fn formula_index(f: organon_scene::overlay_meta::FormulaId) -> usize {
+    use organon_scene::overlay_meta::FormulaId::*;
     match f {
         Original => 0,
         Frenet => 1,
@@ -64,7 +64,7 @@ fn formula_index(f: organic_math_native::overlay_meta::FormulaId) -> usize {
         Axon => 18,
     }
 }
-fn formula_bytes(f: organic_math_native::overlay_meta::FormulaId) -> &'static [u8] {
+fn formula_bytes(f: organon_scene::overlay_meta::FormulaId) -> &'static [u8] {
     FORMULA_PNGS[formula_index(f)]
 }
 
@@ -439,7 +439,7 @@ impl Overlay {
         }
     }
 
-    fn ensure_formula(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, f: organic_math_native::overlay_meta::FormulaId) {
+    fn ensure_formula(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, f: organon_scene::overlay_meta::FormulaId) {
         let i = formula_index(f);
         if self.formulas[i].is_some() {
             return;
@@ -1064,7 +1064,7 @@ impl Overlay {
         dst_format: wgpu::TextureFormat,
         surface: (u32, u32),
         rect: (f32, f32, f32, f32),
-        plot: &crate::math::RooflinePlot,
+        plot: &organon_core::math::RooflinePlot,
         profile_name: &str,
         opacity: f32,
     ) {
@@ -1273,7 +1273,7 @@ mod tests {
         // Regression (#175 Bugbot): the formula cache is sized from
         // FORMULA_PNGS, so every FormulaId must index inside it — and its PNG
         // must decode (each is drawn via `ensure_formula` at runtime).
-        use organic_math_native::overlay_meta::FormulaId::*;
+        use organon_scene::overlay_meta::FormulaId::*;
         let all = [
             Original, Frenet, Dna, Harmonic, Minimal, Attractor, LSystem, CurlNoise,
             Polarization, Maxwell, Phyllotaxis, Mandelbulb, Kifs, Boids, Tessellation,

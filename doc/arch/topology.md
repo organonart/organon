@@ -86,13 +86,20 @@ tally is a second copy of a fact the manifest already states. Six members plus t
 as of organon#49 Tier 4b:
 
 ```
-organic-math-native  (root: plugin cdylib + 6 bins, GPL-3.0-or-later)
+organic-math-native  (root: plugin cdylib + its [[bin]] blocks, GPL-3.0-or-later)
   ├── organon-core ────────── the host-free spine
   ├── organon-render ──┐
   ├── organon-scene ───┤
-  ├── organon-mind ────┼───── all depend on organon-core; only organon-world
-  ├── organon-world ───┤      depends on another member (organon-mind)
+  ├── organon-agent ───┼───── all depend on organon-core; organon-world also
+  ├── organon-mind ────┤      depends on organon-mind, and on render/scene/agent
+  ├── organon-world ───┤      when its `world` feature is on
   └── organon-console ─┘
+
+organon-visual       (the one arrow that points BACK UP — organon#49 T4c-ii)
+  ├── organon-world  { features = ["world"] }
+  ├── organon-core
+  └── organic-math-native ◄── for `agent::core_catalog()`, which reads `param_table`
+
 xtask                          (build tooling; depends on no member)
 ```
 
@@ -102,7 +109,8 @@ xtask                          (build tooling; depends on no member)
 | `organon-render` | `organon-core`, `bytemuck`, `glam`, `half`, `image`, `wgpu` | no `nih_plug`, no `egui`, no `winit` |
 | `organon-scene` | `organon-core`, `bytemuck`, `glam` | no `nih_plug`, no `wgpu`, no `egui` — the substrate's own arithmetic, host-free like core |
 | `organon-mind` | `organon-core`, `bytemuck`, `dirs`, `egui`, `memmap2` | no `nih_plug` |
-| `organon-world` | `organon-core`, `organon-mind`, `bytemuck`, `egui` | no `nih_plug` — the window layer; `cargo tree -p organon-world` is its acceptance test |
+| `organon-world` | `organon-core`, `organon-mind`, `bytemuck`, `egui`; **+ `organon-render`, `organon-scene`, `organon-agent`, `wgpu`, `winit`, … behind the `world` feature** | no `nih_plug` — the window layer *and*, since organon#49 T4c-ii, the world. ⚠️ Check the bar **with the feature on** (`cargo tree -p organon-world --features world`), or it says nothing about the 13.5k lines that matter |
+| `organon-visual` | `organon-world` (`world`), `organon-core`, **`organic-math-native`**, `wgpu`, `winit`, `pollster` | 🚨 **the one member that depends UPWARD on the plugin crate**, and the only one exempt from the no-`nih_plug` bar. It holds `[[bin]] organic-math-visual`, which needs `agent::core_catalog()` (reads `param_table`, cannot descend). It exists so that need does not force the `world` feature onto the package that also builds the VST3 |
 | `organon-console` | `organon-core`, `alacritty_terminal`, `dirs`, `egui`, `portable-pty`, `serde`, `serde_json` | **no `nih_plug`, ever** — standalone-only permanently, so any `nih_plug` in this graph is a loaded gun pointed at Organon's VST3 class ID |
 
 ⚠️ **The leaf crates are siblings, not a stack — with exactly one edge between them.**
