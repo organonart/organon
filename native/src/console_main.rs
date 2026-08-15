@@ -3653,9 +3653,12 @@ impl Console {
                 *stamp = now;
             }
         }
-        // Only *pictures* are capped. A document is a `String` this process already holds and
-        // costs no GPU at all, so counting it against a texture budget would evict a picture to
-        // make room for something that never needed the room.
+        // Pictures are capped by **texture count**; documents get their own **byte** budget
+        // below. Two ledgers on one policy, because the thing each is scarce in differs: a
+        // texture is GPU memory in fixed-size slabs, so counting slabs is the right instrument,
+        // while documents vary by four orders of magnitude and only their total is meaningful.
+        // Putting a document in this list would evict a picture to make room for something that
+        // never needed the room.
         let held: Vec<(ExhibitKey, u64)> = self
             .exhibits
             .iter()
