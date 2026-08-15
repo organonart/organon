@@ -72,7 +72,8 @@ use organon_console::block_anchor::Block;
 use organon_console::block_panel::{BlockAction, BlockPanel, Patch};
 use organon_console::camera;
 use organon_console::command::{
-    ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
+    ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, Reversal,
+    TargetKind,
 };
 use organon_console::conversation::ElementId;
 use organon_console::conversation_view::{self, ConversationPane, SurfaceImages, SurfaceRequest};
@@ -492,6 +493,9 @@ fn console_specs() -> Vec<CommandSpec> {
                 kind: ArgKind::Choice(backgrounds),
                 required: true,
             }],
+            // Every backdrop is one command away from every other, including the one it
+            // replaced. See [`Reversal`] — the rule and its reason live there.
+            reversal: Reversal::Recoverable,
         },
         CommandSpec {
             name: CMD_RIG.into(),
@@ -502,6 +506,7 @@ fn console_specs() -> Vec<CommandSpec> {
                 kind: ArgKind::Choice(rigs),
                 required: true,
             }],
+            reversal: Reversal::Recoverable,
         },
         // The palette's vocabulary is `Theme::NAMES` itself, on `console.patch`'s rule and for
         // its reason: it is the same table `Theme::resolve` refuses against and the same one
@@ -528,6 +533,10 @@ fn console_specs() -> Vec<CommandSpec> {
                 ),
                 required: true,
             }],
+            // ⚠️ Including `edit`/`adjust`: the colour editor is a band this pane opens and
+            // Escape closes, not an element it appends. A palette is a preference, and every
+            // preference here has an inverse.
+            reversal: Reversal::Recoverable,
         },
         // ⚠️ **`ArgKind::Choice` and NOT the scalar, which is the one place this schema is
         // deliberately narrower than the CLI.** `Posture::resolve` also accepts a bare
@@ -547,6 +556,7 @@ fn console_specs() -> Vec<CommandSpec> {
                 ),
                 required: true,
             }],
+            reversal: Reversal::Recoverable,
         },
         // 📌 **A `Choice` with no scalar beside it, which is the posture verb's caveat NOT
         // applying** — and the contrast is worth reading, because the two verbs sit next to
@@ -565,6 +575,10 @@ fn console_specs() -> Vec<CommandSpec> {
                 ),
                 required: true,
             }],
+            // ⚠️ The one that looks alarming and is not. A window that covered the display
+            // uncovers it again with the opposite word — and F11 does it from inside without
+            // any command at all, which is the definition of recoverable.
+            reversal: Reversal::Recoverable,
         },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
@@ -577,6 +591,9 @@ fn console_specs() -> Vec<CommandSpec> {
             doc: "Reserve a run of blank rows in the transcript".into(),
             target: TargetKind::Viewport,
             args: vec![ArgSpec { name: CMD_ROWS.into(), kind: ArgKind::Int, required: true }],
+            // 🚨 The rows land in the transcript and no verb takes them out again. It
+            // completes, and then it waits for an Enter.
+            reversal: Reversal::Permanent,
         },
         CommandSpec {
             name: CMD_PATCH.into(),
@@ -593,6 +610,9 @@ fn console_specs() -> Vec<CommandSpec> {
                     required: true,
                 },
             ],
+            // 🚨 It claims a rectangle of somebody else's output. Same reason as `block`, and
+            // a worse mistake: the rectangle is measured from where the writer already is.
+            reversal: Reversal::Permanent,
         },
         CommandSpec {
             name: CMD_PORTAL.into(),
@@ -605,6 +625,9 @@ fn console_specs() -> Vec<CommandSpec> {
                 kind: ArgKind::Choice(cli::PORTAL_WORDS.iter().map(|s| (*s).to_string()).collect()),
                 required: true,
             }],
+            // It floats *over* the transcript rather than landing in it, and `close` is right
+            // there in the same ring.
+            reversal: Reversal::Recoverable,
         },
         // 🚨 **The ranges are `scene_input`'s constants, not literals, and that is the whole
         // point of the arrangement.** `World::apply_camera_input` clamps a *hand* to the same
@@ -651,6 +674,11 @@ fn console_specs() -> Vec<CommandSpec> {
                     required: false,
                 },
             ],
+            // A viewpoint, and `reset` is in its own ring. ⚠️ It is also the verb autorun can
+            // reach fastest — `/camera reset` is a flag, so the line is whole the moment the
+            // flag is taken — which is exactly the case the rule is happy to fire on: the
+            // worst outcome is a framing, and the next framing replaces it.
+            reversal: Reversal::Recoverable,
         },
     ]
 }
@@ -692,6 +720,8 @@ fn mcp_specs() -> Vec<CommandSpec> {
         // "additionalProperties":true}` — see `mcp::input_schema`, which omits `required`
         // entirely rather than emitting an empty array.
         args: Vec::new(),
+        // A read changes nothing, which is the cleanest case the rule has.
+        reversal: Reversal::Recoverable,
     });
     specs
 }
@@ -5070,6 +5100,52 @@ mod cli_tests {
         // …and an argument with no closed value space says what it wants instead.
         let block = registry.candidates("/block ").expect("the value ring");
         assert_eq!(compact_line(&block, 0, 200), "rows: a whole number");
+    }
+
+    /// 🚨 **Which verbs run without an Enter, in the only place the real table can be seen.**
+    ///
+    /// The compiler already forces every `CommandSpec` to answer — `Reversal` has no default
+    /// on purpose — so what this adds is the *answers*, pinned. A verb moving from one column
+    /// to the other is then a deliberate edit to a list somebody reads, rather than a word
+    /// changed in a literal three hundred lines away from anything that shows the consequence.
+    ///
+    /// ⚠️ **It reads the registry rather than `mcp_specs()`, so the view lane is covered too.**
+    /// `surface`, `help` and `organon` have no `CommandSpec` at all, and two of the three are
+    /// on the waiting side — a check over the specs alone would have missed exactly the verbs
+    /// whose classification is least obvious.
+    #[test]
+    fn the_real_table_says_which_verbs_may_run_without_an_enter() {
+        use organon_console::registry::Registry;
+
+        let registry = Registry::new(&mcp_specs());
+        let table: Vec<(&str, bool)> = registry
+            .entries()
+            .iter()
+            .map(|e| (e.verb(), e.reversal() == Reversal::Recoverable))
+            .collect();
+        assert_eq!(
+            table,
+            [
+                // Settings with an inverse, and one read. Wrong is one command away from right.
+                ("background", true),
+                ("rig", true),
+                ("theme", true),
+                ("posture", true),
+                ("screen", true),
+                // Rows in the transcript, and a rectangle claimed in somebody else's output.
+                ("block", false),
+                ("patch", false),
+                ("portal", true),
+                ("camera", true),
+                ("camera.read", true),
+                // The view lane. `surface` and `organon` put an element in the transcript;
+                // `help` writes a few log lines and reads a table.
+                ("surface", false),
+                ("help", true),
+                ("organon", false),
+            ],
+            "the reversal column of the console's whole vocabulary"
+        );
     }
 
     /// **The block verb's row range is a gate on both sides of the sidecar, and this is the

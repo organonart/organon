@@ -3235,9 +3235,10 @@ dropping the *row*: `/surface` is this case and also a whole command, so what su
 
 🚨 **Completing is not running, and they have separate switches.** Completion is **on by
 default** and only ever rewrites the composer — a line in the box is not an action.
-`Palette::autorun` **submits**, is **off by default**, and additionally requires
-`Candidate::completes`. That a completion may hand autorun a line it then runs is a *chain*,
-not a merge: with autorun off, which is the default, nothing runs. Both rules are pinned in
+`Palette::autorun` **submits**, and additionally requires `Candidate::completes` **and**
+`Candidate::fires`. That a completion may hand autorun a line it then runs is a *chain*, not a
+merge: `/su` completes to `/surface` and stops there, because a surface is not something
+autorun may fire. Both rules are pinned in
 `registry.rs` and again through real frames in `conversation_view.rs`.
 
 ⚠️ **`completion != line` is what makes it terminate**, not the loop bound. `/surface` is
@@ -3281,9 +3282,10 @@ flicker rather than as a line that will not shorten, and invisible to any single
 A deletion therefore holds completion off until an **insertion** lets it go. It reads the
 shadow copy `notice_edit` already keeps (`composer_seen`, the line at the start of the frame)
 against the line the `TextEdit` has just written — one source of truth, no second observer.
-⚠️ **`Palette::autorun` obeys the same latch**, where the stake is higher: with that switch on,
-backspacing `/surface` to `/surfac` leaves one candidate that *completes*, so the keystroke
-trying to erase the command would have executed it.
+⚠️ **`Palette::autorun` obeys the same latch**, where the stake is higher — and now that it is
+on by default the stake is real rather than conditional: backspacing `/theme dark` to
+`/theme dar` leaves one candidate that completes *and* is recoverable, so without the latch the
+keystroke trying to erase the command would execute it.
 
 ⚠️ **What the rule measures is the line's length in bytes**, which answers *"did this frame
 add text"* and nothing finer. Three cases are therefore classified by their effect rather than
@@ -3433,18 +3435,89 @@ the panel is dismissed. One frame passes with nothing focused, during which no k
 arrive. All four keys are matched with `matches_exact`, never `matches_logically`, for the
 shift-permissive reason `composer_key` already documents.
 
-#### Auto-execute, and the guard on it
+#### Auto-execute, and the two guards on it
 
-James asked for it: *"it will just execute the thing as soon as it knows what we want."*
-🚨 **What makes it safe is that "knows what we want" is a provable state, not a guess:**
-`Palette::autorun` fires only when **exactly one candidate remains and that candidate
-completes the command**. `/s` leaves `surface`, which takes nothing, so there is nothing else
-the line could have meant. `/t` leaves `theme`, which still needs a value — so it does **not**
-fire, because firing there would run a command while the hand is still typing its argument.
-That case is pinned by test in both `registry.rs` and `conversation_view.rs`.
+James asked for it: *"it will just execute the thing as soon as it knows what we want"* — and
+again on 2026-08-15, for the default: *"when we reach the end of a tab completion hierarchy …
+it automatically executes and we don't press enter. I would limit this so that if there are any
+things that would be irreversible or dangerous, it should not do that, but should instead
+display a final completion that says something like press enter."*
 
-**Off by default.** `ORGANON_PALETTE_AUTORUN=1` switches it on for a session, read once at
-tab construction rather than per frame.
+🚨 **`Palette::autorun` fires on three terms, all of them provable.** (1) Exactly one
+continuation remains, so there is nothing else the line could have meant. (2) That
+continuation **completes** the command — `/t` leaves `theme`, which still needs a value, so it
+does not fire; firing there would run a command while the hand is still typing its argument.
+(3) The command it completes to is **recoverable**. Pinned by test in both `registry.rs` and
+`conversation_view.rs`.
+
+🚨 **THE RULE, and it is recoverability rather than severity: a verb may run without an Enter
+when the console can be put back the way it was.** A setting has an inverse (another value of
+the same verb) and a read changes nothing; both fire. **A verb that puts a new element into the
+transcript does not** — the transcript only ever grows, and there is no verb that takes an
+element back out of it. Nothing in this vocabulary formats a disk, so a severity scale would
+have one rung and say nothing; what a hand needs protecting from here is the edit it cannot
+undo.
+
+| Runs unasked | Completes, then waits for Enter |
+|---|---|
+| `background`, `rig`, `theme`, `posture`, `screen`, `portal`, `camera`, `camera.read`, `help` | `block`, `patch`, `surface`, `organon` |
+
+⚠️ **`help` is the one that looks like it belongs on the right and does not**, and the pair
+`help`/`surface` is what the rule has to get right: both are view-lane, both take no arguments,
+both are reached the same way. `/help` writes through `note` — the capped diagnostic log — and
+reads a table; `/surface` calls `Transcript::push`. That is a difference in the code, not a
+judgement call. A rule spelled "view-lane verbs are dangerous" or "argument-less verbs are
+dangerous" would have got one of the two wrong.
+
+🚨 **The declaration is `command::Reversal`, on `CommandSpec` and on `registry::Entry`** — one
+per verb, in the place that verb is declared, never a list in a renderer (the house rule that
+put roles on the spec). ⚠️ **It has no `Default`**, so a verb added later cannot answer by not
+answering: adding a `CommandSpec` is a compile error until it says which it is, and the quiet
+answer would have been the one that runs. `Candidate::fires` is derived from it in the same
+`Registry::resolve` call that derives `Candidate::completes`, so neither can drift from what
+Enter would actually do, and a name the table cannot find answers `false`.
+
+📌 **The MCP catalog deliberately does not restate it.** An agent's tool call never reaches
+this rule — the question at that door is *"may this agent act on my behalf"*, which
+`start_approvals` answers with a real prompt per call, a stronger mechanism than an Enter key
+rather than a weaker one. Emitting the flag as a tool annotation would be a second claim about
+the same verb with nothing reading it. It lives on the shared spec so both doors can read one
+fact when the approval model wants it.
+
+**What the ask looks like: the `Enter runs` marker that already existed.** A verb on the right
+of the table still *completes* — `/su` becomes `/surface` under the hand — and then the compact
+row says `Enter runs`, because `Palette::runnable` holds. No second phrasing was invented for
+this; the marker introduced for `/surface` showing an empty panel turned out to be exactly the
+"final completion that says press enter" the request asks for.
+
+🚨 **A command does not run on the frame its last character landed.** `palette_autorun` takes
+`edited` — whether the composer changed on *this* frame, read before `palette_complete`
+rewrites it — and refuses while it is true, so the earliest a fire can happen is the first
+frame in which nothing was typed. Two reasons, the second the larger: the completed line is
+**drawn at least once** before it disappears, and the one-frame caret window above becomes a
+window in which a keystroke **cancels** the fire rather than racing it. ⚠️ **A settled frame
+has to be made to happen** — egui repaints on input, so a deferred fire explicitly
+`request_repaint`s; without that the command would run whenever something else next moved the
+mouse, which is worse than either extreme. It is requested only when a fire is pending, never
+unconditionally. ⚠️ A composer set **wholesale** (a test, a history recall) is settled already
+by this definition: nothing was typed, so there is no hand to wait for.
+
+⚠️ **Measured while pinning it, and it is completion's price rather than autorun's**: typing
+`h` on `/` completes to `/help`, and a character arriving on the very next frame lands at the
+caret index the completion has not yet moved — `/hxelp`, not `/helpx`. The wait does not fix
+that (nothing here does); what it fixes is that `/hxelp` then runs nothing at all.
+
+⚠️ **`Palette::autorun` still obeys `completion_held`**, where the stake is higher than a
+rewritten line: backspacing `/theme dark` to `/theme dar` leaves one candidate that completes
+*and* is recoverable, so without the latch the keystroke trying to erase the command would
+execute it.
+
+**On by default**, which is the substantive half of the request. `ORGANON_PALETTE_AUTORUN=0`
+is the escape hatch and restores the Enter-for-everything console for a session, read once at
+tab construction rather than per frame. ⚠️ **`=1` still means ON** — the variable's existing
+spelling keeps its existing meaning, so nobody's shell profile quietly came to mean the
+opposite of what they wrote. `conversation_view::autorun_enabled` is that rule as a pure
+function of the value, so a test can pin it without writing to the process environment.
 
 #### The panel only exists for a command line
 
@@ -3797,9 +3870,9 @@ reading out two tabs' panels at once.
 
 **Slug and title are different words**, and the rule that binds them is not cosmetic: no slug
 may be a prefix of another slug on the same tab (`panels::no_slug_is_a_prefix_of_another`).
-`Palette::autorun` completes a lone remaining candidate, so `surface` alongside a `surface-fx`
-would make the shorter one permanently ambiguous — the second panel would silently switch the
-first one's auto-completion off. `fx` is the answer, not a longer prefix.
+`Palette::sole_completion` takes a lone remaining candidate, so `surface` alongside a
+`surface-fx` would make the shorter one permanently ambiguous — the second panel would silently
+switch the first one's auto-completion off. `fx` is the answer, not a longer prefix.
 
 #### The one registry extension: a ring that depends on the ring above it
 
@@ -4314,10 +4387,23 @@ path silently breaks the three-products-simultaneously guarantee that
   narrow width is useful or merely honest, since nobody has seen the row at a width that
   cannot hold it. ✏️ The old ledger's second worry — a band whose height changes with the list,
   jumping the transcript on every keystroke — is **closed by construction**: the compact row is
-  one row whatever it holds, and a test pins that. ⚠️ **Auto-execute has still never been used
-  by a human**, and it is now the *second* switch in this area: completion is on by default and
-  autorun is off, and the first honest test of the pair is James setting
-  `ORGANON_PALETTE_AUTORUN=1` and typing `/s`. ⚠️ **The command history has never been walked
+  one row whatever it holds, and a test pins that. ⚠️⚠️ **Auto-execute has still never been used
+  by a human, and as of 2026-08-15 it is ON BY DEFAULT — so this is the most load-bearing line
+  in the ledger.** It used to be a switch nobody had flipped, which made it a claim about code
+  that cost nothing; it is now what happens to James the first time he types a slash. The
+  recoverability rule (§1.9) is what made the default defensible, and it is a *design* argument
+  supported by tests, not evidence: every verb that fires is one another command undoes, which
+  bounds the cost of being wrong at one command — it does not establish that being wrong is
+  rare, or that a command running under the hand feels like help rather than like the console
+  jumping the gun. In order of how much it matters: (1) whether a fire on the first settled
+  frame is *soon enough to be worth having* and *late enough not to startle* — 16 ms is
+  arithmetic, the feeling is not; (2) whether the split lands where a hand expects, in
+  particular `/screen full` firing without an Enter (recoverable by F11, but it is the largest
+  visible change in the set) and `/help` firing while `/surface` does not; (3) whether
+  `Enter runs` reads as *"press Enter"* to somebody who has just watched three other commands
+  run themselves — the marker was written for a different question and is being reused for
+  this one. ⚠️ `ORGANON_PALETTE_AUTORUN=0` is the escape hatch, and the first thing to reach for
+  if any of the three turns out badly. ⚠️ **The command history has never been walked
   by a hand either** — `arrow_owner`'s four cases are pinned as a pure function and driven
   through real frames, but "Up did what I expected" is exactly the kind of claim a test cannot
   make. ✏️ **Correcting this entry, because what it recorded as completion's cost was the

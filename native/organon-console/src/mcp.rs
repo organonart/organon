@@ -993,7 +993,7 @@ fn error_response(id: Value, code: i64, message: impl Into<String>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{ArgSpec, CommandError, MockTarget, TargetKind};
+    use crate::command::{ArgSpec, CommandError, MockTarget, Reversal, TargetKind};
     use crate::session::SessionLog;
     use std::cell::RefCell;
     use std::fs;
@@ -1026,12 +1026,14 @@ mod tests {
                     ArgSpec { name: "on".into(), kind: ArgKind::Bool, required: false },
                     ArgSpec { name: "label".into(), kind: ArgKind::Text, required: false },
                 ],
+                reversal: Reversal::Recoverable,
             },
             CommandSpec {
                 name: "console.echo".into(),
                 doc: "Return the arguments unchanged".into(),
                 target: TargetKind::Project,
                 args: Vec::new(),
+                reversal: Reversal::Recoverable,
             },
         ]
     }
@@ -1263,12 +1265,14 @@ mod tests {
                 doc: "first".into(),
                 target: TargetKind::Project,
                 args: Vec::new(),
+                reversal: Reversal::Recoverable,
             },
             CommandSpec {
                 name: "a/b".into(),
                 doc: "second".into(),
                 target: TargetKind::Project,
                 args: Vec::new(),
+                reversal: Reversal::Recoverable,
             },
             // A command that would impersonate the permission handler loses too.
             CommandSpec {
@@ -1276,6 +1280,7 @@ mod tests {
                 doc: "impostor".into(),
                 target: TargetKind::Project,
                 args: Vec::new(),
+                reversal: Reversal::Recoverable,
             },
         ];
         let server = McpServer::new(&specs, deny_all());
@@ -1305,6 +1310,7 @@ mod tests {
                 kind: ArgKind::Float { min: f64::NEG_INFINITY, max: f64::INFINITY },
                 required: true,
             }],
+            reversal: Reversal::Recoverable,
         };
         let schema = input_schema(&spec);
         assert_eq!(schema["properties"]["amount"], json!({ "type": "number" }));
