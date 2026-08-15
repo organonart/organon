@@ -56,6 +56,7 @@ use std::sync::Arc;
 
 use organic_math_native::agent;
 use organic_math_native::cli;
+use organic_math_native::console_icon;
 use organic_math_native::params::OrganicMathParams;
 use organic_math_native::scene_input;
 use organic_math_native::substrate_camera::SubstrateRig;
@@ -3798,9 +3799,14 @@ impl ApplicationHandler for Console {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
-            .with_title(PRODUCT_NAME)
-            .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
+        // The icon is hung on by `console_icon::apply` rather than inline, because the
+        // title-bar icon and the taskbar icon are two different slots set by two
+        // different APIs — only one of which is portable. See that module.
+        let attrs = console_icon::apply(
+            Window::default_attributes()
+                .with_title(PRODUCT_NAME)
+                .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0)),
+        );
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.init_gpu(window);
     }
@@ -4761,6 +4767,52 @@ mod cli_tests {
             op_from(&name, &args).is_err(),
             "a read must never convert into a line written onto a fire-and-forget channel"
         );
+    }
+
+    /// 🚨 **The row a person actually sees when they type `/`, pinned against the real
+    /// table.**
+    ///
+    /// The compact command panel is generated from [`Registry::candidates`], so nothing in
+    /// the console restates the verb list — which is right, and which also means the thing
+    /// James looks at exists nowhere as a string that could be read. It does now, here,
+    /// because this is the only module that can see the real catalog.
+    ///
+    /// ⚠️ **This test is a *witness*, not a specification.** It must be updated whenever a
+    /// verb is added — that is the point: a diff to this line is what tells a reviewer the
+    /// surface changed, and it is far cheaper than noticing on a running console.
+    ///
+    /// ⚠️ James's own sketch of the row named eight verbs
+    /// (`surface|theme|posture|background|rig|patch|portal|camera`). The panel deliberately
+    /// shows the **true** list, which is eleven: `block`, `camera.read` and `help` are
+    /// typeable, so hiding them would be the surface disagreeing with the registry — a
+    /// second vocabulary, in the one place that exists to prevent one.
+    ///
+    /// ⚠️ `cargo check --tests --features console-edition` only in this session; CI executes
+    /// it — the same standing caveat the sibling test above carries.
+    #[test]
+    fn the_compact_panel_shows_the_real_table() {
+        use organon_console::conversation_view::compact_line;
+        use organon_console::registry::Registry;
+
+        let registry = Registry::new(&mcp_specs());
+        let all = registry.candidates("/").expect("a bare slash opens the whole table");
+        assert_eq!(
+            compact_line(&all, 0, 200),
+            "[background] | rig | theme | posture | block | patch | portal | camera | \
+             camera.read | surface | help"
+        );
+        // 101 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // count rather than an ellipsis when it does not.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 101);
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +9");
+
+        // The value ring of the verb James found offering nothing: `/portal` completes to
+        // `/portal ` on its own (one candidate), and that is what opens this.
+        let portal = registry.candidates("/portal ").expect("the value ring");
+        assert_eq!(compact_line(&portal, 0, 200), "[open] | close | toggle");
+        // …and an argument with no closed value space says what it wants instead.
+        let block = registry.candidates("/block ").expect("the value ring");
+        assert_eq!(compact_line(&block, 0, 200), "rows: a whole number");
     }
 
     /// **The block verb's row range is a gate on both sides of the sidecar, and this is the
