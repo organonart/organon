@@ -62,8 +62,12 @@ and an autorepeating `⌘1` is arguably fine.
 window. This verb says which rectangle it moves.
 
 📌 Not remembered across launches, on posture's rule. 🚨 **Nothing has been seen full screen** —
-the whole claim is that it compiles and 654 lib tests pass (646 before); §3's ledger states
-what that does and does not establish, F11 actually arriving first among them.
+the whole claim is that it compiles and the tests pass: 655 console lib tests (646 before) and
+567 in core, four of the latter being the three screen words and the `screen full` byte-pin
+riding the wire-format round trip, which this verb reaches only because Tier 5a moved that test
+into a crate the console's own bar executes. §3's ledger states what that does and does not
+establish, F11 actually arriving first among them.
+
 ### The console command lane leaves the plugin crate
 
 organon#49 Tier 5a. `ConsoleOp`, `PortalCmd`, `CameraFraming`, the word tables and the
