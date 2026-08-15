@@ -82,6 +82,21 @@ pub enum ConsoleOp {
     /// them — lives in the console's crate. Parsing here would put half of that knowledge on
     /// the wire side of the lane.
     Posture(String),
+    /// **Whether the console's window covers the display** — `full`, `windowed` or `toggle`
+    /// (`organon_console::screen::ScreenCmd`).
+    ///
+    /// 🚨 **Orthogonal to [`ConsoleOp::Posture`], not a value of it**, and the separation is
+    /// the design rather than an arrangement. A posture is a set of *form tokens* — margins,
+    /// corners, padding, a line height — and full screen changes none of them; it changes the
+    /// rectangle the window occupies. A full-screen terminal-posture console and a full-screen
+    /// desktop-posture one are both real, so folding this into the posture axis would make one
+    /// of them unsayable. `organon_console::screen`'s header owns the whole argument, including
+    /// why the window's width is deliberately not allowed to feed back into the form.
+    ///
+    /// A `String` rather than a parsed command for [`ConsoleOp::Posture`]'s reason: `ScreenCmd`
+    /// and the refusal that names its words live in the console's crate, and parsing here would
+    /// put half of that knowledge on the wire side of the lane.
+    Screen(String),
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -325,6 +340,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Rig(name) => format!("rig {name}"),
         ConsoleOp::Theme(name) => format!("theme {name}"),
         ConsoleOp::Posture(word) => format!("posture {word}"),
+        ConsoleOp::Screen(word) => format!("screen {word}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
@@ -353,6 +369,9 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
         // is the *console's* to refuse out loud, not the wire's to drop in silence.
         "theme" => Some(ConsoleOp::Theme(it.next()?.to_string())),
         "posture" => Some(ConsoleOp::Posture(it.next()?.to_string())),
+        // Unvalidated for the same reason, and the vocabulary is `screen::SCREEN_WORDS` —
+        // three words, in the console's crate, refused there by name.
+        "screen" => Some(ConsoleOp::Screen(it.next()?.to_string())),
         // A row count that does not parse — or does not fit — is a malformed line, and a
         // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/
         // `Theme`/`Posture` arms take their payload unvalidated because a *name* is only
@@ -452,6 +471,13 @@ mod tests {
                 // The scalar spelling, which is the one that could have been lost: it is the
                 // only payload on this lane that is a number carried as a word.
                 ConsoleOp::Posture("0.5".into()),
+                // A THIRD axis, not a value of the posture above it: whether the window covers
+                // the display. All three words ride the trip for `Theme`'s reason — this verb's
+                // only escape hatch is the chord, so a `windowed` that survived one direction
+                // only would be a console somebody cannot get out of.
+                ConsoleOp::Screen("full".into()),
+                ConsoleOp::Screen("windowed".into()),
+                ConsoleOp::Screen("toggle".into()),
                 // Tier 5: the payload is a count, not a name — the first op on this lane whose
                 // argument is not a word.
                 ConsoleOp::Block(1),
@@ -489,6 +515,10 @@ mod tests {
             assert_eq!(
                 console_op_to_line(&ConsoleOp::Posture("desktop".into())),
                 "posture desktop"
+            );
+            assert_eq!(
+                console_op_to_line(&ConsoleOp::Screen("full".into())),
+                "screen full"
             );
             assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
             assert_eq!(
