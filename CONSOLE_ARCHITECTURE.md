@@ -2462,9 +2462,10 @@ written at the site, never by an invented pigment, and the rules are four:
    ⚠️ **The room inside the ladder is far smaller than the request implies, and this is the
    number to know before touching it again.** Light's steps are 8/7/6 (page→panel), 21/19/16
    (panel→hairline) and 25/23/19 (hairline→strong): the page's own step was *already* the
-   whisper of the four. So a page may fall **7 units on the tightest channel — 2.35 % of HSV
-   value — before it collides with the panel it must sit above**. `#fafbfc` is the panel plus a
-   uniform 3, which spends 5 of those units and keeps a 3-unit step; uniform because that
+   whisper of the four. So a page may fall **6 units on the tightest channel — 2.35 % of HSV
+   value — before it collides with the panel it must sit above**; the tightest is *blue*,
+   where the panel is coolest. `#fafbfc` is the panel plus a uniform 3, which spends 3 of
+   those 6 and keeps a 3-unit step; uniform because that
    carries the panel's `+1` green / `+2` blue tilt up to the page, and pure white was the only
    step in the ladder with no tilt at all. **"A few percent" is not reachable without moving
    the panel as well**, which is four more spec roles and a decision for James, not a

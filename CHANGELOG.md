@@ -86,9 +86,11 @@ rather than quietly relaxing to accept anything.
 away from the page by darkening — page → panel `#f7f8f9` → hairline `#e2e5e9` → strong
 `#c9ced6` — and the page→panel step was already the whisper of the four (8/7/6 per channel
 against the next step's 21/19/16). **The entire distance the page may fall before colliding
-with the panel is 7 units, 2.35 % of HSV value.** `#fafbfc` is the panel plus a uniform 3,
-which spends 5 of those units on the glare, leaves a 3-unit step, and carries the panel's own
-cool tilt up to the page — pure white was the only step in the ladder with no tilt at all.
+with the panel is 6 units on the tightest channel, 2.35 % of HSV value.** `#fafbfc` is the
+panel plus a uniform 3, which spends 3 of those 6 on the glare, leaves a 3-unit step, and
+carries the panel's own cool tilt up to the page — pure white was the only step in the ladder
+with no tilt at all. (The page travels 5/4/3 against 8/7/6 of headroom; blue is the binding
+channel, so that is the one to quote.)
 Anything approaching "a few percent" would have to move the panel too, which is four more spec
 roles and James's call rather than this change's.
 

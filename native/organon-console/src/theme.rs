@@ -396,15 +396,19 @@ impl Theme {
     /// `#f7f8f9` → hairline `#e2e5e9` → strong `#c9ced6` — and the **page→panel step was
     /// already the whisper of the four**, 8/7/6 per channel against the next step's 21/19/16.
     /// So the entire distance a page may fall before it collides with the panel it must sit
-    /// above is **7 units on the tightest channel, 2.35 % of HSV value**. "A few percent" is
-    /// not available without moving the panel too, which is four more spec roles and James's
-    /// call rather than this change's.
+    /// above is **6 units on the tightest channel, 2.35 % of HSV value** — the *blue*
+    /// channel, which is the binding one because the panel is coolest there. "A few percent"
+    /// is not available without moving the panel too, which is four more spec roles and
+    /// James's call rather than this change's.
     ///
     /// **The rule, in one sentence: the panel plus 3 on every channel.** A uniform offset
     /// keeps the panel's own cool tilt (`+1` green, `+2` blue) instead of inventing a
     /// neutral, which makes the page a *member* of the ladder — pure white was the only step
-    /// in it with no tilt at all. That spends 5 of the 7 available units on the glare and
-    /// leaves a 3-unit step, roughly half the whisper that was there before.
+    /// in it with no tilt at all. Measured against the binding channel that spends **3 of the
+    /// 6 available units** on the glare and leaves a 3-unit step — half the whisper that was
+    /// there before. ⚠️ Quote the tightest channel, not a convenient one: the page moves
+    /// 5/4/3 and the headroom is 8/7/6, so any figure mixing one channel's travel with
+    /// another's headroom (5 of 7, say) is arithmetic about no channel at all.
     ///
     /// ⚠️ **[`Theme::term_bg`] and [`Theme::term_scrim_tint`] both take it, and they must
     /// track.** They are two roles — what an unpainted cell *is*, and what dims the live
