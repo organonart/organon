@@ -705,6 +705,27 @@ impl PerformerLink {
         if self.tx.is_some() {
             return;
         }
+        // 🚨 organon#49 T5b — AN EMPTY CATALOG REFUSES, LOUDLY, INSTEAD OF SERVING A GUTTED
+        // PROMPT. `organon-visual`'s manifest names this as the failure with no error attached
+        // to it: hand `World::new` an empty catalog and everything still compiles and runs, the
+        // model just silently loses every parameter it is allowed to touch. That is precisely
+        // the shape of bug a host that does not run the Performer at all — Organon Console —
+        // would introduce by passing `Vec::new()` and moving on.
+        //
+        // So the absence is made explicit here rather than trusted to a comment at each call
+        // site. A host with no catalog does not get a crippled Performer; it gets none, and the
+        // log says why. ⚠️ Inert for every host that passes a real catalog (the visual, the
+        // standalone, the plugin) — `core_catalog()` is never empty, so this never fires there.
+        if self.catalog.is_empty() {
+            mind_log::append(
+                mind_log::MindEvent::Brief,
+                "agent",
+                "no worker: this host built its World with an empty catalog, so the Performer \
+                 has no vocabulary to actuate. Refusing rather than prompting the model with \
+                 nothing (organon#49 T5b).",
+            );
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let lane = self.lane.clone();
         let reply = self.reply.clone();
@@ -12421,6 +12442,43 @@ mod tests {
     // maths, so the hoist cannot have changed how the visual feels — and so the editor, which
     // reaches the same function through `scene_input::SceneGesture`, provably moves the same
     // camera rather than a parallel one.
+
+    // -----------------------------------------------------------------------
+    // The Performer's catalog gate (organon#49 T5b)
+    // -----------------------------------------------------------------------
+
+    /// 🚨 **The guard that exists to stop a silent failure, pinned so it cannot silently
+    /// regress.** `ensure_agent_worker` refuses an empty catalog rather than prompting the
+    /// model with no vocabulary to actuate — the failure `organon-visual`'s manifest calls
+    /// "a failure with no error attached to it".
+    ///
+    /// Both directions are asserted on purpose. The empty case alone would catch the check
+    /// being **dropped** *or* **inverted** (an inverted check spawns on empty and fails this
+    /// assertion) — but it would say nothing about the guard having been widened until it
+    /// refuses everything, which is the same outage arriving from the other side. Two
+    /// assertions, two ways to be wrong.
+    ///
+    /// ⚠️ No network here. The spawned worker blocks on its channel immediately; it reaches
+    /// the localhost client only once a message is sent, and the `World` drop closes the
+    /// sender, which ends the thread.
+    #[test]
+    fn an_empty_catalog_refuses_the_agent_worker_and_a_real_one_does_not() {
+        let mut empty = World::new(Vec::new());
+        empty.performer.ensure_agent_worker();
+        assert!(
+            empty.performer.tx.is_none(),
+            "an empty catalog must not spawn a worker — a Performer with no vocabulary is \
+             the silent failure this guard exists to prevent"
+        );
+
+        let mut stocked = World::new(vec![agent::CatSlot::num("glow")]);
+        stocked.performer.ensure_agent_worker();
+        assert!(
+            stocked.performer.tx.is_some(),
+            "a non-empty catalog must still spawn — the guard is a refusal for catalog-less \
+             hosts, not a disabling of the Performer"
+        );
+    }
 
     #[test]
     fn a_drag_orbits_yaw_and_pitch() {

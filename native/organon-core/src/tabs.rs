@@ -171,6 +171,22 @@ impl UiTab {
         }
     }
 
+    /// The tab's name as a person **types** it — the label, lowercased.
+    ///
+    /// ⚠️ **Derived from [`UiTab::label`] rather than spelled a second time.** Every label is
+    /// one word today, so lowercasing is the whole transformation; a two-word label would need
+    /// a real slug (the command grammar splits on whitespace) and
+    /// [`every_tab_word_is_one_word`](self) fails the build if one ever arrives, rather than
+    /// letting a tab quietly become untypeable.
+    pub fn word(self) -> String {
+        self.label().to_ascii_lowercase()
+    }
+
+    /// The tab a typed word names, case-insensitively. `None` for anything that is not a tab.
+    pub fn from_word(word: &str) -> Option<UiTab> {
+        Self::ALL.iter().copied().find(|t| t.label().eq_ignore_ascii_case(word))
+    }
+
     /// The per-tab-preset partition this UI tab corresponds to. Most UI tabs map
     /// to a partition (#354 — Environment/Audio/Synth/Settings gained presets);
     /// the Mind tab (#317/#367) is UI-only and maps to `None`.
@@ -186,5 +202,33 @@ impl UiTab {
             UiTab::Synth => EditorTab::Synth,
             UiTab::Settings => EditorTab::Settings,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`UiTab::word`] lowercases the label and does nothing else, so a two-word label would
+    /// produce a "word" with a space in it — and the Console's command grammar splits on
+    /// whitespace, so that tab would silently become untypeable. See that method's doc.
+    #[test]
+    fn every_tab_word_is_one_word() {
+        for tab in UiTab::ALL {
+            assert!(
+                !tab.word().contains(char::is_whitespace),
+                "`{}` needs a real slug, not a lowercased label",
+                tab.label()
+            );
+        }
+    }
+
+    #[test]
+    fn a_tab_round_trips_through_its_word() {
+        for tab in UiTab::ALL {
+            assert_eq!(UiTab::from_word(&tab.word()), Some(*tab));
+        }
+        assert_eq!(UiTab::from_word("LOOK"), Some(UiTab::Look));
+        assert_eq!(UiTab::from_word("nonesuch"), None);
     }
 }
