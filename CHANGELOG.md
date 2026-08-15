@@ -49,6 +49,14 @@ key tables answer `Ignore` for it. All three facts are pinned by tests, so the d
 being true it fails there rather than fighting silently. The chord and the verb funnel into one
 call, so they cannot drift.
 
+🚨 **A key-repeat is not a press.** Holding a key streams `pressed: true` events, so without a
+filter a resting finger would flip the window once per repeat and the state on release would be
+decided by parity — worst on the one chord that is the way *out* of a window with no title bar.
+Filtered in `screen_key` and pinned by test rather than left to be noticed on a display, because
+a repeat stream is exactly what a screenshot cannot show. ⚠️ The `⌘` chords read the same event
+without the flag and are deliberately left alone — existing behaviour, a different key table,
+and an autorepeating `⌘1` is arguably fine.
+
 ⚠️ **Named `screen`, not `fullscreen`, because two different rectangles can go full screen.**
 §2's ledger reserves that phrase for a still-unbuilt *portal* state — the portal taking the whole
 window. This verb says which rectangle it moves.

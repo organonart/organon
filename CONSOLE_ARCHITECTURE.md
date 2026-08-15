@@ -3759,6 +3759,17 @@ work while the composer has focus, and it is **not** consumed out of `i.events`,
 downstream wants it. The chord and `organon console screen toggle` funnel into one call, so the
 key cannot drift from the verb.
 
+🚨 **A key-repeat is not a press, and that filter is in `screen_key` rather than left to be
+observed.** Holding a key streams `pressed: true` events, which egui marks
+(`Event::Key::repeat`). Without the filter a resting finger flips the window once per repeat and
+the state on release is decided by the parity of however many arrived — indistinguishable from
+the chord being broken, and worst on the one chord that is the *way out* of a window with no
+title bar. A toggle is also the worst verb to repeat; an absolute `full` would just be
+re-applied and swallowed by the change guard. ⚠️ The `⌘` chords read the same event **without**
+the flag and are deliberately left alone: that is existing behaviour on a different key table,
+its right answer may not be "ignore the repeat" (an autorepeating `⌘1` is arguably fine), and
+folding an unrelated behaviour change into this one would hide it.
+
 #### Reaching it, and why the schema can state the whole value space here
 
 Three words, no scalar: a window either covers the display or it does not, and there is nothing
@@ -3803,7 +3814,12 @@ path silently breaks the three-products-simultaneously guarantee that
   new ones are `screen.rs`'s), `cargo test -p organon-core` is green, `cargo check --features
   console-edition --bin organon-console` is clean, and `cargo check --tests -p
   organic-math-native --features console-edition` is clean. **That is the whole claim: it
-  compiles and the tests pass.** What is unverified, in order of how much it matters: (1) that
+  compiles and the tests pass.** ✏️ **One item has left this list by being made impossible
+  rather than watched for**: the automated review asked whether a held F11 would rapid-toggle
+  and suggested eyeballing it on hardware. It is now filtered in `screen_key` and pinned by
+  `a_held_key_flips_the_window_once_not_once_per_repeat` — a repeat stream is exactly what does
+  not show up in a screenshot, and this is the chord somebody reaches for when they cannot get
+  out. What remains genuinely needs a display, in order of how much it matters: (1) that
   `set_fullscreen(Borderless(None))` actually fills the display on this Windows box rather than
   producing a maximized-but-bordered window or a black band — and **full-screen behaviour is
   exactly the kind that differs between one display and two**, which is the configuration James

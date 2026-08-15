@@ -213,15 +213,34 @@ impl std::fmt::Display for UnknownScreen {
 /// belief.
 pub const CHORD: egui::Key = egui::Key::F11;
 
-/// Is this keystroke the full-screen chord?
+/// Is this keystroke the full-screen chord? `repeat` is the flag off the same
+/// `egui::Event::Key` the other two arguments come from.
 ///
 /// ⚠️ **Bare only, `matches_exact`, never `matches_logically`** —
 /// [`crate::theme_edit::edit_key`]'s
 /// rule and for its reason. `matches_logically` would let `Ctrl+F11` and `Shift+F11` through as
 /// their bare selves, silently claiming three more chords than this one asked for and taking
 /// them away from whatever wants them next.
-pub fn screen_key(key: egui::Key, mods: egui::Modifiers) -> Option<ScreenCmd> {
-    (key == CHORD && mods.matches_exact(egui::Modifiers::NONE)).then_some(ScreenCmd::Toggle)
+///
+/// 🚨 **A key-repeat is NOT the chord, and this is the one filter that had to be here rather
+/// than left to be looked at.** Holding a key produces a stream of `pressed: true` events on
+/// most platforms, and egui marks them (`Event::Key::repeat`). Without this filter, resting a
+/// finger on the key would flip the window once per repeat — the state after letting go
+/// decided by the parity of however many events arrived, which is indistinguishable from the
+/// chord being broken. **It matters more here than for any other chord in the console**:
+/// `⌘T` on repeat opens tabs somebody can see and close, whereas this is the only way *out* of
+/// a window with no title bar, so its failure mode is being unable to trust the escape hatch.
+/// A toggle is also the worst possible verb to repeat — an absolute `full` would simply be
+/// re-applied and the change guard would swallow it.
+///
+/// ⚠️ **This is deliberately NOT fixed for the `⌘` chords in the same change.** They read the
+/// same event without the flag and have since they were written, so a held `⌘T` presumably
+/// opens a run of tabs — but that is existing behaviour on a different key table, its right
+/// answer may not be "ignore the repeat" (an autorepeating `⌘1` is arguably fine), and nobody
+/// has reported it. It is filed separately rather than folded in here.
+pub fn screen_key(key: egui::Key, mods: egui::Modifiers, repeat: bool) -> Option<ScreenCmd> {
+    (!repeat && key == CHORD && mods.matches_exact(egui::Modifiers::NONE))
+        .then_some(ScreenCmd::Toggle)
 }
 
 #[cfg(test)]
@@ -295,13 +314,29 @@ mod tests {
 
     #[test]
     fn the_chord_is_bare_and_only_bare() {
-        assert_eq!(screen_key(CHORD, Modifiers::NONE), Some(ScreenCmd::Toggle));
+        assert_eq!(screen_key(CHORD, Modifiers::NONE, false), Some(ScreenCmd::Toggle));
         for mods in MOD_SETS.iter().filter(|m| !m.matches_exact(Modifiers::NONE)) {
-            assert_eq!(screen_key(CHORD, *mods), None, "{mods:?} must not flip the window");
+            assert_eq!(screen_key(CHORD, *mods, false), None, "{mods:?} must not flip the window");
         }
         for key in [Key::F10, Key::F12, Key::Escape, Key::Enter, Key::A, Key::Tab] {
-            assert_eq!(screen_key(key, Modifiers::NONE), None, "{key:?} is not the chord");
+            assert_eq!(screen_key(key, Modifiers::NONE, false), None, "{key:?} is not the chord");
         }
+    }
+
+    /// 🚨 **Holding the key must not flip the window once per repeat.** The state after letting
+    /// go would then be decided by the parity of however many events arrived — and this chord
+    /// is the only way out of a window with no title bar, so an escape hatch whose result
+    /// depends on how long a finger rested on it is worse than no chord. Pinned rather than
+    /// left to be noticed on a real display, because a repeat stream is exactly what does not
+    /// show up in a screenshot.
+    #[test]
+    fn a_held_key_flips_the_window_once_not_once_per_repeat() {
+        assert_eq!(screen_key(CHORD, Modifiers::NONE, true), None, "a repeat is not a press");
+        // The shape of a real hold: one genuine press, then a stream of repeats. Exactly one
+        // toggle comes out of it however long the stream is.
+        let hold = std::iter::once(false).chain(std::iter::repeat(true).take(40));
+        let flips = hold.filter(|r| screen_key(CHORD, Modifiers::NONE, *r).is_some()).count();
+        assert_eq!(flips, 1, "a hold produced {flips} toggles");
     }
 
     /// 🚨 **The measurement the header's argument rests on: the terminal has never sent this

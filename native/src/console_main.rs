@@ -3665,7 +3665,7 @@ impl Console {
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
             ctx.input(|i| {
                 for ev in &i.events {
-                    if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+                    if let egui::Event::Key { key, pressed: true, modifiers, repeat, .. } = ev {
                         if action.is_none() {
                             action =
                                 tabs::command_key_action(*key, *modifiers, strip, default_harness);
@@ -3686,8 +3686,16 @@ impl Console {
                         // both conversation-side key tables answer `Ignore`. All three are
                         // pinned by tests in `organon_console::screen`, so a future mapping that
                         // did want F11 would fail there rather than fight silently here.
+                        //
+                        // ⚠️ **`repeat` is passed and is not decoration.** Holding a key streams
+                        // `pressed: true` events, so without it a resting finger would flip the
+                        // window once per repeat and the state on release would come down to
+                        // parity. `screen_key` refuses them; its own doc says why this chord
+                        // needs it more than the `⌘` ones above, which read the same event and
+                        // deliberately keep their existing behaviour.
                         if screen_cmd.is_none() {
-                            screen_cmd = organon_console::screen::screen_key(*key, *modifiers);
+                            screen_cmd =
+                                organon_console::screen::screen_key(*key, *modifiers, *repeat);
                         }
                     }
                 }
