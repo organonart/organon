@@ -90,6 +90,10 @@
 //! stronger statement about the `Shared` layout than moving and re-verifying them.
 
 pub mod edition;
+/// #452 Tier 3 — the `snap` / `record` request+reply wire format, beside the `ipc` paths
+/// it is the format of. Arrived in organon#49 T4c-i from `cli.rs`, which cannot itself
+/// descend; `crate::cli` re-exports it so no caller moved.
+pub mod eyes;
 pub mod gguf;
 pub mod ipc;
 pub mod gguf_data;

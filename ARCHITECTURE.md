@@ -1712,8 +1712,10 @@ each has its own `README`.
 
 ### 19.0 The crate map (#626 Tier 3)
 
-`native/` is a **cargo workspace**, not one crate. As of Tier 3 there are two members that
-matter (`xtask` is the VST3/CLAP bundler and is not part of the engine):
+`native/` is a **cargo workspace**, not one crate. Several members carry engine or product
+code (`xtask` is the VST3/CLAP bundler and is not part of the engine). Read the roster off
+`native/Cargo.toml`'s `members` list rather than counting this table — the sentence that
+used to state a number here went stale twice:
 
 | Crate | Path | Depends on | What it is |
 |---|---|---|---|
@@ -1721,7 +1723,8 @@ matter (`xtask` is the VST3/CLAP bundler and is not part of the engine):
 | **`organon-mind`** | `native/organon-mind` | `organon-core`, `egui`, `bytemuck`, `memmap2` — **and nothing else** | **T4** — the interpretability instrument: the activation ring, Mind UI, model shell. **No nih-plug.** |
 | **`organon-render`** | `native/organon-render` | `organon-core`, `wgpu`, `glam`, `bytemuck`, `image`, `half` | **T4** — the renderer: `render` + its 36 surface submodules, plus `axes`/`chamber`, and **50 shaders**. **No nih-plug, no egui, no winit.** |
 | **`organon-scene`** | `native/organon-scene` | `organon-core`, `glam`, `bytemuck` | **organon#49 T3** — the **substrate**: `substrate_scene` / `substrate_materials` / `substrate_camera` / `substrate_epochs` + `overlay_meta`. Scene *state*, not drawing. **No nih-plug, no wgpu, no egui, no winit.** |
-| `organic-math-native` | `native/` | all three + the world | everything else — the plugin, the visual, the editor, **`world.rs`** |
+| **`organon-agent`** | `native/organon-agent` | `organon-core`, `serde`, `serde_json` — **and nothing else** | **organon#49 T4c-i** — the **AI Performer**: action set, override lane, actuation vocabulary, tool-call protocol, localhost chat client. **No nih-plug.** ⚠️ `core_catalog` and `scene_features` did *not* come — they read `param_table` / `preset`, so `src/agent.rs` is a host adapter over this crate |
+| `organic-math-native` | `native/` | every sibling above | everything else — the plugin, the visual, the editor, **`world.rs`** |
 
 **⚠️ `organon-render` is `world::render`; `world.rs` is NOT part of it and did not move.**
 The world is the *app state* — agent chat client, CLI protocol, docks — and its couplings
@@ -1755,6 +1758,8 @@ number out of the script, and Tier 5's open questions.
 ```bash
 cargo tree -p organon-core     # must contain NO nih_plug, NO wgpu, NO egui, NO winit
 cargo tree -p organon-scene    # same bar, one layer up (organon#49 T3)
+cargo tree -p organon-agent    # organon#49 T4c-i — holds the FULL bar and cheaply:
+                               # its only deps are organon-core, serde and serde_json
 ```
 
 That is the tier's acceptance test. It is meaningful only while core's dependency list
