@@ -523,7 +523,7 @@ impl EditorWindowHandler {
         gui_ctx: Arc<dyn GuiContext>,
         info: WindowInfo,
     ) -> Self {
-        let mut world = World::new();
+        let mut world = World::new(crate::agent::core_catalog());
         let size = (info.physical_size().width, info.physical_size().height);
         let gpu = match bring_up(window, &mut world, size) {
             Ok(surface) => {

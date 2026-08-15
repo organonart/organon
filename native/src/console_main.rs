@@ -1687,7 +1687,7 @@ impl Console {
             default_harness: String::new(),
             plus_open: false,
             quit: false,
-            world: World::new(),
+            world: World::new(organic_math_native::agent::core_catalog()),
             backdrop: None,
             backdrop_source: source,
             console_look: ConsoleLook::default(),

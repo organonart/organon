@@ -1,0 +1,63 @@
+# organon-agent — the AI Performer's vocabulary and its client, below the plugin
+# (organon#49 T4c-i).
+#
+# ⚠️ NO nih_plug. `cargo tree -p organon-agent | grep nih_plug` must be empty — the same
+# bar `organon-core`, `organon-scene`, `organon-render`, `organon-world` and
+# `organon-mind` each hold. This crate holds it cheaply: the only dependencies it has at
+# all are `organon-core`, `serde` and `std`.
+#
+# 🎯 WHY A CRATE OF ITS OWN, RATHER THAN FOLDING INTO organon-core.
+#
+# On dependencies alone this belongs in core — it needs `serde` and `std`, both of which
+# core already carries, and nothing else. The split is on IDENTITY, which is the rule
+# `organon-scene` was drawn by and for the same reason:
+#
+#   organon-core is the SPINE — the wire format, the algorithm, the param vocabulary, the
+#   edition, the GGUF reader — and under #626 §2.5 it is the crate published to crates.io,
+#   so its public API is a standing commitment. An OpenAI-compatible chat client, a
+#   tool-call parser and an action set are not the spine; folding 2 700 lines of them into
+#   it makes the commitment larger and the identity vaguer.
+#
+# The other three were considered and refused for the same class of reason: `organon-world`
+# is the egui/wgpu/winit window layer and an agent protocol is not a window (its manifest
+# says so in as many words), `organon-render` is `world::render`, and `organon-scene` is
+# scene state.
+#
+# 🚨 TWO FUNCTIONS DELIBERATELY DID NOT COME, AND THEY ARE WHY THIS CRATE IS POSSIBLE.
+#
+# `agent.rs`'s entire coupling to the plugin was two functions, measured rather than
+# assumed:
+#
+#   core_catalog()    reads `param_table::pack_*::catalog` — 9 references
+#   scene_features()  reads `preset::{PresetValues, PresetScope, EditorTab}` — 4
+#
+# Both stay in the root crate's `src/agent.rs`, which is now a HOST ADAPTER over this
+# crate: `pub use organon_agent::*;` plus those two and the three private helpers
+# (`cam_speed_word`, `hue_word`, `enum_name`) that nothing else calls. That is the same
+# shape #626 T3's `HostFuncName` established and organon#49 has now used five times — the
+# semantic half below, the host half above, at the same module path so no caller moves.
+#
+# ⚠️ `param_table` and `preset` could NOT have come instead. They are 3 734 and 7 383
+# lines, `preset` names `param_table` 159 times, and `param_table` names `agent` back — so
+# taking them would have dragged the plugin's whole automation surface down and made the
+# cycle worse, not better.
+#
+# 📌 `core_catalog` IS INJECTED, NOT REACHED. `world.rs` calls it in exactly one place
+# (`PerformerLink::ensure_agent_worker`), so `World::new` now takes the catalog as a value
+# and the root crate passes `agent::core_catalog()` at each of its three construction
+# sites. That is what leaves `world.rs` with no upward edge for T4c-ii to answer.
+[package]
+name = "organon-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Organon's AI Performer: the action set, override lane, tool-call protocol and localhost chat client."
+repository = "https://github.com/organonart/organon"
+
+[dependencies]
+organon-core = { path = "../organon-core" }
+serde = { version = "1", features = ["derive"] }
+# The tool-call protocol is JSON on the wire both ways: `build_request_json` composes the
+# OpenAI-compatible request, and the reply parser reads `choices[].message.tool_calls`
+# whose `arguments` is itself a JSON *string*. Not a test-only dependency.
+serde_json = "1"

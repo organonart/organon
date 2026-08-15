@@ -7,7 +7,15 @@
 # `export-public.sh`'s member guard fails on the one that is missing, rather than
 # shipping a manifest that names a member nobody exported. That failure is the system
 # working, not an obstacle to route around.
-members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-scene", "organon-console"]
+members = [
+    "xtask",
+    "organon-core",
+    "organon-mind",
+    "organon-render",
+    "organon-scene",
+    "organon-agent",
+    "organon-console",
+]
 
 [package]
 name = "organic-math-native"
@@ -134,6 +142,10 @@ organon-render = { path = "organon-render" }
 # organon#49 T3 — the substrate: scene look/materials/camera/epochs + overlay metadata,
 # below the plugin. Unconditional like its siblings; carries no nih_plug, wgpu or egui.
 organon-scene = { path = "organon-scene" }
+# organon#49 T4c-i — the AI Performer: action set, override lane, tool-call protocol and
+# the localhost chat client. `src/agent.rs` re-exports it and adds back the two functions
+# that read `param_table` / `preset`, so every `crate::agent::…` path still resolves.
+organon-agent = { path = "organon-agent" }
 # Console #3 T1 — the Console compositor UI. Unconditional like its siblings
 # (the lib is tiny and Edition-parametric); only the BIN is feature-gated.
 organon-console = { path = "organon-console" }

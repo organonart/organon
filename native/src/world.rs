@@ -166,8 +166,8 @@ use glam::{DVec3, Mat3, Mat4, Vec2, Vec3, Vec4};
 #[cfg(not(feature = "mind-edition"))]
 use organic_math_native::frame_ring;
 use organic_math_native::ipc;
-use organic_math_native::agent;
-use organic_math_native::agent::ChatClient; // bring the trait into scope for client.complete()
+use organon_agent as agent;
+use organon_agent::ChatClient; // bring the trait into scope for client.complete()
 use organic_math_native::math;
 use organic_math_native::mind_log;
 use organic_math_native::mind_ring;
@@ -664,6 +664,11 @@ struct PerformerLink {
     // thread that talks to the localhost model), the worker's user-message channel, the
     // agent's last reply (for the status readout), and the edge-detect counters for the
     // plugin-published `Shared.agent[8]` runtime block (chat / plan / release).
+    // organon#49 T4c-i — the prompt-side param vocabulary, handed in at construction by
+    // whoever built the World. It is `agent::core_catalog()` in every real caller; the
+    // indirection exists because that function reads `param_table` and so lives above
+    // this file, while this file is on its way down to `organon-world`.
+    catalog: Vec<agent::CatSlot>,
     lane: std::sync::Arc<std::sync::Mutex<agent::AgentLane>>,
     reply: std::sync::Arc<std::sync::Mutex<String>>,
     // Live state/feedback snapshot the worker injects as read_state / read_feedback
@@ -701,9 +706,14 @@ impl PerformerLink {
         let lane = self.lane.clone();
         let reply = self.reply.clone();
         let state = self.state.clone();
+        // organon#49 T4c-i — the catalog is INJECTED, not reached for. It is built from
+        // `param_table::pack_*::catalog`, which is the plugin's own automation surface and
+        // cannot descend, so `agent::core_catalog` stayed in the root crate and `World::new`
+        // takes the result. That is what leaves this file with no upward edge for T4c-ii,
+        // which moves it into `organon-world`.
+        let catalog = self.catalog.clone();
         std::thread::spawn(move || {
             let client = agent::HttpChatClient;
-            let catalog = agent::core_catalog();
             let mut convo = vec![agent::ChatMessage::system(agent::system_prompt(&catalog))];
             mind_log::append(mind_log::MindEvent::Brief, "agent", agent::architecture_brief());
             for msg in rx {
@@ -1582,7 +1592,15 @@ const MAX_NODE_SAMPLES: usize = 8192;
 const MAX_DYE_NODES: usize = 2048;
 
 impl World {
-    pub fn new() -> Self {
+    /// Build a world.
+    ///
+    /// `catalog` is the agent's prompt-side param vocabulary — `agent::core_catalog()` in
+    /// every shipping caller. ⚠️ **It is a parameter rather than a call** because
+    /// `core_catalog` reads `param_table`, the plugin's automation surface, which cannot
+    /// descend below the plugin crate; this file is on its way to `organon-world` in
+    /// organon#49 T4c-ii and would not be able to see it. Passing an empty vec is legal
+    /// and means "no params in the system prompt" — tests do exactly that.
+    pub fn new(catalog: Vec<agent::CatSlot>) -> Self {
         // #452: seed the CLI command channel from ONE read — the cursor (lines
         // to skip) and the cached byte length both derive from the same content,
         // so a command appended between two separate calls can't strand itself
@@ -1682,6 +1700,7 @@ impl World {
             atlas_profile: math::HardwareProfile::default(),
             neural_load_gen: 0,
             performer: PerformerLink {
+                catalog,
                 lane: std::sync::Arc::new(std::sync::Mutex::new(agent::AgentLane::new())),
                 reply: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
                 state: std::sync::Arc::new(std::sync::Mutex::new(agent::LiveState::default())),
@@ -9840,7 +9859,7 @@ impl World {
             cmd.eyes_len = new_len;
             cmd.eyes_cursor = new_cursor;
             for line in &eyes_lines {
-                let Some((nonce, req)) = organic_math_native::cli::EyesReq::parse(line) else {
+                let Some((nonce, req)) = organon_core::eyes::EyesReq::parse(line) else {
                     mind_log::append(
                         mind_log::MindEvent::Reject,
                         "cli",
@@ -9848,7 +9867,7 @@ impl World {
                     );
                     continue;
                 };
-                use organic_math_native::cli::EyesReq;
+                use organon_core::eyes::EyesReq;
                 match req {
                     EyesReq::Snap { path } => {
                         // Deferred to render() — the production texture is ensured there.
@@ -12333,7 +12352,7 @@ fn append_agent_apply(action: &agent::AgentAction) {
 /// #452 Tier 3: append one reply line to the eyes channel (visual → CLI), so a
 /// `snap`/`record` invocation waiting on its nonce gets the path or the error.
 fn append_eyes_reply(nonce: &str, result: &Result<String, String>) {
-    let line = format!("{}\n", organic_math_native::cli::eyes_reply_line(nonce, result));
+    let line = format!("{}\n", organon_core::eyes::eyes_reply_line(nonce, result));
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -12402,7 +12421,7 @@ mod tests {
 
     #[test]
     fn a_drag_orbits_yaw_and_pitch() {
-        let mut w = World::new();
+        let mut w = World::new(Vec::new());
         let (yaw, pitch) = (w.yaw, w.pitch);
         w.apply_camera_input(CameraInput::Orbit { dx: 10.0, dy: -4.0 });
         assert!((w.yaw - (yaw - 0.1)).abs() < 1e-6, "yaw {} from {yaw}", w.yaw);
@@ -12412,7 +12431,7 @@ mod tests {
     /// The pitch clamp is what stops the camera going over the pole and inverting the view.
     #[test]
     fn pitch_is_clamped_at_both_ends() {
-        let mut w = World::new();
+        let mut w = World::new(Vec::new());
         for _ in 0..500 {
             w.apply_camera_input(CameraInput::Orbit { dx: 0.0, dy: 100.0 });
         }
@@ -12427,7 +12446,7 @@ mod tests {
     /// the way *through* the centre, which is deliberate and easy to "fix" back to a safe 1.0.
     #[test]
     fn the_wheel_zooms_in_and_holds_both_rails() {
-        let mut w = World::new();
+        let mut w = World::new(Vec::new());
         let start = w.distance;
         w.apply_camera_input(CameraInput::Zoom { dy: 20.0 }); // one notch, the visual's unit
         assert!(w.distance < start, "scrolling up must move in");
@@ -12446,7 +12465,7 @@ mod tests {
     /// of move that silently drops one side of an `if`.
     #[test]
     fn on_the_rails_a_drag_leans_instead_of_orbiting() {
-        let mut w = World::new();
+        let mut w = World::new(Vec::new());
         w.rails_ride = true;
         let (yaw, pitch) = (w.yaw, w.pitch);
         w.apply_camera_input(CameraInput::Orbit { dx: 10.0, dy: 10.0 });
