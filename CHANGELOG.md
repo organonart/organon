@@ -64,6 +64,72 @@ window. This verb says which rectangle it moves.
 📌 Not remembered across launches, on posture's rule. 🚨 **Nothing has been seen full screen** —
 the whole claim is that it compiles and 654 lib tests pass (646 before); §3's ledger states
 what that does and does not establish, F11 actually arriving first among them.
+### The console command lane leaves the plugin crate
+
+organon#49 Tier 5a. `ConsoleOp`, `PortalCmd`, `CameraFraming`, the word tables and the
+whole sidecar wire format — **~395 lines and their 285 lines of tests** — move out of
+`cli.rs` into `organon_core::console_ops`, unchanged. `cli.rs` re-exports the module, so
+every `cli::ConsoleOp` / `cli::parse_console_op` / `cli::PORTAL_WORDS` path in the tree
+resolves exactly as before.
+
+📌 **It was never plugin code.** All of `cli.rs`'s nih-plug coupling is two `use` lines
+inside one function (`docs_files`, the `organon docs` generator) and none of it was in this
+section. What kept the console lane upstream was its address, not a dependency — the same
+finding T4c-i made about `agent.rs`.
+
+It goes to `organon-core` for the reason `kind.rs` is already there: the two ends of this
+channel live in **different crates**. `bin/ctl.rs` writes it from the root crate;
+`console_main.rs` reads it, and Tier 5c moves that reader into `organon-console`.
+
+**The camera limits came with it, and that was not in the plan.** `CameraFraming::in_range`
+validates against `scene_input`'s `PITCH_LIMIT` / `YAW_LIMIT` / `DISTANCE_MIN` /
+`DISTANCE_MAX` — a transitive reference a symbol-level scan does not show. Rather than
+split a type from its validator, the constants moved to a new `organon_core::viewpoint`, with
+`scene_input` re-exporting them. `PITCH_LIMIT`'s own doc had already called this out in
+capitals — *"one number, four readers"* — and named the failure mode: *"an agent comes to be
+refused a value the hand can reach, or granted one it cannot."* Those readers now span three
+crates, so core is the only home where there is still one number. The three `DEFAULT_*`
+travelled too: `--reset` targets them, and leaving them a crate away from the band they must
+land inside is the same hazard wearing a different hat.
+
+### `world.rs` leaves the plugin crate — and stops being compiled twice
+
+organon#49 Tier 4c-ii. **`world.rs` (13 509 lines)**, its nine `#[path]` submodules
+(`capture`, `overlay`, `rt`, `metal_island`, `gpu_timer`, `recorder`, `snap`, `ui_layer`,
+`winit_platform`), the `overlay/` asset directory and three shaders move to
+`organon-world`, behind that crate's new **default-off `world` feature**. The visual
+binary moves too, to a package of its own: **`organon-visual`**.
+
+**Why the world needed a feature.** `native/src/lib.rs` gated `pub mod world` on
+`any(mind-edition, console-edition)` for a measured reason — ungated it grows the shipping
+plugin cdylib by **+490 KB** (12 749 728 → 13 250 704 bytes). `organon-world` is an
+*unconditional* dependency of the plugin crate, so an always-public `world` module there
+would put those bytes straight back. The gate did not change; only the manifest that
+states it.
+
+**Why the binary needed its own package.** `bin/visual.rs` never used the library's
+`world` module — it `#[path]`-*included* `world.rs`'s source, compiling the same 13.5k
+lines a second time. That was the mechanism, not redundancy: a `#[path]` include is not a
+cargo feature, so it gave the visual a world the cdylib did not get. It could not descend
+into `organon-world` either, because the visual is the process that runs the AI
+Performer's worker and so needs `agent::core_catalog()`, which reads `param_table` and
+cannot descend. And it could not stay, because **cargo features unify across every target
+of a package** — the cdylib beside it would have got `world` too. `organon-visual` depends
+on both sides (the plugin crate is `crate-type = ["cdylib", "lib"]`), which makes the
+shipping cdylib unchanged **by construction** rather than by measurement.
+
+✅ **The dual compilation is gone, not relocated** — the world compiles once now. That
+also retires the reason `render.rs` / `rt.rs` had to spell siblings `super::`.
+
+**Unchanged on purpose:** the binary is still named `organic-math-visual` and still builds
+to `target/release/organic-math-visual`, so `spawn_visual()`'s probe and the bundlers'
+copy steps are untouched. Only their `cargo build` lines gained `-p organon-visual`
+(`bundle.sh`, `bundle.ps1`, `verify.sh`).
+
+**Also fixed:** `.claude/hooks/doc-rules.sh` matches trigger paths literally, so
+`doc/arch/render.md`'s rule would have silently stopped firing for every moved file. Its
+list is repointed, and `doc/arch/topology.md`'s — which had never listed `organon-scene`,
+`organon-agent` or `organon-world` — gains the four manifests it was missing.
 
 ### `organon-world` — the window layer leaves the plugin crate
 

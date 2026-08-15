@@ -2551,7 +2551,7 @@ impl Console {
     /// header records this as the failure the arrangement forecloses.
     ///
     /// ⚠️ **Borderless, and on the window's current monitor** — `Fullscreen::Borderless(None)`,
-    /// which is `bin/visual.rs`'s call. Never `Exclusive`: that takes a video mode from the
+    /// which is `organon-visual`'s call. Never `Exclusive`: that takes a video mode from the
     /// display and is a projector's business, not a workstation window's, and it is the variety
     /// that makes alt-tab expensive. Only the *discipline* is shared with that file's
     /// `sync_fullscreen` — touch the window only on a real change — and the **two differ

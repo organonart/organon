@@ -60,7 +60,7 @@
 //! `Windowed` would make [`ScreenCmd::Toggle`] send the window *into* full screen from full
 //! screen, and the one command whose whole job is "the other one" would do nothing visible.
 //!
-//! ⚠️ `bin/visual.rs`'s `sync_fullscreen` *does* keep such a bool, and it is right to: its
+//! ⚠️ `organon-visual`'s `sync_fullscreen` *does* keep such a bool, and it is right to: its
 //! intent arrives from `World::wants_fullscreen` on every frame, so it needs an edge to act on.
 //! Nothing here arrives periodically, so there is no edge to detect and no bool to keep.
 //!

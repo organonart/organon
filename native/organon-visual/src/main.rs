@@ -17,12 +17,15 @@
 //! the world. It forwards three calls; everything the old handler used to poke at directly
 //! stayed with the world (see `world.rs`'s module docs).
 
-// The world, `#[path]`-included rather than reached through `organic_math_native::world`,
-// because that module is gated on `mind-edition` and this binary ships in both editions. It
-// costs a second compilation of the same source in a `mind-edition` build — build time, not
-// correctness, and it keeps one source of truth instead of two copies drifting apart.
-#[path = "../world.rs"]
-mod world;
+// organon#49 T4c-ii — the world, reached through the crate that owns it.
+//
+// 📌 This was a `#[path = "../world.rs"]` include for a real reason, now retired: the
+// library's `world` was gated on the editions and this binary ships in both, and a `#[path]`
+// include is not a cargo feature, so including the SOURCE was how the binary got a world the
+// cdylib did not. It cost a second compilation of the same 13.5k lines. Now that `world`
+// lives in `organon-world` behind its own feature and this binary is its own package, the
+// feature can simply be on here and off for the plugin — so the world is compiled once.
+use organon_world::world;
 
 // macOS EDR (true HDR) plumbing: the metal layer belongs to whoever owns the window, which is
 // this binary since #572 stage 3. No-op stubs off macOS.
@@ -31,7 +34,6 @@ mod world;
 // no caller there — hence the allow, scoped to that one build. The macOS and Linux builds still
 // report this module honestly.
 #[cfg_attr(windows, allow(dead_code))]
-#[path = "../hdr_macos.rs"]
 mod hdr_macos;
 
 // Windows HDR output (organon#658 Tier 4) — the same job through wgpu 30's native colour-space
@@ -43,24 +45,21 @@ mod hdr_macos;
 // macOS CI legs rather than only by a box nobody can run. Off Windows nothing calls them, hence
 // the scoped allow — on Windows it is absent, so real rot still reports.
 #[cfg_attr(not(windows), allow(dead_code))]
-#[path = "../hdr_windows.rs"]
 mod hdr_windows;
 
 // The launch watchdog (organon#588): AppKit does not always deliver
 // `applicationDidFinishLaunching:` to a process nothing activated, and winit gates `Resumed`
 // — the event this file builds the window in — on exactly that. Same `#[path]` treatment as
 // `hdr_macos.rs`: it belongs to the window owner, so it lives with the binary that owns one.
-#[path = "../launch_macos.rs"]
 mod launch_macos;
 
-use organic_math_native::ipc;
-// `render.rs` and four of its submodules (`creature`, `creature_overlay`, `rt_pathtrace`, …)
-// are compiled by both hosts and say `crate::math::…` — see `world.rs` on why they must stay
-// byte-identical. In the library that resolves to `pub mod math`; *here* it resolves to this
-// import, so the import is load-bearing even though nothing below names it. Deleting it is
-// eight `unresolved import: crate::math` errors, not a tidy-up (measured, not assumed).
-#[allow(unused_imports)]
-use organic_math_native::math;
+use organon_core::ipc;
+// organon#49 T4c-ii — the `use organon_core::math` shim that stood here is GONE, and the
+// reason it existed is what retired it. `render.rs` and four of its submodules say
+// `crate::math::…`; while this binary `#[path]`-included `world.rs`, `crate::` meant *this
+// binary*, so the import was load-bearing even though nothing below named it. Those files
+// live in `organon-render` now and resolve `crate::math` inside it. Removing this was
+// checked by compiling, not by reading.
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -70,7 +69,7 @@ use winit::monitor::MonitorHandle;
 #[cfg(target_os = "macos")]
 use winit::platform::macos::EventLoopBuilderExtMacOS;
 use winit::window::{Fullscreen, Window, WindowId};
-use organic_math_native::egui_platform::WindowGeometry;
+use organon_world::egui_platform::WindowGeometry;
 use world::{EventResponse, FrameTarget, World};
 
 /// The window's geometry, as the UI layer's platform seam wants it stated (#593 Tier 3).
@@ -383,7 +382,7 @@ impl ApplicationHandler for VisualApp {
         // UI layer's colour handling depends on. An explicit `ORGANON_VISUAL_DISPLAY`
         // still wins in both editions.
         let mut fullscreen = false;
-        let instrument_window = organic_math_native::edition::EDITION.is_mind();
+        let instrument_window = organon_core::edition::EDITION.is_mind();
         if let Some(mon) = pick_launch_monitor(event_loop, instrument_window) {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(Some(mon))));
             fullscreen = true;

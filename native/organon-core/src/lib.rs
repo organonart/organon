@@ -89,6 +89,7 @@
 //! `param_table.rs` therefore came through Tier 3 at a **zero diff**, which is a far
 //! stronger statement about the `Shared` layout than moving and re-verifying them.
 
+pub mod console_ops;
 pub mod edition;
 /// #452 Tier 3 — the `snap` / `record` request+reply wire format, beside the `ipc` paths
 /// it is the format of. Arrived in organon#49 T4c-i from `cli.rs`, which cannot itself
@@ -101,3 +102,8 @@ pub mod kind;
 pub mod math;
 pub mod params;
 pub mod tabs;
+/// organon#49 T5a — the viewpoint's band and origin. Named for the word the code already
+/// used ("the viewpoint may tip", "where the viewpoint starts"), and deliberately NOT `camera`:
+/// `organon_console::camera` is a different subject (who owns the viewpoint, hand or agent) and
+/// reads these constants, so two `camera` modules in one workspace would be a trap.
+pub mod viewpoint;

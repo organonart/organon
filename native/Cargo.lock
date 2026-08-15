@@ -3002,14 +3002,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "organon-visual"
+version = "0.1.0"
+dependencies = [
+ "objc",
+ "organic-math-native",
+ "organon-core",
+ "organon-world",
+ "pollster",
+ "raw-window-handle 0.6.2",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "organon-world"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
+ "dirs",
  "egui",
+ "egui-wgpu",
+ "egui-winit",
+ "glam",
+ "half",
+ "image",
  "memmap2",
+ "organon-agent",
  "organon-core",
  "organon-mind",
+ "organon-render",
+ "organon-scene",
+ "rfd",
+ "serde_json",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]

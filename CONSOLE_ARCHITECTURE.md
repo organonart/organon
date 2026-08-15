@@ -3719,7 +3719,8 @@ one" doing nothing visible and reporting nothing.
 
 `Fullscreen::Borderless(None)` — the window's current monitor — and never `Exclusive`, which
 takes a video mode from the display and is a projector's business. Only the *discipline* is
-shared with `bin/visual.rs`'s `sync_fullscreen` — touch the window only on a real change — and
+shared with `organon-visual`'s `sync_fullscreen` (`organon-visual/src/main.rs`) — touch the
+window only on a real change — and
 the **two differ exactly where it matters**: that one holds a `fullscreen_applied` bool and
 compares against it, because its intent arrives from `World::wants_fullscreen` on every frame
 and it needs an edge; this one has no periodic intent to debounce, so it can ask the window and

@@ -25,7 +25,10 @@ for arg in "$@"; do
   esac
 done
 
-cargo build --release --bin organic-math-visual
+# organon#49 T4c-ii — the visual is its own package now (`organon-visual`), so it needs
+# `-p`; the `world` feature is on by that package's own manifest, not asked for here.
+# The OUTPUT path is unchanged — one workspace, one target/ — so the copy below is untouched.
+cargo build --release -p organon-visual --bin organic-math-visual
 cargo xtask bundle organic-math-native --release
 
 # Optionally build the embedded llama.cpp inference runtime (#367 Tier 2c) so it

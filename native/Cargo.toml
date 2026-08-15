@@ -15,6 +15,7 @@ members = [
     "organon-scene",
     "organon-agent",
     "organon-world",
+    "organon-visual",
     "organon-console",
 ]
 
@@ -82,10 +83,11 @@ name = "organon-console"
 path = "src/console_main.rs"
 required-features = ["console-edition"]
 
-# Separate-process visual window (winit + wgpu). Reads params from shared memory.
-[[bin]]
-name = "organic-math-visual"
-path = "src/bin/visual.rs"
+# organon#49 T4c-ii — `[[bin]] organic-math-visual` MOVED to the `organon-visual`
+# package. It could not stay: it needs `organon-world/world`, and cargo features unify
+# across every target of a package, so asking for it here would hand the cdylib beside it
+# the +490 KB that gate exists to prevent. The binary NAME and its built path are both
+# unchanged (`target/release/organic-math-visual`) — see organon-visual/Cargo.toml.
 
 # #367 Tier 2 — synthetic activation-ring writer. Emits fake per-token model
 # activations into the mind ring so the Live-streaming visual can be exercised with
@@ -120,14 +122,29 @@ required-features = ["embedded-llm"]
 # FORWARDED to organon-core, which is where `edition.rs` now lives (#626 Tier 3).
 # One switch, not two that can disagree: turning this on here turns it on there,
 # so `EDITION` resolves to `Edition::Mind` in exactly one place.
-mind-edition = ["organon-core/mind-edition", "organon-mind/mind-edition"]
+mind-edition = [
+    "organon-core/mind-edition",
+    "organon-mind/mind-edition",
+    # organon#49 T4c-ii — `world` moved to organon-world behind a feature; this is where
+    # `#[cfg(any(mind-edition, console-edition))] pub mod world` used to sit. `mind-edition`
+    # is forwarded too, because `world.rs` carries 16 cfg sites that ask the crate they are
+    # compiled in — see organon-world/Cargo.toml.
+    "organon-world/world",
+    "organon-world/mind-edition",
+]
 
 # Console #3 T1 — the **Organon Console** edition switch, mind-symmetric:
 #   cargo build --release --features console-edition --bin organon-console
 # Forwarded to organon-core (EDITION's one resolution site) and through the
 # organon-console crate's own feature, so the two cannot disagree. Mutually exclusive
 # with mind-edition (compile_error! in organon-core's edition.rs).
-console-edition = ["organon-core/console-edition", "organon-console/console-edition"]
+console-edition = [
+    "organon-core/console-edition",
+    "organon-console/console-edition",
+    # Same reason as mind-edition above: the Console's embedded viewport renders `World`.
+    # No `organon-world/mind-edition` here — that cfg must stay OFF in a Console build.
+    "organon-world/world",
+]
 
 # Pulls in the llama.cpp binding (which statically links + builds llama.cpp itself).
 # OFF by default: the plugin, standalone, visual, and mind-writer bins never touch it.
