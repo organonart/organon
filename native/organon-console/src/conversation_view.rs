@@ -591,6 +591,14 @@ pub struct ConversationPane {
     /// [`egui::TextEdit`] writes [`ConversationPane::composer`] in place, so there is no
     /// edit *event* to observe — a shadow copy is what makes the change observable at all.
     composer_seen: String,
+    /// Whether self-completion is **held off** because the last thing the hand did was delete.
+    ///
+    /// 🚨 **A latch, not a per-frame test, and the difference is the whole fix.** See
+    /// [`completion_held`] for the rule and for why "the line did not shrink this frame" is not
+    /// good enough: the frame after a backspace is a frame in which nothing changed at all, and
+    /// a rule that only refused *shrinking* frames would re-complete on that one — a flicker,
+    /// which is this same defect at a different frequency.
+    completion_held: bool,
     /// Slash commands this pane has sent, most recent first, walked by the arrow keys. See
     /// [`ConversationPane::remember_command`] for what earns a place and what does not.
     history: VecDeque<String>,
@@ -799,6 +807,7 @@ impl ConversationPane {
             palette_selected: 0,
             palette_dismissed: false,
             composer_seen: String::new(),
+            completion_held: false,
             history: VecDeque::new(),
             history_at: None,
             want_caret: false,
@@ -4346,6 +4355,15 @@ const PALETTE_SEP: &str = " | ";
 const PALETTE_PICKED: (&str, &str) = ("[", "]");
 /// The head of the tail note when the words outran the pane. See [`compact_fit`].
 const PALETTE_MORE: &str = "+";
+/// What the row says when the line **as it stands** is already a whole command.
+///
+/// 🚨 **The alternative was a blank panel, and a blank panel reads as a broken one.** `/surface`
+/// takes no arguments: there is nothing to offer, so the row had nothing in it and (with a
+/// space typed after the verb) the panel disappeared altogether. James: *"slash surface shows
+/// no options."* True, and beside the point — what the console knew and did not say is that
+/// Enter would run the line. ⚠️ The wording is [`PALETTE_KEYS`]' own second half, so the two
+/// surfaces teach one vocabulary rather than two. ASCII, for [`PALETTE_HERE`]'s reason.
+const PALETTE_RUNS: &str = "Enter runs";
 
 /// One word of the compact row, already carrying whatever marks it as chosen.
 ///
@@ -4359,6 +4377,10 @@ pub struct CompactWord {
     pub text: String,
     /// The one Tab would take. Exactly one word carries this when there are any.
     pub here: bool,
+    /// Not a continuation at all: a statement that Enter would run the line as it stands. At
+    /// most one word carries this, it is always the first, and it is never something Tab can
+    /// take — which is why it is a field rather than another candidate with a special label.
+    pub runs: bool,
 }
 
 /// The compact row's words, in table order, for the line as it stands.
@@ -4371,28 +4393,34 @@ pub struct CompactWord {
 /// number and `/camera distance ` wants a number in a stated band: neither has options to
 /// list, and [`Palette::hint`] is the sentence written for exactly those. A row that showed
 /// nothing there would be the console knowing the answer and declining to say it.
+///
+/// 🚨 **…and [`PALETTE_RUNS`] leads, for the same reason one scale up.** A line that is already
+/// a whole command is the case where *both* of the above are empty — `/surface` and `/surface `
+/// offer nothing because there is nothing left to offer — and the row went blank on exactly the
+/// lines a hand had finished typing. It comes **first** because [`compact_fit`] drops from the
+/// tail: put last, the one thing a settled line has to say would be the first thing a narrow
+/// pane hid.
 pub fn compact_words(palette: &Palette, selected: usize) -> Vec<CompactWord> {
-    if palette.candidates.is_empty() {
-        return palette
-            .hint()
-            .into_iter()
-            .map(|hint| CompactWord { text: hint, here: false })
-            .collect();
+    let mut words = Vec::new();
+    if palette.runnable {
+        words.push(CompactWord { text: PALETTE_RUNS.to_string(), here: false, runs: true });
     }
-    palette
-        .candidates
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            let here = index == selected;
-            let text = if here {
-                format!("{}{}{}", PALETTE_PICKED.0, candidate.label, PALETTE_PICKED.1)
-            } else {
-                candidate.label.clone()
-            };
-            CompactWord { text, here }
-        })
-        .collect()
+    if palette.candidates.is_empty() {
+        words.extend(
+            palette.hint().map(|hint| CompactWord { text: hint, here: false, runs: false }),
+        );
+        return words;
+    }
+    words.extend(palette.candidates.iter().enumerate().map(|(index, candidate)| {
+        let here = index == selected;
+        let text = if here {
+            format!("{}{}{}", PALETTE_PICKED.0, candidate.label, PALETTE_PICKED.1)
+        } else {
+            candidate.label.clone()
+        };
+        CompactWord { text, here, runs: false }
+    }));
+    words
 }
 
 /// How many of `words` fit across `columns` monospace cells, and how many are left over.
@@ -4542,26 +4570,45 @@ fn command_panel(
         }
         pane.receipt = None;
     }
-    let Some(palette) = pane.palette() else { return (0.0, None) };
+    let Some(palette) = pane.palette().and_then(|p| drawn_palette(p, &pane.composer)) else {
+        return (0.0, None);
+    };
+    let palette = &palette;
     // Clamped rather than kept in step: the list is rebuilt from the line on every keystroke,
     // so an index from the previous list is the one thing that can be out of range.
     let selected = pane.palette_selected.min(palette.candidates.len().saturating_sub(1));
     pane.palette_selected = selected;
-    // 🚨 **A sole candidate that is already the whole line is not a choice.** By the time
-    // this runs `palette_complete` has taken every completion available, so what is left here
-    // is a one-item list offering the word the line already ends with — the thing James asked
-    // not to be shown (*"Do not show me the single choice… simply complete the completion"*).
-    // It is a decision about drawing, so it lives in the renderer: `Palette` still reports it,
-    // and `autorun` still needs it.
-    if palette.sole_completion(&pane.composer).is_none() && palette.candidates.len() == 1 {
-        return (0.0, None);
-    }
     let overflow = if pane.verbose {
         candidate_panel(ui, &pane.registry, &palette, selected, theme, form)
     } else {
         compact_band(ui, &palette, selected, theme, form)
     };
     (overflow, None)
+}
+
+/// What the panel actually draws for `line`, or `None` when there is nothing left to draw.
+///
+/// 🚨 **A sole candidate that is already the whole line is not a choice.** By the time this
+/// runs [`palette_complete`] has taken every completion available, so a one-item list here is
+/// offering the word the line already ends with — the thing James asked not to be shown
+/// (*"Do not show me the single choice… simply complete the completion"*). It is a decision
+/// about drawing, so it lives here rather than in the registry: [`Palette::sole_completion`]
+/// still reports it and [`Palette::autorun`] still needs it.
+///
+/// ⚠️ **Dropping the word is not the same as dropping the row, and conflating the two is the
+/// second half of what James hit.** `/surface` is exactly this case *and* a whole command, so
+/// returning nothing here left a blank region above the composer on the lines a hand had
+/// finished typing. The redundant candidate is dropped from **this copy** — display only,
+/// never the palette [`palette_keys`] reads — and what survives is whatever the line is still
+/// true about, which [`Palette::is_empty`] is the one judge of.
+///
+/// Pure, and separate from the drawing, so a test can read the row a human would see without
+/// standing up an [`egui::Ui`] — and so there is one derivation of it rather than two.
+fn drawn_palette(mut palette: Palette, line: &str) -> Option<Palette> {
+    if palette.sole_completion(line).is_none() && palette.candidates.len() == 1 {
+        palette.candidates.clear();
+    }
+    (!palette.is_empty()).then_some(palette)
 }
 
 /// **The primary panel: one row, every word the line could become next.**
@@ -4606,7 +4653,11 @@ fn compact_band(
                 if index > 0 {
                     piece(PALETTE_SEP, theme.dim);
                 }
-                piece(&word.text, if word.here { theme.ok } else { theme.prose });
+                // The run marker takes the affirmative colour the receipt band's `ok` uses —
+                // it is the same claim about the same line, one keystroke earlier. The
+                // highlighted candidate shares it and is told apart by its brackets.
+                let color = if word.runs || word.here { theme.ok } else { theme.prose };
+                piece(&word.text, color);
             }
             if hidden > 0 {
                 if shown > 0 {
@@ -4902,6 +4953,12 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme
         pane.submit(theme, theme_name);
         return;
     }
+    // 🚨 **Insertion or deletion, decided here and nowhere else.** `notice_edit` above synced
+    // `composer_seen` to the line as it stood at the *start* of this frame, and the box has
+    // just written this frame's keystroke into `composer` — so this is the one point in the
+    // pass where both halves of the edit exist. See `completion_held`.
+    pane.completion_held =
+        completion_held(&pane.composer_seen, &pane.composer, pane.completion_held);
     // Both after the box, so they see the line as it stands *after* this frame's typing.
     // Completing first: `autorun` asks whether the line is now a whole command, and a line
     // one completion short of being one is exactly the case that has just been fixed.
@@ -5077,6 +5134,65 @@ fn composer_keys(ui: &egui::Ui, pane: &mut ConversationPane) {
 /// the table has (verb → value → keyword → value).
 const PALETTE_COMPLETE_STEPS: usize = 4;
 
+/// 🚨 **THE RULE: complete on insertion, never on deletion.**
+///
+/// James, on a running build, 2026-08-14: *"once I have typed slash surface, I am no longer
+/// able to backspace out of it."* Deleting from `/surface` leaves `/surfac`, whose only
+/// candidate is still `surface`, whose completion is `/surface` — so the very deletion that
+/// was just made was put straight back, on the same frame, for ever. It trapped every verb
+/// reachable by a unique prefix and every value once its prefix was unique, and the only way
+/// out of a mistyped command was to select the whole line and start again.
+///
+/// ⚠️ **It was worse than an undo, and the measurement is worth keeping.** Accepting a
+/// completion rewrites the whole line and puts the caret at its end, so the *next* backspace
+/// deletes from wherever that left it. Eight backspaces on `/surface`, driven through real
+/// frames with the guard below removed, produced `/surface`, `/surfae`, `/surface`, `/surfce`,
+/// `/surfc`, `/surface`, `/surace`, `/surac` — the line does not merely refuse to shorten, it
+/// loses characters out of the middle of the word.
+///
+/// The resolution is the one every editor uses and it is stated as a rule about the *edit*
+/// rather than about the line: a completion is something typing earns, so **a frame that added
+/// text may complete and a frame that removed text may not**. `before` is the composer as it
+/// stood when this frame began, `after` is the same line once the box has written this frame's
+/// keystroke into it, and `held` is the answer from last time.
+///
+/// 🚨 **Held, not merely refused, and this is the part a one-frame test cannot see.** The frame
+/// *after* a backspace is a frame in which nothing changed at all — so a rule that only refused
+/// shrinking frames would complete on that next one, and the deletion would be undone one frame
+/// later instead of immediately. That is the same bug at 60 Hz, presenting as a flicker.
+/// A deletion therefore *latches* completion off, and only an insertion lets it go again.
+///
+/// # What this deliberately does not cover
+///
+/// The measure is the line's **length in bytes**, which answers "did this frame add text" and
+/// nothing finer. Three cases are therefore classified by what they did to the length rather
+/// than by what they were, and all three are stated rather than defended:
+///
+/// - **A paste that replaces a long line with a shorter one** reads as a deletion, so it does
+///   not complete. It is an insertion by intent and a shortening in fact.
+/// - **Select-all, then type one character** reads as a deletion for the same reason. The
+///   pasted or typed text is still in the box either way; the *next* inserted character
+///   releases the latch and completion resumes, so the cost is bounded at one keystroke and
+///   there is no state to get stuck in.
+/// - **A same-length replacement** (`/theme dark` pasted over `/theme edit`) changes nothing
+///   about the latch, and completes or not according to whatever the previous edit was.
+///
+/// What it *does* cover is the case the bug was: a deletion that lands on a line whose sole
+/// candidate now differs from it. That is refused, however many characters are left, all the
+/// way back to a bare `/` and out of the line entirely.
+///
+/// ⚠️ **The first frame of a line that was never typed completes.** A composer set wholesale —
+/// by a test, by a recall, by anything that is not a keystroke — arrives with `before` equal to
+/// `after`, so the latch keeps whatever it held, and a fresh pane holds `false`. A line that
+/// appears out of nowhere has not been deleted from, so it is not treated as though it had.
+fn completion_held(before: &str, after: &str, held: bool) -> bool {
+    match after.len().cmp(&before.len()) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => held,
+    }
+}
+
 /// Take the completion when there is only one, with no Tab.
 ///
 /// James, 2026-08-14: *"when I type slash p [Tab] d so that it narrows down to just one
@@ -5099,6 +5215,12 @@ const PALETTE_COMPLETE_STEPS: usize = 4;
 /// hit exactly that. `verb_candidate` gives a verb-with-arguments a trailing space in its
 /// completion, so completing the lone `portal` is what opens the argument ring at all.
 fn palette_complete(pane: &mut ConversationPane) {
+    // 🚨 **Never on a deletion.** Asked once, outside the loop: the cascade is one insertion's
+    // consequence, and re-asking it per step would let a completion argue with the edit that
+    // started it. See `completion_held` — this is the whole of the backspace fix.
+    if pane.completion_held {
+        return;
+    }
     for _ in 0..PALETTE_COMPLETE_STEPS {
         let Some(palette) = pane.palette() else { return };
         let Some(only) = palette.sole_completion(&pane.composer) else { return };
@@ -5113,7 +5235,16 @@ fn palette_complete(pane: &mut ConversationPane) {
 /// wiring between them. It runs **after** the panel keys, so a Tab that completed the line to
 /// its last word fires on the same frame — which is what "as soon as it knows what we want"
 /// has to mean to be worth having.
+///
+/// 🚨 **It obeys [`completion_held`] too, and here the stake is higher than a rewritten line.**
+/// Backspacing `/surface` to `/surfac` leaves one candidate that *completes*, so with the
+/// switch on this would have **run the command** on a keystroke that was trying to erase it —
+/// the same defect as the completion trap, one consequence worse. Deleting is never an
+/// instruction to act.
 fn palette_autorun(pane: &mut ConversationPane, theme: &Theme, theme_name: &str) {
+    if pane.completion_held {
+        return;
+    }
     let Some(palette) = pane.palette() else { return };
     let Some(candidate) = palette.autorun(pane.autorun) else { return };
     let candidate = candidate.clone();
@@ -7565,8 +7696,14 @@ mod tests {
         check("the compact row's selection marks", PALETTE_PICKED.0);
         check("the compact row's selection marks", PALETTE_PICKED.1);
         check("the compact row's remainder note", PALETTE_MORE);
+        check("the compact row's run marker", PALETTE_RUNS);
         let registry = Registry::new(&palette_specs());
-        for line in ["/", "/theme ", "/camera ", "/camera yaw ", "/theme c"] {
+        // ⚠️ `/surface` and `/surface ` are here for the run marker's sake: they are the two
+        // lines whose whole row IS that string, and they are the reason it is a constant
+        // rather than a literal at the draw site.
+        for line in
+            ["/", "/theme ", "/camera ", "/camera yaw ", "/theme c", "/surface", "/surface "]
+        {
             let palette = registry.candidates(line).expect("a command line");
             for candidate in &palette.candidates {
                 check("a candidate's label", &candidate.label);
@@ -8073,6 +8210,21 @@ mod tests {
         (band, left)
     }
 
+    /// The compact row a human would see for the pane's line, as text — or `""` when no panel
+    /// is drawn at all.
+    ///
+    /// 🚨 **Through [`drawn_palette`], which is the renderer's own decision**, so this cannot
+    /// drift from what `command_panel` puts on screen the way a hand-written expectation
+    /// would. `ctx` is taken because the answer is only meaningful after a frame has run: the
+    /// line completes itself during one, and the row describes the line as it ends up.
+    fn row_for(pane: &mut ConversationPane, ctx: &egui::Context) -> String {
+        let _ = palette_frame(ctx, pane, Vec::new());
+        pane.palette()
+            .and_then(|p| drawn_palette(p, &pane.composer))
+            .map(|p| compact_line(&p, pane.palette_selected, 200))
+            .unwrap_or_default()
+    }
+
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
         vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]
     }
@@ -8173,7 +8325,9 @@ mod tests {
     #[test]
     fn the_compact_row_counts_what_it_could_not_fit() {
         let words = |n: usize| -> Vec<CompactWord> {
-            (0..n).map(|_| CompactWord { text: "abcd".into(), here: false }).collect()
+            (0..n)
+                .map(|_| CompactWord { text: "abcd".into(), here: false, runs: false })
+                .collect()
         };
         // "abcd | abcd | abcd" is 18 columns.
         assert_eq!(compact_fit(&words(3), 18), (3, 0), "it all fits");
@@ -8216,6 +8370,55 @@ mod tests {
         let (band, left) = palette_frame(&ctx, &mut pane, Vec::new());
         assert!(band > 0.0, "…and a bare slash must draw one: {band}");
         assert!(left > 300.0, "which still leaves the scrollback the remainder: {left}");
+    }
+
+    /// 🚨 CONTRACT: **a line Enter would run says so, rather than showing nothing.**
+    ///
+    /// James, on a running build, 2026-08-14: *"slash surface shows no options."* `surface`
+    /// takes no arguments, so there genuinely are none — and the row went blank, then (once a
+    /// space was typed after the verb) the panel disappeared outright. A panel that vanishes is
+    /// read as a broken one, and this is the fifth time this week the console has known
+    /// something and said nothing.
+    ///
+    /// ⚠️ Both spellings are pinned because they fail *differently*: `/surface` had a
+    /// redundant one-item list that the renderer dropped, leaving an empty row; `/surface `
+    /// had no candidates at all, so [`Palette::is_empty`] was true and there was no panel to
+    /// draw. One fix would not have found the other.
+    #[test]
+    fn a_finished_command_says_that_enter_would_run_it() {
+        let ctx = egui::Context::default();
+        let mut settled = palette_pane();
+        settled.composer = "/surface".to_string();
+        assert_eq!(
+            row_for(&mut settled, &ctx),
+            "Enter runs",
+            "the verb is complete and takes nothing, so this is the whole truth about it"
+        );
+        let (band, _) = palette_frame(&ctx, &mut settled, Vec::new());
+        assert!(band > 0.0, "…and it is a drawn row, not a hidden one: {band}");
+
+        let mut spaced = palette_pane();
+        spaced.composer = "/surface ".to_string();
+        assert_eq!(row_for(&mut spaced, &ctx), "Enter runs", "the trailing-space spelling too");
+
+        // A runnable line that still has continuations shows both, and the run marker leads —
+        // `compact_fit` drops from the tail, so last would be first to be hidden.
+        let mut more = palette_pane();
+        more.composer = "/camera ".to_string();
+        assert_eq!(row_for(&mut more, &ctx), "Enter runs | [reset] | yaw", "both, run marker first");
+
+        // ⚠️ And the other half, untouched: a line that runs nothing still says nothing.
+        let mut half = palette_pane();
+        half.composer = "/theme ".to_string();
+        assert!(
+            !row_for(&mut half, &ctx).contains(PALETTE_RUNS),
+            "`/theme` still needs a value, so Enter would refuse it"
+        );
+        for prose in ["what does /surface do?", "hello", ""] {
+            let mut pane = palette_pane();
+            pane.composer = prose.to_string();
+            assert_eq!(row_for(&mut pane, &ctx), "", "{prose:?} must draw no panel at all");
+        }
     }
 
     /// 🚨 CONTRACT: **the primary panel is one row and stays one row, however many words it
@@ -8399,16 +8602,29 @@ mod tests {
     /// complete the completion because it's the only option."* The three assertions below are
     /// the three halves of that: the line moves, the panel does not draw a one-item list, and
     /// with autorun off — the default — the transcript stays empty.
+    ///
+    /// ⚠️ **"Never shown" is about the redundant *word*, not about the row.** `/theme dark` is
+    /// a whole command, so the row now says so — see [`PALETTE_RUNS`]. What must not appear is
+    /// a one-item list offering `dark` to a line that already ends in it, and the assertions
+    /// read the row's text to pin exactly that.
     #[test]
     fn a_lone_candidate_completes_itself_and_is_never_shown() {
         let ctx = egui::Context::default();
         let mut pane = palette_pane();
         pane.composer = "/theme d".to_string();
-        let (band, _) = palette_frame(&ctx, &mut pane, Vec::new());
+        let _ = palette_frame(&ctx, &mut pane, Vec::new());
         assert_eq!(pane.composer, "/theme dark", "the only option it could have meant");
-        assert_eq!(band, 0.0, "and the frame that completed it drew no list either");
-        let (after, _) = palette_frame(&ctx, &mut pane, Vec::new());
-        assert_eq!(after, 0.0, "a one-item list of the word already typed is not a choice");
+        let settled = pane.palette().expect("a settled command still has a palette");
+        assert_eq!(
+            compact_line(&settled, 0, 200),
+            "Enter runs | [dark]",
+            "the palette still reports the redundant word; the renderer is what drops it"
+        );
+        assert_eq!(
+            row_for(&mut pane, &ctx),
+            PALETTE_RUNS,
+            "…so what a human sees is the one thing left that is true of the line"
+        );
         assert!(pane.transcript.elements().is_empty(), "completing is not running");
         assert!(pane.receipt.is_none());
 
@@ -8443,6 +8659,133 @@ mod tests {
         let _ = palette_frame(&ctx, &mut shut, key(egui::Key::Escape, egui::Modifiers::NONE));
         let _ = palette_frame(&ctx, &mut shut, Vec::new());
         assert_eq!(shut.composer, "/theme da", "a dismissed panel rewrites nothing");
+    }
+
+    /// One frame's worth of a key held down, and one of a character typed.
+    fn backspace() -> Vec<egui::Event> {
+        key(egui::Key::Backspace, egui::Modifiers::NONE)
+    }
+
+    fn typed(text: &str) -> Vec<egui::Event> {
+        vec![egui::Event::Text(text.to_string())]
+    }
+
+    /// A pane whose composer already holds `line`, with the caret at its end, ready to be
+    /// typed into or deleted from through real frames.
+    fn typing_pane(ctx: &egui::Context, line: &str) -> ConversationPane {
+        let mut pane = palette_pane();
+        pane.composer = line.to_string();
+        // Without this egui's `TextEdit` has no cursor to delete from, and a Backspace event
+        // reaches a widget that does not know where it is.
+        pane.want_caret = true;
+        let _ = palette_frame(ctx, &mut pane, Vec::new());
+        pane
+    }
+
+    /// 🚨 CONTRACT: **a hand can always delete its way back out of a command line.**
+    ///
+    /// James, on a running build, 2026-08-14: *"once I have typed slash surface, I am no longer
+    /// able to backspace out of it."* `/surfac` leaves `surface` as its only candidate, whose
+    /// completion is `/surface` — so every backspace was undone on the frame it happened, and
+    /// select-all-and-retype was the only way to correct a mistyped command. It trapped every
+    /// verb with a unique prefix, which is nearly all of them.
+    ///
+    /// Driven one keystroke at a time through **real frames and egui's own `TextEdit`**,
+    /// because that is the only place the deletion actually happens: a composer assigned
+    /// between frames is synced by `notice_edit` before anything looks at it, so a test that
+    /// popped a character itself would be testing nothing.
+    #[test]
+    fn backspace_walks_out_of_a_completed_command_one_character_at_a_time() {
+        let ctx = egui::Context::default();
+        let mut pane = typing_pane(&ctx, "/surface");
+        assert_eq!(pane.composer, "/surface", "a settled line, left alone");
+
+        let mut seen = vec![pane.composer.clone()];
+        for _ in 0..8 {
+            let _ = palette_frame(&ctx, &mut pane, backspace());
+            seen.push(pane.composer.clone());
+        }
+        assert_eq!(
+            seen,
+            [
+                "/surface", "/surfac", "/surfa", "/surf", "/sur", "/su", "/s", "/", "",
+            ],
+            "every backspace has to land, all the way back to `/` and out of the line"
+        );
+    }
+
+    /// 🚨 CONTRACT: **a deletion is not undone one frame later either**, which is the same
+    /// defect at 60 Hz and would present as a flicker rather than as a line that will not
+    /// shorten.
+    ///
+    /// The frame after a backspace is a frame in which nothing changed at all, so a rule that
+    /// merely refused *shrinking* frames would complete on that next one. The latch is what
+    /// makes the refusal outlive the keystroke — and what lets go of it is an insertion, not
+    /// the passage of time.
+    #[test]
+    fn a_deletion_is_not_undone_on_the_quiet_frames_after_it() {
+        let ctx = egui::Context::default();
+        let mut pane = typing_pane(&ctx, "/surface");
+        let _ = palette_frame(&ctx, &mut pane, backspace());
+        assert_eq!(pane.composer, "/surfac", "the deletion landed");
+        for frame in 0..8 {
+            let _ = palette_frame(&ctx, &mut pane, Vec::new());
+            assert_eq!(pane.composer, "/surfac", "put back on quiet frame {frame}");
+        }
+
+        // …and typing is what starts it up again, on the very next character.
+        let _ = palette_frame(&ctx, &mut pane, backspace());
+        assert_eq!(pane.composer, "/surfa");
+        let _ = palette_frame(&ctx, &mut pane, typed("c"));
+        assert_eq!(
+            pane.composer, "/surface",
+            "an inserted character completes exactly as it did before the fix"
+        );
+    }
+
+    /// 🚨 CONTRACT: **deleting never runs anything**, which is the same rule with a worse
+    /// consequence attached.
+    ///
+    /// With `autorun` on, backspacing `/surface` to `/surfac` leaves one candidate that
+    /// *completes* — so the keystroke trying to erase the command would have executed it.
+    #[test]
+    fn a_backspace_never_runs_the_command_it_is_erasing() {
+        let ctx = egui::Context::default();
+        let mut pane = typing_pane(&ctx, "/surface");
+        pane.autorun = true;
+        let _ = palette_frame(&ctx, &mut pane, backspace());
+        assert_eq!(pane.composer, "/surfac", "the line shortened");
+        assert!(pane.transcript.elements().is_empty(), "and nothing ran");
+        assert!(pane.receipt.is_none());
+    }
+
+    /// The rule itself, stated as the pure function both halves read — including the three
+    /// cases it deliberately gets *approximately* right. See [`completion_held`].
+    #[test]
+    fn completion_is_taken_on_an_insertion_and_never_on_a_deletion() {
+        // The two that matter, from either starting state.
+        assert!(completion_held("/surface", "/surfac", false), "a deletion holds it off");
+        assert!(!completion_held("/surfac", "/surface", true), "an insertion lets it go");
+        // Nothing changed: whatever was true stays true. This is the flicker guard — the frame
+        // after a backspace is exactly this case.
+        assert!(completion_held("/surfac", "/surfac", true), "a quiet frame is not an insertion");
+        assert!(!completion_held("/surfac", "/surfac", false));
+
+        // ⚠️ The edges, each classified by what it did to the length rather than by what it
+        // meant. All three are stated in the doc; none of them can get stuck, because the next
+        // inserted character releases the latch.
+        assert!(
+            completion_held("/theme chocolate", "/th", false),
+            "a paste that shortens the line reads as a deletion, and does not complete"
+        );
+        assert!(
+            completion_held("/surface", "/", false),
+            "select-all then type one character is shorter, so it reads as a deletion too"
+        );
+        assert!(
+            !completion_held("/theme edit", "/theme dark", false),
+            "a same-length replacement changes nothing about the latch"
+        );
     }
 
     /// 🚨 CONTRACT: **the cascade is bounded.**
