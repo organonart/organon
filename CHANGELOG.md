@@ -34,6 +34,7 @@ Reproduced through a real `egui::Context` — two frames, one held ⌘T, no rele
 between — rather than by setting the flag by hand, because the claim under test is
 egui's own behaviour. Noticed during #77's review, which fixed only its own chord
 rather than fold an unrelated behaviour change into that PR.
+
 ### The Console stops needing the Performer's catalog, and an empty catalog now refuses
 
 organon#49 Tier 5b, first half. `console_main.rs` built its `World` with
