@@ -17,7 +17,6 @@
 //! lets a newer CLI talk to an older console. Adding a verb is how this format changes.
 
 use crate::ipc;
-use crate::camera;
 use crate::kind::Kind;
 
 // ---------------------------------------------------------------------------
@@ -177,12 +176,12 @@ impl CameraFraming {
         let ok = |v: Option<f32>, lo: f32, hi: f32| {
             v.is_none_or(|x| x.is_finite() && (lo..=hi).contains(&x))
         };
-        ok(self.yaw, -crate::camera::YAW_LIMIT, crate::camera::YAW_LIMIT)
-            && ok(self.pitch, -crate::camera::PITCH_LIMIT, crate::camera::PITCH_LIMIT)
+        ok(self.yaw, -crate::viewpoint::YAW_LIMIT, crate::viewpoint::YAW_LIMIT)
+            && ok(self.pitch, -crate::viewpoint::PITCH_LIMIT, crate::viewpoint::PITCH_LIMIT)
             && ok(
                 self.distance,
-                crate::camera::DISTANCE_MIN,
-                crate::camera::DISTANCE_MAX,
+                crate::viewpoint::DISTANCE_MIN,
+                crate::viewpoint::DISTANCE_MAX,
             )
     }
 
@@ -640,7 +639,7 @@ mod tests {
         /// commit. Out of range is refused, not clamped; see [`CameraFraming::in_range`].
         #[test]
         fn a_framing_is_in_range_exactly_when_every_stated_axis_is_inside_the_hands_own_band() {
-            use crate::camera as si;
+            use crate::viewpoint as si;
             assert!(CameraFraming { reset: true, ..Default::default() }.in_range(), "reset alone");
             assert!(CameraFraming {
                 yaw: Some(si::YAW_LIMIT),

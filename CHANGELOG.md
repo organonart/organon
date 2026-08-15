@@ -31,7 +31,7 @@ channel live in **different crates**. `bin/ctl.rs` writes it from the root crate
 **The camera limits came with it, and that was not in the plan.** `CameraFraming::in_range`
 validates against `scene_input`'s `PITCH_LIMIT` / `YAW_LIMIT` / `DISTANCE_MIN` /
 `DISTANCE_MAX` — a transitive reference a symbol-level scan does not show. Rather than
-split a type from its validator, the constants moved to a new `organon_core::camera`, with
+split a type from its validator, the constants moved to a new `organon_core::viewpoint`, with
 `scene_input` re-exporting them. `PITCH_LIMIT`'s own doc had already called this out in
 capitals — *"one number, four readers"* — and named the failure mode: *"an agent comes to be
 refused a value the hand can reach, or granted one it cannot."* Those readers now span three

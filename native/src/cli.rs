@@ -19,7 +19,6 @@
 use crate::agent::{self, CliOp, SlotKind};
 use crate::ipc::{self, Shared};
 use crate::params::{GeneratorMode, IndexedEnum, MaterialType, SurfaceMode};
-use organon_core::kind::Kind;
 
 /// A parsed `organon` invocation.
 #[derive(Debug, Clone, PartialEq)]

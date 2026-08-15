@@ -1,4 +1,9 @@
-//! Where the instrument ends — the viewpoint's limits, and nothing else.
+//! Where the instrument ends — the viewpoint's band and its origin, and nothing else.
+//!
+//! ⚠️ **Not `camera`, on purpose.** `organon_console::camera` already exists and is a different
+//! subject entirely — *who owns the viewpoint*, the hand or the agent — and it reads these
+//! constants. Two `camera` modules in one workspace, one reading the other, is a trap; this one
+//! is named for the word the surrounding prose already used.
 //!
 //! organon#49 Tier 5a. Four constants, lifted out of `scene_input` for the reason its own
 //! [`PITCH_LIMIT`] doc already gave in capitals: **one number, four readers**. Those readers

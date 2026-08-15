@@ -123,18 +123,13 @@ pub enum CameraInput {
     Frame { yaw: Option<f32>, pitch: Option<f32>, distance: Option<f32> },
 }
 
-
-
-
-
-/// The viewpoint's limits — organon#49 T5a moved them to `organon_core::camera`, because their
+/// The viewpoint's limits — organon#49 T5a moved them to `organon_core::viewpoint`, because their
 /// readers now span three crates. Re-exported so every `scene_input::PITCH_LIMIT` path here and
-/// in the World resolves exactly as before; `organon_core::camera`'s header owns the reasoning.
-pub use organon_core::camera::{
+/// in the World resolves exactly as before; `organon_core::viewpoint`'s header owns the reasoning.
+pub use organon_core::viewpoint::{
     DEFAULT_DISTANCE, DEFAULT_PITCH, DEFAULT_YAW, DISTANCE_MAX, DISTANCE_MIN, PITCH_LIMIT,
     YAW_LIMIT,
 };
-
 
 /// What one editor frame's pointer interaction asked the camera for.
 ///
