@@ -1281,13 +1281,14 @@ impl ConversationPane {
 
     /// Put one of Organon's editor panels in the flow, or say why not.
     ///
-    /// 🚨 **This is where the `(tab, panel)` pair is checked, and it is the only place that
-    /// can.** The command schema declares the panel argument as the *union* of every slug on
-    /// every tab — one value list per argument is all a schema has — so `/organon motion
-    /// surface` passes validation with a real slug on the wrong tab. `panels::find` takes both
-    /// words, and a refusal here still leaves the words in the composer to be fixed, which is
-    /// the property the whole refusal path exists for. [`crate::registry::NarrowFn`] carries
-    /// the argument for splitting it this way.
+    /// 🚨 **This is the second gate on the `(tab, panel)` pair, and the last one.** The command
+    /// schema declares the panel argument as the *union* of every slug on every tab — one value
+    /// list per argument is all a schema has — so `/organon motion surface` satisfies the
+    /// schema with a real slug on the wrong tab. A line **typed in the composer** is now
+    /// refused before it gets here, by [`crate::registry::NarrowFn`]'s hook, which is what lets
+    /// that refusal name the tab's own panels while the words are still in the box. A call that
+    /// did not come through the composer has had no such check, so `panels::find` still runs
+    /// here: this arm is not dead, it is the door the other callers use.
     fn summon_organon(&mut self, args: &serde_json::Value, typed: &str) -> Receipt {
         let word = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or_default();
         let tab_word = word(registry::ORGANON_TAB_ARG);
@@ -1303,10 +1304,10 @@ impl ConversationPane {
         let Some(panel) = organon_core::panels::find(tab, slug) else {
             let known = organon_core::panels::in_tab(tab);
             let message = if known.is_empty() {
-                format!(
-                    "the {tab_word} tab's panels are not addressable yet — only `look` is \
-                     joined to the panel table so far"
-                )
+                // ⚠️ The same sentence the composer refuses with and the same one the ring
+                // draws when it is empty — written once in `registry`, because a second
+                // spelling of it here would drift the day a tab is joined.
+                registry::unmapped_tab(tab_word)
             } else {
                 format!(
                     "the {tab_word} tab has no panel called `{slug}` — it has: {}",
@@ -6376,10 +6377,15 @@ mod tests {
         assert_eq!(*block.panel, organon_core::panels::LOOK_SURFACE);
     }
 
-    /// 🚨 **The pair, checked where the pair is understood.** `surface` is a real slug, so the
-    /// command schema cannot refuse `/organon motion surface` — the declared value space is the
-    /// union across tabs ([`crate::registry::NarrowFn`]). This is the gate that does, and it
-    /// leaves nothing in the transcript.
+    /// 🚨 **The pair, checked at the door a typed line does not use.** `surface` is a real slug,
+    /// so the command *schema* cannot refuse `/organon motion surface` — the declared value
+    /// space is the union across tabs ([`crate::registry::NarrowFn`]). A composer line is
+    /// refused before it reaches here, by that hook; this call bypasses the composer exactly as
+    /// a non-typed caller would, and it must still be refused and leave nothing behind.
+    ///
+    /// ⚠️ **One sentence, asserted as one sentence.** It is
+    /// [`crate::registry::unmapped_tab`]'s, not a second phrasing that merely resembles it —
+    /// which is what the `contains("not addressable yet")` this replaced could not tell apart.
     #[test]
     fn an_unknown_pair_is_refused_by_the_view_lane() {
         let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
@@ -6389,11 +6395,7 @@ mod tests {
             "/organon motion surface",
         );
         assert!(!receipt.ok);
-        assert!(
-            receipt.text.contains("not addressable yet"),
-            "the refusal should name why, got: {}",
-            receipt.text
-        );
+        assert_eq!(receipt.text, registry::unmapped_tab("motion"));
         assert!(
             !pane
                 .transcript
@@ -7897,9 +7899,22 @@ mod tests {
         // ⚠️ `/surface` and `/surface ` are here for the run marker's sake: they are the two
         // lines whose whole row IS that string, and they are the reason it is a constant
         // rather than a literal at the draw site.
-        for line in
-            ["/", "/theme ", "/camera ", "/camera yaw ", "/theme c", "/surface", "/surface "]
-        {
+        // ⚠️ The three `/organon` lines are here for the strings this crate *writes* rather than
+        // reads off a schema: a panel's "— not transplanted yet", a tab's "not mapped yet" mark,
+        // and the sentence an empty ring draws through `Palette::hint`. Those are prose, and
+        // prose is exactly where a stray dash or ellipsis gets typed.
+        for line in [
+            "/",
+            "/theme ",
+            "/camera ",
+            "/camera yaw ",
+            "/theme c",
+            "/surface",
+            "/surface ",
+            "/organon ",
+            "/organon look ",
+            "/organon generator ",
+        ] {
             let palette = registry.candidates(line).expect("a command line");
             for candidate in &palette.candidates {
                 check("a candidate's label", &candidate.label);

@@ -3677,9 +3677,42 @@ points the way that cannot rot: **`lib.rs` reads its card headings out of the ta
 `card(&mut c[0], panels::LOOK_SURFACE.title, |ui| …)` at all twenty-five Look-tab call sites. A
 renamed panel is one edit and the compiler finds the other end. ⚠️ **Only the Look tab is joined
 that way**; the other seven are *absent* from the table rather than transcribed into it, because
-an entry whose title nothing reads is exactly the un-joined copy the table exists to prevent.
-`/organon motion` therefore offers nothing and says so. A tab joins by converting its `card()`
-sites, one tab at a time.
+an entry whose title nothing reads is exactly the un-joined copy the table exists to prevent. A
+tab joins by converting its `card()` sites, one tab at a time.
+
+#### 🚨 Seven of the eight tabs lead nowhere, and the ring says so in its own line
+
+James typed `/organon generator 2` on a running build and was told *"`2` is not one of surface |
+colour | material | …"* — the Look tab's twenty-five panels, on a line that said `generator`.
+He read it as the console failing to register the word, which is the only reading available: a
+Look-shaped answer to a Generator-shaped question. Two separate defects made that one sentence,
+and both are the same failure — **a surface that knew and did not say**.
+
+**The tabs stay, all eight, and the empty ones are marked.** The alternative was to offer only
+the tabs with panels, which is honest and self-maintaining and was rejected: `UiTab::ALL` *is*
+Organon's hierarchy, and a first ring showing one wedge of it would misrepresent the product as
+having one section. So `look` carries `25 panels` and the other seven carry `not mapped yet — no
+panels in the table`, **counted off `panels::in_tab` rather than listed**, so a tab stops being
+marked on the day its `card()` sites are converted and no line here changes. That is the same
+honesty `Status::Declared` already uses one ring down: named, offered, and truthful about what
+choosing it opens.
+
+⚠️ **An empty ring must never be silent, and the type is what enforces it.** `NarrowFn` answered
+`Option<Vec<(label, doc)>>`, so a tab with no panels answered `Some(vec![])` — truthful, and
+invisible: the band drew empty, which is indistinguishable from a band that is broken, and
+`Palette::is_empty` then threw the panel away entirely. The hook now answers a `Ring`, whose
+`Empty` arm **cannot be constructed without the sentence that explains it**. That sentence is
+`registry::unmapped_tab`, written once and read three times — by the band (through
+`Palette::hint`, so both renderers already draw it), by the refusal, and by the view lane.
+
+⚠️ **The refusal consults the hook, so it names the ring it is refusing against.** `coerce`
+refused against the declared `Choice`, which for a dependent argument is the union across tabs —
+hence twenty-five slugs for a tab that has none. It now asks the hook first wherever the parent
+word is in hand: `/organon generator 2` answers with the unmapped-tab sentence, and `/organon
+look 2` answers *"`/organon look`: `2` is not one of surface | colour | …"*, the head carrying
+the words that **chose** that list. ⚠️ **This does not fix itself as tabs are joined — it gets
+worse**: the union today happens to be Look's, and a second joined tab would have that refusal
+reading out two tabs' panels at once.
 
 **Slug and title are different words**, and the rule that binds them is not cosmetic: no slug
 may be a prefix of another slug on the same tab (`panels::no_slug_is_a_prefix_of_another`).
@@ -3698,22 +3731,26 @@ two a function of ring one: `ArgKind::Choice(Vec<String>)` is fixed when the tab
 is matched exhaustively at **~30 sites** across `command.rs`, `mcp.rs`, `conversation_view.rs`
 and `registry.rs`, so a new arm is a change to the MCP schema generator, the dispatch validator
 and three renderers, for one verb. Instead an `Entry` may carry a `NarrowFn` — a plain `fn`
-pointer, `fn(arg, positional) -> Option<Vec<(label, doc)>>` — consulted by `value_candidates`
-and by nothing else. `CommandSpec` is untouched, so a console verb still cannot have one and the
-agent-facing vocabulary is unchanged.
+pointer, `fn(arg, positional) -> Option<Ring>` — consulted by `value_candidates` **and by
+`coerce`**, and by nothing else. `CommandSpec` is untouched, so a console verb still cannot have
+one and the agent-facing vocabulary is unchanged.
 
 Three consequences worth stating:
 
-- **`Some(vec![])` beats `None` for an unjoined tab.** `None` falls through to the declared
-  `Choice`, which would offer *every* slug on a tab that has none of them.
+- **`Ring::Empty` beats `None` for an unjoined tab, and beats an empty list.** `None` falls
+  through to the declared `Choice`, which would offer *every* slug on a tab that has none of
+  them; an empty list draws a blank band and refuses with nothing to say. `Empty` carries the
+  reason, and the enum is what makes carrying it unavoidable.
 - **`Entry`'s `PartialEq` is hand-written now**, to exclude the hook. `derive` compared it and
   rustc warns that function-pointer equality is not meaningful. Excluding it is also the right
   meaning: an entry is its vocabulary, and the hook is how a ring is drawn.
-- 🚨 **The declared value space is the union across tabs, so the schema cannot catch a wrong
-  pair.** `/organon motion surface` names a real slug on the wrong tab and passes validation. A
-  schema has one value list per argument and no notion of a pair, so the check lives where the
-  pair is understood — `summon_organon`, which answers with that tab's own panel list while the
-  words are still in the composer. Both halves are pinned by test on both sides of the seam.
+- 🚨 **The declared value space is still the union across tabs, and stays so.** It is what the
+  MCP schema and `/help` are generated from, and neither has a parent word in hand — one value
+  list per argument is all a schema has. What changed is that the two paths *with* a parent word
+  in hand now use it: a **typed** `/organon motion surface` is refused in the composer, naming
+  the tab. The `(tab, panel)` check in `summon_organon` is therefore no longer the only gate,
+  but it is not dead either — it is the door a caller that never touched the composer arrives
+  through, and it is pinned by a test that calls it directly.
 
 #### The element, and why it is not an artifact
 
@@ -3826,11 +3863,11 @@ path silently breaks the three-products-simultaneously guarantee that
   found later.** §1.11 carries the reason in full: there is no public way to write an Organon
   parameter from outside `nih_plug`, so a transplanted panel's knobs would do nothing, and
   `/panel` was retired for exactly that. What is verified is code: `cargo test -p
-  organon-console --lib` is **656 green** and `cargo test -p organon-core` is **564 green**,
-  both measured on the tree that merged this tier into `main`'s compact panel rather than on
-  the branch alone (the branch read 640/564 against a 630 base; the difference is `main`'s
-  backspace and receipt work arriving, not anything here changing). Both `cargo check` legs
-  are clean.
+  organon-console --lib` is **659 green** (656 before the tab fixes below) and `cargo test -p
+  organon-core` is **565 green**, both measured on the tree that merged this tier into `main`'s
+  compact panel rather than on the branch alone (the branch read 640/564 against a 630 base; the
+  difference is `main`'s backspace and receipt work arriving, not anything here changing). Both
+  `cargo check` legs are clean.
   **That is the whole claim: it compiles and the tests pass.** What it does not establish, in
   order of how much it matters: (1) **that the two rings feel like Organon's own hierarchy when
   a hand walks them** — James described `l` → `look` completing while the ring beneath it
@@ -3855,6 +3892,18 @@ path silently breaks the three-products-simultaneously guarantee that
   whole panel taxonomy — and `panels::the_look_tab_is_whole` guards a count, not a join: a
   twenty-sixth Look card added without a table entry fails that test, but a *renamed* title on
   any other tab is invisible to everything here.
+  ✏️ **What has changed is what the surface says about it, not how much of it is joined.** The
+  first ring still offers all eight tabs; the seven unjoined ones are marked `not mapped yet — no
+  panels in the table`, their second ring carries the sentence `registry::unmapped_tab` writes
+  instead of drawing blank, and a refusal names the tab that was given rather than the union
+  (§1.11). James found both halves within a minute of first use — a Look-shaped refusal to a
+  `generator` query, and an empty band under `/organon generator ` — which is the sixth
+  the-console-knew-and-said-nothing defect this surface has produced. **The fix is the saying,
+  not the mapping**; seven tabs are still dead ends and now admit it in three places.
+  ⚠️ **Unverified in the same way everything else here is**: the marked ring and both refusal
+  sentences exist as strings pinned by test. Nobody has read them on a running console, and
+  whether "not mapped yet" reads as honest or as broken is the same open question the element's
+  "not transplanted yet" line already carries.
 - 🚨 **Nobody has seen the compact command panel, so whether it *feels* fast is unverified —
   and "fast" is the entire claim being made for it.** ✏️ **The verbose panel HAS now been
   seen**, which is where the compact one came from and what the six defects §1.9 records were

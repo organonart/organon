@@ -11,6 +11,33 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### `/organon` tells the truth about the seven tabs it cannot open
+
+Two defects James hit within a minute of first use, both of the same kind — the console knew
+and did not say. He typed `/organon generator 2` and was refused with *"`2` is not one of
+surface | colour | material | …"*: the **Look** tab's twenty-five panels, on a line that said
+`generator`. The only available reading is that the word `generator` had not registered. It had.
+
+**A refusal now names the ring it is refusing against.** The panel argument is declared as the
+union of every slug on every tab — a command schema has one value list per argument and no
+notion of a dependent one — and the refusal read that declaration even when the tab was sitting
+in the same line. It asks the narrowing hook first now, so `/organon look 2` answers *"`/organon
+look`: `2` is not one of surface | colour | …"* with the head carrying the words that chose that
+list, and a wrong pair (`/organon motion surface`, a real slug on the wrong tab) is refused in
+the composer instead of a ring further in. The declared union is unchanged: `/help` and the MCP
+schema have no tab in hand, and the union is the honest answer there.
+
+**And an empty ring can no longer be silent.** Only the Look tab's cards are joined to the panel
+table, so the other seven offered a band with nothing in it — indistinguishable from a broken
+one. All eight tabs are still offered, because `UiTab::ALL` is Organon's real hierarchy and
+hiding seven of it would misrepresent the product; the unjoined ones are **marked** `not mapped
+yet — no panels in the table`, counted off the table so a tab stops being marked the day it is
+joined. The narrowing hook's return type carries the change: an empty result now has to arrive
+as `Ring::Empty(reason)`, so the ring, the hint and the refusal read one sentence and a future
+empty ring cannot be built without one.
+
+Seven tabs are still dead ends. What changed is that they say so, in three places.
+
 ### `/organon` — the console's rings are Organon's own UI hierarchy
 
 Typing `/organon` in a conversation offers Organon's eight tabs — generator, motion,
