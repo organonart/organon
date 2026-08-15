@@ -1,2 +1,22 @@
 [alias]
 xtask = "run --package xtask --release --"
+
+# 🚨 **The main thread needs a bigger stack than MSVC's 1 MB default, or Organon Console
+# dies at startup.** `OrganonPanels` holds an `OrganicMathParams` — one nih-plug param
+# object per automatable lane — and a `PresetValues` of ~1,300 fields, and
+# `OrganonPanels::new` builds both by value before they reach the heap. On the main thread
+# that overflows before a frame is drawn: *"thread 'main' has overflowed its stack"*, with
+# a clean build and no warning of any kind.
+#
+# ⚠️ Boxing the field in `Console` was tried first and is NOT sufficient — the temporary
+# inside `new()` overflows on its own, so the box only moves where the value lands, not
+# where it is built. The box was kept anyway (it keeps `Console` small), but this is the
+# line that actually fixes it.
+#
+# ⚠️ Applies to every binary this workspace links on MSVC, which is the intended scope: the
+# plugin, the standalone and the visual all construct the same param set, and the only
+# reason they have not hit this is that their call stacks are shallower at the moment they
+# do it. A stack ceiling is reserved address space, not committed memory — pages are
+# committed as they are touched, so an unused 32 MB costs nothing resident.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "link-arg=/STACK:33554432"]
