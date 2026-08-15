@@ -5558,10 +5558,22 @@ mod cli_tests {
                 ("portal", true),
                 ("camera", true),
                 ("camera.read", true),
-                // The view lane. `surface` and `organon` put an element in the transcript;
-                // `help` writes a few log lines and reads a table.
+                // The view lane. `surface`, `media` and `organon` put an element in the
+                // transcript; `help` writes a few log lines and reads a table.
+                //
+                // ✏️ **`media` is here because this list is the SECOND casualty of the same
+                // merge**, and the paragraph at `compact_line`'s `+12` above describes the
+                // first. `/media` joined the view lane on the exhibit branch, where `Reversal`
+                // did not exist; this whole test arrived on the autorun branch, where `/media`
+                // did not. Neither side could be red, git had no conflict to show, and the
+                // combination did not compile at all — so this assertion had never once run
+                // against a table containing `media`. ⚠️ The lesson is the one that line already
+                // teaches: **a list of the whole vocabulary is invalidated by a merge that
+                // touches neither end of it.** Re-derive it from `view_entries()` when it moves;
+                // do not append to it and assume the order.
                 ("surface", false),
                 ("help", true),
+                ("media", false),
                 ("organon", false),
             ],
             "the reversal column of the console's whole vocabulary"
