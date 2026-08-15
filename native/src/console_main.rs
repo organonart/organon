@@ -3541,12 +3541,22 @@ impl Console {
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
+            // `repeat` is forwarded rather than filtered here: which chords a held
+            // key may stream is `command_key_action`'s decision, taken per action
+            // and tested there. `action.is_none()` bounds this to one per frame,
+            // which is a rate and not a total — autorepeat is slower than the frame
+            // rate, so every repeat that arrives gets its own frame to act in.
             ctx.input(|i| {
                 for ev in &i.events {
-                    if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+                    if let egui::Event::Key { key, pressed: true, repeat, modifiers, .. } = ev {
                         if action.is_none() {
-                            action =
-                                tabs::command_key_action(*key, *modifiers, strip, default_harness);
+                            action = tabs::command_key_action(
+                                *key,
+                                *modifiers,
+                                *repeat,
+                                strip,
+                                default_harness,
+                            );
                         }
                     }
                 }
