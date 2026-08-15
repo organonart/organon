@@ -43,13 +43,11 @@ use crate::approval::{
 use crate::block_panel::{DEFAULT_SLIDERS, SLIDER_WIDTH};
 use crate::card_density::{self, DensityMap, Row};
 use crate::command::CommandSpec;
-use crate::conversation::{ExhibitSpec, 
+use crate::conversation::{
     AgentEvent, Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock,
-    ArtifactContent, Body, Change, Element, ElementId, Ignored, OrganonBlock, PanelSpec,
-    ResultDetail,
-    RunOutcome, StepState,
-    SubagentAct, SubagentLog, SubagentProgress, SurfaceSpec, ToolCard, ToolState, Transcript,
-    Verdict,
+    ArtifactContent, Body, Change, Element, ElementId, ExhibitSpec, Ignored, OrganonBlock,
+    PanelSpec, ResultDetail, RunOutcome, StepState, SubagentAct, SubagentLog, SubagentProgress,
+    SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
 };
 use crate::mcp::{ExposureAudit, McpServer, NoDispatch, ToolDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
@@ -199,7 +197,15 @@ pub enum ExhibitContent {
     Picture { texture: egui::TextureId, size: (u32, u32) },
     /// A Markdown document's source text, read off the frame thread. Rendered by
     /// [`markdown_body`] — this crate holds the text and never the pixels.
-    Document(String),
+    ///
+    /// 🚨 **`Arc<str>` rather than `String`, and it is a frame-cost decision, not a style
+    /// one.** The console hands the whole [`ExhibitContents`] map to the view on **every**
+    /// frame, exactly as it hands over [`SurfaceImages`] — but that map holds `TextureId`s,
+    /// which are `Copy` and free to clone, while a document is its entire text. A `String`
+    /// here means a moderately-sized README is deep-copied sixty times a second for as long as
+    /// it is held, which is a real cost in a file whose §1.7 measurement exists because frame
+    /// time is load-bearing. An `Arc` makes that clone a refcount bump.
+    Document(std::sync::Arc<str>),
     /// It will not load, in a sentence that **names the file** rather than quoting a decoder's
     /// internal error — `organon_core::exhibit::ExhibitError`'s rule, applied one stage later,
     /// where the failure is about bytes instead of about a name.

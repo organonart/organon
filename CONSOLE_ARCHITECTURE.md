@@ -4230,8 +4230,28 @@ because the two ledgers fill differently — an exhibit can arrive with several 
 command, and a pooled cap would let a three-item gallery evict the surface a panel is driving —
 but there is only one policy.
 
+🚨 **Documents are budgeted too, and by bytes rather than by count.** The first cut of this tier
+capped only pictures, reasoning that a `String` costs no GPU. That is true and beside the point,
+and #86's review caught it: a document that is never evicted is held for the rest of the session,
+so a long conversation that opened a dozen READMEs keeps every one alive behind cards nobody can
+see. `documents_to_evict` is the weighed twin of `surfaces_to_evict` — same rule, same tie-break,
+**pure and tested** — and it is a separate function rather than a cap computed for the counting
+one because *how many entries fit* is unanswerable in advance when the entries are different
+sizes: dropping the two oldest might free 4 KB or 8 MB, and only the running total knows when to
+stop. The property that falls out, and that a test pins, is that **one oversized document goes
+alone** rather than taking its small, freshly-read neighbours with it.
+
+⚠️ **`ExhibitContent::Document` holds an `Arc<str>`, and that is a frame-cost decision.** The
+console hands the whole `ExhibitContents` map to the view on *every* frame, exactly as it hands
+over `SurfaceImages` — but that map holds `TextureId`s, which are `Copy`. A `String` here meant a
+moderately-sized README being deep-copied sixty times a second for as long as it was held, in a
+file whose §1.7 measurement exists precisely because frame time is load-bearing. The `Arc` makes
+that clone a refcount bump. Also from #86's review.
+
 Every eviction prints a line naming what went and why (`[exhibit]`), on `free_surface`'s rule and
-for its reason: *a silently dropped texture reads as "the picture is still there"*. It drops the
+for its reason: *a silently dropped texture reads as "the picture is still there"*. **A document
+says so too**, because a re-read nobody was told about is how a document that quietly reloads on
+every scroll looks like a console that is merely slow. It drops the
 **entry**, not only the texture, which is what makes the next frame ask again — an item is **a
 reference, never bytes**, so an eviction costs a re-read and never costs the picture. Pictures
 are scaled to a 2048 px long edge before upload (a phone photograph is 4000 px and would be a

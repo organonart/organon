@@ -54,9 +54,17 @@ gains sample media never loses it.
 
 The eviction policy is the surfaces' own — `surfaces_to_evict` is now generic over its key, so
 the two texture ledgers share one policy instead of growing two that can disagree about which
-picture a long session keeps. Every eviction prints a line naming what went and why, and drops
-the entry rather than only the texture, which is what makes the next frame re-read the file: an
-exhibit item is **a reference, never bytes**, so an eviction costs a re-read and never costs the
-picture. Pictures are scaled to a 2048 px long edge before upload and files past 64 MB are
-refused before the decoder is handed them, since a decoder asked for a 500 MB PNG allocates its
-full buffer before anything can object.
+picture a long session keeps. **Documents are budgeted too, by bytes rather than by count**:
+`documents_to_evict` is the weighed twin, pure and tested, and a separate function because "how
+many entries fit" is unanswerable in advance when the entries are different sizes — one oversized
+document therefore goes alone rather than taking its small, freshly-read neighbours with it. A
+document's text is an `Arc<str>` for the same reason the map exists at all: the whole
+`ExhibitContents` map is handed to the view every frame, and a `String` there meant a README
+deep-copied sixty times a second for as long as it was held.
+
+Every eviction prints a line naming what went and why, documents included, and drops the entry
+rather than only the texture — which is what makes the next frame re-read the file: an exhibit
+item is **a reference, never bytes**, so an eviction costs a re-read and never costs the picture.
+Pictures are scaled to a 2048 px long edge before upload and files past 64 MB are refused before
+the decoder is handed them, since a decoder asked for a 500 MB PNG allocates its full buffer
+before anything can object.

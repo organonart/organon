@@ -1245,6 +1245,19 @@ type ExhibitKey = (ElementId, usize);
 /// they share is the *policy*, which is why `surfaces_to_evict` is generic over the key.
 const MAX_EXHIBIT_TEXTURES: usize = 4;
 
+/// How much document text may be held across all exhibits, in bytes.
+///
+/// 🚨 **Documents are budgeted too, and by bytes rather than by count — the review of #86 found
+/// this missing.** The first cut capped only pictures, on the reasoning that a `String` costs no
+/// GPU. That is true and beside the point: a document that is never evicted is held for the rest
+/// of the session, so a long conversation that opened a dozen READMEs keeps every one of them
+/// alive behind cards nobody can see any more. A *count* would have been the wrong instrument
+/// here (one 8 MB document and eight 2 KB ones are not alike), which is why this is the one
+/// ledger measured in bytes.
+///
+/// 4 MB is many books' worth of Markdown and still an order of magnitude under one picture.
+const MAX_DOCUMENT_BYTES_HELD: usize = 4 * 1024 * 1024;
+
 /// The largest file the loader will open, in bytes.
 ///
 /// 🚨 **Checked before the decode, not after**, which is the whole point: a decoder asked for
@@ -1266,8 +1279,8 @@ const MAX_EXHIBIT_EDGE: u32 = 2048;
 enum ExhibitLoad {
     /// Decoded, already scaled to fit [`MAX_EXHIBIT_EDGE`], as tightly-packed RGBA8.
     Picture { size: (u32, u32), rgba: Vec<u8> },
-    /// A document's source text.
-    Document(String),
+    /// A document's source text, already an `Arc` so the frame path never deep-copies it.
+    Document(std::sync::Arc<str>),
     /// A sentence for the person who typed the path.
     Failed(String),
 }
@@ -1306,7 +1319,7 @@ fn load_exhibit_item(path: &std::path::Path) -> ExhibitLoad {
     }
     match organon_core::exhibit::Exhibit::kind_for_path(path) {
         Some(kind::Kind::Markdown) => match std::fs::read_to_string(path) {
-            Ok(text) => ExhibitLoad::Document(text),
+            Ok(text) => ExhibitLoad::Document(text.into()),
             // The one failure a person will hit here and not understand from an io error
             // alone: a file that is not UTF-8 is a real document in some other encoding, not a
             // broken one.
@@ -1377,6 +1390,40 @@ fn surfaces_to_evict<K: Copy + PartialEq>(
     order.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
     order.truncate(held.len() - cap);
     order.into_iter().map(|(key, _, _)| key).collect()
+}
+
+/// Which documents go when more text is held than `budget` allows — **pure**, so the policy is
+/// a test rather than a claim, exactly like [`surfaces_to_evict`].
+///
+/// 📌 **The same rule, weighed instead of counted.** Least-recently-**requested** first, ties
+/// broken furthest-down-the-request-list, and eviction stops the moment what remains fits.
+/// A separate function rather than a `cap` computed for `surfaces_to_evict` because "how many
+/// entries fit" is not answerable in advance when the entries are different sizes: dropping the
+/// two oldest might free 4 KB or 8 MB, and only the running total knows when to stop.
+///
+/// `held` is `(key, last requested, bytes)`. Returns the keys to release, in eviction order —
+/// empty when everything already fits, which is the ordinary case.
+fn documents_to_evict<K: Copy + PartialEq>(
+    held: &[(K, u64, usize)],
+    wanted: &[K],
+    budget: usize,
+) -> Vec<K> {
+    let mut total: usize = held.iter().map(|(_, _, n)| *n).sum();
+    if total <= budget {
+        return Vec::new();
+    }
+    let mut order = held.to_vec();
+    let rank = |k: &K| wanted.iter().position(|w| w == k).unwrap_or(usize::MAX);
+    order.sort_by(|a, b| a.1.cmp(&b.1).then(rank(&b.0).cmp(&rank(&a.0))));
+    let mut going = Vec::new();
+    for (key, _, bytes) in order {
+        if total <= budget {
+            break;
+        }
+        going.push(key);
+        total -= bytes;
+    }
+    going
 }
 
 /// One slider, applied to the snapshot a surface will be rendered from — **pure**, so the
@@ -3618,6 +3665,24 @@ impl Console {
         for key in surfaces_to_evict(&held, &wanted, MAX_EXHIBIT_TEXTURES) {
             self.free_exhibit(key, "the cap");
         }
+        // Documents, on the **same policy** and a different ledger: least-recently-requested
+        // first, until what is held is inside [`MAX_DOCUMENT_BYTES_HELD`]. `surfaces_to_evict`
+        // counts entries rather than weighing them, so the cap it is given is derived here —
+        // drop the oldest until the total fits, which is the byte-wise reading of the same
+        // "oldest goes first" rule and needs no second sort.
+        let docs: Vec<(ExhibitKey, u64, usize)> = self
+            .exhibits
+            .iter()
+            .filter_map(|(k, c)| match c {
+                ExhibitContent::Document(text) => {
+                    Some((*k, self.exhibit_touched.get(k).copied().unwrap_or(0), text.len()))
+                }
+                _ => None,
+            })
+            .collect();
+        for key in documents_to_evict(&docs, &wanted, MAX_DOCUMENT_BYTES_HELD) {
+            self.free_exhibit(key, "the document budget");
+        }
 
         // 3. Start what is missing. `contains_key` covers `Failed` too, which is what stops a
         //    broken file being re-read on every frame for the rest of the session.
@@ -3701,6 +3766,18 @@ impl Console {
     fn free_exhibit(&mut self, key: ExhibitKey, why: &str) {
         let Some(gone) = self.exhibits.remove(&key) else { return };
         self.exhibit_touched.remove(&key);
+        // A document has no texture and still says it went, on the same rule: the next frame
+        // re-reads the file, and a re-read nobody was told about is how a document that quietly
+        // reloads on every scroll looks like a console that is merely slow.
+        if let ExhibitContent::Document(text) = &gone {
+            eprintln!(
+                "[exhibit] released the {}-byte document for element {} item {} - {why}",
+                text.len(),
+                key.0 .0,
+                key.1
+            );
+            return;
+        }
         let ExhibitContent::Picture { texture, size } = gone else { return };
         self.exhibit_textures.remove(&texture);
         if let Some(renderer) = self.renderer.as_mut() {
@@ -5375,11 +5452,11 @@ mod cli_tests {
         assert_eq!(
             compact_line(&all, 0, 200),
             "[background] | rig | theme | posture | screen | block | patch | portal | camera | \
-             camera.read | surface | help | organon"
+             camera.read | surface | help | media | organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 120);
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 128);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -5387,7 +5464,12 @@ mod cli_tests {
         // A hidden count is the one assertion here that a merge can silently invalidate: the
         // row above conflicts loudly because both sides edited the same words, and this one
         // does not because both sides happened to write the same number for different reasons.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +11");
+        // ✏️ **Fourteen verbs now, so `+12`** — `media` (the exhibit, §1.13) is the third verb
+        // to move this line, and the count was re-derived rather than nudged: two verbs are
+        // shown at this width and `mcp_specs()` yields fourteen, so twelve are hidden. The
+        // paragraph above is why that sentence is written out instead of the number simply
+        // being incremented.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +12");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -6144,6 +6226,48 @@ mod cli_tests {
 
     /// The cap, and the order it bites in. Nothing is evicted while the set fits, and what
     /// goes first is what has been unwanted the longest — never what is on screen right now.
+    /// 🚨 **Documents are evicted too, and by weight** — the gap #86's review found. A budget
+    /// that only counted pictures let a document live for the rest of the session behind a card
+    /// nobody could see any more.
+    #[test]
+    fn the_document_budget_drops_the_oldest_until_what_is_left_fits() {
+        // Three documents, 100 bytes each, in a 250-byte budget: exactly one must go, and it
+        // must be the oldest.
+        let held = [(key(0, 1), 10, 100), (key(0, 2), 30, 100), (key(0, 3), 20, 100)];
+        assert_eq!(documents_to_evict(&held, &[], 250), vec![key(0, 1)]);
+        // …and the loop stops as soon as it fits rather than draining to the floor.
+        assert_eq!(documents_to_evict(&held, &[], 150), vec![key(0, 1), key(0, 3)]);
+    }
+
+    /// Everything fitting is the ordinary case and must cost nothing — an empty answer, not a
+    /// sorted list nobody uses.
+    #[test]
+    fn the_document_budget_evicts_nothing_when_it_already_fits() {
+        let held = [(key(0, 1), 10, 100), (key(0, 2), 20, 100)];
+        assert!(documents_to_evict(&held, &[], 4096).is_empty());
+        let none: [(SurfaceKey, u64, usize); 0] = [];
+        assert!(documents_to_evict(&none, &[], 0).is_empty(), "nothing held, nothing to drop");
+    }
+
+    /// 🚨 **One oversized document does not evict the whole ledger.** The weighing loop stops on
+    /// the running total, so a single 10 MB file over a 1 MB budget goes alone — a count-based
+    /// cap would have taken its small, freshly-read neighbours with it.
+    #[test]
+    fn one_huge_document_goes_alone() {
+        let held = [(key(0, 1), 10, 10_000_000), (key(0, 2), 20, 1_000), (key(0, 3), 30, 1_000)];
+        assert_eq!(documents_to_evict(&held, &[], 1_000_000), vec![key(0, 1)]);
+    }
+
+    /// The tie-break is `surfaces_to_evict`'s: among documents last requested on the same
+    /// frame, the one **furthest down** this frame's list goes first, so the top of the page —
+    /// what the reader scrolled to — survives.
+    #[test]
+    fn the_document_tie_break_keeps_the_top_of_the_page() {
+        let held = [(key(0, 1), 10, 100), (key(0, 2), 10, 100)];
+        let wanted = [key(0, 1), key(0, 2)];
+        assert_eq!(documents_to_evict(&held, &wanted, 150), vec![key(0, 2)]);
+    }
+
     #[test]
     fn the_surface_cap_evicts_the_least_recently_wanted() {
         let held = vec![(key(0, 1), 10u64), (key(0, 2), 40), (key(0, 3), 20), (key(0, 4), 30)];
