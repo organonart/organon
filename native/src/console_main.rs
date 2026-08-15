@@ -4813,12 +4813,12 @@ mod cli_tests {
         assert_eq!(
             compact_line(&all, 0, 200),
             "[background] | rig | theme | posture | block | patch | portal | camera | \
-             camera.read | surface | help"
+             camera.read | surface | help | organon"
         );
-        // 101 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // 111 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 101);
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +9");
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 111);
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +10");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
