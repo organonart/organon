@@ -11,6 +11,34 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The console command lane leaves the plugin crate
+
+organon#49 Tier 5a. `ConsoleOp`, `PortalCmd`, `CameraFraming`, the word tables and the
+whole sidecar wire format — **~395 lines and their 285 lines of tests** — move out of
+`cli.rs` into `organon_core::console_ops`, unchanged. `cli.rs` re-exports the module, so
+every `cli::ConsoleOp` / `cli::parse_console_op` / `cli::PORTAL_WORDS` path in the tree
+resolves exactly as before.
+
+📌 **It was never plugin code.** All of `cli.rs`'s nih-plug coupling is two `use` lines
+inside one function (`docs_files`, the `organon docs` generator) and none of it was in this
+section. What kept the console lane upstream was its address, not a dependency — the same
+finding T4c-i made about `agent.rs`.
+
+It goes to `organon-core` for the reason `kind.rs` is already there: the two ends of this
+channel live in **different crates**. `bin/ctl.rs` writes it from the root crate;
+`console_main.rs` reads it, and Tier 5c moves that reader into `organon-console`.
+
+**The camera limits came with it, and that was not in the plan.** `CameraFraming::in_range`
+validates against `scene_input`'s `PITCH_LIMIT` / `YAW_LIMIT` / `DISTANCE_MIN` /
+`DISTANCE_MAX` — a transitive reference a symbol-level scan does not show. Rather than
+split a type from its validator, the constants moved to a new `organon_core::viewpoint`, with
+`scene_input` re-exporting them. `PITCH_LIMIT`'s own doc had already called this out in
+capitals — *"one number, four readers"* — and named the failure mode: *"an agent comes to be
+refused a value the hand can reach, or granted one it cannot."* Those readers now span three
+crates, so core is the only home where there is still one number. The three `DEFAULT_*`
+travelled too: `--reset` targets them, and leaving them a crate away from the band they must
+land inside is the same hazard wearing a different hat.
+
 ### `world.rs` leaves the plugin crate — and stops being compiled twice
 
 organon#49 Tier 4c-ii. **`world.rs` (13 509 lines)**, its nine `#[path]` submodules
