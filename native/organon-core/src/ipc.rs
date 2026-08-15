@@ -2257,6 +2257,47 @@ impl Shared {
 //        for reasons nothing explains. Close and reopen the visual after this lands.
 pub const LAYOUT_VERSION: u32 = 0x0_2_8_5; // "om" sentinel
 
+/// Copy into `dst` every lane in which `mine` disagrees with `base`, leaving the rest alone.
+///
+/// **What it is for.** A front-end that owns only *part* of a look — Organon Console drawing
+/// one of Organon's editor panels — has to put that part on top of a snapshot somebody else
+/// composed, without a hand-written list of which lanes the panel happens to touch. Such a
+/// list is the thing that rots: a param added to the panel would keep working in the editor
+/// and quietly stop reaching the world here, with nothing to say so.
+///
+/// `base` is what the panel's own values *were* before anyone touched them, `mine` is what
+/// they are now, and the difference between the two is exactly the set of lanes the panel has
+/// an opinion about. Nothing else is named, so nothing else can be forgotten.
+///
+/// 🚨 **`base == mine` writes nothing, and that is the point.** An untouched panel is
+/// byte-inert over any `dst` whatsoever — the repo's "new capability defaults to inert" rule
+/// made structural rather than checked. [`overlay_changed_is_inert_when_nothing_moved`] pins
+/// it.
+///
+/// ⚠️ **Lane granularity, not byte granularity.** A changed `f32` differs in one to four of
+/// its bytes; copying only the *differing* bytes would splice two floats together and produce
+/// a value neither side ever held. [`Shared`] is `Pod` and every one of its fields is a `u32`,
+/// an `f32`, or an array of them, so a 4-byte word **is** a lane and `bytemuck` can hand us
+/// the whole struct as `[u32]` — which is why this can be a dozen lines rather than a visitor
+/// over ~200 fields. [`shared_is_a_whole_number_of_lanes`] is the guard on that assumption;
+/// if `Shared` ever grows a field of another width, it fails rather than corrupting one.
+///
+/// ⚠️ **[`Shared::seq`] and [`Shared::layout_version`] are lanes like any other**, and they
+/// are safe here for a reason worth stating rather than relying on: both are equal in `base`
+/// and `mine` whenever the two come from the same build's packers, so neither can ever be in
+/// the differing set. The alternative — special-casing them — would be a second place to
+/// remember, and `seq` is stamped by [`Writer::write`] after this runs anyway.
+pub fn overlay_changed(dst: &mut Shared, base: &Shared, mine: &Shared) {
+    let base: &[u32] = bytemuck::cast_slice(std::slice::from_ref(base));
+    let mine: &[u32] = bytemuck::cast_slice(std::slice::from_ref(mine));
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(std::slice::from_mut(dst));
+    for i in 0..dst.len() {
+        if base[i] != mine[i] {
+            dst[i] = mine[i];
+        }
+    }
+}
+
 impl Default for Shared {
     /// The web app's helix defaults, so the visual shows something sensible
     /// before the plugin has written anything.
@@ -3643,6 +3684,79 @@ impl FeedbackReader {
         let m = self.map.as_ref()?;
         let f: Feedback = bytemuck::pod_read_unaligned(&m[..FB_SIZE]);
         (f.layout_version == LAYOUT_VERSION).then_some(f)
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// The assumption [`overlay_changed`] rests on: a 4-byte word is exactly one lane. If
+    /// `Shared` ever grows a field of another width this fails here, rather than splicing two
+    /// halves of different values together somewhere a person has to notice by eye.
+    #[test]
+    fn shared_is_a_whole_number_of_lanes() {
+        assert_eq!(std::mem::size_of::<Shared>() % 4, 0);
+        assert_eq!(std::mem::align_of::<Shared>() % 4, 0);
+    }
+
+    /// 🚨 The inertness guarantee, and the reason the Console can carry a panel's mirror over
+    /// a snapshot somebody else composed without a lane manifest. Nothing moved → nothing is
+    /// written, whatever `dst` happens to hold.
+    #[test]
+    fn overlay_changed_is_inert_when_nothing_moved() {
+        let values = Shared::default();
+        let mut dst = Shared::default();
+        dst.bevel = 0.75;
+        dst.lighting[2] = 9.0;
+        dst.seq = 41;
+        let before = dst;
+        overlay_changed(&mut dst, &values, &values);
+        assert_eq!(bytemuck::bytes_of(&dst), bytemuck::bytes_of(&before));
+    }
+
+    /// Only what moved moves — the lane that changed lands, and a lane `dst` had its own
+    /// opinion about survives untouched. This is the composition the Console needs: the
+    /// substrate dressing shows through wherever the panel has said nothing.
+    #[test]
+    fn overlay_changed_carries_the_changed_lane_and_nothing_else() {
+        let base = Shared::default();
+        let mut mine = base;
+        mine.bevel = 0.5;
+        let mut dst = base;
+        dst.bevel = 0.1;
+        dst.lighting[2] = 4.25; // dst's own opinion, on a lane the "panel" never touched
+        overlay_changed(&mut dst, &base, &mine);
+        assert_eq!(dst.bevel, 0.5);
+        assert_eq!(dst.lighting[2], 4.25);
+    }
+
+    /// ⚠️ **Lane granularity is what makes this safe, and the check has to be a value that
+    /// differs in only *some* of its bytes.** `0.5f32` and `0.5001f32` share their top byte;
+    /// a byte-wise overlay would copy the low three and leave the high one, producing a float
+    /// neither side ever held. Bit-equality against `mine` is the whole assertion.
+    #[test]
+    fn a_partially_differing_float_is_copied_whole() {
+        let base = Shared::default();
+        let mut mine = base;
+        mine.bevel = 0.5;
+        let mut dst = base;
+        dst.bevel = 0.5001;
+        overlay_changed(&mut dst, &base, &mine);
+        assert_eq!(dst.bevel.to_bits(), 0.5f32.to_bits());
+    }
+
+    /// A lane that moved *back* to its starting value has no opinion again — which is the
+    /// honest reading of "the difference is the opinion", and worth pinning because the
+    /// alternative (a sticky touched-set) is what someone would reach for first.
+    #[test]
+    fn a_lane_returned_to_base_stops_being_asserted() {
+        let base = Shared::default();
+        let mine = base;
+        let mut dst = base;
+        dst.bevel = 0.9;
+        overlay_changed(&mut dst, &base, &mine);
+        assert_eq!(dst.bevel, 0.9);
     }
 }
 

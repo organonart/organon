@@ -3,9 +3,15 @@
 //! A human- and agent-writable JSON description of the procedural material (the
 //! #472 Tier 2/3 noise layers + derived maps). It is an **interchange + gallery**
 //! format on top of the already-preset-captured material params: loading a graph
-//! *applies it to the plugin params* (via the host `ParamSetter`, GUI-thread), so it
-//! flows through the existing params → `Shared` → compute-bake path and is captured
-//! by presets automatically. Saving serialises the current params back out.
+//! *applies it to the live material*, so it flows through the existing
+//! params → `Shared` → compute-bake path and is captured by presets automatically.
+//! Saving serialises the current material back out.
+//!
+//! ⚠️ **"The live material" is whichever side is asking** (Console #7). In Organon's editor
+//! that is the plugin params through the host `ParamSetter`, GUI-thread, exactly as before;
+//! in Organon Console it is the `PresetValues` mirror, because a param cannot be written
+//! from outside `nih_plug` at all. Both routes go through [`crate::param_sink::Sink`], and
+//! this module is deliberately unable to tell them apart.
 //!
 //! The schema uses **string enum names** (`"fbm"`, `"multiply"`, `"albedo"`) so an
 //! agent (or a person) can author it by hand. All fields have defaults, so a partial
@@ -13,10 +19,10 @@
 //! array is variable-length and forward-compatible: today the engine consumes the
 //! first two (Tier 3's base + overlay); later tiers consume more.
 
+use crate::param_sink::{rd, wr, Sink};
 use crate::params::{
     AnimMode, BakeRes, BlendMode, MatChannel, MatNoise, MatProjection, OrganicMathParams,
 };
-use nih_plug::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// The serialised graph format version (bump on a breaking schema change).
@@ -150,69 +156,73 @@ impl Default for MaterialGraph {
 }
 
 impl MaterialGraph {
-    /// Serialise the current material params into a graph (both active layers).
-    pub fn from_params(p: &OrganicMathParams) -> Self {
+    /// Serialise the current material into a graph (both active layers).
+    ///
+    /// ⚠️ **"Current" is whatever the sink says it is** — the live params in Organon's editor,
+    /// the mirror in Organon Console. `p` supplies the parameter *metadata* either way; see
+    /// [`crate::param_sink`] for why the two cannot be one handle.
+    pub(crate) fn from_sink(p: &OrganicMathParams, sink: &Sink) -> Self {
         let base = GraphLayer {
             enabled: true,
-            noise: p.mp_noise.value().as_str().into(),
-            channel: p.mp_channel.value().as_str().into(),
+            noise: rd!(sink, p, mp_noise).as_str().into(),
+            channel: rd!(sink, p, mp_channel).as_str().into(),
             blend: "normal".into(), // base layer is always the replace/base
-            scale: p.mp_scale.value(),
-            rotation: p.mp_rotation.value(),
-            offset: [p.mp_offset_x.value(), p.mp_offset_y.value()],
-            octaves: p.mp_octaves.value(),
-            lacunarity: p.mp_lacunarity.value(),
-            gain: p.mp_gain.value(),
-            warp: p.mp_warp.value(),
-            contrast: p.mp_contrast.value(),
-            gamma: p.mp_gamma.value(),
-            remap: [p.mp_remap_lo.value(), p.mp_remap_hi.value()],
-            invert: p.mp_invert.value(),
-            seed: p.mp_seed.value(),
-            gradient_low: [p.mp_lo_r.value(), p.mp_lo_g.value(), p.mp_lo_b.value()],
-            gradient_high: [p.mp_hi_r.value(), p.mp_hi_g.value(), p.mp_hi_b.value()],
+            scale: rd!(sink, p, mp_scale),
+            rotation: rd!(sink, p, mp_rotation),
+            offset: [rd!(sink, p, mp_offset_x), rd!(sink, p, mp_offset_y)],
+            octaves: rd!(sink, p, mp_octaves),
+            lacunarity: rd!(sink, p, mp_lacunarity),
+            gain: rd!(sink, p, mp_gain),
+            warp: rd!(sink, p, mp_warp),
+            contrast: rd!(sink, p, mp_contrast),
+            gamma: rd!(sink, p, mp_gamma),
+            remap: [rd!(sink, p, mp_remap_lo), rd!(sink, p, mp_remap_hi)],
+            invert: rd!(sink, p, mp_invert),
+            seed: rd!(sink, p, mp_seed),
+            gradient_low: [rd!(sink, p, mp_lo_r), rd!(sink, p, mp_lo_g), rd!(sink, p, mp_lo_b)],
+            gradient_high: [rd!(sink, p, mp_hi_r), rd!(sink, p, mp_hi_g), rd!(sink, p, mp_hi_b)],
         };
         let overlay = GraphLayer {
-            enabled: p.mp2_enable.value(),
-            noise: p.mp2_noise.value().as_str().into(),
-            channel: p.mp2_channel.value().as_str().into(),
-            blend: p.mp2_blend.value().as_str().into(),
-            scale: p.mp2_scale.value(),
-            rotation: p.mp2_rotation.value(),
-            offset: [p.mp2_offset_x.value(), p.mp2_offset_y.value()],
-            octaves: p.mp2_octaves.value(),
-            lacunarity: p.mp2_lacunarity.value(),
-            gain: p.mp2_gain.value(),
-            warp: p.mp2_warp.value(),
-            contrast: p.mp2_contrast.value(),
-            gamma: p.mp2_gamma.value(),
-            remap: [p.mp2_remap_lo.value(), p.mp2_remap_hi.value()],
-            invert: p.mp2_invert.value(),
-            seed: p.mp2_seed.value(),
-            gradient_low: [p.mp2_lo_r.value(), p.mp2_lo_g.value(), p.mp2_lo_b.value()],
-            gradient_high: [p.mp2_hi_r.value(), p.mp2_hi_g.value(), p.mp2_hi_b.value()],
+            enabled: rd!(sink, p, mp2_enable),
+            noise: rd!(sink, p, mp2_noise).as_str().into(),
+            channel: rd!(sink, p, mp2_channel).as_str().into(),
+            blend: rd!(sink, p, mp2_blend).as_str().into(),
+            scale: rd!(sink, p, mp2_scale),
+            rotation: rd!(sink, p, mp2_rotation),
+            offset: [rd!(sink, p, mp2_offset_x), rd!(sink, p, mp2_offset_y)],
+            octaves: rd!(sink, p, mp2_octaves),
+            lacunarity: rd!(sink, p, mp2_lacunarity),
+            gain: rd!(sink, p, mp2_gain),
+            warp: rd!(sink, p, mp2_warp),
+            contrast: rd!(sink, p, mp2_contrast),
+            gamma: rd!(sink, p, mp2_gamma),
+            remap: [rd!(sink, p, mp2_remap_lo), rd!(sink, p, mp2_remap_hi)],
+            invert: rd!(sink, p, mp2_invert),
+            seed: rd!(sink, p, mp2_seed),
+            gradient_low: [rd!(sink, p, mp2_lo_r), rd!(sink, p, mp2_lo_g), rd!(sink, p, mp2_lo_b)],
+            gradient_high: [rd!(sink, p, mp2_hi_r), rd!(sink, p, mp2_hi_g), rd!(sink, p, mp2_hi_b)],
         };
         MaterialGraph {
             version: GRAPH_VERSION,
             name: "material".into(),
-            projection: p.mat_projection.value().as_str().into(),
-            scale: p.mat_scale.value(),
-            bake_res: p.mp_res.value().px() as u32,
+            projection: rd!(sink, p, mat_projection).as_str().into(),
+            scale: rd!(sink, p, mat_scale),
+            bake_res: rd!(sink, p, mp_res).px() as u32,
             layers: vec![base, overlay],
             derive: GraphDerive {
-                normal: p.mat_derive_normal.value(),
-                ao: p.mat_derive_ao.value(),
-                normal_from_albedo: p.mat_normal_source_albedo.value(),
-                normal_strength: p.mat_derive_normal_strength.value(),
-                ao_strength: p.mat_derive_ao_strength.value(),
-                ao_radius: p.mat_derive_ao_radius.value(),
+                normal: rd!(sink, p, mat_derive_normal),
+                ao: rd!(sink, p, mat_derive_ao),
+                normal_from_albedo: rd!(sink, p, mat_normal_source_albedo),
+                normal_strength: rd!(sink, p, mat_derive_normal_strength),
+                ao_strength: rd!(sink, p, mat_derive_ao_strength),
+                ao_radius: rd!(sink, p, mat_derive_ao_radius),
             },
             animation: GraphAnimation {
-                enabled: p.mat_anim_enable.value(),
-                mode: p.mat_anim_mode.value().as_str().into(),
-                speed: p.mat_anim_speed.value(),
-                flow: [p.mat_flow_x.value(), p.mat_flow_y.value()],
-                displace: p.mat_displace.value(),
+                enabled: rd!(sink, p, mat_anim_enable),
+                mode: rd!(sink, p, mat_anim_mode).as_str().into(),
+                speed: rd!(sink, p, mat_anim_speed),
+                flow: [rd!(sink, p, mat_flow_x), rd!(sink, p, mat_flow_y)],
+                displace: rd!(sink, p, mat_displace),
             },
         }
     }
@@ -227,95 +237,92 @@ impl MaterialGraph {
         serde_json::from_str(s).map_err(|e| e.to_string())
     }
 
-    /// Apply the graph to the plugin params via the host setter (GUI thread). Turns
-    /// the material system + procedural bake on, so a loaded graph renders
-    /// immediately. Missing layers disable the corresponding slots.
-    pub fn apply(&self, p: &OrganicMathParams, s: &ParamSetter) {
-        macro_rules! set {
-            ($param:expr, $val:expr) => {{
-                s.begin_set_parameter($param);
-                s.set_parameter($param, $val);
-                s.end_set_parameter($param);
-            }};
-        }
+    /// Apply the graph (GUI thread). Turns the material system + procedural bake on, so a
+    /// loaded graph renders immediately. Missing layers disable the corresponding slots.
+    ///
+    /// ⚠️ **Where it lands is the sink's business.** In Organon's editor that is the host
+    /// `ParamSetter`, gesture-wrapped exactly as before, so a loaded graph is still one
+    /// automation-recordable edit per param; in Organon Console it is the `PresetValues`
+    /// mirror. This function does not know and must not care — see [`crate::param_sink`].
+    pub(crate) fn apply(&self, p: &OrganicMathParams, sink: &mut Sink) {
         // Turn materials + procedural on.
-        set!(&p.mat_enable, true);
-        set!(&p.mp_enable, true);
-        set!(&p.mat_projection, MatProjection::from_str_or(&self.projection, MatProjection::Triplanar));
-        set!(&p.mat_scale, self.scale);
-        set!(&p.mp_res, bake_res_of(self.bake_res));
+        wr!(sink, p, mat_enable, true);
+        wr!(sink, p, mp_enable, true);
+        wr!(sink, p, mat_projection, MatProjection::from_str_or(&self.projection, MatProjection::Triplanar));
+        wr!(sink, p, mat_scale, self.scale);
+        wr!(sink, p, mp_res, bake_res_of(self.bake_res));
 
         // Base layer (layer 0).
         if let Some(l) = self.layers.first() {
-            set!(&p.mp_noise, MatNoise::from_str_or(&l.noise, MatNoise::Fbm));
-            set!(&p.mp_channel, MatChannel::from_str_or(&l.channel, MatChannel::Albedo));
-            set!(&p.mp_scale, l.scale);
-            set!(&p.mp_rotation, l.rotation);
-            set!(&p.mp_offset_x, l.offset[0]);
-            set!(&p.mp_offset_y, l.offset[1]);
-            set!(&p.mp_octaves, l.octaves);
-            set!(&p.mp_lacunarity, l.lacunarity);
-            set!(&p.mp_gain, l.gain);
-            set!(&p.mp_warp, l.warp);
-            set!(&p.mp_contrast, l.contrast);
-            set!(&p.mp_gamma, l.gamma);
-            set!(&p.mp_remap_lo, l.remap[0]);
-            set!(&p.mp_remap_hi, l.remap[1]);
-            set!(&p.mp_invert, l.invert);
-            set!(&p.mp_seed, l.seed);
-            set!(&p.mp_lo_r, l.gradient_low[0]);
-            set!(&p.mp_lo_g, l.gradient_low[1]);
-            set!(&p.mp_lo_b, l.gradient_low[2]);
-            set!(&p.mp_hi_r, l.gradient_high[0]);
-            set!(&p.mp_hi_g, l.gradient_high[1]);
-            set!(&p.mp_hi_b, l.gradient_high[2]);
+            wr!(sink, p, mp_noise, MatNoise::from_str_or(&l.noise, MatNoise::Fbm));
+            wr!(sink, p, mp_channel, MatChannel::from_str_or(&l.channel, MatChannel::Albedo));
+            wr!(sink, p, mp_scale, l.scale);
+            wr!(sink, p, mp_rotation, l.rotation);
+            wr!(sink, p, mp_offset_x, l.offset[0]);
+            wr!(sink, p, mp_offset_y, l.offset[1]);
+            wr!(sink, p, mp_octaves, l.octaves);
+            wr!(sink, p, mp_lacunarity, l.lacunarity);
+            wr!(sink, p, mp_gain, l.gain);
+            wr!(sink, p, mp_warp, l.warp);
+            wr!(sink, p, mp_contrast, l.contrast);
+            wr!(sink, p, mp_gamma, l.gamma);
+            wr!(sink, p, mp_remap_lo, l.remap[0]);
+            wr!(sink, p, mp_remap_hi, l.remap[1]);
+            wr!(sink, p, mp_invert, l.invert);
+            wr!(sink, p, mp_seed, l.seed);
+            wr!(sink, p, mp_lo_r, l.gradient_low[0]);
+            wr!(sink, p, mp_lo_g, l.gradient_low[1]);
+            wr!(sink, p, mp_lo_b, l.gradient_low[2]);
+            wr!(sink, p, mp_hi_r, l.gradient_high[0]);
+            wr!(sink, p, mp_hi_g, l.gradient_high[1]);
+            wr!(sink, p, mp_hi_b, l.gradient_high[2]);
         }
 
         // Overlay layer (layer 1) — enable only if present & flagged.
         if let Some(l) = self.layers.get(1) {
-            set!(&p.mp2_enable, l.enabled);
-            set!(&p.mp2_noise, MatNoise::from_str_or(&l.noise, MatNoise::Fbm));
-            set!(&p.mp2_channel, MatChannel::from_str_or(&l.channel, MatChannel::Roughness));
-            set!(&p.mp2_blend, BlendMode::from_str_or(&l.blend, BlendMode::Normal));
-            set!(&p.mp2_scale, l.scale);
-            set!(&p.mp2_rotation, l.rotation);
-            set!(&p.mp2_offset_x, l.offset[0]);
-            set!(&p.mp2_offset_y, l.offset[1]);
-            set!(&p.mp2_octaves, l.octaves);
-            set!(&p.mp2_lacunarity, l.lacunarity);
-            set!(&p.mp2_gain, l.gain);
-            set!(&p.mp2_warp, l.warp);
-            set!(&p.mp2_contrast, l.contrast);
-            set!(&p.mp2_gamma, l.gamma);
-            set!(&p.mp2_remap_lo, l.remap[0]);
-            set!(&p.mp2_remap_hi, l.remap[1]);
-            set!(&p.mp2_invert, l.invert);
-            set!(&p.mp2_seed, l.seed);
-            set!(&p.mp2_lo_r, l.gradient_low[0]);
-            set!(&p.mp2_lo_g, l.gradient_low[1]);
-            set!(&p.mp2_lo_b, l.gradient_low[2]);
-            set!(&p.mp2_hi_r, l.gradient_high[0]);
-            set!(&p.mp2_hi_g, l.gradient_high[1]);
-            set!(&p.mp2_hi_b, l.gradient_high[2]);
+            wr!(sink, p, mp2_enable, l.enabled);
+            wr!(sink, p, mp2_noise, MatNoise::from_str_or(&l.noise, MatNoise::Fbm));
+            wr!(sink, p, mp2_channel, MatChannel::from_str_or(&l.channel, MatChannel::Roughness));
+            wr!(sink, p, mp2_blend, BlendMode::from_str_or(&l.blend, BlendMode::Normal));
+            wr!(sink, p, mp2_scale, l.scale);
+            wr!(sink, p, mp2_rotation, l.rotation);
+            wr!(sink, p, mp2_offset_x, l.offset[0]);
+            wr!(sink, p, mp2_offset_y, l.offset[1]);
+            wr!(sink, p, mp2_octaves, l.octaves);
+            wr!(sink, p, mp2_lacunarity, l.lacunarity);
+            wr!(sink, p, mp2_gain, l.gain);
+            wr!(sink, p, mp2_warp, l.warp);
+            wr!(sink, p, mp2_contrast, l.contrast);
+            wr!(sink, p, mp2_gamma, l.gamma);
+            wr!(sink, p, mp2_remap_lo, l.remap[0]);
+            wr!(sink, p, mp2_remap_hi, l.remap[1]);
+            wr!(sink, p, mp2_invert, l.invert);
+            wr!(sink, p, mp2_seed, l.seed);
+            wr!(sink, p, mp2_lo_r, l.gradient_low[0]);
+            wr!(sink, p, mp2_lo_g, l.gradient_low[1]);
+            wr!(sink, p, mp2_lo_b, l.gradient_low[2]);
+            wr!(sink, p, mp2_hi_r, l.gradient_high[0]);
+            wr!(sink, p, mp2_hi_g, l.gradient_high[1]);
+            wr!(sink, p, mp2_hi_b, l.gradient_high[2]);
         } else {
-            set!(&p.mp2_enable, false);
+            wr!(sink, p, mp2_enable, false);
         }
 
         // Derived maps.
-        set!(&p.mat_derive_normal, self.derive.normal);
-        set!(&p.mat_derive_ao, self.derive.ao);
-        set!(&p.mat_normal_source_albedo, self.derive.normal_from_albedo);
-        set!(&p.mat_derive_normal_strength, self.derive.normal_strength);
-        set!(&p.mat_derive_ao_strength, self.derive.ao_strength);
-        set!(&p.mat_derive_ao_radius, self.derive.ao_radius);
+        wr!(sink, p, mat_derive_normal, self.derive.normal);
+        wr!(sink, p, mat_derive_ao, self.derive.ao);
+        wr!(sink, p, mat_normal_source_albedo, self.derive.normal_from_albedo);
+        wr!(sink, p, mat_derive_normal_strength, self.derive.normal_strength);
+        wr!(sink, p, mat_derive_ao_strength, self.derive.ao_strength);
+        wr!(sink, p, mat_derive_ao_radius, self.derive.ao_radius);
 
         // Animation + displacement (#472 Tier 5).
-        set!(&p.mat_anim_enable, self.animation.enabled);
-        set!(&p.mat_anim_mode, AnimMode::from_str_or(&self.animation.mode, AnimMode::Drift));
-        set!(&p.mat_anim_speed, self.animation.speed);
-        set!(&p.mat_flow_x, self.animation.flow[0]);
-        set!(&p.mat_flow_y, self.animation.flow[1]);
-        set!(&p.mat_displace, self.animation.displace);
+        wr!(sink, p, mat_anim_enable, self.animation.enabled);
+        wr!(sink, p, mat_anim_mode, AnimMode::from_str_or(&self.animation.mode, AnimMode::Drift));
+        wr!(sink, p, mat_anim_speed, self.animation.speed);
+        wr!(sink, p, mat_flow_x, self.animation.flow[0]);
+        wr!(sink, p, mat_flow_y, self.animation.flow[1]);
+        wr!(sink, p, mat_displace, self.animation.displace);
     }
 }
 
