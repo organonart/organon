@@ -1516,7 +1516,16 @@ struct Console {
     /// One per console, not one per element: two `/organon look surface` cards in a transcript
     /// are two views of one instrument, and reading different values off each would make the
     /// claim `/organon` exists to make — *this is the same panel* — false on sight.
-    organon_panels: OrganonPanels,
+    ///
+    /// 🚨 **Boxed, and that is a crash fix rather than a style choice.** `OrganonPanels` holds
+    /// an `OrganicMathParams` and a `PresetValues` **inline**, and the params struct carries
+    /// one nih-plug param object per automatable lane — so the type is enormous. Held by value
+    /// here it became part of `Console`, which `Console::new` builds **on the main thread's
+    /// stack** before moving it; the console then died at startup with *"thread 'main' has
+    /// overflowed its stack"*, before drawing a frame. The box keeps `Console` the size it was
+    /// and puts the panels on the heap. ⚠️ Measure before un-boxing: nothing warns, the build
+    /// is clean, and the failure is total.
+    organon_panels: Box<OrganonPanels>,
     /// True while the surface acquires as `Occluded` — gates the redraw re-arm
     /// (the measured ~98%-CPU-drawing-nothing spin, fixed on the v2 branch).
     occluded: bool,
@@ -1860,7 +1869,7 @@ impl Console {
             pane_resized: false,
             shared_writer: None,
             shared,
-            organon_panels: OrganonPanels::new(),
+            organon_panels: Box::new(OrganonPanels::new()),
             occluded: false,
             surfaces: HashMap::new(),
             surface_requests: Vec::new(),
