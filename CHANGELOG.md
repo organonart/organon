@@ -11,6 +11,34 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### `/organon` — the console's rings are Organon's own UI hierarchy
+
+Typing `/organon` in a conversation offers Organon's eight tabs — generator, motion,
+environment, look, synth, audio, settings, mind. Typing `l` settles on `look` on its own and
+the ring underneath changes to that tab's twenty-five panels; `/organon look surface` puts that
+panel into the flow as an element.
+
+Neither ring is a list the console wrote. The tabs come from `UiTab::ALL`, the editor's own tab
+bar. The panels come from a new `organon_core::panels` table, and the arrow points the way that
+cannot rot: Organon's editor now reads its Look-tab card headings *out of* that table, at all
+twenty-five call sites, so a renamed panel is one edit and the compiler finds the other end.
+
+One addition to the command registry made it possible: an entry may carry a narrowing hook, so
+a ring can depend on the ring above it. `ArgKind` is untouched — a dependent variant would have
+been a change at ~30 exhaustive match sites, across the MCP schema generator and the dispatch
+validator, for one verb.
+
+🚨 **Every panel is declared, not live: the ring lists them and the element says it has not
+been transplanted yet.** The blocker is not drawing — it is that **there is no public way to
+write an Organon parameter from outside `nih_plug`**. Every panel widget writes through a
+`ParamSetter`, and `ParamMut`, `ParamPtr::set_normalized_value`, `FloatParam`'s value fields and
+nih-plug's own standalone `Wrapper` are each `pub(crate)` or in a private module. A panel drawn
+without a write path is a panel whose knobs do nothing, which is precisely why `/panel` was
+retired, so none is claimed. `CONSOLE_ARCHITECTURE.md` §1.11 records the wall and the measured
+way through it — the console already owns a `World` in-process, so no second process or IPC
+bridge is involved, and `PresetValues` is a freely-writable mirror of the params with a
+`to_shared()`; what is missing is the identity join at the widget.
+
 ### Tune the palette while looking at it — `/theme edit`
 
 `/theme edit` (or `/theme adjust` — James named both and neither is the alias) opens a live

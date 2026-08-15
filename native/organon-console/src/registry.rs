@@ -86,6 +86,8 @@
 //! share the registry because a human types them in the same box and a menu should show them
 //! in the same ring; they are marked because the code that runs them is not the same code.
 
+use organon_core::panels;
+use organon_core::tabs::UiTab;
 use serde_json::{json, Map, Value};
 
 use crate::command::{ArgKind, ArgSpec, CommandSpec};
@@ -124,19 +126,75 @@ pub const VERB_THEME: &str = "console.theme";
 /// out of the dispatch payload on this side, declared by `console_main`'s spec on the other.
 pub const THEME_ARG: &str = "name";
 
+/// `/organon` — put one of Organon's own editor panels into this conversation.
+///
+/// A view-lane verb, like [`VERB_SURFACE`]: it acts on *this* transcript and never leaves the
+/// crate. Two required arguments, and they are the two rings — `<tab> <panel>` — mirroring
+/// Organon's own hierarchy rather than inventing a command tree beside it.
+pub const VERB_ORGANON: &str = "view.organon";
+/// The first ring's argument name: one of [`organon_core::tabs::UiTab::ALL`].
+pub const ORGANON_TAB_ARG: &str = "tab";
+/// The second ring's argument name: a [`organon_core::panels::Panel::slug`] on that tab.
+pub const ORGANON_PANEL_ARG: &str = "panel";
+
 /// One verb, as a hierarchy rather than as a dotted string.
 ///
 /// ⚠️ **[`CommandSpec::target`] is deliberately not carried.** That field names which
 /// `CommandTarget` a dispatch lands on — machinery, not vocabulary — and a view-lane verb has
 /// no target at all. Carrying it would force `/help` to claim a target it does not have, and
 /// a menu would then be reading a field that means nothing to it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Entry {
     name: String,
     doc: String,
     args: Vec<ArgSpec>,
     lane: Lane,
+    narrow: Option<NarrowFn>,
 }
+
+/// ⚠️ **Hand-written because [`Entry::narrow`] must not be compared**, and `derive` would have
+/// compared it: rustc warns that function-pointer equality is not meaningful (addresses are not
+/// guaranteed unique, so two distinct narrowings can compare equal and one function can compare
+/// unequal to itself across codegen units). Ignoring it is also the right *meaning* — an entry
+/// is its vocabulary, and the hook is how a ring is drawn, not what the verb is. Every field a
+/// caller can observe through the public accessors is compared.
+impl PartialEq for Entry {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.doc == other.doc
+            && self.args == other.args
+            && self.lane == other.lane
+    }
+}
+
+/// An argument whose options depend on what an **earlier** positional word said.
+///
+/// 🚨 **Why this is a hook on the entry and not a new [`ArgKind`].** `/organon look` and
+/// `/organon motion` must offer different second rings, which a `Choice(Vec<String>)` cannot
+/// express — its list is fixed when the table is built. The obvious fix is a dependent variant
+/// of `ArgKind`, and it was rejected on measurement: that enum is matched exhaustively at
+/// **~30 sites** across `command.rs`, `mcp.rs`, `conversation_view.rs` and this file, so a new
+/// arm is a change to the MCP schema generator, the dispatch validator and three renderers —
+/// for one verb. A hook touches the candidate walk and nothing else.
+///
+/// ⚠️ **It narrows the ring; it does not validate the line.** The declared `ArgKind::Choice` for
+/// a dependent argument is the **union** across every parent value, so `/organon motion surface`
+/// passes the schema — `surface` really is a panel slug, just not one of Motion's. The pair is
+/// checked where the pair is understood: the view lane answers it and names the mismatch. That
+/// is the honest split (a command schema has one value list per argument and no notion of a
+/// pair), and it is pinned by `an_unknown_pair_is_refused_by_the_view_lane` in
+/// `conversation_view`.
+///
+/// The signature is a plain `fn` pointer rather than a boxed closure so that [`Entry`] stays
+/// `Clone + Debug + PartialEq` — the registry is copied into every pane, and a trait object
+/// would cost all three derives for no gain: every narrowing this console has is a pure
+/// function of a static table.
+///
+/// `positional` holds the words that filled the **required** arguments so far, in declared
+/// order; `arg` is the name of the one being offered. `None` means "no opinion", and the
+/// argument's own [`ArgKind`] answers as usual. Each option is `(label, doc)` — the doc is what
+/// lets `/organon look` show `surface` beside the panel's real heading.
+pub type NarrowFn = fn(arg: &str, positional: &[&str]) -> Option<Vec<(String, String)>>;
 
 impl Entry {
     /// A console verb, from the same [`CommandSpec`] the MCP schema is generated from.
@@ -146,6 +204,9 @@ impl Entry {
             doc: spec.doc.clone(),
             args: spec.args.clone(),
             lane,
+            // A `CommandSpec` is the vocabulary the MCP schema is generated from and carries no
+            // hook: a console verb's value space is closed at build time. See [`NarrowFn`].
+            narrow: None,
         }
     }
 
@@ -410,14 +471,80 @@ fn view_entries() -> Vec<Entry> {
                 .into(),
             args: Vec::new(),
             lane: Lane::View,
+            narrow: None,
         },
         Entry {
             name: VERB_HELP.into(),
             doc: "List every command this console answers".into(),
             args: Vec::new(),
             lane: Lane::View,
+            narrow: None,
+        },
+        Entry {
+            name: VERB_ORGANON.into(),
+            doc: "Put one of Organon's own editor panels here — its tabs, then that tab's panels"
+                .into(),
+            args: vec![
+                ArgSpec {
+                    name: ORGANON_TAB_ARG.into(),
+                    kind: ArgKind::Choice(UiTab::ALL.iter().map(|t| t.word()).collect()),
+                    required: true,
+                },
+                ArgSpec {
+                    name: ORGANON_PANEL_ARG.into(),
+                    // The union across tabs — see [`NarrowFn`] for why the declared list is
+                    // wider than any one ring, and where the pair is actually checked.
+                    kind: ArgKind::Choice(
+                        panels::slugs().into_iter().map(str::to_string).collect(),
+                    ),
+                    required: true,
+                },
+            ],
+            lane: Lane::View,
+            narrow: Some(organon_options),
         },
     ]
+}
+
+/// `/organon`'s two rings, read straight off Organon's own taxonomy.
+///
+/// 🚨 **Nothing here is a list this crate wrote.** The tabs are
+/// [`organon_core::tabs::UiTab::ALL`] — which that module calls "the single source of truth the
+/// editor's tab bar iterates" — and the panels are [`organon_core::panels::in_tab`], which the
+/// editor itself reads its card headings out of. A hand-written copy of either would stop
+/// matching Organon the moment a panel was added, and the ring would be confidently wrong.
+///
+/// ⚠️ **A tab with no panels in the table answers `Some(vec![])`, not `None`.** `None` would
+/// fall through to the declared union and offer *every* slug on a tab that has none of them.
+/// The empty ring is the true answer, and [`Palette::hint`] has nothing to add to it — the
+/// conversation view says which tabs are joined.
+fn organon_options(arg: &str, positional: &[&str]) -> Option<Vec<(String, String)>> {
+    match arg {
+        // The tab ring is exactly the declared `Choice`, so there is nothing to narrow. Saying
+        // so explicitly beats falling through the `_` arm: a future third argument would then
+        // be silently un-narrowed rather than obviously unhandled.
+        ORGANON_TAB_ARG => None,
+        ORGANON_PANEL_ARG => {
+            let tab = UiTab::from_word(positional.first().copied().unwrap_or_default())?;
+            Some(
+                panels::in_tab(tab)
+                    .into_iter()
+                    .map(|p| {
+                        let doc = match p.status {
+                            panels::Status::Live => p.title.to_string(),
+                            // Said in the ring, before the choice is made rather than after —
+                            // see `panels::Status`.
+                            panels::Status::Declared => {
+                                format!("{} — not transplanted yet", p.title)
+                            }
+                        };
+                        (p.slug.to_string(), doc)
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
 }
 
 /// The words after the verb, as the dispatch arguments the spec declares.
@@ -777,9 +904,14 @@ impl Registry {
         let mut filled = 0usize;
         let mut used: Vec<&str> = Vec::new();
         let mut awaiting: Option<&ArgSpec> = None;
+        // The *values* of the required arguments, not just how many are in — an argument whose
+        // ring depends on an earlier one needs the word, and until [`NarrowFn`] there was
+        // nothing that did, so only the count was kept.
+        let mut positional: Vec<&str> = Vec::new();
         for word in &words[1..] {
             if filled < required.len() {
                 filled += 1;
+                positional.push(word);
                 continue;
             }
             if let Some(arg) = awaiting.take() {
@@ -804,11 +936,11 @@ impl Registry {
         let (slot, candidates) = if filled < required.len() {
             let arg = required[filled];
             let more = filled + 1 < required.len() || !optional.is_empty();
-            let candidates = self.value_candidates(arg, typed, stem, more);
+            let candidates = self.value_candidates(entry, arg, &positional, typed, stem, more);
             (Slot::Value { verb, arg: arg.clone() }, candidates)
         } else if let Some(arg) = awaiting {
             let more = used.len() + 1 < optional.len();
-            let candidates = self.value_candidates(arg, typed, stem, more);
+            let candidates = self.value_candidates(entry, arg, &positional, typed, stem, more);
             (Slot::Value { verb, arg: arg.clone() }, candidates)
         } else {
             let candidates = optional
@@ -860,24 +992,37 @@ impl Registry {
     /// dial reads the `ArgKind` off the slot.
     fn value_candidates(
         &self,
+        entry: &Entry,
         arg: &ArgSpec,
+        positional: &[&str],
         typed: &str,
         stem: &str,
         more: bool,
     ) -> Vec<Candidate> {
-        let options: Vec<String> = match &arg.kind {
-            ArgKind::Choice(options) => options.clone(),
-            ArgKind::Bool => vec!["true".to_string(), "false".to_string()],
-            ArgKind::Float { .. } | ArgKind::Int | ArgKind::Text => Vec::new(),
+        // The entry's own hook first, and its `Some` wins outright — including `Some(vec![])`,
+        // which is the true answer for a tab with no panels and must not fall through to the
+        // declared union. See [`NarrowFn`].
+        let options: Vec<(String, String)> = match entry.narrow.and_then(|f| f(&arg.name, positional))
+        {
+            Some(narrowed) => narrowed,
+            None => match &arg.kind {
+                ArgKind::Choice(options) => {
+                    options.iter().map(|o| (o.clone(), String::new())).collect()
+                }
+                ArgKind::Bool => {
+                    vec![("true".to_string(), String::new()), ("false".to_string(), String::new())]
+                }
+                ArgKind::Float { .. } | ArgKind::Int | ArgKind::Text => Vec::new(),
+            },
         };
         options
             .into_iter()
-            .filter(|option| narrows(option, typed))
-            .map(|option| {
+            .filter(|(option, _)| narrows(option, typed))
+            .map(|(option, doc)| {
                 let completion = format!("{stem}{option}{}", if more { " " } else { "" });
                 Candidate {
                     label: option,
-                    doc: String::new(),
+                    doc,
                     completes: matches!(self.resolve(&completion), Resolved::Run { .. }),
                     completion,
                     kind: CandidateKind::Value,
@@ -972,7 +1117,7 @@ mod tests {
         }
         assert_eq!(
             reg.verbs(),
-            ["background", "patch", "camera", "camera.read", "surface", "help"]
+            ["background", "patch", "camera", "camera.read", "surface", "help", "organon"]
         );
     }
 
@@ -984,7 +1129,7 @@ mod tests {
         let console: Vec<&str> = reg.verbs_in("console").iter().map(|e| e.verb()).collect();
         assert_eq!(console, ["background", "patch", "camera", "camera.read"]);
         let view: Vec<&str> = reg.verbs_in("view").iter().map(|e| e.verb()).collect();
-        assert_eq!(view, ["surface", "help"]);
+        assert_eq!(view, ["surface", "help", "organon"]);
         assert!(reg.verbs_in("nothing").is_empty());
 
         // The third ring is the argument's own value space — already closed, already
@@ -1457,5 +1602,105 @@ mod tests {
             "out of range",
             "a failure is reported as itself, never dressed as a success"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // `/organon` — the two rings, and the narrowing that makes them two
+    // -----------------------------------------------------------------------
+
+    /// The first ring is Organon's tab bar, in Organon's own order — James's eight words.
+    /// Derived from `UiTab::ALL`, never listed here, so a tab added to the editor appears in
+    /// the ring with no edit to this crate.
+    #[test]
+    fn the_first_ring_is_organons_tab_bar() {
+        assert_eq!(
+            labels("/organon "),
+            UiTab::ALL.iter().map(|t| t.word()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            labels("/organon "),
+            ["generator", "motion", "environment", "look", "synth", "audio", "settings", "mind"]
+        );
+    }
+
+    /// The second ring changes with the first — the whole point of [`NarrowFn`]. `look` offers
+    /// the Look tab's panels; a tab whose cards are not joined to the table yet offers nothing
+    /// at all rather than the declared union.
+    #[test]
+    fn the_second_ring_depends_on_the_first() {
+        let look = labels("/organon look ");
+        assert_eq!(look.len(), 25, "every card the editor draws on the Look tab");
+        assert_eq!(look[0], "surface");
+        assert!(look.contains(&"bloom".to_string()));
+        assert!(
+            labels("/organon motion ").is_empty(),
+            "an unjoined tab offers nothing, not every slug in the union"
+        );
+    }
+
+    /// A candidate carries the panel's real heading, and says out loud when choosing it would
+    /// open nothing — before the choice, not after.
+    #[test]
+    fn a_declared_panel_says_so_in_the_ring() {
+        let reg = registry();
+        let ring = reg.candidates("/organon look ").unwrap().candidates;
+        let surface = ring.iter().find(|c| c.label == "surface").unwrap();
+        assert_eq!(surface.doc, "Surface — not transplanted yet");
+        let bloom = ring.iter().find(|c| c.label == "bloom").unwrap();
+        assert_eq!(bloom.doc, "Bloom — not transplanted yet");
+    }
+
+    /// James's own example: the `l` completes to `look` on its own, and the ring under it
+    /// becomes the Look tab's panels. Both halves are the machinery that already shipped —
+    /// [`Palette::autorun`] and [`Candidate::completion`] being the whole line — so this pins
+    /// the composition rather than a new mechanism.
+    #[test]
+    fn typing_l_settles_on_look_and_opens_its_panels() {
+        let reg = registry();
+        let palette = reg.candidates("/organon l").unwrap();
+        assert_eq!(palette.candidates.len(), 1, "only `look` begins with an l");
+        let only = &palette.candidates[0];
+        assert_eq!(only.label, "look");
+        assert_eq!(only.completion, "/organon look ");
+        assert!(!only.completes, "a tab alone is not a command — the panel is still needed");
+        // …and asking again with that line is the next ring. One loop, no new machinery.
+        assert_eq!(labels(&only.completion).len(), 25);
+    }
+
+    /// `su` leaves exactly one panel, and accepting it completes the command — which is what
+    /// makes `/organon look su` fire without Enter under [`Palette::autorun`]. This is the
+    /// property `panels::no_slug_is_a_prefix_of_another` exists to protect.
+    #[test]
+    fn a_lone_panel_completes_the_whole_command() {
+        let reg = registry();
+        let palette = reg.candidates("/organon look su").unwrap();
+        assert_eq!(palette.candidates.len(), 1);
+        let only = &palette.candidates[0];
+        assert_eq!(only.completion, "/organon look surface");
+        assert!(only.completes, "both rings are filled, so Enter would run it");
+        assert_eq!(palette.autorun(true).map(|c| c.label.as_str()), Some("surface"));
+    }
+
+    /// ⚠️ The union hole, stated as a test rather than left to be discovered: the declared
+    /// `Choice` is every slug on every tab, so a wrong pair passes the schema. See
+    /// [`NarrowFn`] — the view lane is what refuses it, and it names the mismatch.
+    #[test]
+    fn a_wrong_pair_passes_the_schema_and_is_refused_later() {
+        let reg = registry();
+        assert!(
+            matches!(reg.resolve("/organon motion surface"), Resolved::Run { .. }),
+            "`surface` is a real slug, so the schema cannot see the mismatch"
+        );
+        // A word that is no panel at all *is* caught here, because that the schema can see.
+        assert!(matches!(reg.resolve("/organon look nonesuch"), Resolved::Refused(_)));
+    }
+
+    /// The narrowing is scoped to the one verb that declares it. Every other entry's rings are
+    /// exactly what its `ArgKind` says, unchanged by this addition.
+    #[test]
+    fn narrowing_does_not_leak_into_other_verbs() {
+        let reg = registry();
+        assert_eq!(labels("/background "), ["graphite", "slate"]);
+        assert!(reg.entry("background").is_some_and(|e| e.narrow.is_none()));
     }
 }

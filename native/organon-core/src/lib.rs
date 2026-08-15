@@ -95,5 +95,6 @@ pub mod ipc;
 pub mod gguf_data;
 pub mod kind;
 pub mod math;
+pub mod panels;
 pub mod params;
 pub mod tabs;

@@ -45,7 +45,8 @@ use crate::card_density::{self, DensityMap, Row};
 use crate::command::CommandSpec;
 use crate::conversation::{
     AgentEvent, Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock,
-    ArtifactContent, Body, Change, Element, ElementId, Ignored, PanelSpec, ResultDetail,
+    ArtifactContent, Body, Change, Element, ElementId, Ignored, OrganonBlock, PanelSpec,
+    ResultDetail,
     RunOutcome, StepState,
     SubagentAct, SubagentLog, SubagentProgress, SurfaceSpec, ToolCard, ToolState, Transcript,
     Verdict,
@@ -172,6 +173,27 @@ pub struct ConversationOutput {
     /// rather than read per frame.
     pub theme: Option<ThemeChange>,
 }
+
+/// **How the console draws one of Organon's own panels** — the second seam between the two
+/// crates, and the opposite shape to [`SurfaceRequest`].
+///
+/// 🚨 **A surface is a render list; a panel is a callback, and the difference is forced.** A
+/// surface is a *picture*: this crate says what it laid out, the console renders into a texture,
+/// and the answer arrives on the **next** frame — deferral costs one frame of "rendering…" and
+/// nothing else. A panel is *widgets*: a dropdown that must open where it was clicked, a drag
+/// that must be read in the same pass it was drawn. There is no texture to hand back a frame
+/// later, so the console's drawing has to happen **inside** this crate's layout, at the point in
+/// the flow the element occupies. Hence a `FnMut` the view calls rather than a `Vec` it returns.
+///
+/// ⚠️ **The contract is otherwise identical, and deliberately so**: this crate knows a panel by
+/// its [`organon_core::panels::Panel`] — a tab, a slug and a title — and cannot see
+/// `OrganicMathParams`, a `ParamSetter` or a `World`, and must not learn to. It hands over a
+/// `Ui` and a name; what appears in it is `console_main`'s business.
+///
+/// A console that draws nothing (every test in this crate, and the terminal front-end) passes a
+/// closure that ignores its arguments. The view then draws the panel's frame and heading with an
+/// empty body, which is honest — the element is in the flow, and this build cannot fill it.
+pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &'static organon_core::panels::Panel);
 
 /// The pictures the console has ready, by element. Absent is normal, not an error: a surface
 /// summoned this frame has no texture until the next one, and a surface the cap evicted has
@@ -1202,6 +1224,47 @@ impl ConversationPane {
         self.summon_panel(id);
     }
 
+    /// Put one of Organon's editor panels in the flow, or say why not.
+    ///
+    /// 🚨 **This is where the `(tab, panel)` pair is checked, and it is the only place that
+    /// can.** The command schema declares the panel argument as the *union* of every slug on
+    /// every tab — one value list per argument is all a schema has — so `/organon motion
+    /// surface` passes validation with a real slug on the wrong tab. `panels::find` takes both
+    /// words, and a refusal here still leaves the words in the composer to be fixed, which is
+    /// the property the whole refusal path exists for. [`crate::registry::NarrowFn`] carries
+    /// the argument for splitting it this way.
+    fn summon_organon(&mut self, args: &serde_json::Value, typed: &str) -> Receipt {
+        let word = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or_default();
+        let tab_word = word(registry::ORGANON_TAB_ARG);
+        let slug = word(registry::ORGANON_PANEL_ARG);
+        let Some(tab) = organon_core::tabs::UiTab::from_word(tab_word) else {
+            // Unreachable through the composer — the tab argument's `Choice` is the tab list,
+            // so `resolve` refuses an unknown word before this runs. Said rather than
+            // `unwrap`ped: this is also the arm a future MCP caller would arrive through.
+            let message = format!("`{tab_word}` is not one of Organon's tabs");
+            self.note(message.clone());
+            return Receipt { ok: false, text: message };
+        };
+        let Some(panel) = organon_core::panels::find(tab, slug) else {
+            let known = organon_core::panels::in_tab(tab);
+            let message = if known.is_empty() {
+                format!(
+                    "the {tab_word} tab's panels are not addressable yet — only `look` is \
+                     joined to the panel table so far"
+                )
+            } else {
+                format!(
+                    "the {tab_word} tab has no panel called `{slug}` — it has: {}",
+                    known.iter().map(|p| p.slug).collect::<Vec<_>>().join(", ")
+                )
+            };
+            self.note(message.clone());
+            return Receipt { ok: false, text: message };
+        };
+        self.transcript.insert_organon(OrganonBlock { panel });
+        Receipt { ok: true, text: typed.to_string() }
+    }
+
     /// The look a surface opens at: the console's first button label, since that list *is*
     /// the material table and its head is the console's own default dressing. An empty list
     /// (a caller that handed down nothing) yields an empty name, which the console reads as
@@ -1279,6 +1342,7 @@ impl ConversationPane {
                     self.summon_surface();
                     Receipt { ok: true, text: typed.to_string() }
                 }
+                registry::VERB_ORGANON => self.summon_organon(&args, typed),
                 registry::VERB_HELP => {
                     // Collected first: `help_lines` borrows the registry and `note` wants the
                     // pane.
@@ -1473,6 +1537,7 @@ pub fn draw(
     theme: &Theme,
     theme_name: &str,
     form: &Form,
+    organon: OrganonDraw,
 ) -> ConversationOutput {
     let mut out = ConversationOutput::default();
     // Taken before anything is allocated in the pane, so the ticks mark the *conversation
@@ -1491,7 +1556,7 @@ pub fn draw(
         ui.add_space(4.0);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            out = scrollback(ui, pane, images, theme, form);
+            out = scrollback(ui, pane, images, theme, form, organon);
         });
     });
     // Last, so nothing the flow draws can cover them — the same call-order enforcement the
@@ -1590,6 +1655,7 @@ fn scrollback(
     images: &SurfaceImages,
     theme: &Theme,
     form: &Form,
+    organon: OrganonDraw,
 ) -> ConversationOutput {
     // Collected during the walk and joined after it. A panel is *below* its surface in the
     // ordinary case, but nothing in the model requires that — the link is an id, not an
@@ -1727,6 +1793,12 @@ fn scrollback(
                                 }
                             }
                         },
+                        // Drawn here for the sharpest version of the reason: its widgets are not
+                        // this crate's at all. The frame, the heading and the placement are —
+                        // the body comes from `console_main` through [`OrganonDraw`], and it
+                        // has to run inside this layout because a dropdown opens where it was
+                        // clicked. That type's doc owns the argument.
+                        Body::Organon(block) => organon_element(ui, block, theme, form, organon),
                         // The second body drawn here rather than in `draw_element`, and for a
                         // sharper version of the same reason: answering one needs the question
                         // the pane is holding, which `draw_element` has no access to.
@@ -1917,7 +1989,10 @@ fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme, form: &Form
         // frames, the question an approval is asking, and the diff a tool card draws.
         // Nothing to do here, and nothing missing: an element is drawn exactly once, by
         // whichever of the two has what it needs.
-        Body::Artifact(_) | Body::Approval(_) | Body::Tool(_) => {}
+        // Drawn in the walk rather than here, all three for one reason: they need state that
+        // survives between frames (a slider mid-drag, a panel's live widget values) and this
+        // function has nowhere to keep it.
+        Body::Artifact(_) | Body::Approval(_) | Body::Tool(_) | Body::Organon(_) => {}
         Body::RunEnd(end) => {
             // Named `outcome` rather than `label`, which is now a function in this module:
             // a local of that name would shadow it and the two calls below would stop
@@ -2609,6 +2684,68 @@ fn panel_element(
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
             ui.label(RichText::new(&artifact.title).monospace().strong().color(theme.panel_title));
             panel_body(ui, spec, state, defaults, theme);
+        });
+        card_left_rule(ui, framed.response.rect, theme, form);
+    });
+}
+
+/// One of Organon's editor panels, in the flow: this crate's frame and heading, the console's
+/// body.
+///
+/// The frame is [`panel_element`]'s exactly — same fill, same corner, same left rule — because
+/// the whole claim of `/organon` is that this is *the same instrument*, not a console-flavoured
+/// imitation of it. What differs is where the contents come from: [`OrganonDraw`], which this
+/// crate calls and cannot see inside.
+///
+/// ⚠️ **`push_id` for [`panel_element`]'s reason, and it matters more here.** Organon's own
+/// widgets are built with egui's positional auto-ids, so two Surface panels in one transcript
+/// would collide on every dropdown and every drag — a knob handing its neighbour's drag state
+/// across, which reads as a panel that fights the hand. The element id makes each one its own
+/// namespace.
+///
+/// ⚠️ **A [`Status::Declared`] panel says so where the controls would be, rather than drawing
+/// an empty box.** `/organon` lists every panel of a joined tab and only some are transplanted;
+/// an element that opened to nothing at all would be indistinguishable from one that failed.
+fn organon_element(
+    ui: &mut egui::Ui,
+    block: &OrganonBlock,
+    theme: &Theme,
+    form: &Form,
+    organon: OrganonDraw,
+) {
+    ui.push_id(block.panel.slug, |ui| {
+        let mut framed = Frame::new()
+            .fill(theme.panel_fill)
+            .corner_radius(form.card_corner())
+            .inner_margin(form.card_margin());
+        if let Some(stroke) = form.card_stroke(theme.panel_edge) {
+            framed = framed.stroke(stroke);
+        }
+        let framed = framed.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(format!(
+                    "◈ organon · {} · {}",
+                    block.panel.tab.word(),
+                    block.panel.title
+                ))
+                .monospace()
+                .strong()
+                .color(theme.panel_title),
+            );
+            match block.panel.status {
+                organon_core::panels::Status::Live => organon(ui, block.panel),
+                organon_core::panels::Status::Declared => {
+                    ui.label(
+                        RichText::new(
+                            "this panel is named in Organon's editor but has not been \
+                             transplanted into the console yet",
+                        )
+                        .color(theme.dim)
+                        .italics(),
+                    );
+                }
+            }
         });
         card_left_rule(ui, framed.response.rect, theme, form);
     });
@@ -5564,6 +5701,65 @@ mod tests {
         // list of what would have worked.
         assert!(matches!(registry.resolve("/panel"), Resolved::Refused(_)));
         assert_eq!(registry.resolve("what does /surface do?"), Resolved::Message);
+    }
+
+    /// `/organon look surface` puts the panel in the flow, resolved.
+    #[test]
+    fn organon_summons_a_panel_into_the_transcript() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        let receipt = pane.summon_organon(
+            &serde_json::json!({ "tab": "look", "panel": "surface" }),
+            "/organon look surface",
+        );
+        assert!(receipt.ok, "{}", receipt.text);
+        let last = pane.transcript.elements().back().expect("an element landed");
+        let Body::Organon(block) = &last.body else { panic!("not an Organon body: {:?}", last.body) };
+        assert_eq!(*block.panel, organon_core::panels::LOOK_SURFACE);
+    }
+
+    /// 🚨 **The pair, checked where the pair is understood.** `surface` is a real slug, so the
+    /// command schema cannot refuse `/organon motion surface` — the declared value space is the
+    /// union across tabs ([`crate::registry::NarrowFn`]). This is the gate that does, and it
+    /// leaves nothing in the transcript.
+    #[test]
+    fn an_unknown_pair_is_refused_by_the_view_lane() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        let notes_before = pane.log.len();
+        let receipt = pane.summon_organon(
+            &serde_json::json!({ "tab": "motion", "panel": "surface" }),
+            "/organon motion surface",
+        );
+        assert!(!receipt.ok);
+        assert!(
+            receipt.text.contains("not addressable yet"),
+            "the refusal should name why, got: {}",
+            receipt.text
+        );
+        assert!(
+            !pane
+                .transcript
+                .elements()
+                .iter()
+                .any(|e| matches!(e.body, Body::Organon(_))),
+            "a refused pair leaves no panel behind"
+        );
+        // …and the refusal is *visible*, not merely returned: it goes into the console's own
+        // remarks above the transcript, which is where every other refusal lands.
+        assert!(pane.log.len() > notes_before);
+    }
+
+    /// A slug that is on the tab but misspelled is refused with that tab's own list — the
+    /// alternatives, while the words are still in the composer.
+    #[test]
+    fn a_misspelled_panel_is_refused_with_the_tabs_own_list() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        let receipt = pane.summon_organon(
+            &serde_json::json!({ "tab": "look", "panel": "surfase" }),
+            "/organon look surfase",
+        );
+        assert!(!receipt.ok);
+        assert!(receipt.text.contains("surface"), "got: {}", receipt.text);
+        assert!(receipt.text.contains("bloom"), "the whole tab, got: {}", receipt.text);
     }
 
     /// The knobs start where the console said they start, so the two front-ends draw one
