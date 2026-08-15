@@ -3043,6 +3043,305 @@ built from the **same word tables** (`substrate_materials::MATERIAL_NAMES`, `cli
 cannot drift and the *verb list* still can. Generating clap from `CommandSpec` is the remaining
 quarter of "one vocabulary" and is not done.
 
+### 1.9 The command panel — see your choices while you type, and see what happened after
+
+**The precedent is NeoVim's `which-key`**: press a prefix, a panel shows every valid
+continuation *with its description*; press another key and it narrows. It is fast because it
+never asks you to remember — it shows you, and once you know, the showing costs nothing
+because you are already past it. James's own framing, 2026-08-14: *"when I type slash, I want
+to see something pop up… a pop-up full-width display that lists all my choices."*
+
+`/` shows every verb. `/s` leaves `surface`, so the line reads `/surface` and Enter runs it.
+`/c` leaves `camera` and `camera.read` — type the next letter to narrow. `/theme ` shows the
+palettes, and `/theme ch` leaves `chocolate`. **Values complete exactly like verbs**, which is
+what makes the surface feel finished, and it is free: an `ArgKind::Choice` already *is* the
+list, built from `Theme::NAMES` and `substrate_materials`' tables rather than restated.
+
+#### The candidate model, and the three renderers of it
+
+`registry.rs::Registry::candidates(line) -> Option<Palette>` is a **pure function returning
+structured values** — no egui, no formatted rows, testable headless. A `Candidate` is:
+
+| Field | What it is |
+|---|---|
+| `label` | the word — `theme`, `chocolate`, `distance` |
+| `doc` | one line, off the table. Empty for a `Choice` option, which stands for itself |
+| `completion` | 🚨 **the whole composer line accepting it would produce**, never the fragment |
+| `kind` | `Verb { group, lane }` / `Keyword` / `Value` |
+| `completes` | whether that line is a complete, valid command — asked of `resolve`, so it cannot drift from what Enter does |
+
+🚨 **`completion` being the whole line is what makes one generator serve every renderer.**
+Accepting is `line = candidate.completion`; asking `candidates` again with it yields the next
+ring. That two-step loop is the entirety of what a renderer implements, and it is the same
+loop whether the accept came from Tab, from a wedge, or from a click.
+
+**Three surfaces draw this list and there is one generator**: the panel above the composer;
+the **pie menu**, whose three rings are `groups()` → `verbs_in()` → an argument's `Choice`
+(§2, still unbuilt); and `/help`. A renderer that needed its own generator would be a second
+vocabulary, which is the failure §1.8 exists to prevent, reached from the other end.
+
+The `Palette` around them carries `slot` — which word is being narrowed — `typed`,
+`candidates`, and `runnable` (the line **as it stands** already resolves). ⚠️ `Slot::Value`
+carries the whole `ArgSpec`, not a list of options, because the arguments with *no* closed
+value space are precisely the ones a renderer must treat differently: `Float` is a dial with
+its band already stated, `Int` and `Text` need a typed field. `Palette::hint()` is the
+sentence for a human; the `ArgKind` on the slot is the fact for anything else.
+
+#### Prefix, not fuzzy
+
+Matching is a **case-insensitive prefix**, in table order. Subsequence matching (`/pst` →
+`posture`) is faster on a long list, and this list is nine verbs long, so that speed is not on
+offer. What it would buy instead is the ability for a line that reads like a typo to match a
+distant verb — and with auto-execute available, a surprising *match* becomes a surprising
+*action*. Prefix is also what makes "press another key and it narrows" literally true, which
+is the property being copied. **Fuzzy is not reachable and is not built**; `registry::narrows`
+is the one function that would have to change.
+
+#### Tab completes, Enter runs, and they are never the same key
+
+The composer is also where a human talks to the agent, so the send key must mean one thing
+always. **Tab accepts** the highlighted candidate and cannot send anything at all; **Enter
+submits the line as it stands** and never accepts.
+
+⚠️ **Enter with exactly one candidate left is deliberately not an accept.** `/theme` names one
+verb and is *not* runnable, so an Enter that accepted would have to either run an incomplete
+command or silently rewrite the line and wait for a second Enter — one key doing two different
+things one keystroke apart. Instead Enter reaches `Registry::resolve`, which refuses it by
+name (*"`/theme` needs `name`"*) and **does not clear the composer**, so the words are still
+there and Tab is one key away. That is §1.8's rule unchanged, and it is what makes "Enter
+never accepts" affordable.
+
+Arrows move the highlight, wrapping; Escape shuts the panel until the line changes.
+
+🚨 **`lock_focus(true)` on the composer is load-bearing, not a preference.** egui's focus
+manager reads Tab out of the **raw input** in `Focus::begin_pass`, before any console code
+runs, so consuming the event is too late to stop focus leaving for whatever button the
+scrollback drew — and the keystrokes after it would go somewhere invisible. `lock_focus` sets
+`EventFilter::tab`, which is the flag that pass tests. ⚠️ Visible consequence when the panel
+is shut: Tab indents the message instead of moving focus, which is what a text box does
+everywhere else.
+
+⚠️ **Escape's hazard is real here but it is NOT the terminal's.** In a terminal tab Escape
+belongs to the child (`vim` needs it) and must be consumed before `term_view` clones the event
+vector; the conversation front-end has no child reading keys, so that hazard does not apply.
+A different one does, one layer down: the same `begin_pass` **drops the focused widget** on
+Escape, and `TextEdit` exposes no setter for `EventFilter::escape`. So Escape cannot be
+prevented from blurring the composer — it is *repaired*, by re-requesting focus in the frame
+the panel is dismissed. One frame passes with nothing focused, during which no keystroke can
+arrive. All four keys are matched with `matches_exact`, never `matches_logically`, for the
+shift-permissive reason `composer_key` already documents.
+
+#### Auto-execute, and the guard on it
+
+James asked for it: *"it will just execute the thing as soon as it knows what we want."*
+🚨 **What makes it safe is that "knows what we want" is a provable state, not a guess:**
+`Palette::autorun` fires only when **exactly one candidate remains and that candidate
+completes the command**. `/s` leaves `surface`, which takes nothing, so there is nothing else
+the line could have meant. `/t` leaves `theme`, which still needs a value — so it does **not**
+fire, because firing there would run a command while the hand is still typing its argument.
+That case is pinned by test in both `registry.rs` and `conversation_view.rs`.
+
+**Off by default.** `ORGANON_PALETTE_AUTORUN=1` switches it on for a session, read once at
+tab construction rather than per frame.
+
+#### The panel only exists for a command line
+
+🚨 **A panel that appeared while prose was being typed would be intolerable**, so the test is
+`Registry::resolve`'s own and no other: the line must begin with `/`, and `//` is an escape
+meaning the line is a message. A sentence *mentioning* a command has words in front of the
+slash and answers `None`. ⚠️ A bare `/` answers `Some` with the whole table even though
+`resolve` calls it a message — those are not in conflict: showing the choices is what `/` is
+*for*, and nothing runs until the line is a command.
+
+⚠️ **The list is capped at eight rows with a count of the remainder, rather than scrolled.**
+`console.background` offers more materials than fit, so it genuinely overflows — but a
+vertical `ScrollArea` dropped into this bottom-up column takes the whole pane (684 pt of a
+684 pt pane, measured; see §1.1's composer). "Type another letter to narrow" is also the
+faster route to the one you want.
+
+#### The same region is where a command answers
+
+🚨 **The defect this closes.** A slash command's receipt goes to the pane's log, and the log
+is drawn at the **head** of the scrollback — so in any conversation longer than a screen the
+confirmation lands far above the live edge and is, in practice, invisible. James typed
+`/posture desktop` on 2026-08-14, the console obeyed, and nothing he could see said so. §1.8
+recorded that as a limitation on the grounds that the transcript has no "the console said
+this" element and inventing one is a change to the conversation model. **The panel needs no
+such element**: it is already full-width, already appears and disappears with the command
+line, and is already where the eye is.
+
+- ⚠️ **A receipt and a candidate list share one region and mean opposite things** — "here is
+  what happened" against "here is what you may do" — so they are distinguished
+  **structurally**: a receipt is a single band with a coloured word marker (`ok` / `refused`);
+  candidates are a headed list with `>` on the highlighted row. Only ever one of the two.
+- 🚨 **A refusal outlives a success**, which is `card_density`'s asymmetry one layer out: a
+  confirmation nobody reads cost nothing, because the command ran; a refusal nobody reads
+  cost the command *and* the knowledge that it did not happen. So a success ages out after
+  eight seconds and a refusal never does. Both go the moment the line is edited, which is the
+  honest signal that the human has moved on — and it is what hands the region back to the
+  candidates. `receipt_holds` is that rule as a pure function.
+- `registry::Receipt { ok, text }` is the structured value; `registry::receipt` formats the
+  log's line **from it**, so the band and the log cannot come to disagree about what happened.
+  The marker is a word rather than a glyph because `✓`/`✗` are in none of egui's four fonts.
+
+⚠️ **`/help` is now the third-best way to find a verb**, behind typing `/` and behind the pie
+menu that will read the same table. Its body still lands at the head of the scrollback, which
+is the limitation §1.8 named; this tier routes around it for *receipts* rather than fixing it
+for *output*, because a twenty-line help text in a band above the composer is a different
+thing from a one-line answer.
+
+⚠️ **ASCII throughout the panel**, deliberately. The obvious characters — `▸`/`▾` for the
+highlight, `…` for a `Float`'s band — are in none of egui's bundled fonts and would ship as
+boxes, which is exactly how `✓`/`✗` reached a third draw site. The glyph allowlist test in
+`conversation_view` now walks every string the panel can draw, **including the ones derived
+from a schema**, since a range or an option list is where a stray glyph would hide.
+
+### 1.10 The live colour editor — tune the palette while looking at it
+
+`/theme edit` (or `/theme adjust`) opens an editor for the palette being painted, in §1.9's band
+above the composer. James's framing, 2026-08-14: *"a little dialog, much like the place where we
+do our command completions… it shows the theme and the theme colors, and each one has a little
+HSV editor on it."*
+
+**The loop it replaces.** Every colour in `theme.rs` was chosen against a described intent and
+then written as a hex literal and compiled. That is a fine way to *state* a palette and a
+hopeless way to *judge* one — the only way to find out whether `light`'s whitest white is too
+bright is to look at it, and until now that meant edit, rebuild, relaunch, look.
+
+#### One vocabulary: the fields are enumerated once
+
+🚨 **`theme.rs`'s `colour_fields!` macro is the only list of the palette's colours.** It
+generates `Theme::fields`, `Theme::fields_mut`, `Theme::SCALAR_FIELDS` and `Theme::GROUPS` from
+one grouped declaration, so a colour added later is editable, diffable, storable and on a ring
+with no second place to remember. This is §1.8's rule reached from a new direction: a
+hand-listed editor would silently stop covering a field somebody added, and nothing would say
+so.
+
+⚠️ **Rust has no reflection, so the list is hand-written** — which makes the guard the actual
+work. `every_colour_a_palette_can_differ_in_is_reachable` copies field-by-field *through the
+accessor* between every ordered pair of the four palettes, adds the two non-colour fields
+(`scrim_floor`, `chrome`) by hand, and asserts the result equals the source; a field the
+accessor cannot reach keeps the destination's value and the comparison fails by name. Its
+residual blind spot is stated in the test: **a colour on which all four palettes agree to the
+byte** is invisible to it, and a fifth palette closes that gap for that field.
+
+⚠️ `ansi16` is one array field, so the macro cannot name its members; `ANSI16_NAMES` supplies
+the sixteen and `Theme::editor_groups` folds them onto the terminal's ring. `TERMINAL_GROUP`
+names the heading they attach to, so renaming it cannot silently orphan them.
+
+#### 🚨 The HSV is the truth, not the RGB
+
+**RGB → HSV → RGB does not round-trip, and it is not a rounding error.** A grey has no hue: drag
+saturation to nought and the hue is gone from the bytes, so an editor re-deriving HSV every
+frame would show hue 0 (red) the moment a colour went neutral, and dragging saturation back up
+would return red rather than the blue it was. Value does the same at nought. So the editor holds
+the `Hsva` of every field a hand has touched and derives the `Color32` from it — never the
+reverse. An untouched field is not in the map and is read straight off the palette, which keeps
+the state proportional to the editing rather than to the sixty-eight colours.
+
+⚠️ **This is why it does not use `egui::color_picker::color_picker_color32`.** That function
+solves the same problem with a cache in egui's context memory keyed by the **`Color32`** — and
+§`theme`'s module doc explains at length why this palette deliberately keeps four fields holding
+`#c8e6c8` (`human_text`, `tab_active`, `tab_menu_installed`, `term_fg`) apart. Keyed by value
+they share one entry; keyed by field they do not.
+
+⚠️ **`set_hsva` is on the drag path — every frame, per field being dragged — so it interns its
+field name against `Theme::SCALAR_FIELDS` and `ANSI16_NAMES`, the two `&'static` tables, rather
+than by constructing a palette and asking it.** Both answer the same question; the second built a
+whole `Theme` and a sixty-eight-entry `Vec` per tick to learn a compile-time fact. The general
+rule this is an instance of: `Theme::fields`/`fields_mut` allocate, which is right for the
+once-per-action callers (a save's diff, a startup override) and wrong for anything inside a
+gesture.
+
+⚠️ **A second, subtler round-trip lives in the row itself and is pinned by test.** The drags are
+in degrees and percent because that is how a hand thinks, and `h * 360.0 / 360.0` is not `h` in
+binary floating point — so writing the scaled values back unconditionally made every field
+differ from itself on the first frame, reporting a change nobody made and marking a freshly
+opened palette `unsaved`. The comparison is on what the widget was *given* against what it
+*returned*, which is the only form that can be quiet when nothing moved.
+`an_untouched_editor_asks_for_nothing` is the test that found it.
+
+#### The seam: the editor cannot assign the palette, and should not be able to
+
+`conversation_view::draw` is handed `&Theme`; the one owner is `console_main`'s `Console`, which
+is `theme.rs`'s "one owner, no globals" rule and the thing that makes a per-tab or preview
+palette a second value rather than a rewrite. So an edit leaves as a value —
+`ConversationOutput::theme: Option<ThemeChange>` — and `Console::apply_theme_change` assigns it
+after the frame closure's borrow has ended.
+
+🚨 **`Some` only on the frames something moved.** `Visuals` is held on the egui context rather
+than read per frame, so `console_main` re-derives and re-uploads the whole chrome for every
+change it is handed; answering `Some` unconditionally would do that sixty times a second for a
+palette nobody was touching.
+
+`theme_name` is now threaded into `draw` because this crate is given the palette's *values* and
+cannot recover its label — once an override has been laid over it, the live palette equals none
+of the compiled ones, and filing a saved override under the wrong name would apply a
+light-theme correction to a dark palette.
+
+#### What persistence means
+
+Three things, deliberately not gated on each other:
+
+| | Writes | Says |
+|---|---|---|
+| a drag | nothing | the head row's `unsaved` count |
+| **save** | `theme_overrides[name]` = the **diff** from the compiled palette | a stderr line naming the count |
+| **revert** | removes that entry | the palette returns to what this build ships |
+
+🚨 **Unsaved is always visible.** A tuning session that evaporates at exit without having said so
+is worse than no editor: the tuning felt finished. It is drawn in `mode_alert`, not `bad` — it is
+not an error.
+
+⚠️ **Overrides are keyed by palette**, because an override is a judgement about one palette.
+⚠️ **Only the difference is stored**, so a later build that improves a shade nobody tuned is not
+silently overruled by a file its owner believed recorded three edits. ⚠️ A stored colour naming a
+field this build lacks, or a string that is not eight hex digits, is **skipped with a note** —
+losing nine good edits over a tenth that aged badly is the wrong trade. ⚠️ Hex is **eight
+digits always**: `panel_fill` is premultiplied at `0xe6` and a six-digit form would silently make
+every saved panel opaque.
+
+Startup applies overrides **after** `theme::select` has settled which palette won — an override
+corrects a named palette and cannot resurrect a different one. ⚠️ It applies to an
+environment-selected palette too: the variable is a loan of *which palette*, and the tuned
+colours are part of what that palette now looks like on this machine.
+
+#### The band, and the keys
+
+The editor takes the region outright from both the receipt and the candidate list while it is
+open. Those two answer a line and are gone in seconds; this is a surface a hand is *working in*,
+and one that vanished because a keystroke reached the composer would be unusable.
+
+🚨 **It claims Tab, the arrows and Escape — and no printing key, and not Enter.** The composer is
+still live underneath, so a message stays sendable without closing the editor, and Enter keeps
+meaning exactly one thing, which is §1.9's rule unchanged. Only one of the editor and the panel
+reads a frame's keys, since both want the same three.
+
+🚨 **The editor closes itself if the palette changes underneath it.** `/theme chocolate` typed
+elsewhere, the CLI, or an agent's tool call can all repaint while an editor is open on `light`;
+its held HSV would then describe colours that are no longer there. Comparing the incoming
+palette against what the editor last painted is one `PartialEq` per frame and is the only signal
+available — this crate is not told when the palette is reassigned.
+
+⚠️ **`edit` and `adjust` are values of `console.theme`'s argument, not a verb.** That is what
+makes them complete for free from the same `Choice` §1.9 already draws, with no second table and
+no new ring. Two consequences: they must be in the `Choice` or `Registry::resolve` refuses
+`/theme edit` during validation before the view sees it; and they are refused **on the sidecar**
+by name, because the CLI and the MCP lane have no band above a composer to draw a dialog in.
+This is the one place a console-lane verb is answered locally, and it is the lane's edge rather
+than a violation: the palette really is console-wide (which is why the *edits* leave on
+`ConversationOutput`), but the editor is a panel in this transcript.
+
+⚠️ **ASCII throughout**, like the rest of the band. `theme_edit::drawn_strings` enumerates every
+string the editor can draw — including the **group headings**, which are hand-written prose in
+the field macro, and the **field names** — and §1.9's glyph allowlist test walks it. Sampling
+rather than enumerating is how `✓` reached a third draw site.
+
+⚠️ `ThemeEditor::open` takes a `focus` field name and **no command produces one yet**:
+`/theme`'s schema carries a single argument, so `/theme edit human_text` is not a line the
+registry can build. It exists because landing on a named colour is a one-line change the moment
+a second argument is worth adding. Nothing claims the command exists.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -3066,6 +3365,52 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **Nobody has seen the colour editor, and it is a tool for judging colours by eye — so the
+  one thing it exists to do is exactly the thing not verified.** Everything §1.10 asserts is a
+  claim about code: `cargo test -p organon-console --lib` is **630 green** (604 before, plus
+  twelve in `theme_edit`, six in `theme` and five in `conversation_view`), `cargo test -p
+  organon-core` is 556 green, and both `cargo check` legs are clean. **That is the whole claim:
+  it compiles and the tests pass.** What it does not establish, in order of how much it matters:
+  (1) **that three numeric H/S/V drags are enough to judge a colour by** — the alternative was
+  egui's 2D picker, which is a far better instrument per colour and shows one colour at a time,
+  and James asked for a list where each row has an editor, so the row won; whether a row is
+  enough is a question about a hand on a mouse; (2) that eight rows is the right window, and
+  that a highlight-following window pages the way a hand expects on the timeline's eleven and
+  the terminal's twenty — the arithmetic is pinned by test, the *feel* is not; (3) that the
+  editor's band, which is taller than the candidate list's, does not push the transcript around
+  disruptively — §1.9's own ledger already flags band height as an open question and this makes
+  the band bigger; (4) that `unsaved` in `mode_alert` on the right of the head row is actually
+  noticed, which is the entire defence against a tuning session evaporating at exit; (5) that a
+  drag at 60 fps through `set_visuals` on every change is smooth — the change is gated to frames
+  where something moved, and the automated review found and removed the one per-tick allocation
+  that was on that path (`set_hsva` was building a whole `Theme` plus its sixty-eight-entry field
+  list to intern a compile-time constant), but **nothing has measured a sustained drag** and the
+  remaining per-change cost — deriving `Visuals` and re-uploading egui's chrome — is real and
+  unpriced. ⚠️ **Nothing has been saved
+  and reloaded by a human**, so the round trip through `preferences.json` is pinned by unit test
+  and by nothing else. ⚠️ The immediate motivation — `light`'s whitest white being too bright —
+  is **not fixed by this change**: `Theme::light`'s `term_bg` is still `#ffffff` in the compiled
+  palette, deliberately, because the editor is the general answer and the specific correction is
+  now James's to make and save.
+- 🚨 **Nobody has seen the command panel, so whether it *feels* fast is unverified — and
+  "fast" is the entire claim being made for it.** Everything §1.9 asserts is a claim about
+  code: `cargo test -p organon-console --lib` is **604 green** (583 before, plus eleven in
+  `registry` and ten in `conversation_view`), `cargo check --features console-edition --bin
+  organon-console` is clean, and `cargo check --tests -p organic-math-native --features
+  console-edition` is clean. **That is the whole claim: it compiles and the tests pass.** What
+  it does not establish, in order of how much it matters: (1) that a panel appearing on the
+  first `/` reads as *help* rather than as an interruption — which-key is fast because the
+  panel is glanced at and then outrun, and whether this one can be outrun is a question about
+  a running window; (2) that the region above the composer is the right place for it at all,
+  since it pushes the scrollback up by a band whose height changes with the list, and a
+  transcript that jumps every time a letter narrows the list would be worse than no panel;
+  (3) that eight rows is the right cap — `console.background` overflows it and nobody has seen
+  what "+N more" looks like against a real material table; (4) that the `>` marker and colour
+  are enough to tell the highlighted row from the others without a painted highlight, which
+  was chosen to avoid a second way for a band's height to be wrong. ⚠️ **Auto-execute has
+  never been used by a human.** The guard is pinned by test in two places and the switch is
+  off, but "a command fires as you type" is a feeling as much as a rule, and the first honest
+  test of it is James setting `ORGANON_PALETTE_AUTORUN=1` and typing `/s`.
 - 🚨 **Nobody has seen a collapsed transcript, so whether it actually *reads* better is
   unverified — and that is the entire point of the change.** Card density was designed against
   a screenshot and a sentence, and everything claimed for it here is a claim about code:

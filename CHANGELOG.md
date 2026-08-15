@@ -54,6 +54,103 @@ surface. The membership rule is the one `organon-scene` was drawn by — a modul
 if its shipped code names nothing above it — and widening the crate to swallow them would
 be answering T4c's hard question by pretending it is easy.
 
+### Tune the palette while looking at it — `/theme edit`
+
+`/theme edit` (or `/theme adjust` — James named both and neither is the alias) opens a live
+colour editor in the band above the composer, the region the command palette already owns.
+It shows the palette one group at a time — the transcript, cards, the status strip, the
+composer, the terminal, patch panels, the timeline, the tab strip — with a swatch, the field's
+own name, and **an H/S/V editor on every row**. Tab moves between groups, the arrows pick a
+colour, Escape closes. Every drag repaints immediately.
+
+The loop it replaces was: edit a hex literal in `theme.rs`, rebuild, relaunch, look — about
+seven minutes to evaluate a change that takes a second to judge. The immediate case was
+`light`'s whitest white being too bright, but the point is the class, not the colour.
+
+🚨 **The sixty-eight colours are enumerated in exactly one place.** `theme.rs`'s
+`colour_fields!` macro generates `Theme::fields`, `fields_mut`, `SCALAR_FIELDS` and `GROUPS`
+from a single grouped list, so a colour added later is editable, storable and on a ring
+without anyone remembering to add it three more times. Rust has no reflection, so the list is
+hand-written — which makes the guard the real work:
+`every_colour_a_palette_can_differ_in_is_reachable` copies field-by-field through the accessor
+between **every ordered pair** of the four palettes and demands the result equal the source, so
+a missing field fails by name. Its one blind spot — a colour all four palettes agree on to the
+byte — is stated in the test rather than left to be discovered.
+
+🚨 **HSV is the truth while the editor is open, not the RGB.** RGB → HSV → RGB does not
+round-trip, and not as a rounding error: a grey has no hue at all, so an editor re-deriving HSV
+each frame would show red the instant a colour went neutral, and dragging saturation back up
+would return red rather than the blue it had been. The editor holds the `Hsva` of every field a
+hand has touched, keyed **by field**. ⚠️ That is also why it does not use egui's own
+`color_picker_color32`, which solves the same problem with a cache keyed by *colour value* —
+and this palette deliberately has four fields holding `#c8e6c8` on purpose, which that cache
+would weld together.
+
+📌 **What persistence means, said out loud.** Three things, deliberately not gated on each
+other: every drag **repaints** and writes nothing; **save** stores the *difference* from the
+compiled palette, filed under that palette's name; **revert** drops the overrides and returns
+to the palette this build ships. The head row carries an `unsaved` count whenever the working
+palette differs from the store — a tuning session that evaporates at exit without having said
+so is worse than no editor.
+
+⚠️ Overrides are stored **per palette** (`preferences.json`'s new `theme_overrides`), because
+"`light`'s white is too bright" says nothing about `chocolate`'s graphite; a flat map would
+apply one palette's correction to another and the result would read as the palette being
+broken. Only the tuned colours are written, so a later build that improves a shade nobody
+touched still reaches you. A stored colour naming a field this build lacks is **skipped with a
+line**, never a refusal of the whole file.
+
+⚠️ `edit` and `adjust` are **values of `/theme`'s existing argument**, not a verb of their own,
+which is what makes them complete for free from the same `Choice` the palette names come from.
+On the CLI and the MCP lane they are refused by name, saying where the surface actually lives —
+neither has a band above a composer to draw a dialog in.
+
+🚨 **Nobody has seen it.** `cargo test -p organon-console --lib` is 630 green and all four
+checks pass; that is the whole claim. Whether an H/S/V row is enough to judge a colour by, and
+whether eight rows is the right window, are questions about a running window.
+
+### A command palette above the composer — see your choices while you type
+
+`/` now opens a full-width panel listing every verb with its description; a keystroke narrows
+it, Tab completes the highlighted one, and values complete the same way, so `/theme ch` leaves
+`chocolate`. The precedent is NeoVim's `which-key`, and the point is the same: never ask
+anyone to remember a hierarchy you could simply show them.
+
+🚨 **Candidate generation is a pure function returning structured values**
+(`Registry::candidates` → `Palette` of `Candidate`), with no egui and no formatted rows,
+because **three surfaces draw one list**: this panel, the pie menu (whose three rings are
+`groups()` → `verbs_in()` → an argument's `Choice`), and `/help`. A `Candidate` carries the
+**whole line** accepting it would produce, so accepting is `line = completion` and asking
+again yields the next ring — the entire loop a renderer implements. Nothing restates a
+vocabulary: the options are `Theme::NAMES` and `substrate_materials`' own tables, and a
+`Float` argument hands over its band instead of a list.
+
+📌 **Tab completes, Enter runs, and they are never the same key.** The composer is also where
+a human talks to the agent, so the send key means one thing always. Enter with one candidate
+left is deliberately *not* an accept: `/theme` is unique and still incomplete, and one key
+that either runs an incomplete command or silently rewrites the line is worse than a refusal
+that names what is missing and leaves the words in the box.
+
+🚨 **Auto-execute exists and is off** (`ORGANON_PALETTE_AUTORUN=1`). It fires only when
+exactly one candidate remains **and** that candidate completes the command — so `/s` runs
+`surface`, and `/t` does not run `theme`, because a command firing while the hand is still
+typing its argument is the failure the guard is for.
+
+⚠️ **The panel only exists for a line that is a command** — `Registry::resolve`'s own test,
+so a sentence mentioning `/surface` still reaches the agent and `//` still escapes. A refused
+command still does not clear the composer.
+
+🚨 **The same region is where a command answers.** A slash command's receipt went to the pane
+log, which draws at the head of the scrollback — invisible in any conversation longer than a
+screen, which is how `/posture desktop` came to look like it had failed. The band now shows
+it where it was typed, structurally distinct from a candidate list, and **a refusal outlives a
+success**: success ages out, a refusal holds until the line is edited.
+
+⚠️ `lock_focus(true)` on the composer is what makes Tab available at all — egui's focus
+manager reads Tab out of the raw input before any console code runs — and Escape *blurs* the
+composer for the same reason, so the panel re-requests focus rather than pretending it can
+stop it.
+
 ### The last six params between `world.rs` and the plugin crate
 
 organon#49 Tier 4a. `FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`,

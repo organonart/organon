@@ -49,6 +49,7 @@
 //! ever genuinely wanted, it belongs in a CLI flag that can announce itself in the
 //! console's own output, not in an invisible variable that outranks the file forever.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -88,6 +89,28 @@ pub struct Preferences {
     /// particular name: it is what lets the product change its default theme and have
     /// that reach everyone who never expressed an opinion.
     pub theme: Option<String>,
+
+    /// Colours tuned by hand in the live editor, **per palette**, as
+    /// `theme name -> field name -> rrggbbaa`.
+    ///
+    /// 🚨 **Keyed by palette, and that is not over-engineering.** An override is a judgement
+    /// about one palette — "`light`'s white is too bright" says nothing about `chocolate`'s
+    /// graphite — so a flat field-to-colour map would apply a light-theme correction to a dark
+    /// palette the moment somebody switched, and the result would look like the palette itself
+    /// being broken. Nesting also means switching away and back is lossless, which a hand that
+    /// spent ten minutes tuning expects.
+    ///
+    /// 🚨 **Only what was actually changed is stored** ([`crate::theme::Theme::diff`]). Writing
+    /// all sixty-eight colours would freeze the palette as it was on the day it was saved, so a
+    /// later build that improved a shade nobody had tuned would be silently overruled by a file
+    /// its owner believed recorded three edits.
+    ///
+    /// ⚠️ **A `BTreeMap`, not a `HashMap`**, so the file is written in a stable order — a
+    /// preferences file whose lines shuffle on every save is one nobody can diff or keep in
+    /// version control. Unknown palette names and unknown field names are both **skipped with a
+    /// note** when read, never guessed at: this file may have been written by a build with a
+    /// palette or a field this one does not have.
+    pub theme_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Distinguishes concurrent temp files written by this process. The pid separates
@@ -190,7 +213,7 @@ mod tests {
     #[test]
     fn preferences_round_trip_through_the_store() {
         let root = temp_root("round-trip");
-        let prefs = Preferences { theme: Some("phosphor".into()) };
+        let prefs = Preferences { theme: Some("phosphor".into()), ..Default::default() };
         prefs.save(&root).unwrap();
         assert_eq!(Preferences::load(&root), prefs);
         let _ = fs::remove_dir_all(&root);
@@ -228,7 +251,7 @@ mod tests {
     #[test]
     fn a_bom_is_never_written_and_is_not_tolerated_on_read() {
         let root = temp_root("bom");
-        Preferences { theme: Some("phosphor".into()) }.save(&root).unwrap();
+        Preferences { theme: Some("phosphor".into()), ..Default::default() }.save(&root).unwrap();
         let bytes = fs::read(root.join(PREFS_FILE)).unwrap();
         assert_ne!(&bytes[..3], b"\xEF\xBB\xBF".as_slice(), "a BOM here is silently unreadable");
         assert_eq!(bytes[0], b'{', "the first byte is the JSON itself");
@@ -275,8 +298,8 @@ mod tests {
     #[test]
     fn a_save_replaces_the_previous_file_and_strands_no_temp() {
         let root = temp_root("replace");
-        Preferences { theme: Some("first".into()) }.save(&root).unwrap();
-        Preferences { theme: Some("second".into()) }.save(&root).unwrap();
+        Preferences { theme: Some("first".into()), ..Default::default() }.save(&root).unwrap();
+        Preferences { theme: Some("second".into()), ..Default::default() }.save(&root).unwrap();
         assert_eq!(Preferences::load(&root).theme.as_deref(), Some("second"));
 
         let left: Vec<String> = fs::read_dir(&root)
@@ -293,7 +316,7 @@ mod tests {
     #[test]
     fn the_replacement_is_atomic_because_the_temp_is_a_sibling() {
         let root = temp_root("sibling");
-        let prefs = Preferences { theme: Some("phosphor".into()) };
+        let prefs = Preferences { theme: Some("phosphor".into()), ..Default::default() };
         prefs.save(&root).unwrap();
         // The old content is readable right up to the rename and complete after it;
         // there is no window in which the target exists and does not parse.
@@ -309,7 +332,7 @@ mod tests {
     fn a_save_creates_the_store_directory() {
         let root = temp_root("create").join("not-yet");
         assert!(!root.exists());
-        Preferences { theme: Some("phosphor".into()) }.save(&root).unwrap();
+        Preferences { theme: Some("phosphor".into()), ..Default::default() }.save(&root).unwrap();
         assert_eq!(Preferences::load(&root).theme.as_deref(), Some("phosphor"));
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }

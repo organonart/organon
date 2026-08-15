@@ -384,7 +384,14 @@ const CMD_BACKGROUND: &str = "console.background";
 /// See [`CMD_BACKGROUND`].
 const CMD_RIG: &str = "console.rig";
 /// See [`CMD_BACKGROUND`]. #38: the console's own palette, not the substrate's dressing.
-const CMD_THEME: &str = "console.theme";
+///
+/// ⚠️ **Aliased to the registry's spelling rather than written out again**, because this is the
+/// one console verb the conversation view has to *recognise* as well as forward: two of its
+/// argument values open the live colour editor in that crate's own band (§1.10) instead of
+/// dispatching. Two string literals would compare equal today and stop comparing equal the day
+/// somebody renames the verb — and the symptom would be `/theme edit` quietly dispatching as an
+/// unknown palette name rather than opening anything.
+const CMD_THEME: &str = organon_console::registry::VERB_THEME;
 /// See [`CMD_BACKGROUND`]. #38: how the console holds itself, on the terminal↔desktop axis.
 const CMD_POSTURE: &str = "console.posture";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
@@ -400,6 +407,12 @@ const CMD_CAMERA: &str = "console.camera";
 /// The single argument the two **dressing** verbs take. One name, because the sidecar's wire
 /// form is `<verb> <word>` and inventing two spellings for one slot is how a schema drifts
 /// from its transport.
+///
+/// ⚠️ `registry::THEME_ARG` is the conversation view's copy of this one slot name — it reads the
+/// value out of a dispatch payload to see whether `/theme` was asked to open the editor.
+/// [`tests::the_theme_verbs_slot_name_is_the_one_the_view_reads`] pins the two together; they
+/// cannot be aliased in the same direction as [`CMD_THEME`] because this name is shared by
+/// three verbs and only one of them is read over there.
 const CMD_ARG: &str = "name";
 /// [`CMD_BLOCK`]'s argument. A **second** slot name rather than a reuse of [`CMD_ARG`],
 /// because it is a different kind: `name` is a `Choice` over a table and `rows` is an `Int`,
@@ -482,13 +495,25 @@ fn console_specs() -> Vec<CommandSpec> {
         // its reason: it is the same table `Theme::resolve` refuses against and the same one
         // `bin/ctl.rs` builds its `--help` list from, so a fifth palette reaches all three
         // surfaces in the commit that adds it.
+        // 🚨 **`edit` and `adjust` are values of this argument, not a verb of their own**, and
+        // that is what makes the live editor completable for free: `/theme ` already lists this
+        // `Choice`, so the two words narrow beside the palette names with no second table and
+        // no change to §1.9's candidate machinery. A verb (`/themeedit`) would have needed its
+        // own entry, its own doc and its own ring, to say a thing about the palette that
+        // `/theme` is already the word for.
         CommandSpec {
             name: CMD_THEME.into(),
             doc: "Every colour the console paints. Live, and stored as a preference".into(),
             target: TargetKind::Viewport,
             args: vec![ArgSpec {
                 name: CMD_ARG.into(),
-                kind: ArgKind::Choice(Theme::NAMES.iter().map(|s| (*s).to_string()).collect()),
+                kind: ArgKind::Choice(
+                    Theme::NAMES
+                        .iter()
+                        .chain(organon_console::theme_edit::EDIT_WORDS.iter())
+                        .map(|s| (*s).to_string())
+                        .collect(),
+                ),
                 required: true,
             }],
         },
@@ -680,6 +705,22 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
         // route that skipped the schema.
         CMD_THEME => {
             let w = word(CMD_ARG)?;
+            // 🚨 **The two editor words are legal in the schema and illegal on this lane**, and
+            // refusing them here rather than leaving them out of the `Choice` is deliberate.
+            // They have to be in the `Choice` or `Registry::resolve` would refuse `/theme edit`
+            // during validation, before the conversation view ever sees it — and the view is
+            // where the editor is drawn. They must be refused *here* because this is the
+            // sidecar: the CLI and an agent's tool call both arrive on it, and neither has a
+            // band above a composer to draw a dialog in. Silently doing nothing, or painting a
+            // palette nobody asked for, are both worse than saying where the surface lives.
+            if organon_console::theme_edit::is_edit_word(&w) {
+                return Err(format!(
+                    "{name}: `{w}` opens the live colour editor, which is a panel inside a \
+                     conversation tab — type `/{}` there. This lane paints a named palette: {}",
+                    format_args!("theme {w}"),
+                    Theme::NAMES.join(", ")
+                ));
+            }
             Theme::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Theme(w))
         }
@@ -1632,7 +1673,25 @@ impl Console {
         for note in &selection.notes {
             eprintln!("organon-console: {note}");
         }
-        let theme = selection.theme;
+        let mut theme = selection.theme;
+        // 🚨 **The tuned colours, laid over the palette that won — the last step of the
+        // precedence and deliberately *after* it rather than part of it.** An override is a
+        // correction to one named palette, filed under that name, so which palette is being
+        // painted has to be settled before there is a question of what corrects it. This also
+        // means an override cannot resurrect a palette: `ORGANON_SHELL_THEME=chocolate` picks
+        // chocolate, and only chocolate's own tuned colours follow it.
+        //
+        // ⚠️ **Applied for an environment-selected palette too, which the "loan, never a
+        // takeover" rule above might suggest it should not be.** It should: the variable is a
+        // loan of *which palette*, and the tuned colours are part of what that palette now
+        // looks like on this machine. Skipping them would make a launch shim silently show a
+        // palette its owner has never seen.
+        if let Some(overrides) = stored.theme_overrides.get(selection.name) {
+            for note in theme::apply_overrides(&mut theme, overrides) {
+                eprintln!("organon-console: {note}");
+            }
+        }
+        let theme = theme;
         // egui's own chrome — sliders, popup frames, the `TextEdit` selection wash, scrollbars
         // — comes from the palette rather than from a hardcoded `Visuals::dark()`. This call
         // *was* that hardcoded line, and it is why a light palette could not have worked from
@@ -2305,6 +2364,81 @@ impl Console {
             Err(e) => eprintln!(
                 "organon-console: painted `{canonical}`, but could not store it ({e}) — it will \
                  be gone at exit"
+            ),
+        }
+    }
+
+    /// Take a palette the live editor changed, and do what it asked with the store.
+    ///
+    /// The sibling of [`Console::set_theme`] and deliberately not folded into it: that one takes
+    /// a *name* and paints a compiled palette, this one takes a *palette* that answers to a name
+    /// but is no longer equal to it. Sharing an entry point would mean one function whose
+    /// argument decides which of two quite different things it does.
+    ///
+    /// 🚨 **Painting and storing are separate here for the same reason they are separate in
+    /// `set_theme`, but the split lands differently: the common case writes nothing.** A drag
+    /// arrives as [`StoreAction::Leave`] many times a second, so touching `preferences.json` on
+    /// each one would be a file write per frame, and the editor's `unsaved` marker exists
+    /// precisely so it does not have to be.
+    ///
+    /// ⚠️ **`set_visuals` is re-issued on every change**, not only on a save. Half the window —
+    /// sliders, popups, the selection wash, the scrollbars — comes from `Visuals`, which egui
+    /// holds on the context rather than reading per frame, so an edit that skipped it would
+    /// repaint the console's own painting and leave egui's chrome on the outgoing colours. That
+    /// asymmetry is the whole reason `Theme::visuals` exists; `set_theme`'s doc has it in full.
+    fn apply_theme_change(&mut self, change: organon_console::theme_edit::ThemeChange) {
+        use organon_console::theme_edit::StoreAction;
+
+        let visuals = change.theme.visuals();
+        self.theme = change.theme;
+        self.egui_ctx.set_visuals(visuals);
+
+        match change.store {
+            StoreAction::Leave => return,
+            StoreAction::Save | StoreAction::Clear => {}
+        }
+
+        // ⚠️ **Load, modify, save — never `Preferences { .. }`.** `set_theme`'s warning, for its
+        // reason: the struct grows fields, and a fresh one here would silently discard every
+        // preference this call did not know about.
+        let mut prefs = prefs::Preferences::load_default();
+        let outcome = match change.store {
+            StoreAction::Save => {
+                let Some(base) = Theme::by_name(&change.name) else {
+                    eprintln!(
+                        "organon-console: cannot store colours for `{}` — this build has no \
+                         palette by that name",
+                        change.name
+                    );
+                    return;
+                };
+                let overrides = theme::collect_overrides(&self.theme, &base);
+                let count = overrides.len();
+                if overrides.is_empty() {
+                    // Tuned back to exactly the compiled palette. Storing an empty map would
+                    // leave a key in the file asserting an override that is not one.
+                    prefs.theme_overrides.remove(&change.name);
+                } else {
+                    prefs.theme_overrides.insert(change.name.clone(), overrides);
+                }
+                format!("{count} tuned colour(s) for `{}`", change.name)
+            }
+            StoreAction::Clear => {
+                prefs.theme_overrides.remove(&change.name);
+                format!("the tuned colours for `{}`, cleared", change.name)
+            }
+            StoreAction::Leave => unreachable!("returned above"),
+        };
+
+        match prefs.save_default() {
+            // Nothing on screen reports a *write*, so the write is what gets the line —
+            // `set_theme`'s rule. "I saved this and it did not stick" has to be diagnosable.
+            Ok(()) => {
+                eprintln!("organon-console: stored {outcome} — they will be here next launch")
+            }
+            Err(e) => eprintln!(
+                "organon-console: painted the change, but could not store {outcome} ({e}) — it \
+                 will be gone at exit"
             ),
         }
     }
@@ -3392,6 +3526,11 @@ impl Console {
         // The palette, split out of `self` exactly as everything else here is — one shared
         // borrow that every draw call inside the closure passes down.
         let theme = &self.theme;
+        let theme_name = self.theme_name;
+        // A palette the live editor changed this frame. Collected out of the closure for the
+        // same reason `surface_requests` is: acting on it needs `&mut self`, and `theme` is
+        // borrowed from `self` for the whole of the closure.
+        let mut theme_change: Option<organon_console::theme_edit::ThemeChange> = None;
         // The form tokens at this frame's posture, resolved **once** and borrowed exactly as
         // the palette is. Resolving per draw call would be cheap and wrong for a reason that
         // outlives this tier: two calls in one frame could then disagree, which is precisely
@@ -3475,9 +3614,19 @@ impl Console {
                             // does nothing. An inline artifact needs none of that machinery —
                             // it is an element in a flow that draws itself — so what comes
                             // back is where its surfaces ended up, and nothing else.
-                            let out =
-                                conversation_view::draw(ui, chat, &surface_images, theme, form);
+                            let out = conversation_view::draw(
+                                ui,
+                                chat,
+                                &surface_images,
+                                theme,
+                                theme_name,
+                                form,
+                            );
                             surface_requests = out.surfaces;
+                            // Applied after the frame, not here: `theme` is borrowed from
+                            // `self` for the whole of this closure, so assigning it now is a
+                            // borrow error rather than a style choice.
+                            theme_change = out.theme;
                         }
                         _ => {
                             ui.centered_and_justified(|ui| {
@@ -3513,6 +3662,11 @@ impl Console {
         // the same reason — a rect is an output of the layout that produced it.
         self.surface_requests = surface_requests;
         self.surface_pane = active;
+        // The live colour editor's work, applied now that the closure's borrow of `self.theme`
+        // has ended.
+        if let Some(change) = theme_change {
+            self.apply_theme_change(change);
+        }
         // What the next frame's `render_portal` sizes its texture to — points, never pixels,
         // for `pane_points`' reason: it is the *ratio* to the window that survives a scale
         // nobody has measured yet.
@@ -3886,6 +4040,51 @@ mod cli_tests {
         }
     }
 
+    /// 🚨 CONTRACT: **the slot `/theme` carries its value in is the slot the conversation view
+    /// reads.** The view has to look inside a `console.theme` dispatch to see whether it was
+    /// asked to open the live colour editor (§1.10), and it names that slot with its own
+    /// constant. Two spellings would agree today and diverge silently the day this one is
+    /// renamed — `/theme edit` would then dispatch as an unknown palette instead of opening
+    /// anything, with nothing to say so. The verb's own name needs no test: `CMD_THEME` is an
+    /// alias of `registry::VERB_THEME` and cannot drift at all.
+    #[test]
+    fn the_theme_verbs_slot_name_is_the_one_the_view_reads() {
+        assert_eq!(CMD_ARG, organon_console::registry::THEME_ARG);
+        assert_eq!(CMD_THEME, organon_console::registry::VERB_THEME);
+    }
+
+    /// 🚨 CONTRACT: **the two editor words are offered by the schema and refused on this lane**,
+    /// and both halves are necessary. They must be in the `Choice` or `Registry::resolve`
+    /// refuses `/theme edit` during validation, before the conversation view — where the editor
+    /// is actually drawn — ever sees it. They must be refused *here* because this is the
+    /// sidecar, which the CLI and an agent's tool call both arrive on, and neither has a band
+    /// above a composer to put a dialog in.
+    #[test]
+    fn the_editor_words_are_offered_but_never_dispatched() {
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_THEME)
+            .expect("the theme spec");
+        let ArgKind::Choice(options) = &spec.args[0].kind else {
+            panic!("`{CMD_THEME}`'s argument stopped being a Choice, so nothing completes it");
+        };
+        for word in organon_console::theme_edit::EDIT_WORDS {
+            assert!(options.contains(&word.to_string()), "`{word}` is not offered: {options:?}");
+            let err = op_from(CMD_THEME, &json!({ CMD_ARG: word }))
+                .expect_err("the sidecar must refuse an editor word");
+            assert!(err.contains(word), "the refusal does not quote what was asked: {err}");
+            assert!(
+                err.contains("conversation tab"),
+                "the refusal must say where the editor actually lives: {err}"
+            );
+        }
+        // …and every palette name still goes through untouched.
+        for name in Theme::NAMES {
+            op_from(CMD_THEME, &json!({ CMD_ARG: name }))
+                .unwrap_or_else(|e| panic!("`{name}` should still dispatch: {e}"));
+        }
+    }
+
     /// The backdrop's value space, both halves: the new spelling reaches the substrate, and
     /// **every other value still means what it meant before**. That second half is the point —
     /// Tier 1 widened `ORGANON_SHELL_BACKDROP` rather than redefining it, and a console that
@@ -3942,16 +4141,22 @@ mod cli_tests {
         assert!(h.contains("0/unset off"), "help does not say what unset means");
     }
 
-    /// **The binary introduces itself as what you launched.** `--help`'s header and usage line
-    /// are the console's front door, and they are the one place the rename is *visible*: the
-    /// artifact is `organon-console`, so a header reading "Organon Console" would name a product
-    /// that is not what ran. This is a real regression risk rather than a hypothetical —
-    /// [`PRODUCT_NAME`] deliberately shadows `EDITION.product_name()`, which still answers
-    /// "Organon Console" and will keep tempting a future tidy-up back onto it.
+    /// **The binary introduces itself as what you launched, and never as the *shell*.**
+    /// `--help`'s header and usage line are the console's front door.
+    ///
+    /// ⚠️ **This test used to assert the opposite of what it asserts now, and the inversion was
+    /// a deliberate product decision rather than a drift.** It was written when
+    /// [`PRODUCT_NAME`] was the artifact string and carried
+    /// `assert!(!h.contains("Organon Console"))` — on the reasoning that a header naming the
+    /// product rather than the binary would name "a product that is not what ran". `474e8cd`
+    /// ("Give the console its own name everywhere the name is ours to give") then set
+    /// `PRODUCT_NAME` to `"Organon Console"` on purpose, which made that assertion contradict
+    /// the `starts_with` on the line above it — the two could not both hold, and the console
+    /// edition's test leg went red the moment they met. The surviving intent is the *shell*
+    /// half, which is what the name of this test was always about.
     ///
     /// ⚠️ The **variable names** below are the opposite case: `ORGANON_SHELL_*` is a shipped
-    /// flag surface and stays. Presentation renames, identifiers do not — that split is the
-    /// whole content of this change.
+    /// flag surface and stays. Presentation renames, identifiers do not.
     #[test]
     fn the_console_does_not_introduce_itself_as_the_shell() {
         let h = help_text();
@@ -3960,7 +4165,7 @@ mod cli_tests {
             h.contains(&format!("Usage: {INVOCATION_NAME}")),
             "usage line names the wrong command"
         );
-        assert!(!h.contains("Organon Console"), "the console must not present as Organon Console");
+        assert!(!h.contains("Organon Shell"), "the console must not present as Organon Shell");
         assert!(!h.contains("organon-shell "), "the usage line still names the old binary");
         // …and the environment variables are untouched by all of the above.
         assert!(h.contains("ORGANON_SHELL_BACKDROP"), "the flag surface is NOT renamed");
@@ -4357,6 +4562,16 @@ mod cli_tests {
                 // three nulls are what a partial call actually serializes to.
                 CMD_CAMERA => {
                     json!({ CMD_RESET: false, CMD_YAW: null, CMD_PITCH: null, CMD_DISTANCE: 40.0 })
+                }
+                // 🚨 **A palette NAME, taken from `Theme::NAMES` rather than from the spec's
+                // own `Choice`.** That `Choice` also carries `edit`/`adjust`, which open the
+                // live editor and are refused on this lane by design (§1.10) — so reaching for
+                // `v[0]` the way the two dressing verbs above do would be one reordering away
+                // from this test asserting that an editor word writes a sidecar line, which is
+                // exactly what must never happen.
+                CMD_THEME => json!({ CMD_ARG: Theme::NAMES[0] }),
+                CMD_POSTURE => {
+                    json!({ CMD_ARG: organon_console::posture::POSTURE_WORDS[0] })
                 }
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
