@@ -21,7 +21,17 @@
 > `native/organon-render/src/render.rs`; the **module** paths are unchanged, because
 > `organic-math-native` re-exports the crate and `world.rs` still writes `render::…`.
 >
-> **`world.rs` did not move, and the reason is the interesting part.** #626 scoped "the
+> 🚚 **UPDATE (organon#49 T4c-ii): `world.rs` HAS moved** — to
+> `native/organon-world/src/world.rs`, behind that crate's default-off `world` feature,
+> with its nine `#[path]` submodules and the `capture.wgsl` / `overlay.wgsl` /
+> `rt_debug.wgsl` shaders. `bin/visual.rs` went with it as
+> `native/organon-visual/src/main.rs`, its own package. The paragraph below is #626's
+> reasoning, kept because it is still right about *why it could not move then*: what
+> unblocked it was organon#49 T1–T4c-i moving everything `world.rs` reached upward for —
+> the enums, the substrate, the window leaves, and finally the agent — not a change of
+> mind about the coupling.
+>
+> **`world.rs` did not move [in #626], and the reason is the interesting part.** #626 scoped "the
 > render set" as the 17 files in `doc-rules.sh`, `world.rs` among them — and every hard
 > coupling it attributed to the renderer was `world.rs`'s. The world owns the agent chat
 > client (41 refs), the CLI reply protocol, `egui_platform`, `frame_ring` and
@@ -153,7 +163,13 @@ loop, forward. Two rules make that work and are easy to break:
   `build_uniforms`' `perspective_rh` call clamp the same number twice, and moving one alone is
   a silent no-op. `CAM_NEAR`/`CAM_FAR` are deliberately unchanged: a 127-unit plane frames at
   ≈408 world units at 10° and ≈1023 at 4°, both comfortably inside 0.1..5000.
-- **`world.rs` is compiled twice** in a `mind-edition` build: once as `organic_math_native::world`,
+- ✅ **`world.rs` is compiled ONCE** since organon#49 T4c-ii — the paragraph below describes
+  the arrangement that replaced. It was not redundancy but the *mechanism*: a `#[path]`
+  include is not a cargo feature, so including the source was how the visual binary got a
+  world the shipping cdylib did not get. Now `world` is a feature of `organon-world` and the
+  visual is a package that turns it on, so one compilation serves both. Nothing here needs a
+  path that resolves in two crate roots any more.
+- ~~**`world.rs` is compiled twice**~~ in a `mind-edition` build: once as `organic_math_native::world`,
   once via the binary's `#[path = "../world.rs"]`. Build time, not correctness, and it keeps one
   source of truth. It also means `render.rs` has two hosts, which is why its sibling references
   are spelled `super::axes` / `super::chamber` (`rt.rs` moved to `super::render` for the same

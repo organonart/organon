@@ -9970,7 +9970,9 @@ mod host_mirror_tests {
     /// `world.rs` fails here until someone decides where it belongs.
     #[test]
     fn every_param_type_world_names_is_in_core() {
-        let world = include_str!("world.rs");
+        // organon#49 T4c-ii — `world.rs` descended to `organon-world`. The test is unchanged
+        // in intent: it still scans the real file, from its real home.
+        let world = include_str!("../organon-world/src/world.rs");
 
         // Types confirmed resident in `organon_core::params` by #626 T3 and organon#49
         // T1/T2/T4a. `IndexedEnum` is core's trait; `Host*` names are the adapters and

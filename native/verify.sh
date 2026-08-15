@@ -88,7 +88,10 @@ IMGDIFF=target/release/examples/imgdiff
 
 if [ "$BUILD" = "1" ]; then
   echo "building (visual + CLI + imgdiff)…"
-  cargo build --release --bin organic-math-visual --bin organon --example imgdiff
+  # organon#49 T4c-ii — the visual is `-p organon-visual`; `organon` and the example stay
+  # in the root package, so this is two invocations now rather than one.
+  cargo build --release -p organon-visual --bin organic-math-visual
+  cargo build --release --bin organon --example imgdiff
 fi
 for bin in "$VISUAL" "$ORGANON" "$IMGDIFF"; do
   [ -x "$bin" ] || { echo "verify.sh: missing $bin (drop --no-build?)" >&2; exit 2; }
