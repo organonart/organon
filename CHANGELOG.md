@@ -11,6 +11,28 @@ From here on, this file gets an entry per meaningful change, newest first.
 
 ## Unreleased
 
+### The Console stops needing the Performer's catalog, and an empty catalog now refuses
+
+organon#49 Tier 5b, first half. `console_main.rs` built its `World` with
+`agent::core_catalog()` — the last thing in that file reaching `param_table`, and so the
+last thing that would have forced `organon-console` to depend upward on the plugin crate.
+
+**The Console does not run the AI Performer.** Measured, not assumed: the file contains zero
+references to `agent::dispatch`, `AgentLane`, `ChatMessage`, `HttpChatClient` or
+`system_prompt`, and nothing in it bumps `Shared.agent[1]` — the counter whose movement is
+the only path to `ensure_agent_worker`. So it passes no catalog.
+
+⚠️ **Passing an empty catalog is exactly the bug `organon-visual`'s manifest warns about** —
+"would compile, run, and silently gut the agent's prompt", a failure with no error attached
+to it. So the absence is made explicit instead of trusted to a comment:
+`World::ensure_agent_worker` now **refuses** an empty catalog and logs why, rather than
+prompting the model with no vocabulary to actuate. A host with no catalog gets no Performer,
+not a crippled one. Inert for every host that passes a real catalog — `core_catalog()` is
+never empty, so it never fires for the visual, the standalone or the plugin.
+
+📌 **Not the whole of 5b.** `look_shared` still starts from
+`OrganicMathParams::default().to_shared()`; that half is next.
+
 ### The console command lane leaves the plugin crate
 
 organon#49 Tier 5a. `ConsoleOp`, `PortalCmd`, `CameraFraming`, the word tables and the

@@ -1747,7 +1747,21 @@ impl Console {
             default_harness: String::new(),
             plus_open: false,
             quit: false,
-            world: World::new(organic_math_native::agent::core_catalog()),
+            // organon#49 T5b — **the Console does not run the AI Performer**, so it has no
+            // catalog to give and says so by giving none. Measured, not assumed: this file
+            // contains zero references to `agent::dispatch`, `AgentLane`, `ChatMessage`,
+            // `HttpChatClient` or `system_prompt`, and nothing here ever bumps `Shared.agent[1]`
+            // — the counter whose movement is the only thing that reaches `ensure_agent_worker`.
+            //
+            // ⚠️ This is NOT the silent-empty-catalog bug `organon-visual`'s manifest warns
+            // about. That bug is a host which *does* run the Performer handing it nothing;
+            // `World::ensure_agent_worker` now refuses an empty catalog outright and logs why
+            // (T5b), so the two cases cannot be confused at runtime.
+            //
+            // 📌 It is also the last thing tying this file to `param_table`: `core_catalog()`
+            // reads the plugin's automation surface and cannot descend, so passing it here is
+            // what would have forced `organon-console` to depend upward on the plugin crate.
+            world: World::new(Vec::new()),
             backdrop: None,
             backdrop_source: source,
             console_look: ConsoleLook::default(),
