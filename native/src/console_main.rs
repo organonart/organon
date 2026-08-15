@@ -4141,16 +4141,22 @@ mod cli_tests {
         assert!(h.contains("0/unset off"), "help does not say what unset means");
     }
 
-    /// **The binary introduces itself as what you launched.** `--help`'s header and usage line
-    /// are the console's front door, and they are the one place the rename is *visible*: the
-    /// artifact is `organon-console`, so a header reading "Organon Console" would name a product
-    /// that is not what ran. This is a real regression risk rather than a hypothetical —
-    /// [`PRODUCT_NAME`] deliberately shadows `EDITION.product_name()`, which still answers
-    /// "Organon Console" and will keep tempting a future tidy-up back onto it.
+    /// **The binary introduces itself as what you launched, and never as the *shell*.**
+    /// `--help`'s header and usage line are the console's front door.
+    ///
+    /// ⚠️ **This test used to assert the opposite of what it asserts now, and the inversion was
+    /// a deliberate product decision rather than a drift.** It was written when
+    /// [`PRODUCT_NAME`] was the artifact string and carried
+    /// `assert!(!h.contains("Organon Console"))` — on the reasoning that a header naming the
+    /// product rather than the binary would name "a product that is not what ran". `474e8cd`
+    /// ("Give the console its own name everywhere the name is ours to give") then set
+    /// `PRODUCT_NAME` to `"Organon Console"` on purpose, which made that assertion contradict
+    /// the `starts_with` on the line above it — the two could not both hold, and the console
+    /// edition's test leg went red the moment they met. The surviving intent is the *shell*
+    /// half, which is what the name of this test was always about.
     ///
     /// ⚠️ The **variable names** below are the opposite case: `ORGANON_SHELL_*` is a shipped
-    /// flag surface and stays. Presentation renames, identifiers do not — that split is the
-    /// whole content of this change.
+    /// flag surface and stays. Presentation renames, identifiers do not.
     #[test]
     fn the_console_does_not_introduce_itself_as_the_shell() {
         let h = help_text();
@@ -4159,7 +4165,7 @@ mod cli_tests {
             h.contains(&format!("Usage: {INVOCATION_NAME}")),
             "usage line names the wrong command"
         );
-        assert!(!h.contains("Organon Console"), "the console must not present as Organon Console");
+        assert!(!h.contains("Organon Shell"), "the console must not present as Organon Shell");
         assert!(!h.contains("organon-shell "), "the usage line still names the old binary");
         // …and the environment variables are untouched by all of the above.
         assert!(h.contains("ORGANON_SHELL_BACKDROP"), "the flag surface is NOT renamed");
@@ -4556,6 +4562,16 @@ mod cli_tests {
                 // three nulls are what a partial call actually serializes to.
                 CMD_CAMERA => {
                     json!({ CMD_RESET: false, CMD_YAW: null, CMD_PITCH: null, CMD_DISTANCE: 40.0 })
+                }
+                // 🚨 **A palette NAME, taken from `Theme::NAMES` rather than from the spec's
+                // own `Choice`.** That `Choice` also carries `edit`/`adjust`, which open the
+                // live editor and are refused on this lane by design (§1.10) — so reaching for
+                // `v[0]` the way the two dressing verbs above do would be one reordering away
+                // from this test asserting that an editor word writes a sidecar line, which is
+                // exactly what must never happen.
+                CMD_THEME => json!({ CMD_ARG: Theme::NAMES[0] }),
+                CMD_POSTURE => {
+                    json!({ CMD_ARG: organon_console::posture::POSTURE_WORDS[0] })
                 }
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };

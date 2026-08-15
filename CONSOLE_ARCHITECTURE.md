@@ -3245,6 +3245,14 @@ solves the same problem with a cache in egui's context memory keyed by the **`Co
 `#c8e6c8` (`human_text`, `tab_active`, `tab_menu_installed`, `term_fg`) apart. Keyed by value
 they share one entry; keyed by field they do not.
 
+⚠️ **`set_hsva` is on the drag path — every frame, per field being dragged — so it interns its
+field name against `Theme::SCALAR_FIELDS` and `ANSI16_NAMES`, the two `&'static` tables, rather
+than by constructing a palette and asking it.** Both answer the same question; the second built a
+whole `Theme` and a sixty-eight-entry `Vec` per tick to learn a compile-time fact. The general
+rule this is an instance of: `Theme::fields`/`fields_mut` allocate, which is right for the
+once-per-action callers (a save's diff, a startup override) and wrong for anything inside a
+gesture.
+
 ⚠️ **A second, subtler round-trip lives in the row itself and is pinned by test.** The drags are
 in degrees and percent because that is how a hand thinks, and `h * 360.0 / 360.0` is not `h` in
 binary floating point — so writing the scaled values back unconditionally made every field
@@ -3374,7 +3382,11 @@ path silently breaks the three-products-simultaneously guarantee that
   the band bigger; (4) that `unsaved` in `mode_alert` on the right of the head row is actually
   noticed, which is the entire defence against a tuning session evaporating at exit; (5) that a
   drag at 60 fps through `set_visuals` on every change is smooth — the change is gated to frames
-  where something moved, but nothing has measured a sustained drag. ⚠️ **Nothing has been saved
+  where something moved, and the automated review found and removed the one per-tick allocation
+  that was on that path (`set_hsva` was building a whole `Theme` plus its sixty-eight-entry field
+  list to intern a compile-time constant), but **nothing has measured a sustained drag** and the
+  remaining per-change cost — deriving `Visuals` and re-uploading egui's chrome — is real and
+  unpriced. ⚠️ **Nothing has been saved
   and reloaded by a human**, so the round trip through `preferences.json` is pinned by unit test
   and by nothing else. ⚠️ The immediate motivation — `light`'s whitest white being too bright —
   is **not fixed by this change**: `Theme::light`'s `term_bg` is still `#ffffff` in the compiled
