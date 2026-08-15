@@ -84,9 +84,34 @@ impl TabStrip {
 /// Map one Cmd-modified key press to a tab action. macOS terminal convention:
 /// ⌘ belongs to the terminal (chrome), and is never forwarded to the PTY —
 /// `term_view` skips ⌘-keys for exactly this reason, so there is no overlap.
+///
+/// `repeat` is `egui::Event::Key::repeat`: a *held* key streams `pressed: true`
+/// events and egui marks every one after the first (`InputState::begin_pass` does
+/// `repeat = !first_press` and leaves the event in the stream, so a caller that
+/// destructures with `..` sees an unbroken run of fresh presses). The host applies
+/// at most one action per frame, which bounds the rate and does not bound the
+/// total — autorepeat is slower than the frame rate, so a held chord lands roughly
+/// one action per repeat for as long as the finger rests.
+///
+/// **The policy is a property of the ACTION, not of the key**, which is why the
+/// filter is here rather than at the call site and why the match below is
+/// exhaustive over [`TabAction`] — a chord added later inherits the right answer,
+/// and a *variant* added later fails the build rather than defaulting silently:
+///
+/// * [`TabAction::Switch`] **honours** a repeat. It is navigation, and this is
+///   where a held key earns its stream: ⌘⇧[/] cycling while held is the behaviour
+///   you want from a cycle chord, and ⌘1-9 is idempotent to the point of being
+///   free — the host answers it with `strip.switch(i)`, one index write, so the
+///   thirtieth repeat writes the same number as the first.
+/// * [`TabAction::New`] and [`TabAction::Close`] **refuse** it. Both are
+///   unbounded and neither is recoverable: `New` spawns a PTY per event, and
+///   `Close` drops a session, frees its textures, and quits the console once the
+///   last tab goes. A resting finger is not a request for thirty shells, and it is
+///   certainly not a request to close thirty tabs.
 pub fn command_key_action(
     key: egui::Key,
     mods: egui::Modifiers,
+    repeat: bool,
     strip: &TabStrip,
     default_harness: &str,
 ) -> Option<TabAction> {
@@ -94,7 +119,7 @@ pub fn command_key_action(
         return None;
     }
     use egui::Key as K;
-    match key {
+    let action = match key {
         K::T => Some(TabAction::New(default_harness.to_string())),
         K::W => Some(TabAction::Close(strip.active)),
         K::CloseBracket if mods.shift => {
@@ -119,6 +144,14 @@ pub fn command_key_action(
             (n < strip.tabs.len()).then_some(TabAction::Switch(n))
         }
         _ => None,
+    };
+    match action {
+        // Navigation: a held key means "keep going", and repeating a number means
+        // nothing at all. Both are safe to stream.
+        Some(TabAction::Switch(i)) => Some(TabAction::Switch(i)),
+        // Creation and destruction: one press, one action.
+        Some(a @ (TabAction::New(_) | TabAction::Close(_))) => (!repeat).then_some(a),
+        None => None,
     }
 }
 
@@ -264,26 +297,125 @@ mod tests {
         let s = strip3();
         let cmd = egui::Modifiers::COMMAND;
         assert_eq!(
-            command_key_action(egui::Key::T, cmd, &s, "shell"),
+            command_key_action(egui::Key::T, cmd, false, &s, "shell"),
             Some(TabAction::New("shell".into()))
         );
         assert_eq!(
-            command_key_action(egui::Key::W, cmd, &s, "shell"),
+            command_key_action(egui::Key::W, cmd, false, &s, "shell"),
             Some(TabAction::Close(2))
         );
         assert_eq!(
-            command_key_action(egui::Key::Num2, cmd, &s, "shell"),
+            command_key_action(egui::Key::Num2, cmd, false, &s, "shell"),
             Some(TabAction::Switch(1))
         );
         assert_eq!(
-            command_key_action(egui::Key::Num9, cmd, &s, "shell"),
+            command_key_action(egui::Key::Num9, cmd, false, &s, "shell"),
             None,
             "a number past the strip is a no-op, not a panic"
         );
         assert_eq!(
-            command_key_action(egui::Key::T, egui::Modifiers::CTRL, &s, "shell"),
+            command_key_action(egui::Key::T, egui::Modifiers::CTRL, false, &s, "shell"),
             None,
             "bare Ctrl belongs to the shell, never the chrome"
+        );
+    }
+
+    /// The reproduction, driven through a **real** `egui::Context` rather than a
+    /// hand-set flag — the claim under test is egui's behaviour, so asserting it
+    /// against our own idea of egui would prove nothing. Two frames, one held ⌘T,
+    /// no release between: this is the event stream a resting finger produces.
+    #[test]
+    fn a_held_command_key_reaches_the_frame_loop_as_a_run_of_presses() {
+        let ctx = egui::Context::default();
+        let press = |modifiers| egui::Event::Key {
+            key: egui::Key::T,
+            physical_key: None,
+            pressed: true,
+            // What an integration sends: `egui-winit` discards winit's own repeat
+            // flag (`repeat: _, // egui will figure this out for us`) and pushes
+            // every autorepeat as a plain press, so `false` here is the truthful
+            // input and egui is what fills the flag in.
+            repeat: false,
+            modifiers,
+        };
+        let mut seen: Vec<bool> = Vec::new();
+        let mut actions = Vec::new();
+        let s = strip3();
+        for _ in 0..2 {
+            let raw = egui::RawInput {
+                modifiers: egui::Modifiers::COMMAND,
+                events: vec![press(egui::Modifiers::COMMAND)],
+                ..Default::default()
+            };
+            ctx.run(raw, |ctx| {
+                ctx.input(|i| {
+                    for ev in &i.events {
+                        if let egui::Event::Key {
+                            key,
+                            pressed: true,
+                            repeat,
+                            modifiers,
+                            ..
+                        } = ev
+                        {
+                            seen.push(*repeat);
+                            actions.extend(command_key_action(
+                                *key, *modifiers, *repeat, &s, "shell",
+                            ));
+                        }
+                    }
+                });
+            });
+        }
+        assert_eq!(
+            seen,
+            vec![false, true],
+            "egui marks the second press of a key never released as a repeat, and \
+             leaves it in the stream — this is the bug's whole mechanism"
+        );
+        assert_eq!(
+            actions,
+            vec![TabAction::New("shell".into())],
+            "one finger, one tab: without the filter this held ⌘T is two spawns, \
+             and a real hold is one per repeat for as long as it rests"
+        );
+    }
+
+    #[test]
+    fn a_repeat_never_opens_or_closes_a_tab() {
+        let s = strip3();
+        let cmd = egui::Modifiers::COMMAND;
+        assert_eq!(
+            command_key_action(egui::Key::T, cmd, true, &s, "shell"),
+            None,
+            "a held ⌘T is not a request for a shell per repeat"
+        );
+        assert_eq!(
+            command_key_action(egui::Key::W, cmd, true, &s, "shell"),
+            None,
+            "a held ⌘W would close every tab and then quit the console"
+        );
+    }
+
+    #[test]
+    fn a_repeat_still_navigates_because_navigation_is_what_holding_a_key_is_for() {
+        let mut s = strip3();
+        s.switch(0);
+        let cycle = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        assert_eq!(
+            command_key_action(egui::Key::CloseBracket, cycle, true, &s, "shell"),
+            Some(TabAction::Switch(1)),
+            "a held cycle chord keeps cycling — that is the behaviour, not a defect"
+        );
+        assert_eq!(
+            command_key_action(egui::Key::OpenBracket, cycle, true, &s, "shell"),
+            Some(TabAction::Switch(2)),
+            "and backwards likewise"
+        );
+        assert_eq!(
+            command_key_action(egui::Key::Num2, egui::Modifiers::COMMAND, true, &s, "shell"),
+            Some(TabAction::Switch(1)),
+            "a held number is idempotent: the host answers with one index write"
         );
     }
 }

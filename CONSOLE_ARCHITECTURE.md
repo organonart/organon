@@ -81,9 +81,38 @@ position.
   here. It grew *upward* for a while after the strip moved from the bottom of the
   window to the top, and rendered acceptably anyway because egui clamps an
   off-screen `Area` back into the screen rect; the anchor now derives from the
-  button, so a change to the strip's height cannot re-open that. ⌘T/⌘W/⌘1-9/⌘⇧[] via a pure, tested key table. Default tab =
+  button, so a change to the strip's height cannot re-open that. ⌘T/⌘W/⌘1-9/⌘⇧[] via a pure, tested key table — which **takes a held key's
+  `repeat` flag and answers it per action**, see below. Default tab =
   `$ORGANON_SHELL_DEFAULT` → Pi if installed → plain shell. All sessions pump
   every frame; the active one draws; closing the last quits.
+
+  🚨 **A held ⌘ chord streamed one action per repeat, and `command_key_action` now
+  decides which of them may.** Holding a key produces a run of `pressed: true`
+  events; `egui-winit` discards winit's own repeat flag and pushes each one plainly,
+  and `InputState::begin_pass` then sets `repeat = !first_press` and **leaves the
+  event in the stream** — so the frame loop's `Event::Key { pressed: true, .. }`
+  saw an unbroken run of fresh presses. `action.is_none()` bounds that to one per
+  frame, which is a **rate and not a total**: autorepeat is slower than the frame
+  rate, so a resting finger landed roughly one action per repeat, indefinitely.
+  Reproduced through a real `egui::Context` and pinned by
+  `a_held_command_key_reaches_the_frame_loop_as_a_run_of_presses` — driving the
+  actual library rather than a hand-set flag, because the claim under test *is*
+  egui's behaviour. (Read as pre-existing during #77's review, which fixed only its
+  own chord rather than fold an unrelated behaviour change into that PR.)
+
+  ⚠️ **"Ignore repeats" is the wrong answer for half this table, so the policy is a
+  property of the ACTION, not of the key.** `Switch` **honours** a repeat: ⌘⇧[/]
+  cycling while held is what a cycle chord is *for*, and ⌘1-9 is idempotent to the
+  point of being free — the host answers it with `strip.switch(i)`, one index write,
+  so the thirtieth repeat writes the number the first one did. `New` and `Close`
+  **refuse** it: `New` spawns a PTY per event, `Close` drops a session, frees its
+  textures and quits the console once the last tab goes, and neither is recoverable.
+  Keying on the action means a chord added later inherits the right answer without
+  anyone remembering to ask, and the match is **exhaustive over `TabAction`** so a
+  *variant* added later fails the build rather than defaulting silently. ⚠️ The flag
+  is forwarded from the call site, never filtered there — a `repeat &&` guard around
+  the call would have to re-state which chords it applies to, which is the copy that
+  drifts.
 - **The living backdrop (#14 T1 + Console Spike T1, in `console_main.rs`)** — a frame
   rendered each redraw and painted UNDER the glyphs (the measured
   render-sRGB/sample-linear gamma pair, same-id rebinds). Summoned, never imposed, and
