@@ -384,6 +384,45 @@ impl Theme {
         }
     }
 
+    /// 🚨 **[`Theme::light`]'s page, and the palette's one deliberate departure from the spec
+    /// James wrote.** The spec says `#ffffff`; this is `#fafbfc`. He asked for it on
+    /// 2026-08-14 after looking at the light theme in a running console — *"turn down the
+    /// value slash brightness of the white, that is the whitest white"* — so the deviation is
+    /// an instruction, not a drift, and it is recorded here rather than left as a hex that
+    /// silently disagrees with the `[spec]` line below.
+    ///
+    /// ⚠️ **The ladder is what bounds this, and the room is far narrower than it looks.** The
+    /// light surfaces climb *away* from the page by darkening — page `#ffffff` → panel
+    /// `#f7f8f9` → hairline `#e2e5e9` → strong `#c9ced6` — and the **page→panel step was
+    /// already the whisper of the four**, 8/7/6 per channel against the next step's 21/19/16.
+    /// So the entire distance a page may fall before it collides with the panel it must sit
+    /// above is **6 units on the tightest channel, 2.35 % of HSV value** — the *blue*
+    /// channel, which is the binding one because the panel is coolest there. "A few percent"
+    /// is not available without moving the panel too, which is four more spec roles and
+    /// James's call rather than this change's.
+    ///
+    /// **The rule, in one sentence: the panel plus 3 on every channel.** A uniform offset
+    /// keeps the panel's own cool tilt (`+1` green, `+2` blue) instead of inventing a
+    /// neutral, which makes the page a *member* of the ladder — pure white was the only step
+    /// in it with no tilt at all. Measured against the binding channel that spends **3 of the
+    /// 6 available units** on the glare and leaves a 3-unit step — half the whisper that was
+    /// there before. ⚠️ Quote the tightest channel, not a convenient one: the page moves
+    /// 5/4/3 and the headroom is 8/7/6, so any figure mixing one channel's travel with
+    /// another's headroom (5 of 7, say) is arithmetic about no channel at all.
+    ///
+    /// ⚠️ **[`Theme::term_bg`] and [`Theme::term_scrim_tint`] both take it, and they must
+    /// track.** They are two roles — what an unpainted cell *is*, and what dims the live
+    /// backdrop behind the glyphs — but the scrim is laid over the world at up to
+    /// [`crate::term_view::SCRIM_FLOOR_LIGHT`], so a scrim left at `#ffffff` would keep
+    /// painting the exact white being complained about, over a *larger* area than the
+    /// terminal, and would make a scrimmed region read brighter than the page it borders.
+    /// The field split stays (the struct never merges roles by value); the value is stated
+    /// once so the two cannot drift apart by accident.
+    ///
+    /// ⚠️ **Nobody has seen this on James's display.** The number is reasoned, not observed —
+    /// `CONSOLE_ARCHITECTURE.md` §3's ledger carries it, and only he can close it.
+    const LIGHT_PAGE: Color32 = Color32::from_rgb(0xfa, 0xfb, 0xfc);
+
     /// **A printed technical publication** — quiet, typographic, no phosphor green anywhere.
     /// Specified by James; the ten roles he named are marked `[spec]` below and everything
     /// else follows the module's derivation rules.
@@ -393,8 +432,12 @@ impl Theme {
     /// text, borders and terminal foreground, which is what makes `organon` look like a
     /// terminal rather than a page. `#1a6b46` is a named **state**, and a publication that
     /// could not say "this succeeded" in green would be paying for the rule twice.
+    ///
+    /// ⚠️ **One role no longer holds its specified hex: the page.** See [`Theme::LIGHT_PAGE`]
+    /// for what it is now and why. Every other `[spec]` value below is untouched.
     pub const fn light() -> Self {
-        // [spec] page #ffffff · panel #f7f8f9 · primary #0f1114 · secondary #5d636c ·
+        // [spec] page #ffffff — SUPERSEDED, see `LIGHT_PAGE` (#fafbfc, James 2026-08-14) ·
+        //        panel #f7f8f9 · primary #0f1114 · secondary #5d636c ·
         //        faint #8b919b · hairline #e2e5e9 · strong #c9ced6 · accent #1440c4 ·
         //        success #1a6b46 · error #a32020
         //
@@ -445,9 +488,11 @@ impl Theme {
             // worn at the weight of a border, not shouted.
             composer_edge_dead: Color32::from_rgb(0xd1, 0x90, 0x90),
 
-            term_bg: Color32::from_rgb(0xff, 0xff, 0xff),
+            // Both `LIGHT_PAGE`, stated once — see its doc for the deviation and the
+            // ladder arithmetic that bounds it.
+            term_bg: Self::LIGHT_PAGE,
             term_fg: Color32::from_rgb(0x0f, 0x11, 0x14),
-            term_scrim_tint: Color32::from_rgb(0xff, 0xff, 0xff),
+            term_scrim_tint: Self::LIGHT_PAGE,
             term_exited_notice: Color32::from_rgb(0x5d, 0x63, 0x6c),
             // ⚠️ **CHOSEN, not specified.** The spec is silent on the terminal, and a light
             // background changes what the sixteen names can mean: "white" and "bright white"
@@ -476,7 +521,15 @@ impl Theme {
             ],
 
             // Rule 4: the page at the same 0xe6 alpha `organon` uses, premultiplied.
-            panel_fill: Color32::from_rgba_premultiplied(0xe6, 0xe6, 0xe6, 0xe6),
+            //
+            // ⚠️ **This moved with the page and had to.** Rule 4 states this field as a
+            // *function* of the page, so leaving `0xe6,0xe6,0xe6` behind would not have been
+            // "not changing a patch panel" — it would have been a stated derivation quietly
+            // becoming false, which is the one failure a written rule is supposed to prevent.
+            // `LIGHT_PAGE` × 0xe6/0xff, rounded: 250·230/255 = 225.5 → 0xe1, 251 → 226.4 →
+            // 0xe2, 252 → 227.3 → 0xe3. Hand-computed because `from_rgba_premultiplied` takes
+            // the product, and this is a `const fn`.
+            panel_fill: Color32::from_rgba_premultiplied(0xe1, 0xe2, 0xe3, 0xe6),
             panel_edge: Color32::from_rgb(0xc9, 0xce, 0xd6),
             panel_title: Color32::from_rgb(0x0f, 0x11, 0x14),
             panel_text: Color32::from_rgb(0x0f, 0x11, 0x14),
@@ -868,6 +921,279 @@ impl Theme {
     }
 }
 
+/// The sixteen ANSI slots, named rather than numbered.
+///
+/// `ansi16` is one array field, so the field-list macro below cannot reach inside it — and an
+/// editor showing `ansi16` as a single row would be an editor that cannot tune the terminal at
+/// all. These are the names those sixteen positions answer to, in the order the array holds
+/// them, which is the order every terminal in the world numbers them in.
+pub const ANSI16_NAMES: [&str; 16] = [
+    "ansi_black",
+    "ansi_red",
+    "ansi_green",
+    "ansi_yellow",
+    "ansi_blue",
+    "ansi_magenta",
+    "ansi_cyan",
+    "ansi_white",
+    "ansi_bright_black",
+    "ansi_bright_red",
+    "ansi_bright_green",
+    "ansi_bright_yellow",
+    "ansi_bright_blue",
+    "ansi_bright_magenta",
+    "ansi_bright_cyan",
+    "ansi_bright_white",
+];
+
+/// 🚨 **The one place the palette's colour fields are enumerated.**
+///
+/// Everything that needs "every colour in a `Theme`" — the live editor, the override diff a
+/// preference stores, the reader that applies one back — goes through [`Theme::fields`] and
+/// [`Theme::fields_mut`], and both are generated from the single list below. A second
+/// hand-written list is the failure this repo's one-vocabulary rule exists to prevent, and it
+/// fails in the quietest possible way: a field added later simply stops being editable, with
+/// nothing to say so.
+///
+/// ⚠️ **Rust has no reflection, so this list cannot be *derived* from the struct** — it is
+/// hand-written, which means the real question is what catches it when the two disagree.
+/// `every_colour_a_palette_can_differ_in_is_reachable` is that guard: it copies field-by-field
+/// through this accessor between every ordered pair of the four palettes and asserts the
+/// result is equal to the source. A field missing from the list keeps the destination's own
+/// value and the comparison fails. ⚠️ Its residual blind spot, stated rather than left to be
+/// discovered: a colour field on which **all four palettes agree to the byte** is invisible to
+/// it. A fifth palette that disagrees anywhere closes that gap for that field.
+///
+/// The two non-colour fields — `scrim_floor` (a `u8`) and `chrome` (an enum) — are deliberately
+/// **not** here. They are not pigment, an HSV editor has nothing to say about either, and the
+/// coverage test copies them explicitly so that leaving them out cannot be mistaken for an
+/// omission.
+/// ⚠️ **The list is grouped, and the groups are the struct's own section headings.**
+///
+/// Sixty-eight colours will not fit in the band above the composer and are not navigable as one
+/// flat run either — so the editor shows one group at a time, which is the same ring-narrowing
+/// shape §1.9's command panel already uses for verbs. Taking the groups from *this* list rather
+/// than from a second table beside it is the same rule as the fields themselves: a colour added
+/// to a group is in the editor, and a colour added outside one does not compile.
+macro_rules! colour_fields {
+    ($($group:literal => [$($field:ident),+ $(,)?]),+ $(,)?) => {
+        impl Theme {
+            /// Every scalar colour field's name, in declaration order. `ansi16`'s sixteen are
+            /// not here — they are [`ANSI16_NAMES`], appended by the accessors.
+            pub const SCALAR_FIELDS: &'static [&'static str] = &[$($(stringify!($field)),+),+];
+
+            /// The editor's rings: a heading, and the field names under it. The terminal's
+            /// group carries [`ANSI16_NAMES`] on its tail, since those sixteen live in an
+            /// array the macro cannot reach into but belong with the terminal in every other
+            /// sense.
+            pub const GROUPS: &'static [(&'static str, &'static [&'static str])] =
+                &[$(($group, &[$(stringify!($field)),+])),+];
+
+            /// Every colour this palette holds, by name, in declaration order.
+            pub fn fields(&self) -> Vec<(&'static str, Color32)> {
+                let mut out: Vec<(&'static str, Color32)> =
+                    vec![$($((stringify!($field), self.$field)),+),+];
+                out.extend(ANSI16_NAMES.iter().copied().zip(self.ansi16.iter().copied()));
+                out
+            }
+
+            /// The same set, borrowed mutably — what an editor writes through.
+            ///
+            /// A `Vec` of borrows rather than an iterator because every element is a *distinct*
+            /// field, so they are all live at once and the borrow checker is satisfied by the
+            /// struct's own disjointness. A lending iterator would hand them out one at a time
+            /// and buy nothing: the caller wants the list.
+            pub fn fields_mut(&mut self) -> Vec<(&'static str, &mut Color32)> {
+                let mut out: Vec<(&'static str, &mut Color32)> =
+                    vec![$($((stringify!($field), &mut self.$field)),+),+];
+                out.extend(ANSI16_NAMES.iter().copied().zip(self.ansi16.iter_mut()));
+                out
+            }
+        }
+    };
+}
+
+colour_fields! {
+    "the transcript" => [human_text, human_fill, prose, dim],
+    "cards" => [running, asking, ok, bad, surface_empty, card_left_rule],
+    "the status strip" => [
+        strip_fill,
+        strip_edge,
+        model_fill,
+        model_edge,
+        model_text,
+        model_badge,
+        mode_alert,
+        mode_note,
+        context_track,
+        context_track_empty,
+        context_arc,
+        context_arc_high,
+    ],
+    "the composer" => [composer_fill, composer_edge, composer_edge_focus, composer_edge_dead],
+    "the terminal" => [term_bg, term_fg, term_scrim_tint, term_exited_notice],
+    "patch panels" => [panel_fill, panel_edge, panel_title, panel_text],
+    "the timeline" => [
+        timeline_scripted_fill,
+        timeline_scripted_mark,
+        timeline_status_pending,
+        timeline_status_running,
+        timeline_status_ok,
+        timeline_status_failed,
+        timeline_status_denied,
+        timeline_status_cancelled,
+        timeline_approval_accent,
+        timeline_bubble_user,
+        timeline_bubble_other,
+    ],
+    "the tab strip" => [
+        tab_strip_fill,
+        tab_active,
+        tab_inactive,
+        tab_plus,
+        tab_menu_fill,
+        tab_menu_installed,
+        tab_menu_missing,
+    ],
+}
+
+impl Theme {
+    /// The editor's rings **with the sixteen ANSI slots folded into the terminal's**.
+    ///
+    /// [`Theme::GROUPS`] cannot carry them: they live inside the `ansi16` array, which the
+    /// field macro has no way to name a member of. They are appended here rather than given a
+    /// ring of their own because sixteen extra rows under "the terminal" is exactly where
+    /// somebody tuning a terminal looks, and a group called `ansi` would be a tenth ring whose
+    /// only distinction is an implementation detail of how the palette stores them.
+    pub fn editor_groups() -> Vec<(&'static str, Vec<&'static str>)> {
+        Self::GROUPS
+            .iter()
+            .map(|(group, fields)| {
+                let mut fields: Vec<&'static str> = fields.to_vec();
+                if *group == TERMINAL_GROUP {
+                    fields.extend(ANSI16_NAMES);
+                }
+                (*group, fields)
+            })
+            .collect()
+    }
+}
+
+/// The one group [`Theme::editor_groups`] appends [`ANSI16_NAMES`] to. Named rather than
+/// spelled twice, so renaming the heading cannot silently orphan the sixteen.
+pub const TERMINAL_GROUP: &str = "the terminal";
+
+impl Theme {
+    /// Write one colour by name. `false` for a name this palette does not have — **never a
+    /// panic and never a near miss**, on [`Theme::resolve`]'s rule: an override read back out
+    /// of a preferences file written by some other version of this console may name a field
+    /// this build has since renamed, and the honest answer is to skip it and say so, not to
+    /// guess which field was meant.
+    pub fn set_field(&mut self, name: &str, colour: Color32) -> bool {
+        for (field, slot) in self.fields_mut() {
+            if field == name {
+                *slot = colour;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Read one colour by name.
+    pub fn field(&self, name: &str) -> Option<Color32> {
+        self.fields().into_iter().find(|(f, _)| *f == name).map(|(_, c)| c)
+    }
+
+    /// Every colour in which this palette differs from `base`, by name.
+    ///
+    /// 🚨 **This is what gets stored, and storing the difference rather than the whole palette
+    /// is the decision.** A saved override file holding all sixty-eight colours would pin the
+    /// palette as it was on the day it was saved — so a later build that improves a shade
+    /// nobody tuned would be silently overruled by a file the person thought recorded three
+    /// edits. Storing only what was actually changed means an untouched field keeps following
+    /// the compiled palette, which is what someone who tuned three colours expects to happen.
+    pub fn diff(&self, base: &Theme) -> Vec<(&'static str, Color32)> {
+        self.fields()
+            .into_iter()
+            .zip(base.fields())
+            .filter(|((_, mine), (_, theirs))| mine != theirs)
+            .map(|((name, mine), _)| (name, mine))
+            .collect()
+    }
+}
+
+/// One colour as eight hex digits, `rrggbbaa`, **exactly the bytes egui holds**.
+///
+/// 🚨 **Eight digits always, and the alpha is not decoration.** [`Theme::panel_fill`] is
+/// premultiplied with an alpha of `0xe6` — the translucency *is* the look — so a six-digit
+/// form would silently make every saved panel opaque. `Color32`'s bytes are already
+/// premultiplied, so writing and reading them back through
+/// [`Color32::from_rgba_premultiplied`] is byte-exact for every colour a palette can hold,
+/// including the transparent [`Theme::card_left_rule`] two of the four palettes use to decline
+/// a rule entirely.
+pub fn to_hex(colour: Color32) -> String {
+    let [r, g, b, a] = colour.to_array();
+    format!("{r:02x}{g:02x}{b:02x}{a:02x}")
+}
+
+/// [`to_hex`]'s inverse. `None` for anything that is not eight hex digits, with or without a
+/// leading `#` — a stored override is a string in a file some other build wrote, so the parse
+/// has to be able to refuse rather than guess.
+pub fn from_hex(text: &str) -> Option<Color32> {
+    let text = text.strip_prefix('#').unwrap_or(text);
+    if text.len() != 8 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&text[i..i + 2], 16).ok();
+    Some(Color32::from_rgba_premultiplied(byte(0)?, byte(2)?, byte(4)?, byte(6)?))
+}
+
+/// Lay a stored override map over a palette, returning a note for anything skipped.
+///
+/// ⚠️ **Every failure is a skip with a sentence, never a refusal of the whole file and never a
+/// panic.** This map came out of `preferences.json`, which some other build of this console may
+/// have written — so it can name a field this build has renamed, or carry a colour string that
+/// is not eight hex digits. Dropping the whole palette back to its compiled state because one
+/// line of it aged badly would lose the other nine edits; taking the nine and saying so about
+/// the tenth is what a person tuning a palette actually wants. The notes go to the console's own
+/// stderr beside the rest of [`select`]'s.
+///
+/// The returned notes are empty in the normal case, which is the case that matters: a file this
+/// build wrote, read back by this build, says nothing at all.
+pub fn apply_overrides(
+    theme: &mut Theme,
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    for (field, text) in overrides {
+        let Some(colour) = from_hex(text) else {
+            notes.push(format!(
+                "the stored colour for `{field}` is `{text}`, which is not eight hex digits — \
+                 skipped"
+            ));
+            continue;
+        };
+        if !theme.set_field(field, colour) {
+            notes.push(format!(
+                "the stored palette names a colour `{field}`, which this console does not have \
+                 — skipped"
+            ));
+        }
+    }
+    notes
+}
+
+/// The inverse: what a save writes down, given a palette and the compiled one it overrides.
+///
+/// Empty when nothing was tuned, and the caller is expected to *remove* the palette's entry
+/// rather than store an empty map — see `Console::save_theme_overrides`.
+pub fn collect_overrides(
+    theme: &Theme,
+    base: &Theme,
+) -> std::collections::BTreeMap<String, String> {
+    theme.diff(base).into_iter().map(|(name, c)| (name.to_string(), to_hex(c))).collect()
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self::organon()
@@ -1226,17 +1552,25 @@ mod tests {
     // -------------------------------------------------------------------------
 
     /// 🚨 **Every hex the spec names, on the field the spec names it for.** These are not
-    /// derived values and there is nothing to reason about: a spec said `#ffffff` is the page,
-    /// so `term_bg` is `#ffffff` or the palette is not the one that was asked for. A wrong
-    /// colour compiles and draws, and nobody has opened a window on any of these — this test
-    /// is the only thing standing between "typed correctly" and "typed".
+    /// derived values and there is nothing to reason about: a spec said `#f7f8f9` is the panel,
+    /// so `strip_fill` is `#f7f8f9` or the palette is not the one that was asked for. A wrong
+    /// colour compiles and draws — this test is the only thing standing between "typed
+    /// correctly" and "typed".
+    ///
+    /// ⚠️ **One row is deliberately no longer the spec's, and it is asserted *as* a deviation
+    /// rather than quietly relaxed.** The light page was `#ffffff`; James asked for it turned
+    /// down after seeing it on a real display, so it is [`Theme::LIGHT_PAGE`] now. The pin did
+    /// not weaken — it still fails on any value nobody chose — but it now names an instruction
+    /// instead of a specification, and `the_light_page_stays_a_step_above_the_panel` below is
+    /// the guard the *spec* used to provide for free by being pure white.
     #[test]
     fn the_specified_hexes_land_on_the_fields_they_were_specified_for() {
         let t = Theme::light();
         // page · panel/input · primary · secondary · faint · hairline · strong · accent ·
         // success · error
-        assert_eq!(t.term_bg, Color32::from_rgb(0xff, 0xff, 0xff), "light page");
-        assert_eq!(t.term_scrim_tint, Color32::from_rgb(0xff, 0xff, 0xff), "light scrim tint");
+        assert_eq!(t.term_bg, Theme::LIGHT_PAGE, "light page — James's value, not the spec's");
+        assert_eq!(Theme::LIGHT_PAGE, Color32::from_rgb(0xfa, 0xfb, 0xfc), "and it is #fafbfc");
+        assert_eq!(t.term_scrim_tint, Theme::LIGHT_PAGE, "light scrim tint tracks the page");
         assert_eq!(t.composer_fill, Color32::from_rgb(0xf7, 0xf8, 0xf9), "light input plate");
         assert_eq!(t.strip_fill, Color32::from_rgb(0xf7, 0xf8, 0xf9), "light panel");
         assert_eq!(t.prose, Color32::from_rgb(0x0f, 0x11, 0x14), "light primary text");
@@ -1261,7 +1595,8 @@ mod tests {
             ("tab_active", t.tab_active),
             ("panel_edge", t.panel_edge),
         ] {
-            // Widened, because `#ffffff` is one of these and `255 + 8` is not a `u8`.
+            // Widened, because the near-white page is one of these and `252 + 8` is not a
+            // `u8`. (It was `255 + 8` while the page was `#ffffff`; the overflow is the same.)
             let (r, g, b) = (c.r() as i32, c.g() as i32, c.b() as i32);
             assert!(
                 !(g > r + 8 && g > b + 8),
@@ -1307,6 +1642,72 @@ mod tests {
         // 🚨 The spec's own sentence, as an assertion: the WORD `ok` is the secondary grey.
         // `conversation_view` draws that word from `theme.ok`, so this is the field it names.
         assert_eq!(t.ok, Color32::from_rgb(0x8f, 0x8f, 0x8f), "the word `ok` is NOT green");
+    }
+
+    /// 🚨 **The light surface ladder still climbs, and the page is still the top of it.**
+    ///
+    /// This is the guard that became necessary the moment the page stopped being `#ffffff`.
+    /// While it was pure white the ordering was free — nothing can be brighter than white, so
+    /// "the page is above the panel" could not be broken by editing the page. It can now, and
+    /// the failure is silent and *inverting*: a page darker than the panel makes every plate
+    /// drawn on it — the composer, the status strip, a bubble — read as **raised out of** the
+    /// paper rather than recessed into it, which is the opposite of the printed-publication
+    /// metaphor the whole palette is built on. It compiles, it draws, and it looks like a
+    /// theme rather than like a bug.
+    ///
+    /// ⚠️ **The trap is live, not hypothetical.** The brief that commissioned this change
+    /// suggested `#f4f5f6` as a starting point "which keeps a visible step above panel";
+    /// `0xf4` is **244** and the panel's `0xf7` is **247**, so that value sits three units
+    /// *below* the panel and would have inverted the first step. The arithmetic is what
+    /// settles it — the eye cannot judge three units of grey from a hex string.
+    #[test]
+    fn the_light_page_stays_a_step_above_the_panel() {
+        let t = Theme::light();
+        // The four steps, brightest first: page → panel → hairline → strong.
+        let ladder = [
+            ("page", t.term_bg),
+            ("panel", t.strip_fill),
+            ("hairline", t.strip_edge),
+            ("strong", t.model_edge),
+        ];
+        for pair in ladder.windows(2) {
+            let ((up, a), (down, b)) = (pair[0], pair[1]);
+            for (ch, x, y) in [("r", a.r(), b.r()), ("g", a.g(), b.g()), ("b", a.b(), b.b())] {
+                assert!(x > y, "the light ladder inverted at {up} → {down} on {ch}: {x} vs {y}");
+            }
+        }
+
+        // The step itself, not merely its sign. Three units is what `LIGHT_PAGE` chose —
+        // about half the 8/7/6 the spec's pure white had — and below roughly this the step
+        // stops surviving a display's own gamma and the ladder has lost a distinction it was
+        // built around, without any test noticing.
+        let (page, panel) = (t.term_bg, t.strip_fill);
+        for (ch, p, q) in
+            [("r", page.r(), panel.r()), ("g", page.g(), panel.g()), ("b", page.b(), panel.b())]
+        {
+            assert!(p - q >= 3, "the page→panel step collapsed to {} on {ch}", p - q);
+        }
+
+        // 🚨 The stated derivation, as arithmetic rather than as a comment claiming it: the
+        // page is *the panel plus a uniform offset*. Uniform is the whole point — it carries
+        // the panel's own cool tilt (+1 green, +2 blue) up to the page instead of dropping a
+        // neutral into a ladder where every other step is tilted. A page edited by eye would
+        // pass every assertion above and quietly break this one.
+        let step = page.r() - panel.r();
+        assert_eq!(page.g() - panel.g(), step, "the page's offset from the panel is not uniform");
+        assert_eq!(page.b() - panel.b(), step, "the page's offset from the panel is not uniform");
+
+        // …and `panel_fill` is rule 4's function *of that page*, so it moved with it. `0xe6`
+        // is `organon`'s alpha and does not move; the three channels are the page carrying it.
+        assert_eq!(t.panel_fill.a(), 0xe6, "rule 4's alpha is `organon`'s own");
+        for (ch, got, src) in [
+            ("r", t.panel_fill.r(), page.r()),
+            ("g", t.panel_fill.g(), page.g()),
+            ("b", t.panel_fill.b(), page.b()),
+        ] {
+            let want = ((src as u32 * 0xe6 + 127) / 0xff) as u8;
+            assert_eq!(got, want, "panel_fill.{ch} is not the page premultiplied at 0xe6");
+        }
     }
 
     /// 🚨 **Chocolate's surface ladder is its spine, and every neutral in it is neutral.**
@@ -1645,5 +2046,196 @@ mod tests {
     fn the_default_name_is_the_first_row_of_the_table() {
         assert_eq!(DEFAULT_THEME_NAME, Theme::NAMES[0]);
         assert_eq!(Theme::by_name(DEFAULT_THEME_NAME), Some(Theme::default()));
+    }
+
+    /// 🚨 **CONTRACT: the field accessor reaches every colour a palette can differ in.**
+    ///
+    /// This is the whole guard on the hand-written list in `colour_fields!`, and the reason it
+    /// is written this way rather than as a count. A count (`assert_eq!(fields().len(), 68)`)
+    /// moves the hardcoding rather than removing it: someone adding a field updates the number
+    /// and the test goes green while the accessor still cannot see it.
+    ///
+    /// Instead: copy **through the accessor** from one palette into another, add the two
+    /// non-colour fields by hand, and demand the result equal the source. A colour field the
+    /// accessor cannot reach keeps the destination's own value, and `assert_eq!` fails naming
+    /// the pair. Every ordered pair is checked, so a field is covered as soon as *any* two of
+    /// the four palettes disagree about it.
+    ///
+    /// ⚠️ Stated rather than left to be found: a colour on which **all four palettes agree to
+    /// the byte** is invisible here. Nothing else in the suite would catch it either; a fifth
+    /// palette that differs anywhere closes the gap for that field.
+    #[test]
+    fn every_colour_a_palette_can_differ_in_is_reachable() {
+        let palettes: Vec<(&str, Theme)> =
+            Theme::NAMES.iter().map(|n| (*n, Theme::by_name(n).unwrap())).collect();
+
+        for (from_name, from) in &palettes {
+            for (into_name, into) in &palettes {
+                let mut copy = into.clone();
+                for (name, slot) in copy.fields_mut() {
+                    // `fields` is in the same declaration order for every palette, so this
+                    // could be a zip — the lookup by name is deliberate, because it is also
+                    // testing that the two directions agree about the names.
+                    *slot = from
+                        .field(name)
+                        .unwrap_or_else(|| panic!("`{name}` is writable but not readable"));
+                }
+                // The two fields that are not pigment, by hand — see `colour_fields!`.
+                copy.scrim_floor = from.scrim_floor;
+                copy.chrome = from.chrome;
+                assert_eq!(
+                    &copy, from,
+                    "copying `{from_name}` into `{into_name}` through `fields_mut` left them \
+                     different, so `colour_fields!` is missing a field"
+                );
+            }
+        }
+    }
+
+    /// CONTRACT: a name appears once. A duplicate would make `set_field` write the first of
+    /// two fields forever and the second one uneditable, which is the accessor failing in a
+    /// way the coverage test above cannot see (it looks up by name and would find the first).
+    #[test]
+    fn no_two_colours_answer_to_the_same_name() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, _) in Theme::organon().fields() {
+            assert!(seen.insert(name), "`{name}` is the name of two different colours");
+        }
+        assert_eq!(seen.len(), Theme::SCALAR_FIELDS.len() + ANSI16_NAMES.len());
+    }
+
+    /// CONTRACT: hex is **byte-exact both ways, alpha included**. `panel_fill` is the case that
+    /// matters — it is premultiplied at `0xe6`, so a six-digit round trip would quietly make
+    /// every saved panel opaque — and `card_left_rule` is the other, being fully transparent in
+    /// two of the four palettes.
+    #[test]
+    fn every_colour_survives_the_hex_round_trip() {
+        for name in Theme::NAMES {
+            let t = Theme::by_name(name).unwrap();
+            for (field, colour) in t.fields() {
+                let text = to_hex(colour);
+                assert_eq!(text.len(), 8, "{name}.{field}");
+                assert_eq!(from_hex(&text), Some(colour), "{name}.{field} via `{text}`");
+                assert_eq!(from_hex(&format!("#{text}")), Some(colour), "{name}.{field} with #");
+            }
+        }
+        assert_eq!(to_hex(Theme::organon().panel_fill), "0b120ee6", "the alpha is carried");
+        assert_eq!(to_hex(Color32::TRANSPARENT), "00000000");
+    }
+
+    /// CONTRACT: a stored override that is not eight hex digits is **refused**, not guessed at.
+    #[test]
+    fn a_malformed_hex_override_is_refused() {
+        for bad in ["", "#", "c8e6c8", "c8e6c8ff00", "gggggggg", "#c8e6c8f", " c8e6c8ff"] {
+            assert_eq!(from_hex(bad), None, "`{bad}` should not parse");
+        }
+    }
+
+    /// CONTRACT: `diff` reports exactly what was changed, so a saved override file records
+    /// three edits rather than a whole frozen palette. See [`Theme::diff`] for why that
+    /// matters.
+    #[test]
+    fn a_diff_names_only_what_moved() {
+        let base = Theme::light();
+        assert!(base.diff(&base).is_empty(), "a palette differs from itself in nothing");
+
+        let mut edited = base.clone();
+        assert!(edited.set_field("term_bg", Color32::from_rgb(0xf2, 0xf2, 0xf2)));
+        assert!(edited.set_field("ansi_bright_white", Color32::from_rgb(0x10, 0x10, 0x10)));
+        let moved = edited.diff(&base);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert_eq!(moved[0].0, "term_bg", "declaration order, not alphabetical");
+        assert_eq!(moved[1].0, "ansi_bright_white");
+
+        // …and applying the diff back onto the base reconstructs the edited palette, which is
+        // the whole contract between `diff` and what a launch reads out of the store.
+        let mut rebuilt = base.clone();
+        for (name, colour) in moved {
+            assert!(rebuilt.set_field(name, colour));
+        }
+        assert_eq!(rebuilt, edited);
+    }
+
+    /// 🚨 **CONTRACT: the editor's rings are the whole field set, partitioned — nothing missing
+    /// and nothing shown twice.** This is what stops a colour existing in the palette, being
+    /// reachable through `set_field`, and yet appearing on no page of the editor: reachable but
+    /// unreachable-by-hand, which from a person's side is indistinguishable from not existing.
+    #[test]
+    fn the_editor_rings_partition_every_colour() {
+        let grouped: Vec<&str> =
+            Theme::editor_groups().into_iter().flat_map(|(_, f)| f).collect();
+        let all: Vec<&str> = Theme::organon().fields().into_iter().map(|(n, _)| n).collect();
+
+        let mut sorted_grouped = grouped.clone();
+        sorted_grouped.sort_unstable();
+        let mut sorted_all = all.clone();
+        sorted_all.sort_unstable();
+        assert_eq!(sorted_grouped, sorted_all, "the rings and the field set disagree");
+        assert_eq!(grouped.len(), all.len(), "a field appears on two rings");
+
+        // The heading the sixteen hang off has to keep existing, or they orphan silently.
+        assert!(
+            Theme::GROUPS.iter().any(|(g, _)| *g == TERMINAL_GROUP),
+            "`{TERMINAL_GROUP}` is not one of the groups, so ANSI16_NAMES attach to nothing"
+        );
+        let terminal = Theme::editor_groups()
+            .into_iter()
+            .find(|(g, _)| *g == TERMINAL_GROUP)
+            .expect("the terminal ring")
+            .1;
+        assert!(terminal.contains(&"ansi_bright_white"), "{terminal:?}");
+        assert!(terminal.contains(&"term_bg"), "{terminal:?}");
+    }
+
+    /// CONTRACT: a stored override survives the round trip through the file's string form, and
+    /// **only the tuned colours are written**. This is the contract between a save and the next
+    /// launch; if it breaks, a palette silently opens as something other than what was saved.
+    #[test]
+    fn overrides_round_trip_through_the_store() {
+        let base = Theme::light();
+        let mut tuned = base.clone();
+        tuned.set_field("term_bg", Color32::from_rgb(0xf0, 0xf0, 0xf0));
+        tuned.set_field("panel_fill", Color32::from_rgba_premultiplied(0xd0, 0xd0, 0xd0, 0xc0));
+
+        let stored = collect_overrides(&tuned, &base);
+        assert_eq!(stored.len(), 2, "only what moved is written: {stored:?}");
+        assert_eq!(stored["term_bg"], "f0f0f0ff");
+        assert_eq!(stored["panel_fill"], "d0d0d0c0", "the alpha is stored");
+
+        let mut rebuilt = Theme::light();
+        assert!(apply_overrides(&mut rebuilt, &stored).is_empty(), "a clean file says nothing");
+        assert_eq!(rebuilt, tuned);
+    }
+
+    /// 🚨 CONTRACT: **a stale or malformed override is skipped with a sentence, and the rest of
+    /// the file still lands.** The file may have been written by a build with a field this one
+    /// has renamed; losing nine good edits over the tenth would be the wrong trade.
+    #[test]
+    fn a_stale_override_is_skipped_and_the_others_still_apply() {
+        let mut t = Theme::light();
+        let stored = std::collections::BTreeMap::from([
+            ("term_bg".to_string(), "f0f0f0ff".to_string()),
+            ("human_txt".to_string(), "112233ff".to_string()),
+            ("prose".to_string(), "not-a-colour".to_string()),
+        ]);
+        let notes = apply_overrides(&mut t, &stored);
+
+        assert_eq!(t.term_bg, Color32::from_rgb(0xf0, 0xf0, 0xf0), "the good one did not land");
+        assert_eq!(t.prose, Theme::light().prose, "a malformed colour must change nothing");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("`human_txt`") && n.contains("does not have")));
+        assert!(notes.iter().any(|n| n.contains("`prose`") && n.contains("eight hex digits")));
+    }
+
+    /// CONTRACT: an unknown field name is refused rather than silently dropped on the floor or
+    /// matched to something near it — a file written by another build is the case.
+    #[test]
+    fn an_unknown_field_name_is_refused() {
+        let mut t = Theme::organon();
+        assert!(!t.set_field("human_txt", Color32::RED), "no near-miss matching");
+        assert!(!t.set_field("scrim_floor", Color32::RED), "not a colour, not in the list");
+        assert!(!t.set_field("ansi16", Color32::RED), "the array is reached by slot, not whole");
+        assert_eq!(t, Theme::organon(), "a refused write changes nothing");
+        assert!(t.set_field("ansi_black", Color32::RED), "the slots themselves are reachable");
     }
 }

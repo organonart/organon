@@ -2449,6 +2449,31 @@ written at the site, never by an invented pigment, and the rules are four:
    spec's own **hairline** colour, which is by construction exactly one step further from the
    page. (`chocolate` names all four of its steps — `#191919 → #1F1F1F → #262626 → #303030` —
    so none of this applies to it.)
+
+   🚨 **`light`'s page is the one role in any palette that is NOT its spec's value.** The spec
+   says `#ffffff`; `Theme::LIGHT_PAGE` is **`#fafbfc`**, because James looked at the palette in
+   a running console on 2026-08-14 and asked for the whitest white turned down. It is a named
+   constant rather than two literals because `term_bg` and `term_scrim_tint` both take it and
+   must track: the scrim is laid over the live backdrop at up to `SCRIM_FLOOR_LIGHT`, so a
+   scrim left white would cover a *larger* area than the terminal with the exact value being
+   complained about, and a scrimmed region would read brighter than the page it borders. The
+   fields stay separate — the struct never merges roles by value — but the value is stated once.
+
+   ⚠️ **The room inside the ladder is far smaller than the request implies, and this is the
+   number to know before touching it again.** Light's steps are 8/7/6 (page→panel), 21/19/16
+   (panel→hairline) and 25/23/19 (hairline→strong): the page's own step was *already* the
+   whisper of the four. So a page may fall **6 units on the tightest channel — 2.35 % of HSV
+   value — before it collides with the panel it must sit above**; the tightest is *blue*,
+   where the panel is coolest. `#fafbfc` is the panel plus a uniform 3, which spends 3 of
+   those 6 and keeps a 3-unit step; uniform because that
+   carries the panel's `+1` green / `+2` blue tilt up to the page, and pure white was the only
+   step in the ladder with no tilt at all. **"A few percent" is not reachable without moving
+   the panel as well**, which is four more spec roles and a decision for James, not a
+   derivation. `the_light_page_stays_a_step_above_the_panel` pins the ordering, the minimum
+   step, the uniform offset and rule 4's premultiply — the ordering needed no guard while the
+   page was `#ffffff`, since nothing can be brighter than white, and its failure now is silent
+   and *inverting*: a page darker than its panel makes every plate drawn on it read as raised
+   out of the paper rather than recessed into it.
 2. **States.** A state the spec names takes its named colour; a state it does not name comes
    from the palette's **text ladder**, never from a hue the spec never introduced. ⚠️ That is
    why **none of the three has an amber**: "a tool is running" is primary text, not
@@ -3043,6 +3068,597 @@ built from the **same word tables** (`substrate_materials::MATERIAL_NAMES`, `cli
 cannot drift and the *verb list* still can. Generating clap from `CommandSpec` is the remaining
 quarter of "one vocabulary" and is not done.
 
+### 1.9 The command panel — see your choices while you type, and see what happened after
+
+**The precedent is NeoVim's `which-key`**: press a prefix, a panel shows every valid
+continuation *with its description*; press another key and it narrows. It is fast because it
+never asks you to remember — it shows you, and once you know, the showing costs nothing
+because you are already past it. James's own framing, 2026-08-14: *"when I type slash, I want
+to see something pop up… a pop-up full-width display that lists all my choices."*
+
+`/` shows every verb. `/c` leaves `camera` and `camera.read` — type the next letter to
+narrow. `/theme ` shows the palettes. **Values complete exactly like verbs**, which is what
+makes the surface feel finished, and it is free: an `ArgKind::Choice` already *is* the list,
+built from `Theme::NAMES` and `substrate_materials`' tables rather than restated.
+
+#### The panel is one row. The list is a mode.
+
+**The primary panel is a single full-width row of words**, and that is what a `/` opens:
+
+```
+[background] | rig | theme | posture | block | patch | portal | camera | camera.read | surface | help
+```
+
+James, 2026-08-14, having used the first version: *"when the commands pop up, it is not what
+I had in mind, but I'm glad you did it this way because I think it is good for it to start
+this way. This should be available as a verbose mode, But I want the primary mode to be more
+compact and I want it to be simply a list of the available terms."* He wrote the row out
+himself, pipes and all.
+
+🚨 **The words are `Registry::candidates`' own and nothing restates them**, which is why the
+row narrows as letters are typed for free and why it gained `block`, `camera.read` and `help`
+— three verbs James's sketch omitted — without anybody deciding to add them. Curating that
+list is exactly the second vocabulary §1.8 exists to prevent, reached from the friendliest
+possible direction. The brackets mark the word Tab would take; a bracket rather than a colour
+alone, because colour is a weak signal in a row of same-sized words and dies in a screenshot,
+and rather than the verbose list's `>`, which reads as a bullet when there is only one row.
+`conversation_view::compact_line` is that row as a plain string, so it can be read in a test
+rather than looked at.
+
+⚠️ **Where the row would list options and there are none, it reads the hint instead** —
+`rows: a whole number` for `/block `, `distance: a number from 5 to 4000` for `/camera
+distance `. `Palette::hint` was written for exactly the kinds with no closed value space
+(`Float`, `Int`, `Text`) and the compact row is the first surface to draw it.
+
+🚨 **A line Enter would run says so, because a blank row reads as a broken one.** James, on a
+running build: *"slash surface shows no options."* `surface` takes no arguments, so there
+genuinely are none — and the panel said nothing at all, which is indistinguishable from a
+panel that has failed. The row now leads with **`Enter runs`** whenever `Palette::runnable`
+holds: `Enter runs` alone for `/surface`, `Enter runs | [reset] | yaw | distance` for
+`/camera `. ⚠️ It leads rather than trails because `compact_fit` drops from the tail, so last
+would be the first thing a narrow pane hid. ⚠️ **Two spellings failed differently and both are
+pinned**: `/surface` had a redundant one-item list the renderer dropped, leaving an empty row,
+while `/surface ` had no candidates at all, so `Palette::is_empty` was true and there was no
+panel to draw — that third term (`&& !runnable`) now lives in `is_empty` rather than at the
+call site, exactly as `hint()` already did. The `None` path is untouched: a line that is not a
+command line still opens nothing, so nothing pops up over prose. ⚠️ **One consequence worth
+stating**: a panel being open is what gives the arrow keys to the panel (`arrow_owner`), so on
+a runnable line with no candidates Up and Down now move a highlight that is not there instead
+of the caret — which is already what they do on a hint-only line like `/block `, and on a
+one-line command there is no other row for the caret to reach.
+
+⚠️ **The row counts what it could not fit rather than truncating it** (`… | +9`).
+`compact_fit` measures in **characters**, which is exact because the row is drawn entirely in
+the mono face, and it is a count rather than an ellipsis because egui's own truncation
+appends `…` — U+2026, in none of its four bundled fonts, the very defect the glyph allowlist
+exists to catch.
+
+**The verbose list is the old panel, whole**, behind `ORGANON_PALETTE_VERBOSE=1`, read once at
+tab construction the same way `ORGANON_PALETTE_AUTORUN` is. ⚠️ **An env var rather than a
+key.** James asked for the list to *"be available as a verbose mode"* and said nothing about
+how to reach it; a keybinding invented on his behalf is a standing claim on a key in a box
+that is also where he talks to an agent. Which key it eventually gets is his.
+
+#### A lone candidate completes itself
+
+🚨 **One continuation left is not a choice, it is an answer already given.** James:
+*"when I type slash p [Tab] d so that it narrows down to just one choice, 'desktop', Do not
+show me the single choice like you currently do. Simply complete the completion because it's
+the only option."* `Palette::sole_completion` is that rule, and `palette_complete` is the
+loop; the panel additionally declines to draw a one-item list whose candidate is already the
+whole line, which is the same statement seen from the drawing side —
+`conversation_view::drawn_palette`, one pure function so the row a test reads and the row a
+human sees cannot be two derivations. ⚠️ Dropping the redundant *word* is not the same as
+dropping the *row*: `/surface` is this case and also a whole command, so what survives is the
+`Enter runs` marker above.
+
+🚨 **Completing is not running, and they have separate switches.** Completion is **on by
+default** and only ever rewrites the composer — a line in the box is not an action.
+`Palette::autorun` **submits**, is **off by default**, and additionally requires
+`Candidate::completes`. That a completion may hand autorun a line it then runs is a *chain*,
+not a merge: with autorun off, which is the default, nothing runs. Both rules are pinned in
+`registry.rs` and again through real frames in `conversation_view.rs`.
+
+⚠️ **`completion != line` is what makes it terminate**, not the loop bound. `/surface` is
+already its own sole completion, so a rule that counted candidates alone would rewrite the
+line to itself on every frame for ever. The bound (`PALETTE_COMPLETE_STEPS`, four) is there
+for a cycle the registry has no way to produce today and a future `Choice` table has no way
+to be trusted not to.
+
+⚠️ **`/camera` must not complete**, because `camera` and `camera.read` both match it — a
+prefix that is also a whole verb is two candidates, and a count is the whole trigger.
+
+⚠️ **What this buys beyond the keystroke, and it is the larger half.** `candidates` reads a
+line with no trailing whitespace as *"still typing this word"*, so `/portal` put `portal` in
+the **verb** slot and offered the verb back; only `/portal ` reached the value slot.
+A command whose arguments are its entire point therefore appeared to offer no argument
+completions at all, which is what James reported. `verb_candidate` gives a verb-with-arguments
+a trailing space in its completion, so taking the lone candidate is what opens the ring:
+typing exactly `/portal` now leaves `/portal ` in the box with `[open] | close | toggle`
+above it.
+
+⚠️ **Escape suppresses it, for free and correctly.** `ConversationPane::palette` answers
+`None` while the panel is dismissed, so a human who has shut the panel is not having their
+line rewritten behind it.
+
+🚨 **THE RULE: complete on insertion, NEVER on deletion — and a reader who does not know it
+will reintroduce the worst defect this panel has had.** James, on a running build:
+*"once I have typed slash surface, I am no longer able to backspace out of it."* Deleting
+from `/surface` leaves `/surfac`, whose only candidate is still `surface`, whose completion
+is `/surface` — so the deletion was undone on the frame it happened. Every verb with a unique
+prefix was a trap (`/background`, `/rig`, `/theme`, `/posture`, `/help`) and so was every
+value once its prefix was unique, and select-all-and-retype was the only way out of a typo.
+⚠️ It was worse than an undo: accepting rewrites the whole line and puts the caret at its end,
+so the characters that *did* come out came from the middle of the word — measured through real
+frames, eight backspaces on `/surface` gave `/surface`, `/surfae`, `/surface`, `/surfce`,
+`/surfc`, `/surface`, `/surace`, `/surac`.
+
+`conversation_view::completion_held` is the rule and it is a **latch, not a per-frame test**.
+The frame *after* a backspace is a frame in which nothing changed at all, so refusing only
+*shrinking* frames would re-complete on that next one — the same bug at 60 Hz, presenting as a
+flicker rather than as a line that will not shorten, and invisible to any single-frame test.
+A deletion therefore holds completion off until an **insertion** lets it go. It reads the
+shadow copy `notice_edit` already keeps (`composer_seen`, the line at the start of the frame)
+against the line the `TextEdit` has just written — one source of truth, no second observer.
+⚠️ **`Palette::autorun` obeys the same latch**, where the stake is higher: with that switch on,
+backspacing `/surface` to `/surfac` leaves one candidate that *completes*, so the keystroke
+trying to erase the command would have executed it.
+
+⚠️ **What the rule measures is the line's length in bytes**, which answers *"did this frame
+add text"* and nothing finer. Three cases are therefore classified by their effect rather than
+their intent, each stated rather than defended: a **paste that replaces a long line with a
+short one** reads as a deletion; **select-all then type one character** reads as a deletion;
+a **same-length replacement** leaves the latch as it was. None can get stuck — the next
+inserted character releases it, so the cost is bounded at one keystroke — and a composer set
+wholesale (a test, a history recall) arrives unchanged within its frame and completes as
+before.
+
+⚠️ **One frame of exposure, stated rather than papered over.** The completion runs *after*
+the `TextEdit` has taken this frame's keystroke, so the caret is put back at the end of the
+line on the following frame. A keystroke arriving inside that window — under ~16 ms at 60 fps,
+faster than any measured human burst — lands at the old caret index, mid-word. Closing it
+entirely would mean setting egui's cursor state *before* the widget runs, which needs the
+`TextEdit`'s id outside `composer_box` and entangles the box with the registry it was
+deliberately split from.
+
+#### The candidate model, and the three renderers of it
+
+`registry.rs::Registry::candidates(line) -> Option<Palette>` is a **pure function returning
+structured values** — no egui, no formatted rows, testable headless. A `Candidate` is:
+
+| Field | What it is |
+|---|---|
+| `label` | the word — `theme`, `chocolate`, `distance` |
+| `doc` | one line, off the table. Empty for a `Choice` option, which stands for itself |
+| `completion` | 🚨 **the whole composer line accepting it would produce**, never the fragment |
+| `kind` | `Verb { group, lane }` / `Keyword` / `Value` |
+| `completes` | whether that line is a complete, valid command — asked of `resolve`, so it cannot drift from what Enter does |
+
+🚨 **`completion` being the whole line is what makes one generator serve every renderer.**
+Accepting is `line = candidate.completion`; asking `candidates` again with it yields the next
+ring. That two-step loop is the entirety of what a renderer implements, and it is the same
+loop whether the accept came from Tab, from a wedge, or from a click.
+
+**Three surfaces draw this list and there is one generator**: the panel above the composer;
+the **pie menu**, whose three rings are `groups()` → `verbs_in()` → an argument's `Choice`
+(§2, still unbuilt); and `/help`. A renderer that needed its own generator would be a second
+vocabulary, which is the failure §1.8 exists to prevent, reached from the other end.
+
+The `Palette` around them carries `slot` — which word is being narrowed — `typed`,
+`candidates`, and `runnable` (the line **as it stands** already resolves). ⚠️ `Slot::Value`
+carries the whole `ArgSpec`, not a list of options, because the arguments with *no* closed
+value space are precisely the ones a renderer must treat differently: `Float` is a dial with
+its band already stated, `Int` and `Text` need a typed field. `Palette::hint()` is the
+sentence for a human; the `ArgKind` on the slot is the fact for anything else.
+
+#### Prefix, not fuzzy
+
+Matching is a **case-insensitive prefix**, in table order. Subsequence matching (`/pst` →
+`posture`) is faster on a long list, and this list is nine verbs long, so that speed is not on
+offer. What it would buy instead is the ability for a line that reads like a typo to match a
+distant verb — and with auto-execute available, a surprising *match* becomes a surprising
+*action*. Prefix is also what makes "press another key and it narrows" literally true, which
+is the property being copied. **Fuzzy is not reachable and is not built**; `registry::narrows`
+is the one function that would have to change.
+
+#### Tab completes, Enter runs, and they are never the same key
+
+The composer is also where a human talks to the agent, so the send key must mean one thing
+always. **Tab accepts** the highlighted candidate and cannot send anything at all; **Enter
+submits the line as it stands** and never accepts.
+
+⚠️ **Enter with exactly one candidate left is deliberately not an accept.** `/theme` names one
+verb and is *not* runnable, so an Enter that accepted would have to either run an incomplete
+command or silently rewrite the line and wait for a second Enter — one key doing two different
+things one keystroke apart. Instead Enter reaches `Registry::resolve`, which refuses it by
+name (*"`/theme` needs `name`"*) and **does not clear the composer**, so the words are still
+there and Tab is one key away. That is §1.8's rule unchanged, and it is what makes "Enter
+never accepts" affordable.
+
+Arrows move the highlight, wrapping — but see the history below, which is the other claimant
+on that key.
+
+🚨 **Escape's dismissal is a fact about an EDIT, and getting that wrong shipped a bug.** It
+was the composer's *text* at the moment Escape was pressed, compared for equality on every
+frame — and content equality cannot express "has changed since", because a line becomes equal
+to a dismissed string again by ordinary retyping. Press Escape once at `/p` and every future
+`/p` was silently refused a panel for the life of the tab, with nothing on screen to explain
+it; James hit exactly that (*"Now my tab completion broke. When I type slash p, nothing comes
+up"*). `ConversationPane::notice_edit` now watches the composer change against a shadow copy
+of the previous frame's text, once per frame, before anything asks whether the panel is open.
+⚠️ The rule lives there rather than in `palette()` deliberately: `palette` is the *question*,
+and a `&self` read that quietly rewrote state to answer itself would put the rule in the place
+that is asked rather than the place that knows. ⚠️ The one case it does not catch is a line
+replaced by an identical line *within a single frame* — select-all then paste the same text,
+both landing on one pass. Every ordinary route to retyping a string passes through a frame in
+which it is shorter.
+
+#### Up walks the commands you have already sent
+
+James asked for it in one line: *"Add a slash command scroll back buffer on the up key."* Up
+recalls the previous slash command into the composer, Down comes back forward, and stepping
+forward past the newest returns to the empty box the walk started in. **It does not wrap**,
+where the panel's highlight does: a ring of eleven verbs has no end worth feeling, and a
+history that silently rolled from the oldest to the newest would be indistinguishable from
+having lost your place.
+
+🚨 **Up already meant two other things, and the rule that picks one is a pure function** —
+`conversation_view::arrow_owner`, three booleans in, one owner out — because the wrong pick
+costs a message somebody was writing:
+
+1. **A walk in progress keeps them.** Recalling `/theme dark` puts a command line in the box,
+   which opens a panel; without this the second Up would move a highlight and the walk would
+   be one step deep for ever. A walk ends by *editing* the recalled line, which is asked of
+   the composer (`walking()`) rather than tracked, so there is no second flag to keep in step.
+2. **An open panel takes them next**, unchanged.
+3. **An empty box hands them to history**, because an empty text box has no caret motion to
+   perform: Up there can only mean "what did I type before".
+4. **Otherwise the text box keeps them.** Prose, a half-written paragraph, and a command line
+   whose panel was dismissed with Escape are all this case. ⚠️ A multiline `TextEdit` gives Up
+   a real meaning — moving the caret between lines — and taking it unconditionally would break
+   ordinary typing in the box a human talks to an agent in, which is the same constraint that
+   made Tab and Enter separate keys. Escape means "stop showing me this", not "hand my arrow
+   keys to something else".
+
+⚠️ **The raw key is carried alongside the act through the consumption pass**, because
+`palette_key` maps **Shift+Tab** to `Prev` — the same act ArrowUp produces — so routing on the
+act alone would hand Shift+Tab to the history.
+
+**What earns a place**: `Resolved::Run` and `Resolved::Refused`, most recent first, no
+consecutive duplicates. ⚠️ **A refusal is remembered and that is the case the buffer is most
+for** — a command that ran is one you no longer need back, while one the registry refused is a
+line with a typo in it you want in front of you again to fix. Prose is not remembered (he
+asked for a *command* buffer, and a walk that stepped over three paragraphs would not be a
+recall surface), and `Resolved::Escaped` is not a command at all. ⚠️ **In memory, for the life
+of the tab**: the session log already records every command that ran, so a durable recall
+surface would be a second record of the same fact and the two would disagree the first time
+one was pruned. Reading back the session log is the honest way to make it survive a restart.
+
+🚨 **`lock_focus(true)` on the composer is load-bearing, not a preference.** egui's focus
+manager reads Tab out of the **raw input** in `Focus::begin_pass`, before any console code
+runs, so consuming the event is too late to stop focus leaving for whatever button the
+scrollback drew — and the keystrokes after it would go somewhere invisible. `lock_focus` sets
+`EventFilter::tab`, which is the flag that pass tests. ⚠️ Visible consequence when the panel
+is shut: Tab indents the message instead of moving focus, which is what a text box does
+everywhere else.
+
+⚠️ **Escape's hazard is real here but it is NOT the terminal's.** In a terminal tab Escape
+belongs to the child (`vim` needs it) and must be consumed before `term_view` clones the event
+vector; the conversation front-end has no child reading keys, so that hazard does not apply.
+A different one does, one layer down: the same `begin_pass` **drops the focused widget** on
+Escape, and `TextEdit` exposes no setter for `EventFilter::escape`. So Escape cannot be
+prevented from blurring the composer — it is *repaired*, by re-requesting focus in the frame
+the panel is dismissed. One frame passes with nothing focused, during which no keystroke can
+arrive. All four keys are matched with `matches_exact`, never `matches_logically`, for the
+shift-permissive reason `composer_key` already documents.
+
+#### Auto-execute, and the guard on it
+
+James asked for it: *"it will just execute the thing as soon as it knows what we want."*
+🚨 **What makes it safe is that "knows what we want" is a provable state, not a guess:**
+`Palette::autorun` fires only when **exactly one candidate remains and that candidate
+completes the command**. `/s` leaves `surface`, which takes nothing, so there is nothing else
+the line could have meant. `/t` leaves `theme`, which still needs a value — so it does **not**
+fire, because firing there would run a command while the hand is still typing its argument.
+That case is pinned by test in both `registry.rs` and `conversation_view.rs`.
+
+**Off by default.** `ORGANON_PALETTE_AUTORUN=1` switches it on for a session, read once at
+tab construction rather than per frame.
+
+#### The panel only exists for a command line
+
+🚨 **A panel that appeared while prose was being typed would be intolerable**, so the test is
+`Registry::resolve`'s own and no other: the line must begin with `/`, and `//` is an escape
+meaning the line is a message. A sentence *mentioning* a command has words in front of the
+slash and answers `None`. ⚠️ A bare `/` answers `Some` with the whole table even though
+`resolve` calls it a message — those are not in conflict: showing the choices is what `/` is
+*for*, and nothing runs until the line is a command.
+
+⚠️ **The verbose list is capped at eight rows with a count of the remainder, rather than
+scrolled.** `console.background` offers more materials than fit, so it genuinely overflows —
+but a vertical `ScrollArea` dropped into this bottom-up column takes the whole pane (684 pt of
+a 684 pt pane, measured; see §1.1's composer). "Type another letter to narrow" is also the
+faster route to the one you want. The compact row has no such cap: it is one row and it
+counts what did not fit along the width.
+
+#### The panel's bottom edge, and why it was on top of the text
+
+🚨 **The panel painted over the composer, and the cause was `ui.horizontal`.** James: *"Line
+the bottom of it up so it sits just atop the top line of the text box. Your current box
+extends lower than that and covers a bit of the text."* `Ui::horizontal` seeds its child with
+`spacing().interact_size.y` — 18 pt on egui's default style, on the assumption that a
+horizontal row holds something interactive — and `allocate_ui_with_layout_dyn` then advances
+by `frame_rect.union(final_child_rect)`, so a row of 15.125 pt text still costs the whole 18.
+The band was arithmetic over *text* heights. **Measured at 2.875 pt of overflow per row**, by
+putting `ui.horizontal` back and reading `plate`'s own return.
+
+⚠️ **And the overflow goes downward, which is why it was visible rather than merely wrong.**
+`plate` reserves its band in a bottom-up column but lays out top-down inside it, so rows that
+outgrow the reservation are painted past its *lower* edge — over the composer, which was
+placed there first, rather than pushing the scrollback up. Ten rows (a head, eight verbs and a
+`+N` line, which is what a bare `/` drew against the real table) put ~29 pt of panel across
+the top line of the text box.
+
+`palette_row` allocates each row explicitly at `palette_row_height`, so the arithmetic and the
+drawing are one statement. ⚠️ **Posture is in that height and it is not decoration**: `body`
+applies `Form::body_line_height`, which at the desktop end is strictly greater than the text's
+own height, so a band measured from `text_style_height` alone is short at every posture but
+the terminal one. `plate` returns how far it outgrew its reservation — **zero by
+construction** — and the test harness asserts that on *every* frame it runs rather than in one
+test of its own, because the failure reappears whenever a row is added, a font changes or a
+posture widens the line.
+
+#### The same region is where a command answers
+
+🚨 **The defect this closes.** A slash command's receipt goes to the pane's log, and the log
+is drawn at the **head** of the scrollback — so in any conversation longer than a screen the
+confirmation lands far above the live edge and is, in practice, invisible. James typed
+`/posture desktop` on 2026-08-14, the console obeyed, and nothing he could see said so. §1.8
+recorded that as a limitation on the grounds that the transcript has no "the console said
+this" element and inventing one is a change to the conversation model. **The panel needs no
+such element**: it is already full-width, already appears and disappears with the command
+line, and is already where the eye is.
+
+- ⚠️ **A receipt and a candidate list share one region and mean opposite things** — "here is
+  what happened" against "here is what you may do" — so they are distinguished
+  **structurally**: a receipt is a single band with a coloured word marker (`ok` / `refused`);
+  candidates are a headed list with `>` on the highlighted row. Only ever one of the two.
+- 🚨 **A refusal outlives a success**, which is `card_density`'s asymmetry one layer out: a
+  confirmation nobody reads cost nothing, because the command ran; a refusal nobody reads
+  cost the command *and* the knowledge that it did not happen. So a success ages out after
+  eight seconds and a refusal never does. Both go the moment the line is edited, which is the
+  honest signal that the human has moved on — and it is what hands the region back to the
+  candidates. `receipt_holds` is that rule as a pure function.
+- `registry::Receipt { ok, text }` is the structured value; `registry::receipt` formats the
+  log's line **from it**, so the band and the log cannot come to disagree about what happened.
+  The marker is the word `ok` rather than a glyph — 🚨 **and the log shipped with `✓` anyway,
+  for four hours, photographed on a running console drawing `☐ /rig daylight` in the pane log
+  and again in the status band.** The glyph allowlist guard existed and did not catch it: it
+  walks an enumerated list of *draw sites*, and a string built in `registry.rs` and drawn in
+  `conversation_view.rs` fell straight between them. That is the fourth time this exact defect
+  has shipped and every earlier fix was site-local, so the guard now checks
+  `registry::receipt`'s **output** from the file that draws it.
+
+⚠️ **`/help` is now the third-best way to find a verb**, behind typing `/` and behind the pie
+menu that will read the same table. Its body still lands at the head of the scrollback, which
+is the limitation §1.8 named; this tier routes around it for *receipts* rather than fixing it
+for *output*, because a twenty-line help text in a band above the composer is a different
+thing from a one-line answer.
+
+⚠️ **ASCII throughout the panel**, deliberately. The obvious characters — `▸`/`▾` for the
+highlight, `…` for a `Float`'s band or for a row that overran its width — are in none of
+egui's bundled fonts and would ship as boxes, which is exactly how `✓` reached a fourth draw
+site. The glyph allowlist test in `conversation_view` walks every string the panel can draw,
+**including the ones derived from a schema** and the compact row as a whole assembled line at
+three widths, since a range, an option list or a separator is where a stray glyph hides.
+
+### 1.10 The window icon — the aperture mark, and the two defaults it replaces
+
+The Console opened with the operating system's default icon. `native/src/console_icon.rs`
+is the whole of the fix: two PNGs `include_bytes!`d into the binary, decoded once in
+`ApplicationHandler::resumed`, handed to winit through `console_icon::apply`.
+
+The artwork is `native/assets/chrome/aperture-mark-on-dark.svg` — two concentric rings and
+a centre dot in warm gold on near-black, ticked at N/E/S/W. It is the **source**; the
+rasters beside it are generated from it, and `assets/chrome/README.md` carries the command
+that regenerates them.
+
+🚨 **"The Console shows the default icon" was two different defaults, set by two unrelated
+APIs, and only one of them is portable.** `with_window_icon` is winit's cross-platform
+call, and on Windows it reaches `ICON_SMALL` alone — title bar and Alt-Tab. The **taskbar
+button**, the most visible of the three, is `ICON_BIG`, reachable only through
+`WindowAttributesExtWindows::with_taskbar_icon`, which exists on Windows and nowhere else.
+Setting just the portable one would have looked like a fix and left the taskbar untouched.
+Both live behind one `apply` call so the platform story has a single home. (On macOS
+`with_window_icon` does nothing at all — the icon there comes from an `.app` bundle, and
+the Console has none.)
+
+⚠️ **The rasters are committed rather than built, and the drift that buys is paid for
+explicitly.** Rasterising at build time with `resvg` would make the SVG the only source,
+but the root crate has **no build script today**, and adding one is not a local change: it
+builds the plugin cdylib, the standalone, the visual, the CLI and three editions, and every
+one of them would grow a build script plus ~20 build-dependency crates so that one window
+could have an icon. Committing the pixels costs **nothing** — `image` is already a
+dependency here, for the overlay's formula PNGs. The price is that the PNGs can fall out of
+step with the SVG, and the mitigation is that the SVG sits beside them with the regeneration
+command written down, plus two tests (`console_icon::tests`) that pin the rasters' sizes and
+opacity so a broken or resized asset fails at test time rather than shipping a window whose
+icon silently did not load.
+
+⚠️ **Drawing the circles and lines in code was the third option and is the one to avoid.**
+It looks like less machinery; it is a transcription of a design asset that stops matching
+the day the asset changes, with nothing to say so.
+
+⚠️ **winit takes one bitmap per slot — it does not accept a set and pick**, which is what a
+Windows `.ico` resource does. So the sizes are a choice about what scales best rather than a
+spread: **48×48** for the window slot (`SM_CXSMICON` is 16 px at 100 % scaling and 36 px at
+this workstation's 225 %; 48 divides exactly by 3 into 16 and by 2 into 24 and reduces into
+36, so every common slot is a downsample) and **256×256** for the taskbar.
+
+⚠️ **The mark does not survive 16×16, and that is a property of the artwork, not of this
+code.** Measured, magnified, and looked at: the outer ring's 3 px stroke lands on 0.4 px and
+the inner ring's 1.4 px stroke on 0.19 px; the ticks and the centre dot vanish and what is
+left is a dark square with a grey smudge in it. **32×32 is the floor.** No 16 px raster is
+committed, deliberately — shipping one would only give Windows an illegible bitmap to prefer
+over a downsample of a good one. A legible small size needs a *hinted* variant of the
+drawing (thicker strokes, no inner ring), which is an artwork decision.
+
+📌 **This is the window icon, not the executable icon.** What Explorer draws on
+`organon-console.exe`, and what a pinned shortcut shows, is a Win32 `RT_GROUP_ICON` resource
+linked into the binary — a `.ico` plus a build script. Not done, and `assets/chrome/README.md`
+records what it would cost.
+
+⚠️ **Scoped to the Console alone.** `console_icon` is gated on `console-edition`, so the
+plugin cdylib does not carry an icon it can never draw. Organon and Organon Mind are separate
+products with their own identity; the mechanism is reusable by them and is deliberately not
+wired up.
+
+### 1.10 The live colour editor — tune the palette while looking at it
+
+`/theme edit` (or `/theme adjust`) opens an editor for the palette being painted, in §1.9's band
+above the composer. James's framing, 2026-08-14: *"a little dialog, much like the place where we
+do our command completions… it shows the theme and the theme colors, and each one has a little
+HSV editor on it."*
+
+**The loop it replaces.** Every colour in `theme.rs` was chosen against a described intent and
+then written as a hex literal and compiled. That is a fine way to *state* a palette and a
+hopeless way to *judge* one — the only way to find out whether `light`'s whitest white is too
+bright is to look at it, and until now that meant edit, rebuild, relaunch, look.
+
+#### One vocabulary: the fields are enumerated once
+
+🚨 **`theme.rs`'s `colour_fields!` macro is the only list of the palette's colours.** It
+generates `Theme::fields`, `Theme::fields_mut`, `Theme::SCALAR_FIELDS` and `Theme::GROUPS` from
+one grouped declaration, so a colour added later is editable, diffable, storable and on a ring
+with no second place to remember. This is §1.8's rule reached from a new direction: a
+hand-listed editor would silently stop covering a field somebody added, and nothing would say
+so.
+
+⚠️ **Rust has no reflection, so the list is hand-written** — which makes the guard the actual
+work. `every_colour_a_palette_can_differ_in_is_reachable` copies field-by-field *through the
+accessor* between every ordered pair of the four palettes, adds the two non-colour fields
+(`scrim_floor`, `chrome`) by hand, and asserts the result equals the source; a field the
+accessor cannot reach keeps the destination's value and the comparison fails by name. Its
+residual blind spot is stated in the test: **a colour on which all four palettes agree to the
+byte** is invisible to it, and a fifth palette closes that gap for that field.
+
+⚠️ `ansi16` is one array field, so the macro cannot name its members; `ANSI16_NAMES` supplies
+the sixteen and `Theme::editor_groups` folds them onto the terminal's ring. `TERMINAL_GROUP`
+names the heading they attach to, so renaming it cannot silently orphan them.
+
+#### 🚨 The HSV is the truth, not the RGB
+
+**RGB → HSV → RGB does not round-trip, and it is not a rounding error.** A grey has no hue: drag
+saturation to nought and the hue is gone from the bytes, so an editor re-deriving HSV every
+frame would show hue 0 (red) the moment a colour went neutral, and dragging saturation back up
+would return red rather than the blue it was. Value does the same at nought. So the editor holds
+the `Hsva` of every field a hand has touched and derives the `Color32` from it — never the
+reverse. An untouched field is not in the map and is read straight off the palette, which keeps
+the state proportional to the editing rather than to the sixty-eight colours.
+
+⚠️ **This is why it does not use `egui::color_picker::color_picker_color32`.** That function
+solves the same problem with a cache in egui's context memory keyed by the **`Color32`** — and
+§`theme`'s module doc explains at length why this palette deliberately keeps four fields holding
+`#c8e6c8` (`human_text`, `tab_active`, `tab_menu_installed`, `term_fg`) apart. Keyed by value
+they share one entry; keyed by field they do not.
+
+⚠️ **`set_hsva` is on the drag path — every frame, per field being dragged — so it interns its
+field name against `Theme::SCALAR_FIELDS` and `ANSI16_NAMES`, the two `&'static` tables, rather
+than by constructing a palette and asking it.** Both answer the same question; the second built a
+whole `Theme` and a sixty-eight-entry `Vec` per tick to learn a compile-time fact. The general
+rule this is an instance of: `Theme::fields`/`fields_mut` allocate, which is right for the
+once-per-action callers (a save's diff, a startup override) and wrong for anything inside a
+gesture.
+
+⚠️ **A second, subtler round-trip lives in the row itself and is pinned by test.** The drags are
+in degrees and percent because that is how a hand thinks, and `h * 360.0 / 360.0` is not `h` in
+binary floating point — so writing the scaled values back unconditionally made every field
+differ from itself on the first frame, reporting a change nobody made and marking a freshly
+opened palette `unsaved`. The comparison is on what the widget was *given* against what it
+*returned*, which is the only form that can be quiet when nothing moved.
+`an_untouched_editor_asks_for_nothing` is the test that found it.
+
+#### The seam: the editor cannot assign the palette, and should not be able to
+
+`conversation_view::draw` is handed `&Theme`; the one owner is `console_main`'s `Console`, which
+is `theme.rs`'s "one owner, no globals" rule and the thing that makes a per-tab or preview
+palette a second value rather than a rewrite. So an edit leaves as a value —
+`ConversationOutput::theme: Option<ThemeChange>` — and `Console::apply_theme_change` assigns it
+after the frame closure's borrow has ended.
+
+🚨 **`Some` only on the frames something moved.** `Visuals` is held on the egui context rather
+than read per frame, so `console_main` re-derives and re-uploads the whole chrome for every
+change it is handed; answering `Some` unconditionally would do that sixty times a second for a
+palette nobody was touching.
+
+`theme_name` is now threaded into `draw` because this crate is given the palette's *values* and
+cannot recover its label — once an override has been laid over it, the live palette equals none
+of the compiled ones, and filing a saved override under the wrong name would apply a
+light-theme correction to a dark palette.
+
+#### What persistence means
+
+Three things, deliberately not gated on each other:
+
+| | Writes | Says |
+|---|---|---|
+| a drag | nothing | the head row's `unsaved` count |
+| **save** | `theme_overrides[name]` = the **diff** from the compiled palette | a stderr line naming the count |
+| **revert** | removes that entry | the palette returns to what this build ships |
+
+🚨 **Unsaved is always visible.** A tuning session that evaporates at exit without having said so
+is worse than no editor: the tuning felt finished. It is drawn in `mode_alert`, not `bad` — it is
+not an error.
+
+⚠️ **Overrides are keyed by palette**, because an override is a judgement about one palette.
+⚠️ **Only the difference is stored**, so a later build that improves a shade nobody tuned is not
+silently overruled by a file its owner believed recorded three edits. ⚠️ A stored colour naming a
+field this build lacks, or a string that is not eight hex digits, is **skipped with a note** —
+losing nine good edits over a tenth that aged badly is the wrong trade. ⚠️ Hex is **eight
+digits always**: `panel_fill` is premultiplied at `0xe6` and a six-digit form would silently make
+every saved panel opaque.
+
+Startup applies overrides **after** `theme::select` has settled which palette won — an override
+corrects a named palette and cannot resurrect a different one. ⚠️ It applies to an
+environment-selected palette too: the variable is a loan of *which palette*, and the tuned
+colours are part of what that palette now looks like on this machine.
+
+#### The band, and the keys
+
+The editor takes the region outright from both the receipt and the candidate list while it is
+open. Those two answer a line and are gone in seconds; this is a surface a hand is *working in*,
+and one that vanished because a keystroke reached the composer would be unusable.
+
+🚨 **It claims Tab, the arrows and Escape — and no printing key, and not Enter.** The composer is
+still live underneath, so a message stays sendable without closing the editor, and Enter keeps
+meaning exactly one thing, which is §1.9's rule unchanged. Only one of the editor and the panel
+reads a frame's keys, since both want the same three.
+
+🚨 **The editor closes itself if the palette changes underneath it.** `/theme chocolate` typed
+elsewhere, the CLI, or an agent's tool call can all repaint while an editor is open on `light`;
+its held HSV would then describe colours that are no longer there. Comparing the incoming
+palette against what the editor last painted is one `PartialEq` per frame and is the only signal
+available — this crate is not told when the palette is reassigned.
+
+⚠️ **`edit` and `adjust` are values of `console.theme`'s argument, not a verb.** That is what
+makes them complete for free from the same `Choice` §1.9 already draws, with no second table and
+no new ring. Two consequences: they must be in the `Choice` or `Registry::resolve` refuses
+`/theme edit` during validation before the view sees it; and they are refused **on the sidecar**
+by name, because the CLI and the MCP lane have no band above a composer to draw a dialog in.
+This is the one place a console-lane verb is answered locally, and it is the lane's edge rather
+than a violation: the palette really is console-wide (which is why the *edits* leave on
+`ConversationOutput`), but the editor is a panel in this transcript.
+
+⚠️ **ASCII throughout**, like the rest of the band. `theme_edit::drawn_strings` enumerates every
+string the editor can draw — including the **group headings**, which are hand-written prose in
+the field macro, and the **field names** — and §1.9's glyph allowlist test walks it. Sampling
+rather than enumerating is how `✓` reached a third draw site.
+
+⚠️ `ThemeEditor::open` takes a `focus` field name and **no command produces one yet**:
+`/theme`'s schema carries a single argument, so `/theme edit human_text` is not a line the
+registry can build. It exists because landing on a named colour is a one-line change the moment
+a second argument is worth adding. Nothing claims the command exists.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -3066,6 +3682,112 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **Nobody has seen the compact command panel, so whether it *feels* fast is unverified —
+  and "fast" is the entire claim being made for it.** ✏️ **The verbose panel HAS now been
+  seen**, which is where the compact one came from and what the six defects §1.9 records were
+  found by: James used it on 2026-08-14, and the panel he used painted over the composer,
+  refused to reappear after an Escape, offered no arguments for `/portal`, and wrote a check
+  mark that drew as an empty box. Those are fixed and each is pinned; the row that replaced it
+  has still only been read as a string in a test. Everything §1.9 asserts is a claim about
+  code: `cargo test -p organon-console --lib` is **646 green** (640 before), `cargo test -p
+  organon-core` is **556 green**, `cargo check --features console-edition --bin
+  organon-console` is clean, and `cargo check --tests -p organic-math-native --features
+  console-edition` is clean. **That is the whole claim: it compiles and the tests pass.** What
+  it does not establish, in order of how much it matters: (1) that eleven verbs in one row is
+  legible at a glance rather than a wall of words — which-key is fast because the panel is
+  glanced at and then outrun, and a row that has to be *read* is slower than the list it
+  replaced; (2) that the brackets read as a selection rather than as punctuation, which
+  matters because Tab still takes what they mark; (3) that a line completing itself under the
+  hand feels like help rather than like interference — the one-frame caret window §1.9 states
+  is arithmetic, but "the box moved while I was typing" is a feeling; (4) whether `+9` at a
+  narrow width is useful or merely honest, since nobody has seen the row at a width that
+  cannot hold it. ✏️ The old ledger's second worry — a band whose height changes with the list,
+  jumping the transcript on every keystroke — is **closed by construction**: the compact row is
+  one row whatever it holds, and a test pins that. ⚠️ **Auto-execute has still never been used
+  by a human**, and it is now the *second* switch in this area: completion is on by default and
+  autorun is off, and the first honest test of the pair is James setting
+  `ORGANON_PALETTE_AUTORUN=1` and typing `/s`. ⚠️ **The command history has never been walked
+  by a hand either** — `arrow_owner`'s four cases are pinned as a pure function and driven
+  through real frames, but "Up did what I expected" is exactly the kind of claim a test cannot
+  make. ✏️ **Correcting this entry, because what it recorded as completion's cost was the
+  smaller half of it.** The one-frame caret window was named here as the known price of
+  self-completion, and it was true; what went unrecorded is that **deletion was impossible** —
+  every backspace on a uniquely-prefixed verb was undone on the frame it happened, and a
+  mistyped command could only be corrected by selecting the whole line. James found it in
+  minutes on the first running build (*"once I have typed slash surface, I am no longer able to
+  backspace out of it"*). It is fixed and pinned (§1.9's insertion-only rule); the lesson worth
+  keeping is that the ledger listed the defect that had been *reasoned about* and missed the one
+  a hand meets first, which is the failure mode a ledger written without a user exists to have.
+- 🚨 **Nobody has seen the colour editor, and it is a tool for judging colours by eye — so the
+  one thing it exists to do is exactly the thing not verified.** Everything §1.10 asserts is a
+  claim about code. What it does not establish, in order of how much it matters:
+  (1) **that three numeric H/S/V drags are enough to judge a colour by** — the alternative was
+  egui's 2D picker, which is a far better instrument per colour and shows one colour at a time,
+  and James asked for a list where each row has an editor, so the row won; whether a row is
+  enough is a question about a hand on a mouse; (2) that eight rows is the right window, and
+  that a highlight-following window pages the way a hand expects on the timeline's eleven and
+  the terminal's twenty — the arithmetic is pinned by test, the *feel* is not; (3) that the
+  editor's band, which is taller than the candidate list's, does not push the transcript around
+  disruptively — §1.9's own ledger already flags band height as an open question and this makes
+  the band bigger; (4) that `unsaved` in `mode_alert` on the right of the head row is actually
+  noticed, which is the entire defence against a tuning session evaporating at exit; (5) that a
+  drag at 60 fps through `set_visuals` on every change is smooth — the change is gated to frames
+  where something moved, and the automated review found and removed the one per-tick allocation
+  that was on that path (`set_hsva` was building a whole `Theme` plus its sixty-eight-entry field
+  list to intern a compile-time constant), but **nothing has measured a sustained drag** and the
+  remaining per-change cost — deriving `Visuals` and re-uploading egui's chrome — is real and
+  unpriced. ⚠️ **Nothing has been saved
+  and reloaded by a human**, so the round trip through `preferences.json` is pinned by unit test
+  and by nothing else. ✏️ **The entry as written on `console/theme-editor` said the light page
+  was "still `#ffffff`, deliberately". That was true of that branch and is false here** — this
+  merge also carries `console/light-white`, so `Theme::light`'s page is `#fafbfc` and the
+  editor is the general answer *beside* a specific correction rather than instead of one. It is
+  the exact failure mode this document warns about: a claim that was accurate about one branch
+  and wrong about the tree it landed in.
+- 🚨 **Nobody has seen the window icon rendered, at any size, in any slot.** §1.10 is a
+  claim about code and about PNG files, and nothing more: `cargo test -p organon-console
+  --lib` is unchanged by it (the icon lives in the root crate), `cargo test -p
+  organon-core` is **556 green**, `cargo check --features console-edition --bin
+  organon-console` is clean, and `cargo check --tests -p organic-math-native --features
+  console-edition` is clean. **That is the whole claim: it compiles and the tests pass.**
+  Only James has the display. What has *not* been established, in order of how much it
+  matters: (1) that the icon appears **at all** — `decode` returns `None` on failure by
+  design, so a window that opens with the OS default is indistinguishable from one where
+  nothing was wired up, and the two tests only prove the bytes are a well-formed 48×48 and
+  256×256 RGBA, never that winit accepted them or that Windows drew them; (2) that
+  `with_taskbar_icon` actually changes the **taskbar button** — that reading comes from
+  winit 0.30.13's `platform_impl/windows/window.rs` (`set_taskbar_icon` → `IconType::Big`),
+  which is the right call by inspection but has not been watched happen; (3) how the
+  **opaque `#0e0d0b` tile reads against a light taskbar** — the artwork is "on-dark" by
+  design and was deliberately not changed, but on a light theme it will be a near-black
+  square with a gold mark in it rather than a mark, and whether that is right is James's
+  call; (4) whether the **48 px raster downscaled by Windows to 16 px** is any better than
+  the 16 px render that was rejected as illegible — the arithmetic says a reduction beats a
+  direct render at that size, and Windows' own downscaler was never watched do it. The one
+  thing that *is* measured rather than argued: the 16 px render was produced, magnified 16×
+  and looked at, and it is not recognisable as the aperture mark.
+- 🚨 **Nobody has seen `#fafbfc` on James's display, and he is the only person who can say
+  whether it fixes what he was looking at.** The light page came down from `#ffffff` because
+  he saw glare in a running console; the replacement was **reasoned, not observed**. Everything
+  claimed for it is a claim about code: `cargo test -p organon-console --lib` is **605 green**
+  (604 before, plus `the_light_page_stays_a_step_above_the_panel`), `cargo test -p organon-core`
+  is **556 green**, `cargo check --features console-edition --bin organon-console` is clean, and
+  `cargo check --tests -p organic-math-native --features console-edition` is clean. **That is
+  the whole claim: it compiles and the tests pass.** ⚠️ **What it most likely does not establish
+  is that the change is big enough to matter.** The ladder allows the page to fall only 2.35 %
+  of HSV value before it collides with the panel, and this spends about half of that — a
+  **1.18 %** reduction. If James still sees glare, the honest answer is not to squeeze the
+  remaining units (the step is already halved) but to take the whole light ladder down
+  together, which is a re-spec of four roles he named and therefore his call. Worked numbers
+  for that option, preserving today's gaps exactly, are in the PR that made this change. Also
+  unverified: (1) that the 3-unit page→panel step survives a real display's gamma and the
+  composer plate and status strip still read as sitting *on* the page rather than merging into
+  it — they carry `#e2e5e9` hairlines doing most of that work, but the fill step is the
+  reinforcement and nobody has looked; (2) that `panel_fill`'s matching move is invisible,
+  since a Tier 5 patch panel only appears over a live backdrop and none was running; (3) that a
+  TUI's own light colour scheme still reads correctly against a page that is no longer the pure
+  white `ansi16`'s GitHub Light lineage was chosen against — the shift is 3 units and the
+  foregrounds did not move, so this is noted rather than suspected.
 - 🚨 **Nobody has seen a collapsed transcript, so whether it actually *reads* better is
   unverified — and that is the entire point of the change.** Card density was designed against
   a screenshot and a sentence, and everything claimed for it here is a claim about code:
