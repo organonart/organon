@@ -17,6 +17,7 @@ single shared insertion point made every pair of open branches conflict by const
 ## Unreleased
 
 <!-- Normally empty. New entries are one file each in `changelog.d/`; see `changelog.d/README.md`. Anything that does land here is absorbed by the next release. -->
+
 ### The Console stops needing the Performer's catalog, and an empty catalog now refuses
 
 organon#49 Tier 5b, first half. `console_main.rs` built its `World` with
