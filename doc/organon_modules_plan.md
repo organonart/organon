@@ -239,8 +239,10 @@ what makes it *feel* like an ecosystem, and it can land later without changing a
 against M1.
 
 🚨 **M0 was missing from the first draft of this table, and the way it was missing is the point.**
-This document's §3 says *ask the manifests, not the prose* — and M1 was written without asking the
-manifest of the very crate it names first, which states the blocker in a 🚨 block. A plan that
+§3 of this document practises the opposite — *checked against the manifests rather than assumed* —
+and the rule this same change wrote into `LICENSING.md` is to ask the manifests rather than a
+hand-written table. M1 was written without asking the manifest of the very crate it names first,
+which states the blocker in a 🚨 block. A plan that
 prices its own critical path off remembered structure repeats the exact failure the rest of this
 document is about. 📌 Until M0 lands, **level 2 is reachable only by path or git dependency**,
 which works for a repo we control and is not an ecosystem.

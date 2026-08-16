@@ -79,6 +79,7 @@ that root, so a published crate would fail to build for everyone depending on it
 **M0**, ahead of M1, with the genuine decision it forces named rather than deferred — vendor a copy,
 a build script, or split the runtime gallery from the compiled-in data, complicated by `deploy.sh`
 installing those same network JSONs as the #226 gallery. 🚨 The failure is the one this document is
-otherwise about: §3 says *ask the manifests, not the prose*, and M1 was written without asking the
-manifest of the crate it names first. Until M0 lands, level 2 is reachable only by path or git
+otherwise about — §3 is itself headed *checked against the manifests rather than assumed*, and this
+same change wrote "ask the manifests, not this table" into `LICENSING.md` — yet M1 was written
+without asking the manifest of the crate it names first. Until M0 lands, level 2 is reachable only by path or git
 dependency — which works for a repo we control, and is not an ecosystem.
