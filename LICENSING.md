@@ -5,9 +5,16 @@ GPL, and the line between them is drawn by a dependency rather than by preferenc
 
 | What | Licence | Why |
 |---|---|---|
-| `native/organon-core` · `native/organon-render` · `native/organon-mind` · `native/organon-console` | **MIT OR Apache-2.0** (your choice) | The engine. No plugin bindings anywhere in it. |
+| `native/organon-core` · `native/organon-render` · `native/organon-scene` · `native/organon-agent` · `native/organon-world` · `native/organon-mind` · `native/organon-console` | **MIT OR Apache-2.0** (your choice) | The engine. No plugin bindings anywhere in it. |
 | `native/xtask` | **MIT OR Apache-2.0** | The build tool. Does not link plugin bindings. |
-| `native/` root crate (`organic-math-native`) — the plugin, the standalone, the visual, the `organon` CLI | **GPL-3.0-or-later** | Forced. See below. |
+| `native/` root crate (`organic-math-native`) — the plugin, the standalone, the `organon` CLI | **GPL-3.0-or-later** | Forced. See below. |
+| `native/organon-visual` — the `organic-math-visual` binary | **GPL-3.0-or-later** | ⚠️ **Inherited, not forced by its own deps.** It is the one member that depends *upward* on the root crate (for `agent::core_catalog()`, which reads `param_table` and cannot descend), so the root's licence reaches it. Anything reusing the visual's host loop inherits GPL with it. |
+
+⚠️ **Ask the manifests, not this table.** `grep -E '^name|^license' native/*/Cargo.toml` is the
+authority; a hand-written list is a second copy of a fact the manifests already state, and this
+one fell three crates behind before anyone noticed. It matters more than the usual staleness,
+because the permissive row is precisely what an outside project reads before depending on the
+engine — see `doc/organon_modules_plan.md` §3, which is the first plan to actually rely on it.
 
 Full texts: [`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE),
 [`LICENSE-GPL`](LICENSE-GPL). Third-party material: [`NOTICE`](NOTICE).
