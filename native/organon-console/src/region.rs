@@ -66,18 +66,33 @@
 //! **A region that already holds nothing cannot be cleared.** [`Refusal::AlreadyEmpty`], because
 //! a command that silently does nothing is indistinguishable from one that did not arrive.
 //!
-//! # 📌 The rule this tier states and does not yet need
+//! # 📌 The uniqueness rule, now that something needs it
 //!
 //! A content kind that may exist **only once** is, on a second assignment, **refused by name,
 //! saying what already holds it** — never moved. That follows §1.3's "refused, not clamped":
 //! moving a thing somebody can see, because they named a second place for it, is a guess about
 //! which of the two they meant.
 //!
-//! Nothing in this tier is unique, so there is no machinery for it here and deliberately so —
-//! an unreachable arm is an untested branch pretending to be a design. The kind that will need
-//! it is `3d`: at most one region can hold the live World, because `console_main.rs`'s
-//! `engine_plan` renders it at most once per frame and the two targets share `frame_index` and
-//! the TAA jitter phase riding it.
+//! Tier 1 stated this rule and built no machinery for it, on the grounds that an unreachable
+//! arm is an untested branch pretending to be a design. Tier 2b makes it reachable:
+//! [`Content::ThreeD`] is the one kind that may be held once.
+//!
+//! 🚨 **The limit belongs to the PRODUCER, not to the idea of a viewport**, and
+//! [`Content::only_one_because`] is where that is said rather than assumed. A region holding
+//! `3d` is a rectangle a producer draws into; today the only producer is Organon's `World`, and
+//! *Organon* is what cannot be drawn twice in a frame — `console_main.rs`'s `engine_plan`
+//! renders it at most once because `frame_index` and the TAA jitter phase riding it are shared
+//! between targets. A producer that could fill four regions at once would inherit a refusal it
+//! has no reason to obey, so the reason travels with the refusal instead of being folded into
+//! the word `3d`. ⚠️ What is **not** available today is attributing it in the type system: there
+//! is one producer, and inventing a `Producer` enum with one variant to hang the limit off would
+//! be exactly the untested branch this module refused to build in Tier 1. So the attribution is
+//! a reason string and a doc, and the seam for a second producer is that
+//! `only_one_because` is the single site that decides.
+//!
+//! ⚠️ **A displacement is still allowed to move it.** `full 3d` while `left` holds `3d`
+//! displaces `left` and stands, because containment has exactly one reading — the refusal is
+//! for a *second* copy, not for the one copy being widened.
 //!
 //! # What is NOT here
 //!
@@ -191,17 +206,28 @@ pub const REGION_WORDS: &[&str] = &[
 
 /// What a region holds.
 ///
-/// Two kinds this tier, and the absences are the scope rather than an oversight. **`3d` is
-/// Tier 2** and is genuinely hard: `console_main.rs`'s `engine_plan(portal_open, …)` cannot
-/// express *which region* holds the live World, and the portal's justification for taking a
-/// frame — that it is temporary and dismissable — has to be **rebuilt** rather than renamed for
-/// something persistent. **`media` is later still**, and waits on §1.13's placement question.
+/// Three kinds, and the remaining absence is the scope rather than an oversight: **`media` waits
+/// on §1.13's placement question.**
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Content {
     /// A live agent — the tab the console is showing, whichever front-end it is.
     Agent,
     /// One of Organon's own editor panels.
     Panel,
+    /// **A live 3D viewport**: a rectangle a producer draws into, orbited by a drag and zoomed
+    /// by the wheel.
+    ///
+    /// 🚨 **The viewport is the general thing and Organon is the first application of it**,
+    /// which is James's own ordering and is why the word is `3d` rather than `world`: the region
+    /// says *a 3D picture belongs here*, and which engine draws it is the producer's business.
+    /// Today there is exactly one producer — Organon's `World`, the same one
+    /// [`crate::portal`] shows — and everything specific to it lives behind
+    /// [`Content::only_one_because`] and in `console_main.rs`, never in this word.
+    ///
+    /// ⚠️ **The Rust spelling is `ThreeD` because an identifier cannot begin with a digit.** The
+    /// *word* is `3d`, and the word is what travels — on the wire, in `--help`, in the ring and
+    /// in every refusal.
+    ThreeD,
 }
 
 impl Content {
@@ -210,6 +236,26 @@ impl Content {
         match self {
             Content::Agent => "agent",
             Content::Panel => "panel",
+            Content::ThreeD => "3d",
+        }
+    }
+
+    /// Why at most one region may hold this kind — `None` when any number may.
+    ///
+    /// 🚨 **The single site that decides uniqueness, and it answers with a REASON rather than a
+    /// bool** — because the reason is what says whose limit it is. `3d` is limited by the
+    /// producer behind it (Organon's `World` renders once per frame), not by anything about
+    /// viewports, and a caller reading the refusal should learn that rather than concluding the
+    /// console only ever wants one picture. See the module header on why this is a reason string
+    /// and not a `Producer` type.
+    pub fn only_one_because(self) -> Option<&'static str> {
+        match self {
+            Content::Agent | Content::Panel => None,
+            Content::ThreeD => Some(
+                "its producer is Organon, and Organon draws at most one frame per console \
+                 frame — `frame_index` and the TAA jitter phase riding it are shared between \
+                 targets, so two live pictures would trade phases and flicker",
+            ),
         }
     }
 }
@@ -233,9 +279,9 @@ pub enum ContentCmd {
 /// The word [`ContentCmd::Clear`] is spelled as.
 pub const CLEAR_WORD: &str = "off";
 
-/// The content words, in the order `--help` should list them — the two kinds, then the clearing
-/// word. [`REGION_WORDS`]' arrangement, for its reason.
-pub const CONTENT_WORDS: &[&str] = &["agent", "panel", CLEAR_WORD];
+/// The content words, in the order `--help` should list them — the three kinds in [`Content`]'s
+/// own order, then the clearing word. [`REGION_WORDS`]' arrangement, for its reason.
+pub const CONTENT_WORDS: &[&str] = &["agent", "panel", "3d", CLEAR_WORD];
 
 impl ContentCmd {
     /// The word this command travels as.
@@ -252,6 +298,7 @@ impl ContentCmd {
         match word {
             "agent" => Ok(ContentCmd::Hold(Content::Agent)),
             "panel" => Ok(ContentCmd::Hold(Content::Panel)),
+            "3d" => Ok(ContentCmd::Hold(Content::ThreeD)),
             CLEAR_WORD => Ok(ContentCmd::Clear),
             _ => Err(UnknownWord {
                 word: word.to_string(),
@@ -294,6 +341,11 @@ pub enum Refusal {
     AlreadyEmpty { asked: Region },
     /// The result would hold no [`Content::Agent`] at all.
     LastAgent { asked: Region },
+    /// A kind that may exist only once is already held somewhere else.
+    ///
+    /// ⚠️ **`because` is carried rather than looked up at the display site**, so the refusal and
+    /// [`Content::only_one_because`] cannot drift into two explanations of one rule.
+    AlreadyHeld { asked: Region, content: Content, by: Region, because: &'static str },
 }
 
 impl std::fmt::Display for Refusal {
@@ -322,6 +374,19 @@ impl std::fmt::Display for Refusal {
                 "`{}` holds the last agent — emptying it would leave the console with nothing \
                  to talk to, and the verb that undoes it is typed at an agent",
                 asked.as_word()
+            ),
+            // The region that was asked for is named as well as the one standing in the way, so
+            // the sentence still identifies the command that produced it when it is read out of
+            // a log with no context.
+            Refusal::AlreadyHeld { asked, content, by, because } => write!(
+                f,
+                "`{}` asked for `{}`, which `{}` already holds, and there can be only one: \
+                 {because} — clear it with `viewport {} off` and ask again, or name a region \
+                 that contains it",
+                asked.as_word(),
+                content.as_word(),
+                by.as_word(),
+                by.as_word(),
             ),
         }
     }
@@ -391,13 +456,24 @@ impl Layout {
         self.occupied().iter().any(|(_, c)| *c == Content::Agent)
     }
 
+    /// The first region holding `content`, in [`Region::ALL`] order — `None` if nothing does.
+    ///
+    /// For a kind [`Content::only_one_because`] limits there is at most one, so "first" is
+    /// "the one"; for the others this is the same determinism `console_main.rs` already relies
+    /// on to decide which agent region gets the live tab.
+    pub fn region_holding(&self, content: Content) -> Option<Region> {
+        self.occupied().into_iter().find(|(_, c)| *c == content).map(|(r, _)| r)
+    }
+
     /// Put `cmd` in `region`, or say why not. **Pure** — the layout that comes back is a new
     /// value and `self` is untouched, which is what lets the refusal path leave the console
     /// exactly as it was with no unwinding to get wrong.
     ///
     /// The order of the checks is the order of the module header's rules, and it matters: the
     /// overlap check runs before the agent check, so `top` while `left` is held is refused for
-    /// the reason a person can act on (the grid) rather than for a consequence of it.
+    /// the reason a person can act on (the grid) rather than for a consequence of it. The
+    /// uniqueness check sits between them, and is asked of what **survives** the displacement —
+    /// so widening a `3d` region from `left` to `full` is allowed while a second copy is not.
     pub fn assign(&self, region: Region, cmd: ContentCmd) -> Result<Change, Refusal> {
         let mut next = *self;
         let mut displaced = Vec::new();
@@ -429,6 +505,28 @@ impl Layout {
                 }
                 if !partial.is_empty() {
                     return Err(Refusal::Overlap { asked: region, with: partial });
+                }
+                // 🚨 **Asked of what survives, not of what is held now.** A region being
+                // displaced is giving up its copy in this same command, so counting it would
+                // refuse `full 3d` from a console holding `left 3d` — a widening, not a second
+                // copy. The check runs before anything is written because `assign` is pure and
+                // a refusal must leave `self` untouched with nothing to unwind.
+                if let Some(because) = content.only_one_because() {
+                    if let Some(other) = self
+                        .occupied()
+                        .into_iter()
+                        .find(|(held, c)| {
+                            *c == content && *held != region && !displaced.contains(held)
+                        })
+                        .map(|(held, _)| held)
+                    {
+                        return Err(Refusal::AlreadyHeld {
+                            asked: region,
+                            content,
+                            by: other,
+                            because,
+                        });
+                    }
                 }
                 for r in &displaced {
                     next.held[Self::slot(*r)] = None;
@@ -899,15 +997,84 @@ mod tests {
             let c = ContentCmd::resolve(word).unwrap_or_else(|_| panic!("`{word}` is unresolvable"));
             assert_eq!(c.as_word(), *word);
         }
-        for c in [ContentCmd::Hold(Content::Agent), ContentCmd::Hold(Content::Panel), ContentCmd::Clear]
-        {
+        for c in [
+            ContentCmd::Hold(Content::Agent),
+            ContentCmd::Hold(Content::Panel),
+            ContentCmd::Hold(Content::ThreeD),
+            ContentCmd::Clear,
+        ] {
             assert!(CONTENT_WORDS.contains(&c.as_word()), "{c:?} is unlisted");
         }
         // ⚠️ **`off` is a content WORD and not a content KIND** — the tables differ by exactly
         // one entry, and that difference is the whole reason `ContentCmd` exists beside
         // `Content`. If they ever match, a clearing word has become something a region holds.
-        assert_eq!(CONTENT_WORDS.len(), 3);
-        assert!(!["agent", "panel"].contains(&CLEAR_WORD));
+        assert_eq!(CONTENT_WORDS.len(), 4);
+        assert!(!["agent", "panel", "3d"].contains(&CLEAR_WORD));
+    }
+
+    /// 🚨 **At most one region holds `3d`, and the refusal says whose limit it is.**
+    ///
+    /// The rule Tier 1 stated and deliberately did not build. Two halves are worth pinning
+    /// separately: that a second copy is refused *by name*, and that the refusal quotes
+    /// [`Content::only_one_because`]'s reason — which attributes the limit to Organon rather
+    /// than to viewports, and is the sentence a future producer would change.
+    #[test]
+    fn only_one_region_may_hold_the_live_3d_and_the_refusal_says_whose_limit_it_is() {
+        let three_d = ContentCmd::Hold(Content::ThreeD);
+        let split = Layout::default()
+            .assign(Region::Left, agent())
+            .expect("left agent")
+            .layout
+            .assign(Region::Right, three_d)
+            .expect("right 3d")
+            .layout;
+        assert_eq!(split.region_holding(Content::ThreeD), Some(Region::Right));
+
+        // …and a second one, in a region that overlaps nothing, is refused rather than moved.
+        let corners = split
+            .assign(Region::TopLeft, agent())
+            .expect("topleft displaces left")
+            .layout;
+        let e = corners.assign(Region::BottomLeft, three_d).expect_err("a second 3d");
+        let Refusal::AlreadyHeld { asked, content, by, because } = e.clone() else {
+            panic!("{e:?} is not the uniqueness refusal");
+        };
+        assert_eq!((asked, content, by), (Region::BottomLeft, Content::ThreeD, Region::Right));
+        assert_eq!(Some(because), Content::ThreeD.only_one_because());
+        let text = e.to_string();
+        assert!(text.contains("bottomleft") && text.contains("right"), "{text}");
+        assert!(text.contains("Organon"), "the refusal must name whose limit it is: {text}");
+        assert!(text.contains("viewport right off"), "…and the way out: {text}");
+
+        // ⚠️ **A widening is not a second copy**, which is why the check is asked of what
+        // survives the displacement rather than of what is held now. A `3d` corner asked to
+        // become a `3d` half displaces itself and stands.
+        let corner = Layout::default()
+            .assign(Region::Left, agent())
+            .expect("left agent")
+            .layout
+            .assign(Region::BottomRight, three_d)
+            .expect("bottomright 3d")
+            .layout;
+        let widened = corner.assign(Region::Right, three_d).expect("right contains bottomright");
+        assert_eq!(widened.displaced, vec![Region::BottomRight]);
+        assert_eq!(widened.layout.region_holding(Content::ThreeD), Some(Region::Right));
+
+        // The other two kinds are unlimited, and that is a property of the kind rather than an
+        // accident of this layout: two agents and two panels are both ordinary.
+        assert_eq!(Content::Agent.only_one_because(), None);
+        assert_eq!(Content::Panel.only_one_because(), None);
+        let two_panels = Layout::default()
+            .assign(Region::Left, agent())
+            .expect("left")
+            .layout
+            .assign(Region::TopRight, panel())
+            .expect("topright")
+            .layout
+            .assign(Region::BottomRight, panel())
+            .expect("a second panel is ordinary")
+            .layout;
+        assert_eq!(two_panels.occupied().len(), 3);
     }
 
     /// Neither resolver approximates, and both refusals carry the table that would have worked.
@@ -916,7 +1083,7 @@ mod tests {
         for bad in ["Left", "LEFT", "lef", "left ", "centre", "middle", "", "0.5"] {
             assert!(Region::resolve(bad).is_err(), "`{bad}` resolved and must not");
         }
-        for bad in ["Agent", "AGENT", "3d", "media", "on", ""] {
+        for bad in ["Agent", "AGENT", "3D", "3", "media", "on", ""] {
             assert!(ContentCmd::resolve(bad).is_err(), "`{bad}` resolved and must not");
         }
         let e = Region::resolve("middle").expect_err("not a region").to_string();
@@ -924,8 +1091,8 @@ mod tests {
         for word in REGION_WORDS {
             assert!(e.contains(word), "`{word}` is missing from the refusal: {e}");
         }
-        let e = ContentCmd::resolve("3d").expect_err("not yet").to_string();
-        assert!(e.contains("3d"), "{e}");
+        let e = ContentCmd::resolve("media").expect_err("not yet").to_string();
+        assert!(e.contains("media"), "{e}");
         for word in CONTENT_WORDS {
             assert!(e.contains(word), "`{word}` is missing from the refusal: {e}");
         }
