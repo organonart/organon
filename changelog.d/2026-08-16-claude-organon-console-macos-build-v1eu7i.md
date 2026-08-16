@@ -6,6 +6,11 @@ actually developed and deployed on (`deploy.sh` is macOS-only) had no compile co
 all. `build (macos)` closes that for the Console: `macos-latest`, console edition, real
 build plus `cargo test --workspace`.
 
+It is **green on its first run**: the binary builds in 9 m 30 s and the suite is **2138
+passed, 0 failed, 5 ignored** across 30 test binaries, whole job 17 m 46 s cold. So the
+answer to "does the Console compile on macOS" is yes — with the caveat at the bottom, which
+is the half that matters.
+
 🚨 **The Windows cross-check trick does not transfer to Apple targets, and the reason is not
 the one `ci.yml`'s header leads you to expect.** That header establishes — correctly — that
 `check (windows cross)` needs no system packages because `native/` contains no `build.rs`
@@ -30,15 +35,28 @@ cross-checks **clean** for `aarch64-apple-darwin` from a Linux container — it 
 `dlopen`-based (`libloading`) and needs no headers whatsoever. `coreaudio-sys` and
 `coremidi-sys` are the bindgen ones, and they are the wall.
 
-What *does* cross-check from Linux is every nih_plug-free workspace member —
-`organon-core`, `organon-console`, `organon-scene`, `organon-render`, `organon-mind`, all
-targets, lib and tests, in seconds. That is the compositor itself compiler-verified for
-Apple silicon, and it is now written into the contributor note as the inner loop for macOS
-work. It is deliberately **not** a CI job: expressing it as one means a hand-maintained
-`-p` list, which is precisely what the `--workspace` rule two blocks below exists to forbid,
-and its coverage is a strict subset of the real leg's. The one thing it cannot reach is the
-root crate — so `console_main.rs`, the Console's actual entry point and window, is invisible
-to it, and only `build (macos)` compiles that.
+What *does* cross-check from Linux is nine of the workspace's eleven members, all targets,
+lib and tests, in well under a minute — the compositor itself compiler-verified for Apple
+silicon with no Mac in the room. That is now the contributor note's inner loop for macOS
+work. It is deliberately **not** a CI job: its coverage is a strict subset of the real leg's,
+and the real leg is free here. The one thing it cannot reach is the root crate, so
+`console_main.rs` — the Console's entry point and window — is invisible to it.
+
+⚠️ **The exclusion is written as a deny-list, and the allow-list version failed exactly as
+predicted while this was being written.** The recipe is
+
+```
+cargo check --target aarch64-apple-darwin --all-targets \
+  --workspace --exclude organic-math-native --exclude organon-visual
+```
+
+and its first draft was a `-p` list typed from CLAUDE.md's repository map, which silently
+missed five real members: `organon-agent`, `organon-visual`, `organon-world`, `xtask` and
+the vendored `egui-wgpu`. That is the same failure the `--workspace` rule further down
+`ci.yml` exists to prevent, reproduced by hand within an hour of quoting it. `cargo metadata
+--no-deps` is the authority on who the members are; a prose list is not. Only two members
+reach nih_plug — the root crate, and `organon-visual`, which is excluded solely because it
+*depends on* the root crate rather than being a nih_plug crate itself.
 
 📌 **Nothing in the Console's own source needed changing**, which is worth recording as a
 result rather than passing over as a non-event: `platform.rs` already takes the platform as
@@ -47,7 +65,7 @@ a Mac. The rule that module's header lays down — a platform-dependent decision
 with a test per variant, never as a `#[cfg]` at the point of use — is why a first macOS
 build found no missing arm to add.
 
-⚠️ **A green leg means "green and ready to deploy", never "verified working."** The Console
+⚠️ **The green leg means "green and ready to deploy", never "verified working."** The Console
 has never been *run* on macOS — no window, no glyph, no PTY. `CONSOLE_ARCHITECTURE.md` §3
 carries the list of what stays unknown until somebody opens it on a real Mac, and it is the
 interesting half: Metal surface configuration, the backdrop's gamma pair on a backend where

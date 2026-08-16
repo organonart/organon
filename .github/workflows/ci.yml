@@ -124,14 +124,22 @@
 #   ► THE CHOICE MADE HERE: **one macOS job, no Apple cross-check leg beside it.**
 #
 # The cross-check leg is not merely blocked — even the version that WOULD work is
-# not worth a job. Every workspace *member* (`organon-core`, `organon-console`,
-# `organon-scene`, `organon-render`, `organon-mind`) is nih_plug-free and does
-# cross-check clean for `aarch64-apple-darwin`, all targets, in ~15 s; only the ROOT
-# crate is blocked. But expressing that as a CI job means a hand-maintained `-p`
-# list, which is precisely the thing the `--workspace` note further down exists to
-# forbid — a member added later would silently fall out of it. Its coverage is also
-# a strict subset of what the real macOS leg already sees. So the partial
+# not worth a job. **Two** of the workspace's eleven members reach nih_plug and are
+# therefore blocked: the root crate `organic-math-native`, and `organon-visual`,
+# which depends on it. The other nine cross-check clean for `aarch64-apple-darwin`,
+# all targets, in well under a minute. But its coverage is a strict subset of what
+# the real macOS leg already sees, and the leg is free here. So the partial
 # cross-check lives in the contributor note below, as an inner loop, not as a job.
+#
+# ⚠️ **Write that exclusion as a DENY-list, never an allow-list**, for the same
+# reason `paths-ignore` below is one: a member added later must be covered by
+# default, not silently omitted. `-p a -p b -p c…` is the shape the `--workspace`
+# note further down exists to forbid, and it failed in exactly the predicted way
+# while this leg was being written — the first version of the recipe was typed from
+# CLAUDE.md's repository map and silently missed five real members
+# (`organon-agent`, `organon-visual`, `organon-world`, `xtask`, the vendored
+# `egui-wgpu`). `cargo metadata --no-deps` is the authority on who the members are;
+# a prose list anywhere, this comment included, is not.
 #
 # ── Spend for the macOS leg ─────────────────────────────────────────────────────
 # The Windows block above states its arithmetic in billing multipliers, so state
@@ -148,6 +156,19 @@
 #     runners have a much smaller concurrent-job allowance than Linux, so a macOS
 #     leg is the one most likely to sit queued. That is a wall-clock cost on a busy
 #     day, and it is the reason to add one macOS job rather than three.
+#
+# Measured on this leg's first-ever run (PR #96, cold cache, all six jobs in
+# parallel), so the next person has a baseline rather than the estimate above:
+#
+#   build (macos)          ~17m46s total    9m30s build + ~7m test + ~30s setup
+#
+# ⚠️ Two things in that number are worth reading carefully. It did **not queue** —
+# the runner was allocated in 1 s alongside the other five, so the concurrency
+# caveat above is a risk to plan for, not something observed. And it is the SLOWEST
+# leg here despite arm64 being fast per-core, because it is the only leg that both
+# builds a bin AND runs the whole workspace suite; the Linux legs' ~14m do the same
+# work on more cores. The test half is ~7 minutes, not the ~4 the Linux legs spend,
+# which is the part to watch if this leg ever needs trimming.
 #
 # ► **Console edition only, and build + test rather than a check.** Only-one-job is
 #   the concurrency argument above. Build-and-test rather than check is because this
@@ -190,19 +211,25 @@
 # caveat above before quoting a green result at anyone.
 #
 # **The Apple equivalent exists but is PARTIAL, and the partiality is the whole
-# point of knowing about it.** From any Linux or macOS box:
+# point of knowing about it.** From any Linux or macOS box, no Mac and no Xcode:
 #
 #   rustup target add aarch64-apple-darwin
 #   cd native && cargo check --target aarch64-apple-darwin --all-targets \
-#     -p organon-core -p organon-console -p organon-scene -p organon-render -p organon-mind
+#     --workspace --exclude organic-math-native --exclude organon-visual
 #
-# That covers every nih_plug-free workspace member — which is most of the Console —
-# in seconds, and it is the right inner loop for compositor work. What it CANNOT do
-# is reach the root crate: `cargo check` on `organic-math-native` for an Apple target
+# ⚠️ Note the shape: `--workspace` minus the two members that reach nih_plug, NOT a
+# `-p` list of the nine that do not. A member added later is then checked by
+# default; with an allow-list it would be silently skipped. `organon-visual` is on
+# the deny side only because it depends on the root crate — it is not itself a
+# nih_plug crate.
+#
+# That covers nine of eleven members — which is most of the Console — in well under
+# a minute, and it is the right inner loop for compositor work. What it CANNOT do is
+# reach the root crate: `cargo check` on `organic-math-native` for an Apple target
 # dies in `coreaudio-sys`'s build script with `'AudioUnit/AudioUnit.h' file not
 # found`, for the reason the macOS block above sets out. So `console_main.rs` — the
 # Console's actual entry point and window — is invisible to it. Only `build (macos)`
-# compiles that. Do not extend the `-p` list into a substitute for the real leg.
+# compiles that. Do not grow the excludes into a substitute for the real leg.
 
 name: CI
 
