@@ -7,6 +7,28 @@
 //! window server can answer. `console_main.rs` owns the texture, the render and the paint, and
 //! maps the state onto them.
 //!
+//! # 📌 One presentation of a viewport, not the only live rectangle any more
+//!
+//! Tier 2b gives a [`crate::region`] a viewport of its own, and everything below is unchanged by
+//! it: the verb, the state machine, the screen-anchored rect and the wheel claim are exactly what
+//! they were. What changed is the *description*. A **viewport** is a producer plus a camera plus
+//! a texture; the portal is one way of presenting one — floating, summoned, dismissable — and a
+//! region is another — placed, persistent, arranged by hand. `SceneMode` in `scene_input` has
+//! modelled that distinction since before either existed, and both of these are
+//! `SceneMode::Workstation`.
+//!
+//! 🚨 **One mechanism, two presentations — never two implementations.** `console_main.rs` owns
+//! that end: one texture, one `render_viewport`, one `paint_viewport`, one `SceneInput`
+//! accumulator, one `pane_pixels_in` ratio. The two presentations differ in *which rectangle*
+//! and in *who wins the frame*, and in nothing else. What that buys is stated where it matters:
+//! when a second producer arrives, the portal shows it as readily as a region does, because the
+//! producer seam sits below both.
+//!
+//! ⚠️ **The portal takes the frame from a region viewport**, and `console_main.rs`'s
+//! `engine_plan` is where that is decided and argued. The loser paints a notice naming what
+//! holds the frame and the command that releases it; it does not go blank and it does not show
+//! a stale picture.
+//!
 //! # What makes it a portal rather than a patch
 //!
 //! Every anchor the console has today is a **scroll** anchor: [`crate::block_anchor`] pins a
@@ -207,6 +229,21 @@ pub fn pointer_inside(rect: Option<egui::Rect>, pointer: Option<egui::Pos2>) -> 
     }
 }
 
+/// Is the pointer inside **any** live viewport rectangle?
+///
+/// 🚨 **The portal stopped being the only one, and this is the whole of what that changed on the
+/// input side.** Tier 2b gives a *region* a viewport too, and §1.14 recorded the consequence in
+/// advance: `term_view` reads the wheel from raw input, so the only thing that keeps a scroll out
+/// of the transcript is an explicit rect test — and there is now more than one rectangle to test.
+/// This is [`pointer_inside`] over a list rather than a second mechanism, for the reason §1.14
+/// gives for not inventing a second gesture vocabulary: the two presentations of a viewport must
+/// claim the wheel the *same* way or they will drift into claiming it differently.
+///
+/// An empty slice is `false`, which is the undivided, portal-less console exactly.
+pub fn pointer_inside_any(rects: &[egui::Rect], pointer: Option<egui::Pos2>) -> bool {
+    rects.iter().any(|r| pointer_inside(Some(*r), pointer))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +349,46 @@ mod tests {
         assert!(!pointer_inside(r, Some(r.unwrap().min - egui::vec2(2.0, 2.0))), "just outside");
         assert!(!pointer_inside(r, None), "the pointer has left the window");
         assert!(!pointer_inside(None, Some(egui::pos2(500.0, 100.0))), "no portal is open");
+    }
+
+    /// 🚨 **Every live viewport rectangle claims the wheel, and the empty list is the console
+    /// that has none — byte for byte the behaviour before Tier 2b.**
+    ///
+    /// This is the pure half of §1.14's "the second consumer": `term_view` reads the wheel from
+    /// raw input, so this predicate is the *only* thing standing between a scroll over a picture
+    /// and the transcript underneath it. The case worth pinning hardest is the **second**
+    /// rectangle — a region viewport is not the portal, does not float, and would be silently
+    /// unclaimed by a test that only ever passed one rect.
+    #[test]
+    fn any_live_viewport_claims_the_wheel_and_an_empty_list_claims_nothing() {
+        let portal = portal_rect(pane()).expect("a portal fits this pane");
+        // The left half of the pane — a `3d` region beside a transcript, the shape Tier 2b runs.
+        let region = egui::Rect::from_min_max(egui::pos2(0.0, 30.0), egui::pos2(550.0, 720.0));
+        let both = [portal, region];
+
+        assert!(pointer_inside_any(&both, Some(portal.center())), "the portal claims its own");
+        assert!(pointer_inside_any(&both, Some(region.center())), "…and so does the region");
+        // Between them and inside neither: the transcript keeps the wheel, which is the whole
+        // point — claiming a rectangle must not mean claiming the window.
+        assert!(
+            !pointer_inside_any(&both, Some(egui::pos2(700.0, 700.0))),
+            "a point in neither belongs to the transcript"
+        );
+        assert!(!pointer_inside_any(&both, None), "the pointer has left the window");
+
+        // ⚠️ **The empty slice is the pre-Tier-2b console**, and it is what `console_main.rs`
+        // passes when nothing is live. A predicate that answered `true` here would silently stop
+        // the transcript scrolling in the default, undivided console — invariant #4's failure.
+        assert!(!pointer_inside_any(&[], Some(portal.center())), "nothing is live");
+        // One rectangle answers exactly as the single-rect form does, which is what makes this a
+        // widening of `pointer_inside` rather than a second rule beside it.
+        for p in [portal.center(), region.center(), egui::pos2(700.0, 700.0)] {
+            assert_eq!(
+                pointer_inside_any(&[portal], Some(p)),
+                pointer_inside(Some(portal), Some(p)),
+                "the list of one must agree with the single rect at {p:?}"
+            );
+        }
     }
 
     /// 📌 **egui reports `clicked()` on the FIRST click of a pair — it does not wait to see

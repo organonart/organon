@@ -572,7 +572,10 @@ pub fn block_quads(
 ///
 /// * a **panel** — its sliders are dragged, and a drag that also scrolled would take the block
 ///   out from under the hand doing it ([`crate::block_panel::pointer_inside`]);
-/// * the **portal** — the wheel over it zooms its camera ([`crate::portal`]);
+/// * a **viewport** — the wheel over one zooms its camera ([`crate::portal`]). ✏️ **Tier 2b
+///   makes that plural**: the floating portal and a region holding `3d` are two presentations
+///   of one thing and claim the wheel identically, which is why the parameter below is a
+///   rectangle *list* and not the portal's single rect;
 /// * a **scene patch** does **not**. It is a picture, and the wheel over a picture keeps
 ///   scrolling the page exactly as the wheel over a paragraph does.
 ///
@@ -580,9 +583,9 @@ pub fn block_quads(
 pub fn wheel_scrolls_the_transcript(
     scroll: f32,
     pointer_on_panel: bool,
-    pointer_on_portal: bool,
+    pointer_on_viewport: bool,
 ) -> bool {
-    scroll.abs() >= 1.0 && !pointer_on_panel && !pointer_on_portal
+    scroll.abs() >= 1.0 && !pointer_on_panel && !pointer_on_viewport
 }
 
 /// One frame of the terminal: pump the session, size the grid to the rect, feed
@@ -604,12 +607,18 @@ pub fn wheel_scrolls_the_transcript(
 /// byte. `patch_image` is what a *scene* patch samples, and it is supplied independently of
 /// `backdrop` on purpose (see the paint pass).
 ///
-/// `portal` is the **screen-anchored** rectangle the console is floating over this pane, if
-/// any — see [`crate::portal`]. Nothing is painted here for it: the caller paints it *after*
-/// this function, so it lands over the glyphs. All this module does with it is
-/// [`wheel_scrolls_the_transcript`], and that is the whole reason it is a parameter — the
-/// terminal reads the wheel from **raw input**, so no amount of egui layer ordering would keep
-/// a scroll over the portal out of the scrollback.
+/// `viewports` are the **live 3D rectangles on screen this frame**: the screen-anchored portal
+/// the console is floating over this pane, and the region holding `3d` if there is one — see
+/// [`crate::portal`] and [`crate::region`]. Nothing is painted here for either; the caller paints
+/// them, the portal *after* this function so it lands over the glyphs, a region in its own child
+/// `Ui`. All this module does with them is [`wheel_scrolls_the_transcript`], and that is the
+/// whole reason they are a parameter — the terminal reads the wheel from **raw input**, so no
+/// amount of egui layer ordering would keep a scroll over a viewport out of the scrollback.
+///
+/// 🚨 **A region viewport is why this went from one rectangle to a list, and §1.14 predicted
+/// it.** Reading raw input was inert while there was exactly one live tab and nothing else
+/// wanted the wheel; a viewport beside the transcript is that second consumer. An empty slice is
+/// the console before any of this, byte for byte.
 ///
 /// The return value is the buttons a person pressed inside those patches this frame. This
 /// module does not know what they mean — see [`crate::block_panel`] — so it hands them back
@@ -621,7 +630,7 @@ pub fn draw(
     backdrop: Option<BandedBackdrop<'_>>,
     patches: &mut [Patch],
     patch_image: Option<egui::TextureId>,
-    portal: Option<egui::Rect>,
+    viewports: &[egui::Rect],
     theme: &Theme,
 ) -> Vec<BlockAction> {
     let font_id = egui::FontId::monospace(FONT_PT);
@@ -702,23 +711,27 @@ pub fn draw(
     // wheel over a paragraph does. `view` is five field reads, so computing it twice costs
     // nothing.
     //
-    // 🚨 **The portal takes the wheel too, and that REVERSES the rule stated above it.** A
+    // 🚨 **A viewport takes the wheel too, and that REVERSES the rule stated above it.** A
     // scene patch deliberately does not claim it — the sentence "a scene patch is something to
-    // look at" is the whole argument — and the portal is the other thing: a wheel over it
+    // look at" is the whole argument — and a viewport is the other thing: a wheel over it
     // zooms its camera, so it must not also scroll the transcript underneath. A picture that
     // stole the wheel would break scrolling; an instrument that did not take it would be an
     // instrument you cannot reach. [`crate::portal`]'s module docs argue it at length. The
-    // patch's behaviour is unchanged — this is one more rectangle in the same test, not a
+    // patch's behaviour is unchanged — these are more rectangles in the same test, not a
     // change to which patches are in it.
+    //
+    // ✏️ **Plural since Tier 2b**, and that is the *only* thing that changed here: a region
+    // holding `3d` is the same instrument in a different presentation, so it is one more rect
+    // in this list rather than a second rule about who owns the pointer.
     let pre_wheel = anchor.view(session);
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let pointer_on_panel = block_panel::pointer_inside(
         &block_panel::panel_placements(patches, pre_wheel, rect, cell_h),
         pointer,
     );
-    let pointer_on_portal = portal::pointer_inside(portal, pointer);
+    let pointer_on_viewport = portal::pointer_inside_any(viewports, pointer);
     let scroll = ui.input(|i| i.raw_scroll_delta.y);
-    if wheel_scrolls_the_transcript(scroll, pointer_on_panel, pointer_on_portal) {
+    if wheel_scrolls_the_transcript(scroll, pointer_on_panel, pointer_on_viewport) {
         session.scroll_display((scroll / cell_h * 1.5) as i32);
     }
 

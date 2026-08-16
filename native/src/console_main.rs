@@ -1829,34 +1829,49 @@ struct Console {
     /// undivided however it was left. A stored layout would be the first thing that could make
     /// a launch look broken with no command having been typed.
     layout: organon_console::region::Layout,
-    /// The portal's render target.
+    /// **The viewport's render target — ONE texture serving both presentations.**
+    ///
+    /// 🚨 **One, not one each, and that is [`engine_plan`]'s guarantee spent rather than a
+    /// saving.** At most one presentation gets the World in any frame, so a second texture could
+    /// only ever hold a picture nobody is allowed to refresh — i.e. the stale texture §1.14's
+    /// vacancy rule forbids showing. The presentation that lost the frame paints a notice, and
+    /// the presentation that won owns this. Switching between them is a size change, which this
+    /// field already handles the only way it can: free, reallocate, and say so in the log.
     ///
     /// ⚠️ **A field beside [`Console::backdrop`], NOT a [`SurfaceKey`] variant**, and the reason
     /// is about meaning rather than effort. [`surfaces_to_evict`] is a policy for *many things
-    /// competing for few slots*; a portal is *one thing that is open or closed*. It is
+    /// competing for few slots*; a viewport is *one thing that is live or not*. It is
     /// requested every frame it exists, so its stamp is always `now` and the cap could never
     /// choose it — a key variant would exist solely to be excluded from the one function the
     /// type serves, and would then have to be remembered out of [`Console::free_all_surfaces`]
     /// and taught to the eviction log so it did not print a fabricated element id.
     ///
-    /// The deciding argument is smaller and harder: **the portal must work in a terminal tab**,
+    /// The deciding argument is smaller and harder: **the viewport must work in a terminal tab**,
     /// where there are no elements and [`ElementId`] means nothing at all. So `SurfaceKey`, its
     /// tests, `SurfaceImages` and the whole `conversation_view` seam are untouched by this
     /// feature — only [`SurfaceTexture`] and [`Console::make_surface_texture`] are reused, which
     /// is the part that was worth reusing.
-    portal: Option<SurfaceTexture>,
-    /// The camera gesture the portal accumulated this frame, drained into the World after the
-    /// UI and before the next render — `wgpu_editor`'s arrangement exactly.
-    portal_input: scene_input::SceneInput,
-    /// Where the portal was drawn **last** frame, in points.
+    viewport: Option<SurfaceTexture>,
+    /// The camera gesture the live viewport accumulated this frame, drained into the World after
+    /// the UI and before the next render — `wgpu_editor`'s arrangement exactly.
+    ///
+    /// 🚨 **One accumulator, because there is one camera.** `World` holds a single
+    /// yaw/pitch/distance and the console shows it through whichever rectangle is live, so a
+    /// second accumulator would be a second name for the same three fields. It is also what
+    /// keeps `scene_input::scene_viewport`'s fixed egui id honest: that function interns one id,
+    /// so it may be called **at most once per frame** — which is exactly what the precedence in
+    /// [`engine_plan`] already guarantees, since the losing presentation paints a notice and
+    /// registers no interaction region at all.
+    viewport_input: scene_input::SceneInput,
+    /// Where the live viewport was drawn **last** frame, in points.
     ///
     /// ⚠️ One frame behind, exactly as [`Console::pane_points`] is and for the same reason: the
     /// rect is derived from the pane, the pane is an egui layout output, and the texture has to
-    /// exist before the frame that paints it. The visible consequence is one "the portal is
+    /// exist before the frame that paints it. The visible consequence is one "the viewport is
     /// there but empty" frame when it opens, and nothing else — the rect *inside* a frame is
     /// recomputed from that frame's own pane, so the rectangle a person sees is never stale
     /// even though the pixels in it are one frame old.
-    portal_points: Option<(f32, f32)>,
+    viewport_points: Option<(f32, f32)>,
     /// When a **hand** last moved the camera, or `None` if none ever has.
     ///
     /// 🚨 This is the whole of what makes "the hand always wins" enforceable, and it has to be
@@ -1919,7 +1934,27 @@ struct Console {
     posture: Posture,
 }
 
-/// Register the portal's interaction region and paint it.
+/// Register a viewport's interaction region and paint it — **the one implementation, serving
+/// both presentations.**
+///
+/// 🚨 **A viewport is a producer plus a camera plus a texture; the portal and a `3d` region are
+/// two ways of presenting one.** That is why this takes a rect and a mode rather than being
+/// duplicated per presentation: the gesture, the camera, the image and the edge are identical,
+/// and only *where* it sits differs. `SceneMode` is the enum that already modelled exactly this
+/// distinction, from before either existed — `Workstation` is "a pane inside the workstation, a
+/// widget among widgets", `Immersive` is "the scene is the window and the interface floats over
+/// it" — so it is the seam rather than a parallel notion invented here.
+///
+/// ⚠️ **Both call sites pass `Workstation` today, and that is the honest answer rather than an
+/// unused parameter.** A floating rectangle and a region are *both* bounded panes inside an
+/// interface; nothing in the console is immersive yet (§2's portal row owns that). It is passed
+/// explicitly so each site says which presentation it is, and so the day one of them becomes
+/// immersive it is a value changed at a call site rather than a hardcode discovered inside here.
+///
+/// ⚠️ **Call it at most once per frame.** `scene_input::scene_viewport` interns a single fixed
+/// egui id, so two live viewports in one frame would be two widgets fighting over one id. That
+/// is not a rule anybody has to remember: [`engine_plan`] gives the World to exactly one
+/// presentation, and the other paints a notice instead of calling this.
 ///
 /// # Order inside, and why it is not the obvious one
 ///
@@ -1944,20 +1979,21 @@ struct Console {
 ///
 /// `scene_viewport` hardcodes `Sense::drag()`. That is right here and would stop being right in
 /// an immersive portal: a drag-only widget is what egui treats as "a big background thing", so
-/// a click landing on it is handed to whatever control wanted it. The portal has no click
-/// gesture yet, so nothing is lost. When the click-to-grow transition is built, widen
+/// a click landing on it is handed to whatever control wanted it. Neither presentation has a
+/// click gesture yet, so nothing is lost. When the click-to-grow transition is built, widen
 /// `scene_viewport` with a `Sense` parameter — the editor's two call sites passing
 /// `Sense::drag()` verbatim so their behaviour is provably unchanged — rather than adding a
 /// second `ui.interact` on the same rect: two widgets on one rectangle fight in the hit test,
 /// and which one loses is decided by registration order.
-fn paint_portal(
+fn paint_viewport(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     image: Option<egui::TextureId>,
     input: &mut scene_input::SceneInput,
+    mode: scene_input::SceneMode,
     theme: &Theme,
 ) {
-    let _resp = scene_input::scene_viewport(ui, rect, scene_input::SceneMode::Workstation, input);
+    let _resp = scene_input::scene_viewport(ui, rect, mode, input);
     let painter = ui.painter();
     match image {
         // UV 0..1 with no fit policy to get wrong: the console renders the target at exactly
@@ -1973,7 +2009,7 @@ fn paint_portal(
                 egui::Color32::WHITE,
             );
         }
-        // The one frame between "the portal is open" and "its rect has been measured, its
+        // The one frame between "this viewport is live" and "its rect has been measured, its
         // texture made and a world drawn into it". Filled rather than left transparent so the
         // object exists on screen from the frame it was asked for — an empty outline over live
         // scrollback reads as a rendering failure, which is the very confusion the surface
@@ -2013,13 +2049,23 @@ fn paint_portal(
 /// `plan` answers `None` when any region falls under `region::MIN_SIDE`. The console is then
 /// showing nothing at all, which is the one state that absolutely must not be quiet — so the
 /// whole pane carries the sentence and the command that undoes it.
+///
+/// # The `3d` region, and what it answers with
+///
+/// Returns **the rectangle the `3d` region was drawn at this frame**, which is what the next
+/// frame's [`Console::render_viewport`] sizes its texture to — the same one-frame-behind
+/// arrangement the portal already has, for the same reason (a rect is an output of the layout
+/// that produced it). `None` when no region holds `3d`, when the pane cannot hold the layout, or
+/// when the portal took the frame — in the last case the region is drawn as a **notice**, so
+/// there is no viewport rect to remember and nothing must size a texture to it.
 fn draw_regions(
     ui: &mut egui::Ui,
     pane: Option<egui::Rect>,
     layout: &organon_console::region::Layout,
     theme: &Theme,
+    viewport: &mut RegionViewport<'_>,
     draw_active_pane: &mut dyn FnMut(&mut egui::Ui),
-) {
+) -> Option<egui::Rect> {
     use organon_console::region::{plan, Content};
     let Some(placed) = pane.and_then(|p| plan(p, layout)) else {
         ui.centered_and_justified(|ui| {
@@ -2027,8 +2073,9 @@ fn draw_regions(
                 "the window is too small for this layout — `organon console viewport full agent`",
             );
         });
-        return;
+        return None;
     };
+    let mut viewport_rect = None;
     let mut live_tab_taken = false;
     for slot in &placed {
         // A child `Ui` per region, salted by the region's own word so two regions cannot share
@@ -2062,6 +2109,39 @@ fn draw_regions(
                  divides the pane and says what each part is for",
                 theme,
             ),
+            // 🚨 **The live 3D viewport — the same mechanism the portal is, in a different
+            // rectangle.** `paint_viewport` is one implementation and this is its second call
+            // site; nothing about the render, the texture, the gesture or the camera is
+            // duplicated here.
+            Some(Content::ThreeD) if !viewport.yielded_to_portal => {
+                viewport_rect = Some(slot.rect);
+                paint_viewport(
+                    &mut child,
+                    slot.rect,
+                    viewport.image,
+                    viewport.input,
+                    // A region *is* "a pane inside the workstation, a widget among widgets" —
+                    // `SceneMode`'s own words for this variant, written before either
+                    // presentation existed. See [`paint_viewport`] on why the mode is passed
+                    // rather than assumed.
+                    scene_input::SceneMode::Workstation,
+                    theme,
+                );
+            }
+            // 🚨 **The loser of [`engine_plan`]'s arbitration says who has the frame and what
+            // gives it back — it does not go blank, and it does not show the stale texture it
+            // held a moment ago.** §1.14's vacancy rule applies with more force to a picture
+            // than to an empty quarter: a rectangle that was rendering a world and now is not
+            // is exactly what a broken viewport looks like.
+            Some(Content::ThreeD) => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "3d — the portal has the world. Organon renders at most one frame per console \
+                 frame, so the floating portal takes it while it is open; `organon console \
+                 portal close` gives it back to this region",
+                theme,
+            ),
             // 🚨 **Vacant is a sentence, never a blank.** §1.9's `Ring::Empty` argument at the
             // scale of a quarter of a window: a region that draws nothing is indistinguishable
             // from one that is broken, and the console's running tally of "it knew and said
@@ -2070,17 +2150,36 @@ fn draw_regions(
                 &mut child,
                 slot.rect,
                 slot.region.as_word(),
-                "empty — `organon console viewport <region> agent` or `… panel` fills it",
+                "empty — `organon console viewport <region> agent`, `… 3d` or `… panel` fills it",
                 theme,
             ),
         }
     }
     paint_region_edges(ui, pane, &placed, theme);
+    viewport_rect
+}
+
+/// What the `3d` region draws this frame — the live viewport's three inputs, bundled so the
+/// walk's signature says what it needs rather than growing three more positional arguments.
+struct RegionViewport<'a> {
+    /// This frame's World render, when the region has it. `None` is the one frame between the
+    /// region being asked for and its rect having been measured — [`paint_viewport`] fills it.
+    image: Option<egui::TextureId>,
+    /// **The console's one camera accumulator**, shared with the portal — see
+    /// [`Console::viewport_input`] on why one and not one each.
+    input: &'a mut scene_input::SceneInput,
+    /// Whether the portal took this frame's World render ([`engine_plan`]'s precedence).
+    ///
+    /// ⚠️ When true the region paints a **notice**, never the texture: the texture belongs to
+    /// the portal this frame, and showing the region's last one would be a picture that has
+    /// quietly stopped being live. It also registers no interaction region, which is what keeps
+    /// `scene_viewport`'s single egui id to one claimant per frame.
+    yielded_to_portal: bool,
 }
 
 /// What a region says when it is not the live tab: its own word, then what belongs there.
 ///
-/// Filled rather than left transparent, on [`paint_portal`]'s rule and for its reason — an
+/// Filled rather than left transparent, on [`paint_viewport`]'s rule and for its reason — an
 /// outline over whatever the backdrop is painting reads as a rendering failure, which is the
 /// confusion the surface path's `rendering…` placeholder already exists to prevent.
 fn paint_region_notice(
@@ -2143,8 +2242,29 @@ fn paint_region_edges(
 /// and a panel in adjacent regions line up rather than each having their own idea of a margin.
 const REGION_NOTICE_PAD: f32 = 8.0;
 
-/// What the engine is asked to draw this frame: the backdrop's source, and whether the portal
-/// renders — **pure**, so the invariant below is a test rather than a promise.
+/// Which **presentation** of the viewport the one World frame is being drawn for.
+///
+/// 🚨 **A viewport is a producer plus a camera plus a texture; this says which rectangle it is
+/// shown in.** The portal floats over the transcript and a region sits beside it, and that is
+/// the *whole* difference between them — the render, the texture, the sizing, the gesture and
+/// the camera are one mechanism underneath, which is what [`Console::render_viewport`] and
+/// [`paint_viewport`] are. `organon_world::scene_input::SceneMode` is the other half of the same
+/// distinction and is passed to the paint site rather than restated here.
+///
+/// ⚠️ **Both arms are reachable today**, which is the bar `region.rs` set for adding one at all.
+/// There is no `Immersive` arm because there is no immersive presentation — §2's portal row owns
+/// it, and an arm nothing can select is an untested branch pretending to be a design.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewportTarget {
+    /// The floating, screen-anchored rectangle — [`organon_console::portal`].
+    Portal,
+    /// The region holding `3d` — [`organon_console::region::Content::ThreeD`].
+    Region,
+}
+
+/// What the engine is asked to draw this frame: the backdrop's source, and **which viewport
+/// presentation, if any, gets the World** — pure, so the invariant below is a test rather than a
+/// promise.
 ///
 /// 📌 **At most ONE `World` render per frame, in every state, by construction.** That is what
 /// this function exists to guarantee, and `the_engine_is_asked_for_at_most_one_frame` proves it
@@ -2156,30 +2276,53 @@ const REGION_NOTICE_PAD: f32 = 8.0;
 /// World portal beside a live World backdrop would promote it from a documented non-issue to
 /// the default.
 ///
-/// So an open portal **takes the frame**: the backdrop does not render and does not paint while
-/// it is up. `backdrop_source` is not written, so closing the portal restores whatever the
-/// backdrop was with no remembered value to get wrong.
+/// # 🚨 There are now TWO claimants, and the precedence is stated rather than emergent
 ///
-/// ⚠️ **The cost, stated rather than discovered: a scene patch shows nothing while the portal
-/// is open.** A patch samples the backdrop's texture, and the promotion that renders a
-/// substrate for it (`Off` + `patches_want_image`) is exactly what the portal displaces. It
-/// comes back the moment the portal closes. Two live rectangles showing two different scenes
+/// **The portal wins.** An open portal takes the frame from a `3d` region exactly as it already
+/// takes it from the backdrop, and the argument is the one §1.2 already made rather than a new
+/// one: the portal is **temporary and dismissable**, so the state where it holds the frame ends
+/// with one word (`organon console portal close`) that is in the same ring as the word that got
+/// you there. A region is the persistent thing a person arranged, and it is *still arranged*
+/// while the portal is up — nothing is written, nothing is remembered, and closing the portal
+/// gives the region its frame back with no stored value to get wrong. That is the same
+/// restoration property the backdrop already had, extended to one more claimant rather than
+/// re-argued for it.
+///
+/// The rejected alternative worth naming: **letting the region win** would make `/portal open`
+/// a command that appears to do nothing whenever a `3d` region exists, and this lane is
+/// fire-and-forget — there is no return path to say why (§1.3, "the refusal reaches nobody").
+/// A verb that silently no-ops is the defect this console keeps a tally of. Refusing the second
+/// one by name has the same problem for the same reason.
+///
+/// ⚠️ **The loser does not go blank and does not show a stale texture.** §1.14's vacancy rule at
+/// the scale of a picture: a rectangle that draws nothing is indistinguishable from one that is
+/// broken. `draw_regions` paints a notice naming what has the frame and the word that releases
+/// it — see [`RegionViewport::yielded_to_portal`].
+///
+/// ⚠️ **The cost, stated rather than discovered: a scene patch shows nothing while either
+/// viewport is live.** A patch samples the backdrop's texture, and the promotion that renders a
+/// substrate for it (`Off` + `patches_want_image`) is exactly what a viewport displaces. It
+/// comes back the moment the last one goes. Two live rectangles showing two different scenes
 /// would need the second `World` that `render_surfaces`' doc prices at ~50 shaders and ~62
 /// pipelines, and would still trade jitter phases; one at a time is the honest version.
 fn engine_plan(
     portal_open: bool,
+    region_holds_world: bool,
     backdrop: BackdropSource,
     patches_want_image: bool,
-) -> (BackdropSource, bool) {
+) -> (BackdropSource, Option<ViewportTarget>) {
     if portal_open {
-        return (BackdropSource::Off, true);
+        return (BackdropSource::Off, Some(ViewportTarget::Portal));
+    }
+    if region_holds_world {
+        return (BackdropSource::Off, Some(ViewportTarget::Region));
     }
     let source = if backdrop == BackdropSource::Off && patches_want_image {
         BackdropSource::Substrate
     } else {
         backdrop
     };
-    (source, false)
+    (source, None)
 }
 
 impl Console {
@@ -2328,9 +2471,9 @@ impl Console {
             // One region, `Full`, holding the agent — invariant #4, and `redraw` compares
             // against this exact value to take the pre-region path unchanged.
             layout: organon_console::region::Layout::default(),
-            portal: None,
-            portal_input: scene_input::SceneInput::default(),
-            portal_points: None,
+            viewport: None,
+            viewport_input: scene_input::SceneInput::default(),
+            viewport_points: None,
             hand_camera_at: None,
             agent_camera_at: None,
             viewpoint: camera::ViewpointCell::new(),
@@ -2809,15 +2952,13 @@ impl Console {
                 return;
             }
             self.portal_state = next;
-            // Closing frees the texture immediately rather than leaving it held against a
-            // re-open. A portal is one thing that is open or closed, not a cache — and 2.5 MB
-            // held for a window nobody asked for is the kind of cost that is invisible until
-            // somebody profiles. The log line is [`Console::free_portal`]'s, unconditional on
-            // [`Console::free_surface`]'s rule.
-            if !next.is_open() {
-                self.free_portal("it was closed");
-                self.portal_input = scene_input::SceneInput::default();
-            }
+            // ⚠️ **The texture is NOT freed here, and that is a consolidation rather than an
+            // omission.** Closing a portal used to release it on this line; a `3d` region can
+            // now stop being live by three more routes (cleared, displaced, or the layout
+            // reset), and a release per route is how the one nobody remembered comes to leak.
+            // [`Console::render_viewport`]'s gate is the single site, reached every frame, and
+            // it is total over every route by construction because it asks [`engine_plan`]
+            // rather than asking what just changed.
             return;
         }
         if let cli::ConsoleOp::Camera(framing) = op {
@@ -3224,13 +3365,14 @@ impl Console {
         self.agent_camera_at = Some(Instant::now());
         if !camera::viewpoint_is_visible(
             self.portal_state.is_open(),
+            self.region_showing_world().is_some(),
             self.render_source() == BackdropSource::World,
         ) {
             eprintln!(
                 "organon-console: the camera moved, but nothing on screen is showing the \
-                 world — `organon console portal open`, or `organon console background \
-                 world`. (A substrate backdrop frames its own plane and ignores the \
-                 viewpoint entirely.)"
+                 world — `organon console portal open`, `organon console viewport <region> 3d`, \
+                 or `organon console background world`. (A substrate backdrop frames its own \
+                 plane and ignores the viewpoint entirely.)"
             );
         }
     }
@@ -3665,11 +3807,32 @@ impl Console {
     /// override, and the terminal behind it stays flat black.
     ///
     /// Console Spike, the portal: this is now one half of [`engine_plan`]'s answer rather than
-    /// the whole decision. The other half is whether the *portal* renders, and the two are
+    /// the whole decision. The other half is *which viewport presentation* renders, and they are
     /// computed together precisely so that "at most one World render per frame" is a property
-    /// of one function instead of an agreement between two.
+    /// of one function instead of an agreement between three.
     fn render_source(&self) -> BackdropSource {
-        engine_plan(self.portal_state.is_open(), self.backdrop_source, self.patches_want_image()).0
+        self.engine_plan().0
+    }
+
+    /// [`engine_plan`] asked with this console's own state — the one site that reads the four
+    /// inputs, so no caller can assemble a different set of them.
+    fn engine_plan(&self) -> (BackdropSource, Option<ViewportTarget>) {
+        engine_plan(
+            self.portal_state.is_open(),
+            self.region_showing_world().is_some(),
+            self.backdrop_source,
+            self.patches_want_image(),
+        )
+    }
+
+    /// The region holding `3d`, if any — **at most one**, which is `region.rs`'s uniqueness rule
+    /// rather than a fact about this lookup ([`Content::only_one_because`] is where that limit
+    /// is decided and attributed).
+    ///
+    /// ⚠️ It answers about the **layout**, not about the frame: a region can hold `3d` while the
+    /// portal has the World, and that is exactly the state whose notice has to name the portal.
+    fn region_showing_world(&self) -> Option<organon_console::region::Region> {
+        self.layout.region_holding(organon_console::region::Content::ThreeD)
     }
 
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
@@ -4170,9 +4333,18 @@ impl Console {
         }
     }
 
-    /// The portal's frame: render the **World** into the portal's own target and hand back what
-    /// to paint it with. `None` while it is closed, or for the one frame before its rect is
-    /// known.
+    /// The viewport's frame: render the **World** into the one viewport target and hand back
+    /// what to paint it with. `None` when no presentation is live, or for the one frame before
+    /// the live one's rect is known.
+    ///
+    /// # 🚨 One render, whichever presentation asked for it
+    ///
+    /// [`engine_plan`] has already decided *which* — the portal if it is open, otherwise a
+    /// region holding `3d` — and this function does not need to know which it was: the answer
+    /// is entirely carried by [`Console::viewport_points`], which the previous frame's winner
+    /// wrote. That is what makes this one mechanism rather than two that happen to agree.
+    /// Switching presentation is a size change, handled by the same free-and-reallocate path a
+    /// window resize already takes, with the same unconditional log line.
     ///
     /// # 🚨 Why this is the World and not the substrate
     ///
@@ -4183,10 +4355,10 @@ impl Console {
     /// then discarded, with a green build and no log line. [`portal`]'s module docs carry the
     /// argument in full; this is the site that depends on it.
     ///
-    /// ⚠️ **`set_substrate_rig(None)` here is load-bearing, not defensive tidiness.**
+    /// ⚠️ **`set_substrate_rig(None)` here matters, and is not defensive tidiness.**
     /// [`Console::render_surfaces`] installs a rig per surface and never clears it, and it runs
     /// *before* this. A conversation tab that drew one surface would otherwise leave the
-    /// portal's World framing a plane nobody is drawing — the same stale-rig hazard
+    /// viewport's World framing a plane nobody is drawing — the same stale-rig hazard
     /// [`Console::render_backdrop`]'s `Off` arm was given its own clear for.
     ///
     /// # What it does NOT have to do
@@ -4198,43 +4370,62 @@ impl Console {
     /// `render_to_texture` runs `frame_body`, the CLI's parameter lane drains inside this call:
     /// `organon set` / `generator` / `recipe` typed at a prompt in this console reach this
     /// world, with no wiring at all.
-    fn render_portal(&mut self) -> Option<egui::TextureId> {
-        if !self.portal_state.is_open() {
+    fn render_viewport(&mut self) -> Option<egui::TextureId> {
+        // 🚨 **The one gate, and it is [`engine_plan`]'s answer rather than a second reading of
+        // the state.** Asking `portal_state.is_open() || region_showing_world().is_some()` here
+        // would be a copy of the precedence rule, and a copy is how a console comes to render a
+        // frame nothing paints — or to paint one nothing rendered.
+        //
+        // 🚨 **And it is the single release site.** Nothing live means the texture goes now
+        // rather than being held against a re-open: a viewport is one thing that is live or
+        // not, not a cache, and 2.5 MB held for a rectangle nobody asked for is the kind of cost
+        // that is invisible until somebody profiles. Releasing *here* rather than at each verb
+        // is what makes it total — the portal closing, the region being cleared, the region
+        // being displaced and `viewport full agent` are four routes to the same state, and this
+        // asks about the state. The gesture goes with it, or a latch stranded mid-drag would
+        // have the next viewport claiming the wheel with no drag behind it.
+        let Some(_live) = self.engine_plan().1 else {
+            self.free_viewport(
+                "nothing is showing the world — the portal is closed and no region holds `3d`",
+            );
+            self.viewport_input = scene_input::SceneInput::default();
             return None;
-        }
+        };
         let device = self.world.device().cloned()?;
         let gpu = self.gpu.as_ref()?;
         let swapchain = (gpu.config.width.max(1), gpu.config.height.max(1));
         let window_points = self.window_points?;
-        // The portal's rect from the previous frame, as a fraction of the window applied to the
-        // swapchain — `pane_pixels_in`'s ratio, never points times a remembered scale. That
-        // argument is `render_backdrop`'s and the measurement is `pane_pixels_in`'s.
-        let size = scene_input::pane_pixels_in(swapchain, self.portal_points?, window_points);
-        if self.portal.as_ref().is_none_or(|t| t.size != size) {
-            self.free_portal("the portal changed size");
-            self.portal = self.make_surface_texture(&device, size, self.surface_clock);
+        // The live viewport's rect from the previous frame, as a fraction of the window applied
+        // to the swapchain — `pane_pixels_in`'s ratio, never points times a remembered scale.
+        // That argument is `render_backdrop`'s and the measurement is `pane_pixels_in`'s.
+        let size = scene_input::pane_pixels_in(swapchain, self.viewport_points?, window_points);
+        if self.viewport.as_ref().is_none_or(|t| t.size != size) {
+            self.free_viewport("the viewport changed size");
+            self.viewport = self.make_surface_texture(&device, size, self.surface_clock);
         }
-        let held = self.portal.as_ref()?;
+        let held = self.viewport.as_ref()?;
         let (id, texture_size) = (held.id, held.size);
         // The World, not a rig — see this function's doc, and the module docs it points at.
         self.world.set_substrate_rig(None);
-        let texture = &self.portal.as_ref()?.texture;
+        let texture = &self.viewport.as_ref()?.texture;
         self.world.render_to_texture(texture, texture_size, BACKDROP_FORMAT);
         Some(id)
     }
 
-    /// Drop the portal's texture and its egui registration, saying why —
+    /// Drop the viewport's texture and its egui registration, saying why —
     /// [`Console::free_surface`]'s body and its unconditional log, with the one clause that
     /// identifies it changed.
     ///
-    /// ⚠️ It prints `the portal` rather than an element and a pane, which is the concrete half
+    /// ⚠️ It prints `the viewport` rather than an element and a pane, which is the concrete half
     /// of why this is not a `SurfaceKey` variant: there is no element and, in a terminal tab,
     /// no element *space* — a key here would have had to fabricate both to satisfy the log.
-    fn free_portal(&mut self, why: &str) {
-        let Some(gone) = self.portal.take() else { return };
+    /// **Which presentation held it rides in `why`**, which is that argument's job: the caller
+    /// knows and this function has no reason to.
+    fn free_viewport(&mut self, why: &str) {
+        let Some(gone) = self.viewport.take() else { return };
         eprintln!(
-            "[surface] released the {}×{} texture for the portal — {why}; \
-             {} of {MAX_SURFACE_TEXTURES} conversation surfaces live, portal {} bytes",
+            "[surface] released the {}×{} texture for the viewport — {why}; \
+             {} of {MAX_SURFACE_TEXTURES} conversation surfaces live, viewport {} bytes",
             gone.size.0,
             gone.size.1,
             self.surfaces.len(),
@@ -4335,11 +4526,18 @@ impl Console {
         // picture, and one frame behind for the same reason.
         let asked = std::mem::take(&mut self.exhibit_requests);
         let exhibit_contents = self.service_exhibits(&asked);
-        // …and the portal last, after everything that installs a substrate rig, because it is
-        // the one target that must have none. [`Console::render_portal`] clears it explicitly
+        // …and the viewport last, after everything that installs a substrate rig, because it is
+        // the one target that must have none. [`Console::render_viewport`] clears it explicitly
         // rather than relying on this order — the order is what makes the clear cheap, not what
         // makes it correct.
-        let portal_image = self.render_portal();
+        //
+        // ONE render for whichever presentation [`engine_plan`] gave the frame to; the two call
+        // sites below paint it, and at most one of them is reached.
+        let viewport_image = self.render_viewport();
+        // Which presentation that was, so the paint sites can tell "I have the frame" from "the
+        // other one does". Read after the render, from the same function the render asked, so
+        // the picture and the notice cannot disagree about who owns the world this frame.
+        let portal_has_the_frame = self.engine_plan().1 == Some(ViewportTarget::Portal);
 
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),
@@ -4430,11 +4628,11 @@ impl Console {
         // `pane_rect` for exactly that reason: a ratio only cancels the scale if both halves
         // were measured under it.
         let mut window_rect: Option<egui::Rect> = None;
-        // The portal, split out of `self` for the closure exactly as everything else here is.
-        // The state is `Copy`, the gesture accumulator is borrowed, and the rect comes back out
-        // to be remembered for the next frame's `render_portal`.
+        // The viewport, split out of `self` for the closure exactly as everything else here is.
+        // The portal's state is `Copy`, the **one** gesture accumulator is borrowed, and the
+        // live rect comes back out to be remembered for the next frame's `render_viewport`.
         let portal_open = self.portal_state.is_open();
-        let portal_input = &mut self.portal_input;
+        let viewport_input = &mut self.viewport_input;
         // Organon's editor panels, split out of `self` exactly as everything else here is —
         // mutably, because the whole point is that a control inside the conversation writes
         // to it. Its snapshot is read at the *top* of the next frame, so nothing has to come
@@ -4454,11 +4652,21 @@ impl Console {
         // the tearing a tween would make visible.
         let form = &self.posture.form();
         let mut portal_rect: Option<egui::Rect> = None;
+        // Where the `3d` region was drawn this frame, if it had the world — `draw_regions`'
+        // answer, collected out of the closure exactly as `portal_rect` is and remembered for
+        // the next frame's `render_viewport`.
+        let mut region_viewport_rect: Option<egui::Rect> = None;
         // How the pane is divided this frame, borrowed exactly as the palette is. Read only —
         // the layout is moved by `set_viewport`, which has already run in `drain_console` at the
         // top of this function, so the division a frame draws is the one every command issued
         // before it asked for.
         let layout = self.layout;
+        // Which region holds `3d`, read off the copy above rather than through
+        // [`Console::region_showing_world`] — `self` is split into disjoint field borrows for
+        // the duration of `egui_ctx.run`, so a method taking `&self` cannot be called here. It
+        // is the same lookup on the same value: `Layout` is `Copy` and this is that copy.
+        let three_d_region =
+            layout.region_holding(organon_console::region::Content::ThreeD);
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
@@ -4535,6 +4743,35 @@ impl Console {
                     portal_rect = pane_rect
                         .filter(|_| portal_open)
                         .and_then(organon_console::portal::portal_rect);
+                    // 🚨 **The `3d` region's rectangle, computed BEFORE anything is drawn**,
+                    // because the terminal arbitrates the wheel against it and the terminal may
+                    // be drawn first — the walk visits regions in `Region::ALL` order, so
+                    // relying on the viewport having painted (and consumed the scroll from
+                    // inside `scene_viewport`) would be relying on the layout's alphabet.
+                    //
+                    // 🚨 **This is §1.14's "what a split does NOT yet change" becoming real.**
+                    // Regions are disjoint, so this rectangle never overlaps the one the
+                    // transcript is in — but `term_view` reads the wheel from **raw input**,
+                    // which is global and knows nothing about any rectangle, so without an
+                    // explicit test a wheel over the viewport would zoom its camera *and*
+                    // scroll the transcript beside it. A viewport region is the second wheel
+                    // consumer that section said would arrive, and the mechanism is
+                    // `block_panel::pointer_inside`'s and the portal's — not a third one.
+                    //
+                    // Computed from the layout whether or not the region has this frame's
+                    // world: a rectangle that is showing the "the portal has it" notice still
+                    // is not the transcript, and a wheel over it must not scroll the transcript
+                    // either.
+                    let region_claim = pane_rect
+                        .zip(three_d_region)
+                        .and_then(|(p, r)| organon_console::region::region_rect(p, r));
+                    // The rectangles the transcript does not own, as a fixed-size array — see
+                    // the `term_view::draw` call below on why `Rect::NOTHING` stands in for an
+                    // absent claim rather than a shorter slice.
+                    let viewport_claims = [
+                        portal_rect.unwrap_or(egui::Rect::NOTHING),
+                        region_claim.unwrap_or(egui::Rect::NOTHING),
+                    ];
                     // 🚨 **The live tab, drawn into whatever rectangle it is given.** This was
                     // the body of the `CentralPanel` closure and is now a closure of its own,
                     // called **at most once per frame** — see the region walk below for why at
@@ -4568,13 +4805,26 @@ impl Console {
                                     &mut pane.blocks,
                                     patch_image,
                                     // 🚨 The wheel arbitration, and the only thing this crate
-                                    // does with the rect. The terminal reads the wheel from **raw
-                                    // input**, so registering the portal after it — or as an
-                                    // `Area`, or as a modal — would not keep a scroll over the
-                                    // portal out of the scrollback. Nothing but an explicit rect
-                                    // test can, which is why `block_panel::pointer_inside` exists
-                                    // and why this copies it.
-                                    portal_rect,
+                                    // does with the rects. The terminal reads the wheel from
+                                    // **raw input**, so registering a viewport after it — or as
+                                    // an `Area`, or as a modal — would not keep a scroll over
+                                    // one out of the scrollback. Nothing but an explicit rect
+                                    // test can, which is why `block_panel::pointer_inside`
+                                    // exists and why this copies it.
+                                    //
+                                    // **Two rectangles now, and it is a slice rather than two
+                                    // parameters** — one mechanism serving both presentations,
+                                    // the same consolidation `paint_viewport` is. At most one of
+                                    // them is *live* in any frame, but both are rectangles the
+                                    // transcript does not own, and listing only the live one
+                                    // would make a wheel over the yielded region scroll text
+                                    // that is nowhere near the pointer.
+                                    //
+                                    // An absent claim is `Rect::NOTHING`, whose `contains` is
+                                    // false for every point — so this is a fixed-size array with
+                                    // no allocation in the frame path, and "there is no portal"
+                                    // is answered by the geometry rather than by a length.
+                                    &viewport_claims,
                                     theme,
                                 );
                             }
@@ -4631,7 +4881,22 @@ impl Console {
                     if layout == organon_console::region::Layout::default() {
                         draw_active_pane(ui);
                     } else {
-                        draw_regions(ui, pane_rect, &layout, theme, &mut draw_active_pane);
+                        region_viewport_rect = draw_regions(
+                            ui,
+                            pane_rect,
+                            &layout,
+                            theme,
+                            &mut RegionViewport {
+                                // The image only when the region is the one that got the frame;
+                                // when the portal took it the region paints a notice and this is
+                                // never read, but handing it a texture it must not draw is a
+                                // trap set for whoever edits the arm next.
+                                image: (!portal_has_the_frame).then_some(viewport_image).flatten(),
+                                input: viewport_input,
+                                yielded_to_portal: portal_has_the_frame,
+                            },
+                            &mut draw_active_pane,
+                        );
                     }
                     // The portal, over whichever front-end just drew. **After the content and
                     // inside the same layer**, which buys both halves at once: within one layer
@@ -4640,8 +4905,21 @@ impl Console {
                     // what wins the tie for a drag — `scene_input`'s own tested arrangement,
                     // "in workstation mode the pane registers after the scroll area, and egui
                     // breaks a tie by taking the topmost".
+                    //
+                    // ⚠️ Unchanged from a person's point of view, and structurally it is now the
+                    // *second* call site of one function rather than the only one. The portal
+                    // always has the frame when it is open ([`engine_plan`]), so the image here
+                    // is unconditionally its own — which is why this arm needs no equivalent of
+                    // the region's yielded notice.
                     if let Some(rect) = portal_rect {
-                        paint_portal(ui, rect, portal_image, portal_input, theme);
+                        paint_viewport(
+                            ui,
+                            rect,
+                            viewport_image,
+                            viewport_input,
+                            scene_input::SceneMode::Workstation,
+                            theme,
+                        );
                     }
                 });
         });
@@ -4649,7 +4927,12 @@ impl Console {
         // field borrow ends before anything below needs `&mut self` (`Console::apply`,
         // `Console::apply_console`). Applying it is a few lines further down, once those have
         // run — see there for why the camera reaches the world in the frame it was moved in.
-        let camera = portal_input.gesture.take();
+        //
+        // 🚨 **One accumulator, drained once, whichever rectangle filled it.** There is one
+        // camera because there is one `World`, so a viewport region and the portal are two
+        // windows onto the same viewpoint rather than two viewpoints — and the hand-outranks-an-
+        // agent arbitration below therefore needed no widening at all: a drag is a drag.
+        let camera = viewport_input.gesture.take();
         state.handle_platform_output(window, out.platform_output);
         // What the next frame's backdrop is sized to. Two point sizes, never pixels and never
         // a scale: the conversion belongs with the clamps in `pane_pixels_in`, and it is the
@@ -4667,10 +4950,18 @@ impl Console {
         if let Some(change) = theme_change {
             self.apply_theme_change(change);
         }
-        // What the next frame's `render_portal` sizes its texture to — points, never pixels,
+        // What the next frame's `render_viewport` sizes its texture to — points, never pixels,
         // for `pane_points`' reason: it is the *ratio* to the window that survives a scale
         // nobody has measured yet.
-        self.portal_points = portal_rect.map(|r| (r.width(), r.height()));
+        //
+        // 🚨 **`or`, and the order IS [`engine_plan`]'s precedence.** `portal_rect` is `Some`
+        // only while the portal is open, and an open portal takes the frame — so preferring it
+        // here is the same rule spelled in the same order, not a second decision that has to be
+        // kept in step. `region_viewport_rect` is `None` whenever the region yielded (it painted
+        // a notice, so there is no viewport rectangle to size anything to), which is what stops
+        // a yielded region from quietly resizing the portal's own texture underneath it.
+        self.viewport_points =
+            portal_rect.or(region_viewport_rect).map(|r| (r.width(), r.height()));
         // The camera gesture into the world, once per frame, after the UI and before the next
         // render — `wgpu_editor`'s precedent exactly, so a drag reaches the camera in the frame
         // it was made. This is the line the whole "shows the World, not the substrate" argument
@@ -4702,15 +4993,21 @@ impl Console {
         // move is reported exactly as an agent's is. That is what makes this a measurement
         // rather than an echo.
         //
-        // Unconditional: a frame in which nothing moved still republishes, because `portal_open`
-        // and `backdrop_shows_world` can change without the camera doing so, and a cell that
-        // only updated on movement would report a stale visibility forever.
+        // Unconditional: a frame in which nothing moved still republishes, because `portal_open`,
+        // `region_3d` and `backdrop_shows_world` can all change without the camera doing so, and
+        // a cell that only updated on movement would report a stale visibility forever.
         let (yaw, pitch, distance) = self.world.camera_framing();
         self.viewpoint.publish(camera::Viewpoint {
             yaw,
             pitch,
             distance,
             portal_open: self.portal_state.is_open(),
+            // ⚠️ **The LAYOUT, not the frame.** A region can hold `3d` while the portal has the
+            // world, and in that state the region is showing a notice — but the camera is still
+            // emphatically visible (the portal is drawing it), so `visible` is true either way.
+            // Reporting the layout is also the more useful fact: it is what a `console.camera`
+            // caller would have to know to predict where its framing will show up.
+            region_3d: self.region_showing_world().is_some(),
             backdrop_shows_world: self.render_source() == BackdropSource::World,
             hand_last: self.hand_camera_at,
             agent_last: self.agent_camera_at,
@@ -6026,7 +6323,12 @@ mod cli_tests {
         assert!(e.contains("agent"), "the refusal must quote what was typed: {e}");
         assert!(e.contains("region"), "…and which table it was read against: {e}");
         assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "middle", CMD_CONTENT: "agent" })).is_err());
-        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left", CMD_CONTENT: "3d" })).is_err());
+        // ✏️ **This line used to read `"3d"`, pinning it as a word the vocabulary did not have.**
+        // Tier 2b gives it one, so the assertion moved to `media` — the kind that is still
+        // absent (§1.13's placement question owns it). Changed rather than deleted: a table
+        // whose refusals are never exercised stops being a closed value space the day somebody
+        // adds a word to one of the four renderings and not the others.
+        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left", CMD_CONTENT: "media" })).is_err());
         assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left" })).is_err(), "no default");
         assert!(op_from(CMD_VIEWPORT, &json!({})).is_err());
     }
@@ -6147,22 +6449,83 @@ mod cli_tests {
     /// The property is bought by the state machine rather than by a check somewhere, which is
     /// what makes it survive: an open portal takes the frame, and the future immersive state
     /// *is* the backdrop rather than a second thing beside it.
+    ///
+    /// ✏️ **Tier 2b doubled the input space and the proof had to grow with it, not merely keep
+    /// passing.** There are now *two* claimants for the one frame — the portal and a region
+    /// holding `3d` — so the cross product is 2 × 2 × 3 × 2, and every one of the twenty-four
+    /// states is checked. Widening the function while leaving this loop at its old arity is the
+    /// exact shape of a proof that keeps reporting green about a space it no longer covers.
     #[test]
     fn the_engine_is_asked_for_at_most_one_frame() {
         for portal_open in [false, true] {
-            for backdrop in
-                [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate]
-            {
-                for patches in [false, true] {
-                    let (source, portal_renders) = engine_plan(portal_open, backdrop, patches);
-                    let renders =
-                        usize::from(source != BackdropSource::Off) + usize::from(portal_renders);
-                    assert!(
-                        renders <= 1,
-                        "portal_open={portal_open} backdrop={backdrop:?} patches={patches} \
-                         asks the engine for {renders} frames"
+            for region_holds_world in [false, true] {
+                for backdrop in
+                    [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate]
+                {
+                    for patches in [false, true] {
+                        let (source, viewport) =
+                            engine_plan(portal_open, region_holds_world, backdrop, patches);
+                        let renders = usize::from(source != BackdropSource::Off)
+                            + usize::from(viewport.is_some());
+                        assert!(
+                            renders <= 1,
+                            "portal_open={portal_open} region={region_holds_world} \
+                             backdrop={backdrop:?} patches={patches} asks the engine for \
+                             {renders} frames"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 🚨 **The precedence between the two viewport presentations, stated as a test rather than
+    /// left to whichever branch happens to come first.**
+    ///
+    /// **The portal wins**, and the argument is §1.2's own rather than a new one: it is
+    /// *temporary and dismissable*, so the state where it holds the frame ends with one word
+    /// that sits in the same ring as the word that got you there. A region is the persistent
+    /// thing a person arranged, and it is still arranged — nothing about the layout is written,
+    /// so closing the portal hands the frame straight back.
+    ///
+    /// Three properties, and the third is the one that would rot quietly:
+    ///
+    /// 1. with both claimants, the portal renders;
+    /// 2. with only a region, the region renders and the backdrop does not — a `3d` region costs
+    ///    the backdrop exactly what an open portal costs it, which is the documented price of
+    ///    one World;
+    /// 3. **neither claimant writes `backdrop_source`**, so removing them both restores whatever
+    ///    the backdrop was with no remembered value to get wrong. That is asserted by comparing
+    ///    against the pre-viewport answer computed here from the inputs alone.
+    #[test]
+    fn the_portal_outranks_a_region_viewport_and_neither_disturbs_the_backdrop() {
+        for backdrop in [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate] {
+            for patches in [false, true] {
+                for region in [false, true] {
+                    assert_eq!(
+                        engine_plan(true, region, backdrop, patches),
+                        (BackdropSource::Off, Some(ViewportTarget::Portal)),
+                        "an open portal takes the frame from everything, region={region} \
+                         backdrop={backdrop:?}"
                     );
                 }
+                assert_eq!(
+                    engine_plan(false, true, backdrop, patches),
+                    (BackdropSource::Off, Some(ViewportTarget::Region)),
+                    "with the portal shut the region has it, from {backdrop:?}"
+                );
+                // The pre-viewport answer, derived from the inputs rather than quoted — so this
+                // is a statement about the *rule* and not a second copy of the table.
+                let untouched = if backdrop == BackdropSource::Off && patches {
+                    BackdropSource::Substrate
+                } else {
+                    backdrop
+                };
+                assert_eq!(
+                    engine_plan(false, false, backdrop, patches),
+                    (untouched, None),
+                    "with neither claimant, {backdrop:?} is exactly what it was (patches={patches})"
+                );
             }
         }
     }
@@ -6180,8 +6543,8 @@ mod cli_tests {
         for backdrop in [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate] {
             for patches in [false, true] {
                 assert_eq!(
-                    engine_plan(true, backdrop, patches),
-                    (BackdropSource::Off, true),
+                    engine_plan(true, false, backdrop, patches),
+                    (BackdropSource::Off, Some(ViewportTarget::Portal)),
                     "an open portal renders and the backdrop does not, from {backdrop:?}"
                 );
                 // The same inputs with the portal closed are the pre-portal answer exactly.
@@ -6191,8 +6554,8 @@ mod cli_tests {
                     backdrop
                 };
                 assert_eq!(
-                    engine_plan(false, backdrop, patches),
-                    (want, false),
+                    engine_plan(false, false, backdrop, patches),
+                    (want, None),
                     "closing it restores {backdrop:?} (patches={patches})"
                 );
             }
