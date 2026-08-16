@@ -426,9 +426,15 @@ enum ConsoleAction {
                             already holds nothing, and refused on the last region holding an \
                             `agent` — a console with nothing to talk to has no obvious way \
                             back, since the verb that would fix it is typed at an agent.\n\n\
-                            ⚠️ `panel` is a NAMED PLACEHOLDER in this tier: the region says what \
-                            belongs there and Tier 2 gives it a body. `3d` and `media` are not \
-                            in the vocabulary yet. ⚠️ Only one region can show the live tab — \
+                            `3d` is a LIVE 3D VIEWPORT — drag inside it to orbit, wheel to \
+                            zoom, and `organon set`/`generator`/`recipe` typed at a prompt drive \
+                            what it shows. ⚠️ Only ONE region may hold it, because its producer \
+                            is Organon and Organon draws at most one frame per console frame; a \
+                            second is refused by name. ⚠️ An open portal TAKES that frame — the \
+                            region then says so and `console portal close` gives it back.\n\n\
+                            ⚠️ `panel` is a NAMED PLACEHOLDER: the region says what belongs \
+                            there and a later tier gives it a body. `media` is not in the \
+                            vocabulary yet. ⚠️ Only one region can show the live tab — \
                             a second `agent` region says so rather than drawing it twice.\n\n\
                             📌 Orthogonal to `posture` and `screen` both, and it is NOT \
                             remembered: the console opens undivided however you left it.")]
@@ -436,7 +442,7 @@ enum ConsoleAction {
         /// Which part of the pane (see the value list above)
         #[arg(value_parser = region_words())]
         region: String,
-        /// What it holds: agent, panel, or off to empty it
+        /// What it holds: agent, 3d, panel, or off to empty it
         #[arg(value_parser = content_words())]
         content: String,
     },
@@ -1382,7 +1388,13 @@ mod tests {
         }
         assert!(parse(&["console", "viewport"]).is_err(), "neither word has a default");
         assert!(parse(&["console", "viewport", "middle", "agent"]).is_err(), "no such region");
-        assert!(parse(&["console", "viewport", "left", "3d"]).is_err(), "not in this tier");
+        // ✏️ **This line used to read `"3d"`.** Tier 2b put that word in the vocabulary, so the
+        // assertion moved to `media` — the kind that is still absent (§1.13's placement question
+        // owns it). It is the CLI-side twin of the same edit in `console_main.rs`, and the pair is
+        // why the word list is worth exercising from both ends: this is the leg the four-leg bar
+        // only *type-checks*, and a `possible_values` table that has grown a word its negative
+        // assertion still denies compiles perfectly and fails only when somebody runs it.
+        assert!(parse(&["console", "viewport", "left", "media"]).is_err(), "not in the vocabulary");
         assert!(parse(&["console", "viewport", "left", "agent", "right"]).is_err(), "one pair");
         // 🚨 The clap gate is the *word* tables and nothing more — whether a region MAY hold a
         // content depends on what the console is holding right now, which this process cannot

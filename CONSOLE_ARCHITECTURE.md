@@ -2172,10 +2172,11 @@ different readers.
 
 #### 📌 The state machine is also the render budget
 
-`engine_plan(portal_open, backdrop, patches_want_image) -> (BackdropSource, bool)` is the one
-place both decisions are made, and `the_engine_is_asked_for_at_most_one_frame` proves the
-property over the entire input space: **at most one `World` render per console frame, in every
-state.** `SURFACE_RENDERS_PER_FRAME`'s doc rules the two-render case out — `frame_index` and
+`engine_plan(portal_open, region_holds_world, backdrop, patches_want_image) ->
+(BackdropSource, Option<ViewportTarget>)` is the one place both decisions are made, and
+`the_engine_is_asked_for_at_most_one_frame` proves the property over the entire input space:
+**at most one `World` render per console frame, in every state.**
+`SURFACE_RENDERS_PER_FRAME`'s doc rules the two-render case out — `frame_index` and
 the TAA jitter phase riding on it are shared between the targets, invisible on a still lit
 plane and visible-and-intermittent on a moving World. A live portal beside a live backdrop is
 exactly that case. So an open portal **takes the frame**.
@@ -2186,6 +2187,33 @@ paint and a scene patch has no picture.** The promotion that renders a substrate
 written, so closing the portal restores everything with no remembered value to get wrong. The
 alternative is a second `World` — ~50 shaders and ~62 pipelines by `render_surfaces`' own
 pricing, still trading jitter phases.
+
+✏️ **Tier 2b: there is a second claimant, and the portal still wins.** A region holding `3d`
+(§1.14) wants the same one frame, so `engine_plan` gained an input and now answers *which*
+presentation gets it rather than a bool. The rule is **the portal takes the frame from a region
+viewport too**, and the reason is the one this section already gives: the portal is temporary and
+dismissable, so the state it creates ends in one word, while the region is the persistent thing a
+person arranged and is still arranged underneath — nothing is written, so closing the portal hands
+the frame straight back. §1.14 carries the argument in full, including the two rejected rules and
+why "the refusal reaches nobody" disqualifies both. ⚠️ The yielded region **paints a notice**
+naming what holds the world and the command that releases it; it does not blank and it does not
+keep showing the picture it had a moment ago.
+
+#### ✏️ One presentation of a viewport, not the only live rectangle — Tier 2b
+
+Everything above is unchanged: the verb, the two states, the screen-anchored rect, the wheel
+claim, the "shows the World" correctness argument. What changed is the **description**, and it is
+worth writing down because the code now depends on it. A **viewport** is a producer plus a camera
+plus a texture. The portal is one way of presenting one — floating, summoned, dismissable — and a
+region is another — placed, persistent, arranged by hand. `scene_input::SceneMode` has modelled
+exactly that distinction since before either existed, and both of these are `Workstation`.
+
+🚨 **One mechanism, two presentations — never two implementations.** One texture
+(`Console::viewport`), one `render_viewport`, one `paint_viewport`, one `SceneInput` accumulator,
+one `pane_pixels_in` ratio, one `pointer_inside` test widened to a list. §1.14's table is the
+site-by-site account. The property this preserves is the one James asked for: **when a second
+producer arrives, the portal shows it as readily as a region does, because the producer seam sits
+below both.**
 
 #### Why it is a field and not a `SurfaceKey` variant
 
@@ -4455,15 +4483,187 @@ remembered.
 **A region that already holds nothing cannot be cleared.** A command that changes nothing and
 says nothing is indistinguishable from one that never arrived.
 
-#### 📌 The uniqueness rule, stated where Tier 2 will need it
+#### 📌 The uniqueness rule, and whose limit it turned out to be — Tier 2b
 
 A content kind that may exist **only once** is, on a second assignment, **refused by name, saying
 what already holds it** — never moved. That follows §1.3's "refused, not clamped": moving a thing
 somebody can see because they named a second place for it is a guess about which of the two they
-meant. Nothing in this tier is unique, so there is **no machinery for it** — an unreachable arm
-is an untested branch pretending to be a design. `3d` is the kind that will need it: at most one
-region can hold the live World, because `engine_plan` renders it at most once per frame and the
-two targets share `frame_index` and the TAA jitter phase riding on it.
+meant. Tier 1 stated the rule and built no machinery for it, because an unreachable arm is an
+untested branch pretending to be a design. `3d` makes it reachable, and building it changed where
+the limit is *attributed*.
+
+🚨 **The limit belongs to the producer, not to the idea of a viewport.** Tier 1 pre-committed to
+it as a property of the content kind — *"at most one region can hold the live World"* — and under
+James's ordering that is backwards. A region holding `3d` is a rectangle a producer draws into.
+Today the only producer is Organon's `World`, and it is **Organon** that cannot be drawn twice in
+a frame: `engine_plan` renders it once because `frame_index` and the TAA jitter phase riding on it
+are shared between targets. A future producer — the simplified real-time engine James describes —
+might fill four regions happily, and would otherwise inherit a refusal it has no reason to obey,
+which would read as a rule about viewports rather than as an accident of one engine's temporal
+history.
+
+So `Content::only_one_because` is the single site that decides, and **it answers with a reason
+rather than a bool**, because the reason is what carries the attribution: the refusal a person
+reads names Organon and its shared jitter phase, not "viewports are singular". ⚠️ **What is not
+available is attributing it in the type system**, and that is stated rather than worked around: a
+`Producer` enum with one variant, invented so the limit could hang off it, is exactly the untested
+branch Tier 1 declined to build. The attribution is a reason string, a doc and a test that asserts
+the refusal quotes it — and the seam for a second producer is that one function.
+
+⚠️ **A displacement is still allowed to move it.** `full 3d` while `left` holds `3d` displaces
+`left` and stands: the check is asked of what **survives** the assignment, not of what is held
+now, so widening one copy is not the same act as asking for a second. That is the same
+"invariant on the resulting layout" shape the last-agent rule already uses, and for its reason —
+a per-verb special case is how the second route comes to be the one nobody remembered.
+
+#### 🚨 `3d`, and why the obvious word was taken — Tier 2b
+
+The content word is **`3d`**. Three candidates were real:
+
+| Word | For | Against |
+|---|---|---|
+| **`3d`** | §1.14 already promised this word in print; general; names no renderer; it is James's own phrase | reads cruder than `agent`/`panel`/`media` |
+| `scene` | the best register of the three | **collides** — `organon-scene`'s own header is *"the substrate, below the plugin"*, and in this tree "scene" already means the thing painted **behind** the glyphs |
+| `world` | matches `organon-world` | 🚨 names *Organon's renderer*, which is the one thing the word must not do |
+
+`scene` lost on the collision and `world` lost on the ordering that decides this whole tier:
+**the generalized 3D viewport is what is being built, and Organon is a particular application of
+it.** A region says *a 3D picture belongs here*; which engine draws it is the producer's business,
+and `world` would have baked today's only answer into the vocabulary a person types.
+
+⚠️ The Rust spelling is `Content::ThreeD` because an identifier cannot begin with a digit. The
+**word** is `3d`, and the word is what travels — on the wire, in `--help`, in the ring and in
+every refusal.
+
+#### 🚨 The producer seam — where the generality actually lives
+
+> **A producer yields a texture the console can sample, at a size the console asks for.**
+
+That is the whole boundary, and it is deliberately not *"a function that draws into our device"*.
+The in-process producer satisfies it trivially (`World::render_to_texture` into the console's own
+target). An out-of-process one satisfies it later by importing a shared texture, **without
+restructuring the region model** — which is the accommodation James asked for, and it costs one
+sentence today rather than a layer.
+
+🚨 **There are no speculative arms behind it, and that is the point.** No `Producer` enum with one
+variant, no trait methods nothing calls, no vocabulary word for choosing a producer. §1.14's own
+rule holds: an unreachable arm is an untested branch pretending to be a design. **The generality
+is in where the boundary is drawn, not in machinery behind it.** What a second producer will
+change is `Content::only_one_because` and the site that renders — not `Region`, not `Layout`, not
+`plan`, not the lane, and not the two presentations below.
+
+#### 🚨 Two claimants for one frame: the portal wins, and the loser says so
+
+An open portal and a region holding `3d` both want the one World render. `engine_plan` is widened
+to `(portal_open, region_holds_world, backdrop, patches_want_image) -> (BackdropSource,
+Option<ViewportTarget>)` and arbitrates between them; `the_engine_is_asked_for_at_most_one_frame`
+is widened with it, to the full 2 × 2 × 3 × 2 cross product. ⚠️ Widening the function while
+leaving the proof at its old arity is the exact shape of a test that keeps reporting green about a
+space it no longer covers, so the loop's arity moved in the same commit as the signature.
+
+**The portal takes the frame.** The argument is §1.2's own rather than a new one: the portal is
+**temporary and dismissable**, so the state where it holds the frame ends with one word
+(`organon console portal close`) that sits in the same ring as the word that got you there. The
+region is the persistent thing a person arranged and it is *still arranged* — nothing is written,
+nothing is remembered, and closing the portal hands the frame straight back. That is the same
+"no remembered value to get wrong" property the backdrop already had, extended to one more
+claimant rather than re-argued for it.
+
+The two rejected rules, named so nobody has to re-derive them:
+
+- **The region wins.** Then `/portal open` is a command that appears to do nothing whenever a
+  `3d` region exists — and this lane is fire-and-forget with no return path (§1.3, "the refusal
+  reaches nobody"), so there is nowhere to say why. A verb that silently no-ops is the defect
+  this file keeps a running tally of.
+- **Refuse the second by name**, on §1.3's "refused, not clamped" precedent. Same problem: the
+  refusal reaches a reader of stderr and nobody else, so from the composer `/portal open` looks
+  broken rather than declined.
+
+🚨 **The loser paints a notice and never a stale texture.** §1.14's vacancy rule applies with more
+force to a picture than to an empty quarter: a rectangle that *was* rendering a world and now is
+not is precisely what a broken viewport looks like. The yielded region says the portal has the
+world, says why (Organon renders one frame per console frame) and names the command that gives it
+back. It also registers no interaction region at all, which is what keeps `scene_viewport`'s
+single interned egui id to one claimant per frame.
+
+#### 🚨 One mechanism, two presentations — what "keep it in sync" actually means
+
+The portal is unchanged from a person's point of view: same verb, same state machine, same
+screen-anchored rect, same wheel claim. What changed is that it is no longer the only live
+rectangle, and **nothing is implemented twice**. A **viewport** is a producer plus a camera plus a
+texture; a region is one way of presenting one and the portal is another. `SceneMode` in
+`scene_input` has modelled that distinction since before either existed — `Workstation` is *"a
+pane inside the workstation, a widget among widgets"*, `Immersive` is *"the scene is the window
+and the interface floats over it"* — so it is the seam, rather than a parallel notion invented
+here. Both presentations are `Workstation` today, which is the honest answer: a floating rectangle
+and a region are both bounded panes inside an interface.
+
+| Was the portal's | Is now | Serving |
+|---|---|---|
+| `Console::portal` | `Console::viewport` — **one** texture | one target is live per frame, so a second could only ever hold a picture nobody may refresh |
+| `portal_input` | `viewport_input` — **one** `SceneInput` | one camera, because there is one `World` |
+| `portal_points` | `viewport_points` — `portal_rect.or(region_rect)` | `or`, and the order **is** the precedence above, not a second copy of it |
+| `render_portal` | `render_viewport` | gated on `engine_plan`'s answer, never on a second reading of the state |
+| `free_portal` | `free_viewport` | **the single release site**, in `render_viewport`'s gate |
+| `paint_portal` | `paint_viewport(…, mode)` | two call sites, one implementation |
+| `portal::pointer_inside` | `+ pointer_inside_any(&[Rect])` | both presentations claim the wheel the same way |
+
+⚠️ **The texture release moved, and that is a consolidation rather than an omission.** Closing a
+portal used to free it on the spot. A `3d` region can stop being live by three more routes — it is
+cleared, it is displaced, or `viewport full agent` resets the layout — and a release per route is
+how the one nobody remembered comes to leak 2.5 MB. `render_viewport`'s gate is now the one site,
+reached every frame, and it is total over every route by construction because it asks
+`engine_plan` rather than asking what just changed. The gesture accumulator is reset with it, or a
+latch stranded mid-drag would have the next viewport claiming the wheel with no drag behind it.
+
+📌 **What this buys the next tier, in one sentence:** when a second producer arrives, the portal
+shows it as readily as a region does, because the producer seam sits **below** both presentations.
+That property is cheap to preserve now and expensive to retrofit, which is the whole reason the
+portal was kept and generalised rather than left beside a copy of itself.
+
+#### ⚠️ The wheel is region-aware now — the second consumer §1.14 predicted
+
+Tier 1 recorded that `term_view` reads the wheel and every key from **raw input**, and that this
+was inert because there was exactly one live tab and so no second consumer. **A viewport region is
+that second consumer.** `term_view::draw`'s `portal: Option<Rect>` becomes `viewports: &[Rect]`,
+tested by `portal::pointer_inside_any` — `pointer_inside` over a list, not a second mechanism, for
+the reason this section already gives about not inventing a second gesture vocabulary. Two
+rectangles go in the list: the portal's and the `3d` region's.
+
+⚠️ **Both, even though at most one is live.** A yielded region is showing a notice and is still
+not the transcript, so a wheel over it must not scroll text that is nowhere near the pointer.
+
+⚠️ **The rect is computed before anything is drawn, not read back from the region walk.** The walk
+visits regions in `Region::ALL` order, so a viewport that happened to be visited first would have
+consumed the scroll from inside `scene_viewport` and one visited second would not — relying on
+that is relying on the layout's alphabet. Only `term_view`'s explicit rect test is order-free.
+This does **not** widen `scene_viewport`'s contract: keys are untouched, and the terminal still
+owns the keyboard.
+
+#### The camera: one, and a region does not get a second
+
+**One camera, console-wide.** §1.3 owns it and nothing there needed widening: `World` holds a
+single yaw/pitch/distance, there is one `World`, so a viewport region and the portal are two
+windows onto the same viewpoint rather than two viewpoints. There is one `SceneInput`
+accumulator, drained once per frame, and the hand-outranks-an-agent arbitration therefore did not
+have to learn anything — a drag is a drag, whichever rectangle it landed in.
+
+A second `3d` region is refused (above), so "what happens to the camera when a second viewport
+region exists" has no state to answer for. If a producer ever lifts that refusal, *then* per-region
+cameras become a real question; it is not one today, and inventing an answer now would be
+inventing the machinery this section just declined to build.
+
+⚠️ **`camera::viewpoint_is_visible` gained a `region_3d` argument, and leaving it out would have
+made the predicate lie** — §1.3's "it says so when it moves something nobody is looking at" would
+have shouted *"nothing on screen is showing the world"* at somebody watching a live picture. The
+truth table is now checked over its whole input space rather than by example. `console.camera.read`
+reports `region_3d` as its own key beside `portal_open` — **a separate fact, not folded in**,
+because an agent acts on them differently: the portal is something an agent may open and close, a
+region viewport is something a hand arranged. Reporting a region as `portal_open: true` would
+invite `console.portal close` aimed at a rectangle it cannot touch. ⚠️ It reports the **layout**,
+not the frame: a region can hold `3d` while the portal has the world, and `visible` is true either
+way. And nothing was appended to `Shared` — §2 already refuses that, and this is host state that
+dies with the window.
 
 #### ⚠️ Unassigned space is a sentence, never a blank
 
@@ -4551,12 +4751,12 @@ it before writing. Every refusal is therefore spoken at the console end, by name
 | Command service T2+: core_catalog seeding + real targets | `command::CommandService` landed in #5 T1 (dispatch + catalog + the every-dispatch-leaves-a-record invariant) and is **live in the product since Console Spike T2** (`console.background` / `console.rig`, seeded from `substrate_materials`' tables, dispatched from the frame path). T2+ adds the bin-side `core_catalog`→`CommandSpec` adapter, the runtime target over the CLI override lane + snap request/reply sidecar, and the policy engine that makes `Denied`/`Requested` real — never a second vocabulary | Console #5 |
 | Conversation view milestone 2 | Milestone 1 landed the whole path (decoder → `agent_map` → `conversation` → `conversation_view`, one live child per tab), the inline artifact (`Body::Artifact`) and the rendered surface it drives (`/surface`). `/panel` has since been deleted — it drove the console backdrop, which a conversation cannot show. Next: the **agent** summoning one, via a tool call the integrator answers with `Transcript::insert_artifact`, with the tool card as the anchor. ✏️ Subagent events rendered *inside* the tool card that spawned them has since **landed**, and so has ✏️ `tool_use_result` (the undocumented structured per-tool detail a rich card wants — four measured fields, no more). Then, in the order §5.9.3 holds them: `Notice`/`post_turn_summary` and `RateLimit` rendered into the flow rather than only read for facts, and **thinking blocks**, which are decoded and drawn nowhere and are waiting on a capture that contains one; then Pi as the second harness, mapped onto the same nine transcript events — never a second event vocabulary | Console Spike §5.9 |
 | Approvals, next steps | The card, the in-process MCP-over-HTTP server and the session-scoped decision memory landed together (§1.1, "The approval card"). Next, in order of what a session actually costs: 🚨 **`system/permission_denied` carrying `decision_reason_type: "mode"` rendered as its own thing** rather than as a generic red tool error — the band now says a non-default mode may be silencing approvals, but the individual refusal it causes still looks like an ordinary tool failure, and that line is the only place a human learns *which of their clicks* caused it; the console's own verbs are now **served** as capability tools (`Capabilities` handed down, `ConsoleDispatch` onto the audited drain, plus the one in-process read §1.3 adds) so a card can say *"organon · background"* instead of a shell command — but nothing has called one yet, and **§7's withholding property has not been re-measured against a server that serves them**, which is the first thing to read off a live run; then a memory that survives the tab, with the audit trail a durable one obliges | `doc/console_approval_protocol.md` · `doc/console_session_control_protocol.md` §10 |
-| The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. ⚠️ **This "full screen" is the PORTAL's, and it is not what §1.12 landed** — that is the *window* covering the display, which suppresses nothing inside it and shares no code with this. The two are independent and compose: a full-screen portal inside a full-screen window is the state this row is ultimately reaching for. §1.12's verb is named `console screen` rather than `console fullscreen` precisely so this row keeps the phrase. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it | Console Spike §5.9 · `doc/console_portal_recon.md` — the site-by-site investigation these follow from, now merged, carrying this correction as its own §1.1 amendment so the two cannot drift apart |
+| The portal's other states | §1.2 landed the portal itself and §1.3 its camera; **immersive, full screen and the animated grow are still unbuilt**, in James's own order. ⚠️ **"Immersive is nearly free" is the one claim in the recon that does NOT survive contact, and the correction matters before anyone scopes it.** The recon reads immersive as the existing backdrop, which is true of the *rendering* and false of the *painting*: `paint_portal` paints the portal **over** the front-end (that is what floating means), and immersive needs it **under** the glyphs with the scrim over it — and the scrim lives inside `term_view::draw`'s `Some(bands)` arm, fed from the epoch ledger. So immersive is a **new integration** (a single-band `BandedBackdrop` carrying the portal's texture, and deliberately *not* opening a look epoch, or the first screenful is striped), not a variant added to `portal::step`. It is also a terminal-tab-only route as things stand: the conversation front-end has no backdrop path at all. Then **full screen**, genuinely new (no path suppresses the tab strip, the glyph grid or the scrim), then the **animated grow** between the three rects. ⚠️ **This "full screen" is the PORTAL's, and it is not what §1.12 landed** — that is the *window* covering the display, which suppresses nothing inside it and shares no code with this. The two are independent and compose: a full-screen portal inside a full-screen window is the state this row is ultimately reaching for. §1.12's verb is named `console screen` rather than `console fullscreen` precisely so this row keeps the phrase. Three things must land with them and are already argued: `scene_viewport` widened by a `Sense` parameter (clicks in Portal, drag-only in Immersive — never a second `ui.interact` on the same rect); **Escape consumed state-conditionally** (`consume_key` `retain`s out of the same `i.events` vector `term_view` clones — the console's first state-dependent key ownership, and the new states are exactly the ones that need it); and the allocation rule for the animation — **allocate at the destination size, scale the quad, reallocate once on settle**, because a size change today is free + realloc + re-register + one unconditional log line, i.e. ~15 of each per 250 ms transition. That same settle rule closes the window-resize-drag churn with it. ✏️ **Tier 2b re-homes half of this row.** `SceneMode::Immersive` now clearly belongs *here* rather than being a spare variant — §1.2's viewport/presentation split is what makes "immersive" a third presentation of the one mechanism instead of a fourth thing, so the work is a `SceneMode` value at a call site plus the `BandedBackdrop` integration above, and `paint_viewport` already takes the mode. 🚨 **And the row gains a second, larger future James named explicitly: the EXTERNAL-PROCESS portal** — opening a portal launches a **separate process in its own window**, exactly as Organon's visual already works. Four facts, recorded so whoever picks it up does not rediscover them: `spawn_visual()` probes for the `organic-math-visual` binary by **file name** (which is why `CLAUDE.md` forbids renaming that one and permits renaming the front-of-house binaries); the two processes talk over the **`Shared` mmap**; `ipc.rs::ns_file` namespaces every channel so a Console session and an Organon session coexist; and **`$ORGANON_IPC_NS` is the runtime override** that lets one visual binary serve any edition — `term.rs:195` already injects it into every tab the console spawns. ⚠️ **Deferred deliberately and nothing was built toward it** — James: *"Portals will come after we get the viewports working."* No stub, no arm, and today's portal was **not** changed in anticipation of it. ⚠️ Note the ordering it implies: an external portal is a *second producer process*, so it lands on §1.14's producer seam ("a producer yields a texture the console can sample, at a size the console asks for") rather than on `portal::step` | Console Spike §5.9 · `doc/console_portal_recon.md` — the site-by-site investigation these follow from, now merged, carrying this correction as its own §1.1 amendment so the two cannot drift apart |
 | A **read** path for the console's own state | **The camera half has landed, on the MCP lane only** — `console.camera.read` (§1.3, "Reading it back"), answered in-process from the viewpoint `redraw` publishes. What is left is the *other* transport and the *other* verbs. `organon console …` is still fire-and-forget with no return path, so the CLI reads nothing; the honest fix there is the request/reply sidecar §5.9.25 already names for the command service — a nonce out, an answer back, on the `eyes.txt` pattern the World lane already runs. ⚠️ **Do not generalise the camera's shape to reach it.** A published cell works because the camera is one small `Copy` tuple owned by the frame path; "the console's state" at large is panes, transcripts and textures, and a cell per fact is a second state tree that will drift from the first. ⚠️ The other tempting shortcut is to append yaw/pitch/distance to `Shared` so `organon status` reports them; do not. `Shared` is append-only with pinned goldens and a `LAYOUT_VERSION`, and this is **host** state that dies with the window — putting it there would make it a param, which is the one thing it is not (§1.3, the two cameras) | Console Spike §5.9.25 |
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
-| Regions, Tier 2 — the content | §1.14 landed the axis: the nine-word vocabulary, the quadrant overlap rule, the two refusals, the lane, and the per-region walk that replaced the single-pane `match`. What is left is what a region **holds**. In order: **`3d`**, which is the crux and is genuinely hard — `engine_plan(portal_open, …)` cannot express *which region* holds the live World, and the portal's justification for taking the frame (**temporary and dismissable**) has to be **rebuilt, not renamed**, for something persistent that sits beside the transcript all session. That is also where §1.14's stated-but-unbuilt uniqueness rule first fires: at most one region may hold the World, because the two targets share `frame_index` and the TAA jitter phase. Then **`panel`**, today a named placeholder — the body exists (`OrganonPanels::draw`, §1.11) and what is missing is a *third* word naming which panel, since two rings cannot say it. Then **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before those three — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does | §1.14 |
+| Regions, Tier 2 — the content | §1.14 landed the axis in T1 and **`3d` in T2b**: the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule now attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied. What is left is what a region **holds**. **`panel`**, today a named placeholder — the body exists (`OrganonPanels::draw`, §1.11) and what is missing is a *third* word naming which panel, since two rings cannot say it. Then **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before those — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does. 📌 **The one thing `3d` did NOT settle is whether it is any good**: whether a 3D viewport in half a window earns its half, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
@@ -4566,22 +4766,88 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
-- 🚨 **The regions (§1.14) have never been seen split.** Every claim in that section is about a
-  model, a rectangle arithmetic and a command lane — all of which are green — and **none of it is
-  about how a divided console looks or feels.** No GPU and no hand were available: the console
-  was not launched, no `/viewport` was ever typed at a running window, and no frame was captured.
-  Concretely, this is what a green bar does **not** cover. Whether a half-height conversation is
-  usable is the question the tier exists to let James answer, and it is unanswered. Whether the
-  hairline separators read as separators at 225 % scaling, or as artifacts, is unknown. Whether
-  `term_view`'s glyph grid lays out correctly in a child `Ui` with a clip rect — rather than
-  merely compiling — has not been observed; the grid is sized from
-  `available_rect_before_wrap()`, which the child answers with the region's rect, and that is an
-  argument rather than a measurement. Whether the portal, which still floats over the **whole**
-  pane, looks right straddling two regions is likewise unknown, and is a taste call as much as a
-  correctness one. **The wheel is not region-aware** — `term_view` reads it from raw input, so it
-  reaches the live tab from anywhere in the window; §1.14 records why that is inert today and
-  what closes it. Nothing here should be read as "verified working"; it is **green and ready to
-  deploy**, which is a different sentence.
+- ✅ **Tier 2b was BUILT, RUN AND LOOKED AT on a GPU — this is the first region tier that is not
+  "green and ready to deploy".** A release `organon-console` from the worktree was launched on
+  ORGANON-ONE (RTX 5090, 225 % scaling) under a forked IPC namespace, driven with the CLI and a
+  real pointer, and captured at every step. **What was seen**, each with a frame:
+  a `3d` region **renders the live World** beside a working transcript — not a blank rect, not the
+  placeholder, not a stale texture; the transcript **re-wraps into its half** (filenames break
+  mid-word at the region's width, which is what proves `term_view`'s grid sized itself from the
+  child `Ui`'s rect rather than the window's); **drag inside the region orbits** and **wheel inside
+  it zooms**; **wheel over the transcript scrolls the transcript and does not move the camera**,
+  and **wheel over the viewport zooms and leaves the transcript in exactly the same scroll
+  position** — both directions, with real scrollback on screen; `organon console camera` drives it
+  from a prompt; the **portal still opens, orbits and closes unchanged**, and while it is open the
+  region paints its yielded notice and gets the frame back on close.
+  ✅ **The precedence rule does what it says.** With both claimants, the portal renders and the
+  region reads *"3d — the portal has the world. Organon renders at most one frame per console
+  frame, so the floating portal takes it while it is open; `organon console portal close` gives it
+  back to this region."*
+  ✅ **The uniqueness refusal was seen live**, not merely unit-tested: asking a second region for
+  `3d` printed the refusal naming both regions, attributing the limit to Organon and its shared
+  jitter phase, and naming the way out.
+  ✅ **Nothing leaked.** Six `[surface] released …` lines across the session, each naming its
+  cause, and every allocation matched — including the two that matter most: the texture
+  reallocating when the frame changes hands (`the viewport changed size`, 1375×1725 ⇄ 1155×650)
+  and the single release site firing on the way out (`nothing is showing the world — the portal is
+  closed and no region holds 3d`). The console returned to `full agent` with no texture held.
+  ⚠️ **What a running console still does NOT settle, and these are James's calls, not mine.**
+  Whether a 3D viewport in half a window is *useful*; whether this is the right split; whether
+  orbiting beside a live transcript feels right. No amount of green or of captured frames answers
+  any of them, and nothing here should be read as claiming otherwise.
+  ⚠️ **One observation that is a real finding rather than a defect: the yielded notice's
+  legibility depends on the layout.** The portal is anchored **top-right** and floats over the
+  whole pane, so with `3d` on the `right` it covers most of the notice and only its first few
+  characters are readable; with `3d` on the `left` the notice is fully legible. The notice is
+  painted and correct either way — what varies is whether you can read it. That is the collision
+  §1.2's "it occludes the rows it floats over" already describes, met by a region rather than by
+  text, and it is a placement question for the tier that gives the portal its other states.
+  ⚠️ **Measurement honesty about the drive itself.** Two early drag attempts on the region did
+  **not** register, and the reason was window-activation state rather than the wiring: the first
+  ran before the window had ever been activated, and the wheel — which needs only hover — worked
+  throughout. The decisive check was running the *same* gesture against the portal, which orbited;
+  after the window had been clicked into, the region orbited too, repeatably. I did not isolate
+  precisely which activation step fixed it, so it is recorded as observed rather than explained.
+  ⚠️ **Captured with `PrintWindow`, not a screen grab**, because the window could not be brought
+  to the foreground from a background process and stealing focus mid-session was not worth it.
+  ⚠️ **`GetWindowRect` returns LOGICAL points to a DPI-unaware process** — at 225 % this window is
+  2782×1888 physical against ~1236×839 logical, and a bitmap sized from the logical rect silently
+  crops the right edge in a way that reads exactly like a text-wrapping bug. The capture script
+  declares itself DPI-aware, which is the fix rather than oversizing and hoping.
+  ✅ **Measured:** `organon-console --lib` **699 passed, 3 ignored**; `organon-core` **593**;
+  the console bin target **61 passed**; `--bin organon` **15 passed**; both `cargo check` legs
+  clean. ⚠️ **The `--lib` baseline in circulation was 696 and the true one is 697** — counted from
+  the test attributes on `main` rather than from the number the brief carried, because a stale
+  baseline turns a delta of two into a delta of three and then somebody goes looking for a test
+  that was never written. The two added are `region`'s uniqueness refusal and `portal`'s
+  wheel-claim-over-a-list; the console bin's one is the portal-versus-region precedence.
+  🚨 **`--bin organon` caught a real failure that the four-leg bar structurally cannot see, and it
+  is the third instance of the same defect class.** `console_viewport_takes_a_region_and_a_content_
+  and_defaults_neither` asserted that `viewport left 3d` is **refused** — true when it was written,
+  false the moment `3d` joined `CONTENT_WORDS`. It compiles perfectly either way, because the
+  assertion is about a *value* and the leg that covers it only type-checks. Its console-side twin
+  (`the_viewport_verbs_rings_…`) carried the identical stale line. **Both moved to `media`** rather
+  than being deleted: a word table whose refusals are never exercised stops being a closed value
+  space the day somebody adds a word to one of its four renderings and not the others.
+
+- ✅ **CORRECTED — the regions HAVE now been seen split.** This entry said *"never been seen
+  split"*, and that stopped being true twice over: James ran a divided console with
+  `topleft agent` and confirmed the vacancy notices read correctly, and Tier 2b (below) was built
+  and driven on a GPU. What the original entry got right is kept below, because a claim that was
+  once unobserved and is now observed should say **which** parts got observed rather than being
+  deleted wholesale.
+  ✅ **Observed since:** a divided pane draws; `term_view`'s glyph grid does lay out correctly in
+  a clipped child `Ui` rather than merely compiling; the vacancy notices name themselves and the
+  command that fills them. **The wheel is region-aware as of Tier 2b** — that sentence below is
+  superseded, and §1.14's "the second consumer" subsection is what replaced it.
+  ⚠️ **Still unobserved, and still the point of the whole axis:** whether a half-height
+  conversation is *useful* is James's call and is unanswered by any amount of green. Whether the
+  hairline separators read as separators at 225 % scaling or as artifacts has not been judged.
+  Whether the portal, which still floats over the **whole** pane, looks right straddling two
+  regions is likewise unknown, and is a taste call as much as a correctness one.
+  📌 The original entry, kept for the record: it was **green and ready to deploy**, which is a
+  different sentence from verified working — and this is the tier where that distinction stopped
+  being the only thing on offer.
   ✅ What *is* measured: `organon-console --lib` is **696 passed, 3 ignored** (684 before — the
   twelve are `region`'s), `organon-core` is **593** unchanged (the new wire assertions live inside
   existing tests), the console bin target is **60 passed** (59 before) and the CLI's own bin is
