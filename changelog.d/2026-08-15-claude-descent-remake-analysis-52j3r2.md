@@ -69,3 +69,16 @@ stopped being true when `organon-visual` was extracted. Both fixed. ⚠️ The c
 rather than corrected** — a number in prose is what went stale twice — so the comment points at the
 manifests instead, the same rule `doc/arch/topology.md` already applies to the `members` list six
 lines above it. Comments only; no `license` field, dependency or member was touched.
+
+📌 **And the plan's own critical path was wrong on first draft, in the way it warns about.** M1
+said publishing the four crates needed `publish = false` removed — no crate sets it, so there was
+nothing to remove — and it missed a fatal blocker that `organon-core/Cargo.toml` already states in
+a 🚨 block: `math.rs` has **7** `include_str!("../../assets/…")` sites reaching *out of* the
+package root (3 network JSONs, 4 creature JSONs), and `cargo package` bundles only what is under
+that root, so a published crate would fail to build for everyone depending on it. That is now
+**M0**, ahead of M1, with the genuine decision it forces named rather than deferred — vendor a copy,
+a build script, or split the runtime gallery from the compiled-in data, complicated by `deploy.sh`
+installing those same network JSONs as the #226 gallery. 🚨 The failure is the one this document is
+otherwise about: §3 says *ask the manifests, not the prose*, and M1 was written without asking the
+manifest of the crate it names first. Until M0 lands, level 2 is reachable only by path or git
+dependency — which works for a repo we control, and is not an ecosystem.

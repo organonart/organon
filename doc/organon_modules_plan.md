@@ -226,15 +226,24 @@ It is small, which is the good news.
 
 | # | Deliverable | Why |
 |---|---|---|
-| **M1** | **Publish the four crates to crates.io** — `organon-core`, `organon-render`, `organon-scene`, `organon-world`. Semantic versions, a stated compatibility policy, `publish = false` removed | Without it there is no linked-module story at all. Already `topology.md`'s preferred end state |
+| **M0** | 🚨 **Make `organon-core` packageable at all.** `math.rs` carries **7** `include_str!("../../assets/…")` sites reaching *out of* the package root — 3 network JSONs, 4 creature JSONs — and `cargo package` bundles only files under that root, so a published crate would fail to build for everyone who depended on it | **The real gate.** `organon-core/Cargo.toml` already flags this in a 🚨 block and defers it; the decision it names is genuine (vendor a copy under the package, a build script, or split the runtime gallery from the compiled-in data) and is complicated by `deploy.sh` installing `assets/networks/*.json` as the runtime gallery |
+| **M1** | **Publish the four crates to crates.io** — `organon-core`, `organon-render`, `organon-scene`, `organon-world`. Semantic versions and a stated compatibility policy | Without it there is no linked-module story at all. Already `topology.md`'s preferred end state. ⚠️ **Not a flag flip:** no crate sets `publish = false`, so there is nothing to remove — the work is M0 plus versioning, and the other three need their own `cargo package` dry-run before anyone assumes they are clean |
 | **M2** | **A public-API review of `organon-world`** — what a module may depend on, what is incidental. The 6DOF camera arm is the first thing to promote deliberately rather than by accident | An API nobody has ever consumed from outside is a guess |
 | **M3** | **The hosted-module protocol** — a module *manifest* on the harness-registry pattern (identity, launch, detection, where to get it) plus surface compositing through `ns_file`-namespaced IPC | Turns "pull it in from the Console" from an aspiration into a mechanism, reusing two things already built |
 | **M4** | **A Console verb to add and run a module** | The user-facing half of M3 |
 | **M5** | **`CONTRIBUTING.md` gains the three levels** (§1) and the param-chain placement test | Otherwise the distinction lives only in this document and decays |
 
-⚠️ **M1 and M2 are the blocking pair; M3–M5 are not.** A linked module works the moment the
-crates are published. The hosted path is what makes it *feel* like an ecosystem, and it can land
-later without changing anything built against M1.
+⚠️ **M0 → M1 → M2 is the blocking chain; M3–M5 are not.** A linked module works the moment the
+crates are published, and the crates cannot be published until M0 is answered. The hosted path is
+what makes it *feel* like an ecosystem, and it can land later without changing anything built
+against M1.
+
+🚨 **M0 was missing from the first draft of this table, and the way it was missing is the point.**
+This document's §3 says *ask the manifests, not the prose* — and M1 was written without asking the
+manifest of the very crate it names first, which states the blocker in a 🚨 block. A plan that
+prices its own critical path off remembered structure repeats the exact failure the rest of this
+document is about. 📌 Until M0 lands, **level 2 is reachable only by path or git dependency**,
+which works for a repo we control and is not an ecosystem.
 
 ---
 
