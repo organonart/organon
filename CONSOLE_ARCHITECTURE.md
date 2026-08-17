@@ -4766,6 +4766,81 @@ path silently breaks the three-products-simultaneously guarantee that
 
 ## 3. Honesty ledger
 
+- 🚨 **THE CONSOLE HAS NEVER BEEN RUN ON macOS. Not once, by anyone.** No window has opened
+  on a Mac, no glyph has been drawn there, no PTY has been spawned there by this binary.
+  Everything below is about whether it *compiles*, which is a different sentence, and
+  this work was scoped to exactly that.
+  ✅ **IT COMPILES, AND THE SUITE PASSES — measured on a real `macos-latest` runner, not
+  inferred.** `build (macos)` (PR #96) is **green on its first run**: `cargo build --release
+  --features console-edition --bin organon-console` in **9 m 30 s**, then `cargo test --release
+  --workspace --features console-edition --no-fail-fast` → **2138 passed, 0 failed, 5 ignored**
+  across 30 test binaries, zero errors. Whole job 17 m 46 s cold, and it did not queue. That is the
+  answer to "can we build Organon Console for macOS": **yes**, with the caveat this entry opens on.
+  ✅ **Also measured, from a Linux container with no Mac in reach**, because the fast loop matters
+  more than the answer once: nine of the workspace's eleven members type-check clean for
+  **`aarch64-apple-darwin`**, `--all-targets` (lib *and* tests), in well under a minute —
+  `cargo check --target aarch64-apple-darwin --all-targets --workspace --exclude
+  organic-math-native --exclude organon-visual`, exit 0. That is the compositor compiler-verified
+  for Apple silicon without a Mac. `platform.rs` is why it costs nothing to believe: macOS folds
+  into `Platform::Unix`, its `/bin/zsh` fallback was written for a Mac, and both arms are exercised
+  by tests on every host, so a Mac-shaped launch decision is not a `#[cfg]` nobody can run.
+  ⚠️ **The exclusion is a deny-list on purpose, and the allow-list version failed exactly as
+  predicted while this was being written.** The first recipe was a `-p` list typed from CLAUDE.md's
+  repository map, and it silently missed five real members — `organon-agent`, `organon-visual`,
+  `organon-world`, `xtask`, the vendored `egui-wgpu`. `cargo metadata --no-deps` is the authority on
+  who the members are; a prose list, this one included, is not. Only **two** members reach nih_plug:
+  the root crate, and `organon-visual`, which is on the deny side solely because it *depends on* the
+  root crate rather than being a nih_plug crate itself.
+  🚨 **The root crate is NOT in that list, and the reason is the single most surprising fact
+  establishing this turned up.** `cargo check --target aarch64-apple-darwin --features console-edition
+  --bin organon-console` **fails**, and not on our code — it never reaches our code:
+
+  ```
+  error: failed to run custom build command for `coreaudio-sys v0.2.18`
+  coreaudio.h:1:10: fatal error: 'AudioUnit/AudioUnit.h' file not found
+  ```
+
+  ⚠️ **This is the exact inference the Windows story invites, and it is wrong.** `ci.yml`'s
+  header establishes that the Windows cross-check needs no system packages because `native/`
+  has no `build.rs` and `cargo check` does not link. Both remain true for Apple targets, and
+  the check still dies — because the build script belongs to a **dependency**, and `cargo
+  check` runs those. `nih_plug` (`features = ["standalone"]`) → `cpal` → `coreaudio-rs` →
+  `coreaudio-sys`, which runs bindgen against the macOS SDK headers. That is `CONSOLE_ARCHITECTURE.md`'s
+  version of the crate's own note that the Console **binary** lives in the root crate: the
+  compositor lib is nih_plug-free by acceptance test, and the moment you ask for the *binary*
+  the whole plugin host stack arrives with it, Apple frameworks included. ⚠️ Do not "fix" the
+  wrong `-sys` crate on the strength of the name: **`jack-sys`, also Unix-graph, also a `-sys`
+  crate, cross-checks clean** — it is `dlopen`-based and needs no headers (measured, exit 0).
+  `coreaudio-sys` and `coremidi-sys` are the bindgen ones.
+  📌 **So this is cause (c) — it needs a real Mac — and it is a property of the TOOLCHAIN, not
+  a defect in our source.** Nothing was found to fix: no missing macOS arm, no unsupported
+  upstream crate. The blocker is the absence of an Apple SDK on a Linux box, and the answer to
+  it is `build (macos)` on a `macos-latest` runner, which is the first macOS
+  coverage this repository has ever had for any edition. `ci.yml`'s macOS block owns the
+  reasoning — including why there is deliberately **no** cheap Apple cross-check leg beside it
+  and what the leg does not prove.
+  🚨 **What the green `build (macos)` means and does not mean.** It means *green and ready to
+  deploy* — it compiles, and the workspace suite passes on macOS. It does **not** mean verified
+  working, and the list of what stays unknown until somebody opens the window on a real Mac is
+  long and is the interesting part: whether wgpu picks Metal and the surface configures;
+  whether the backdrop's sRGB/linear gamma pair (measured on Windows and Vulkan) holds on
+  Metal; whether the glyph grid is legible at Retina scale factors, which no other platform's
+  scaling exercises; whether ⌘T/⌘W/⌘1-9 arrive as `Modifiers::COMMAND` through winit on the
+  platform where ⌘ is the *native* modifier rather than the borrowed one; whether a login
+  `/bin/zsh -l` tab inherits the PATH a Homebrew- or nvm-installed harness needs; and whether
+  the window has **any icon at all** — `with_window_icon` does nothing on macOS (§ the icon
+  note above), the icon there comes from an `.app` bundle, and the Console has none.
+  📌 **Explicitly out of scope and NOT attempted**, so nobody reads a green tick as more: no
+  `.app` bundle, no `Info.plist`, no code signing or notarization, no dock/menu-bar
+  integration, no `deploy.sh` path (that script is the *plugin's*, and the Console is
+  standalone-only with no bundle and no plugin identity — permanently). A macOS *build* is not
+  a macOS *product*, and this entry is only about the first.
+  ⚠️ **Organon and Organon Mind still have no macOS CI coverage.** The Console leg builds the
+  root crate's lib, so most shared macOS ground is compiled incidentally; the
+  `cfg(not(feature = "console-edition"))` arms — the plugin's export macros, `standalone.rs`,
+  `mind_main.rs` — are not. Unlike the Windows/Mind asymmetry, which `ci.yml` argues for, this
+  one is a gap rather than a considered trade.
+
 - ✅ **Tier 2b was BUILT, RUN AND LOOKED AT on a GPU — this is the first region tier that is not
   "green and ready to deploy".** A release `organon-console` from the worktree was launched on
   ORGANON-ONE (RTX 5090, 225 % scaling) under a forked IPC namespace, driven with the CLI and a
