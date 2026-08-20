@@ -76,7 +76,9 @@ already.
 
 **Hooks enforce the doc discipline** (`.claude/settings.json` — the file is the
 authority; re-count with
-`python3 -c "import json;d=json.load(open('.claude/settings.json'));print(sum(len(h['hooks']) for g in d['hooks'].values() for h in g))"`):
+`python3 -c "import json;d=json.load(open('.claude/settings.json'));print(sum(len(h['hooks']) for g in d['hooks'].values() for h in g))"`
+— **8** at the time of writing, four per event. ⚠️ On Windows that line prints the
+Microsoft Store's *"Python was not found"* and exits 49; prefix `wsl.exe -e` there):
 
 - *SessionStart* — `load-architecture-doc.sh` injects the **root** `ARCHITECTURE.md`
   into every session, so it is in context from turn one (the harness auto-loads
@@ -84,12 +86,28 @@ authority; re-count with
   **drifted** — more than 8 commits have touched its subject since it was last updated;
   `structure-drift-check.sh` reports the largest functions and widest structs with
   per-session deltas; `context-budget-check.sh` prices what the first of those costs.
-  The first three are silent when nothing has moved, which is the normal case; the
-  budget line always prints, because a number you only see when it is already bad is how
-  the injected core doubled without anyone noticing.
+  Only `doc-staleness-check.sh` is silent when nothing has moved, which is its normal
+  case. The other three **always print something** — the loader injects the doc, and the
+  two measuring hooks emit a measurement when they can take one and a named refusal when
+  they cannot — because a number you only see when it is already bad is how the injected
+  core doubled without anyone noticing.
 - *Stop* — `architecture-doc-check.sh` reminds you if a load-bearing file changed
   without a matching architecture-doc update; `doc-coherence.sh` checks the durable docs
-  for duplicate table keys and unbalanced code fences.
+  for duplicate table keys and unbalanced code fences; `web-architecture-doc-check.sh`
+  and `status-week-check.sh` are wired too and never fire here (see the ⏸ note below).
+
+⚠️ **"Always prints" is a promise the two measuring hooks now keep, and it is worth
+knowing what it rests on.** Both are Python inside, and until #1 T1 both were spelled
+`python3 … 2>/dev/null || exit 0` — so on a machine with no working `python3` they
+exited **0 with no output**, which is indistinguishable from "nothing to report".
+Measured on the Windows workstation 2026-08-20: neither had ever run, and in the gap
+`ARCHITECTURE.md` reached 110% of the budget the silent hook exists to police.
+`.claude/hooks/python-runner.sh` now resolves an interpreter — `python3`, `python`,
+`py -3`, then `wsl.exe -e python3` — by **running** each, never by locating it: on
+Windows `python3` is usually the Store stub, which *is* on PATH and *does* fail, so
+`command -v` finding it means nothing. With none reachable the hooks print a named
+refusal and still exit 0; they are reports, never gates. **So the guarantee is: a
+number, or a line telling you why there is no number — never silence.**
 
 `architecture-doc-check.sh` carries one rule per durable doc:
 
