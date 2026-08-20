@@ -415,6 +415,20 @@ const CMD_SCREEN: &str = "console.screen";
 /// region`'s header owns the argument; the short of it is that a split changes none of `Form`'s
 /// tokens and does not move the window, so it is neither of the two verbs beside it.
 const CMD_VIEWPORT: &str = "console.viewport";
+/// See [`CMD_BACKGROUND`]. **What is IN a region that holds `panel`** — the scrolling column of
+/// Organon's editor panels. `organon_console::panel_stack`'s header owns the argument.
+///
+/// 🚨 **A second verb rather than a third word on [`CMD_VIEWPORT`], and that split IS the
+/// tier.** `CONSOLE_ARCHITECTURE.md` §2 recorded the blocker on giving `panel` a body as *"a
+/// third word naming which panel, since two rings cannot say it"*. Naming the region and naming
+/// the panel in **different commands** dissolves it: `viewport left panel` declares the region,
+/// `stack add surface` fills it, and neither sentence needs more than two words.
+///
+/// ⚠️ **Not spelled `panel`.** `/panel` is a *retired* word the console refuses by name, with a
+/// test pinning the refusal, and re-minting it for a different meaning is how somebody comes to
+/// type it expecting the old thing. `stack` also names what this verb edits: `panel` is what a
+/// *region* holds.
+const CMD_STACK: &str = "console.stack";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
@@ -461,6 +475,20 @@ const CMD_STATE: &str = "state";
 const CMD_REGION: &str = "region";
 /// See [`CMD_REGION`].
 const CMD_CONTENT: &str = "content";
+/// [`CMD_STACK`]'s two slots. Neither reuses [`CMD_ARG`] or [`CMD_REGION`], on [`CMD_ROWS`]'
+/// rule: `add` is not a `name`, and a panel is not a region. Both are `Choice`s over
+/// `panel_stack`'s own tables, so the MCP schema, the slash palette's two rings and the CLI's
+/// `--help` are three renderings of one vocabulary.
+///
+/// ⚠️ **Both are required, and the emptying word rides [`CMD_PANEL`]** rather than being a third
+/// action — `panel_stack::StackCmd`'s doc owns the argument, and the short of it is that the
+/// slash grammar fills required arguments positionally and optional ones by keyword, so an
+/// optional panel would make the typed line `/stack add panel surface` while the CLI stayed
+/// `stack add surface`. One verb, two spellings, is the drift this tree spends its refusals
+/// preventing.
+const CMD_ACTION: &str = "action";
+/// See [`CMD_ACTION`].
+const CMD_PANEL: &str = "panel";
 /// [`CMD_CAMERA`]'s four slots. Named per axis rather than as one `axis` + `value` pair,
 /// because framing a shot is **one intent**: a caller that wants to be closer *and* a little
 /// above says so once and the viewpoint moves once, instead of travelling through an
@@ -633,6 +661,50 @@ fn console_specs() -> Vec<CommandSpec> {
             // fires on a lone completion, and two rings of nine and three words never leave one.
             reversal: Reversal::Recoverable,
         },
+        // 📌 **Two `Choice`s again, `viewport`'s arrangement exactly**, and for its reason: both
+        // tables are closed lists with nothing between their words, so the whole value space is
+        // stated and both rings complete. What the schema cannot say is again the part that
+        // depends on **state** — whether a region holds a stack at all, and whether the column
+        // is holding the panel a `remove` names — and that is [`Console::set_stack`]'s job,
+        // because the layout and the stack are the console's and the refusal it produces names
+        // what stood in the way.
+        CommandSpec {
+            name: CMD_STACK.into(),
+            doc: "Add or remove one of Organon's editor panels in a region's scrolling stack"
+                .into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: CMD_ACTION.into(),
+                    kind: ArgKind::Choice(
+                        organon_console::panel_stack::STACK_ACTIONS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec {
+                    name: CMD_PANEL.into(),
+                    // `panels::slugs()` plus the clearing word, built by `panel_stack` rather
+                    // than assembled here — a second concatenation is how the schema comes to
+                    // offer a word the resolver does not know.
+                    kind: ArgKind::Choice(
+                        organon_console::panel_stack::panel_words()
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    ),
+                    required: true,
+                },
+            ],
+            // 🚨 **Permanent, and the classification is argued rather than assumed.** Nothing
+            // lands in the transcript, which is `viewport`'s case for `Recoverable` — but
+            // `remove all` discards a column somebody assembled and **no single command
+            // rebuilds it**, which is `block`'s case for the other column. The conservative
+            // reading wins, and the practical effect is that autorun can never fire this verb.
+            reversal: Reversal::Permanent,
+        },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
         // therefore lives in TWO places that are both real gates rather than one that is
@@ -788,6 +860,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Posture(_) => CMD_POSTURE,
         cli::ConsoleOp::Screen(_) => CMD_SCREEN,
         cli::ConsoleOp::Viewport { .. } => CMD_VIEWPORT,
+        cli::ConsoleOp::Stack { .. } => CMD_STACK,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -867,6 +940,21 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             organon_console::region::Region::resolve(&r).map_err(|e| format!("{name}: {e}"))?;
             organon_console::region::ContentCmd::resolve(&c).map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Viewport { region: r, content: c })
+        }
+        // Both words resolved and the answer thrown away, on `CMD_VIEWPORT`'s rule: membership
+        // was settled by `validate_args` against the two `Choice`s, so this is the belt that
+        // catches a call reaching the service by a route that skipped the schema.
+        //
+        // 🚨 **What is deliberately NOT checked here is whether the column can honour it** —
+        // whether any region holds a stack, and whether it is holding the panel a `remove`
+        // names. Both are facts about state at the moment the op is *drained*, and this runs at
+        // dispatch. [`Console::set_stack`] is the one gate, and it refuses by name.
+        CMD_STACK => {
+            let a = word(CMD_ACTION)?;
+            let p = word(CMD_PANEL)?;
+            organon_console::panel_stack::StackCmd::resolve(&a, &p)
+                .map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Stack { action: a, panel: p })
         }
         CMD_BLOCK => {
             let n = args
@@ -999,6 +1087,10 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         // so the two must agree or `validate_args` refuses every dispatch this produces.
         cli::ConsoleOp::Viewport { region, content } => {
             json!({ CMD_REGION: region, CMD_CONTENT: content })
+        }
+        // Two more slots of its own, for the reason directly above.
+        cli::ConsoleOp::Stack { action, panel } => {
+            json!({ CMD_ACTION: action, CMD_PANEL: panel })
         }
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
         // optional argument and `op_from` maps straight back to `None`. Omitting the key
@@ -1215,7 +1307,12 @@ fn console_step(
         | cli::ConsoleOp::Theme(_)
         | cli::ConsoleOp::Posture(_)
         | cli::ConsoleOp::Screen(_)
-        | cli::ConsoleOp::Viewport { .. } => return None,
+        // **And what is inside a `panel` region is not a look either** — one step further in
+        // than the split above. It changes which cards are drawn in a rectangle the glyphs
+        // already owned; the backdrop behind that rectangle is the same picture, wearing the
+        // same dressing, rendered once.
+        | cli::ConsoleOp::Viewport { .. }
+        | cli::ConsoleOp::Stack { .. } => return None,
     }
     Some((source, look))
 }
@@ -1829,6 +1926,18 @@ struct Console {
     /// undivided however it was left. A stored layout would be the first thing that could make
     /// a launch look broken with no command having been typed.
     layout: organon_console::region::Layout,
+    /// **The scrolling column of Organon panels a `panel` region shows.** Moved only by
+    /// [`Console::set_stack`] and by a `/organon` line's answer.
+    ///
+    /// 🚨 **ONE stack, console-wide, and every `panel` region is a view of it** —
+    /// `organon_console::panel_stack`'s header owns the argument. In short: two panel regions
+    /// are two views of one instrument (the same reason [`OrganonPanels`] is one mirror per
+    /// console, not one per card), and the add verb has no ring to spare for a region word, so
+    /// a per-region stack would give every region after the first a column nothing could ever
+    /// fill.
+    ///
+    /// 📌 Not written to `preferences.json`, on the layout's rule directly above.
+    panel_stack: organon_console::panel_stack::Stack,
     /// **The viewport's render target — ONE texture serving both presentations.**
     ///
     /// 🚨 **One, not one each, and that is [`engine_plan`]'s guarantee spent rather than a
@@ -2064,6 +2173,7 @@ fn draw_regions(
     layout: &organon_console::region::Layout,
     theme: &Theme,
     viewport: &mut RegionViewport<'_>,
+    panels: &mut RegionPanels<'_>,
     draw_active_pane: &mut dyn FnMut(&mut egui::Ui),
 ) -> Option<egui::Rect> {
     use organon_console::region::{plan, Content};
@@ -2101,12 +2211,33 @@ fn draw_regions(
                  region; a second one needs Tier 2's per-region tab",
                 theme,
             ),
+            // 🚨 **The scrolling column of Organon's own editor panels.** `panel_stack::draw`
+            // is the whole presentation — it takes the `Ui` it is handed and never reaches for
+            // the window's layer, which is what keeps a stack mappable onto a lit surface if
+            // the console's own chrome ever becomes one (#17). The panel *bodies* come back
+            // through `OrganonDraw`, exactly as they did when a panel was an element in a
+            // transcript; only the address changed.
+            Some(Content::Panel) if !panels.stack.is_empty() => {
+                organon_console::panel_stack::draw(
+                    &mut child,
+                    slot.region,
+                    panels.stack,
+                    theme,
+                    panels.form,
+                    panels.draw,
+                );
+            }
+            // 🚨 **An empty column is a sentence, and it names the verb that fills it.** Same
+            // rule as the vacant region below and with one thing more to say: a region that has
+            // been *assigned* and holds nothing looks exactly like one that is broken, and this
+            // is the only place the stack's own vocabulary is discoverable from.
             Some(Content::Panel) => paint_region_notice(
                 &mut child,
                 slot.rect,
                 slot.region.as_word(),
-                "panel — an Organon editor panel belongs here. Tier 2 gives it a body; this tier \
-                 divides the pane and says what each part is for",
+                "panel — an empty stack. `organon console stack add <panel>` puts one of \
+                 Organon's editor panels here, or type `/organon look surface` at an agent; \
+                 `… stack remove all` empties it again",
                 theme,
             ),
             // 🚨 **The live 3D viewport — the same mechanism the portal is, in a different
@@ -2157,6 +2288,20 @@ fn draw_regions(
     }
     paint_region_edges(ui, pane, &placed, theme);
     viewport_rect
+}
+
+/// What a `panel` region draws this frame, bundled for [`RegionViewport`]'s reason.
+struct RegionPanels<'a> {
+    /// **The console's one stack**, shown by every region holding `panel` — see
+    /// [`Console::panel_stack`] on why one and not one each.
+    stack: &'a organon_console::panel_stack::Stack,
+    /// This frame's posture tokens, so a card in a stack and a card in the transcript are the
+    /// same object at the same posture rather than two things that resemble each other.
+    form: &'a organon_console::posture::Form,
+    /// 🚨 **Where a panel's body comes from** — the seam `organon-console` cannot fill, because
+    /// it cannot see `OrganicMathParams`, a `ParamSetter` or a `World`. Unchanged from when a
+    /// panel was an element in a transcript; only its address moved.
+    draw: organon_console::panel_stack::OrganonDraw<'a>,
 }
 
 /// What the `3d` region draws this frame — the live viewport's three inputs, bundled so the
@@ -2471,6 +2616,7 @@ impl Console {
             // One region, `Full`, holding the agent — invariant #4, and `redraw` compares
             // against this exact value to take the pre-region path unchanged.
             layout: organon_console::region::Layout::default(),
+            panel_stack: organon_console::panel_stack::Stack::default(),
             viewport: None,
             viewport_input: scene_input::SceneInput::default(),
             viewport_points: None,
@@ -2997,6 +3143,13 @@ impl Console {
             self.set_viewport(region, content);
             return;
         }
+        // Above the ledger for the reason directly above, one level in: this changes which
+        // panels a region's column holds, and the backdrop behind that column is the same
+        // picture wearing the same dressing.
+        if let cli::ConsoleOp::Stack { action, panel } = op {
+            self.set_stack(action, panel);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -3305,6 +3458,91 @@ impl Console {
             // unwind and the console goes on drawing exactly what it was.
             Err(refusal) => eprintln!("organon-console: {refusal}"),
         }
+    }
+
+    /// Put a panel in the console's column, take one out, or empty it — **or say why not**.
+    ///
+    /// # 🚨 The only gate that can answer, for [`Console::set_viewport`]'s reason
+    ///
+    /// clap restricts both words and [`op_from`] resolves them again, but neither can answer
+    /// the questions that actually decide this command: *is any region showing a stack*, and
+    /// *is the column holding the panel this `remove` names?* Both are facts about state that
+    /// lives here, and the lane gets no answer back — so every refusal is spoken at this end,
+    /// by name.
+    ///
+    /// ⚠️ **A stack nothing is showing is refused rather than filled.** A column that exists
+    /// only in memory would be a command that appears to work and changes no pixel, which is
+    /// the defect this console keeps a running tally of. The refusal carries the `viewport`
+    /// line that makes a region to show it in.
+    fn set_stack(&mut self, action_word: &str, panel_word: &str) {
+        use organon_console::panel_stack::{Home, Refusal, StackCmd};
+        let cmd = match StackCmd::resolve(action_word, panel_word) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("organon-console: {e}");
+                return;
+            }
+        };
+        // Asked first, and of every arm including `remove`: with nothing showing the column,
+        // even emptying it is a change nobody can see.
+        let Home::Shown(region) = Home::of(&self.layout) else {
+            eprintln!("organon-console: {}", Refusal::NoRegion);
+            return;
+        };
+        match cmd {
+            StackCmd::Add(panel) => {
+                self.panel_stack.push(panel);
+                // The region is named for the reason `/organon`'s answer names it: there is one
+                // stack and possibly several views of it, so "it was added" leaves a person
+                // hunting the window for a panel that is on screen.
+                eprintln!(
+                    "organon-console: `{}` added to the panel stack in `{}` ({} now)",
+                    panel.slug,
+                    region.as_word(),
+                    self.panel_stack.len()
+                );
+            }
+            StackCmd::Remove(panel) => match self.panel_stack.remove_last(panel.slug) {
+                Some(_) => eprintln!(
+                    "organon-console: `{}` taken out of the panel stack ({} left)",
+                    panel.slug,
+                    self.panel_stack.len()
+                ),
+                // Named rather than shrugged off — `region::Refusal::AlreadyEmpty`'s rule: a
+                // command that changes nothing and says nothing is indistinguishable from one
+                // that never arrived. The held list is what makes it actionable.
+                None => eprintln!(
+                    "organon-console: {}",
+                    Refusal::NotHeld {
+                        slug: panel.slug.to_string(),
+                        held: self.held_panel_slugs(),
+                    }
+                ),
+            },
+            StackCmd::Clear => {
+                if self.panel_stack.is_empty() {
+                    eprintln!("organon-console: {}", Refusal::AlreadyEmpty);
+                    return;
+                }
+                let n = self.panel_stack.len();
+                self.panel_stack.clear();
+                eprintln!("organon-console: the panel stack is empty ({n} taken out)");
+            }
+        }
+    }
+
+    /// What the column is holding, for a refusal to quote. `"nothing"` rather than an empty
+    /// string, so the sentence reads as a sentence.
+    fn held_panel_slugs(&self) -> String {
+        if self.panel_stack.is_empty() {
+            return "nothing".to_string();
+        }
+        self.panel_stack
+            .entries()
+            .iter()
+            .map(|e| e.panel().slug)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Move the viewer's viewpoint — **unless a hand is on it**.
@@ -4667,6 +4905,19 @@ impl Console {
         // is the same lookup on the same value: `Layout` is `Copy` and this is that copy.
         let three_d_region =
             layout.region_holding(organon_console::region::Content::ThreeD);
+        // The console's one panel column, split out of `self` for the closure. Shared rather
+        // than mutable: a `/organon` line asks for a push by leaving a value on
+        // `ConversationOutput`, which is applied after the closure with `&mut self` in hand —
+        // the same arrangement `theme_change` and `surface_requests` use, and for its reason.
+        let panel_stack = &self.panel_stack;
+        // 🚨 **Where a summoned panel would go**, computed from the layout before anything is
+        // drawn and handed to the conversation front-end. This is what lets the refusal for
+        // "no region holds a stack" be spoken *in the composer*, beside the words that are
+        // still in it, rather than on a stderr nobody is reading.
+        let panel_home = organon_console::panel_stack::Home::of(&layout);
+        // A panel a `/organon` line asked for this frame, collected out of the closure exactly
+        // as `theme_change` is and for its reason: pushing it needs `&mut self`.
+        let mut panel_wanted: Option<&'static organon_core::panels::Panel> = None;
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
@@ -4765,12 +5016,50 @@ impl Console {
                     let region_claim = pane_rect
                         .zip(three_d_region)
                         .and_then(|(p, r)| organon_console::region::region_rect(p, r));
+                    // 🚨 **And every `panel` region, which is the consumer §1.14 named in
+                    // advance**: *"it becomes real the moment a region holds something
+                    // scrollable"*. A stack scrolls, so a wheel over one must not also scroll
+                    // a transcript nowhere near the pointer.
+                    //
+                    // ⚠️ **Every panel region, not just the one `/organon` names.** They all
+                    // show the one stack and all of them scroll; listing only the first would
+                    // leave the wheel over the second stealing the transcript's scroll.
+                    //
+                    // ⚠️ Walked over `Region::ALL` with `Layout::get` rather than through
+                    // `occupied()`, which allocates: this is the frame path, and the sentence
+                    // below about a fixed-size array with no allocation has to stay true of
+                    // the whole block rather than only of the array it names.
+                    let mut stack_claims = [egui::Rect::NOTHING; 4];
+                    if let Some(p) = pane_rect {
+                        let mut next = 0usize;
+                        for region in organon_console::region::Region::ALL.iter().copied() {
+                            if layout.get(region)
+                                != Some(organon_console::region::Content::Panel)
+                            {
+                                continue;
+                            }
+                            // A layout is at most four disjoint regions, so this cannot
+                            // overrun — the guard is a belt, and it is what makes that a
+                            // statement rather than a hope.
+                            let Some(slot) = stack_claims.get_mut(next) else { break };
+                            if let Some(r) = organon_console::region::region_rect(p, region) {
+                                *slot = r;
+                            }
+                            next += 1;
+                        }
+                    }
                     // The rectangles the transcript does not own, as a fixed-size array — see
                     // the `term_view::draw` call below on why `Rect::NOTHING` stands in for an
-                    // absent claim rather than a shorter slice.
+                    // absent claim rather than a shorter slice. ⚠️ Four slots for the stacks
+                    // because a layout is at most four disjoint regions; `zip` above stops at
+                    // whichever runs out, so a fifth region kind could never overrun it.
                     let viewport_claims = [
                         portal_rect.unwrap_or(egui::Rect::NOTHING),
                         region_claim.unwrap_or(egui::Rect::NOTHING),
+                        stack_claims[0],
+                        stack_claims[1],
+                        stack_claims[2],
+                        stack_claims[3],
                     ];
                     // 🚨 **The live tab, drawn into whatever rectangle it is given.** This was
                     // the body of the `CentralPanel` closure and is now a closure of its own,
@@ -4842,22 +5131,16 @@ impl Console {
                                     theme,
                                     theme_name,
                                     form,
-                                    // 🚨 **The seam, and this crate is the only one that could
-                                    // fill it** — [`conversation_view::OrganonDraw`] is where an
-                                    // Organon editor panel's body comes from, and the console lib
-                                    // cannot see `OrganicMathParams` because it is the *lower*
-                                    // crate of the two. Reached for every panel the table marks
-                                    // `Status::Live`, which today is Look ▸ Surface and nothing
-                                    // else; a `Declared` panel never gets here and the view says
-                                    // so where its controls would be.
-                                    //
-                                    // What a control writes is a `PresetValues` mirror rather than
-                                    // a parameter, because a parameter cannot be written from
-                                    // outside `nih_plug` at all —
-                                    // `organic_math_native::param_sink` owns that account, and
-                                    // `OrganonPanels::overlay` is where the mirror reaches the
-                                    // world.
-                                    &mut |ui, panel| organon_panels.draw(ui, panel),
+                                    // 🚨 **Where a panel summoned here would GO — a destination
+                                    // travelling in, not a body.** The seam that used to be
+                                    // here handed this crate a way to *draw* an Organon panel
+                                    // in the flow; a panel is not an element of a transcript
+                                    // any more (§1.14: a transcript is a log and a control is
+                                    // not a log entry), so what the view needs is the answer to
+                                    // "is there a stack, and whose region is showing it" — and
+                                    // that answer is what lets `/organon` refuse *in the
+                                    // composer* instead of on a stderr nobody reads.
+                                    panel_home,
                                 );
                                 surface_requests = out.surfaces;
                                 exhibit_requests = out.exhibits;
@@ -4865,6 +5148,10 @@ impl Console {
                                 // `self` for the whole of this closure, so assigning it now is a
                                 // borrow error rather than a style choice.
                                 theme_change = out.theme;
+                                // …and the panel a `/organon` line asked for, out for the same
+                                // reason: pushing it needs `&mut self`, and `self` is split
+                                // into disjoint field borrows for the whole of this closure.
+                                panel_wanted = out.panel;
                             }
                             _ => {
                                 ui.centered_and_justified(|ui| {
@@ -4894,6 +5181,24 @@ impl Console {
                                 image: (!portal_has_the_frame).then_some(viewport_image).flatten(),
                                 input: viewport_input,
                                 yielded_to_portal: portal_has_the_frame,
+                            },
+                            &mut RegionPanels {
+                                stack: panel_stack,
+                                form,
+                                // 🚨 **The seam that used to be handed to the conversation
+                                // view**, unchanged and at its new address: this crate is the
+                                // only one that can fill it, because the console lib cannot
+                                // see `OrganicMathParams`. Reached for every panel the table
+                                // marks `Status::Live` — today Look ▸ Surface and nothing else
+                                // — and a `Declared` panel never gets here, `panel_stack`
+                                // saying so where its controls would be.
+                                //
+                                // What a control writes is a `PresetValues` mirror rather than
+                                // a parameter, because a parameter cannot be written from
+                                // outside `nih_plug` at all: `param_sink` owns that account,
+                                // and `OrganonPanels::overlay` is where the mirror reaches the
+                                // world.
+                                draw: &mut |ui, panel| organon_panels.draw(ui, panel),
                             },
                             &mut draw_active_pane,
                         );
@@ -4949,6 +5254,17 @@ impl Console {
         // has ended.
         if let Some(change) = theme_change {
             self.apply_theme_change(change);
+        }
+        // …and a panel a `/organon` line asked for, applied now that the closure's shared
+        // borrow of `self.panel_stack` has ended.
+        //
+        // ⚠️ **No destination check here, and none is missing.** `panel_home` was computed
+        // from the same layout this frame drew, and the view refuses in the composer when it
+        // is `Nowhere` — so an answer arriving at all means a region was showing a stack when
+        // the line was typed. Re-asking here would be a second gate that could only ever
+        // disagree with the sentence a person has already been shown.
+        if let Some(panel) = panel_wanted {
+            self.panel_stack.push(panel);
         }
         // What the next frame's `render_viewport` sizes its texture to — points, never pixels,
         // for `pane_points`' reason: it is the *ratio* to the window that survives a scale
@@ -5920,6 +6236,14 @@ mod cli_tests {
                 // writes a line the console then refuses. `full agent` is the one pair that is
                 // always accepted, because it is the layout the console opens in.
                 CMD_VIEWPORT => json!({ CMD_REGION: "full", CMD_CONTENT: "agent" }),
+                // 🚨 **Named words for `CMD_VIEWPORT`'s reason, arriving on a third verb.**
+                // The panel ring's last entry is `all`, which is legal in the schema and is a
+                // *refusal* under `add` (it names the whole column, and this verb does not fill
+                // one from a word) — so indexing either `Choice` would be one reordering away
+                // from asserting that a refused pair writes a sidecar line. `add surface` is
+                // the pair that is always accepted at this gate: Surface is the one panel with
+                // a body, and adding never depends on what the column is holding.
+                CMD_STACK => json!({ CMD_ACTION: "add", CMD_PANEL: "surface" }),
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -6142,15 +6466,23 @@ mod cli_tests {
         let all = registry.candidates("/").expect("a bare slash opens the whole table");
         assert_eq!(
             compact_line(&all, 0, 200),
-            "[background] | rig | theme | posture | screen | viewport | block | patch | portal | \
-             camera | camera.read | surface | help | media | organon"
+            // ✏️ `stack` sits between `viewport` and `block` because `console_specs` declares
+            // it there — beside the verb it splits a sentence with, not beside the two verbs
+            // it shares a `Reversal` with. The order here is the table's, read out.
+            "[background] | rig | theme | posture | screen | viewport | stack | block | patch | \
+             portal | camera | camera.read | surface | help | media | organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
         // ✏️ **139 with `viewport`** (§1.14), which is the fifteenth verb and the fourth to move
         // this line. Re-derived from the string above rather than nudged, on the paragraph
         // below's rule.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 139);
+        // ✏️ **147 with `stack`** (#98 Tier A), the sixteenth verb and the fifth to move this
+        // line. **Re-derived, not nudged**, on the paragraph below's rule: the sixteen words
+        // are 102 characters (`background` in brackets counts 12) and the fifteen separators
+        // 45 — the word is five letters and its separator three, so the arithmetic and the
+        // number agree by construction rather than by my having added eight.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 147);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -6166,7 +6498,12 @@ mod cli_tests {
         // ✏️ **Fifteen verbs now, so `+13`** — `viewport` (§1.14) is the fourth verb to move this
         // line, and the count was re-derived rather than incremented: two verbs are shown at
         // this width and `mcp_specs()` plus the view lane yield fifteen, so thirteen are hidden.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +13");
+        // ✏️ **Sixteen verbs now, so `+14`** — `stack` (#98 Tier A) is the fifth verb to move
+        // this line, and the count was re-derived rather than incremented: two verbs are shown
+        // at this width, `mcp_specs()` yields twelve and the view lane four, so fourteen are
+        // hidden. The paragraph above is why that sentence is written out instead of the
+        // number simply being bumped.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +14");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -6213,6 +6550,14 @@ mod cli_tests {
                 // `viewport full agent` restores the undivided console from any layout in one
                 // command. Wrong is one command away from right, which is the whole test.
                 ("viewport", true),
+                // ✏️ **`stack` sits with the two below it and NOT with `viewport` above it**,
+                // which is the classification worth stating rather than assuming, because the
+                // two verbs are neighbours and look alike. Nothing lands in the transcript,
+                // which is `viewport`'s whole case for the other column — but `stack remove
+                // all` discards a column somebody assembled and **no single command rebuilds
+                // it**, which is `block`'s case for this one. Wrong is *many* commands away
+                // from right, so it waits for an Enter.
+                ("stack", false),
                 // Rows in the transcript, and a rectangle claimed in somebody else's output.
                 ("block", false),
                 ("patch", false),
@@ -6331,6 +6676,71 @@ mod cli_tests {
         assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left", CMD_CONTENT: "media" })).is_err());
         assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left" })).is_err(), "no default");
         assert!(op_from(CMD_VIEWPORT, &json!({})).is_err());
+    }
+
+    /// **The stack verb's two rings are `panel_stack`'s own two tables**, quoted rather than
+    /// restated — so a twenty-sixth Organon panel reaches the MCP schema, the slash palette and
+    /// the CLI's `--help` in the commit that adds it.
+    ///
+    /// ⚠️ It also pins the thing this verb does **not** check at dispatch: whether the column
+    /// can honour the command. `remove bloom` passes every gate here and is refused by
+    /// [`Console::set_stack`], because "is any region showing a stack" and "is the column
+    /// holding this panel" are facts about state at the moment the op *lands*, and this
+    /// function runs before that.
+    #[test]
+    fn the_stack_verbs_rings_are_the_panel_stack_tables_and_it_checks_words_not_columns() {
+        use organon_console::panel_stack::{panel_words, ALL_WORD, STACK_ACTIONS};
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_STACK)
+            .expect("console.stack is registered");
+        assert_eq!(spec.target, TargetKind::Viewport, "what a region draws is the viewport");
+        assert_eq!(spec.args.len(), 2, "an action and a panel, never one fused word");
+        let ring = |slot: &str| -> Vec<String> {
+            match &spec.args.iter().find(|a| a.name == slot).expect("the slot").kind {
+                ArgKind::Choice(v) => v.clone(),
+                other => panic!("{slot} is {other:?}, not a Choice"),
+            }
+        };
+        assert_eq!(ring(CMD_ACTION), STACK_ACTIONS.to_vec());
+        assert_eq!(ring(CMD_PANEL), panel_words());
+        for a in &spec.args {
+            assert!(a.required, "`{}` is not optional — half a command is not a command", a.name);
+        }
+
+        // Every pair the schema offers converts, and every one of those lines is one the drain
+        // reads back — `viewport`'s cross product, for its reason. ⚠️ `add all` is the one pair
+        // that must NOT convert: `all` names the whole column and this verb does not fill one
+        // from a single word.
+        for a in STACK_ACTIONS {
+            for p in panel_words() {
+                let asked = op_from(CMD_STACK, &json!({ CMD_ACTION: a, CMD_PANEL: p }));
+                if *a == "add" && p == ALL_WORD {
+                    let e = asked.expect_err("`add all` must be refused by name");
+                    assert!(e.contains(ALL_WORD), "the refusal quotes the word: {e}");
+                    continue;
+                }
+                let op = asked.unwrap_or_else(|e| panic!("`{a} {p}`: {e}"));
+                assert_eq!(
+                    op,
+                    cli::ConsoleOp::Stack { action: (*a).into(), panel: p.into() }
+                );
+                let line = cli::console_op_to_line(&op);
+                assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
+            }
+        }
+        // 🚨 The slots are not interchangeable — `surface` is not an action and `add` is not a
+        // panel — and a swapped call is refused by name rather than half-understood.
+        let e = op_from(CMD_STACK, &json!({ CMD_ACTION: "surface", CMD_PANEL: "add" }))
+            .expect_err("the words are in the wrong slots");
+        assert!(e.contains("surface"), "the refusal must quote what was typed: {e}");
+        // `clear` was never an action word: the emptying word rides the panel ring. Exercised
+        // because it is the obvious guess, and a table whose refusals are never asked for stops
+        // being a closed value space the day somebody adds a word to one rendering and not the
+        // others.
+        assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "clear", CMD_PANEL: "all" })).is_err());
+        assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "add" })).is_err(), "no default");
+        assert!(op_from(CMD_STACK, &json!({})).is_err());
     }
 
     /// A block is not a look, and `console_step` must say so rather than quietly folding it
@@ -6840,6 +7250,12 @@ mod cli_tests {
             cli::ConsoleOp::Viewport { region: "full".into(), content: "agent".into() },
             cli::ConsoleOp::Viewport { region: "topleft".into(), content: "panel".into() },
             cli::ConsoleOp::Viewport { region: "right".into(), content: "off".into() },
+            // The second two-word op, with the same way to be wrong plus one of its own: the
+            // emptying word rides the *panel* slot, so `remove all` has to survive the trip or
+            // a column becomes unclearable.
+            cli::ConsoleOp::Stack { action: "add".into(), panel: "surface".into() },
+            cli::ConsoleOp::Stack { action: "remove".into(), panel: "bloom".into() },
+            cli::ConsoleOp::Stack { action: "remove".into(), panel: "all".into() },
             cli::ConsoleOp::Camera(cli::CameraFraming { reset: true, ..Default::default() }),
             cli::ConsoleOp::Camera(cli::CameraFraming {
                 distance: Some(40.0),

@@ -184,6 +184,24 @@ pub fn find(tab: UiTab, slug: &str) -> Option<&'static Panel> {
     PANELS.iter().find(|p| p.tab == tab && p.slug.eq_ignore_ascii_case(slug))
 }
 
+/// The panel a slug names on its own, with no tab in hand.
+///
+/// 🚨 **The one lookup that does not take a tab, and it is sound only because of
+/// [`one_tab_owns_each_slug`].** The Console's panel-stack verb (`console stack add surface`)
+/// spends both of its argument rings on an action and a panel, so it has no room for a tab
+/// word — and there is no tab to *use*, because the stack is a column of panels rather than a
+/// walk of Organon's hierarchy. "The first match" is therefore "the match", the same
+/// arrangement `region::Layout::region_holding` uses for a content kind that may exist once.
+///
+/// ⚠️ **When a second tab joins the table and repeats a slug, that test fails**, and this
+/// function is what has to change — the honest fix then is to give the stack verb a tab, which
+/// is a third ring it does not have, or to make the slugs globally unique. Do not quietly widen
+/// this to "the first one, whichever tab it is on": that would open a panel from a tab nobody
+/// named, which is the exact failure [`find`]'s doc refuses.
+pub fn find_by_slug(slug: &str) -> Option<&'static Panel> {
+    PANELS.iter().find(|p| p.slug.eq_ignore_ascii_case(slug))
+}
+
 /// Every slug in the table, deduplicated, in table order. The declared value space of the
 /// `panel` argument — a *union* across tabs, because a command schema has one value list and
 /// the tab is not known when the schema is built. [`find`] is what checks the pair.
@@ -239,6 +257,24 @@ mod tests {
                 panel.slug
             );
         }
+    }
+
+    /// 🚨 **The property [`find_by_slug`] rests on**, and the thing that has to be re-decided
+    /// the day a second tab is joined: no two panels anywhere in the table share a slug. The
+    /// per-tab rule above is about *completion*; this one is about a lookup with no tab at all.
+    #[test]
+    fn one_tab_owns_each_slug() {
+        assert_eq!(
+            slugs().len(),
+            PANELS.len(),
+            "two panels share a slug — `find_by_slug` can no longer answer, and the stack \
+             verb it serves has no ring to spare for a tab"
+        );
+        for panel in PANELS {
+            assert_eq!(find_by_slug(panel.slug), Some(panel), "{}", panel.slug);
+        }
+        assert_eq!(find_by_slug("SURFACE"), Some(&LOOK_SURFACE), "the lookup folds case");
+        assert_eq!(find_by_slug("nonesuch"), None);
     }
 
     /// The pair, not the word. See [`find`].

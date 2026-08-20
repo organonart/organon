@@ -116,6 +116,24 @@ pub enum ConsoleOp {
     /// malformed rather than a command with defaults — and guessing would rearrange a window
     /// somebody is looking at.
     Viewport { region: String, content: String },
+    /// **What is IN a region that holds `panel`** — an action word
+    /// (`organon_console::panel_stack::STACK_ACTIONS`) and a panel word (a
+    /// `organon_core::panels::Panel::slug`, or the clearing word `all`).
+    ///
+    /// 🚨 **A different verb from [`ConsoleOp::Viewport`], and that is the whole design of the
+    /// tier it landed in.** `viewport` says what a region is *for*; this says what the column
+    /// inside it *holds*. Splitting the sentence is what removes the recorded blocker — a
+    /// third ring naming which panel, which two rings cannot say — because neither command
+    /// ever needs more than two words.
+    ///
+    /// Two `String`s rather than parsed values, on [`ConsoleOp::Viewport`]'s rule: the action
+    /// and panel vocabularies, and the refusals that name them, live in the console's own
+    /// crate, and parsing here would put half of that knowledge on the wire side of the lane.
+    ///
+    /// 📌 **Both words are required**, `viewport`'s arrangement exactly: there has never been a
+    /// one-word `stack` line, so a bare one is not an older spelling of anything and guessing
+    /// would add or remove a panel nobody named.
+    Stack { action: String, panel: String },
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -361,6 +379,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Posture(word) => format!("posture {word}"),
         ConsoleOp::Screen(word) => format!("screen {word}"),
         ConsoleOp::Viewport { region, content } => format!("viewport {region} {content}"),
+        ConsoleOp::Stack { action, panel } => format!("stack {action} {panel}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
@@ -401,6 +420,15 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
             let region = it.next()?.to_string();
             let content = it.next()?.to_string();
             Some(ConsoleOp::Viewport { region, content })
+        }
+        // The `viewport` arm's rule twice over — two required words, both unvalidated. The
+        // action and the panel are the console crate's tables to refuse against, and a bare
+        // `stack` is not an older spelling of anything, so a missing word is malformed rather
+        // than a command with a default.
+        "stack" => {
+            let action = it.next()?.to_string();
+            let panel = it.next()?.to_string();
+            Some(ConsoleOp::Stack { action, panel })
         }
         // A row count that does not parse — or does not fit — is a malformed line, and a
         // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/
@@ -516,6 +544,13 @@ mod tests {
                 ConsoleOp::Viewport { region: "left".into(), content: "agent".into() },
                 ConsoleOp::Viewport { region: "bottomright".into(), content: "panel".into() },
                 ConsoleOp::Viewport { region: "right".into(), content: "off".into() },
+                // What is IN a `panel` region. Both words ride the trip for `Viewport`'s
+                // reason, and `all` above all: it is the only way to empty a column, so a
+                // spelling that survived one direction only would leave a stack somebody
+                // cannot clear.
+                ConsoleOp::Stack { action: "add".into(), panel: "surface".into() },
+                ConsoleOp::Stack { action: "remove".into(), panel: "surface".into() },
+                ConsoleOp::Stack { action: "remove".into(), panel: "all".into() },
                 // Tier 5: the payload is a count, not a name — the first op on this lane whose
                 // argument is not a word.
                 ConsoleOp::Block(1),
@@ -564,6 +599,13 @@ mod tests {
                     content: "panel".into()
                 }),
                 "viewport topright panel"
+            );
+            assert_eq!(
+                console_op_to_line(&ConsoleOp::Stack {
+                    action: "add".into(),
+                    panel: "surface".into()
+                }),
+                "stack add surface"
             );
             assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
             assert_eq!(
@@ -634,6 +676,14 @@ mod tests {
             assert_eq!(
                 parse_console_op("viewport middle agent"),
                 Some(ConsoleOp::Viewport { region: "middle".into(), content: "agent".into() })
+            );
+            // `stack` is the second two-word verb and carries both halves of the same rule.
+            assert_eq!(parse_console_op("stack"), None);
+            assert_eq!(parse_console_op("stack add"), None, "half a command is not a command");
+            assert_eq!(
+                parse_console_op("stack shuffle surface"),
+                Some(ConsoleOp::Stack { action: "shuffle".into(), panel: "surface".into() }),
+                "the console refuses an unknown action out loud; the wire must not swallow it"
             );
             // ⚠️ An unknown palette or posture is NOT skipped here, and that is the one place
             // this lane deliberately parses something it cannot use. `theme phosphor` is a

@@ -20,7 +20,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use organic_math_native::{agent, cli, ipc, scene_input};
 use organon_core::kind;
-use organon_console::{posture, region, screen, theme};
+use organon_console::{panel_stack, posture, region, screen, theme};
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -114,6 +114,20 @@ fn region_words() -> clap::builder::PossibleValuesParser {
 /// rather than restating it, so a kind added there reaches `--help` and completion together.
 fn content_words() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(region::CONTENT_WORDS.iter().copied())
+}
+
+/// Possible-values parsers for `console stack <ACTION> <PANEL>`. Built from
+/// `organon_console::panel_stack`'s own two tables, on [`patch_kinds`]' rule and for its reason.
+fn stack_actions() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(panel_stack::STACK_ACTIONS.iter().copied())
+}
+
+/// See [`stack_actions`]. ⚠️ This list carries `all`, which is **not** a panel — it names the
+/// whole column, exactly as `off` in `content_words` is not a content kind. `panel_stack`'s
+/// `panel_words` is the one place the slugs and that word are joined, so `--help`, the schema
+/// and completion cannot come to offer different sets.
+fn stack_panels() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(panel_stack::panel_words())
 }
 
 /// Possible-values parser for `console patch --kind <KIND>`.
@@ -432,8 +446,10 @@ enum ConsoleAction {
                             is Organon and Organon draws at most one frame per console frame; a \
                             second is refused by name. ⚠️ An open portal TAKES that frame — the \
                             region then says so and `console portal close` gives it back.\n\n\
-                            ⚠️ `panel` is a NAMED PLACEHOLDER: the region says what belongs \
-                            there and a later tier gives it a body. `media` is not in the \
+                            `panel` is a SCROLLING STACK of Organon's own editor panels — \
+                            `console stack add <panel>` fills it, and the region's size has \
+                            nothing to do with how many panels are in it. There is ONE stack \
+                            and every `panel` region is a view of it. `media` is not in the \
                             vocabulary yet. ⚠️ Only one region can show the live tab — \
                             a second `agent` region says so rather than drawing it twice.\n\n\
                             📌 Orthogonal to `posture` and `screen` both, and it is NOT \
@@ -445,6 +461,39 @@ enum ConsoleAction {
         /// What it holds: agent, 3d, panel, or off to empty it
         #[arg(value_parser = content_words())]
         content: String,
+    },
+    /// Put one of Organon's editor panels in a region's scrolling stack, or take one out
+    #[command(after_help = "A region assigned `panel` holds a SCROLLING COLUMN of Organon's own \
+                            editor panels, and this is what fills it. Two commands, not one: \
+                            `console viewport left panel` says a region is for panels, then \
+                            `console stack add surface` says which panel. That split is why \
+                            neither sentence ever needs a third word.\n\n\
+                            📌 The region's size is independent of how many panels are in it — \
+                            a top-left corner scrolls twenty exactly as a full-height column \
+                            does.\n\n\
+                            🚨 There is ONE stack, console-wide, and every region holding \
+                            `panel` is a view of it. Two such regions are two views of one \
+                            instrument (they scroll independently, and hold the same panels), \
+                            which is the same rule that gives the console one parameter mirror \
+                            rather than one per card.\n\n\
+                            `remove` takes out the LAST copy of a panel — the one you just \
+                            added. `remove all` empties the column; `all` is a word for the \
+                            whole column and not a panel, so `add all` is refused by name.\n\n\
+                            ⚠️ Only Look ▸ Surface has real controls. The other twenty-four \
+                            panels are named, addressable, and open a line saying they have \
+                            not been transplanted into the console yet — which is honest, and \
+                            visible in the column beside one that has been.\n\n\
+                            ⚠️ Refused if NO region holds `panel`: a column nothing is showing \
+                            is a command that appears to work and changes no pixel. It is also \
+                            NOT remembered — a console opens with an empty stack however you \
+                            left it.")]
+    Stack {
+        /// add or remove
+        #[arg(value_parser = stack_actions())]
+        action: String,
+        /// Which panel — a Look-tab slug, or `all` with `remove` to empty the column
+        #[arg(value_parser = stack_panels())]
+        panel: String,
     },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
@@ -756,6 +805,12 @@ fn run_console(action: ConsoleAction) -> ! {
         ConsoleAction::Viewport { region, content } => {
             cli::ConsoleOp::Viewport { region, content }
         }
+        // The `Viewport` arm's arrangement exactly, and its reason in full: clap has restricted
+        // each word to its own closed table, the console resolves them again on arrival — which
+        // is the gate that matters for a line written straight onto the sidecar by hand — and
+        // nothing is checked *between* them here, because whether the column can honour this
+        // depends on what the console is holding right now.
+        ConsoleAction::Stack { action, panel } => cli::ConsoleOp::Stack { action, panel },
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
         // here; the fallback rather than an `expect` because it is not a guess — it is the
@@ -1400,6 +1455,45 @@ mod tests {
         // content depends on what the console is holding right now, which this process cannot
         // see. `left off` is a legal line and a refusal waiting to happen at the other end.
         assert!(parse(&["console", "viewport", "left", "off"]).is_ok());
+    }
+
+    /// **`console stack` takes two words and neither is optional** — `viewport`'s test one
+    /// module over, and the whole cross product for its reason: a pair that survives one
+    /// direction only is a command the console skips in silence.
+    ///
+    /// ⚠️ **`add all` is legal HERE and refused at the other end**, which is the same shape as
+    /// `viewport left off`: clap's gate is the *word* tables and nothing more, and whether the
+    /// column can honour a command depends on state this process cannot see. Pinning it as
+    /// `is_ok()` is what stops somebody "fixing" it into the CLI, where the refusal would then
+    /// exist in two places and could disagree.
+    #[test]
+    fn console_stack_takes_an_action_and_a_panel_and_defaults_neither() {
+        for a in panel_stack::STACK_ACTIONS {
+            for p in panel_stack::panel_words() {
+                let c = parse(&["console", "stack", a, p]).unwrap();
+                match c.cmd {
+                    Cmd::Console { action: ConsoleAction::Stack { action, panel } } => {
+                        assert_eq!(&action, a);
+                        assert_eq!(panel, p);
+                        let op = cli::ConsoleOp::Stack { action, panel };
+                        assert_eq!(
+                            cli::parse_console_op(&cli::console_op_to_line(&op)),
+                            Some(op),
+                            "`stack {a} {p}` must survive the sidecar round trip"
+                        );
+                    }
+                    _ => panic!("`console stack {a} {p}` parsed as something else"),
+                }
+            }
+            assert!(parse(&["console", "stack", a]).is_err(), "`{a}` alone is half a command");
+        }
+        assert!(parse(&["console", "stack"]).is_err(), "neither word has a default");
+        assert!(parse(&["console", "stack", "shuffle", "surface"]).is_err(), "no such action");
+        assert!(parse(&["console", "stack", "add", "nonesuch"]).is_err(), "no such panel");
+        // `clear` was never an action word — the emptying word rides the panel ring. Pinned
+        // because it is the obvious guess and the CLI must not half-accept it.
+        assert!(parse(&["console", "stack", "clear"]).is_err(), "clear is not an action");
+        assert!(parse(&["console", "stack", "add", "surface", "bloom"]).is_err(), "one pair");
     }
 
     /// **`console camera` takes any subset of four flags and round-trips through the sidecar.**

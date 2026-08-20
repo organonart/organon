@@ -105,6 +105,7 @@ pub mod harness;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mock_agent;
+pub mod panel_stack;
 pub mod platform;
 pub mod portal;
 pub mod posture;
