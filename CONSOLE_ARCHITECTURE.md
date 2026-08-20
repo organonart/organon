@@ -3895,6 +3895,13 @@ the composer.**
 `/organon` → the eight tabs. `/organon look` → the Look tab's twenty-five panels. `/organon
 look surface` → that panel, as an element in the flow.
 
+✏️ **That last arrow now ends somewhere else: the panel goes into a region's PANEL STACK, and
+there is no transcript home at all** (§1.14, #98 Tier A). *A transcript is a log and a control is
+not a log entry.* Both **rings are unchanged** — the tab, the panel, the two tables they read,
+the dependent hook, the refusals — and everything below about *which* panel and *why it can be
+drawn at all* is untouched. What changed is the **destination**, and it is called out here and
+corrected in place at the two subsections it invalidates rather than being rewritten away.
+
 **Neither ring is a list this console wrote.** The tabs are `organon_core::tabs::UiTab::ALL`,
 which that module already calls "the single source of truth the editor's tab bar iterates". The
 panels are the new `organon_core::panels::PANELS` — and the arrow between it and the editor
@@ -3992,6 +3999,15 @@ The block carries the panel **resolved**, as a `&'static Panel`, not as a `(tab,
 pair is checked once, at the command, and an element holding it would push that check into every
 frame that draws it.
 
+✏️ **`Body::Organon` no longer exists** (§1.14, #98 Tier A): a panel is not an element of a
+transcript at all, so there is no sixth body and no `OrganonBlock`. **Everything above stays
+because the argument is still correct and would be needed again if a panel ever came back** —
+an Organon panel could not have been an `ArtifactContent` arm, and being unable to be an artifact
+was the evidence it was its own body. `conversation.rs` carries the same paragraph as a comment
+where the variant stood, so a reader of the code meets it too. ✏️ The **second** paragraph
+survives verbatim and is now `panel_stack::Entry`'s: the panel is still carried resolved, and the
+reason is still that a `(tab, slug)` pair would push a check into every frame that draws it.
+
 #### The seam: a callback, not a render list
 
 `conversation_view::OrganonDraw` — `&mut dyn FnMut(&mut egui::Ui, &'static Panel)`, passed into
@@ -4004,6 +4020,15 @@ layout, at the point in the flow the element occupies.
 
 The contract is otherwise identical and deliberately so: `organon-console` knows a panel by its
 tab, slug and title, and cannot see `OrganicMathParams`, a `ParamSetter` or a `World`.
+
+✏️ **The type moved to `panel_stack::OrganonDraw` and its address changed with the destination;
+the argument above did not.** It is still a callback rather than a render list, still for the
+reason that a dropdown must open where it was clicked, and still the opposite shape to
+`SurfaceRequest`. What is no longer true is the phrase *"at the point in the flow the element
+occupies"* — a panel occupies a point in a **stack**, and `conversation_view::draw` no longer
+takes this parameter at all. What travels into the conversation view now is the *destination*
+(`panel_stack::Home`), not a way to draw, which is what lets `/organon` refuse **in the composer**
+when nothing holds a stack rather than on a stderr nobody reads.
 
 #### 🚨 The wall: an Organon parameter cannot be written from outside `nih_plug`
 
@@ -4113,7 +4138,10 @@ sidecar the renderer never re-reads.
 
 ⚠️ **One mirror per console, not one per element.** Two `/organon look surface` cards in a
 transcript are two views of one instrument; reading different values off each would make the
-claim the command exists to make false on sight.
+claim the command exists to make false on sight. ✏️ **The cards are in a stack now, not in a
+transcript, and the rule and its reason carry over unchanged** — §1.14 makes the same argument
+one level up to keep the *stack* itself console-wide rather than one per region, and the two are
+the same sentence about the same instrument.
 
 ⚠️ **The write lands one frame later**, because the conversation is drawn after the snapshot is
 published. That is the same arrangement `surface_requests` and `pane_points` already use, for
