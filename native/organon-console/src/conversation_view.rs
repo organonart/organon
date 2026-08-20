@@ -45,12 +45,13 @@ use crate::card_density::{self, DensityMap, Row};
 use crate::command::CommandSpec;
 use crate::conversation::{
     AgentEvent, Answer, AnsweredBy, ApprovalBlock, ApprovalState, Arguments, ArtifactBlock,
-    ArtifactContent, Body, Change, Element, ElementId, ExhibitSpec, Ignored, OrganonBlock,
+    ArtifactContent, Body, Change, Element, ElementId, ExhibitSpec, Ignored,
     PanelSpec, ResultDetail, RunOutcome, StepState, SubagentAct, SubagentLog, SubagentProgress,
     SurfaceSpec, ToolCard, ToolState, Transcript, Verdict,
 };
 use crate::mcp::{ExposureAudit, McpServer, NoDispatch, ToolDispatch};
 use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
+use crate::panel_stack;
 use crate::posture::Form;
 use crate::registry;
 use crate::text_diff::{self, DiffRow, LineDiff};
@@ -244,28 +245,16 @@ pub struct ConversationOutput {
     /// and re-upload egui's whole chrome every frame, because `Visuals` is held on the context
     /// rather than read per frame.
     pub theme: Option<ThemeChange>,
+    /// A panel `/organon` asked for this frame, to be pushed onto the console's
+    /// [`crate::panel_stack::Stack`].
+    ///
+    /// 🚨 **`Some` only on the frame a line was submitted**, on [`ConversationOutput::theme`]'s
+    /// rule and for its reason: the stack is `console_main`'s and this crate can only leave a
+    /// value. ⚠️ The *destination* travelled the other way, into `draw` as a
+    /// [`crate::panel_stack::Home`] — so the refusal for "no region holds a stack" is spoken
+    /// here, in the composer, where the words still are, rather than on a stderr nobody reads.
+    pub panel: Option<&'static organon_core::panels::Panel>,
 }
-
-/// **How the console draws one of Organon's own panels** — the second seam between the two
-/// crates, and the opposite shape to [`SurfaceRequest`].
-///
-/// 🚨 **A surface is a render list; a panel is a callback, and the difference is forced.** A
-/// surface is a *picture*: this crate says what it laid out, the console renders into a texture,
-/// and the answer arrives on the **next** frame — deferral costs one frame of "rendering…" and
-/// nothing else. A panel is *widgets*: a dropdown that must open where it was clicked, a drag
-/// that must be read in the same pass it was drawn. There is no texture to hand back a frame
-/// later, so the console's drawing has to happen **inside** this crate's layout, at the point in
-/// the flow the element occupies. Hence a `FnMut` the view calls rather than a `Vec` it returns.
-///
-/// ⚠️ **The contract is otherwise identical, and deliberately so**: this crate knows a panel by
-/// its [`organon_core::panels::Panel`] — a tab, a slug and a title — and cannot see
-/// `OrganicMathParams`, a `ParamSetter` or a `World`, and must not learn to. It hands over a
-/// `Ui` and a name; what appears in it is `console_main`'s business.
-///
-/// A console that draws nothing (every test in this crate, and the terminal front-end) passes a
-/// closure that ignores its arguments. The view then draws the panel's frame and heading with an
-/// empty body, which is honest — the element is in the flow, and this build cannot fill it.
-pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &'static organon_core::panels::Panel);
 
 /// The pictures the console has ready, by element. Absent is normal, not an error: a surface
 /// summoned this frame has no texture until the next one, and a surface the cap evicted has
@@ -728,6 +717,23 @@ pub struct ConversationPane {
     /// the palette changes underneath it, which is what `/theme chocolate` typed while an
     /// editor is open does.
     theme_edit: Option<ThemeEditor>,
+    /// Where a panel summoned here would go, as this frame's [`draw`] was told.
+    ///
+    /// 🚨 **Held rather than passed down through `submit`, because it is a fact about the
+    /// CONSOLE and this crate cannot see one.** The layout lives on `console_main`'s
+    /// `Console`; `draw` is handed the answer at the top of every frame and
+    /// [`ConversationPane::summon_organon`] reads it. Threading it through `scrollback` →
+    /// `composer` → `submit` → `run_command` would be five signatures carrying one value that
+    /// is constant for the frame.
+    panel_home: panel_stack::Home,
+    /// A panel `/organon` asked for this frame, for the console to push onto the stack.
+    ///
+    /// ⚠️ **An output, not an action**, exactly as [`ConversationOutput::theme`] is: this crate
+    /// is handed the *destination* and cannot reach the stack itself — the stack holds
+    /// `&'static Panel`s that only `console_main` can put on screen. Drained into the
+    /// [`ConversationOutput`] at the end of `draw`, after the column, for the reason that
+    /// function's own comment gives about `out` being replaced wholesale.
+    panel_wanted: Option<&'static organon_core::panels::Panel>,
 }
 
 /// A command's answer, shown where the command was typed.
@@ -904,6 +910,11 @@ impl ConversationPane {
             want_caret: false,
             receipt: None,
             theme_edit: None,
+            // The honest opening value: until `draw` is told otherwise, nothing holds a stack.
+            // A pane that has never been drawn refusing `/organon` is correct — there is no
+            // console around it yet.
+            panel_home: panel_stack::Home::Nowhere,
+            panel_wanted: None,
             // Read once, here, rather than per frame: they are switches for a session, and an
             // env lookup inside the draw path would be a syscall per keystroke.
             autorun: autorun_enabled(
@@ -1396,7 +1407,17 @@ impl ConversationPane {
         }
     }
 
-    /// Put one of Organon's editor panels in the flow, or say why not.
+    /// Ask for one of Organon's editor panels **in the panel stack**, or say why not.
+    ///
+    /// 🚨 **A panel does not land in the transcript, and there is no fallback that puts one
+    /// there.** James, 2026-08-20: *"Would we ever want a panel inline? A panel should not
+    /// scroll away. That doesn't make sense."* A transcript is a log and a control is not a log
+    /// entry — a panel is used *while* watching what it changes, and one that scrolls off
+    /// mid-drag was never usable. So with no region holding a stack this **refuses by name**
+    /// and says what would have made one; it does not fall back and it does not quietly do
+    /// nothing, which is `Ring::Empty`'s rule at the scale of a verb.
+    ///
+    /// The push itself is `console_main`'s — see [`ConversationPane::panel_wanted`].
     ///
     /// 🚨 **This is the second gate on the `(tab, panel)` pair, and the last one.** The command
     /// schema declares the panel argument as the *union* of every slug on every tab — one value
@@ -1434,7 +1455,18 @@ impl ConversationPane {
             self.note(message.clone());
             return Receipt { ok: false, text: message };
         };
-        self.transcript.insert_organon(OrganonBlock { panel });
+        let panel_stack::Home::Shown(region) = self.panel_home else {
+            // The refusal a person meets the first time, and the whole of how they learn a
+            // region has to be declared. One sentence, written once, in `panel_stack`.
+            let message = panel_stack::Refusal::NoRegion.to_string();
+            self.note(message.clone());
+            return Receipt { ok: false, text: message };
+        };
+        self.panel_wanted = Some(panel);
+        // ⚠️ **The region is named, not merely implied.** There is one stack and possibly
+        // several regions showing it, so "it went somewhere" would leave a person hunting the
+        // window for a panel that is on screen.
+        self.note(format!("{} → the panel stack in `{}`", panel.title, region.as_word()));
         Receipt { ok: true, text: typed.to_string() }
     }
 
@@ -1816,8 +1848,12 @@ pub fn draw(
     theme: &Theme,
     theme_name: &str,
     form: &Form,
-    organon: OrganonDraw,
+    panel_home: panel_stack::Home,
 ) -> ConversationOutput {
+    // 🚨 **Set before anything is laid out**, because the composer is drawn inside the column
+    // below and a `/organon` line submitted there reads it in the same frame. See
+    // [`ConversationPane::panel_home`] on why it is a field rather than five more parameters.
+    pane.panel_home = panel_home;
     let mut out = ConversationOutput::default();
     // 🚨 **Held out here and assigned after the column, because `scrollback` returns a whole
     // `ConversationOutput` and `out = scrollback(…)` REPLACES the struct.** Writing the
@@ -1843,10 +1879,14 @@ pub fn draw(
         ui.add_space(4.0);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            out = scrollback(ui, pane, images, exhibits, theme, form, organon);
+            out = scrollback(ui, pane, images, exhibits, theme, form);
         });
     });
     out.theme = theme_change;
+    // Held out and assigned here for `theme_change`'s reason, spelled out four lines above:
+    // `out = scrollback(…)` replaces the struct, so anything written onto `out` inside the
+    // column is discarded three lines later, every frame, in silence.
+    out.panel = pane.panel_wanted.take();
     // Last, so nothing the flow draws can cover them — the same call-order enforcement the
     // patch paints rely on, one layer up. At terminal posture this returns without touching
     // the painter.
@@ -1944,7 +1984,6 @@ fn scrollback(
     exhibits: &ExhibitContents,
     theme: &Theme,
     form: &Form,
-    organon: OrganonDraw,
 ) -> ConversationOutput {
     // Collected during the walk and joined after it. A panel is *below* its surface in the
     // ordinary case, but nothing in the model requires that — the link is an id, not an
@@ -2124,14 +2163,6 @@ fn scrollback(
                                 }
                             }
                         },
-                        // Drawn here for the sharpest version of the reason: its widgets are not
-                        // this crate's at all. The frame, the heading and the placement are —
-                        // the body comes from `console_main` through [`OrganonDraw`], and it
-                        // has to run inside this layout because a dropdown opens where it was
-                        // clicked. That type's doc owns the argument.
-                        Body::Organon(block) => {
-                            organon_element(ui, element.id, block, theme, form, organon)
-                        }
                         // The second body drawn here rather than in `draw_element`, and for a
                         // sharper version of the same reason: answering one needs the question
                         // the pane is holding, which `draw_element` has no access to.
@@ -2256,11 +2287,14 @@ fn scrollback(
     // and any group it anchored with it.
     density_map.retain(|id| transcript.get(id).is_some());
     // The scrollback cannot change the palette — only the editor above the composer can, and
-    // `draw` assigns that field from `command_panel`'s answer.
+    // `draw` assigns that field from `command_panel`'s answer. Nor can it summon a panel: a
+    // `/organon` line arrives through the composer, and `draw` drains that field too, for the
+    // same reason and after the same column.
     ConversationOutput {
         surfaces: join_drives(laid_out, drives),
         exhibits: wanted_exhibits,
         theme: None,
+        panel: None,
     }
 }
 
@@ -2329,7 +2363,7 @@ fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme, form: &Form
         // Drawn in the walk rather than here, all three for one reason: they need state that
         // survives between frames (a slider mid-drag, a panel's live widget values) and this
         // function has nowhere to keep it.
-        Body::Artifact(_) | Body::Approval(_) | Body::Tool(_) | Body::Organon(_) => {}
+        Body::Artifact(_) | Body::Approval(_) | Body::Tool(_) => {}
         Body::RunEnd(end) => {
             // Named `outcome` rather than `label`, which is now a function in this module:
             // a local of that name would shadow it and the two calls below would stop
@@ -3021,76 +3055,6 @@ fn panel_element(
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
             ui.label(RichText::new(&artifact.title).monospace().strong().color(theme.panel_title));
             panel_body(ui, spec, state, defaults, theme);
-        });
-        card_left_rule(ui, framed.response.rect, theme, form);
-    });
-}
-
-/// One of Organon's editor panels, in the flow: this crate's frame and heading, the console's
-/// body.
-///
-/// The frame is [`panel_element`]'s exactly — same fill, same corner, same left rule — because
-/// the whole claim of `/organon` is that this is *the same instrument*, not a console-flavoured
-/// imitation of it. What differs is where the contents come from: [`OrganonDraw`], which this
-/// crate calls and cannot see inside.
-///
-/// ⚠️ **`push_id` for [`panel_element`]'s reason, and it matters more here.** Organon's own
-/// widgets are built with egui's positional auto-ids, so two Surface panels in one transcript
-/// would collide on every dropdown and every drag — a knob handing its neighbour's drag state
-/// across, which reads as a panel that fights the hand.
-///
-/// 🚨 **The namespace is the ELEMENT's id, not the panel's slug.** It was the slug until the
-/// first panel went `Status::Live`, and the slug is exactly the wrong choice: two `/organon
-/// look surface` cards in one transcript are two elements with *one* slug, so they would land
-/// in the same namespace and produce the collision this call exists to prevent — while two
-/// *different* panels, which the slug does separate, could never have collided anyway. The bug
-/// was unreachable while every panel drew a single label; it became reachable the moment one
-/// drew widgets.
-///
-/// ⚠️ **A [`Status::Declared`] panel says so where the controls would be, rather than drawing
-/// an empty box.** `/organon` lists every panel of a joined tab and only some are transplanted;
-/// an element that opened to nothing at all would be indistinguishable from one that failed.
-fn organon_element(
-    ui: &mut egui::Ui,
-    id: ElementId,
-    block: &OrganonBlock,
-    theme: &Theme,
-    form: &Form,
-    organon: OrganonDraw,
-) {
-    ui.push_id(id, |ui| {
-        let mut framed = Frame::new()
-            .fill(theme.panel_fill)
-            .corner_radius(form.card_corner())
-            .inner_margin(form.card_margin());
-        if let Some(stroke) = form.card_stroke(theme.panel_edge) {
-            framed = framed.stroke(stroke);
-        }
-        let framed = framed.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(format!(
-                    "◈ organon · {} · {}",
-                    block.panel.tab.word(),
-                    block.panel.title
-                ))
-                .monospace()
-                .strong()
-                .color(theme.panel_title),
-            );
-            match block.panel.status {
-                organon_core::panels::Status::Live => organon(ui, block.panel),
-                organon_core::panels::Status::Declared => {
-                    ui.label(
-                        RichText::new(
-                            "this panel is named in Organon's editor but has not been \
-                             transplanted into the console yet",
-                        )
-                        .color(theme.dim)
-                        .italics(),
-                    );
-                }
-            }
         });
         card_left_rule(ui, framed.response.rect, theme, form);
     });
@@ -6862,18 +6826,53 @@ mod tests {
         assert_eq!(registry.resolve("what does /surface do?"), Resolved::Message);
     }
 
-    /// `/organon look surface` puts the panel in the flow, resolved.
+    /// 🚨 **`/organon look surface` asks the console for a panel in the STACK, and leaves
+    /// nothing in the transcript.**
+    ///
+    /// ✏️ **This test was `organon_summons_a_panel_into_the_transcript` and asserted the
+    /// opposite** — a `Body::Organon` element at the back of the flow. That body is gone:
+    /// James, *"A panel should not scroll away."* A transcript is a log and a control is not a
+    /// log entry, so what a summon produces now is a *request* the console drains
+    /// ([`ConversationOutput::panel`]) plus a note naming the region it went to.
     #[test]
-    fn organon_summons_a_panel_into_the_transcript() {
+    fn organon_asks_the_console_for_a_panel_in_the_stack() {
         let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        pane.panel_home = panel_stack::Home::Shown(crate::region::Region::Left);
+        let before = pane.transcript.len();
         let receipt = pane.summon_organon(
             &serde_json::json!({ "tab": "look", "panel": "surface" }),
             "/organon look surface",
         );
         assert!(receipt.ok, "{}", receipt.text);
-        let last = pane.transcript.elements().back().expect("an element landed");
-        let Body::Organon(block) = &last.body else { panic!("not an Organon body: {:?}", last.body) };
-        assert_eq!(*block.panel, organon_core::panels::LOOK_SURFACE);
+        assert_eq!(pane.panel_wanted, Some(&organon_core::panels::LOOK_SURFACE));
+        assert_eq!(pane.transcript.len(), before, "nothing landed in the flow");
+        // The region is named where a person can read it, not merely implied — there is one
+        // stack and possibly several regions showing it.
+        assert!(
+            pane.log.back().is_some_and(|line| line.contains("left")),
+            "the answer does not say which region: {:?}",
+            pane.log.back()
+        );
+    }
+
+    /// 🚨 **With no region holding a stack there is nowhere for a panel to go, and that is a
+    /// refusal by name — never a fallback and never a silence.** This is the sentence a person
+    /// meets the first time they type `/organon`, and it is the whole of how they learn a
+    /// region has to be declared first.
+    #[test]
+    fn organon_refuses_when_no_region_holds_a_stack() {
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        assert_eq!(pane.panel_home, panel_stack::Home::Nowhere, "the opening value");
+        let before = pane.transcript.len();
+        let receipt = pane.summon_organon(
+            &serde_json::json!({ "tab": "look", "panel": "surface" }),
+            "/organon look surface",
+        );
+        assert!(!receipt.ok, "a panel with nowhere to go is not a success");
+        assert_eq!(receipt.text, panel_stack::Refusal::NoRegion.to_string());
+        assert!(receipt.text.contains("viewport"), "it names the fix: {}", receipt.text);
+        assert_eq!(pane.panel_wanted, None, "nothing was asked of the console");
+        assert_eq!(pane.transcript.len(), before, "and nothing fell back into the flow");
     }
 
     /// `/media` with one picture puts an image exhibit in the flow.
@@ -6986,14 +6985,11 @@ mod tests {
         );
         assert!(!receipt.ok);
         assert_eq!(receipt.text, registry::unmapped_tab("motion"));
-        assert!(
-            !pane
-                .transcript
-                .elements()
-                .iter()
-                .any(|e| matches!(e.body, Body::Organon(_))),
-            "a refused pair leaves no panel behind"
-        );
+        // ✏️ It used to assert no `Body::Organon` landed in the flow; a panel cannot land there
+        // at all now, so what "leaves no panel behind" means is that the console was asked for
+        // nothing — the tab check runs *before* the destination check, so this stays a
+        // statement about the pair rather than about the layout.
+        assert_eq!(pane.panel_wanted, None, "a refused pair asks the console for nothing");
         // …and the refusal is *visible*, not merely returned: it goes into the console's own
         // remarks above the transcript, which is where every other refusal lands.
         assert!(pane.log.len() > notes_before);

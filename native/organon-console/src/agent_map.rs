@@ -1301,7 +1301,6 @@ mod tests {
                 Body::RunEnd(_) => "end",
                 Body::Artifact(_) => "artifact",
                 Body::Approval(_) => "approval",
-                Body::Organon(_) => "organon",
             })
             .collect();
         assert_eq!(

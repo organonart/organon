@@ -216,6 +216,10 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         transcript,
         mapper: EventMapper::new(),
         theme_edit: None,
+        // Nothing is summoned in a bench, so the honest values are "no stack" and "nothing
+        // asked for" — the same pair `ConversationPane::new` opens with.
+        panel_home: crate::panel_stack::Home::Nowhere,
+        panel_wanted: None,
         failure: None,
         composer: String::new(),
         log: VecDeque::new(),
@@ -298,7 +302,7 @@ fn frame(
                 // second time through `content_margin` and every measurement would be taken at
                 // a width neither the caller nor the table names. Posture is not what this
                 // bench varies; width is.
-                let _ = scrollback(ui, pane, images, &Default::default(), theme, &Form::TERMINAL, &mut |_, _| {});
+                let _ = scrollback(ui, pane, images, &Default::default(), theme, &Form::TERMINAL);
             });
         });
     });

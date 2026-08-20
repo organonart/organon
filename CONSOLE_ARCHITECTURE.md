@@ -3895,6 +3895,13 @@ the composer.**
 `/organon` → the eight tabs. `/organon look` → the Look tab's twenty-five panels. `/organon
 look surface` → that panel, as an element in the flow.
 
+✏️ **That last arrow now ends somewhere else: the panel goes into a region's PANEL STACK, and
+there is no transcript home at all** (§1.14, #98 Tier A). *A transcript is a log and a control is
+not a log entry.* Both **rings are unchanged** — the tab, the panel, the two tables they read,
+the dependent hook, the refusals — and everything below about *which* panel and *why it can be
+drawn at all* is untouched. What changed is the **destination**, and it is called out here and
+corrected in place at the two subsections it invalidates rather than being rewritten away.
+
 **Neither ring is a list this console wrote.** The tabs are `organon_core::tabs::UiTab::ALL`,
 which that module already calls "the single source of truth the editor's tab bar iterates". The
 panels are the new `organon_core::panels::PANELS` — and the arrow between it and the editor
@@ -3992,6 +3999,15 @@ The block carries the panel **resolved**, as a `&'static Panel`, not as a `(tab,
 pair is checked once, at the command, and an element holding it would push that check into every
 frame that draws it.
 
+✏️ **`Body::Organon` no longer exists** (§1.14, #98 Tier A): a panel is not an element of a
+transcript at all, so there is no sixth body and no `OrganonBlock`. **Everything above stays
+because the argument is still correct and would be needed again if a panel ever came back** —
+an Organon panel could not have been an `ArtifactContent` arm, and being unable to be an artifact
+was the evidence it was its own body. `conversation.rs` carries the same paragraph as a comment
+where the variant stood, so a reader of the code meets it too. ✏️ The **second** paragraph
+survives verbatim and is now `panel_stack::Entry`'s: the panel is still carried resolved, and the
+reason is still that a `(tab, slug)` pair would push a check into every frame that draws it.
+
 #### The seam: a callback, not a render list
 
 `conversation_view::OrganonDraw` — `&mut dyn FnMut(&mut egui::Ui, &'static Panel)`, passed into
@@ -4004,6 +4020,15 @@ layout, at the point in the flow the element occupies.
 
 The contract is otherwise identical and deliberately so: `organon-console` knows a panel by its
 tab, slug and title, and cannot see `OrganicMathParams`, a `ParamSetter` or a `World`.
+
+✏️ **The type moved to `panel_stack::OrganonDraw` and its address changed with the destination;
+the argument above did not.** It is still a callback rather than a render list, still for the
+reason that a dropdown must open where it was clicked, and still the opposite shape to
+`SurfaceRequest`. What is no longer true is the phrase *"at the point in the flow the element
+occupies"* — a panel occupies a point in a **stack**, and `conversation_view::draw` no longer
+takes this parameter at all. What travels into the conversation view now is the *destination*
+(`panel_stack::Home`), not a way to draw, which is what lets `/organon` refuse **in the composer**
+when nothing holds a stack rather than on a stderr nobody reads.
 
 #### 🚨 The wall: an Organon parameter cannot be written from outside `nih_plug`
 
@@ -4113,7 +4138,10 @@ sidecar the renderer never re-reads.
 
 ⚠️ **One mirror per console, not one per element.** Two `/organon look surface` cards in a
 transcript are two views of one instrument; reading different values off each would make the
-claim the command exists to make false on sight.
+claim the command exists to make false on sight. ✏️ **The cards are in a stack now, not in a
+transcript, and the rule and its reason carry over unchanged** — §1.14 makes the same argument
+one level up to keep the *stack* itself console-wide rather than one per region, and the two are
+the same sentence about the same instrument.
 
 ⚠️ **The write lands one frame later**, because the conversation is drawn after the snapshot is
 published. That is the same arrangement `surface_requests` and `pane_points` already use, for
@@ -4418,6 +4446,10 @@ it a body. `3d` and `media` are not in the vocabulary at all. What this tier buy
 only a hand can judge — whether a half-height conversation is any good — and it buys it without
 touching the engine.
 
+✏️ **`panel` has a body now — see "a scrolling stack" below.** The sentence above is left standing
+because it is what Tier 1 shipped and what the two tiers after it were scoped against; the
+placeholder is gone, `3d` landed in Tier 2b, and `media` is still absent.
+
 #### 🚨 A fourth axis, and the argument is §1.12's word for word
 
 James's earlier framing folded this into the posture, and he changed his mind to this explicitly.
@@ -4718,6 +4750,176 @@ consumer for the wheel to be stolen from. It becomes real the moment a region ho
 scrollable, and the mechanism is already built and tested: `block_panel::pointer_inside` and
 `portal::pointer_inside` are the two precedents, and a region test is the same shape.
 
+#### 🚨 `panel` — a scrolling stack, and where an Organon panel now lives — Tier A
+
+**`organon-console/src/panel_stack.rs`.** A region holding `panel` holds a **scrolling column of
+Organon's own editor panels**, added and removed by verb. James's framing, 2026-08-20: *"instead
+of popping up a panel right above us like we do now in the agent panel, we should be able to pop
+up panels in one of the viewports we have assigned as a panel … so we could create our own stacks
+that would scroll. And that means even if a viewport took up only the top left or top right, we
+could still scroll many panels with the same scrolling mechanism."*
+
+🚨 **The stack REMOVES the blocker rather than working around it.** §2's row recorded the
+obstacle as *"a third word naming which panel, since two rings cannot say it"* — `/viewport
+<region> <content>` already spends both argument rings. A stack dissolves it by splitting the
+sentence in two: `/viewport left panel` declares the region and a **different command** puts a
+panel in it. Nothing here ever needs three rings, and that is a property of the split, not of a
+longer grammar.
+
+📌 **Region size is independent of panel count.** One `egui::ScrollArea` per stack, `auto_shrink`
+off on both axes, sized to the region and nothing else — so a top-left corner scrolls twenty
+panels exactly as a full-height column does. That is what makes assigning a *small* region worth
+doing at all, and it is the property the whole tier exists for.
+
+📌 **`panel_stack::draw` takes its target, and that is a spelling choice made on purpose.**
+`fn draw(ui: &mut egui::Ui, region, stack, theme, form, organon)` — it paints into the `Ui` it is
+handed, through that `Ui`'s own painter, and never reaches for `ctx`, a named layer or the
+window. James's standing note is that *"the entire surface of the console is still itself a 3D
+surface that can have physically based rendering applied to it"* (#17), and `egui → texture` is
+the half the console does **not** have today, unlike `World → texture` which the backdrop, the
+portal and `/surface` all use. 🚨 **Nothing was built toward it** — no offscreen path, no texture
+per region, no producer machinery, because a texture and a copy per region per frame is a real
+cost for a capability nothing uses. What this buys is only that a stack does not *assume* the
+window, so whoever builds #17 has nothing here to unpick. It cost one parameter that was already
+going to be there.
+
+#### 🚨 A panel lives ONLY in a stack — the transcript is not a home for one
+
+James, 2026-08-20: *"I don't know if we would ever want to put an Organon panel in the transcript
+if we have this new paradigm. Would we ever want a panel inline? A panel should not scroll away.
+That doesn't make sense."* The sharp form: **a transcript is a log, and a control is not a log
+entry.** A panel is used *while* watching what it changes, and a control that scrolls off
+mid-drag was never usable. The inline route was the answer to "where does a panel go" from before
+regions existed.
+
+So `/organon <tab> <panel>` targets the stack, and with **no** region holding one it is **refused
+by name**, carrying the command that makes one. It does not fall back to the transcript and it
+does not silently do nothing — `Ring::Empty`'s rule, at the scale of a verb.
+
+⚠️ **Retired deliberately, not left unreachable.** `Body::Organon`, `OrganonBlock`,
+`Transcript::insert_organon` and `organon_element` are **deleted**, and
+`conversation_view::draw` no longer takes an `OrganonDraw` at all — the type moved to
+`panel_stack`, where the only caller now is. An arm nothing can select is an untested branch
+pretending to be a design, which is this file's own phrase. 📌 What made it cheap is in §3's
+ledger: the inline panel was recorded as *"reached, not seen"* — **no human has ever looked at
+one** — so this retires something never validated rather than removing something known to work.
+⚠️ **`/surface` is untouched and is not what this decision is about**: a rendered surface with its
+own controls beneath it is an *artifact travelling with its panel*, a different thing that keeps
+`Body::Artifact` and `ArtifactContent::Panel`.
+
+#### 🚨 ONE stack, console-wide — every `panel` region is a view of it
+
+There is a single `Stack` on `Console`, not one per region. **Two reasons, and the first is
+§1.11's own argument one level up**: `OrganonPanels` is one mirror per console because two
+`/organon look surface` cards are two views of one instrument, and a column that read differently
+in each region would make the claim `/organon` exists to make — *this is the same panel* — false
+on sight.
+
+The second is this file's rule about unreachable arms. The add verb has two rings
+(`<action> <panel>`) and no room for a region word, so a per-region stack would give every region
+after the first a column **nothing could ever put anything into**. A per-region stack becomes
+expressible when a region grows a command line and *is* the context (#98 Tier C); until then one
+stack is the honest model.
+
+⚠️ **What genuinely is per-region is the scroll position** — the scroll area is keyed by the
+region, so two regions showing one stack scroll independently. That is right: they are two
+viewports onto one column, and it is exactly why the id namespace below has to carry the region.
+
+**The destination rule, and it is said out loud.** `/organon`'s answer names **the first region
+holding `panel` in `Region::ALL` order** — largest first, the same determinism that already
+decides which `agent` region gets the live tab. With one stack there is no ambiguity about *what*
+is written; the region is quoted so a person knows which rectangle to look at.
+
+#### 🚨 The id namespace: WHERE it is drawn, never WHAT is drawn — the third instance
+
+§1.11 records this bug fixed twice. `organon_element` scoped its widgets by the panel's **slug**,
+which separates two *different* panels (something that could never collide) while merging two
+elements of the **same** panel. And the typed-value box's key was absolute —
+`Id::new("om_value_edit")` plus the param pointer — correct in the editor where a param appears
+once, and wrong with two Surface elements over one params instance: clicking one value box opened
+a text field in **both**.
+
+A stack is that case from a third direction, and from two at once — **two regions showing one
+stack**, and **two copies of one panel inside a stack**. Both fixes say the same thing and it is
+now stated as the rule: **an Organon panel's egui namespace is its position on screen, never its
+identity.** `panel_stack::draw` pushes `("organon-panel-stack", region.as_word())` and then, per
+panel, the entry's **serial** — a number issued once at push and **never reused**, so removing the
+third panel cannot hand its open dropdown or half-typed value box to the fourth.
+
+⚠️ **Both pushes happen inside `draw`, not in the caller's `Ui`.** `console_main`'s region walk
+*does* salt each child `Ui` with the region word, and if the property rested on that it would be
+pinned by a line in another crate that nothing in `organon-console` can see. Pushing it here makes
+it testable where it is implemented.
+
+🚨 **The test is a mutation test, not an assertion that happens to hold.**
+`two_surface_panels_never_share_a_widget_namespace` draws **four** Surface bodies in one headless
+frame — one stack shown by two regions, two copies inside it — under parent `Ui`s given the
+**same** id salt so the parent can separate nothing, and asserts that the exact key
+`param_sink::value_box` builds (`ui.id().with("om_value_edit").with(<param ptr>)`, with one
+pointer standing behind all four) is distinct at every site. `the_region_and_the_serial_are_both_
+doing_work` then removes each half of the key in turn and requires the namespaces to collapse.
+"They both drew" would have proved nothing.
+
+#### What is in the stack, and what is still an honest line
+
+**Only Look ▸ Surface has a body** — `panels::Status::Live` is Surface and nothing else, and **no
+second panel was transplanted here**: §1.11 requires a hand to confirm the first one moves the
+picture and nobody has done that. The other twenty-four draw their existing *"named in Organon's
+editor but has not been transplanted into the console yet"* line **inside the stack**, so a column
+of them is twenty-four named things rather than twenty-four empty boxes.
+
+**The verb is `organon console stack <action> <panel>`** — `add` or `remove`, then a slug —
+**two required `Choice` rings, `/viewport`'s shape exactly**. `remove` takes out the **last**
+copy of a slug, because the gesture a person means is *undo the one I just added*.
+
+🚨 **Emptying the column is `stack remove all`, and "clear" is deliberately not a third action.**
+The slash grammar fills *required* arguments positionally and *optional* ones by keyword
+(`registry::parse_args`), so an optional trailing panel would make the typed line `/stack add
+panel surface` while the CLI stayed `organon console stack add surface` — one verb with two
+spellings, which is the drift this tree spends most of its refusals preventing. Both words are
+therefore required, and the emptying word rides the **panel** ring as `all`. That is
+`region::CLEAR_WORD`'s own arrangement one module over, on the precedent `console.background`'s
+three backdrop *sources* set: a clearing word travelling in the same argument as the real values.
+⚠️ `add all` is **refused by name** rather than read as "every panel" — filling a column from a
+word somebody typed meaning the opposite is not a convenience.
+
+⚠️ **It is not spelled `panel`.** `/panel` is a *retired* word this console refuses by name, with
+a test pinning the refusal, and re-minting it for a different meaning is how somebody comes to
+type it expecting the old thing. `stack` also names what the verb actually edits: `panel` says
+what a *region* holds.
+
+⚠️ **`Reversal::Permanent`, and the classification is the argued one.** Nothing lands in the
+transcript, which is `viewport`'s case for `Recoverable` — but `clear` discards a column somebody
+assembled and **no single command rebuilds it**, which is `block`'s case for `Permanent`. The
+conservative reading wins, and the practical effect is that autorun can never fire it.
+
+⚠️ **The stack is uncapped, deliberately.** A cap needs a refusal and the refusal could not reach
+the person who caused it: `/organon look surface` is answered in a conversation pane one frame
+*before* the console applies the push, so a full stack would answer "added" and then quietly not
+add. A long column is recoverable with one word; a receipt that lies is not.
+
+#### ⚠️ The wheel over a stack — the consumer §1.14 predicted, arriving
+
+Tier 1 recorded that `term_view` reads the wheel from **raw input** and that this was inert
+because there was one live tab; Tier 2b made the `3d` region the second consumer. **A panel stack
+is the third, and it is the one Tier 1 named**: *"it becomes real the moment a region holds
+something scrollable, and the mechanism is already built and tested."* So every region holding
+`panel` joins the portal and the `3d` region in the rectangle list `term_view::draw` tests
+against — `portal::pointer_inside_any` over a longer list, never a second gesture vocabulary.
+
+⚠️ **Every panel region, not just the first.** They all show the stack and all of them scroll, so
+listing only the one `/organon` names would leave a wheel over the second scrolling text nowhere
+near the pointer. ⚠️ The conversation front-end needs nothing: its scrollback is an
+`egui::ScrollArea` and the region `Ui`s are clipped, so egui's own hover test already answers.
+
+#### What Tier A leaves to B, C and D
+
+**Three columns (`topcenter`)** is Tier B and it is *geometry* — four quadrant bits become six
+cells — so `region.rs`'s bitmask is untouched here. **A command line inside the stack** is Tier C,
+and it is what makes a per-region stack addressable and answers "what does an unassigned region
+show". **A tab per agent region** is Tier D, still blocked on the borrow and nothing else. Saved
+layouts, animated transitions and drag-to-resize stay after all of them, for §1.14's own reason.
+
 #### The lane
 
 Full console lane, not the view lane — `/organon`'s shape would not do, because Tier 2 must
@@ -4756,7 +4958,7 @@ it before writing. Every refusal is therefore spoken at the console end, by name
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
-| Regions, Tier 2 — the content | §1.14 landed the axis in T1 and **`3d` in T2b**: the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule now attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied. What is left is what a region **holds**. **`panel`**, today a named placeholder — the body exists (`OrganonPanels::draw`, §1.11) and what is missing is a *third* word naming which panel, since two rings cannot say it. Then **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before those — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does. 📌 **The one thing `3d` did NOT settle is whether it is any good**: whether a 3D viewport in half a window earns its half, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 |
+| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. Beside those, #98's own **Tier B** (three columns — four quadrant bits to six cells, a geometry change) and **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before those — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
@@ -5059,6 +5261,32 @@ path silently breaks the three-products-simultaneously guarantee that
   whether an editor card reads as an element in a conversation flow is untested. The two
   frames are deliberately different objects drawn to the same spec, and that is exactly the
   kind of claim only a screen settles.
+  ✏️ **The seam moved and the question it was asking has been withdrawn.** `OrganonDraw` now
+  lives in `panel_stack`, and a panel is no longer an element in a conversation flow at all —
+  §1.14 carries the argument (*a transcript is a log and a control is not a log entry*). So
+  "whether an editor card reads as an element in a conversation flow" is not a thing anybody
+  has to answer any more; **"still not seen" survives verbatim**, now about a card in a
+  scrolling column beside the transcript instead of one inside it.
+- 🚨 **The panel stack has never been looked at either, and that is the whole of what a green
+  build leaves open here.** What is verified is code: the four legs plus the root-crate bin
+  tests. What is not: whether a column of Organon's controls **beside** a live transcript reads
+  as the instrument's own editor or as a cramped imitation of it; whether the gap between cards,
+  the scroll bar and the region's own hairline settle into one object or three; whether
+  twenty-four "not transplanted yet" lines stacked in a column read as an honest inventory or
+  as a broken panel — sharper here than in §1.11's version of the same worry, because in a
+  column they are *adjacent* rather than summoned one at a time; and whether `stack` is the word
+  a hand reaches for after typing `/viewport left panel`. **No amount of green answers any of
+  them**, and the id-namespace test, which is the strongest thing in this tier, proves only that
+  four Surface bodies get four distinct egui ids — not that a knob in one moves the picture,
+  which §1.11's item (0) still records as unchecked.
+- ⚠️ **The egui-id collision, third instance — reasoned and now *tested*, but still not
+  reproduced.** §1.11's two fixes were read out of the code rather than found by running
+  anything, and this one was too: a stack plus two regions is the same case from a third
+  direction, worked out before the draw call was written. What is different is that it is pinned
+  by a headless egui frame that draws four Surface bodies and compares the exact key
+  `param_sink::value_box` builds, plus a companion that removes each half of the key and requires
+  the collision back. That is a real test of the property; it is **not** a person clicking one
+  value box and watching whether a text field opens in another.
 - ✏️ **The `PresetValues` route is built and the counts are confirmed.** It was recorded as *"a
   reading of the code, not a working path"* with the caveat that no field had been checked for
   preset capture. All 167 of Surface's distinct parameter fields are present in `PresetValues`,

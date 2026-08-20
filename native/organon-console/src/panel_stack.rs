@@ -1,0 +1,805 @@
+//! **The panel stack — what a region holding `panel` actually holds.**
+//!
+//! [`crate::region`] divides the pane and says what each part is for; this answers what one of
+//! those parts *contains* when the answer is `panel`: **a scrolling column of Organon's own
+//! editor panels**, added and removed by verb. James's framing, 2026-08-20: *"instead of
+//! popping up a panel right above us like we do now in the agent panel, we should be able to
+//! pop up panels in one of the viewports we have assigned as a panel … so we could create our
+//! own stacks that would scroll. And that means even if a viewport took up only the top left or
+//! top right, we could still scroll many panels with the same scrolling mechanism."*
+//!
+//! # 🚨 The stack REMOVES the blocker; it does not work around it
+//!
+//! `CONSOLE_ARCHITECTURE.md` §2 recorded the obstacle to giving `panel` a body as *"a third
+//! word naming which panel, since two rings cannot say it"* — `/viewport <region> <content>`
+//! already spends both of its argument rings. A stack dissolves that: **the region and the
+//! panel are named by different commands.** `/viewport left panel` declares the region;
+//! `/organon look surface` (or `console stack add surface`) puts a panel in it. Neither
+//! sentence ever needs three rings, and that is a property of the *split*, not of a longer
+//! grammar. [`StackCmd`] owns why emptying the column rides the *panel* ring rather than being
+//! a third action word.
+//!
+//! # 📌 Region size is independent of panel count
+//!
+//! One [`egui::ScrollArea`] per stack, sized to the region and nothing else. A top-left corner
+//! scrolls twenty panels exactly as a full-height column does, which is what makes assigning a
+//! small region worth doing at all.
+//!
+//! # 🚨 ONE stack, console-wide — every `panel` region is a view of it
+//!
+//! There is a single [`Stack`] on the console, not one per region. Two reasons, and the first
+//! is the same argument `panel_surface::OrganonPanels` already makes one level down (§1.11,
+//! *"one mirror per console, not one per element"*): two `panel` regions are **two views of one
+//! instrument**, and a column that read differently in each would make the claim `/organon`
+//! exists to make — *this is the same panel* — false on sight.
+//!
+//! The second is this module's own rule about unreachable arms. The add verb has two rings
+//! (`<action> <panel>`) and no room for a region word, so a per-region stack would give every
+//! region after the first a column **nothing can ever put anything into** — an untested branch
+//! pretending to be a design. A per-region stack becomes expressible when a region grows a
+//! command line of its own and *is* the context (issue #98 Tier C); until then one stack is the
+//! honest model.
+//!
+//! ⚠️ What is genuinely per-region is the **scroll position**: the [`egui::ScrollArea`] is keyed
+//! by the region, so two regions showing one stack scroll independently. That is right — they
+//! are two viewports onto one column — and it is why the id namespace below has to carry the
+//! region.
+//!
+//! # 🚨 The id namespace: WHERE it is drawn, never WHAT is drawn
+//!
+//! §1.11 records this bug being fixed twice, and a stack is the same case from a third
+//! direction. `organon_element` scoped its widgets by the panel's **slug**, which separates two
+//! *different* panels (which could never have collided) while merging two elements of the
+//! **same** panel; and the typed-value box's key was absolute (`Id::new("om_value_edit")` plus
+//! the param pointer), so clicking one value box opened a text field in both. Both fixes say
+//! the same thing: **an Organon panel's egui namespace is its position on screen, not its
+//! identity.**
+//!
+//! So [`draw`] pushes `(STACK_ID, region.as_word())` and then, per panel, the entry's
+//! [`Entry::serial`] — a number issued once per push and **never reused**, so removing the
+//! third panel does not hand its widget state to the fourth. The pair `(region, serial)` is
+//! unique across every panel this console draws, and it is pushed *inside this function* rather
+//! than inherited from whatever `Ui` the caller supplies — which is what makes the property
+//! testable here instead of resting on a salt in `console_main.rs`.
+//!
+//! # 📌 [`draw`] takes its target, and that is a spelling choice made on purpose
+//!
+//! It paints into the [`egui::Ui`] it is handed, through that `Ui`'s own painter, and never
+//! reaches for the context, a named layer or the window. James's standing note is that *"the
+//! entire surface of the console is still itself a 3D surface that can have physically based
+//! rendering applied to it"* (organon#17), and `egui → texture` is the half the console does
+//! **not** have today — unlike `World → texture`, which the backdrop, the portal and
+//! `/surface` all use. 🚨 **Nothing here is built toward that**: no offscreen path, no texture
+//! per region, no producer machinery, because a texture and a copy per region per frame is a
+//! real cost for a capability nothing uses, and an arm nothing can select is an untested branch
+//! pretending to be a design. All this buys is that a stack does not *assume* the window.
+//!
+//! # What is NOT here
+//!
+//! No `Console` state and no parameters. A panel's **body** arrives through [`OrganonDraw`],
+//! exactly as it did when a panel was an element in the transcript: this crate knows a panel by
+//! its tab, slug and title and cannot see `OrganicMathParams`, a `ParamSetter` or a `World`.
+
+use egui::{Frame, RichText};
+use organon_core::panels::{self, Panel};
+
+use crate::posture::Form;
+use crate::region::Region;
+use crate::theme::Theme;
+
+/// **How the console draws one of Organon's own panels** — the seam between the two crates.
+///
+/// 🚨 **A callback, not a render list, and the difference is forced.** A *surface* is a
+/// picture: the view says what it laid out, `console_main` renders into a texture and the
+/// answer arrives next frame — deferral costs one frame of "rendering…". A panel is *widgets*:
+/// a dropdown must open where it was clicked and a drag must be read in the pass it was drawn.
+/// There is no texture to hand back later, so the console's drawing happens **inside** this
+/// crate's layout, at the point in the column the panel occupies.
+///
+/// ⚠️ It moved here from `conversation_view` when the transcript stopped being a home for
+/// panels; the contract is unchanged, only its address.
+///
+/// A console that draws nothing (every test in this crate) passes a closure that ignores its
+/// arguments. The stack then draws each panel's frame and heading with an empty body, which is
+/// honest — the panel is in the column, and this build cannot fill it.
+pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &'static Panel);
+
+/// One panel in the column, and the number that gives it its egui namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entry {
+    serial: u64,
+    panel: &'static Panel,
+}
+
+impl Entry {
+    /// The number this entry was issued when it was pushed. **Never reused within a stack** —
+    /// see the module header on why that is what keeps two panels' widget state apart.
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    pub fn panel(&self) -> &'static Panel {
+        self.panel
+    }
+}
+
+/// The console's one scrolling column of Organon panels.
+///
+/// ⚠️ **Deliberately uncapped.** A cap would need a refusal, and the refusal could not reach
+/// the person who caused it: `/organon look surface` is answered in a conversation pane one
+/// frame *before* the console applies the push, so a stack that filled up would answer "added"
+/// and then quietly not add. A long column is recoverable with one word (`stack clear`); a
+/// receipt that lies is not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stack {
+    entries: Vec<Entry>,
+    /// The next serial to issue. Monotonic for the life of the console — it is **not** the
+    /// length, because a removal must not let the next push inherit a departed panel's id.
+    next_serial: u64,
+}
+
+impl Stack {
+    /// The column, top to bottom. The order panels were added in — nothing reorders.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Put a panel at the bottom of the column and answer the serial it was given.
+    ///
+    /// **Duplicates are allowed on purpose.** Two Surface panels in one column are two views of
+    /// one instrument (§1.11), which is a thing somebody comparing two disclosure states
+    /// genuinely wants — and refusing it would be a rule about the *panel* where every other
+    /// rule here is about the *column*.
+    pub fn push(&mut self, panel: &'static Panel) -> u64 {
+        let serial = self.next_serial;
+        self.next_serial += 1;
+        self.entries.push(Entry { serial, panel });
+        serial
+    }
+
+    /// Take out the **last** panel with this slug, or `None` if the column has none.
+    ///
+    /// Last rather than first, because the gesture a person means by `stack remove surface` is
+    /// *undo the one I just added* — and with duplicates allowed, the one they just added is
+    /// the one at the bottom.
+    pub fn remove_last(&mut self, slug: &str) -> Option<Entry> {
+        let at = self.entries.iter().rposition(|e| e.panel.slug.eq_ignore_ascii_case(slug))?;
+        Some(self.entries.remove(at))
+    }
+
+    /// Empty the column. The serial counter is **not** rewound — see [`Stack::next_serial`].
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// What `console stack <action> <panel>` asks for.
+///
+/// **Two words, both required, both a closed `Choice`** — `/viewport`'s shape exactly, and the
+/// reason nothing here ever needs a third ring.
+///
+/// 🚨 **Why "clear" is not a third action word, and this is not ceremony.** The slash grammar
+/// fills *required* arguments positionally and *optional* ones by keyword
+/// (`registry::parse_args`), so an optional trailing panel would make the typed line
+/// `/stack add panel surface` while the CLI stayed `organon console stack add surface` — one
+/// verb with two spellings, which is the drift this tree spends most of its refusals
+/// preventing. Both words are therefore required, and emptying the column rides the **panel**
+/// ring as [`ALL_WORD`]. That is `region::CLEAR_WORD`'s own arrangement one module over: a
+/// clearing word travelling in the same argument as the real values, on the precedent
+/// `console.background`'s three backdrop *sources* set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StackCmd {
+    /// Add this panel to the bottom of the column.
+    Add(&'static Panel),
+    /// Take out the last copy of this panel.
+    Remove(&'static Panel),
+    /// Empty the column — `stack remove all`.
+    Clear,
+}
+
+/// The action words, in the order `--help` should list them.
+///
+/// One table, read by `bin/ctl.rs`'s possible-values parser, by the console's command schema
+/// and by [`StackCmd::resolve`]'s refusal — [`crate::region::REGION_WORDS`]' arrangement, for
+/// its reason: a second hand-maintained copy is how a CLI comes to accept a word nothing can
+/// act on.
+pub const STACK_ACTIONS: &[&str] = &["add", "remove"];
+
+/// The word that means *the whole column* in the panel ring. See [`StackCmd`] on why it lives
+/// there rather than being a third action.
+///
+/// ⚠️ **It is a word, not a panel**, exactly as `region::CLEAR_WORD` is a word and not a
+/// content kind: no [`Entry`] ever holds it, and giving [`StackCmd`] an `Add(all)` arm would put
+/// a value in the enum the draw path must then match and refuse to draw.
+pub const ALL_WORD: &str = "all";
+
+/// The panel ring's whole value space: every slug, then [`ALL_WORD`].
+///
+/// Built from `panels::slugs()` rather than restated, so a panel added to Organon's table
+/// reaches the MCP schema, the slash palette and the CLI's `--help` in the commit that adds it.
+///
+/// ⚠️ **`&'static str`, not `String`, and that is not tidiness.** Both halves already are
+/// `'static` — the slugs are `pub const`s in Organon's table and [`ALL_WORD`] is one here — and
+/// clap's `PossibleValuesParser` converts from `&'static str` but **not** from an owned
+/// `String`, so answering `Vec<String>` would make `bin/ctl.rs` either leak each word or
+/// restate the list. The schema side converts once at its own call site, where an owned
+/// `String` is what `ArgKind::Choice` wants anyway.
+pub fn panel_words() -> Vec<&'static str> {
+    let mut out = panels::slugs();
+    out.push(ALL_WORD);
+    out
+}
+
+impl StackCmd {
+    /// The action word this command travels as.
+    pub fn action_word(&self) -> &'static str {
+        match self {
+            StackCmd::Add(_) => "add",
+            StackCmd::Remove(_) | StackCmd::Clear => "remove",
+        }
+    }
+
+    /// The panel word this command travels with.
+    pub fn panel_word(&self) -> &'static str {
+        match self {
+            StackCmd::Add(p) | StackCmd::Remove(p) => p.slug,
+            StackCmd::Clear => ALL_WORD,
+        }
+    }
+
+    /// Read an action word and a panel word, or say why neither will do.
+    ///
+    /// ⚠️ **Exact, never approximated** — [`crate::region::Region::resolve`]'s rule. The one
+    /// place case is folded is the *panel slug*, because `panels::find` already folds it and
+    /// two spellings of one lookup is how they come to disagree.
+    pub fn resolve(action: &str, panel: &str) -> Result<Self, Refusal> {
+        if !STACK_ACTIONS.contains(&action) {
+            return Err(Refusal::UnknownAction { word: action.to_string() });
+        }
+        if panel.eq_ignore_ascii_case(ALL_WORD) {
+            // 🚨 **Refused by name rather than quietly adding twenty-five panels.** `all` is the
+            // clearing word; reading it as "every panel in the table" would fill the column from
+            // a word a person typed meaning the opposite, and this lane has no undo but the
+            // command itself.
+            return match action {
+                "remove" => Ok(StackCmd::Clear),
+                _ => Err(Refusal::AllIsNotAnAddition),
+            };
+        }
+        let resolved = panels::find_by_slug(panel).ok_or_else(|| Refusal::UnknownPanel {
+            word: panel.to_string(),
+            known: panels::slugs().join(", "),
+        })?;
+        Ok(match action {
+            "add" => StackCmd::Add(resolved),
+            // `remove` is the only other word `STACK_ACTIONS` holds. A catch-all rather than a
+            // second literal, so a third action added to that table without a case here is a
+            // wrong answer `every_action_word_resolves` catches, not a panic in the frame path.
+            _ => StackCmd::Remove(resolved),
+        })
+    }
+}
+
+/// Why a stack command was refused. **Every arm names what was asked and what would have
+/// worked** — a refusal that only says "no" is the defect this console keeps a tally of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    UnknownAction { word: String },
+    /// A slug no panel in `organon_core::panels::PANELS` answers to.
+    UnknownPanel { word: String, known: String },
+    /// [`ALL_WORD`] given to `add`. See [`StackCmd::resolve`].
+    AllIsNotAnAddition,
+    /// `remove` of a panel the column is not holding.
+    NotHeld { slug: String, held: String },
+    /// `remove all` on a column that is already empty. [`crate::region::Refusal::AlreadyEmpty`]'s
+    /// rule: a command that changes nothing and says nothing is indistinguishable from one
+    /// that never arrived.
+    AlreadyEmpty,
+    /// 🚨 **No region holds a stack**, so there is nowhere for a panel to go. Named rather than
+    /// silently dropped, and it carries the command that fixes it: this is the refusal a person
+    /// meets the *first* time they type `/organon look surface`, and it is the whole of how
+    /// they learn a region has to be declared first.
+    NoRegion,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::UnknownAction { word } => write!(
+                f,
+                "`{word}` is not a stack action — known: {}",
+                STACK_ACTIONS.join(", ")
+            ),
+            Refusal::UnknownPanel { word, known } => write!(
+                f,
+                "`{word}` is not one of Organon's panels — known: {known}, or `{ALL_WORD}`"
+            ),
+            Refusal::AllIsNotAnAddition => write!(
+                f,
+                "`{ALL_WORD}` is the word for the whole column, and this verb does not fill a \
+                 column from one command — name a panel to add, or say `stack remove \
+                 {ALL_WORD}` to empty it"
+            ),
+            Refusal::NotHeld { slug, held } => write!(
+                f,
+                "the panel stack is not holding `{slug}` — it holds: {held}"
+            ),
+            Refusal::AlreadyEmpty => write!(
+                f,
+                "the panel stack is already empty, so there is nothing to clear"
+            ),
+            Refusal::NoRegion => write!(
+                f,
+                "no region holds a panel stack, so there is nowhere to put a panel — \
+                 `organon console viewport left panel` makes one (any region word will do), \
+                 then ask again"
+            ),
+        }
+    }
+}
+
+/// Which region's stack a panel summoned from a conversation lands in.
+///
+/// 🚨 **A panel lives only in a stack; there is no transcript home.** James, 2026-08-20:
+/// *"Would we ever want a panel inline? A panel should not scroll away. That doesn't make
+/// sense."* The sharp form is that **a transcript is a log and a control is not a log entry** —
+/// a panel is used while watching its result, and a control that scrolls off mid-drag was never
+/// usable. The inline route was the answer to "where does a panel go" before regions existed;
+/// [`Home::Nowhere`] is refused by name rather than falling back to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Home {
+    /// No region holds `panel`. `/organon` refuses with [`Refusal::NoRegion`].
+    #[default]
+    Nowhere,
+    /// The region a summoned panel goes to. **The first region holding `panel` in
+    /// [`Region::ALL`] order**, which is largest-first — the same determinism `console_main`
+    /// already uses to decide which `agent` region gets the live tab. Carried so the answer can
+    /// *say* which region it used, since there is one stack and possibly several views of it.
+    Shown(Region),
+}
+
+impl Home {
+    /// Where a summoned panel goes, given what the console is holding.
+    ///
+    /// ⚠️ The rule is deliberately the plain one: there is a single console-wide stack, so this
+    /// picks the region whose *name* the answer will quote, not which column is written to.
+    pub fn of(layout: &crate::region::Layout) -> Self {
+        match layout.region_holding(crate::region::Content::Panel) {
+            Some(region) => Home::Shown(region),
+            None => Home::Nowhere,
+        }
+    }
+}
+
+/// The heading one panel wears, wherever it is drawn.
+///
+/// ⚠️ **One caller today, and it is `pub` on purpose rather than by habit.** The same sentence
+/// used to be `format!`ed inside `conversation_view`'s panel element, which is now retired; a
+/// second surface that ever draws a panel — a pie menu's preview, a per-region command line's
+/// echo — asks this rather than writing `"◈ organon · "` again. It is pinned by a test for the
+/// same reason: the mark and the separator are the console's house style, not this module's
+/// taste.
+pub fn heading(panel: &Panel) -> String {
+    format!("◈ organon · {} · {}", panel.tab.word(), panel.title)
+}
+
+/// What a [`panels::Status::Declared`] panel says where its controls would be.
+///
+/// ⚠️ **It says so rather than drawing an empty box**, for `Ring::Empty`'s reason one scale up:
+/// a panel that opened to nothing at all would be indistinguishable from one that failed. Only
+/// Look ▸ Surface is `Live` today and the other twenty-four earn this line.
+pub const NOT_TRANSPLANTED: &str =
+    "this panel is named in Organon's editor but has not been transplanted into the console yet";
+
+/// The gap between two panels in the column, in points. Half a line, so the cards read as a
+/// stack rather than as one long form — and small enough that a region's own edge is still the
+/// strongest horizontal line in the rectangle.
+const GAP: f32 = 6.0;
+
+/// The namespace every stacked panel hangs under. A constant rather than a literal at the
+/// `push_id` site so the test below is naming the same thing the draw path is.
+const STACK_ID: &str = "organon-panel-stack";
+
+/// Draw the column into `ui`, scrolling.
+///
+/// 🚨 **The id pushes are the point of this function existing** — see the module header. The
+/// caller's `Ui` is not trusted to separate anything: `(STACK_ID, region.as_word())` then
+/// `entry.serial()` is pushed here, so two regions showing the same stack, and two copies of
+/// one panel inside a stack, are all independently operable.
+///
+/// ⚠️ **`auto_shrink` is off on both axes**, which is what makes the region's size independent
+/// of the panel count: the scroll area fills the rectangle it was given whether it holds one
+/// panel or twenty.
+pub fn draw(
+    ui: &mut egui::Ui,
+    region: Region,
+    stack: &Stack,
+    theme: &Theme,
+    form: &Form,
+    organon: OrganonDraw,
+) {
+    ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_fill);
+    ui.push_id((STACK_ID, region.as_word()), |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            for entry in stack.entries() {
+                ui.push_id(entry.serial(), |ui| card(ui, entry.panel(), theme, form, organon));
+                ui.add_space(GAP);
+            }
+        });
+    });
+}
+
+/// One panel's frame, heading and body.
+///
+/// The frame is the conversation view's card frame — same fill, same corner, same stroke —
+/// because the whole claim of `/organon` is that this is *the same instrument*, not a
+/// console-flavoured imitation of it.
+fn card(
+    ui: &mut egui::Ui,
+    panel: &'static Panel,
+    theme: &Theme,
+    form: &Form,
+    organon: OrganonDraw,
+) {
+    let mut framed = Frame::new()
+        .fill(theme.panel_fill)
+        .corner_radius(form.card_corner())
+        .inner_margin(form.card_margin());
+    if let Some(stroke) = form.card_stroke(theme.panel_edge) {
+        framed = framed.stroke(stroke);
+    }
+    framed.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(heading(panel)).monospace().strong().color(theme.panel_title));
+        match panel.status {
+            panels::Status::Live => organon(ui, panel),
+            panels::Status::Declared => {
+                ui.label(RichText::new(NOT_TRANSPLANTED).color(theme.dim).italics());
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::region::{Content, ContentCmd, Layout};
+
+    fn surface() -> &'static Panel {
+        &panels::LOOK_SURFACE
+    }
+    fn bloom() -> &'static Panel {
+        &panels::LOOK_BLOOM
+    }
+
+    #[test]
+    fn a_new_stack_is_empty_and_a_push_puts_a_panel_at_the_bottom() {
+        let mut stack = Stack::default();
+        assert!(stack.is_empty());
+        stack.push(surface());
+        stack.push(bloom());
+        assert_eq!(stack.len(), 2);
+        assert_eq!(
+            stack.entries().iter().map(|e| e.panel().slug).collect::<Vec<_>>(),
+            vec!["surface", "bloom"],
+            "the column is in the order panels were added"
+        );
+    }
+
+    /// 🚨 **The property the whole id namespace rests on.** A serial is issued once and never
+    /// reused, so removing a panel cannot hand its egui widget state — an open dropdown, a
+    /// half-typed value box, a drag in flight — to whatever is pushed next.
+    #[test]
+    fn a_serial_is_never_reused_after_a_removal() {
+        let mut stack = Stack::default();
+        let first = stack.push(surface());
+        let second = stack.push(bloom());
+        assert_ne!(first, second);
+        stack.remove_last("bloom");
+        let third = stack.push(bloom());
+        assert_ne!(third, second, "the departed panel's serial came back");
+        assert_ne!(third, first);
+        stack.clear();
+        let fourth = stack.push(surface());
+        assert!(fourth > third, "clearing rewound the counter: {fourth} after {third}");
+    }
+
+    /// Two copies of one panel are two entries with two serials — see [`Stack::push`] on why
+    /// duplicates are allowed at all.
+    #[test]
+    fn two_copies_of_one_panel_are_two_entries() {
+        let mut stack = Stack::default();
+        let a = stack.push(surface());
+        let b = stack.push(surface());
+        assert_ne!(a, b);
+        assert_eq!(stack.len(), 2);
+    }
+
+    #[test]
+    fn remove_takes_the_last_copy_and_answers_none_for_a_panel_not_held() {
+        let mut stack = Stack::default();
+        let first = stack.push(surface());
+        stack.push(bloom());
+        let last = stack.push(surface());
+        let gone = stack.remove_last("surface").expect("a surface was held");
+        assert_eq!(gone.serial(), last, "the LAST copy came out, not the first");
+        assert_eq!(stack.len(), 2);
+        assert_eq!(stack.entries()[0].serial(), first);
+        assert!(stack.remove_last("kaleidoscope").is_none());
+    }
+
+    /// The whole action vocabulary, resolved against a real slug. ⚠️ Driven off
+    /// [`STACK_ACTIONS`] rather than a list written here, so a third action cannot be added
+    /// without this failing — `resolve`'s catch-all arm would otherwise answer `Remove` for it
+    /// in silence.
+    #[test]
+    fn every_action_word_resolves_and_keeps_its_own_word() {
+        assert_eq!(STACK_ACTIONS, &["add", "remove"], "the actions this test knows about");
+        for action in STACK_ACTIONS {
+            let cmd = StackCmd::resolve(action, "surface").expect("a real slug on a real action");
+            assert_eq!(cmd.action_word(), *action);
+            assert_eq!(cmd.panel_word(), "surface");
+        }
+    }
+
+    /// 🚨 **The emptying word rides the panel ring**, and only one action may carry it — see
+    /// [`StackCmd`] on why it is not a third action, and `resolve` on why `add all` is refused
+    /// rather than read as "every panel".
+    #[test]
+    fn all_empties_the_column_on_remove_and_is_refused_on_add() {
+        assert_eq!(StackCmd::resolve("remove", ALL_WORD), Ok(StackCmd::Clear));
+        assert_eq!(StackCmd::resolve("remove", "ALL"), Ok(StackCmd::Clear));
+        assert_eq!(StackCmd::resolve("add", ALL_WORD), Err(Refusal::AllIsNotAnAddition));
+        // …and it survives the round trip, so the sidecar line a `Clear` writes is one this
+        // vocabulary reads back as a `Clear`.
+        let clear = StackCmd::Clear;
+        assert_eq!(
+            StackCmd::resolve(clear.action_word(), clear.panel_word()),
+            Ok(StackCmd::Clear)
+        );
+    }
+
+    /// The panel ring is the slug table plus the one word that is not a panel.
+    #[test]
+    fn the_panel_ring_is_organons_own_slugs_plus_the_clearing_word() {
+        let words = panel_words();
+        assert_eq!(words.last().copied(), Some(ALL_WORD));
+        assert_eq!(words.len(), panels::slugs().len() + 1);
+        assert!(words.contains(&"surface"));
+        assert!(
+            !panels::slugs().contains(&ALL_WORD),
+            "`{ALL_WORD}` became a real slug — it can no longer be the clearing word"
+        );
+    }
+
+    #[test]
+    fn an_unknown_action_and_an_unknown_panel_are_refused_by_name() {
+        let e = StackCmd::resolve("push", "surface").expect_err("`push` is not an action");
+        assert!(e.to_string().contains("push"), "{e}");
+        assert!(e.to_string().contains("add"), "the refusal lists what would work: {e}");
+        let e = StackCmd::resolve("add", "nonesuch").expect_err("no such panel");
+        assert!(e.to_string().contains("nonesuch"), "{e}");
+        assert!(e.to_string().contains("surface"), "the refusal lists the slugs: {e}");
+    }
+
+    /// The slug lookup is case-folded exactly where `panels::find` is, and nowhere else.
+    #[test]
+    fn a_slug_resolves_regardless_of_case() {
+        assert_eq!(StackCmd::resolve("add", "SURFACE"), Ok(StackCmd::Add(surface())));
+    }
+
+    /// 🚨 **Every refusal names the thing it is refusing.** The console's running tally of
+    /// "it knew and said nothing" defects is long enough; this is the cheapest guard against
+    /// adding to it.
+    #[test]
+    fn every_refusal_says_what_would_have_worked() {
+        let cases = [
+            Refusal::UnknownAction { word: "push".into() },
+            Refusal::UnknownPanel { word: "nope".into(), known: "surface".into() },
+            Refusal::AllIsNotAnAddition,
+            Refusal::NotHeld { slug: "bloom".into(), held: "surface".into() },
+            Refusal::AlreadyEmpty,
+            Refusal::NoRegion,
+        ];
+        for case in cases {
+            let text = case.to_string();
+            assert!(text.len() > 30, "a refusal that short cannot be naming anything: {text}");
+            assert!(
+                text.contains('`') || text.contains("stack"),
+                "the refusal names nothing concrete: {text}"
+            );
+        }
+    }
+
+    /// `NoRegion` is the one refusal a person meets before they have learned the vocabulary, so
+    /// it has to carry the command that fixes it verbatim.
+    #[test]
+    fn the_no_region_refusal_names_the_command_that_makes_one() {
+        let text = Refusal::NoRegion.to_string();
+        assert!(text.contains("viewport"), "{text}");
+        assert!(text.contains("panel"), "{text}");
+    }
+
+    /// 🚨 **The destination rule, stated as a test.** The first region holding `panel` in
+    /// `Region::ALL` order — largest first — is the one the answer names.
+    #[test]
+    fn the_home_is_the_first_panel_region_in_region_all_order() {
+        assert_eq!(Home::of(&Layout::default()), Home::Nowhere, "a fresh console has no stack");
+
+        let split = Layout::default()
+            .assign(Region::Left, ContentCmd::Hold(Content::Agent))
+            .expect("left agent")
+            .layout;
+        let one = split
+            .assign(Region::Right, ContentCmd::Hold(Content::Panel))
+            .expect("right panel")
+            .layout;
+        assert_eq!(Home::of(&one), Home::Shown(Region::Right));
+
+        // Two regions holding `panel`, and the answer is the earlier of the two in
+        // `Region::ALL` — `TopLeft` before `BottomLeft`, largest-first order.
+        let corners = Layout::vacant()
+            .assign(Region::TopRight, ContentCmd::Hold(Content::Agent))
+            .expect("an agent first, or the last-agent rule refuses everything")
+            .layout
+            .assign(Region::TopLeft, ContentCmd::Hold(Content::Panel))
+            .expect("topleft panel")
+            .layout
+            .assign(Region::BottomLeft, ContentCmd::Hold(Content::Panel))
+            .expect("bottomleft panel")
+            .layout;
+        assert_eq!(Home::of(&corners), Home::Shown(Region::TopLeft));
+    }
+
+    /// The heading is the one both surfaces read. If this string moves, it moves once.
+    #[test]
+    fn a_panel_heading_names_its_tab_and_its_editor_title() {
+        assert_eq!(heading(surface()), "◈ organon · look · Surface");
+    }
+
+    // -----------------------------------------------------------------------
+    // The id namespace, on a real headless egui context
+    // -----------------------------------------------------------------------
+
+    /// Draw `stacks` — one per region — in one frame, and answer the egui `Id` each panel body
+    /// was handed, in draw order.
+    ///
+    /// ⚠️ **`ui.id()` is what the body actually gets**, and it is the same value
+    /// `param_sink::value_box` folds into its typed-value key. Recording anything else would be
+    /// testing a proxy for the property rather than the property.
+    fn body_ids(stacks: &[(Region, &Stack)]) -> Vec<egui::Id> {
+        let ctx = egui::Context::default();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for (region, stack) in stacks {
+                    // 🚨 **Every region gets a parent `Ui` with the SAME id salt**, which is
+                    // the whole point of the arrangement: the parent contributes nothing that
+                    // could tell two regions apart, so anything this test observes as separate
+                    // was separated by [`draw`] itself. `console_main` does salt its child
+                    // `Ui`s per region — and if that were what this rested on, the property
+                    // would be pinned in another crate by a line nothing here can see.
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt("one-parent-for-every-region")
+                            .max_rect(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(400.0, 500.0),
+                            ))
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    draw(
+                        &mut child,
+                        *region,
+                        stack,
+                        &Theme::default(),
+                        &Form::TERMINAL,
+                        &mut |ui, _panel| sink.lock().expect("no panic in the closure").push(ui.id()),
+                    );
+                }
+            });
+        });
+        let out = seen.lock().expect("no panic").clone();
+        out
+    }
+
+    /// 🚨 **THE test the third instance of the egui-id collision needed.** §1.11 records this
+    /// bug being fixed twice; a stack makes it reachable again from two directions at once —
+    /// **two regions showing one stack**, and **two copies of one panel inside a stack**. Every
+    /// Surface body drawn in a frame must land in its own namespace, or a dropdown opened in
+    /// one opens in all of them.
+    ///
+    /// ⚠️ **It is not enough that they draw.** What is asserted is the exact key
+    /// `param_sink::value_box` builds — `ui.id().with("om_value_edit").with(<param ptr hash>)`,
+    /// with the *same* pointer hash at every site, because there is one params instance behind
+    /// every Surface panel. That is the collision that actually shipped once, and it is what
+    /// "independently operable" means here.
+    #[test]
+    fn two_surface_panels_never_share_a_widget_namespace() {
+        let mut left = Stack::default();
+        left.push(surface());
+        left.push(surface());
+
+        // One stack, shown by two regions — the arrangement §1.14's "one stack, console-wide"
+        // makes ordinary. Four Surface bodies in one frame, over one params instance.
+        let ids = body_ids(&[(Region::Left, &left), (Region::Right, &left)]);
+        assert_eq!(ids.len(), 4, "four panel bodies were drawn");
+
+        let unique: std::collections::HashSet<_> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), 4, "two panel bodies share a namespace: {ids:?}");
+
+        // The real key, with one param pointer standing behind every copy.
+        const PARAM: u64 = 0x0bad_c0de_dead_beef;
+        let keys: std::collections::HashSet<_> =
+            ids.iter().map(|id| id.with("om_value_edit").with(PARAM)).collect();
+        assert_eq!(
+            keys.len(),
+            4,
+            "two value boxes over one param share a slot — clicking one would open a text \
+             field in both, which is exactly the bug §1.11 fixed twice"
+        );
+    }
+
+    /// The counterpart of the test above, and the one that makes it a *mutation* test rather
+    /// than an assertion that happens to hold: strip either push and the namespaces collapse.
+    /// Two stacks whose entries carry the same serials, drawn under one region, must collide —
+    /// which proves the region half of the key is doing work.
+    #[test]
+    fn the_region_and_the_serial_are_both_doing_work() {
+        let mut a = Stack::default();
+        a.push(surface());
+        let mut b = Stack::default();
+        b.push(surface());
+        // Same serial (0) in both stacks, same panel: only the region differs.
+        assert_eq!(a.entries()[0].serial(), b.entries()[0].serial());
+        let ids = body_ids(&[(Region::Left, &a), (Region::Right, &b)]);
+        assert_ne!(ids[0], ids[1], "the region is not part of the namespace");
+
+        // …and within one region, only the serial differs.
+        let mut two = Stack::default();
+        two.push(surface());
+        two.push(surface());
+        let ids = body_ids(&[(Region::Left, &two)]);
+        assert_ne!(ids[0], ids[1], "the serial is not part of the namespace");
+    }
+
+    /// An empty stack draws nothing and asks for no id at all — the region's own "empty" notice
+    /// is what a person sees, and `console_main` owns that sentence.
+    #[test]
+    fn an_empty_stack_draws_no_bodies() {
+        assert!(body_ids(&[(Region::Full, &Stack::default())]).is_empty());
+    }
+
+    /// A `Declared` panel never reaches the body callback: it draws [`NOT_TRANSPLANTED`]
+    /// instead. ⚠️ Twenty-four of the twenty-five panels are in this state, so a stack full of
+    /// them must still be a stack rather than twenty-four empty boxes.
+    #[test]
+    fn a_declared_panel_draws_its_own_line_instead_of_a_body() {
+        let mut stack = Stack::default();
+        stack.push(bloom());
+        stack.push(surface());
+        assert_eq!(bloom().status, panels::Status::Declared);
+        assert_eq!(
+            body_ids(&[(Region::Left, &stack)]).len(),
+            1,
+            "only the transplanted panel asked for a body"
+        );
+    }
+}

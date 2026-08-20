@@ -944,30 +944,20 @@ pub enum Body {
     /// A permission request awaiting a human. Inserted by the console for the same reason
     /// an artifact is, and answered by [`Transcript::answer_approval`].
     Approval(ApprovalBlock),
-    /// One of **Organon's own editor panels**, put into the flow by `/organon`.
-    ///
-    /// 🚨 **Why this is a body of its own and not a third [`ArtifactContent`] arm.** That enum
-    /// is one arm per [`organon_core::kind::Kind`] — the vocabulary the *terminal* front-end
-    /// shares, pinned by `every_shared_kind_has_exactly_one_artifact_arm` — and an Organon
-    /// panel is not in it, because it cannot be: a `Kind` has to be placeable on a text lane
-    /// (`doc/console_patch_protocol.md`), and this is a live egui panel with dropdowns and
-    /// typed numeric entry. Forcing it into that enum would have meant either two arms
-    /// answering `Kind::Panel` — which that test calls "a kind this view cannot address" — or
-    /// widening the shared kind vocabulary with a kind the terminal lane can never honour.
-    /// Being unable to be an artifact is the *evidence* that it is its own body.
-    Organon(OrganonBlock),
-}
-
-/// One of Organon's editor panels, in the flow.
-///
-/// ⚠️ **The panel is carried resolved, as a `&'static`, not as a `(tab, slug)` pair.** The pair
-/// is checked once — where `/organon` is answered, which is the only place that can say
-/// *"Motion has no panel called surface"* while the words are still in the composer. An element
-/// holding the pair would push that check into every frame that draws it, and the failure would
-/// be a panel that renders an error message forever.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OrganonBlock {
-    pub panel: &'static organon_core::panels::Panel,
+    // 🚨 **There was a sixth body, `Organon(OrganonBlock)`, and it is gone on purpose.**
+    // `/organon` used to put one of Organon's editor panels in the flow. It targets a
+    // [`crate::panel_stack::Stack`] now, and there is no transcript home at all — James:
+    // *"A panel should not scroll away. That doesn't make sense."* The sharp form is that a
+    // transcript is a **log** and a control is not a log entry: a panel is used while watching
+    // what it changes, and a control that scrolls off mid-drag was never usable.
+    //
+    // ⚠️ Recorded here rather than merely deleted, because the *argument* for that body is
+    // still correct and would be needed again if a panel ever came back: an Organon panel
+    // could not be an [`ArtifactContent`] arm, since that enum is one arm per
+    // [`organon_core::kind::Kind`] and a `Kind` has to be placeable on a text lane, which a
+    // live egui panel with dropdowns and typed numeric entry is not. Being unable to be an
+    // artifact was the evidence it was its own body. `CONSOLE_ARCHITECTURE.md` §1.14 owns the
+    // retirement.
 }
 
 /// One renderable thing, with stable identity and a turn it belongs to.
@@ -1711,14 +1701,6 @@ impl Transcript {
         Change::Appended(self.append(turn, Body::Artifact(artifact)))
     }
 
-    /// Put one of Organon's editor panels in the flow. [`Transcript::insert_artifact`]'s
-    /// sibling in every respect — same turn, same cap, same eviction — and separate only
-    /// because [`Body::Organon`] is not an artifact; that variant's doc owns the reason.
-    pub fn insert_organon(&mut self, block: OrganonBlock) -> Change {
-        let turn = self.ensure_turn();
-        Change::Appended(self.append(turn, Body::Organon(block)))
-    }
-
     /// Put a permission request in the flow — **where the agent is working**, which is the
     /// end of the current turn, exactly where an artifact lands.
     ///
@@ -1916,10 +1898,7 @@ impl Transcript {
                 // An artifact holds no correlation and no running-ness; the view's
                 // per-element widget state goes with it, keyed off an id that
                 // `Transcript::get` now answers `None` for.
-                // An Organon panel keeps no side-map entry, exactly like an artifact: its live
-                // widget values are the *view*'s, keyed by `ElementId`, and the view drops them
-                // when the element stops resolving. Nothing to unregister here.
-                Body::Human(_) | Body::RunEnd(_) | Body::Artifact(_) | Body::Organon(_) => {}
+                Body::Human(_) | Body::RunEnd(_) | Body::Artifact(_) => {}
             }
             if let Some(i) = self.turn_index(gone.turn) {
                 self.turns[i].retained = self.turns[i].retained.saturating_sub(1);
@@ -2859,7 +2838,6 @@ mod tests {
                         Body::RunEnd(_) => "run_end",
                         Body::Artifact(_) => "artifact",
                         Body::Approval(_) => "approval",
-                        Body::Organon(_) => "organon",
                     };
                     let was = kinds.entry(e.id.0).or_insert(kind);
                     assert_eq!(*was, kind, "{ctx}: element {} changed kind", e.id.0);
