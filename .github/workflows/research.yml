@@ -1,0 +1,356 @@
+name: Research dispatch
+
+# Deep-research evals — `doc/research/README.md` owns the why.
+#
+# Four jobs, and the split between them is the security design rather than tidiness:
+#
+#   validate   every PR that touches the research directory. Read-only. Checks the
+#              mechanical contracts — briefs parse, reports declare their provenance and
+#              name a brief that exists, the fact-pack parsers still find something.
+#   dispatch   builds the dispatch prompts (brief + measured repo state) for a human to
+#              paste into models this workflow cannot reach. No model runs here.
+#   research   THE AUTOMATED LEG. Hands a dispatch prompt to Claude with the repository
+#              checked out, and files the report. Runs at `contents: read`.
+#   publish    takes the report the research job produced and puts it somewhere durable —
+#              a release asset, a pull request. No model runs here either.
+#
+# ⚠️ The model never holds a writable token. `research` cannot push, cannot open a PR and
+# cannot touch a release; everything that writes runs in a job with no model in it,
+# consuming an artifact. That is the same boundary claude-review.yml relies on and says so
+# at length: the tool allowlist is not the security boundary, `permissions:` is.
+#
+# ⚠️ No research run fires on a pull request, deliberately. It costs real tokens and
+# produces a document somebody then has to adjudicate; one per PR would fill
+# `doc/research/reports/` faster than anyone could check it, which is the exact failure the
+# `status: unreviewed` field exists to make visible.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brief:
+        description: 'Brief id, or "all" for the prompt build (see doc/research/briefs/)'
+        required: false
+        default: all
+        # Deliberately a free-text input rather than a `choice`. A choice list would be a
+        # second copy of the brief list, maintained by hand, rotting the first time
+        # someone adds a brief and forgets this file. The script validates the id and
+        # prints the real list on a miss, which is the same answer one hop later.
+      research:
+        description: 'Run the brief against Claude and file a report'
+        required: false
+        default: 'false'
+      model:
+        description: 'Model to research with'
+        required: false
+        default: claude-opus-5
+      open_pr:
+        description: 'Open a pull request adding the report to doc/research/reports/'
+        required: false
+        default: 'true'
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - 'doc/research/**'
+      - 'native/tools/research-brief.py'
+      - '.github/workflows/research.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the research contracts
+        run: python3 native/tools/research-brief.py --validate
+
+      # A report that merges without provenance is the failure this whole directory is
+      # designed against, so name the rule in the log rather than only in a doc.
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo '## Research contracts'
+            echo
+            echo '```'
+            python3 native/tools/research-brief.py --list || true
+            echo '```'
+            echo
+            echo 'Every checked-in report needs front matter (`brief`, `model`, `run_date`,'
+            echo '`commit`, `status`) and a `## Claims` section. A report without them cannot'
+            echo 'be adjudicated, and an unadjudicated report next to `ARCHITECTURE.md` is'
+            echo 'the hazard `doc/research/README.md` opens with.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dispatch:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # only to attach assets to the release below
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the fact pack reports commit count and per-doc last-touched dates
+
+      - name: Build the dispatch prompts
+        env:
+          BRIEF: ${{ github.event.inputs.brief || 'all' }}
+        run: |
+          mkdir -p dispatch
+          if [ "$BRIEF" = "all" ] || [ -z "$BRIEF" ]; then
+            python3 native/tools/research-brief.py --all --out dispatch
+          else
+            python3 native/tools/research-brief.py --brief "$BRIEF" --out dispatch
+          fi
+
+      - name: Put the prompts in the job summary
+        run: |
+          {
+            echo '# Deep-research dispatch'
+            echo
+            echo "Built from \`$GITHUB_SHA\`. Copy a prompt below into each model's deep-research"
+            echo 'mode — **at least three, from different labs**, or the cross-model signal that'
+            echo 'makes the scoreable briefs worth running is lost. File what comes back under'
+            echo '`doc/research/reports/` with front matter and `status: unreviewed`.'
+            echo
+            for f in dispatch/*.md; do
+              echo "<details><summary><code>$(basename "$f")</code> — $(wc -c < "$f") bytes</summary>"
+              echo
+              # FOUR backticks, not three: a dispatch prompt contains fenced blocks of its
+              # own (the commit log in the fact pack, the trace table in one brief), and a
+              # three-backtick wrapper would close on the first of them and spill the rest
+              # of the prompt into the page as rendered Markdown.
+              echo '````markdown'
+              cat "$f"
+              echo '````'
+              echo
+              echo '</details>'
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-dispatch-${{ github.sha }}
+          path: dispatch/
+          retention-days: 90
+
+      # A release is the natural pin for a round: the prompts that shipped with a version
+      # stay fetchable next to it, so a report filed later can be checked against the
+      # exact question that produced it.
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dispatch/*.md --clobber
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # The automated leg. Claude gets the dispatch prompt AND the repository, which is
+  # what separates this from pasting a prompt into a chat window: it can open the files
+  # a claim rests on. `doc-code-fidelity` requires both halves of every finding quoted
+  # with `path:line`, and that is only honestly attemptable with file access.
+  research:
+    if: |
+      (github.event_name == 'workflow_dispatch' && inputs.research == 'true') ||
+      github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read       # THE boundary — the model's token cannot write anything
+      id-token: write
+    env:
+      # `all` is meaningful when building prompts and meaningless when running one, so
+      # collapse it to the scoreable brief — the leg with ground truth in the tree, and
+      # the one whose output is worth the tokens.
+      BRIEF: ${{ (github.event_name == 'release' || inputs.brief == 'all' || inputs.brief == '') && 'doc-code-fidelity' || inputs.brief }}
+      MODEL: ${{ inputs.model || 'claude-opus-5' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build the prompt and an empty report to fill
+        id: prep
+        run: |
+          mkdir -p dispatch
+          python3 native/tools/research-brief.py --brief "$BRIEF" --out dispatch
+          REPORT=$(RESEARCH_SURFACE="GitHub Actions, repository checked out" \
+            python3 native/tools/research-brief.py --new-report \
+              --brief-id "$BRIEF" --model "$MODEL" \
+              --notes "automated run in CI with file access; claims are checkable but NOT checked — adjudicate before citing")
+          echo "report=$REPORT" >> "$GITHUB_OUTPUT"
+          echo "Report file: $REPORT"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}   # required — OAuth path 401s without it
+          prompt: |
+            Carry out a research brief on this repository and write the report.
+
+            1. Read `dispatch/dispatch-${{ env.BRIEF }}.md`. That file is your brief: it
+               contains the question, the scope, the method, the measured repository state
+               and the output contract. Follow it exactly — including the output contract,
+               whose `## Claims` section is machine-read and must keep its shape.
+
+            2. Do the research against THIS tree, which is checked out. Use Read, Grep and
+               Glob. This is the whole reason the job exists: a claim you can anchor to
+               `path:line` is worth more than three you cannot, and a `verified` claim you
+               did not actually open a file to check is the one defect that makes the
+               report unusable.
+
+            3. Write the report into `${{ steps.prep.outputs.report }}`. That file already
+               contains its YAML front matter — **keep those lines byte-identical** and put
+               your report below them. Do not create a different file; a validator checks
+               that exact path and its contract.
+
+            4. Run `python3 native/tools/research-brief.py --validate` and fix anything it
+               reports about your file.
+
+            Do NOT read ARCHITECTURE.md or CLAUDE.md end to end unprompted — ARCHITECTURE.md
+            is ~2,000 lines and both are already in your context. Grep them for the specific
+            claims you are checking.
+
+            Do not commit, push or open anything. Writing the report file is the whole job;
+            a later step publishes it.
+          # A research pass reads many files and writes one long document, so it needs a
+          # far larger turn budget than the review workflow's 60. Write/Edit are allowed
+          # because producing the report file IS the deliverable — and they are safe here
+          # for the same reason the review workflow's allowlist is not the boundary:
+          # `contents: read` above means nothing written can leave the runner except as
+          # the artifact a later job picks up.
+          claude_args: >-
+            --allowedTools
+            "Read,Grep,Glob,LS,TodoWrite,Write,Edit,Bash(python3 native/tools/research-brief.py:*),Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(rg:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(ls:*),Bash(find:*)"
+            --model ${{ env.MODEL }}
+            --max-turns 150
+
+      # If the model wrote nothing, the report is still just front matter and has no
+      # `## Claims` section — so this fails rather than filing a blank as evidence.
+      - name: Check the report against the contracts
+        run: python3 native/tools/research-brief.py --validate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-report-${{ github.sha }}
+          path: doc/research/reports/
+          retention-days: 90
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Research report — \`$BRIEF\` · \`$MODEL\`"
+            echo
+            echo "Commit \`$GITHUB_SHA\`. Status is **unreviewed**: file access makes the"
+            echo 'claims checkable, not checked. Adjudicate them against the tree and record'
+            echo 'the verdicts in `doc/research/FINDINGS.md` before anything cites this.'
+            echo
+            if [ -f "${{ steps.prep.outputs.report }}" ]; then
+              echo '<details><summary>The report</summary>'
+              echo
+              echo '````markdown'
+              cat "${{ steps.prep.outputs.report }}"
+              echo '````'
+              echo
+              echo '</details>'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Publishing — no model here, only the artifact the research job produced. This is where
+  # the write permissions live, and it is why the research job does not need them.
+  publish:
+    needs: research
+    if: always() && needs.research.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # ⚠️ The DEFAULT branch, not the dispatched ref. The research job runs against
+      # whatever branch you dispatched, and checking that out here would branch the report
+      # off it — a PR stacked on another PR, which CLAUDE.md's invariant 5 forbids because
+      # a stacked PR can report "merged" and never reach the main line. It has happened
+      # twice in this repository. A report is an independent change and branches off main
+      # like one; the commit it describes is recorded in its front matter, not in its base.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: research-report-${{ github.sha }}
+          path: doc/research/reports/
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" doc/research/reports/*.md --clobber
+
+      # A report becomes an artifact OF the repository by being merged, not by a bot
+      # committing it. So: a branch and a draft PR, which a person reads and lands — the
+      # same path every other change takes. `status: unreviewed` in the front matter is
+      # exactly what that PR is asking someone to change.
+      - name: Open a pull request with the report
+        if: github.event_name != 'release' && inputs.open_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `git status --porcelain`, NOT `git diff --quiet`. A freshly downloaded report is
+          # an UNTRACKED file, and `git diff` does not see untracked files — so the diff
+          # spelling reported "nothing to file", exited 0, and the job went green having
+          # published nothing. That is the worst shape a bug can take here: the run passes,
+          # the report exists in the artifact, and no one is told it never landed.
+          if [ -z "$(git status --porcelain -- doc/research/reports/)" ]; then
+            echo "::warning::no new report to file — the research job produced nothing new"
+            exit 0
+          fi
+          REPORT=$(ls -1 doc/research/reports/*.md | grep -v 'README.md' | head -1)
+          BRANCH="research/report-${GITHUB_RUN_ID}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add doc/research/reports/
+          git commit \
+            -m "Research report: $(basename "$REPORT")" \
+            -m "Filed by the Research dispatch workflow. status: unreviewed — the claims are
+          checkable, not checked. Adjudicate them into doc/research/FINDINGS.md before
+          anything cites this report."
+          git push -u origin "$BRANCH"
+
+          # The BRANCH is the deliverable; the pull request is a convenience on top of it.
+          # `gh pr create` fails outright when "Allow GitHub Actions to create and approve
+          # pull requests" is off (Settings → Actions → General) — a repository policy, not
+          # an error to route around, and one plenty of repositories keep off on purpose.
+          # Failing the job there would throw away a pushed report over a missing checkbox,
+          # so the fallback prints the one-click compare URL instead and the job stays green.
+          BODY=$(printf '%s\n' \
+            'Filed automatically by the Research dispatch workflow.' '' \
+            '⚠️ **`status: unreviewed`.** File access makes these claims checkable, not checked.' \
+            'Nothing should cite this report — adjudicate its `## Claims` list against the tree' \
+            'and record the verdicts in `doc/research/FINDINGS.md`, which is what later work reads.' '' \
+            'Merging this files the evidence. It does not endorse it.' '' \
+            '---' '_Generated by [Claude Code](https://claude.ai/code)_')
+          if gh pr create --draft --title "Research report — $(date +%Y-%m-%d)" --body "$BODY"; then
+            echo "::notice::opened a draft PR for $BRANCH"
+          else
+            echo "::warning::could not open the PR (Actions may be barred from creating PRs). The report IS pushed."
+            {
+              echo "### Report pushed, PR not opened"
+              echo
+              echo "\`$REPORT\` is on branch \`$BRANCH\`. Open the pull request here:"
+              echo
+              echo "<${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${BRANCH}?expand=1>"
+              echo
+              echo 'If you want this step to open the PR itself, enable **Settings → Actions →'
+              echo 'General → Allow GitHub Actions to create and approve pull requests**.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

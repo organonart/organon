@@ -133,6 +133,7 @@ explains why and how they attach.
 | [`doc/arch/topology.md`](doc/arch/topology.md) | The crate graph, and what may depend on what. |
 | [`MIND_ARCHITECTURE.md`](MIND_ARCHITECTURE.md) | What exists **right now** in Organon Mind, plus its honesty ledger. |
 | [`CONSOLE_ARCHITECTURE.md`](CONSOLE_ARCHITECTURE.md) | The same, for Organon Console. |
+| [`doc/research/`](doc/research/README.md) | **Deep research evals** — the same brief sent to several models, their reports kept as evidence, and the claims that survived checking against the tree. Read [`FINDINGS.md`](doc/research/FINDINGS.md), not the reports. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How changes get made here — start here before writing code. |
 | [`SECURITY.md`](SECURITY.md) | How to report privately, and what the real attack surface is. |
 | [`LICENSING.md`](LICENSING.md) | Why the engine is permissive and the plugin is GPL. |

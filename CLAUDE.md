@@ -67,6 +67,7 @@ already.
 | **`CONSOLE_ARCHITECTURE.md`** | **Organon Console**'s living state | update in the **same change** as every Console PR |
 | **`doc/guide/`** | **the user documentation** — installing into a DAW, the generator/surface/material model, playing it from clips and controllers, presets, output. Narrative and hand-written; describes *mechanisms*, never counts | update when a user-visible behaviour changes |
 | **`doc/reference/`** | every generator / surface / material / parameter / recipe. **GENERATED** by `organon docs` from the prose in `agent.rs` + `recipe.rs`; never hand-edit — a test (`generated_reference_is_current`) fails the build on drift | regenerate in the **same commit** as any description change |
+| **`doc/research/`** | the **deep-research evals** — briefs (the questions), reports (raw model output, kept as evidence) and `FINDINGS.md` (claims adjudicated against the tree). ⚠️ A report is the **least** trustworthy document here; cite `FINDINGS.md`, never a report | file a report per round; adjudicate before citing anything from it |
 | **`CONTRIBUTING.md`** | **the process**: how to scope work, the tier pattern, the review cycle, the verification bar | read before scoping feature work |
 | **`SECURITY.md`** | how to report privately, and what the real attack surface is — including which parts are by design | update when you change a trust boundary |
 | **`LICENSING.md`** | why the licence is split across crates, and what that constrains | read before touching a `license` field |
