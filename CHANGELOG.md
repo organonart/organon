@@ -7,75 +7,632 @@ the issue numbers they reference, stayed private with the original.
 
 From here on, this file gets an entry per meaningful change, newest first.
 
+**New entries are not written into this file.** They are one Markdown file each in
+[`changelog.d/`](changelog.d/README.md), concatenated in here at release time — because a
+single shared insertion point made every pair of open branches conflict by construction.
+`changelog.d/README.md` is the how; `.gitattributes`' `CHANGELOG.md` block is the why.
+
 ---
 
 ## Unreleased
 
-### Deep research evals — the repository as the fixed content
+<!-- Normally empty. New entries are one file each in `changelog.d/`; see `changelog.d/README.md`. Anything that does land here is absorbed by the next release. -->
 
-An eval normally holds the content fixed and varies the model, to score the model. This
-inverts it: **the repository is the content, several models are run over it, and the
-reports are kept as artifacts of the repository.** `doc/research/` is the new home —
-briefs (the questions, hand-written and reviewed), reports (raw model output), and
-`FINDINGS.md` (claims adjudicated against the tree).
+### The Console stops needing the Performer's catalog, and an empty catalog now refuses
 
-`native/tools/research-brief.py` welds a brief to a **fact pack measured at dispatch** —
-commit, crates, binaries and their feature gates, catalog counts, the durable docs, the
-last thirty commits — so a report can always be pinned to the tree it actually saw. The
-dispatch prompt itself is deliberately **not** checked in: it changes on nearly every
-commit, so committing it would produce either constant churn or a drift test that always
-fails, and both train people to ignore it. Briefs and reports are checked in; the thing
-between them is a build artifact.
+organon#49 Tier 5b, first half. `console_main.rs` built its `World` with
+`agent::core_catalog()` — the last thing in that file reaching `param_table`, and so the
+last thing that would have forced `organon-console` to depend upward on the plugin crate.
 
-Four briefs ship. Only one of them — `doc-code-fidelity`, a documentation-drift audit —
-has ground truth in the tree, and saying so is the point: it is the leg that scores the
-models (precision over the claims they marked `verified`) at the same time as it scores
-the docs. `architecture-critique` and `newcomer-comprehension` are partly checkable;
-`product-landscape` is judgement about the outside world and is not scored at all.
-Pretending all four were evals is how this would have become theatre.
+**The Console does not run the AI Performer.** Measured, not assumed: the file contains zero
+references to `agent::dispatch`, `AgentLane`, `ChatMessage`, `HttpChatClient` or
+`system_prompt`, and nothing in it bumps `Shared.agent[1]` — the counter whose movement is
+the only path to `ensure_agent_worker`. So it passes no catalog.
 
-⚠️ **The hazard this is built around.** A model's essay about the codebase is the least
-trustworthy document in a repository whose `ARCHITECTURE.md` is injected into every AI
-session and whose `doc/reference/` is generated and drift-tested — and from a directory
-listing, an agent cannot tell them apart. So every report carries front matter declaring
-its `status` (`unreviewed` / `adjudicated` / `superseded`) and the commit it describes, a
-CI job refuses a report that does not, and `FINDINGS.md` — not the reports — is what later
-work cites. It is the same posture Mind takes toward every quantity it displays: an
-unlabelled number is worse than a missing one.
+⚠️ **Passing an empty catalog is exactly the bug `organon-visual`'s manifest warns about** —
+"would compile, run, and silently gut the agent's prompt", a failure with no error attached
+to it. So the absence is made explicit instead of trusted to a comment:
+`World::ensure_agent_worker` now **refuses** an empty catalog and logs why, rather than
+prompting the model with no vocabulary to actuate. A host with no catalog gets no Performer,
+not a crippled one. Inert for every host that passes a real catalog — `core_catalog()` is
+never empty, so it never fires for the visual, the standalone or the plugin.
 
-**One leg is automated: `.github/workflows/research.yml` hands a brief to Claude with the
-repository checked out.** File access is what makes it worth having — a model that can
-only read a prompt must guess about source, while this one greps the tree, which is the
-difference between an essay about the documentation and an audit of it. It is the only
-configuration in which `doc-code-fidelity`, scored on precision and demanding both halves
-of every finding quoted with `path:line`, can honestly be attempted.
+📌 **Not the whole of 5b.** `look_shared` still starts from
+`OrganicMathParams::default().to_shared()`; that half is next.
 
-⚠️ **The model never holds a writable token.** The research job runs at `contents: read`;
-attaching to a release and opening the pull request that lands the report happen in a
-separate job with no model in it, consuming an artifact. That is the boundary
-`claude-review.yml` already relies on and documents: the tool allowlist is not the security
-boundary, `permissions:` is.
+### The console command lane leaves the plugin crate
 
-**A report becomes an artifact of the repository by being merged, not by a bot committing
-it.** The publish job opens a *draft* PR whose body says outright that merging files the
-evidence and does not endorse it. `status: unreviewed` is what that PR asks a person to
-change.
+organon#49 Tier 5a. `ConsoleOp`, `PortalCmd`, `CameraFraming`, the word tables and the
+whole sidecar wire format — **~395 lines and their 285 lines of tests** — move out of
+`cli.rs` into `organon_core::console_ops`, unchanged. `cli.rs` re-exports the module, so
+every `cli::ConsoleOp` / `cli::parse_console_op` / `cli::PORTAL_WORDS` path in the tree
+resolves exactly as before.
 
-`.github/workflows/research.yml` validates the contracts on every PR that touches the
-directory, and builds the dispatch prompts on demand and on every published release
-(attached to the release, and pasted into the job summary to copy) for the models CI cannot
-reach — the eval premise wants several labs, and one vendor's token buys one vendor's
-opinion. Adjudication stays a human step in every case: it is the half that produces the
-value, and automating dispatch while leaving it undone is what would fill the directory
-with unreviewed essays. **No research run fires on a pull request** — one per PR would fill the
-directory faster than anyone could adjudicate it — and a hosted round still wants several
-labs, which one vendor's token cannot buy.
+📌 **It was never plugin code.** All of `cli.rs`'s nih-plug coupling is two `use` lines
+inside one function (`docs_files`, the `organon docs` generator) and none of it was in this
+section. What kept the console lane upstream was its address, not a dependency — the same
+finding T4c-i made about `agent.rs`.
 
-A **local** model running continuously is recorded as a later tier rather than built. The
-argument for it is economic, not technical: every leg here is priced per run, which makes a
-round an event. Zero marginal cost buys something no vendor sells at a sensible price —
-a standing check on every commit, most of which find nothing, which is exactly why nobody
-would pay for them and exactly why they are worth doing when free.
+It goes to `organon-core` for the reason `kind.rs` is already there: the two ends of this
+channel live in **different crates**. `bin/ctl.rs` writes it from the root crate;
+`console_main.rs` reads it, and Tier 5c moves that reader into `organon-console`.
+
+**The camera limits came with it, and that was not in the plan.** `CameraFraming::in_range`
+validates against `scene_input`'s `PITCH_LIMIT` / `YAW_LIMIT` / `DISTANCE_MIN` /
+`DISTANCE_MAX` — a transitive reference a symbol-level scan does not show. Rather than
+split a type from its validator, the constants moved to a new `organon_core::viewpoint`, with
+`scene_input` re-exporting them. `PITCH_LIMIT`'s own doc had already called this out in
+capitals — *"one number, four readers"* — and named the failure mode: *"an agent comes to be
+refused a value the hand can reach, or granted one it cannot."* Those readers now span three
+crates, so core is the only home where there is still one number. The three `DEFAULT_*`
+travelled too: `--reset` targets them, and leaving them a crate away from the band they must
+land inside is the same hazard wearing a different hat.
+
+### `world.rs` leaves the plugin crate — and stops being compiled twice
+
+organon#49 Tier 4c-ii. **`world.rs` (13 509 lines)**, its nine `#[path]` submodules
+(`capture`, `overlay`, `rt`, `metal_island`, `gpu_timer`, `recorder`, `snap`, `ui_layer`,
+`winit_platform`), the `overlay/` asset directory and three shaders move to
+`organon-world`, behind that crate's new **default-off `world` feature**. The visual
+binary moves too, to a package of its own: **`organon-visual`**.
+
+**Why the world needed a feature.** `native/src/lib.rs` gated `pub mod world` on
+`any(mind-edition, console-edition)` for a measured reason — ungated it grows the shipping
+plugin cdylib by **+490 KB** (12 749 728 → 13 250 704 bytes). `organon-world` is an
+*unconditional* dependency of the plugin crate, so an always-public `world` module there
+would put those bytes straight back. The gate did not change; only the manifest that
+states it.
+
+**Why the binary needed its own package.** `bin/visual.rs` never used the library's
+`world` module — it `#[path]`-*included* `world.rs`'s source, compiling the same 13.5k
+lines a second time. That was the mechanism, not redundancy: a `#[path]` include is not a
+cargo feature, so it gave the visual a world the cdylib did not get. It could not descend
+into `organon-world` either, because the visual is the process that runs the AI
+Performer's worker and so needs `agent::core_catalog()`, which reads `param_table` and
+cannot descend. And it could not stay, because **cargo features unify across every target
+of a package** — the cdylib beside it would have got `world` too. `organon-visual` depends
+on both sides (the plugin crate is `crate-type = ["cdylib", "lib"]`), which makes the
+shipping cdylib unchanged **by construction** rather than by measurement.
+
+✅ **The dual compilation is gone, not relocated** — the world compiles once now. That
+also retires the reason `render.rs` / `rt.rs` had to spell siblings `super::`.
+
+**Unchanged on purpose:** the binary is still named `organic-math-visual` and still builds
+to `target/release/organic-math-visual`, so `spawn_visual()`'s probe and the bundlers'
+copy steps are untouched. Only their `cargo build` lines gained `-p organon-visual`
+(`bundle.sh`, `bundle.ps1`, `verify.sh`).
+
+**Also fixed:** `.claude/hooks/doc-rules.sh` matches trigger paths literally, so
+`doc/arch/render.md`'s rule would have silently stopped firing for every moved file. Its
+list is repointed, and `doc/arch/topology.md`'s — which had never listed `organon-scene`,
+`organon-agent` or `organon-world` — gains the four manifests it was missing.
+### The light theme's whole surface ladder comes down to V ≈ 0.85
+
+James looked at the corrected `#fafbfc` page in a running console and said *"the white part is
+too white. Move it down to about a 0.85 V in the HSV system."* **This is the second, larger
+correction of the same complaint, not a contradiction of the first** — `CONSOLE_ARCHITECTURE.md`
+§3's ledger had already predicted that a 1.18 % reduction "may not be enough" and named this
+exact remedy.
+
+🚨 **The result is a light GREY page, not a white one, and that is what was asked for.**
+`V = 0.851` reads as pale grey card stock. §1.4 says so in as many words so that nobody later
+"fixes" it back toward white.
+
+⚠️ **The page could not move alone.** Light's surfaces climb away from the page by darkening,
+and the page→panel step is the whisper of the four — 3/3/3 per channel against panel→hairline's
+21/19/16 and hairline→strong's 25/23/19. A page dropped to `217` against a panel of `249` sits
+**32 units below it** and *inverts* the ladder: every plate drawn on the page would read as
+raised **out of** the paper instead of recessed into it.
+`the_light_page_stays_a_step_above_the_panel` already pinned that and fails on it.
+
+So the move is a **uniform −35 on every channel of every step**, which keeps all three
+inter-step distances to the unit and keeps each step's cool tilt:
+
+| step | before | after | V before → after |
+|---|---|---|---|
+| page (`LIGHT_PAGE`) | `#fafbfc` | **`#d7d8d9`** | 0.988 → **0.851** |
+| panel (`LIGHT_PANEL`) | `#f7f8f9` | **`#d4d5d6`** | 0.976 → 0.839 |
+| hairline (`LIGHT_HAIRLINE`) | `#e2e5e9` | **`#bfc2c6`** | 0.914 → 0.776 |
+| strong (`LIGHT_STRONG`) | `#c9ced6` | **`#a6abb3`** | 0.839 → 0.702 |
+| `panel_fill` | `#e1e2e3e6` | **`#c2c3c4e6`** | rule 4: the page at `0xe6` |
+| `composer_edge_dead` | `#d19090` | **`#bd7c7d`** | rule 4: error 1:1 into the page |
+| `timeline_scripted_fill` | `#edd2d2` | **`#cdb3b4`** | rule 4: error 20 % over the page |
+| `timeline_bubble_user` | `#d1d9f0` | **`#b4bcd3`** | rule 4: accent 1:5 over the panel |
+
+`217/255 = 0.8510` is the nearest a `u8` gets to `0.85 × 255 = 216.75`. The three earlier
+figures — 8/7/6 of headroom, 2.35 % of HSV value, the 1.18 % spent — are historical: they
+measured the distance to a panel that was never obliged to hold still.
+
+⚠️ **Uniform subtraction does not weaken the ladder, it strengthens it slightly.** sRGB's
+transfer curve makes an equal code-value step a larger luminance ratio lower down, so contrast
+between adjacent steps *rises*: panel-on-page 1.026 → 1.030, hairline-on-page 1.220 → 1.253,
+strong-on-page 1.526 → 1.617. `strong` at `#a6abb3` is a more visible border than `#c9ced6`.
+
+🚨 **What it costs is the text ladder, which deliberately did not move.** `primary #0f1114` is
+untouched at 13.3:1 on the new page, but `secondary #5d636c` falls 5.70 → **4.12** on the panel
+(under AA's 4.5) and `faint #8b919b` falls 3.06 → **2.22** on the page and 2.51 → **1.77** on a
+hairline plate. **No compression of the surface ladder repairs this** — the only fix is a
+darker text ladder, three more roles James specified, so it is costed in §1.4 and not taken
+(`#737983` would restore `faint`).
+
+⚠️ **Two rule-4 derivations had already gone stale and are repaired here.**
+`composer_edge_dead` and `timeline_scripted_fill` are mixes "into the page", were computed
+against the spec's `#ffffff`, and the first correction left them behind — a written rule
+quietly false for a day. `panel_fill` moved only because a test pinned it. New test
+`every_light_plate_mixed_from_a_surface_is_recomputed_from_it` pins all three mixes and the
+invariant that would have caught them for free: **a plate mixed into a surface may never be
+brighter than that surface.**
+
+The four steps are now named constants rather than fifteen repeated literals — the panel is
+five fields, the hairline six, the strong border four, and a third correction spelled as
+fifteen hand-edits is one that lands on fourteen of them. Sharing a constant welds nothing:
+every field still assigns independently.
+
+`cargo test -p organon-console --lib` 647 green (646 before); `cargo test -p organon-core` 557
+green; both `--features console-edition` checks clean. 🚨 **Nobody has seen this ladder on a
+display** — see `CONSOLE_ARCHITECTURE.md` §3.
+
+### `organon-world` — the window layer leaves the plugin crate
+
+organon#49 Tier 4b. `scene_input`, `egui_platform`, `frame_ring` and `audio_ring` —
+**2 294 lines** — move to a new crate that carries `egui` **on purpose** and `nih_plug`
+not at all. `cargo tree -p organon-world` is the acceptance test; unlike core and scene,
+only the nih-plug half of that bar applies here.
+
+**Why a new crate was unavoidable.** `world.rs` needs egui, wgpu and winit together, and
+every existing crate refuses at least one: core and scene forbid all three, `organon-render`
+forbids egui and winit (and its manifest argues at length that it is `world::render`, not
+the world), `organon-console` forbids nih-plug permanently and is the compositor rather than
+the engine. `organon-scene`'s own manifest anticipated this and declined to name it —
+`scene_input` "travels with `world.rs` in Tier 4, to whatever crate hosts the
+egui/wgpu/winit layer." This is that crate.
+
+📌 **One crate, not two.** Splitting the input/window layer from the world would put
+`winit` on one side of a boundary and everything else on the other, with `world.rs` the
+only consumer of both halves — a distinction without a seam.
+
+📌 **The name is the cheapest thing in this change.** Nothing outside the workspace reads
+it: no wire format, no saved state, no installed path, no host identity. It was chosen
+rather than deferred because deferring blocks T4c, and being wrong costs a `git mv` —
+unlike every identifier CLAUDE.md's naming section protects.
+
+🚨 **`recorder` looked like a member and is not one — it is `world::recorder`.**
+`world.rs` declares nine submodules by `#[path]`, and `bin/visual.rs` includes `world.rs`
+the same way, so `#[path = "recorder.rs"]` resolves against *the includer's* directory:
+from the binary it reads `src/bin/../recorder.rs`. Moving the file breaks that, with an
+error **the library build never shows** — `cargo check --lib` does not compile binaries.
+
+It was moved, caught by `cargo check --workspace --all-targets`, and reverted. Reverting
+it is also what took `wgpu`, `half` and `dirs` back out of the new manifest, which is why
+this crate is egui-only today. A second, subtler break came with it: the move had
+rewritten `recorder`'s `organic_math_native::audio_ring` import to `crate::audio_ring`,
+and `crate::` means the *binary* when the file is compiled through `bin/visual.rs`. Both
+failures were invisible to `--lib` and both are now covered by the all-targets check.
+
+⚠️ **`agent` and `cli` are deliberately not here**, though `world.rs` imports them
+alongside these five. They carry `param_table` and `preset`, the plugin's own automation
+surface. The membership rule is the one `organon-scene` was drawn by — a module comes only
+if its shipped code names nothing above it — and widening the crate to swallow them would
+be answering T4c's hard question by pretending it is easy.
+### One Organon panel is live inside Organon Console: Look ▸ Surface
+
+`/organon look surface` used to open an element that said *"this panel is named in Organon's
+editor but has not been transplanted into the console yet"*. It now opens Organon's real Surface
+controls — mode, palette, node bevel, the material maps, the procedural noise layers, and the
+per-surface-mode dials for Metaball, Splat, Swept Tubes, Voxel, Volume, Membrane, Neural Tissue
+and Plexus — driving the World the console is already rendering, with no second process and no
+IPC bridge.
+
+**It is one function, called twice.** `panel_surface::surface_card` is the Surface card;
+`lib.rs`'s Look tab calls it and so does the console. There is no second rendering to keep in
+step, which is the whole claim `/organon` makes: this is the same instrument, not a
+console-flavoured imitation.
+
+**The obstacle was writing a parameter, not drawing one.** There is no public way to write an
+Organon parameter from outside `nih_plug` — `ParamMut` and every setter on it are `pub(crate)`,
+and the one non-host type implementing `GuiContext` lives in a private module of an upstream git
+dependency. The way through is `PresetValues`, a freely writable mirror of the parameter set
+whose fields share their identifiers with `OrganicMathParams` and which has its own
+`to_shared()`. What was actually missing was the *identity* at the widget: `&params.bevel` does
+not tell a writer that it is `pv.bevel`. `param_sink`'s macros supply it by naming the field
+once, so a rename on either side is a compile error.
+
+**The mirror reaches the world as a difference, not as a snapshot.** Only the lanes where the
+panel disagrees with its own starting state are written, so an untouched panel is byte-inert
+over whatever the console had already composed — and no hand-written list of "which lanes the
+Surface card owns" exists to fall out of date. A param added to the card reaches the world for
+free.
+
+Nothing else moved: the editor's Surface card is the same card, its writes still go through the
+host setter gesture-wrapped and automation-recordable, and a console in which nobody opens a
+panel publishes the bytes it published before.
+
+Two known differences from the editor's rendering, both consequences rather than choices: the
+slider *fill* is egui's rather than nih-plug's `ParamSlider` (that widget takes a `ParamSetter`
+in its constructor, so no mirror can drive one), and ↑/↓ inside an open dropdown commits on the
+following frame instead of scrubbing live. Ranges, units, value strings, variant names, help
+text, grid lines and the disclosure logic are all read off the real parameters and are the same
+by construction.
+
+The remaining twenty-four panels are unchanged and still say so.
+
+### `/organon` tells the truth about the seven tabs it cannot open
+
+Two defects James hit within a minute of first use, both of the same kind — the console knew
+and did not say. He typed `/organon generator 2` and was refused with *"`2` is not one of
+surface | colour | material | …"*: the **Look** tab's twenty-five panels, on a line that said
+`generator`. The only available reading is that the word `generator` had not registered. It had.
+
+**A refusal now names the ring it is refusing against.** The panel argument is declared as the
+union of every slug on every tab — a command schema has one value list per argument and no
+notion of a dependent one — and the refusal read that declaration even when the tab was sitting
+in the same line. It asks the narrowing hook first now, so `/organon look 2` answers *"`/organon
+look`: `2` is not one of surface | colour | …"* with the head carrying the words that chose that
+list, and a wrong pair (`/organon motion surface`, a real slug on the wrong tab) is refused in
+the composer instead of a ring further in. The declared union is unchanged: `/help` and the MCP
+schema have no tab in hand, and the union is the honest answer there.
+
+**And an empty ring can no longer be silent.** Only the Look tab's cards are joined to the panel
+table, so the other seven offered a band with nothing in it — indistinguishable from a broken
+one. All eight tabs are still offered, because `UiTab::ALL` is Organon's real hierarchy and
+hiding seven of it would misrepresent the product; the unjoined ones are **marked** `not mapped
+yet — no panels in the table`, counted off the table so a tab stops being marked the day it is
+joined. The narrowing hook's return type carries the change: an empty result now has to arrive
+as `Ring::Empty(reason)`, so the ring, the hint and the refusal read one sentence and a future
+empty ring cannot be built without one.
+
+Seven tabs are still dead ends. What changed is that they say so, in three places.
+
+### `/organon` — the console's rings are Organon's own UI hierarchy
+
+Typing `/organon` in a conversation offers Organon's eight tabs — generator, motion,
+environment, look, synth, audio, settings, mind. Typing `l` settles on `look` on its own and
+the ring underneath changes to that tab's twenty-five panels; `/organon look surface` puts that
+panel into the flow as an element.
+
+Neither ring is a list the console wrote. The tabs come from `UiTab::ALL`, the editor's own tab
+bar. The panels come from a new `organon_core::panels` table, and the arrow points the way that
+cannot rot: Organon's editor now reads its Look-tab card headings *out of* that table, at all
+twenty-five call sites, so a renamed panel is one edit and the compiler finds the other end.
+
+One addition to the command registry made it possible: an entry may carry a narrowing hook, so
+a ring can depend on the ring above it. `ArgKind` is untouched — a dependent variant would have
+been a change at ~30 exhaustive match sites, across the MCP schema generator and the dispatch
+validator, for one verb.
+
+🚨 **Every panel is declared, not live: the ring lists them and the element says it has not
+been transplanted yet.** The blocker is not drawing — it is that **there is no public way to
+write an Organon parameter from outside `nih_plug`**. Every panel widget writes through a
+`ParamSetter`, and `ParamMut`, `ParamPtr::set_normalized_value`, `FloatParam`'s value fields and
+nih-plug's own standalone `Wrapper` are each `pub(crate)` or in a private module. A panel drawn
+without a write path is a panel whose knobs do nothing, which is precisely why `/panel` was
+retired, so none is claimed. `CONSOLE_ARCHITECTURE.md` §1.11 records the wall and the measured
+way through it — the console already owns a `World` in-process, so no second process or IPC
+bridge is involved, and `PresetValues` is a freely-writable mirror of the params with a
+`to_shared()`; what is missing is the identity join at the widget.
+
+### `organon-agent`, and `world.rs` runs out of upward edges
+
+organon#49 Tier 4c-i. After Tier 4b, `world.rs` reached above the plugin crate in exactly
+**two** places — `agent` and `cli`. Both are answered here, and neither the way the issue
+expected.
+
+**`agent.rs` becomes `organon-agent`.** Measured rather than assumed, its entire coupling
+to the plugin was **two functions**:
+
+| Stays in `src/agent.rs` | Reads |
+|---|---|
+| `core_catalog()` | `param_table::pack_*::catalog` — 9 references |
+| `scene_features()` | `preset::{PresetValues, PresetScope, EditorTab}` — 4 |
+
+Everything else — the action set, the override lane, the actuation vocabulary, the
+tool-call parser, the localhost chat client — needed nothing above `organon-core`. The
+crate's **only** dependencies are `organon-core`, `serde` and `serde_json`.
+
+`src/agent.rs` is now a **host adapter**: `pub use organon_agent::*;` plus those two
+functions and the three private helpers (`cam_speed_word`, `hue_word`, `enum_name`) that
+nothing but `scene_features` calls — which is why they travelled with it rather than being
+made `pub` below just to stay reachable. **Every `crate::agent::…` path in the tree still
+resolves**, so no caller moved. That is #626 T3's `HostFuncName` shape for the fifth time
+in this issue.
+
+⚠️ **`param_table` and `preset` could not have descended instead.** They are 3 734 and
+7 383 lines, `preset` names `param_table` 159 times, and `param_table` names `agent`
+*back* — moving them would have dragged the plugin's whole automation surface down and
+turned a two-function seam into a cycle.
+
+📌 **A new crate rather than folding into `organon-core`, on identity not dependencies.**
+Core would have taken it without adding a single dependency. But core is the spine and is
+the crate published to crates.io, so its public API is a standing commitment; an
+OpenAI-compatible chat client is not the spine. Same rule `organon-scene` was drawn by.
+
+**`cli::EyesReq` becomes `organon_core::eyes`.** `world.rs` needed only the `snap`/`record`
+wire format, which reaches *nothing* — no plugin types, no params, not even serde — and
+now sits beside the `ipc::eyes_cmd_path` / `eyes_reply_path` functions it is the format
+**of**, whose doc comment already pointed at it. A separate module rather than more of
+`ipc.rs`, because that file owns the append-only `Shared` layout and a text protocol with
+no layout does not belong inside that invariant. `cli.rs` re-exports; `bin/ctl.rs` is
+untouched. `cli.rs` itself stays put — it reaches `recipe`, `clip` and `preset`.
+
+**`World::new` now takes the catalog.** `world.rs` called `agent::core_catalog()` in one
+place; it receives a `Vec<CatSlot>` instead, and the three construction sites
+(`bin/visual.rs`, `wgpu_editor.rs`, `console_main.rs`) pass `agent::core_catalog()`. That
+is what leaves `world.rs` with **no upward edge at all** for T4c-ii to answer.
+
+⚠️ **The eyes test moved down with the code.** It was testing `EyesReq` from `cli.rs`; left
+there, `cargo test -p organon-core` would never have run it — the exact coverage hole
+`--workspace` exists to close. `organon-core` goes 556 → **557**.
+
+🚨 **A guard fired on prose and it was right to be fixed rather than worked around.**
+Tier 2's `cli_and_agent_are_free_of_nih_plug_outside_tests` substring-scans both files —
+and the new `agent.rs` module doc, whose entire subject is that the code below carries no
+plugin binding, **tripped its own guard by naming it**. The scan now skips comment lines,
+matching `every_param_type_world_names_is_in_core` directly above it, which already did.
+A comment reaches nothing, and a check that fires where there is no defect is a check
+people learn to dismiss. A *trailing* comment on a code line still counts, deliberately:
+a false positive costs a reworded line, a false negative costs a tier.
+### Backspace works again, and a finished command says Enter would run it
+
+Two defects James found in minutes on a running build, both in the command panel that had not
+yet been released.
+
+- 🚨 **You could not delete your way out of a command line.** *"Once I have typed slash
+  surface, I am no longer able to backspace out of it."* Deleting from `/surface` leaves
+  `/surfac`, whose only candidate is still `surface`, whose completion is `/surface` — so the
+  deletion was undone on the frame it happened. Every verb with a unique prefix was a trap
+  (`/background`, `/rig`, `/theme`, `/posture`, `/help`), as was every value once its prefix
+  was unique, and select-all-and-retype was the only way to correct a typo. ⚠️ **Worse than an
+  undo**: accepting rewrites the whole line and puts the caret at its end, so the characters
+  that did come out came from the middle of the word — eight backspaces on `/surface`,
+  measured through real frames, gave `/surface`, `/surfae`, `/surface`, `/surfce`, `/surfc`,
+  `/surface`, `/surace`, `/surac`.
+
+  **The rule is now the one every editor uses: complete on insertion, never on deletion.**
+  Insertion completes exactly as before — that is what opens `/portal`'s argument ring at all
+  — and it is a **latch rather than a per-frame test**, because the frame *after* a backspace
+  is a frame in which nothing changed, so refusing only shrinking frames would re-complete one
+  frame later: the same bug at 60 Hz, presenting as a flicker and invisible to a single-frame
+  test. ⚠️ `Palette::autorun` obeys it too, where the stake is higher — with that switch on,
+  the backspace would have **run** the command it was erasing. ⚠️ The measure is the line's
+  length, so a paste that shortens the line and select-all-then-type both read as deletions;
+  neither can stick, since the next inserted character releases the latch. Pinned by
+  backspacing `/surface` to empty one character at a time through real frames.
+
+- 🚨 **A runnable line said nothing, and a blank panel reads as a broken one.** *"Slash
+  surface shows no options."* `surface` takes no arguments, so there genuinely are none — and
+  `/surface` drew an empty row while `/surface ` made the panel vanish outright. The row now
+  leads with **`Enter runs`** whenever the line as it stands resolves: `Enter runs` for
+  `/surface`, `Enter runs | [reset] | yaw | distance` for `/camera `. `Palette::runnable` has
+  existed since the registry was written and no renderer had ever read it. ⚠️ It leads rather
+  than trails because the row drops from the tail when it does not fit. ⚠️ The fix for the
+  vanishing panel is a third term in `Palette::is_empty` — nothing to offer, nothing to hint,
+  **and nothing to run** — so it cannot be missed by the next surface, the same way `hint()`
+  already could not. Prose still opens no panel at all.
+
+`cargo test -p organon-console --lib` 646 green (640 before); `cargo test -p organon-core` 556
+green; both `--features console-edition` checks clean. ⚠️ **Still nobody has typed into the
+fixed panel** — every claim here is a claim about code and about frames driven headlessly.
+
+### The command panel becomes one row, and the line finishes itself
+
+James used the panel the day it landed and asked for it a tenth the height: *"I want the
+primary mode to be more compact and I want it to be simply a list of the available terms."*
+So `/` now opens a **single full-width row of words** —
+`[background] | rig | theme | posture | block | patch | portal | camera | camera.read |
+surface | help` — with brackets on the one Tab would take. The verbose list is kept whole
+behind `ORGANON_PALETTE_VERBOSE=1`.
+
+🚨 **The words are `Registry::candidates`' own and nothing restates them.** James's sketch of
+the row named eight verbs; the panel shows the true eleven, because curating the list would be
+a second vocabulary in the one place built to prevent one. Where a slot has no closed value
+space the row reads the hint instead (`rows: a whole number`), and where the words outrun the
+pane it counts them (`+9`) rather than truncating — egui's own truncation appends `…`, which
+is in none of its bundled fonts.
+
+📌 **A lone candidate completes itself instead of being shown as a one-item list**, and
+**completing is not running**. Completion is on by default and only rewrites the composer;
+`Palette::autorun` submits, is off by default, and additionally requires a *complete* command.
+`completion != line` is what terminates it, not the loop bound — `/surface` is already its own
+sole completion. `/camera` deliberately does not complete, since `camera.read` matches too.
+This also fixes a design hole James hit from the other side: `/portal` offered no argument
+completions at all, because a line with no trailing space is still naming its verb; taking the
+lone candidate is what opens the ring, so typing exactly `/portal` now shows
+`[open] | close | toggle`.
+
+📌 **Up walks the slash commands you have already sent**, Down comes back, and it does not
+wrap. Ownership of the arrow keys is a pure function (`arrow_owner`): a walk in progress, then
+an open panel, then an empty composer, then the text box keeps them — because a multiline
+`TextEdit` gives Up a real meaning and this is the box a human talks to an agent in. Refusals
+are remembered (that is the line you most want back); prose is not. In memory, for the life of
+the tab.
+
+**Three defects from the panel that shipped four hours earlier, each found on a running
+console:**
+
+- 🚨 **The panel painted over the composer.** `ui.horizontal` seeds its child with
+  `spacing().interact_size.y` (18 pt) while the band was arithmetic over text heights
+  (15.125 pt) — **2.875 pt of overflow per row, measured** — and in a bottom-up column that
+  spills *downward*, over the text box rather than pushing the scrollback up. Ten rows put
+  ~29 pt of panel across the top line of the composer. Rows are allocated explicitly now, and
+  `plate` returns its own overflow so every panel test asserts it is zero.
+- 🚨 **Escape poisoned a line for the life of the tab.** The dismissal was keyed on the
+  composer's *text*, and content equality cannot say "has changed since" — so once `/p` had
+  been dismissed, every future `/p` was silently refused a panel with nothing to explain it.
+  It is now a fact about an edit, watched rather than compared.
+- 🚨 **The log's receipt marker was tofu.** `registry::receipt` opened with `✓` (U+2713),
+  photographed drawing as `☐ /rig daylight` in the pane log and again in the status band. It
+  is the word `ok` now, matching the band above the composer. **The glyph allowlist guard
+  existed and did not catch it** — it walks an enumerated list of draw sites, and a string
+  built in `registry.rs` and drawn in `conversation_view.rs` fell between them. Fourth
+  occurrence of this defect, and every earlier fix was site-local; the guard now checks
+  `registry::receipt`'s output from the file that draws it.
+
+`cargo test -p organon-console --lib` 613 green; `cargo test -p organon-core` 556 green; both
+`--features console-edition` checks clean. ⚠️ **Nobody has seen the compact row** — see
+`CONSOLE_ARCHITECTURE.md` §3 for what that does and does not establish.
+### The light theme's page is no longer pure white
+
+James looked at `light` in a running console and asked for the whitest white turned down.
+It was `#ffffff` on `term_bg` and `term_scrim_tint`; both are now `LIGHT_PAGE` — **`#fafbfc`**,
+stated once so the terminal's background and the scrim laid over the backdrop cannot drift
+apart. The scrim matters more than it sounds: it paints over a *larger* area than the
+terminal, so leaving it white would have kept the complained-about glare and made a scrimmed
+region read brighter than the page beside it.
+
+⚠️ **This is a deliberate departure from a written spec, and it is recorded as one.** The
+`[spec]` comment in `Theme::light` no longer claims a value the code does not have, and the
+test that pins the specified hexes now asserts the page **as an instruction from James**
+rather than quietly relaxing to accept anything.
+
+🚨 **The ladder is what bounds the change, and the room in it is tiny.** Light's surfaces climb
+away from the page by darkening — page → panel `#f7f8f9` → hairline `#e2e5e9` → strong
+`#c9ced6` — and the page→panel step was already the whisper of the four (8/7/6 per channel
+against the next step's 21/19/16). **The entire distance the page may fall before colliding
+with the panel is 6 units on the tightest channel, 2.35 % of HSV value.** `#fafbfc` is the
+panel plus a uniform 3, which spends 3 of those 6 on the glare, leaves a 3-unit step, and
+carries the panel's own cool tilt up to the page — pure white was the only step in the ladder
+with no tilt at all. (The page travels 5/4/3 against 8/7/6 of headroom; blue is the binding
+channel, so that is the one to quote.)
+Anything approaching "a few percent" would have to move the panel too, which is four more spec
+roles and James's call rather than this change's.
+
+`panel_fill` moved with it (`#e6e6e6e6` → `#e1e2e3e6`) because derivation rule 4 states it as
+*the page premultiplied at `organon`'s own `0xe6`* — leaving it behind would not have been
+"not touching a patch panel", it would have been a written rule quietly becoming false.
+
+New test `the_light_page_stays_a_step_above_the_panel` pins the ordering, a minimum step, the
+uniform-offset rule and rule 4's premultiply. While the page was `#ffffff` the ordering was
+free — nothing can be brighter than white — and it is now editable, with a silent and
+*inverting* failure: a page darker than its panel makes every plate drawn on it read as raised
+out of the paper instead of recessed into it, which is the opposite of the whole metaphor.
+### Organon Console has a window icon — the aperture mark, instead of the OS default
+
+Two concentric rings and a centre dot in warm gold on near-black, ticked at N/E/S/W. The SVG
+lives at `native/assets/chrome/`, and the rasters generated from it are compiled into the
+binary and handed to winit at window creation.
+
+🚨 **"It shows the default icon" was two defaults, set by two unrelated APIs.**
+`with_window_icon` is winit's portable call and on Windows reaches `ICON_SMALL` alone — title
+bar and Alt-Tab. The **taskbar button** is `ICON_BIG`, reachable only through
+`WindowAttributesExtWindows::with_taskbar_icon`. Setting the portable one alone would have
+looked like a fix and left the most visible of the three untouched.
+
+📌 **The pixels are committed, not rasterised at build time.** A `resvg` build-dependency
+would keep the SVG as the single source, but the root crate has no build script today and it
+builds the plugin cdylib, the standalone, the visual, the CLI and three editions — all of
+which would grow one so that a single window could have an icon. Committing the rasters adds
+**no dependency at all** (`image` is already here). The drift that buys is paid for in the
+open: the SVG sits beside them, `assets/chrome/README.md` has the regeneration command, and
+two tests pin the rasters' dimensions and opacity so a broken asset fails at test time rather
+than shipping a window whose icon quietly did not load.
+
+⚠️ **The mark does not survive 16×16.** Rendered, magnified and looked at: the outer ring's
+3 px stroke lands on 0.4 px, the inner ring's on 0.19 px, the ticks and centre dot disappear.
+32×32 is the floor. No 16 px raster is committed — that would only hand Windows an illegible
+bitmap to prefer over a downsample of a good one. A legible small size needs a hinted variant
+of the drawing, which is an artwork decision.
+
+⚠️ **Console only**, gated on `console-edition`. Organon and Organon Mind are separate
+products with their own identity; the mechanism would work for them and is deliberately not
+wired up. The **executable** icon (Explorer, pinned shortcuts) is a different mechanism — a
+Win32 resource and a `.ico` — and is not done.
+### Tune the palette while looking at it — `/theme edit`
+
+`/theme edit` (or `/theme adjust` — James named both and neither is the alias) opens a live
+colour editor in the band above the composer, the region the command palette already owns.
+It shows the palette one group at a time — the transcript, cards, the status strip, the
+composer, the terminal, patch panels, the timeline, the tab strip — with a swatch, the field's
+own name, and **an H/S/V editor on every row**. Tab moves between groups, the arrows pick a
+colour, Escape closes. Every drag repaints immediately.
+
+The loop it replaces was: edit a hex literal in `theme.rs`, rebuild, relaunch, look — about
+seven minutes to evaluate a change that takes a second to judge. The immediate case was
+`light`'s whitest white being too bright, but the point is the class, not the colour.
+
+🚨 **The sixty-eight colours are enumerated in exactly one place.** `theme.rs`'s
+`colour_fields!` macro generates `Theme::fields`, `fields_mut`, `SCALAR_FIELDS` and `GROUPS`
+from a single grouped list, so a colour added later is editable, storable and on a ring
+without anyone remembering to add it three more times. Rust has no reflection, so the list is
+hand-written — which makes the guard the real work:
+`every_colour_a_palette_can_differ_in_is_reachable` copies field-by-field through the accessor
+between **every ordered pair** of the four palettes and demands the result equal the source, so
+a missing field fails by name. Its one blind spot — a colour all four palettes agree on to the
+byte — is stated in the test rather than left to be discovered.
+
+🚨 **HSV is the truth while the editor is open, not the RGB.** RGB → HSV → RGB does not
+round-trip, and not as a rounding error: a grey has no hue at all, so an editor re-deriving HSV
+each frame would show red the instant a colour went neutral, and dragging saturation back up
+would return red rather than the blue it had been. The editor holds the `Hsva` of every field a
+hand has touched, keyed **by field**. ⚠️ That is also why it does not use egui's own
+`color_picker_color32`, which solves the same problem with a cache keyed by *colour value* —
+and this palette deliberately has four fields holding `#c8e6c8` on purpose, which that cache
+would weld together.
+
+📌 **What persistence means, said out loud.** Three things, deliberately not gated on each
+other: every drag **repaints** and writes nothing; **save** stores the *difference* from the
+compiled palette, filed under that palette's name; **revert** drops the overrides and returns
+to the palette this build ships. The head row carries an `unsaved` count whenever the working
+palette differs from the store — a tuning session that evaporates at exit without having said
+so is worse than no editor.
+
+⚠️ Overrides are stored **per palette** (`preferences.json`'s new `theme_overrides`), because
+"`light`'s white is too bright" says nothing about `chocolate`'s graphite; a flat map would
+apply one palette's correction to another and the result would read as the palette being
+broken. Only the tuned colours are written, so a later build that improves a shade nobody
+touched still reaches you. A stored colour naming a field this build lacks is **skipped with a
+line**, never a refusal of the whole file.
+
+⚠️ `edit` and `adjust` are **values of `/theme`'s existing argument**, not a verb of their own,
+which is what makes them complete for free from the same `Choice` the palette names come from.
+On the CLI and the MCP lane they are refused by name, saying where the surface actually lives —
+neither has a band above a composer to draw a dialog in.
+
+🚨 **Nobody has seen it.** `cargo test -p organon-console --lib` is 630 green and all four
+checks pass; that is the whole claim. Whether an H/S/V row is enough to judge a colour by, and
+whether eight rows is the right window, are questions about a running window.
+
+### A command palette above the composer — see your choices while you type
+
+`/` now opens a full-width panel listing every verb with its description; a keystroke narrows
+it, Tab completes the highlighted one, and values complete the same way, so `/theme ch` leaves
+`chocolate`. The precedent is NeoVim's `which-key`, and the point is the same: never ask
+anyone to remember a hierarchy you could simply show them.
+
+🚨 **Candidate generation is a pure function returning structured values**
+(`Registry::candidates` → `Palette` of `Candidate`), with no egui and no formatted rows,
+because **three surfaces draw one list**: this panel, the pie menu (whose three rings are
+`groups()` → `verbs_in()` → an argument's `Choice`), and `/help`. A `Candidate` carries the
+**whole line** accepting it would produce, so accepting is `line = completion` and asking
+again yields the next ring — the entire loop a renderer implements. Nothing restates a
+vocabulary: the options are `Theme::NAMES` and `substrate_materials`' own tables, and a
+`Float` argument hands over its band instead of a list.
+
+📌 **Tab completes, Enter runs, and they are never the same key.** The composer is also where
+a human talks to the agent, so the send key means one thing always. Enter with one candidate
+left is deliberately *not* an accept: `/theme` is unique and still incomplete, and one key
+that either runs an incomplete command or silently rewrites the line is worse than a refusal
+that names what is missing and leaves the words in the box.
+
+🚨 **Auto-execute exists and is off** (`ORGANON_PALETTE_AUTORUN=1`). It fires only when
+exactly one candidate remains **and** that candidate completes the command — so `/s` runs
+`surface`, and `/t` does not run `theme`, because a command firing while the hand is still
+typing its argument is the failure the guard is for.
+
+⚠️ **The panel only exists for a line that is a command** — `Registry::resolve`'s own test,
+so a sentence mentioning `/surface` still reaches the agent and `//` still escapes. A refused
+command still does not clear the composer.
+
+🚨 **The same region is where a command answers.** A slash command's receipt went to the pane
+log, which draws at the head of the scrollback — invisible in any conversation longer than a
+screen, which is how `/posture desktop` came to look like it had failed. The band now shows
+it where it was typed, structurally distinct from a candidate list, and **a refusal outlives a
+success**: success ages out, a refusal holds until the line is edited.
+
+⚠️ `lock_focus(true)` on the composer is what makes Tab available at all — egui's focus
+manager reads Tab out of the raw input before any console code runs — and Escape *blurs* the
+composer for the same reason, so the panel re-requests focus rather than pretending it can
+stop it.
+
 ### The last six params between `world.rs` and the plugin crate
 
 organon#49 Tier 4a. `FdtdSource`, `FieldVolSource`, `ColourMode`, `CalColourSource`,

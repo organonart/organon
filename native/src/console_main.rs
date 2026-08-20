@@ -56,6 +56,8 @@ use std::sync::Arc;
 
 use organic_math_native::agent;
 use organic_math_native::cli;
+use organic_math_native::console_icon;
+use organic_math_native::panel_surface::OrganonPanels;
 use organic_math_native::params::OrganicMathParams;
 use organic_math_native::scene_input;
 use organic_math_native::substrate_camera::SubstrateRig;
@@ -67,13 +69,17 @@ use organon_core::edition::EDITION;
 use organon_core::ipc;
 use organon_core::kind;
 use organon_console::block_anchor::Block;
-use organon_console::block_panel::{BlockAction, BlockPanel, Patch};
+use organon_console::block_panel::{BlockAction, BlockPanel, Patch, PatchContent};
 use organon_console::camera;
 use organon_console::command::{
-    ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, TargetKind,
+    ArgKind, ArgSpec, CommandError, CommandService, CommandSpec, CommandTarget, Reversal,
+    TargetKind,
 };
 use organon_console::conversation::ElementId;
-use organon_console::conversation_view::{self, ConversationPane, SurfaceImages, SurfaceRequest};
+use organon_console::conversation_view::{
+    self, ConversationPane, ExhibitContent, ExhibitContents, ExhibitRequest, SurfaceImages,
+    SurfaceRequest,
+};
 use organon_console::harness::{self, HarnessSpec};
 use organon_console::platform::Platform;
 use organon_console::portal::{self, PortalState};
@@ -372,7 +378,6 @@ fn look_shared(source: BackdropSource, look: &ConsoleLook) -> Box<ipc::Shared> {
 fn initial_shared(source: BackdropSource) -> Box<ipc::Shared> {
     look_shared(source, &ConsoleLook::default())
 }
-
 // ---------------------------------------------------------------------------
 // The console command lane (#4 Tier 2)
 // ---------------------------------------------------------------------------
@@ -384,9 +389,32 @@ const CMD_BACKGROUND: &str = "console.background";
 /// See [`CMD_BACKGROUND`].
 const CMD_RIG: &str = "console.rig";
 /// See [`CMD_BACKGROUND`]. #38: the console's own palette, not the substrate's dressing.
-const CMD_THEME: &str = "console.theme";
+///
+/// ⚠️ **Aliased to the registry's spelling rather than written out again**, because this is the
+/// one console verb the conversation view has to *recognise* as well as forward: two of its
+/// argument values open the live colour editor in that crate's own band (§1.10) instead of
+/// dispatching. Two string literals would compare equal today and stop comparing equal the day
+/// somebody renames the verb — and the symptom would be `/theme edit` quietly dispatching as an
+/// unknown palette name rather than opening anything.
+const CMD_THEME: &str = organon_console::registry::VERB_THEME;
 /// See [`CMD_BACKGROUND`]. #38: how the console holds itself, on the terminal↔desktop axis.
 const CMD_POSTURE: &str = "console.posture";
+/// See [`CMD_BACKGROUND`]. Whether the window covers the display — **a third axis, orthogonal
+/// to [`CMD_POSTURE`]**, not a value of it. `organon_console::screen`'s header owns the
+/// argument; the one-line form is that a posture is a set of form tokens and full screen moves
+/// none of them.
+///
+/// ⚠️ **Named for the WINDOW's state, and deliberately not "fullscreen".**
+/// `CONSOLE_ARCHITECTURE.md` §2's seams table reserves the phrase *full screen* for a portal state
+/// that is still unbuilt — the portal taking the whole window, after `immersive` and before the
+/// animated grow. Two different rectangles can each be described as going full screen, so this
+/// verb says which one it moves.
+const CMD_SCREEN: &str = "console.screen";
+/// See [`CMD_BACKGROUND`]. **How the pane inside the window is divided, and what each part
+/// holds** — a fourth axis, orthogonal to the posture and the screen both. `organon_console::
+/// region`'s header owns the argument; the short of it is that a split changes none of `Form`'s
+/// tokens and does not move the window, so it is neither of the two verbs beside it.
+const CMD_VIEWPORT: &str = "console.viewport";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
@@ -400,6 +428,12 @@ const CMD_CAMERA: &str = "console.camera";
 /// The single argument the two **dressing** verbs take. One name, because the sidecar's wire
 /// form is `<verb> <word>` and inventing two spellings for one slot is how a schema drifts
 /// from its transport.
+///
+/// ⚠️ `registry::THEME_ARG` is the conversation view's copy of this one slot name — it reads the
+/// value out of a dispatch payload to see whether `/theme` was asked to open the editor.
+/// [`tests::the_theme_verbs_slot_name_is_the_one_the_view_reads`] pins the two together; they
+/// cannot be aliased in the same direction as [`CMD_THEME`] because this name is shared by
+/// three verbs and only one of them is read over there.
 const CMD_ARG: &str = "name";
 /// [`CMD_BLOCK`]'s argument. A **second** slot name rather than a reuse of [`CMD_ARG`],
 /// because it is a different kind: `name` is a `Choice` over a table and `rows` is an `Int`,
@@ -418,6 +452,15 @@ const CMD_KIND: &str = "kind";
 /// wrong thing. The `Choice` is built from `cli::PORTAL_WORDS`, so the schema, the CLI's
 /// `--help` and the parser are three renderings of one table.
 const CMD_STATE: &str = "state";
+/// [`CMD_VIEWPORT`]'s two slots. **Two named slots rather than one `Choice` of nine × three
+/// pairs**, because they are two independent value spaces and a palette that offered
+/// `left-agent` as a word would be describing a thing neither table contains — and the second
+/// ring is what makes the verb completable: `/viewport left ` then narrows to what a region can
+/// hold. Neither is [`CMD_ARG`] or [`CMD_STATE`], on [`CMD_ROWS`]' rule: a region is not a
+/// `name`, and `agent` is not a *state* the way `open` and `full` are.
+const CMD_REGION: &str = "region";
+/// See [`CMD_REGION`].
+const CMD_CONTENT: &str = "content";
 /// [`CMD_CAMERA`]'s four slots. Named per axis rather than as one `axis` + `value` pair,
 /// because framing a shot is **one intent**: a caller that wants to be closer *and* a little
 /// above says so once and the viewpoint moves once, instead of travelling through an
@@ -467,6 +510,9 @@ fn console_specs() -> Vec<CommandSpec> {
                 kind: ArgKind::Choice(backgrounds),
                 required: true,
             }],
+            // Every backdrop is one command away from every other, including the one it
+            // replaced. See [`Reversal`] — the rule and its reason live there.
+            reversal: Reversal::Recoverable,
         },
         CommandSpec {
             name: CMD_RIG.into(),
@@ -477,20 +523,37 @@ fn console_specs() -> Vec<CommandSpec> {
                 kind: ArgKind::Choice(rigs),
                 required: true,
             }],
+            reversal: Reversal::Recoverable,
         },
         // The palette's vocabulary is `Theme::NAMES` itself, on `console.patch`'s rule and for
         // its reason: it is the same table `Theme::resolve` refuses against and the same one
         // `bin/ctl.rs` builds its `--help` list from, so a fifth palette reaches all three
         // surfaces in the commit that adds it.
+        // 🚨 **`edit` and `adjust` are values of this argument, not a verb of their own**, and
+        // that is what makes the live editor completable for free: `/theme ` already lists this
+        // `Choice`, so the two words narrow beside the palette names with no second table and
+        // no change to §1.9's candidate machinery. A verb (`/themeedit`) would have needed its
+        // own entry, its own doc and its own ring, to say a thing about the palette that
+        // `/theme` is already the word for.
         CommandSpec {
             name: CMD_THEME.into(),
             doc: "Every colour the console paints. Live, and stored as a preference".into(),
             target: TargetKind::Viewport,
             args: vec![ArgSpec {
                 name: CMD_ARG.into(),
-                kind: ArgKind::Choice(Theme::NAMES.iter().map(|s| (*s).to_string()).collect()),
+                kind: ArgKind::Choice(
+                    Theme::NAMES
+                        .iter()
+                        .chain(organon_console::theme_edit::EDIT_WORDS.iter())
+                        .map(|s| (*s).to_string())
+                        .collect(),
+                ),
                 required: true,
             }],
+            // ⚠️ Including `edit`/`adjust`: the colour editor is a band this pane opens and
+            // Escape closes, not an element it appends. A palette is a preference, and every
+            // preference here has an inverse.
+            reversal: Reversal::Recoverable,
         },
         // ⚠️ **`ArgKind::Choice` and NOT the scalar, which is the one place this schema is
         // deliberately narrower than the CLI.** `Posture::resolve` also accepts a bare
@@ -510,6 +573,65 @@ fn console_specs() -> Vec<CommandSpec> {
                 ),
                 required: true,
             }],
+            reversal: Reversal::Recoverable,
+        },
+        // 📌 **A `Choice` with no scalar beside it, which is the posture verb's caveat NOT
+        // applying** — and the contrast is worth reading, because the two verbs sit next to
+        // each other and look alike. A posture's value space is two words *or* a number, so
+        // its schema is deliberately narrower than its CLI. A screen state has three words and
+        // nothing between them: a window either covers the display or it does not. So here the
+        // schema states the whole value space, and an agent gets the complete vocabulary.
+        CommandSpec {
+            name: CMD_SCREEN.into(),
+            doc: "Whether the window covers the display. F11 flips it from inside".into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: CMD_STATE.into(),
+                kind: ArgKind::Choice(
+                    organon_console::screen::SCREEN_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                ),
+                required: true,
+            }],
+            // ⚠️ The one that looks alarming and is not. A window that covered the display
+            // uncovers it again with the opposite word — and F11 does it from inside without
+            // any command at all, which is the definition of recoverable.
+            reversal: Reversal::Recoverable,
+        },
+        // 📌 **Two `Choice`s, so the whole value space is stated and both rings complete** —
+        // `screen`'s case rather than `posture`'s, and for the same reason: each table is a
+        // closed list with nothing between its words. What the schema cannot say is the part
+        // that depends on *state* — whether this region may hold this content given what the
+        // console is holding right now — and that is not a shortcoming to be worked around: it
+        // is [`Console::set_viewport`]'s job, because the layout is the console's and the
+        // refusal it produces names the region that stood in the way.
+        CommandSpec {
+            name: CMD_VIEWPORT.into(),
+            doc: "Divide the pane into regions and say what each one holds".into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: CMD_REGION.into(),
+                    kind: ArgKind::Choice(
+                        organon_console::region::REGION_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec {
+                    name: CMD_CONTENT.into(),
+                    kind: ArgKind::Choice(
+                        organon_console::region::CONTENT_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
+            ],
+            // ⚠️ **Recoverable, and the argument is `screen`'s exactly**: `viewport full agent`
+            // restores the undivided console from any layout, in one command, and it is in the
+            // same ring as everything that got you away from it. Nothing lands in the transcript
+            // and nothing is remembered across a launch.
+            //
+            // 📌 That makes it *eligible* for autorun rather than a candidate for it: the rule
+            // fires on a lone completion, and two rings of nine and three words never leave one.
+            reversal: Reversal::Recoverable,
         },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
@@ -522,6 +644,9 @@ fn console_specs() -> Vec<CommandSpec> {
             doc: "Reserve a run of blank rows in the transcript".into(),
             target: TargetKind::Viewport,
             args: vec![ArgSpec { name: CMD_ROWS.into(), kind: ArgKind::Int, required: true }],
+            // 🚨 The rows land in the transcript and no verb takes them out again. It
+            // completes, and then it waits for an Enter.
+            reversal: Reversal::Permanent,
         },
         CommandSpec {
             name: CMD_PATCH.into(),
@@ -538,6 +663,9 @@ fn console_specs() -> Vec<CommandSpec> {
                     required: true,
                 },
             ],
+            // 🚨 It claims a rectangle of somebody else's output. Same reason as `block`, and
+            // a worse mistake: the rectangle is measured from where the writer already is.
+            reversal: Reversal::Permanent,
         },
         CommandSpec {
             name: CMD_PORTAL.into(),
@@ -550,6 +678,9 @@ fn console_specs() -> Vec<CommandSpec> {
                 kind: ArgKind::Choice(cli::PORTAL_WORDS.iter().map(|s| (*s).to_string()).collect()),
                 required: true,
             }],
+            // It floats *over* the transcript rather than landing in it, and `close` is right
+            // there in the same ring.
+            reversal: Reversal::Recoverable,
         },
         // 🚨 **The ranges are `scene_input`'s constants, not literals, and that is the whole
         // point of the arrangement.** `World::apply_camera_input` clamps a *hand* to the same
@@ -596,6 +727,11 @@ fn console_specs() -> Vec<CommandSpec> {
                     required: false,
                 },
             ],
+            // A viewpoint, and `reset` is in its own ring. ⚠️ It is also the verb autorun can
+            // reach fastest — `/camera reset` is a flag, so the line is whole the moment the
+            // flag is taken — which is exactly the case the rule is happy to fire on: the
+            // worst outcome is a framing, and the next framing replaces it.
+            reversal: Reversal::Recoverable,
         },
     ]
 }
@@ -637,6 +773,8 @@ fn mcp_specs() -> Vec<CommandSpec> {
         // "additionalProperties":true}` — see `mcp::input_schema`, which omits `required`
         // entirely rather than emitting an empty array.
         args: Vec::new(),
+        // A read changes nothing, which is the cleanest case the rule has.
+        reversal: Reversal::Recoverable,
     });
     specs
 }
@@ -648,6 +786,8 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Rig(_) => CMD_RIG,
         cli::ConsoleOp::Theme(_) => CMD_THEME,
         cli::ConsoleOp::Posture(_) => CMD_POSTURE,
+        cli::ConsoleOp::Screen(_) => CMD_SCREEN,
+        cli::ConsoleOp::Viewport { .. } => CMD_VIEWPORT,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -680,6 +820,22 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
         // route that skipped the schema.
         CMD_THEME => {
             let w = word(CMD_ARG)?;
+            // 🚨 **The two editor words are legal in the schema and illegal on this lane**, and
+            // refusing them here rather than leaving them out of the `Choice` is deliberate.
+            // They have to be in the `Choice` or `Registry::resolve` would refuse `/theme edit`
+            // during validation, before the conversation view ever sees it — and the view is
+            // where the editor is drawn. They must be refused *here* because this is the
+            // sidecar: the CLI and an agent's tool call both arrive on it, and neither has a
+            // band above a composer to draw a dialog in. Silently doing nothing, or painting a
+            // palette nobody asked for, are both worse than saying where the surface lives.
+            if organon_console::theme_edit::is_edit_word(&w) {
+                return Err(format!(
+                    "{name}: `{w}` opens the live colour editor, which is a panel inside a \
+                     conversation tab — type `/{}` there. This lane paints a named palette: {}",
+                    format_args!("theme {w}"),
+                    Theme::NAMES.join(", ")
+                ));
+            }
             Theme::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Theme(w))
         }
@@ -687,6 +843,30 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             let w = word(CMD_ARG)?;
             organon_console::posture::Posture::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Posture(w))
+        }
+        // `resolve` and the answer thrown away, on `CMD_THEME`'s rule: membership was settled
+        // by `validate_args` against the `Choice` above, so this is the belt that catches a
+        // line reaching the service by a route that skipped the schema.
+        CMD_SCREEN => {
+            let w = word(CMD_STATE)?;
+            organon_console::screen::ScreenCmd::resolve(&w).map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Screen(w))
+        }
+        // Both words resolved and both answers thrown away, on `CMD_SCREEN`'s rule: membership
+        // was settled by `validate_args` against the two `Choice`s, so this is the belt that
+        // catches a call reaching the service by a route that skipped the schema.
+        //
+        // 🚨 **What is deliberately NOT checked here is whether the assignment is legal.** That
+        // depends on the layout the console is holding *at the moment the op is drained*, and
+        // this function runs at dispatch — a gate here would be answering with a layout that may
+        // have moved by the time the op lands. The one gate is [`Console::set_viewport`], which
+        // has the layout in hand and refuses by name.
+        CMD_VIEWPORT => {
+            let r = word(CMD_REGION)?;
+            let c = word(CMD_CONTENT)?;
+            organon_console::region::Region::resolve(&r).map_err(|e| format!("{name}: {e}"))?;
+            organon_console::region::ContentCmd::resolve(&c).map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Viewport { region: r, content: c })
         }
         CMD_BLOCK => {
             let n = args
@@ -809,6 +989,17 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
             json!({ CMD_UP: up, CMD_ROWS: rows, CMD_KIND: kind.as_word() })
         }
         cli::ConsoleOp::Portal(cmd) => json!({ CMD_STATE: cmd.as_word() }),
+        // `CMD_STATE`, with the portal rather than with the four `CMD_ARG` verbs above, and
+        // the slot name is the schema's — `console_specs` declares it, so the two must agree
+        // or `validate_args` refuses every dispatch this produces. Both verbs name a *state*
+        // rather than a thing; a screen state is a `String` here because that is what crossed
+        // the lane, and it has already been resolved once by `op_from`.
+        cli::ConsoleOp::Screen(word) => json!({ CMD_STATE: word }),
+        // Two slots of its own rather than either name above — `console_specs` declares them,
+        // so the two must agree or `validate_args` refuses every dispatch this produces.
+        cli::ConsoleOp::Viewport { region, content } => {
+            json!({ CMD_REGION: region, CMD_CONTENT: content })
+        }
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
         // optional argument and `op_from` maps straight back to `None`. Omitting the key
         // entirely would do the same thing; spelling it keeps the dispatch record — which is
@@ -1002,12 +1193,29 @@ fn console_step(
         // of the substrate, and neither belongs in the Tier-4 epoch ledger this function's
         // caller feeds — a band of scrollback records what was behind it, and nothing behind
         // it moved. `Console::apply_console` routes both first, for that reason in full.
+        //
+        // **A screen state is not a look either, and it is the furthest of all of them from
+        // being one**: it changes nothing the console *draws*. It resizes the window and lets
+        // the next frame lay out into whatever rectangle it was given — the substrate behind
+        // the glyphs is re-rendered at a new size, wearing the identical dressing. Banding the
+        // transcript here would mark a look change at a moment the look demonstrably did not
+        // change.
+        //
+        // **A division of the pane is not a look, and it is the case most likely to be argued
+        // the other way** — a split does change what is on the screen, dramatically. But what it
+        // changes is *how many rectangles the glyphs are drawn into*, not what is behind them:
+        // the backdrop is still rendered once, at the whole pane's size, wearing the identical
+        // dressing, and every region is drawn over the same picture. So banding the transcript
+        // here would mark a look change at a moment the look did not change — `screen`'s
+        // argument exactly, one level in.
         cli::ConsoleOp::Block(_)
         | cli::ConsoleOp::Patch { .. }
         | cli::ConsoleOp::Portal(_)
         | cli::ConsoleOp::Camera(_)
         | cli::ConsoleOp::Theme(_)
-        | cli::ConsoleOp::Posture(_) => return None,
+        | cli::ConsoleOp::Posture(_)
+        | cli::ConsoleOp::Screen(_)
+        | cli::ConsoleOp::Viewport { .. } => return None,
     }
     Some((source, look))
 }
@@ -1136,6 +1344,125 @@ struct SurfaceTexture {
 /// painting into each other's textures the moment both had a surface open.
 type SurfaceKey = (usize, ElementId);
 
+/// One exhibit item, by element and index into that exhibit's items.
+type ExhibitKey = (ElementId, usize);
+
+/// How many exhibit pictures may hold a texture at once.
+///
+/// The same figure as [`MAX_SURFACE_TEXTURES`] and deliberately a *separate* ceiling rather
+/// than a share of it. The two ledgers are keyed differently and fill differently — surfaces
+/// are summoned one at a time, an exhibit can arrive with several items in one command — and a
+/// single pooled cap would let a three-item gallery evict the surface a panel is driving. What
+/// they share is the *policy*, which is why `surfaces_to_evict` is generic over the key.
+const MAX_EXHIBIT_TEXTURES: usize = 4;
+
+/// How much document text may be held across all exhibits, in bytes.
+///
+/// 🚨 **Documents are budgeted too, and by bytes rather than by count — the review of #86 found
+/// this missing.** The first cut capped only pictures, on the reasoning that a `String` costs no
+/// GPU. That is true and beside the point: a document that is never evicted is held for the rest
+/// of the session, so a long conversation that opened a dozen READMEs keeps every one of them
+/// alive behind cards nobody can see any more. A *count* would have been the wrong instrument
+/// here (one 8 MB document and eight 2 KB ones are not alike), which is why this is the one
+/// ledger measured in bytes.
+///
+/// 4 MB is many books' worth of Markdown and still an order of magnitude under one picture.
+const MAX_DOCUMENT_BYTES_HELD: usize = 4 * 1024 * 1024;
+
+/// The largest file the loader will open, in bytes.
+///
+/// 🚨 **Checked before the decode, not after**, which is the whole point: a decoder asked for
+/// a 500 MB PNG allocates its full pixel buffer before anything can object, and the console
+/// dies of an allocation failure rather than saying no. A stat is cheap and a refusal is
+/// legible.
+const MAX_EXHIBIT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The longest edge a picture is scaled to before it becomes a texture.
+///
+/// Two reasons, both real. A phone photograph is routinely 4000 px on its long edge and would
+/// be a 64 MB texture at full size, four of which is a quarter of a gigabyte against a budget
+/// that prices its conversation surfaces at ~23 MB. And the card it is drawn in is a few
+/// hundred points tall (`conversation_view::EXHIBIT_HEIGHT`), so everything past this is
+/// resolution nobody can see.
+const MAX_EXHIBIT_EDGE: u32 = 2048;
+
+/// What a loader thread hands back.
+enum ExhibitLoad {
+    /// Decoded, already scaled to fit [`MAX_EXHIBIT_EDGE`], as tightly-packed RGBA8.
+    Picture { size: (u32, u32), rgba: Vec<u8> },
+    /// A document's source text, already an `Arc` so the frame path never deep-copies it.
+    Document(std::sync::Arc<str>),
+    /// A sentence for the person who typed the path.
+    Failed(String),
+}
+
+/// Read one exhibit item **off the frame thread**, and never panic doing it.
+///
+/// 🚨 **Every failure arm names the file.** A decoder's own error text describes bytes
+/// ("invalid PNG signature", "unexpected EOF") and lands in a console where several things
+/// could have produced it; the person who typed a path needs to know *which* path went wrong.
+/// This is `organon_core::exhibit::ExhibitError`'s rule applied one stage later — that type
+/// refuses a name, this one refuses the bytes behind it.
+///
+/// ⚠️ **The kind comes from the shared table, not from a flag passed in.** `kind_for_path` is
+/// the same function the composer's refusal used, so a file cannot be classified one way when
+/// it is accepted and another way when it is read.
+fn load_exhibit_item(path: &std::path::Path) -> ExhibitLoad {
+    let name = path.display();
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        // The common case by far, and the one worth a plain sentence: a typo, or a relative
+        // path resolved against a working directory the person did not have in mind.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return ExhibitLoad::Failed(format!("{name}: no such file"));
+        }
+        Err(err) => return ExhibitLoad::Failed(format!("{name}: {err}")),
+    };
+    if meta.is_dir() {
+        return ExhibitLoad::Failed(format!("{name}: that is a directory"));
+    }
+    if meta.len() > MAX_EXHIBIT_FILE_BYTES {
+        return ExhibitLoad::Failed(format!(
+            "{name}: {} MB is past the {} MB this build will open",
+            meta.len() / (1024 * 1024),
+            MAX_EXHIBIT_FILE_BYTES / (1024 * 1024)
+        ));
+    }
+    match organon_core::exhibit::Exhibit::kind_for_path(path) {
+        Some(kind::Kind::Markdown) => match std::fs::read_to_string(path) {
+            Ok(text) => ExhibitLoad::Document(text.into()),
+            // The one failure a person will hit here and not understand from an io error
+            // alone: a file that is not UTF-8 is a real document in some other encoding, not a
+            // broken one.
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+                ExhibitLoad::Failed(format!("{name}: not UTF-8 text"))
+            }
+            Err(err) => ExhibitLoad::Failed(format!("{name}: {err}")),
+        },
+        Some(kind::Kind::Image) => match image::open(path) {
+            Ok(decoded) => {
+                // `thumbnail` preserves the aspect ratio and is the fast path; a picture
+                // already inside the bound is returned untouched by the `>` test rather than
+                // resampled for nothing.
+                let scaled = if decoded.width() > MAX_EXHIBIT_EDGE
+                    || decoded.height() > MAX_EXHIBIT_EDGE
+                {
+                    decoded.thumbnail(MAX_EXHIBIT_EDGE, MAX_EXHIBIT_EDGE)
+                } else {
+                    decoded
+                };
+                let rgba = scaled.to_rgba8();
+                ExhibitLoad::Picture { size: (rgba.width(), rgba.height()), rgba: rgba.into_raw() }
+            }
+            Err(err) => ExhibitLoad::Failed(format!("{name}: {err}")),
+        },
+        // Unreachable through `/media`, which resolves the kind before an artifact is ever
+        // built — but this function takes a path and a path can say anything, so it answers
+        // rather than assuming.
+        _ => ExhibitLoad::Failed(format!("{name}: not a file this build shows")),
+    }
+}
+
 /// Which surfaces keep their textures when more are held than [`MAX_SURFACE_TEXTURES`]
 /// allows, and which go — **pure**, so the policy is a test rather than a claim.
 ///
@@ -1146,15 +1473,22 @@ type SurfaceKey = (usize, ElementId);
 /// at once evicts the ones furthest up the page rather than an arbitrary one.
 ///
 /// Returns the keys to release, in eviction order.
-fn surfaces_to_evict(
-    held: &[(SurfaceKey, u64)],
-    wanted: &[SurfaceKey],
+///
+/// 📌 **Generic over the key, because there are now two texture ledgers and there must not be
+/// two policies.** A conversation surface is keyed by `(pane, element)` and an exhibit item by
+/// `(element, item)`; the *policy* — least-recently-requested first, ties broken down the
+/// request list — is a fact about how a person reads a scrollback and is identical for both. A
+/// second copy specialised to the other key is how the two would drift into disagreeing about
+/// which picture a long session keeps.
+fn surfaces_to_evict<K: Copy + PartialEq>(
+    held: &[(K, u64)],
+    wanted: &[K],
     cap: usize,
-) -> Vec<SurfaceKey> {
+) -> Vec<K> {
     if held.len() <= cap {
         return Vec::new();
     }
-    let mut order: Vec<(SurfaceKey, u64, usize)> = held
+    let mut order: Vec<(K, u64, usize)> = held
         .iter()
         .map(|(key, touched)| {
             let rank = wanted.iter().position(|w| w == key).unwrap_or(usize::MAX);
@@ -1167,6 +1501,40 @@ fn surfaces_to_evict(
     order.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
     order.truncate(held.len() - cap);
     order.into_iter().map(|(key, _, _)| key).collect()
+}
+
+/// Which documents go when more text is held than `budget` allows — **pure**, so the policy is
+/// a test rather than a claim, exactly like [`surfaces_to_evict`].
+///
+/// 📌 **The same rule, weighed instead of counted.** Least-recently-**requested** first, ties
+/// broken furthest-down-the-request-list, and eviction stops the moment what remains fits.
+/// A separate function rather than a `cap` computed for `surfaces_to_evict` because "how many
+/// entries fit" is not answerable in advance when the entries are different sizes: dropping the
+/// two oldest might free 4 KB or 8 MB, and only the running total knows when to stop.
+///
+/// `held` is `(key, last requested, bytes)`. Returns the keys to release, in eviction order —
+/// empty when everything already fits, which is the ordinary case.
+fn documents_to_evict<K: Copy + PartialEq>(
+    held: &[(K, u64, usize)],
+    wanted: &[K],
+    budget: usize,
+) -> Vec<K> {
+    let mut total: usize = held.iter().map(|(_, _, n)| *n).sum();
+    if total <= budget {
+        return Vec::new();
+    }
+    let mut order = held.to_vec();
+    let rank = |k: &K| wanted.iter().position(|w| w == k).unwrap_or(usize::MAX);
+    order.sort_by(|a, b| a.1.cmp(&b.1).then(rank(&b.0).cmp(&rank(&a.0))));
+    let mut going = Vec::new();
+    for (key, _, bytes) in order {
+        if total <= budget {
+            break;
+        }
+        going.push(key);
+        total -= bytes;
+    }
+    going
 }
 
 /// One slider, applied to the snapshot a surface will be rendered from — **pure**, so the
@@ -1388,6 +1756,20 @@ struct Console {
     /// exactly as it does against the standalone visual.
     shared_writer: Option<ipc::Writer>,
     shared: Box<ipc::Shared>,
+    /// **What an Organon editor panel drawn in a conversation has asked for** (Console #7).
+    /// One per console, not one per element: two `/organon look surface` cards in a transcript
+    /// are two views of one instrument, and reading different values off each would make the
+    /// claim `/organon` exists to make — *this is the same panel* — false on sight.
+    ///
+    /// 🚨 **Boxed, and that is a crash fix rather than a style choice.** `OrganonPanels` holds
+    /// an `OrganicMathParams` and a `PresetValues` **inline**, and the params struct carries
+    /// one nih-plug param object per automatable lane — so the type is enormous. Held by value
+    /// here it became part of `Console`, which `Console::new` builds **on the main thread's
+    /// stack** before moving it; the console then died at startup with *"thread 'main' has
+    /// overflowed its stack"*, before drawing a frame. The box keeps `Console` the size it was
+    /// and puts the panels on the heap. ⚠️ Measure before un-boxing: nothing warns, the build
+    /// is clean, and the failure is total.
+    organon_panels: Box<OrganonPanels>,
     /// True while the surface acquires as `Occluded` — gates the redraw re-arm
     /// (the measured ~98%-CPU-drawing-nothing spin, fixed on the v2 branch).
     occluded: bool,
@@ -1403,40 +1785,93 @@ struct Console {
     /// else: a look changed by a drag is rendered on the frame after the drag, which at 60 Hz
     /// is not a thing a hand can perceive.
     surface_requests: Vec<SurfaceRequest>,
+    /// What the console has read or decoded for each exhibit item, and what the view draws
+    /// from. A missing entry is "still reading" — see `conversation_view::ExhibitContent`.
+    exhibits: ExhibitContents,
+    /// What the conversation view asked for on the **previous** frame — `surface_requests`'
+    /// rule and its reason, one seam over.
+    exhibit_requests: Vec<ExhibitRequest>,
+    /// The wgpu textures behind `exhibits`' `Picture` entries, held so they outlive the egui
+    /// registration that points at them. Keyed by that registration, because freeing one means
+    /// telling egui first and dropping the texture second.
+    exhibit_textures: HashMap<egui::TextureId, wgpu::Texture>,
+    /// Items with a loader thread running. Prevents a second thread being spawned for a file
+    /// every frame while the first is still opening it — which, on a slow disk, is how one
+    /// picture becomes a hundred threads.
+    exhibit_inflight: HashSet<ExhibitKey>,
+    /// Last frame each item was asked for, for the eviction policy.
+    exhibit_touched: HashMap<ExhibitKey, u64>,
+    /// The frame counter the stamps above come from — `surface_clock`'s twin.
+    exhibit_clock: u64,
+    /// Where loader threads send their results. Drained at the top of `service_exhibits`.
+    exhibit_rx: std::sync::mpsc::Receiver<(ExhibitKey, ExhibitLoad)>,
+    /// Cloned into each loader thread. Held here so the channel stays open for the life of the
+    /// console rather than closing the moment the last job finishes.
+    exhibit_tx: std::sync::mpsc::Sender<(ExhibitKey, ExhibitLoad)>,
     surface_pane: usize,
     /// Monotonic frame counter, used only as the cap's recency stamp.
     surface_clock: u64,
     /// Whether the portal is on screen. Moved only by [`Console::apply_console`], through
     /// [`portal::step`].
     portal_state: PortalState,
-    /// The portal's render target.
+    /// **How the pane is divided, and what each part holds.** Moved only by
+    /// [`Console::set_viewport`], through `region::Layout::assign`.
+    ///
+    /// ⚠️ **Held rather than derived, unlike [`organon_console::screen::Screen`]** — and the
+    /// contrast is worth reading, because that module argues hard *against* keeping a copy. Its
+    /// reason is that the window itself knows whether it is full screen, so a remembered bool
+    /// would be a second source of truth for a fact the platform already owns. Nothing owns this
+    /// one: egui has no notion of a region, the rectangles are recomputed from the pane every
+    /// frame and remembered nowhere, and there is no second authority for a stored layout to
+    /// disagree with.
+    ///
+    /// 📌 **Not written to `preferences.json`, on the posture's rule**: a console opens
+    /// undivided however it was left. A stored layout would be the first thing that could make
+    /// a launch look broken with no command having been typed.
+    layout: organon_console::region::Layout,
+    /// **The viewport's render target — ONE texture serving both presentations.**
+    ///
+    /// 🚨 **One, not one each, and that is [`engine_plan`]'s guarantee spent rather than a
+    /// saving.** At most one presentation gets the World in any frame, so a second texture could
+    /// only ever hold a picture nobody is allowed to refresh — i.e. the stale texture §1.14's
+    /// vacancy rule forbids showing. The presentation that lost the frame paints a notice, and
+    /// the presentation that won owns this. Switching between them is a size change, which this
+    /// field already handles the only way it can: free, reallocate, and say so in the log.
     ///
     /// ⚠️ **A field beside [`Console::backdrop`], NOT a [`SurfaceKey`] variant**, and the reason
     /// is about meaning rather than effort. [`surfaces_to_evict`] is a policy for *many things
-    /// competing for few slots*; a portal is *one thing that is open or closed*. It is
+    /// competing for few slots*; a viewport is *one thing that is live or not*. It is
     /// requested every frame it exists, so its stamp is always `now` and the cap could never
     /// choose it — a key variant would exist solely to be excluded from the one function the
     /// type serves, and would then have to be remembered out of [`Console::free_all_surfaces`]
     /// and taught to the eviction log so it did not print a fabricated element id.
     ///
-    /// The deciding argument is smaller and harder: **the portal must work in a terminal tab**,
+    /// The deciding argument is smaller and harder: **the viewport must work in a terminal tab**,
     /// where there are no elements and [`ElementId`] means nothing at all. So `SurfaceKey`, its
     /// tests, `SurfaceImages` and the whole `conversation_view` seam are untouched by this
     /// feature — only [`SurfaceTexture`] and [`Console::make_surface_texture`] are reused, which
     /// is the part that was worth reusing.
-    portal: Option<SurfaceTexture>,
-    /// The camera gesture the portal accumulated this frame, drained into the World after the
-    /// UI and before the next render — `wgpu_editor`'s arrangement exactly.
-    portal_input: scene_input::SceneInput,
-    /// Where the portal was drawn **last** frame, in points.
+    viewport: Option<SurfaceTexture>,
+    /// The camera gesture the live viewport accumulated this frame, drained into the World after
+    /// the UI and before the next render — `wgpu_editor`'s arrangement exactly.
+    ///
+    /// 🚨 **One accumulator, because there is one camera.** `World` holds a single
+    /// yaw/pitch/distance and the console shows it through whichever rectangle is live, so a
+    /// second accumulator would be a second name for the same three fields. It is also what
+    /// keeps `scene_input::scene_viewport`'s fixed egui id honest: that function interns one id,
+    /// so it may be called **at most once per frame** — which is exactly what the precedence in
+    /// [`engine_plan`] already guarantees, since the losing presentation paints a notice and
+    /// registers no interaction region at all.
+    viewport_input: scene_input::SceneInput,
+    /// Where the live viewport was drawn **last** frame, in points.
     ///
     /// ⚠️ One frame behind, exactly as [`Console::pane_points`] is and for the same reason: the
     /// rect is derived from the pane, the pane is an egui layout output, and the texture has to
-    /// exist before the frame that paints it. The visible consequence is one "the portal is
+    /// exist before the frame that paints it. The visible consequence is one "the viewport is
     /// there but empty" frame when it opens, and nothing else — the rect *inside* a frame is
     /// recomputed from that frame's own pane, so the rectangle a person sees is never stale
     /// even though the pixels in it are one frame old.
-    portal_points: Option<(f32, f32)>,
+    viewport_points: Option<(f32, f32)>,
     /// When a **hand** last moved the camera, or `None` if none ever has.
     ///
     /// 🚨 This is the whole of what makes "the hand always wins" enforceable, and it has to be
@@ -1499,7 +1934,27 @@ struct Console {
     posture: Posture,
 }
 
-/// Register the portal's interaction region and paint it.
+/// Register a viewport's interaction region and paint it — **the one implementation, serving
+/// both presentations.**
+///
+/// 🚨 **A viewport is a producer plus a camera plus a texture; the portal and a `3d` region are
+/// two ways of presenting one.** That is why this takes a rect and a mode rather than being
+/// duplicated per presentation: the gesture, the camera, the image and the edge are identical,
+/// and only *where* it sits differs. `SceneMode` is the enum that already modelled exactly this
+/// distinction, from before either existed — `Workstation` is "a pane inside the workstation, a
+/// widget among widgets", `Immersive` is "the scene is the window and the interface floats over
+/// it" — so it is the seam rather than a parallel notion invented here.
+///
+/// ⚠️ **Both call sites pass `Workstation` today, and that is the honest answer rather than an
+/// unused parameter.** A floating rectangle and a region are *both* bounded panes inside an
+/// interface; nothing in the console is immersive yet (§2's portal row owns that). It is passed
+/// explicitly so each site says which presentation it is, and so the day one of them becomes
+/// immersive it is a value changed at a call site rather than a hardcode discovered inside here.
+///
+/// ⚠️ **Call it at most once per frame.** `scene_input::scene_viewport` interns a single fixed
+/// egui id, so two live viewports in one frame would be two widgets fighting over one id. That
+/// is not a rule anybody has to remember: [`engine_plan`] gives the World to exactly one
+/// presentation, and the other paints a notice instead of calling this.
 ///
 /// # Order inside, and why it is not the obvious one
 ///
@@ -1524,20 +1979,21 @@ struct Console {
 ///
 /// `scene_viewport` hardcodes `Sense::drag()`. That is right here and would stop being right in
 /// an immersive portal: a drag-only widget is what egui treats as "a big background thing", so
-/// a click landing on it is handed to whatever control wanted it. The portal has no click
-/// gesture yet, so nothing is lost. When the click-to-grow transition is built, widen
+/// a click landing on it is handed to whatever control wanted it. Neither presentation has a
+/// click gesture yet, so nothing is lost. When the click-to-grow transition is built, widen
 /// `scene_viewport` with a `Sense` parameter — the editor's two call sites passing
 /// `Sense::drag()` verbatim so their behaviour is provably unchanged — rather than adding a
 /// second `ui.interact` on the same rect: two widgets on one rectangle fight in the hit test,
 /// and which one loses is decided by registration order.
-fn paint_portal(
+fn paint_viewport(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     image: Option<egui::TextureId>,
     input: &mut scene_input::SceneInput,
+    mode: scene_input::SceneMode,
     theme: &Theme,
 ) {
-    let _resp = scene_input::scene_viewport(ui, rect, scene_input::SceneMode::Workstation, input);
+    let _resp = scene_input::scene_viewport(ui, rect, mode, input);
     let painter = ui.painter();
     match image {
         // UV 0..1 with no fit policy to get wrong: the console renders the target at exactly
@@ -1553,7 +2009,7 @@ fn paint_portal(
                 egui::Color32::WHITE,
             );
         }
-        // The one frame between "the portal is open" and "its rect has been measured, its
+        // The one frame between "this viewport is live" and "its rect has been measured, its
         // texture made and a world drawn into it". Filled rather than left transparent so the
         // object exists on screen from the frame it was asked for — an empty outline over live
         // scrollback reads as a rendering failure, which is the very confusion the surface
@@ -1573,8 +2029,242 @@ fn paint_portal(
     );
 }
 
-/// What the engine is asked to draw this frame: the backdrop's source, and whether the portal
-/// renders — **pure**, so the invariant below is a test rather than a promise.
+/// Draw a **divided** pane: one region per rectangle, and a notice in every region that holds
+/// nothing yet.
+///
+/// Only reached when the layout is not the default — `redraw`'s fast path draws an undivided
+/// console through exactly the code it always did (invariant #4). Everything here is the
+/// consequence of `organon_console::region::plan`'s answer; no rectangle is computed at this
+/// site, which is what keeps the geometry headlessly testable.
+///
+/// # 🚨 The live tab is drawn at most once, and that is structural rather than a rule
+///
+/// `draw_active_pane` is `&mut dyn FnMut`, so calling it twice would need two simultaneous
+/// `&mut` borrows of the same pane — `conversation_view::draw` takes one. A second `agent`
+/// region therefore **cannot** show a second copy of the tab, and rather than leave that as a
+/// silent blank it says so and names what would fix it. Tier 2's per-region tab is the fix.
+///
+/// # ⚠️ A pane too small for the layout says so rather than drawing slivers
+///
+/// `plan` answers `None` when any region falls under `region::MIN_SIDE`. The console is then
+/// showing nothing at all, which is the one state that absolutely must not be quiet — so the
+/// whole pane carries the sentence and the command that undoes it.
+///
+/// # The `3d` region, and what it answers with
+///
+/// Returns **the rectangle the `3d` region was drawn at this frame**, which is what the next
+/// frame's [`Console::render_viewport`] sizes its texture to — the same one-frame-behind
+/// arrangement the portal already has, for the same reason (a rect is an output of the layout
+/// that produced it). `None` when no region holds `3d`, when the pane cannot hold the layout, or
+/// when the portal took the frame — in the last case the region is drawn as a **notice**, so
+/// there is no viewport rect to remember and nothing must size a texture to it.
+fn draw_regions(
+    ui: &mut egui::Ui,
+    pane: Option<egui::Rect>,
+    layout: &organon_console::region::Layout,
+    theme: &Theme,
+    viewport: &mut RegionViewport<'_>,
+    draw_active_pane: &mut dyn FnMut(&mut egui::Ui),
+) -> Option<egui::Rect> {
+    use organon_console::region::{plan, Content};
+    let Some(placed) = pane.and_then(|p| plan(p, layout)) else {
+        ui.centered_and_justified(|ui| {
+            ui.monospace(
+                "the window is too small for this layout — `organon console viewport full agent`",
+            );
+        });
+        return None;
+    };
+    let mut viewport_rect = None;
+    let mut live_tab_taken = false;
+    for slot in &placed {
+        // A child `Ui` per region, salted by the region's own word so two regions cannot share
+        // an egui id — and clipped, which is both meanings at once (`block_panel`'s comment):
+        // what is painted, and what the pointer reaches.
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("organon-viewport", slot.region.as_word()))
+                .max_rect(slot.rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(slot.rect.intersect(ui.clip_rect()));
+        match slot.content {
+            Some(Content::Agent) if !live_tab_taken => {
+                live_tab_taken = true;
+                draw_active_pane(&mut child);
+            }
+            Some(Content::Agent) => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "agent — waiting for a tab of its own. The live tab is drawn in the first agent \
+                 region; a second one needs Tier 2's per-region tab",
+                theme,
+            ),
+            Some(Content::Panel) => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "panel — an Organon editor panel belongs here. Tier 2 gives it a body; this tier \
+                 divides the pane and says what each part is for",
+                theme,
+            ),
+            // 🚨 **The live 3D viewport — the same mechanism the portal is, in a different
+            // rectangle.** `paint_viewport` is one implementation and this is its second call
+            // site; nothing about the render, the texture, the gesture or the camera is
+            // duplicated here.
+            Some(Content::ThreeD) if !viewport.yielded_to_portal => {
+                viewport_rect = Some(slot.rect);
+                paint_viewport(
+                    &mut child,
+                    slot.rect,
+                    viewport.image,
+                    viewport.input,
+                    // A region *is* "a pane inside the workstation, a widget among widgets" —
+                    // `SceneMode`'s own words for this variant, written before either
+                    // presentation existed. See [`paint_viewport`] on why the mode is passed
+                    // rather than assumed.
+                    scene_input::SceneMode::Workstation,
+                    theme,
+                );
+            }
+            // 🚨 **The loser of [`engine_plan`]'s arbitration says who has the frame and what
+            // gives it back — it does not go blank, and it does not show the stale texture it
+            // held a moment ago.** §1.14's vacancy rule applies with more force to a picture
+            // than to an empty quarter: a rectangle that was rendering a world and now is not
+            // is exactly what a broken viewport looks like.
+            Some(Content::ThreeD) => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "3d — the portal has the world. Organon renders at most one frame per console \
+                 frame, so the floating portal takes it while it is open; `organon console \
+                 portal close` gives it back to this region",
+                theme,
+            ),
+            // 🚨 **Vacant is a sentence, never a blank.** §1.9's `Ring::Empty` argument at the
+            // scale of a quarter of a window: a region that draws nothing is indistinguishable
+            // from one that is broken, and the console's running tally of "it knew and said
+            // nothing" defects is long enough.
+            None => paint_region_notice(
+                &mut child,
+                slot.rect,
+                slot.region.as_word(),
+                "empty — `organon console viewport <region> agent`, `… 3d` or `… panel` fills it",
+                theme,
+            ),
+        }
+    }
+    paint_region_edges(ui, pane, &placed, theme);
+    viewport_rect
+}
+
+/// What the `3d` region draws this frame — the live viewport's three inputs, bundled so the
+/// walk's signature says what it needs rather than growing three more positional arguments.
+struct RegionViewport<'a> {
+    /// This frame's World render, when the region has it. `None` is the one frame between the
+    /// region being asked for and its rect having been measured — [`paint_viewport`] fills it.
+    image: Option<egui::TextureId>,
+    /// **The console's one camera accumulator**, shared with the portal — see
+    /// [`Console::viewport_input`] on why one and not one each.
+    input: &'a mut scene_input::SceneInput,
+    /// Whether the portal took this frame's World render ([`engine_plan`]'s precedence).
+    ///
+    /// ⚠️ When true the region paints a **notice**, never the texture: the texture belongs to
+    /// the portal this frame, and showing the region's last one would be a picture that has
+    /// quietly stopped being live. It also registers no interaction region, which is what keeps
+    /// `scene_viewport`'s single egui id to one claimant per frame.
+    yielded_to_portal: bool,
+}
+
+/// What a region says when it is not the live tab: its own word, then what belongs there.
+///
+/// Filled rather than left transparent, on [`paint_viewport`]'s rule and for its reason — an
+/// outline over whatever the backdrop is painting reads as a rendering failure, which is the
+/// confusion the surface path's `rendering…` placeholder already exists to prevent.
+fn paint_region_notice(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    heading: &str,
+    body: &str,
+    theme: &Theme,
+) {
+    ui.painter().rect_filled(rect, 0.0, theme.panel_fill);
+    // The inset is the notice's own, not the region's: the rectangle a region owns is exact
+    // (`region_rect` reserves no gutter), so the breathing room is drawn inside it.
+    let inner = rect.shrink(REGION_NOTICE_PAD);
+    let mut text = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(("organon-viewport-notice", heading))
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    text.set_clip_rect(inner.intersect(ui.clip_rect()));
+    text.label(egui::RichText::new(heading).monospace().strong().color(theme.panel_title));
+    text.label(egui::RichText::new(body).monospace().color(theme.panel_text));
+}
+
+/// The hairlines **between** regions — and only between them.
+///
+/// ⚠️ **Every edge that lies on the pane's own boundary is skipped**, which is what stops a
+/// divided console from growing a border it never had: the outer frame of the window is not a
+/// separator, and drawing one there would be a visible change to a console that only asked for
+/// a split. Duplicate segments (two regions sharing an edge) are drawn twice at the same
+/// coordinates, which costs one more line and cannot be seen — cheaper than deduplicating.
+fn paint_region_edges(
+    ui: &mut egui::Ui,
+    pane: Option<egui::Rect>,
+    placed: &[organon_console::region::Placed],
+    theme: &Theme,
+) {
+    let Some(pane) = pane else { return };
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.0_f32, theme.panel_edge);
+    let inside = |a: f32, b: f32| (a - b).abs() > 0.5;
+    for slot in placed {
+        let r = slot.rect;
+        if inside(r.left(), pane.left()) {
+            painter.line_segment([r.left_top(), r.left_bottom()], stroke);
+        }
+        if inside(r.right(), pane.right()) {
+            painter.line_segment([r.right_top(), r.right_bottom()], stroke);
+        }
+        if inside(r.top(), pane.top()) {
+            painter.line_segment([r.left_top(), r.right_top()], stroke);
+        }
+        if inside(r.bottom(), pane.bottom()) {
+            painter.line_segment([r.left_bottom(), r.right_bottom()], stroke);
+        }
+    }
+}
+
+/// The inset a region's notice text sits at, in points. The patch panel's `PAD`, so a notice
+/// and a panel in adjacent regions line up rather than each having their own idea of a margin.
+const REGION_NOTICE_PAD: f32 = 8.0;
+
+/// Which **presentation** of the viewport the one World frame is being drawn for.
+///
+/// 🚨 **A viewport is a producer plus a camera plus a texture; this says which rectangle it is
+/// shown in.** The portal floats over the transcript and a region sits beside it, and that is
+/// the *whole* difference between them — the render, the texture, the sizing, the gesture and
+/// the camera are one mechanism underneath, which is what [`Console::render_viewport`] and
+/// [`paint_viewport`] are. `organon_world::scene_input::SceneMode` is the other half of the same
+/// distinction and is passed to the paint site rather than restated here.
+///
+/// ⚠️ **Both arms are reachable today**, which is the bar `region.rs` set for adding one at all.
+/// There is no `Immersive` arm because there is no immersive presentation — §2's portal row owns
+/// it, and an arm nothing can select is an untested branch pretending to be a design.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewportTarget {
+    /// The floating, screen-anchored rectangle — [`organon_console::portal`].
+    Portal,
+    /// The region holding `3d` — [`organon_console::region::Content::ThreeD`].
+    Region,
+}
+
+/// What the engine is asked to draw this frame: the backdrop's source, and **which viewport
+/// presentation, if any, gets the World** — pure, so the invariant below is a test rather than a
+/// promise.
 ///
 /// 📌 **At most ONE `World` render per frame, in every state, by construction.** That is what
 /// this function exists to guarantee, and `the_engine_is_asked_for_at_most_one_frame` proves it
@@ -1586,30 +2276,53 @@ fn paint_portal(
 /// World portal beside a live World backdrop would promote it from a documented non-issue to
 /// the default.
 ///
-/// So an open portal **takes the frame**: the backdrop does not render and does not paint while
-/// it is up. `backdrop_source` is not written, so closing the portal restores whatever the
-/// backdrop was with no remembered value to get wrong.
+/// # 🚨 There are now TWO claimants, and the precedence is stated rather than emergent
 ///
-/// ⚠️ **The cost, stated rather than discovered: a scene patch shows nothing while the portal
-/// is open.** A patch samples the backdrop's texture, and the promotion that renders a
-/// substrate for it (`Off` + `patches_want_image`) is exactly what the portal displaces. It
-/// comes back the moment the portal closes. Two live rectangles showing two different scenes
+/// **The portal wins.** An open portal takes the frame from a `3d` region exactly as it already
+/// takes it from the backdrop, and the argument is the one §1.2 already made rather than a new
+/// one: the portal is **temporary and dismissable**, so the state where it holds the frame ends
+/// with one word (`organon console portal close`) that is in the same ring as the word that got
+/// you there. A region is the persistent thing a person arranged, and it is *still arranged*
+/// while the portal is up — nothing is written, nothing is remembered, and closing the portal
+/// gives the region its frame back with no stored value to get wrong. That is the same
+/// restoration property the backdrop already had, extended to one more claimant rather than
+/// re-argued for it.
+///
+/// The rejected alternative worth naming: **letting the region win** would make `/portal open`
+/// a command that appears to do nothing whenever a `3d` region exists, and this lane is
+/// fire-and-forget — there is no return path to say why (§1.3, "the refusal reaches nobody").
+/// A verb that silently no-ops is the defect this console keeps a tally of. Refusing the second
+/// one by name has the same problem for the same reason.
+///
+/// ⚠️ **The loser does not go blank and does not show a stale texture.** §1.14's vacancy rule at
+/// the scale of a picture: a rectangle that draws nothing is indistinguishable from one that is
+/// broken. `draw_regions` paints a notice naming what has the frame and the word that releases
+/// it — see [`RegionViewport::yielded_to_portal`].
+///
+/// ⚠️ **The cost, stated rather than discovered: a scene patch shows nothing while either
+/// viewport is live.** A patch samples the backdrop's texture, and the promotion that renders a
+/// substrate for it (`Off` + `patches_want_image`) is exactly what a viewport displaces. It
+/// comes back the moment the last one goes. Two live rectangles showing two different scenes
 /// would need the second `World` that `render_surfaces`' doc prices at ~50 shaders and ~62
 /// pipelines, and would still trade jitter phases; one at a time is the honest version.
 fn engine_plan(
     portal_open: bool,
+    region_holds_world: bool,
     backdrop: BackdropSource,
     patches_want_image: bool,
-) -> (BackdropSource, bool) {
+) -> (BackdropSource, Option<ViewportTarget>) {
     if portal_open {
-        return (BackdropSource::Off, true);
+        return (BackdropSource::Off, Some(ViewportTarget::Portal));
+    }
+    if region_holds_world {
+        return (BackdropSource::Off, Some(ViewportTarget::Region));
     }
     let source = if backdrop == BackdropSource::Off && patches_want_image {
         BackdropSource::Substrate
     } else {
         backdrop
     };
-    (source, false)
+    (source, None)
 }
 
 impl Console {
@@ -1632,7 +2345,25 @@ impl Console {
         for note in &selection.notes {
             eprintln!("organon-console: {note}");
         }
-        let theme = selection.theme;
+        let mut theme = selection.theme;
+        // 🚨 **The tuned colours, laid over the palette that won — the last step of the
+        // precedence and deliberately *after* it rather than part of it.** An override is a
+        // correction to one named palette, filed under that name, so which palette is being
+        // painted has to be settled before there is a question of what corrects it. This also
+        // means an override cannot resurrect a palette: `ORGANON_SHELL_THEME=chocolate` picks
+        // chocolate, and only chocolate's own tuned colours follow it.
+        //
+        // ⚠️ **Applied for an environment-selected palette too, which the "loan, never a
+        // takeover" rule above might suggest it should not be.** It should: the variable is a
+        // loan of *which palette*, and the tuned colours are part of what that palette now
+        // looks like on this machine. Skipping them would make a launch shim silently show a
+        // palette its owner has never seen.
+        if let Some(overrides) = stored.theme_overrides.get(selection.name) {
+            for note in theme::apply_overrides(&mut theme, overrides) {
+                eprintln!("organon-console: {note}");
+            }
+        }
+        let theme = theme;
         // egui's own chrome — sliders, popup frames, the `TextEdit` selection wash, scrollbars
         // — comes from the palette rather than from a hardcoded `Visuals::dark()`. This call
         // *was* that hardcoded line, and it is why a light palette could not have worked from
@@ -1673,6 +2404,10 @@ impl Console {
                 None
             }
         };
+        // The loader channel, made before the struct so both ends can be moved into it. It
+        // stays open for the console's whole life because the sender is held on the struct —
+        // a channel whose last sender dropped would make every later `try_recv` an error.
+        let (exhibit_tx, exhibit_rx) = std::sync::mpsc::channel();
         Self {
             window: None,
             gpu: None,
@@ -1687,7 +2422,21 @@ impl Console {
             default_harness: String::new(),
             plus_open: false,
             quit: false,
-            world: World::new(),
+            // organon#49 T5b — **the Console does not run the AI Performer**, so it has no
+            // catalog to give and says so by giving none. Measured, not assumed: this file
+            // contains zero references to `agent::dispatch`, `AgentLane`, `ChatMessage`,
+            // `HttpChatClient` or `system_prompt`, and nothing here ever bumps `Shared.agent[1]`
+            // — the counter whose movement is the only thing that reaches `ensure_agent_worker`.
+            //
+            // ⚠️ This is NOT the silent-empty-catalog bug `organon-visual`'s manifest warns
+            // about. That bug is a host which *does* run the Performer handing it nothing;
+            // `World::ensure_agent_worker` now refuses an empty catalog outright and logs why
+            // (T5b), so the two cases cannot be confused at runtime.
+            //
+            // 📌 It is also the last thing tying this file to `param_table`: `core_catalog()`
+            // reads the plugin's automation surface and cannot descend, so passing it here is
+            // what would have forced `organon-console` to depend upward on the plugin crate.
+            world: World::new(Vec::new()),
             backdrop: None,
             backdrop_source: source,
             console_look: ConsoleLook::default(),
@@ -1699,9 +2448,18 @@ impl Console {
             pane_resized: false,
             shared_writer: None,
             shared,
+            organon_panels: Box::new(OrganonPanels::new()),
             occluded: false,
             surfaces: HashMap::new(),
             surface_requests: Vec::new(),
+            exhibits: ExhibitContents::new(),
+            exhibit_requests: Vec::new(),
+            exhibit_textures: HashMap::new(),
+            exhibit_inflight: HashSet::new(),
+            exhibit_touched: HashMap::new(),
+            exhibit_clock: 0,
+            exhibit_rx,
+            exhibit_tx,
             surface_pane: 0,
             surface_clock: 0,
             // Closed, and not seeded from the environment. `ORGANON_SHELL_BACKDROP` exists and
@@ -1710,9 +2468,12 @@ impl Console {
             // that opened with a window already floating in it would be back in the state that
             // ruling forbids, by a new route.
             portal_state: PortalState::Closed,
-            portal: None,
-            portal_input: scene_input::SceneInput::default(),
-            portal_points: None,
+            // One region, `Full`, holding the agent — invariant #4, and `redraw` compares
+            // against this exact value to take the pre-region path unchanged.
+            layout: organon_console::region::Layout::default(),
+            viewport: None,
+            viewport_input: scene_input::SceneInput::default(),
+            viewport_points: None,
             hand_camera_at: None,
             agent_camera_at: None,
             viewpoint: camera::ViewpointCell::new(),
@@ -2191,15 +2952,13 @@ impl Console {
                 return;
             }
             self.portal_state = next;
-            // Closing frees the texture immediately rather than leaving it held against a
-            // re-open. A portal is one thing that is open or closed, not a cache — and 2.5 MB
-            // held for a window nobody asked for is the kind of cost that is invisible until
-            // somebody profiles. The log line is [`Console::free_portal`]'s, unconditional on
-            // [`Console::free_surface`]'s rule.
-            if !next.is_open() {
-                self.free_portal("it was closed");
-                self.portal_input = scene_input::SceneInput::default();
-            }
+            // ⚠️ **The texture is NOT freed here, and that is a consolidation rather than an
+            // omission.** Closing a portal used to release it on this line; a `3d` region can
+            // now stop being live by three more routes (cleared, displaced, or the layout
+            // reset), and a release per route is how the one nobody remembered comes to leak.
+            // [`Console::render_viewport`]'s gate is the single site, reached every frame, and
+            // it is total over every route by construction because it asks [`engine_plan`]
+            // rather than asking what just changed.
             return;
         }
         if let cli::ConsoleOp::Camera(framing) = op {
@@ -2221,6 +2980,21 @@ impl Console {
         }
         if let cli::ConsoleOp::Posture(word) = op {
             self.set_posture(word);
+            return;
+        }
+        // Above the ledger for the same reason, and one more of its own: this changes no pixel
+        // *behind* the glyphs, and it does not even change the console's drawing — it resizes
+        // the window and lets the next frame lay out into whatever it got.
+        if let cli::ConsoleOp::Screen(word) = op {
+            self.set_screen(word);
+            return;
+        }
+        // Above the ledger for the same reason as the screen, and for one more of its own: the
+        // backdrop is still rendered once at the whole pane's size and every region is drawn
+        // over the same picture, so nothing *behind* the glyphs moved. See `console_step`'s
+        // `Viewport` arm, which is where that argument is written out.
+        if let cli::ConsoleOp::Viewport { region, content } = op {
+            self.set_viewport(region, content);
             return;
         }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
@@ -2309,6 +3083,81 @@ impl Console {
         }
     }
 
+    /// Take a palette the live editor changed, and do what it asked with the store.
+    ///
+    /// The sibling of [`Console::set_theme`] and deliberately not folded into it: that one takes
+    /// a *name* and paints a compiled palette, this one takes a *palette* that answers to a name
+    /// but is no longer equal to it. Sharing an entry point would mean one function whose
+    /// argument decides which of two quite different things it does.
+    ///
+    /// 🚨 **Painting and storing are separate here for the same reason they are separate in
+    /// `set_theme`, but the split lands differently: the common case writes nothing.** A drag
+    /// arrives as [`StoreAction::Leave`] many times a second, so touching `preferences.json` on
+    /// each one would be a file write per frame, and the editor's `unsaved` marker exists
+    /// precisely so it does not have to be.
+    ///
+    /// ⚠️ **`set_visuals` is re-issued on every change**, not only on a save. Half the window —
+    /// sliders, popups, the selection wash, the scrollbars — comes from `Visuals`, which egui
+    /// holds on the context rather than reading per frame, so an edit that skipped it would
+    /// repaint the console's own painting and leave egui's chrome on the outgoing colours. That
+    /// asymmetry is the whole reason `Theme::visuals` exists; `set_theme`'s doc has it in full.
+    fn apply_theme_change(&mut self, change: organon_console::theme_edit::ThemeChange) {
+        use organon_console::theme_edit::StoreAction;
+
+        let visuals = change.theme.visuals();
+        self.theme = change.theme;
+        self.egui_ctx.set_visuals(visuals);
+
+        match change.store {
+            StoreAction::Leave => return,
+            StoreAction::Save | StoreAction::Clear => {}
+        }
+
+        // ⚠️ **Load, modify, save — never `Preferences { .. }`.** `set_theme`'s warning, for its
+        // reason: the struct grows fields, and a fresh one here would silently discard every
+        // preference this call did not know about.
+        let mut prefs = prefs::Preferences::load_default();
+        let outcome = match change.store {
+            StoreAction::Save => {
+                let Some(base) = Theme::by_name(&change.name) else {
+                    eprintln!(
+                        "organon-console: cannot store colours for `{}` — this build has no \
+                         palette by that name",
+                        change.name
+                    );
+                    return;
+                };
+                let overrides = theme::collect_overrides(&self.theme, &base);
+                let count = overrides.len();
+                if overrides.is_empty() {
+                    // Tuned back to exactly the compiled palette. Storing an empty map would
+                    // leave a key in the file asserting an override that is not one.
+                    prefs.theme_overrides.remove(&change.name);
+                } else {
+                    prefs.theme_overrides.insert(change.name.clone(), overrides);
+                }
+                format!("{count} tuned colour(s) for `{}`", change.name)
+            }
+            StoreAction::Clear => {
+                prefs.theme_overrides.remove(&change.name);
+                format!("the tuned colours for `{}`, cleared", change.name)
+            }
+            StoreAction::Leave => unreachable!("returned above"),
+        };
+
+        match prefs.save_default() {
+            // Nothing on screen reports a *write*, so the write is what gets the line —
+            // `set_theme`'s rule. "I saved this and it did not stick" has to be diagnosable.
+            Ok(()) => {
+                eprintln!("organon-console: stored {outcome} — they will be here next launch")
+            }
+            Err(e) => eprintln!(
+                "organon-console: painted the change, but could not store {outcome} ({e}) — it \
+                 will be gone at exit"
+            ),
+        }
+    }
+
     /// Stand the console differently — **snapping, on the next frame**.
     ///
     /// 🚨 **This does not animate, and the absence is a decision rather than a stub.** The
@@ -2341,6 +3190,120 @@ impl Console {
             // fraction, and answering `desktop` would let the mistake look like it worked.
             Err(e) => eprintln!("organon-console: {e} — ignored"),
             Ok(p) => self.posture = p,
+        }
+    }
+
+    /// Fill the display, or give the window its edges back.
+    ///
+    /// 🚨 **The window is asked where it is, rather than a remembered copy being consulted** —
+    /// and that is the whole reason `Console` has no `screen` field. `Window::fullscreen()`
+    /// *is* the state; anything beside it would be a second answer to a one-bit question, and
+    /// the two can genuinely disagree, because this verb is not the only way a window gets
+    /// resized (macOS's green button, a tiling window manager, the platform restoring a
+    /// session). After such a divergence a remembered `Windowed` would make `toggle` send a
+    /// full-screen window *into* full screen, so the one word whose entire meaning is "the
+    /// other one" would do nothing visible and report nothing. `organon_console::screen`'s
+    /// header records this as the failure the arrangement forecloses.
+    ///
+    /// ⚠️ **Borderless, and on the window's current monitor** — `Fullscreen::Borderless(None)`,
+    /// which is `organon-visual`'s call. Never `Exclusive`: that takes a video mode from the
+    /// display and is a projector's business, not a workstation window's, and it is the variety
+    /// that makes alt-tab expensive. Only the *discipline* is shared with that file's
+    /// `sync_fullscreen` — touch the window only on a real change — and the **two differ
+    /// exactly where it matters**: it holds a `fullscreen_applied` bool and compares against
+    /// it, because its intent arrives from `World::wants_fullscreen` every frame and it needs
+    /// an edge; this has no periodic intent to debounce, so it asks the window and keeps no
+    /// bool at all. **No code is shared, deliberately**: `World::wants_fullscreen` travels in
+    /// `Shared` and is written by the visual's own `F` key and its projector launch logic, and
+    /// the console's `World` renders only into a backdrop texture and never owns a swapchain —
+    /// so reaching for it would mean the console writing into the visual's IPC state to set a
+    /// flag on its own window. Two lines of winit is a far smaller price than that coupling.
+    ///
+    /// ⚠️ **Nothing is stored across launches**, on [`Console::set_posture`]'s rule: the
+    /// console opens windowed however you left it. A window that reopens covering the display,
+    /// with no title bar, is the state that most needs an undo and has the fewest ways to get
+    /// one.
+    fn set_screen(&mut self, word: &str) {
+        use organon_console::screen::{Screen, ScreenCmd};
+        let cmd = match ScreenCmd::resolve(word) {
+            // Refused rather than approximated — `Posture::resolve`'s rule: an unrecognised
+            // word must not resize a window somebody is looking at.
+            Err(e) => {
+                eprintln!("organon-console: {e} — ignored");
+                return;
+            }
+            Ok(cmd) => cmd,
+        };
+        let Some(window) = self.window.as_ref() else {
+            // Only reachable if the lane were ever drained before `resumed`, which it is not —
+            // `drain_console` runs inside the frame path. Said out loud rather than silently
+            // skipped, because a command that vanishes is the failure this whole lane's
+            // forward-compatibility story tries to make legible.
+            eprintln!(
+                "organon-console: `screen {word}` arrived before there was a window — ignored"
+            );
+            return;
+        };
+        let now = Screen::from_is_full(window.fullscreen().is_some());
+        let want = cmd.apply_to(now);
+        if want == now {
+            return;
+        }
+        window.set_fullscreen(want.is_full().then(|| winit::window::Fullscreen::Borderless(None)));
+    }
+
+    /// Put a content kind in a region of the pane — **or say, out loud, why not**.
+    ///
+    /// # 🚨 This is the ONLY gate on an assignment, and it has to be
+    ///
+    /// `bin/ctl.rs` restricts both words at the clap boundary and [`op_from`] resolves them
+    /// again, but neither can answer the question that actually decides a `/viewport` command:
+    /// *may this region hold this, given what the console is holding right now?* Overlap, the
+    /// last-agent rule and "there is nothing there to clear" are all facts about the **current
+    /// layout**, which lives here and nowhere else — and the lane is fire-and-forget, so a
+    /// caller cannot read it before writing. Every refusal therefore has to be spoken at this
+    /// end, by name, with the region that stood in the way.
+    ///
+    /// # ⚠️ A displacement is reported, because nobody asked for it in so many words
+    ///
+    /// `region::Layout::assign` displaces a region that *contains* the one being asked for, or
+    /// is contained by it — which is what makes `viewport left agent` work from a console
+    /// holding `full`. That is a change to the screen the command did not name, so it is said
+    /// rather than swallowed. The alternative — refusing every overlap — makes the first word
+    /// of every split a refusal, since the console opens holding `full` and `full off` is
+    /// refused by the last-agent rule; `region`'s header has the measurement.
+    fn set_viewport(&mut self, region_word: &str, content_word: &str) {
+        use organon_console::region::{ContentCmd, Region};
+        // Refused rather than approximated — `Posture::resolve`'s rule, and here the cost of an
+        // approximation is a window rearranged into a shape nobody named.
+        let region = match Region::resolve(region_word) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("organon-console: {e} — ignored");
+                return;
+            }
+        };
+        let cmd = match ContentCmd::resolve(content_word) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("organon-console: {e} — ignored");
+                return;
+            }
+        };
+        match self.layout.assign(region, cmd) {
+            Ok(change) => {
+                for gone in &change.displaced {
+                    eprintln!(
+                        "organon-console: `{}` gave up its place to `{}`",
+                        gone.as_word(),
+                        region.as_word()
+                    );
+                }
+                self.layout = change.layout;
+            }
+            // The layout is untouched — `assign` is pure, so there is no half-applied state to
+            // unwind and the console goes on drawing exactly what it was.
+            Err(refusal) => eprintln!("organon-console: {refusal}"),
         }
     }
 
@@ -2402,13 +3365,14 @@ impl Console {
         self.agent_camera_at = Some(Instant::now());
         if !camera::viewpoint_is_visible(
             self.portal_state.is_open(),
+            self.region_showing_world().is_some(),
             self.render_source() == BackdropSource::World,
         ) {
             eprintln!(
                 "organon-console: the camera moved, but nothing on screen is showing the \
-                 world — `organon console portal open`, or `organon console background \
-                 world`. (A substrate backdrop frames its own plane and ignores the \
-                 viewpoint entirely.)"
+                 world — `organon console portal open`, `organon console viewport <region> 3d`, \
+                 or `organon console background world`. (A substrate backdrop frames its own \
+                 plane and ignores the viewpoint entirely.)"
             );
         }
     }
@@ -2529,6 +3493,15 @@ impl Console {
                         .collect(),
                 ),
             ),
+            // 🚨 **The claim is honoured and the rows say what is in them**, which is the
+            // whole of `PatchContent::media_notice`'s argument: the CLI offers these words, so
+            // refusing the line here would be a dispatch that succeeds and paints nothing —
+            // the exact failure `every_shared_kind_has_exactly_one_patch_arm` exists to catch.
+            // The picture itself is a conversation-front-end placement in this tier; a
+            // terminal pane has no `ElementId` to key a texture on and no per-patch texture
+            // ledger, and building both is #56 T5/T6.
+            kind::Kind::Image => Patch { block, content: PatchContent::Image },
+            kind::Kind::Markdown => Patch { block, content: PatchContent::Markdown },
         });
         eprintln!(
             "[patch] claimed {rows} rows @ line {first_abs} ({}, up {up}, pane {pane})",
@@ -2834,11 +3807,32 @@ impl Console {
     /// override, and the terminal behind it stays flat black.
     ///
     /// Console Spike, the portal: this is now one half of [`engine_plan`]'s answer rather than
-    /// the whole decision. The other half is whether the *portal* renders, and the two are
+    /// the whole decision. The other half is *which viewport presentation* renders, and they are
     /// computed together precisely so that "at most one World render per frame" is a property
-    /// of one function instead of an agreement between two.
+    /// of one function instead of an agreement between three.
     fn render_source(&self) -> BackdropSource {
-        engine_plan(self.portal_state.is_open(), self.backdrop_source, self.patches_want_image()).0
+        self.engine_plan().0
+    }
+
+    /// [`engine_plan`] asked with this console's own state — the one site that reads the four
+    /// inputs, so no caller can assemble a different set of them.
+    fn engine_plan(&self) -> (BackdropSource, Option<ViewportTarget>) {
+        engine_plan(
+            self.portal_state.is_open(),
+            self.region_showing_world().is_some(),
+            self.backdrop_source,
+            self.patches_want_image(),
+        )
+    }
+
+    /// The region holding `3d`, if any — **at most one**, which is `region.rs`'s uniqueness rule
+    /// rather than a fact about this lookup ([`Content::only_one_because`] is where that limit
+    /// is decided and attributed).
+    ///
+    /// ⚠️ It answers about the **layout**, not about the frame: a region can hold `3d` while the
+    /// portal has the World, and that is exactly the state whose notice has to name the portal.
+    fn region_showing_world(&self) -> Option<organon_console::region::Region> {
+        self.layout.region_holding(organon_console::region::Content::ThreeD)
     }
 
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
@@ -3128,6 +4122,195 @@ impl Console {
         Some(SurfaceTexture { texture, view, id, size, holds: None, touched: now })
     }
 
+    /// Take everything the loader threads have finished, then start work on anything this
+    /// frame asked for and nothing is holding — and answer with what the view may draw.
+    ///
+    /// # Why this is a drain and not a call
+    ///
+    /// 🚨 **Never block the frame.** Opening a file and decoding a JPEG are both unbounded in
+    /// the only sense that matters here — they depend on a disk and on somebody else's bytes —
+    /// so doing either between `begin_pass` and `end_pass` freezes the window for as long as it
+    /// takes. Everything else in this console is synchronous and in-process, so this is the
+    /// first place that rule has needed enforcing, and the shape is the cheapest one that
+    /// enforces it: one thread per item, a channel back, and a frame that only ever *collects*.
+    ///
+    /// The visible consequence is that a picture arrives one or more frames after it is asked
+    /// for, which is the same deferral a conversation surface already has and shows the same
+    /// way — `reading...` until it is there.
+    fn service_exhibits(&mut self, requests: &[ExhibitRequest]) -> ExhibitContents {
+        // 1. Collect. Every message is a job that has finished, so the in-flight set loses it
+        //    whether it succeeded or failed — a failure that stayed in-flight would never be
+        //    retried and never be drawn.
+        while let Ok((key, load)) = self.exhibit_rx.try_recv() {
+            self.exhibit_inflight.remove(&key);
+            let content = match load {
+                ExhibitLoad::Document(text) => ExhibitContent::Document(text),
+                ExhibitLoad::Failed(why) => ExhibitContent::Failed(why),
+                ExhibitLoad::Picture { size, rgba } => match self.upload_exhibit(size, &rgba) {
+                    Some(texture) => ExhibitContent::Picture { texture, size },
+                    // The decode worked and the upload did not, which is a different sentence
+                    // from a bad file and has to read like one or it sends someone to check
+                    // their PNG.
+                    None => ExhibitContent::Failed("the GPU would not take this picture".into()),
+                },
+            };
+            self.exhibits.insert(key, content);
+        }
+
+        // 2. Evict, on the surfaces' own policy and before anything new is started, so the peak
+        //    is the cap rather than the cap plus this frame's arrivals.
+        self.exhibit_clock = self.exhibit_clock.wrapping_add(1);
+        let now = self.exhibit_clock;
+        let wanted: Vec<ExhibitKey> = requests.iter().map(|r| (r.element, r.item)).collect();
+        for key in &wanted {
+            if let Some(stamp) = self.exhibit_touched.get_mut(key) {
+                *stamp = now;
+            }
+        }
+        // Pictures are capped by **texture count**; documents get their own **byte** budget
+        // below. Two ledgers on one policy, because the thing each is scarce in differs: a
+        // texture is GPU memory in fixed-size slabs, so counting slabs is the right instrument,
+        // while documents vary by four orders of magnitude and only their total is meaningful.
+        // Putting a document in this list would evict a picture to make room for something that
+        // never needed the room.
+        let held: Vec<(ExhibitKey, u64)> = self
+            .exhibits
+            .iter()
+            .filter(|(_, c)| matches!(c, ExhibitContent::Picture { .. }))
+            .map(|(k, _)| (*k, self.exhibit_touched.get(k).copied().unwrap_or(0)))
+            .collect();
+        for key in surfaces_to_evict(&held, &wanted, MAX_EXHIBIT_TEXTURES) {
+            self.free_exhibit(key, "the cap");
+        }
+        // Documents, on the **same policy** and a different ledger: least-recently-requested
+        // first, until what is held is inside [`MAX_DOCUMENT_BYTES_HELD`]. `surfaces_to_evict`
+        // counts entries rather than weighing them, so the cap it is given is derived here —
+        // drop the oldest until the total fits, which is the byte-wise reading of the same
+        // "oldest goes first" rule and needs no second sort.
+        let docs: Vec<(ExhibitKey, u64, usize)> = self
+            .exhibits
+            .iter()
+            .filter_map(|(k, c)| match c {
+                ExhibitContent::Document(text) => {
+                    Some((*k, self.exhibit_touched.get(k).copied().unwrap_or(0), text.len()))
+                }
+                _ => None,
+            })
+            .collect();
+        for key in documents_to_evict(&docs, &wanted, MAX_DOCUMENT_BYTES_HELD) {
+            self.free_exhibit(key, "the document budget");
+        }
+
+        // 3. Start what is missing. `contains_key` covers `Failed` too, which is what stops a
+        //    broken file being re-read on every frame for the rest of the session.
+        for request in requests {
+            let key = (request.element, request.item);
+            if self.exhibits.contains_key(&key) || self.exhibit_inflight.contains(&key) {
+                continue;
+            }
+            self.exhibit_touched.insert(key, now);
+            self.exhibit_inflight.insert(key);
+            let tx = self.exhibit_tx.clone();
+            let path = request.path.clone();
+            // Detached on purpose: the job owns everything it touches, and a console shutting
+            // down while a read is in flight should not wait on a disk. The channel's receiver
+            // living on `Console` is what makes a send after teardown a no-op rather than a
+            // panic.
+            std::thread::spawn(move || {
+                let _ = tx.send((key, load_exhibit_item(&path)));
+            });
+        }
+
+        self.exhibits.clone()
+    }
+
+    /// Put a decoded picture on the GPU, or `None` if there is no device yet.
+    ///
+    /// The [`make_surface_texture`](Self::make_surface_texture) pair exactly —
+    /// `Rgba8UnormSrgb` storage with an `Rgba8Unorm` sample view — so a photograph and the
+    /// engine's own render are linearized the same number of times. Getting that wrong is not a
+    /// crash; it is a picture that looks washed out beside a surface, which is the kind of
+    /// thing only a hand can see.
+    fn upload_exhibit(&mut self, size: (u32, u32), rgba: &[u8]) -> Option<egui::TextureId> {
+        let device = self.world.device().cloned()?;
+        let queue = self.world.queue().cloned()?;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shell-exhibit"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: BACKDROP_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[BACKDROP_SAMPLE_FORMAT],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.0 * 4),
+                rows_per_image: Some(size.1),
+            },
+            wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("shell-exhibit-sample"),
+            format: Some(BACKDROP_SAMPLE_FORMAT),
+            ..Default::default()
+        });
+        let renderer = self.renderer.as_mut()?;
+        let id = renderer.register_native_texture(&device, &view, wgpu::FilterMode::Linear);
+        self.exhibit_textures.insert(id, texture);
+        Some(id)
+    }
+
+    /// Drop one exhibit item's texture, saying why.
+    ///
+    /// Unconditional logging, on [`Console::free_surface`]'s rule and for its reason: *"a
+    /// silently dropped texture reads as 'the picture is still there'"*. `[exhibit]` is the tag
+    /// to grep for.
+    ///
+    /// ⚠️ **The entry goes, not just the texture.** Leaving a `Picture` behind pointing at a
+    /// freed registration is a dangling `TextureId`; removing the entry is what makes the next
+    /// frame ask for it again, which is exactly what "a reference, never bytes" buys — the file
+    /// is still on disk, so an eviction costs a re-read and never costs the picture.
+    fn free_exhibit(&mut self, key: ExhibitKey, why: &str) {
+        let Some(gone) = self.exhibits.remove(&key) else { return };
+        self.exhibit_touched.remove(&key);
+        // A document has no texture and still says it went, on the same rule: the next frame
+        // re-reads the file, and a re-read nobody was told about is how a document that quietly
+        // reloads on every scroll looks like a console that is merely slow.
+        if let ExhibitContent::Document(text) = &gone {
+            eprintln!(
+                "[exhibit] released the {}-byte document for element {} item {} - {why}",
+                text.len(),
+                key.0 .0,
+                key.1
+            );
+            return;
+        }
+        let ExhibitContent::Picture { texture, size } = gone else { return };
+        self.exhibit_textures.remove(&texture);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.free_texture(&texture);
+        }
+        eprintln!(
+            "[exhibit] released the {}x{} texture for element {} item {} - {why}; \
+             {} of {MAX_EXHIBIT_TEXTURES} live",
+            size.0,
+            size.1,
+            key.0 .0,
+            key.1,
+            self.exhibits.values().filter(|c| matches!(c, ExhibitContent::Picture { .. })).count()
+        );
+    }
+
     /// Drop one surface's texture and its egui registration, saying why.
     ///
     /// Unconditional logging, on [`Console::retire_epochs`]' rule: a cap that silently drops a
@@ -3150,9 +4333,18 @@ impl Console {
         }
     }
 
-    /// The portal's frame: render the **World** into the portal's own target and hand back what
-    /// to paint it with. `None` while it is closed, or for the one frame before its rect is
-    /// known.
+    /// The viewport's frame: render the **World** into the one viewport target and hand back
+    /// what to paint it with. `None` when no presentation is live, or for the one frame before
+    /// the live one's rect is known.
+    ///
+    /// # 🚨 One render, whichever presentation asked for it
+    ///
+    /// [`engine_plan`] has already decided *which* — the portal if it is open, otherwise a
+    /// region holding `3d` — and this function does not need to know which it was: the answer
+    /// is entirely carried by [`Console::viewport_points`], which the previous frame's winner
+    /// wrote. That is what makes this one mechanism rather than two that happen to agree.
+    /// Switching presentation is a size change, handled by the same free-and-reallocate path a
+    /// window resize already takes, with the same unconditional log line.
     ///
     /// # 🚨 Why this is the World and not the substrate
     ///
@@ -3163,10 +4355,10 @@ impl Console {
     /// then discarded, with a green build and no log line. [`portal`]'s module docs carry the
     /// argument in full; this is the site that depends on it.
     ///
-    /// ⚠️ **`set_substrate_rig(None)` here is load-bearing, not defensive tidiness.**
+    /// ⚠️ **`set_substrate_rig(None)` here matters, and is not defensive tidiness.**
     /// [`Console::render_surfaces`] installs a rig per surface and never clears it, and it runs
     /// *before* this. A conversation tab that drew one surface would otherwise leave the
-    /// portal's World framing a plane nobody is drawing — the same stale-rig hazard
+    /// viewport's World framing a plane nobody is drawing — the same stale-rig hazard
     /// [`Console::render_backdrop`]'s `Off` arm was given its own clear for.
     ///
     /// # What it does NOT have to do
@@ -3178,43 +4370,62 @@ impl Console {
     /// `render_to_texture` runs `frame_body`, the CLI's parameter lane drains inside this call:
     /// `organon set` / `generator` / `recipe` typed at a prompt in this console reach this
     /// world, with no wiring at all.
-    fn render_portal(&mut self) -> Option<egui::TextureId> {
-        if !self.portal_state.is_open() {
+    fn render_viewport(&mut self) -> Option<egui::TextureId> {
+        // 🚨 **The one gate, and it is [`engine_plan`]'s answer rather than a second reading of
+        // the state.** Asking `portal_state.is_open() || region_showing_world().is_some()` here
+        // would be a copy of the precedence rule, and a copy is how a console comes to render a
+        // frame nothing paints — or to paint one nothing rendered.
+        //
+        // 🚨 **And it is the single release site.** Nothing live means the texture goes now
+        // rather than being held against a re-open: a viewport is one thing that is live or
+        // not, not a cache, and 2.5 MB held for a rectangle nobody asked for is the kind of cost
+        // that is invisible until somebody profiles. Releasing *here* rather than at each verb
+        // is what makes it total — the portal closing, the region being cleared, the region
+        // being displaced and `viewport full agent` are four routes to the same state, and this
+        // asks about the state. The gesture goes with it, or a latch stranded mid-drag would
+        // have the next viewport claiming the wheel with no drag behind it.
+        let Some(_live) = self.engine_plan().1 else {
+            self.free_viewport(
+                "nothing is showing the world — the portal is closed and no region holds `3d`",
+            );
+            self.viewport_input = scene_input::SceneInput::default();
             return None;
-        }
+        };
         let device = self.world.device().cloned()?;
         let gpu = self.gpu.as_ref()?;
         let swapchain = (gpu.config.width.max(1), gpu.config.height.max(1));
         let window_points = self.window_points?;
-        // The portal's rect from the previous frame, as a fraction of the window applied to the
-        // swapchain — `pane_pixels_in`'s ratio, never points times a remembered scale. That
-        // argument is `render_backdrop`'s and the measurement is `pane_pixels_in`'s.
-        let size = scene_input::pane_pixels_in(swapchain, self.portal_points?, window_points);
-        if self.portal.as_ref().is_none_or(|t| t.size != size) {
-            self.free_portal("the portal changed size");
-            self.portal = self.make_surface_texture(&device, size, self.surface_clock);
+        // The live viewport's rect from the previous frame, as a fraction of the window applied
+        // to the swapchain — `pane_pixels_in`'s ratio, never points times a remembered scale.
+        // That argument is `render_backdrop`'s and the measurement is `pane_pixels_in`'s.
+        let size = scene_input::pane_pixels_in(swapchain, self.viewport_points?, window_points);
+        if self.viewport.as_ref().is_none_or(|t| t.size != size) {
+            self.free_viewport("the viewport changed size");
+            self.viewport = self.make_surface_texture(&device, size, self.surface_clock);
         }
-        let held = self.portal.as_ref()?;
+        let held = self.viewport.as_ref()?;
         let (id, texture_size) = (held.id, held.size);
         // The World, not a rig — see this function's doc, and the module docs it points at.
         self.world.set_substrate_rig(None);
-        let texture = &self.portal.as_ref()?.texture;
+        let texture = &self.viewport.as_ref()?.texture;
         self.world.render_to_texture(texture, texture_size, BACKDROP_FORMAT);
         Some(id)
     }
 
-    /// Drop the portal's texture and its egui registration, saying why —
+    /// Drop the viewport's texture and its egui registration, saying why —
     /// [`Console::free_surface`]'s body and its unconditional log, with the one clause that
     /// identifies it changed.
     ///
-    /// ⚠️ It prints `the portal` rather than an element and a pane, which is the concrete half
+    /// ⚠️ It prints `the viewport` rather than an element and a pane, which is the concrete half
     /// of why this is not a `SurfaceKey` variant: there is no element and, in a terminal tab,
     /// no element *space* — a key here would have had to fabricate both to satisfy the log.
-    fn free_portal(&mut self, why: &str) {
-        let Some(gone) = self.portal.take() else { return };
+    /// **Which presentation held it rides in `why`**, which is that argument's job: the caller
+    /// knows and this function has no reason to.
+    fn free_viewport(&mut self, why: &str) {
+        let Some(gone) = self.viewport.take() else { return };
         eprintln!(
-            "[surface] released the {}×{} texture for the portal — {why}; \
-             {} of {MAX_SURFACE_TEXTURES} conversation surfaces live, portal {} bytes",
+            "[surface] released the {}×{} texture for the viewport — {why}; \
+             {} of {MAX_SURFACE_TEXTURES} conversation surfaces live, viewport {} bytes",
             gone.size.0,
             gone.size.1,
             self.surfaces.len(),
@@ -3274,11 +4485,26 @@ impl Console {
         // When a patch is being rendered against an `off` backdrop, the snapshot has to
         // describe the substrate the patch will show — the World draws what this says, and it
         // has no other way to learn that anything wants a picture this frame.
-        let published = if self.render_source() == self.backdrop_source {
+        let mut published = if self.render_source() == self.backdrop_source {
             *self.shared
         } else {
             *look_shared(self.render_source(), &self.console_look)
         };
+        // …and then whatever an Organon editor panel in a conversation has asked for, on top
+        // (Console #7). **Here rather than inside `look_shared`** for two reasons: that
+        // function is recomputed-from-scratch by design and is shared with the per-surface
+        // path, which is deliberately answerable only to the controls beside it; and a panel's
+        // opinion is a *later* statement than the backdrop's dressing, so it composes on top
+        // rather than being part of the look. Inert until a control is moved — see
+        // [`OrganonPanels::overlay`].
+        //
+        // ⚠️ **One frame behind, and that is the same arrangement everything else here uses.**
+        // The conversation is drawn further down this function, so a drag this frame lands in
+        // next frame's snapshot — exactly as `surface_requests` and `pane_points` are recorded
+        // now and consumed next time. At redraw rates it is not perceptible, and the
+        // alternative is publishing twice per frame.
+        self.organon_panels.overlay(&mut published);
+        let published = published;
         if let Some(w) = self.shared_writer.as_mut() {
             w.write(published);
         }
@@ -3294,11 +4520,24 @@ impl Console {
         // by the next frame's `render_backdrop` rather than the other way round, and so that
         // a console with the backdrop on still gets the picture it published.
         let surface_images = self.render_surfaces(&published);
-        // …and the portal last, after everything that installs a substrate rig, because it is
-        // the one target that must have none. [`Console::render_portal`] clears it explicitly
+        // …and the exhibits, which are not rendered at all: this collects what the loader
+        // threads finished, starts anything new, and hands the view what it may draw. Placed
+        // beside `render_surfaces` because it answers the same question for the other kind of
+        // picture, and one frame behind for the same reason.
+        let asked = std::mem::take(&mut self.exhibit_requests);
+        let exhibit_contents = self.service_exhibits(&asked);
+        // …and the viewport last, after everything that installs a substrate rig, because it is
+        // the one target that must have none. [`Console::render_viewport`] clears it explicitly
         // rather than relying on this order — the order is what makes the clear cheap, not what
         // makes it correct.
-        let portal_image = self.render_portal();
+        //
+        // ONE render for whichever presentation [`engine_plan`] gave the frame to; the two call
+        // sites below paint it, and at most one of them is reached.
+        let viewport_image = self.render_viewport();
+        // Which presentation that was, so the paint sites can tell "I have the frame" from "the
+        // other one does". Read after the render, from the same function the render asked, so
+        // the picture and the notice cannot disagree about who owns the world this frame.
+        let portal_has_the_frame = self.engine_plan().1 == Some(ViewportTarget::Portal);
 
         let (Some(window), Some(gpu), Some(state), Some(renderer)) = (
             self.window.as_ref(),
@@ -3361,6 +4600,10 @@ impl Console {
         let sessions = &mut self.sessions;
         let pane_looks = &mut self.pane_looks;
         let mut action: Option<TabAction> = None;
+        // The full-screen chord, collected out of the closure exactly as `action` is and for
+        // the same reason: `Console::set_screen` needs `&mut self`, and `self` is split into
+        // disjoint borrows for the duration of `egui_ctx.run`.
+        let mut screen_cmd: Option<organon_console::screen::ScreenCmd> = None;
         // Buttons pressed inside a patch's panel this frame, collected out of the closure the
         // same way `action` is and for the same reason: applying one needs `&mut self`, and
         // `self` is split into disjoint borrows for the duration of `egui_ctx.run`.
@@ -3375,6 +4618,7 @@ impl Console {
         // …what does come back is where its rendered surfaces ended up, which is the NEXT frame's render list.
         // Collected out of the closure for the same reason: acting on it needs `&mut self`.
         let mut surface_requests: Vec<SurfaceRequest> = Vec::new();
+        let mut exhibit_requests: Vec<ExhibitRequest> = Vec::new();
         // The rect the terminal actually paints into, captured for the NEXT frame's backdrop
         // (see `render_backdrop`). Taken from the same `ui` and by the same call
         // `term_view::draw` sizes its grid from, so the texture and the quad cannot disagree.
@@ -3384,29 +4628,93 @@ impl Console {
         // `pane_rect` for exactly that reason: a ratio only cancels the scale if both halves
         // were measured under it.
         let mut window_rect: Option<egui::Rect> = None;
-        // The portal, split out of `self` for the closure exactly as everything else here is.
-        // The state is `Copy`, the gesture accumulator is borrowed, and the rect comes back out
-        // to be remembered for the next frame's `render_portal`.
+        // The viewport, split out of `self` for the closure exactly as everything else here is.
+        // The portal's state is `Copy`, the **one** gesture accumulator is borrowed, and the
+        // live rect comes back out to be remembered for the next frame's `render_viewport`.
         let portal_open = self.portal_state.is_open();
-        let portal_input = &mut self.portal_input;
+        let viewport_input = &mut self.viewport_input;
+        // Organon's editor panels, split out of `self` exactly as everything else here is —
+        // mutably, because the whole point is that a control inside the conversation writes
+        // to it. Its snapshot is read at the *top* of the next frame, so nothing has to come
+        // back out of the closure.
+        let organon_panels = &mut self.organon_panels;
         // The palette, split out of `self` exactly as everything else here is — one shared
         // borrow that every draw call inside the closure passes down.
         let theme = &self.theme;
+        let theme_name = self.theme_name;
+        // A palette the live editor changed this frame. Collected out of the closure for the
+        // same reason `surface_requests` is: acting on it needs `&mut self`, and `theme` is
+        // borrowed from `self` for the whole of the closure.
+        let mut theme_change: Option<organon_console::theme_edit::ThemeChange> = None;
         // The form tokens at this frame's posture, resolved **once** and borrowed exactly as
         // the palette is. Resolving per draw call would be cheap and wrong for a reason that
         // outlives this tier: two calls in one frame could then disagree, which is precisely
         // the tearing a tween would make visible.
         let form = &self.posture.form();
         let mut portal_rect: Option<egui::Rect> = None;
+        // Where the `3d` region was drawn this frame, if it had the world — `draw_regions`'
+        // answer, collected out of the closure exactly as `portal_rect` is and remembered for
+        // the next frame's `render_viewport`.
+        let mut region_viewport_rect: Option<egui::Rect> = None;
+        // How the pane is divided this frame, borrowed exactly as the palette is. Read only —
+        // the layout is moved by `set_viewport`, which has already run in `drain_console` at the
+        // top of this function, so the division a frame draws is the one every command issued
+        // before it asked for.
+        let layout = self.layout;
+        // Which region holds `3d`, read off the copy above rather than through
+        // [`Console::region_showing_world`] — `self` is split into disjoint field borrows for
+        // the duration of `egui_ctx.run`, so a method taking `&self` cannot be called here. It
+        // is the same lookup on the same value: `Layout` is `Copy` and this is that copy.
+        let three_d_region =
+            layout.region_holding(organon_console::region::Content::ThreeD);
         let out = self.egui_ctx.run(raw, |ctx| {
             window_rect = Some(ctx.screen_rect());
             // ⌘-keys are the host's chrome (term_view skips them for the PTY).
+            // `repeat` is forwarded rather than filtered here: which chords a held
+            // key may stream is `command_key_action`'s decision, taken per action
+            // and tested there. `action.is_none()` bounds this to one per frame,
+            // which is a rate and not a total — autorepeat is slower than the frame
+            // rate, so every repeat that arrives gets its own frame to act in.
             ctx.input(|i| {
                 for ev in &i.events {
-                    if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+                    if let egui::Event::Key { key, pressed: true, repeat, modifiers, .. } = ev {
                         if action.is_none() {
-                            action =
-                                tabs::command_key_action(*key, *modifiers, strip, default_harness);
+                            action = tabs::command_key_action(
+                                *key,
+                                *modifiers,
+                                *repeat,
+                                strip,
+                                default_harness,
+                            );
+                        }
+                        // 🚨 **Read here — beside the ⌘ chords, from the raw frame events,
+                        // before a single panel is laid out — and that placement is what makes
+                        // it the way OUT of full screen rather than a key that works when
+                        // nothing has focus.** A window with no title bar has no close button,
+                        // so the escape hatch cannot be conditional on which pane is active or
+                        // on whether the composer has the caret. This site sees every keystroke
+                        // regardless of both, which is exactly why ⌘T works while you are
+                        // typing.
+                        //
+                        // ⚠️ Deliberately **not** consumed out of `i.events`, unlike the state-
+                        // conditional Escape ownership §2's portal row reserves. Nothing downstream
+                        // wants this key: `term::encode_key` returns `None` for every function
+                        // key, so the PTY receives nothing whether or not it is removed, and
+                        // both conversation-side key tables answer `Ignore`. All three are
+                        // pinned by tests in `organon_console::screen`, so a future mapping that
+                        // did want F11 would fail there rather than fight silently here.
+                        //
+                        // ⚠️ **`repeat` is passed and is not decoration.** Holding a key streams
+                        // `pressed: true` events, so without it a resting finger would flip the
+                        // window once per repeat and the state on release would come down to
+                        // parity. `screen_key` refuses them; its own doc says why this chord
+                        // needs it more than the `⌘` ones above — which now take the flag too,
+                        // and answer it differently: `command_key_action` streams `Switch` on
+                        // repeat and refuses it only for `New`/`Close`. Two key tables, one
+                        // event, opposite right answers, which is why they resolve separately.
+                        if screen_cmd.is_none() {
+                            screen_cmd =
+                                organon_console::screen::screen_key(*key, *modifiers, *repeat);
                         }
                     }
                 }
@@ -3435,55 +4743,160 @@ impl Console {
                     portal_rect = pane_rect
                         .filter(|_| portal_open)
                         .and_then(organon_console::portal::portal_rect);
+                    // 🚨 **The `3d` region's rectangle, computed BEFORE anything is drawn**,
+                    // because the terminal arbitrates the wheel against it and the terminal may
+                    // be drawn first — the walk visits regions in `Region::ALL` order, so
+                    // relying on the viewport having painted (and consumed the scroll from
+                    // inside `scene_viewport`) would be relying on the layout's alphabet.
+                    //
+                    // 🚨 **This is §1.14's "what a split does NOT yet change" becoming real.**
+                    // Regions are disjoint, so this rectangle never overlaps the one the
+                    // transcript is in — but `term_view` reads the wheel from **raw input**,
+                    // which is global and knows nothing about any rectangle, so without an
+                    // explicit test a wheel over the viewport would zoom its camera *and*
+                    // scroll the transcript beside it. A viewport region is the second wheel
+                    // consumer that section said would arrive, and the mechanism is
+                    // `block_panel::pointer_inside`'s and the portal's — not a third one.
+                    //
+                    // Computed from the layout whether or not the region has this frame's
+                    // world: a rectangle that is showing the "the portal has it" notice still
+                    // is not the transcript, and a wheel over it must not scroll the transcript
+                    // either.
+                    let region_claim = pane_rect
+                        .zip(three_d_region)
+                        .and_then(|(p, r)| organon_console::region::region_rect(p, r));
+                    // The rectangles the transcript does not own, as a fixed-size array — see
+                    // the `term_view::draw` call below on why `Rect::NOTHING` stands in for an
+                    // absent claim rather than a shorter slice.
+                    let viewport_claims = [
+                        portal_rect.unwrap_or(egui::Rect::NOTHING),
+                        region_claim.unwrap_or(egui::Rect::NOTHING),
+                    ];
+                    // 🚨 **The live tab, drawn into whatever rectangle it is given.** This was
+                    // the body of the `CentralPanel` closure and is now a closure of its own,
+                    // called **at most once per frame** — see the region walk below for why at
+                    // most, and `region.rs`'s header for why that is a fact about the borrow
+                    // checker rather than a policy: `conversation_view::draw` takes the pane
+                    // `&mut`, so a second live copy of one tab is not something this seam
+                    // *declines* to draw, it is something it cannot express.
+                    //
                     // §5.9's fork, at the one place it shows: the same panel, the same
                     // window, two renderings. The terminal branch is what it was — Tier 5's
                     // patch ledger and the actions its panels return included; a conversation
                     // tab has neither because it has no transcript of terminal lines to claim
                     // a rectangle in.
-                    match (sessions.get_mut(active), pane_looks.get_mut(active)) {
-                        (Some(Pane::Term(session)), Some(pane)) => {
-                            // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of
-                            // the same pane, which is exactly why the patch ledger lives on
-                            // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
-                            // `Console` that would have to be indexed in step with it. The ledger
-                            // is `&mut` because a panel's sliders are real: a value dragged this
-                            // frame has to still be there on the next one.
-                            block_actions = term_view::draw(
-                                ui,
-                                session,
-                                &mut pane.anchor,
-                                bands.as_ref().map(|(boundaries, textures)| BandedBackdrop {
-                                    boundaries,
-                                    textures,
-                                }),
-                                &mut pane.blocks,
-                                patch_image,
-                                // 🚨 The wheel arbitration, and the only thing this crate does
-                                // with the rect. The terminal reads the wheel from **raw
-                                // input**, so registering the portal after it — or as an
-                                // `Area`, or as a modal — would not keep a scroll over the
-                                // portal out of the scrollback. Nothing but an explicit rect
-                                // test can, which is why `block_panel::pointer_inside` exists
-                                // and why this copies it.
-                                portal_rect,
-                                theme,
-                            );
+                    let mut draw_active_pane = |ui: &mut egui::Ui| {
+                        match (sessions.get_mut(active), pane_looks.get_mut(active)) {
+                            (Some(Pane::Term(session)), Some(pane)) => {
+                                // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of
+                                // the same pane, which is exactly why the patch ledger lives on
+                                // `PaneLooks` beside the anchor rather than in a parallel `Vec` on
+                                // `Console` that would have to be indexed in step with it. The
+                                // ledger is `&mut` because a panel's sliders are real: a value
+                                // dragged this frame has to still be there on the next one.
+                                block_actions = term_view::draw(
+                                    ui,
+                                    session,
+                                    &mut pane.anchor,
+                                    bands.as_ref().map(|(boundaries, textures)| BandedBackdrop {
+                                        boundaries,
+                                        textures,
+                                    }),
+                                    &mut pane.blocks,
+                                    patch_image,
+                                    // 🚨 The wheel arbitration, and the only thing this crate
+                                    // does with the rects. The terminal reads the wheel from
+                                    // **raw input**, so registering a viewport after it — or as
+                                    // an `Area`, or as a modal — would not keep a scroll over
+                                    // one out of the scrollback. Nothing but an explicit rect
+                                    // test can, which is why `block_panel::pointer_inside`
+                                    // exists and why this copies it.
+                                    //
+                                    // **Two rectangles now, and it is a slice rather than two
+                                    // parameters** — one mechanism serving both presentations,
+                                    // the same consolidation `paint_viewport` is. At most one of
+                                    // them is *live* in any frame, but both are rectangles the
+                                    // transcript does not own, and listing only the live one
+                                    // would make a wheel over the yielded region scroll text
+                                    // that is nowhere near the pointer.
+                                    //
+                                    // An absent claim is `Rect::NOTHING`, whose `contains` is
+                                    // false for every point — so this is a fixed-size array with
+                                    // no allocation in the frame path, and "there is no portal"
+                                    // is answered by the geometry rather than by a length.
+                                    &viewport_claims,
+                                    theme,
+                                );
+                            }
+                            (Some(Pane::Conversation(chat)), _) => {
+                                // No PTY, so no patch ledger and no block actions: `block_actions`
+                                // stays the empty `Vec` it was initialised to and the loop below
+                                // does nothing. An inline artifact needs none of that machinery —
+                                // it is an element in a flow that draws itself — so what comes
+                                // back is where its surfaces ended up, and nothing else.
+                                let out = conversation_view::draw(
+                                    ui,
+                                    chat,
+                                    &surface_images,
+                                    &exhibit_contents,
+                                    theme,
+                                    theme_name,
+                                    form,
+                                    // 🚨 **The seam, and this crate is the only one that could
+                                    // fill it** — [`conversation_view::OrganonDraw`] is where an
+                                    // Organon editor panel's body comes from, and the console lib
+                                    // cannot see `OrganicMathParams` because it is the *lower*
+                                    // crate of the two. Reached for every panel the table marks
+                                    // `Status::Live`, which today is Look ▸ Surface and nothing
+                                    // else; a `Declared` panel never gets here and the view says
+                                    // so where its controls would be.
+                                    //
+                                    // What a control writes is a `PresetValues` mirror rather than
+                                    // a parameter, because a parameter cannot be written from
+                                    // outside `nih_plug` at all —
+                                    // `organic_math_native::param_sink` owns that account, and
+                                    // `OrganonPanels::overlay` is where the mirror reaches the
+                                    // world.
+                                    &mut |ui, panel| organon_panels.draw(ui, panel),
+                                );
+                                surface_requests = out.surfaces;
+                                exhibit_requests = out.exhibits;
+                                // Applied after the frame, not here: `theme` is borrowed from
+                                // `self` for the whole of this closure, so assigning it now is a
+                                // borrow error rather than a style choice.
+                                theme_change = out.theme;
+                            }
+                            _ => {
+                                ui.centered_and_justified(|ui| {
+                                    ui.monospace("no live tab — ⌘T opens one");
+                                });
+                            }
                         }
-                        (Some(Pane::Conversation(chat)), _) => {
-                            // No PTY, so no patch ledger and no block actions: `block_actions`
-                            // stays the empty `Vec` it was initialised to and the loop below
-                            // does nothing. An inline artifact needs none of that machinery —
-                            // it is an element in a flow that draws itself — so what comes
-                            // back is where its surfaces ended up, and nothing else.
-                            let out =
-                                conversation_view::draw(ui, chat, &surface_images, theme, form);
-                            surface_requests = out.surfaces;
-                        }
-                        _ => {
-                            ui.centered_and_justified(|ui| {
-                                ui.monospace("no live tab — ⌘T opens one");
-                            });
-                        }
+                    };
+                    // 🚨 **The single-region fast path, and it is the whole of invariant #4.**
+                    // A console that has had no `/viewport` typed does not merely *look* like
+                    // the one built before this module existed — it runs the identical code:
+                    // no child `Ui`, no id salt, no clip rect, no separator. The comparison is
+                    // against the value `Console::new` starts from, so the two cannot drift.
+                    if layout == organon_console::region::Layout::default() {
+                        draw_active_pane(ui);
+                    } else {
+                        region_viewport_rect = draw_regions(
+                            ui,
+                            pane_rect,
+                            &layout,
+                            theme,
+                            &mut RegionViewport {
+                                // The image only when the region is the one that got the frame;
+                                // when the portal took it the region paints a notice and this is
+                                // never read, but handing it a texture it must not draw is a
+                                // trap set for whoever edits the arm next.
+                                image: (!portal_has_the_frame).then_some(viewport_image).flatten(),
+                                input: viewport_input,
+                                yielded_to_portal: portal_has_the_frame,
+                            },
+                            &mut draw_active_pane,
+                        );
                     }
                     // The portal, over whichever front-end just drew. **After the content and
                     // inside the same layer**, which buys both halves at once: within one layer
@@ -3492,8 +4905,21 @@ impl Console {
                     // what wins the tie for a drag — `scene_input`'s own tested arrangement,
                     // "in workstation mode the pane registers after the scroll area, and egui
                     // breaks a tie by taking the topmost".
+                    //
+                    // ⚠️ Unchanged from a person's point of view, and structurally it is now the
+                    // *second* call site of one function rather than the only one. The portal
+                    // always has the frame when it is open ([`engine_plan`]), so the image here
+                    // is unconditionally its own — which is why this arm needs no equivalent of
+                    // the region's yielded notice.
                     if let Some(rect) = portal_rect {
-                        paint_portal(ui, rect, portal_image, portal_input, theme);
+                        paint_viewport(
+                            ui,
+                            rect,
+                            viewport_image,
+                            viewport_input,
+                            scene_input::SceneMode::Workstation,
+                            theme,
+                        );
                     }
                 });
         });
@@ -3501,7 +4927,12 @@ impl Console {
         // field borrow ends before anything below needs `&mut self` (`Console::apply`,
         // `Console::apply_console`). Applying it is a few lines further down, once those have
         // run — see there for why the camera reaches the world in the frame it was moved in.
-        let camera = portal_input.gesture.take();
+        //
+        // 🚨 **One accumulator, drained once, whichever rectangle filled it.** There is one
+        // camera because there is one `World`, so a viewport region and the portal are two
+        // windows onto the same viewpoint rather than two viewpoints — and the hand-outranks-an-
+        // agent arbitration below therefore needed no widening at all: a drag is a drag.
+        let camera = viewport_input.gesture.take();
         state.handle_platform_output(window, out.platform_output);
         // What the next frame's backdrop is sized to. Two point sizes, never pixels and never
         // a scale: the conversion belongs with the clamps in `pane_pixels_in`, and it is the
@@ -3512,11 +4943,25 @@ impl Console {
         // beside the two point sizes, because it is the same one-frame-behind arrangement for
         // the same reason — a rect is an output of the layout that produced it.
         self.surface_requests = surface_requests;
+        self.exhibit_requests = exhibit_requests;
         self.surface_pane = active;
-        // What the next frame's `render_portal` sizes its texture to — points, never pixels,
+        // The live colour editor's work, applied now that the closure's borrow of `self.theme`
+        // has ended.
+        if let Some(change) = theme_change {
+            self.apply_theme_change(change);
+        }
+        // What the next frame's `render_viewport` sizes its texture to — points, never pixels,
         // for `pane_points`' reason: it is the *ratio* to the window that survives a scale
         // nobody has measured yet.
-        self.portal_points = portal_rect.map(|r| (r.width(), r.height()));
+        //
+        // 🚨 **`or`, and the order IS [`engine_plan`]'s precedence.** `portal_rect` is `Some`
+        // only while the portal is open, and an open portal takes the frame — so preferring it
+        // here is the same rule spelled in the same order, not a second decision that has to be
+        // kept in step. `region_viewport_rect` is `None` whenever the region yielded (it painted
+        // a notice, so there is no viewport rectangle to size anything to), which is what stops
+        // a yielded region from quietly resizing the portal's own texture underneath it.
+        self.viewport_points =
+            portal_rect.or(region_viewport_rect).map(|r| (r.width(), r.height()));
         // The camera gesture into the world, once per frame, after the UI and before the next
         // render — `wgpu_editor`'s precedent exactly, so a drag reaches the camera in the frame
         // it was made. This is the line the whole "shows the World, not the substrate" argument
@@ -3548,21 +4993,35 @@ impl Console {
         // move is reported exactly as an agent's is. That is what makes this a measurement
         // rather than an echo.
         //
-        // Unconditional: a frame in which nothing moved still republishes, because `portal_open`
-        // and `backdrop_shows_world` can change without the camera doing so, and a cell that
-        // only updated on movement would report a stale visibility forever.
+        // Unconditional: a frame in which nothing moved still republishes, because `portal_open`,
+        // `region_3d` and `backdrop_shows_world` can all change without the camera doing so, and
+        // a cell that only updated on movement would report a stale visibility forever.
         let (yaw, pitch, distance) = self.world.camera_framing();
         self.viewpoint.publish(camera::Viewpoint {
             yaw,
             pitch,
             distance,
             portal_open: self.portal_state.is_open(),
+            // ⚠️ **The LAYOUT, not the frame.** A region can hold `3d` while the portal has the
+            // world, and in that state the region is showing a notice — but the camera is still
+            // emphatically visible (the portal is drawing it), so `visible` is true either way.
+            // Reporting the layout is also the more useful fact: it is what a `console.camera`
+            // caller would have to know to predict where its framing will show up.
+            region_3d: self.region_showing_world().is_some(),
             backdrop_shows_world: self.render_source() == BackdropSource::World,
             hand_last: self.hand_camera_at,
             agent_last: self.agent_camera_at,
         });
         if let Some(action) = action {
             self.apply(action);
+        }
+        // The chord and `organon console screen toggle` are the **same call** from here on —
+        // one word, resolved once, so the key can never drift from the verb. Spelled back into
+        // its word rather than passed as a value, which is the arrangement `apply_console` uses
+        // for a button in the scrollback: it costs a three-way match and it means there is
+        // exactly one path a screen change can take.
+        if let Some(cmd) = screen_cmd {
+            self.set_screen(cmd.as_word());
         }
         // A button pressed inside the scrollback and the same word typed at a prompt are the
         // **same call** from here on — `apply_console` is exactly where `organon console
@@ -3644,9 +5103,14 @@ impl ApplicationHandler for Console {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
-            .with_title(PRODUCT_NAME)
-            .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
+        // The icon is hung on by `console_icon::apply` rather than inline, because the
+        // title-bar icon and the taskbar icon are two different slots set by two
+        // different APIs — only one of which is portable. See that module.
+        let attrs = console_icon::apply(
+            Window::default_attributes()
+                .with_title(PRODUCT_NAME)
+                .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0)),
+        );
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.init_gpu(window);
     }
@@ -3755,7 +5219,10 @@ fn help_text() -> String {
              organon console background <{backgrounds}>\n    \
              organon console rig <{rigs}>\n    \
              organon console theme <{themes}>       live, and stored as a preference\n    \
-             organon console posture <{postures}|0.0-1.0>  snaps; not remembered\n\
+             organon console posture <{postures}|0.0-1.0>  snaps; not remembered\n    \
+             organon console screen <{screens}>     the window, not the form; F11 flips it\n    \
+             organon console viewport <{regions}>\n                              \
+             <{contents}>  divide the pane; `off` empties a region\n\
          \n\
          Docs: SHELL_ARCHITECTURE.md\n",
         substrate = BACKDROP_SUBSTRATE,
@@ -3779,6 +5246,12 @@ fn help_text() -> String {
             .join("|"),
         themes = Theme::NAMES.join("|"),
         postures = organon_console::posture::POSTURE_WORDS.join("|"),
+        screens = organon_console::screen::SCREEN_WORDS.join("|"),
+        // Both quoted from `region`'s own tables, on the `backgrounds` rule below: `--help`
+        // must not be able to offer a region the console cannot divide into, nor a content
+        // word nothing resolves.
+        regions = organon_console::region::REGION_WORDS.join("|"),
+        contents = organon_console::region::CONTENT_WORDS.join("|"),
         // Quoted from the tables the drain resolves against, never restated — the discipline
         // the scrim line already earned here, and the reason `--help` cannot advertise a
         // material this build cannot draw.
@@ -3884,6 +5357,64 @@ mod cli_tests {
         for word in organon_console::posture::POSTURE_WORDS {
             assert!(h.contains(word), "`{word}` is a posture `--help` never mentions");
         }
+        assert!(h.contains("organon console screen"), "the screen verb is unlisted");
+        for word in organon_console::screen::SCREEN_WORDS {
+            assert!(h.contains(word), "`{word}` is a screen state `--help` never mentions");
+        }
+        // 🚨 **The chord is documented where somebody stuck in full screen would look**, and
+        // that is the one part of this verb whose absence is not a documentation gap but a
+        // trap: a borderless window has no close button, so a person who does not know the key
+        // and does not remember the verb has no way back inside the app. It is asserted rather
+        // than trusted for exactly that reason.
+        assert!(
+            h.contains(&format!("{:?}", organon_console::screen::CHORD)),
+            "the way OUT of full screen is not in `--help`"
+        );
+    }
+
+    /// 🚨 CONTRACT: **the slot `/theme` carries its value in is the slot the conversation view
+    /// reads.** The view has to look inside a `console.theme` dispatch to see whether it was
+    /// asked to open the live colour editor (§1.10), and it names that slot with its own
+    /// constant. Two spellings would agree today and diverge silently the day this one is
+    /// renamed — `/theme edit` would then dispatch as an unknown palette instead of opening
+    /// anything, with nothing to say so. The verb's own name needs no test: `CMD_THEME` is an
+    /// alias of `registry::VERB_THEME` and cannot drift at all.
+    #[test]
+    fn the_theme_verbs_slot_name_is_the_one_the_view_reads() {
+        assert_eq!(CMD_ARG, organon_console::registry::THEME_ARG);
+        assert_eq!(CMD_THEME, organon_console::registry::VERB_THEME);
+    }
+
+    /// 🚨 CONTRACT: **the two editor words are offered by the schema and refused on this lane**,
+    /// and both halves are necessary. They must be in the `Choice` or `Registry::resolve`
+    /// refuses `/theme edit` during validation, before the conversation view — where the editor
+    /// is actually drawn — ever sees it. They must be refused *here* because this is the
+    /// sidecar, which the CLI and an agent's tool call both arrive on, and neither has a band
+    /// above a composer to put a dialog in.
+    #[test]
+    fn the_editor_words_are_offered_but_never_dispatched() {
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_THEME)
+            .expect("the theme spec");
+        let ArgKind::Choice(options) = &spec.args[0].kind else {
+            panic!("`{CMD_THEME}`'s argument stopped being a Choice, so nothing completes it");
+        };
+        for word in organon_console::theme_edit::EDIT_WORDS {
+            assert!(options.contains(&word.to_string()), "`{word}` is not offered: {options:?}");
+            let err = op_from(CMD_THEME, &json!({ CMD_ARG: word }))
+                .expect_err("the sidecar must refuse an editor word");
+            assert!(err.contains(word), "the refusal does not quote what was asked: {err}");
+            assert!(
+                err.contains("conversation tab"),
+                "the refusal must say where the editor actually lives: {err}"
+            );
+        }
+        // …and every palette name still goes through untouched.
+        for name in Theme::NAMES {
+            op_from(CMD_THEME, &json!({ CMD_ARG: name }))
+                .unwrap_or_else(|e| panic!("`{name}` should still dispatch: {e}"));
+        }
     }
 
     /// The backdrop's value space, both halves: the new spelling reaches the substrate, and
@@ -3942,16 +5473,22 @@ mod cli_tests {
         assert!(h.contains("0/unset off"), "help does not say what unset means");
     }
 
-    /// **The binary introduces itself as what you launched.** `--help`'s header and usage line
-    /// are the console's front door, and they are the one place the rename is *visible*: the
-    /// artifact is `organon-console`, so a header reading "Organon Console" would name a product
-    /// that is not what ran. This is a real regression risk rather than a hypothetical —
-    /// [`PRODUCT_NAME`] deliberately shadows `EDITION.product_name()`, which still answers
-    /// "Organon Console" and will keep tempting a future tidy-up back onto it.
+    /// **The binary introduces itself as what you launched, and never as the *shell*.**
+    /// `--help`'s header and usage line are the console's front door.
+    ///
+    /// ⚠️ **This test used to assert the opposite of what it asserts now, and the inversion was
+    /// a deliberate product decision rather than a drift.** It was written when
+    /// [`PRODUCT_NAME`] was the artifact string and carried
+    /// `assert!(!h.contains("Organon Console"))` — on the reasoning that a header naming the
+    /// product rather than the binary would name "a product that is not what ran". `474e8cd`
+    /// ("Give the console its own name everywhere the name is ours to give") then set
+    /// `PRODUCT_NAME` to `"Organon Console"` on purpose, which made that assertion contradict
+    /// the `starts_with` on the line above it — the two could not both hold, and the console
+    /// edition's test leg went red the moment they met. The surviving intent is the *shell*
+    /// half, which is what the name of this test was always about.
     ///
     /// ⚠️ The **variable names** below are the opposite case: `ORGANON_SHELL_*` is a shipped
-    /// flag surface and stays. Presentation renames, identifiers do not — that split is the
-    /// whole content of this change.
+    /// flag surface and stays. Presentation renames, identifiers do not.
     #[test]
     fn the_console_does_not_introduce_itself_as_the_shell() {
         let h = help_text();
@@ -3960,7 +5497,7 @@ mod cli_tests {
             h.contains(&format!("Usage: {INVOCATION_NAME}")),
             "usage line names the wrong command"
         );
-        assert!(!h.contains("Organon Console"), "the console must not present as Organon Console");
+        assert!(!h.contains("Organon Shell"), "the console must not present as Organon Shell");
         assert!(!h.contains("organon-shell "), "the usage line still names the old binary");
         // …and the environment variables are untouched by all of the above.
         assert!(h.contains("ORGANON_SHELL_BACKDROP"), "the flag surface is NOT renamed");
@@ -4358,6 +5895,31 @@ mod cli_tests {
                 CMD_CAMERA => {
                     json!({ CMD_RESET: false, CMD_YAW: null, CMD_PITCH: null, CMD_DISTANCE: 40.0 })
                 }
+                // 🚨 **A palette NAME, taken from `Theme::NAMES` rather than from the spec's
+                // own `Choice`.** That `Choice` also carries `edit`/`adjust`, which open the
+                // live editor and are refused on this lane by design (§1.10) — so reaching for
+                // `v[0]` the way the two dressing verbs above do would be one reordering away
+                // from this test asserting that an editor word writes a sidecar line, which is
+                // exactly what must never happen.
+                CMD_THEME => json!({ CMD_ARG: Theme::NAMES[0] }),
+                CMD_POSTURE => {
+                    json!({ CMD_ARG: organon_console::posture::POSTURE_WORDS[0] })
+                }
+                // `SCREEN_WORDS[0]` the way the two dressing verbs reach for `v[0]`, and safe
+                // to do so where `CMD_THEME` is not: this `Choice` carries no word that is
+                // legal in the schema and illegal on the lane, because every screen state is
+                // reachable from here. If one ever is not, this must stop being an index.
+                CMD_SCREEN => {
+                    json!({ CMD_STATE: organon_console::screen::SCREEN_WORDS[0] })
+                }
+                // 🚨 **Named words, not `v[0]` from either `Choice`** — and this is the
+                // `CMD_THEME` caveat arriving on a second verb rather than the two dressing
+                // verbs' shortcut. `CONTENT_WORDS[2]` is `off`, which is legal in the schema
+                // and is a *refusal* on a default console (it would evict the last agent), so
+                // indexing would be one reordering away from asserting that a clearing word
+                // writes a line the console then refuses. `full agent` is the one pair that is
+                // always accepted, because it is the layout the console opens in.
+                CMD_VIEWPORT => json!({ CMD_REGION: "full", CMD_CONTENT: "agent" }),
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -4548,6 +6110,137 @@ mod cli_tests {
         );
     }
 
+    /// 🚨 **The row a person actually sees when they type `/`, pinned against the real
+    /// table.**
+    ///
+    /// The compact command panel is generated from [`Registry::candidates`], so nothing in
+    /// the console restates the verb list — which is right, and which also means the thing
+    /// James looks at exists nowhere as a string that could be read. It does now, here,
+    /// because this is the only module that can see the real catalog.
+    ///
+    /// ⚠️ **This test is a *witness*, not a specification.** It must be updated whenever a
+    /// verb is added — that is the point: a diff to this line is what tells a reviewer the
+    /// surface changed, and it is far cheaper than noticing on a running console.
+    ///
+    /// ⚠️ James's own sketch of the row named eight verbs
+    /// (`surface|theme|posture|background|rig|patch|portal|camera`). The panel deliberately
+    /// shows the **true** list, which is thirteen: `block`, `camera.read` and `help` are
+    /// typeable, so hiding them would be the surface disagreeing with the registry — a
+    /// second vocabulary, in the one place that exists to prevent one. `screen` and `organon`
+    /// are the twelfth and thirteenth, each earning its place the moment it became typeable —
+    /// and they arrived on separate branches, which is what made the hidden count below merge
+    /// wrong. Update the number here in the same breath as the assertions.
+    ///
+    /// ⚠️ `cargo check --tests --features console-edition` only in this session; CI executes
+    /// it — the same standing caveat the sibling test above carries.
+    #[test]
+    fn the_compact_panel_shows_the_real_table() {
+        use organon_console::conversation_view::compact_line;
+        use organon_console::registry::Registry;
+
+        let registry = Registry::new(&mcp_specs());
+        let all = registry.candidates("/").expect("a bare slash opens the whole table");
+        assert_eq!(
+            compact_line(&all, 0, 200),
+            "[background] | rig | theme | posture | screen | viewport | block | patch | portal | \
+             camera | camera.read | surface | help | media | organon"
+        );
+        // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
+        // count rather than an ellipsis when it does not.
+        // ✏️ **139 with `viewport`** (§1.14), which is the fifteenth verb and the fourth to move
+        // this line. Re-derived from the string above rather than nudged, on the paragraph
+        // below's rule.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 139);
+        // 🚨 **This line is why the test is a witness rather than a specification, and it very
+        // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
+        // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
+        // to look at, while the combined table is thirteen verbs and the true answer is `+11`.
+        // A hidden count is the one assertion here that a merge can silently invalidate: the
+        // row above conflicts loudly because both sides edited the same words, and this one
+        // does not because both sides happened to write the same number for different reasons.
+        // ✏️ **Fourteen verbs now, so `+12`** — `media` (the exhibit, §1.13) is the third verb
+        // to move this line, and the count was re-derived rather than nudged: two verbs are
+        // shown at this width and `mcp_specs()` yields fourteen, so twelve are hidden. The
+        // paragraph above is why that sentence is written out instead of the number simply
+        // being incremented.
+        // ✏️ **Fifteen verbs now, so `+13`** — `viewport` (§1.14) is the fourth verb to move this
+        // line, and the count was re-derived rather than incremented: two verbs are shown at
+        // this width and `mcp_specs()` plus the view lane yield fifteen, so thirteen are hidden.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +13");
+
+        // The value ring of the verb James found offering nothing: `/portal` completes to
+        // `/portal ` on its own (one candidate), and that is what opens this.
+        let portal = registry.candidates("/portal ").expect("the value ring");
+        assert_eq!(compact_line(&portal, 0, 200), "[open] | close | toggle");
+        // …and an argument with no closed value space says what it wants instead.
+        let block = registry.candidates("/block ").expect("the value ring");
+        assert_eq!(compact_line(&block, 0, 200), "rows: a whole number");
+    }
+
+    /// 🚨 **Which verbs run without an Enter, in the only place the real table can be seen.**
+    ///
+    /// The compiler already forces every `CommandSpec` to answer — `Reversal` has no default
+    /// on purpose — so what this adds is the *answers*, pinned. A verb moving from one column
+    /// to the other is then a deliberate edit to a list somebody reads, rather than a word
+    /// changed in a literal three hundred lines away from anything that shows the consequence.
+    ///
+    /// ⚠️ **It reads the registry rather than `mcp_specs()`, so the view lane is covered too.**
+    /// `surface`, `help` and `organon` have no `CommandSpec` at all, and two of the three are
+    /// on the waiting side — a check over the specs alone would have missed exactly the verbs
+    /// whose classification is least obvious.
+    #[test]
+    fn the_real_table_says_which_verbs_may_run_without_an_enter() {
+        use organon_console::registry::Registry;
+
+        let registry = Registry::new(&mcp_specs());
+        let table: Vec<(&str, bool)> = registry
+            .entries()
+            .iter()
+            .map(|e| (e.verb(), e.reversal() == Reversal::Recoverable))
+            .collect();
+        assert_eq!(
+            table,
+            [
+                // Settings with an inverse, and one read. Wrong is one command away from right.
+                ("background", true),
+                ("rig", true),
+                ("theme", true),
+                ("posture", true),
+                ("screen", true),
+                // ✏️ **`viewport` sits with the settings and not with the two below it**, which
+                // is the classification worth stating rather than assuming: a split changes the
+                // window dramatically and puts nothing in the transcript, and
+                // `viewport full agent` restores the undivided console from any layout in one
+                // command. Wrong is one command away from right, which is the whole test.
+                ("viewport", true),
+                // Rows in the transcript, and a rectangle claimed in somebody else's output.
+                ("block", false),
+                ("patch", false),
+                ("portal", true),
+                ("camera", true),
+                ("camera.read", true),
+                // The view lane. `surface`, `media` and `organon` put an element in the
+                // transcript; `help` writes a few log lines and reads a table.
+                //
+                // ✏️ **`media` is here because this list is the SECOND casualty of the same
+                // merge**, and the paragraph at `compact_line`'s `+12` above describes the
+                // first. `/media` joined the view lane on the exhibit branch, where `Reversal`
+                // did not exist; this whole test arrived on the autorun branch, where `/media`
+                // did not. Neither side could be red, git had no conflict to show, and the
+                // combination did not compile at all — so this assertion had never once run
+                // against a table containing `media`. ⚠️ The lesson is the one that line already
+                // teaches: **a list of the whole vocabulary is invalidated by a merge that
+                // touches neither end of it.** Re-derive it from `view_entries()` when it moves;
+                // do not append to it and assume the order.
+                ("surface", false),
+                ("help", true),
+                ("media", false),
+                ("organon", false),
+            ],
+            "the reversal column of the console's whole vocabulary"
+        );
+    }
+
     /// **The block verb's row range is a gate on both sides of the sidecar, and this is the
     /// console-side half.** `ArgKind::Int` carries no bounds, so unlike a material name the
     /// count is *not* fully checked by the schema — `op_from` is what stands between a
@@ -4577,6 +6270,67 @@ mod cli_tests {
         }
         assert!(op_from(CMD_BLOCK, &json!({ CMD_ROWS: "twelve" })).is_err());
         assert!(op_from(CMD_BLOCK, &json!({})).is_err(), "a missing count is not zero");
+    }
+
+    /// **The viewport verb's two rings are the region module's own two tables**, quoted rather
+    /// than restated — so a tenth region or a third content kind reaches the MCP schema, the
+    /// slash palette and the CLI's `--help` in the commit that adds it.
+    ///
+    /// ⚠️ It also pins the one thing this verb does **not** check at dispatch: whether the
+    /// assignment is legal. `full off` passes every gate here and is refused by
+    /// [`Console::set_viewport`], because "is there another agent region" is a fact about the
+    /// layout the console is holding when the op lands, and this function runs before that.
+    #[test]
+    fn the_viewport_verbs_rings_are_the_region_tables_and_it_checks_words_not_layouts() {
+        use organon_console::region::{CONTENT_WORDS, REGION_WORDS};
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_VIEWPORT)
+            .expect("console.viewport is registered");
+        assert_eq!(spec.target, TargetKind::Viewport, "dividing the pane is the viewport");
+        assert_eq!(spec.args.len(), 2, "a region and a content, never one fused word");
+        let ring = |slot: &str| -> Vec<String> {
+            match &spec.args.iter().find(|a| a.name == slot).expect("the slot").kind {
+                ArgKind::Choice(v) => v.clone(),
+                other => panic!("{slot} is {other:?}, not a Choice"),
+            }
+        };
+        assert_eq!(ring(CMD_REGION), REGION_WORDS.to_vec());
+        assert_eq!(ring(CMD_CONTENT), CONTENT_WORDS.to_vec());
+        for a in &spec.args {
+            assert!(a.required, "`{}` is not optional — half a command is not a command", a.name);
+        }
+
+        // Every pair the schema offers converts, and every one of those lines is one the drain
+        // reads back — the cross product, because the failure of a pair that survives one
+        // direction only is a command the console skips in silence.
+        for r in REGION_WORDS {
+            for c in CONTENT_WORDS {
+                let op = op_from(CMD_VIEWPORT, &json!({ CMD_REGION: r, CMD_CONTENT: c }))
+                    .unwrap_or_else(|e| panic!("`{r} {c}`: {e}"));
+                assert_eq!(
+                    op,
+                    cli::ConsoleOp::Viewport { region: (*r).into(), content: (*c).into() }
+                );
+                let line = cli::console_op_to_line(&op);
+                assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
+            }
+        }
+        // 🚨 The slots are not interchangeable, and a swapped call is refused by name rather
+        // than half-understood — `agent` is not a region and `left` is not a content.
+        let e = op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "agent", CMD_CONTENT: "left" }))
+            .expect_err("the words are in the wrong slots");
+        assert!(e.contains("agent"), "the refusal must quote what was typed: {e}");
+        assert!(e.contains("region"), "…and which table it was read against: {e}");
+        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "middle", CMD_CONTENT: "agent" })).is_err());
+        // ✏️ **This line used to read `"3d"`, pinning it as a word the vocabulary did not have.**
+        // Tier 2b gives it one, so the assertion moved to `media` — the kind that is still
+        // absent (§1.13's placement question owns it). Changed rather than deleted: a table
+        // whose refusals are never exercised stops being a closed value space the day somebody
+        // adds a word to one of the four renderings and not the others.
+        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left", CMD_CONTENT: "media" })).is_err());
+        assert!(op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left" })).is_err(), "no default");
+        assert!(op_from(CMD_VIEWPORT, &json!({})).is_err());
     }
 
     /// A block is not a look, and `console_step` must say so rather than quietly folding it
@@ -4695,22 +6449,83 @@ mod cli_tests {
     /// The property is bought by the state machine rather than by a check somewhere, which is
     /// what makes it survive: an open portal takes the frame, and the future immersive state
     /// *is* the backdrop rather than a second thing beside it.
+    ///
+    /// ✏️ **Tier 2b doubled the input space and the proof had to grow with it, not merely keep
+    /// passing.** There are now *two* claimants for the one frame — the portal and a region
+    /// holding `3d` — so the cross product is 2 × 2 × 3 × 2, and every one of the twenty-four
+    /// states is checked. Widening the function while leaving this loop at its old arity is the
+    /// exact shape of a proof that keeps reporting green about a space it no longer covers.
     #[test]
     fn the_engine_is_asked_for_at_most_one_frame() {
         for portal_open in [false, true] {
-            for backdrop in
-                [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate]
-            {
-                for patches in [false, true] {
-                    let (source, portal_renders) = engine_plan(portal_open, backdrop, patches);
-                    let renders =
-                        usize::from(source != BackdropSource::Off) + usize::from(portal_renders);
-                    assert!(
-                        renders <= 1,
-                        "portal_open={portal_open} backdrop={backdrop:?} patches={patches} \
-                         asks the engine for {renders} frames"
+            for region_holds_world in [false, true] {
+                for backdrop in
+                    [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate]
+                {
+                    for patches in [false, true] {
+                        let (source, viewport) =
+                            engine_plan(portal_open, region_holds_world, backdrop, patches);
+                        let renders = usize::from(source != BackdropSource::Off)
+                            + usize::from(viewport.is_some());
+                        assert!(
+                            renders <= 1,
+                            "portal_open={portal_open} region={region_holds_world} \
+                             backdrop={backdrop:?} patches={patches} asks the engine for \
+                             {renders} frames"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 🚨 **The precedence between the two viewport presentations, stated as a test rather than
+    /// left to whichever branch happens to come first.**
+    ///
+    /// **The portal wins**, and the argument is §1.2's own rather than a new one: it is
+    /// *temporary and dismissable*, so the state where it holds the frame ends with one word
+    /// that sits in the same ring as the word that got you there. A region is the persistent
+    /// thing a person arranged, and it is still arranged — nothing about the layout is written,
+    /// so closing the portal hands the frame straight back.
+    ///
+    /// Three properties, and the third is the one that would rot quietly:
+    ///
+    /// 1. with both claimants, the portal renders;
+    /// 2. with only a region, the region renders and the backdrop does not — a `3d` region costs
+    ///    the backdrop exactly what an open portal costs it, which is the documented price of
+    ///    one World;
+    /// 3. **neither claimant writes `backdrop_source`**, so removing them both restores whatever
+    ///    the backdrop was with no remembered value to get wrong. That is asserted by comparing
+    ///    against the pre-viewport answer computed here from the inputs alone.
+    #[test]
+    fn the_portal_outranks_a_region_viewport_and_neither_disturbs_the_backdrop() {
+        for backdrop in [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate] {
+            for patches in [false, true] {
+                for region in [false, true] {
+                    assert_eq!(
+                        engine_plan(true, region, backdrop, patches),
+                        (BackdropSource::Off, Some(ViewportTarget::Portal)),
+                        "an open portal takes the frame from everything, region={region} \
+                         backdrop={backdrop:?}"
                     );
                 }
+                assert_eq!(
+                    engine_plan(false, true, backdrop, patches),
+                    (BackdropSource::Off, Some(ViewportTarget::Region)),
+                    "with the portal shut the region has it, from {backdrop:?}"
+                );
+                // The pre-viewport answer, derived from the inputs rather than quoted — so this
+                // is a statement about the *rule* and not a second copy of the table.
+                let untouched = if backdrop == BackdropSource::Off && patches {
+                    BackdropSource::Substrate
+                } else {
+                    backdrop
+                };
+                assert_eq!(
+                    engine_plan(false, false, backdrop, patches),
+                    (untouched, None),
+                    "with neither claimant, {backdrop:?} is exactly what it was (patches={patches})"
+                );
             }
         }
     }
@@ -4728,8 +6543,8 @@ mod cli_tests {
         for backdrop in [BackdropSource::Off, BackdropSource::World, BackdropSource::Substrate] {
             for patches in [false, true] {
                 assert_eq!(
-                    engine_plan(true, backdrop, patches),
-                    (BackdropSource::Off, true),
+                    engine_plan(true, false, backdrop, patches),
+                    (BackdropSource::Off, Some(ViewportTarget::Portal)),
                     "an open portal renders and the backdrop does not, from {backdrop:?}"
                 );
                 // The same inputs with the portal closed are the pre-portal answer exactly.
@@ -4739,8 +6554,8 @@ mod cli_tests {
                     backdrop
                 };
                 assert_eq!(
-                    engine_plan(false, backdrop, patches),
-                    (want, false),
+                    engine_plan(false, false, backdrop, patches),
+                    (want, None),
                     "closing it restores {backdrop:?} (patches={patches})"
                 );
             }
@@ -5018,6 +6833,13 @@ mod cli_tests {
             cli::ConsoleOp::Portal(cli::PortalCmd::Open),
             cli::ConsoleOp::Portal(cli::PortalCmd::Close),
             cli::ConsoleOp::Portal(cli::PortalCmd::Toggle),
+            // The first op on this lane carrying two words, so the round trip has a way to be
+            // wrong the others do not: swapping the slots. Both orders of meaning are covered —
+            // a region word in the region slot and a content word in the content slot — and the
+            // clearing word rides along, since `off` is the only way back from a split.
+            cli::ConsoleOp::Viewport { region: "full".into(), content: "agent".into() },
+            cli::ConsoleOp::Viewport { region: "topleft".into(), content: "panel".into() },
+            cli::ConsoleOp::Viewport { region: "right".into(), content: "off".into() },
             cli::ConsoleOp::Camera(cli::CameraFraming { reset: true, ..Default::default() }),
             cli::ConsoleOp::Camera(cli::CameraFraming {
                 distance: Some(40.0),
@@ -5294,6 +7116,48 @@ mod cli_tests {
 
     /// The cap, and the order it bites in. Nothing is evicted while the set fits, and what
     /// goes first is what has been unwanted the longest — never what is on screen right now.
+    /// 🚨 **Documents are evicted too, and by weight** — the gap #86's review found. A budget
+    /// that only counted pictures let a document live for the rest of the session behind a card
+    /// nobody could see any more.
+    #[test]
+    fn the_document_budget_drops_the_oldest_until_what_is_left_fits() {
+        // Three documents, 100 bytes each, in a 250-byte budget: exactly one must go, and it
+        // must be the oldest.
+        let held = [(key(0, 1), 10, 100), (key(0, 2), 30, 100), (key(0, 3), 20, 100)];
+        assert_eq!(documents_to_evict(&held, &[], 250), vec![key(0, 1)]);
+        // …and the loop stops as soon as it fits rather than draining to the floor.
+        assert_eq!(documents_to_evict(&held, &[], 150), vec![key(0, 1), key(0, 3)]);
+    }
+
+    /// Everything fitting is the ordinary case and must cost nothing — an empty answer, not a
+    /// sorted list nobody uses.
+    #[test]
+    fn the_document_budget_evicts_nothing_when_it_already_fits() {
+        let held = [(key(0, 1), 10, 100), (key(0, 2), 20, 100)];
+        assert!(documents_to_evict(&held, &[], 4096).is_empty());
+        let none: [(SurfaceKey, u64, usize); 0] = [];
+        assert!(documents_to_evict(&none, &[], 0).is_empty(), "nothing held, nothing to drop");
+    }
+
+    /// 🚨 **One oversized document does not evict the whole ledger.** The weighing loop stops on
+    /// the running total, so a single 10 MB file over a 1 MB budget goes alone — a count-based
+    /// cap would have taken its small, freshly-read neighbours with it.
+    #[test]
+    fn one_huge_document_goes_alone() {
+        let held = [(key(0, 1), 10, 10_000_000), (key(0, 2), 20, 1_000), (key(0, 3), 30, 1_000)];
+        assert_eq!(documents_to_evict(&held, &[], 1_000_000), vec![key(0, 1)]);
+    }
+
+    /// The tie-break is `surfaces_to_evict`'s: among documents last requested on the same
+    /// frame, the one **furthest down** this frame's list goes first, so the top of the page —
+    /// what the reader scrolled to — survives.
+    #[test]
+    fn the_document_tie_break_keeps_the_top_of_the_page() {
+        let held = [(key(0, 1), 10, 100), (key(0, 2), 10, 100)];
+        let wanted = [key(0, 1), key(0, 2)];
+        assert_eq!(documents_to_evict(&held, &wanted, 150), vec![key(0, 2)]);
+    }
+
     #[test]
     fn the_surface_cap_evicts_the_least_recently_wanted() {
         let held = vec![(key(0, 1), 10u64), (key(0, 2), 40), (key(0, 3), 20), (key(0, 4), 30)];

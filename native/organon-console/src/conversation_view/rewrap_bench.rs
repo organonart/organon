@@ -215,6 +215,7 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         session: None,
         transcript,
         mapper: EventMapper::new(),
+        theme_edit: None,
         failure: None,
         composer: String::new(),
         log: VecDeque::new(),
@@ -243,6 +244,23 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         // nothing in this file can reach.
         registry: super::Registry::new(&[]),
         local: Box::new(crate::mcp::NoDispatch),
+        // The command panel is a band above the composer and neither bench measures it: the
+        // composer is empty, so no line is a command line and nothing is drawn. ⚠️ `autorun`
+        // is off here and ON in the product: a bench must not run commands. Tests built on
+        // this pane that care about the shipping behaviour turn it back on — see
+        // `conversation_view::tests::palette_pane`.
+        palette_selected: 0,
+        palette_dismissed: false,
+        composer_seen: String::new(),
+        completion_held: false,
+        history: std::collections::VecDeque::new(),
+        history_at: None,
+        want_caret: false,
+        receipt: None,
+        autorun: false,
+        // The verbose list is off here for the same reason it is off in the product: the
+        // primary panel is the one row, and a bench must measure what a person will see.
+        verbose: false,
     }
 }
 
@@ -280,7 +298,7 @@ fn frame(
                 // second time through `content_margin` and every measurement would be taken at
                 // a width neither the caller nor the table names. Posture is not what this
                 // bench varies; width is.
-                let _ = scrollback(ui, pane, images, theme, &Form::TERMINAL);
+                let _ = scrollback(ui, pane, images, &Default::default(), theme, &Form::TERMINAL, &mut |_, _| {});
             });
         });
     });

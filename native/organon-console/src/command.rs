@@ -41,6 +41,44 @@ use crate::session::{
 // The catalog as data
 // ---------------------------------------------------------------------------
 
+/// Whether running this command can be taken back.
+///
+/// 🚨 **THE RULE: a verb may run without an Enter when the console can be put back the way it
+/// was.** A setting has an inverse — another value of the same verb — and a read changes
+/// nothing; both are [`Reversal::Recoverable`], and getting one wrong costs a second command.
+/// A verb that puts a **new element into the transcript** is [`Reversal::Permanent`]: the
+/// transcript only ever grows, and there is no verb that takes an element back out of it.
+///
+/// ⚠️ **The test is recoverability, not severity.** Nothing in this console's vocabulary
+/// formats a disk, so a severity scale would have one rung and say nothing. What a hand
+/// actually needs protecting from is the edit it cannot undo.
+///
+/// ⚠️ **It is declared on the verb rather than decided at a draw site**, for the reason
+/// `registry`'s module doc gives for everything else in the palette: a renderer that
+/// classified verbs itself would be a second vocabulary, and the one that mattered would be
+/// whichever ran last. `Entry` carries the same field for the view-lane verbs, which have no
+/// `CommandSpec` at all — one declaration per verb, in the place that verb is declared.
+///
+/// ⚠️ **There is no `Default`, deliberately.** A default would let a verb added later answer
+/// this question by not answering it, and the quiet answer is the one that runs. Every
+/// `CommandSpec` literal in the tree has to say which it is; adding a verb is a compile error
+/// until it does.
+///
+/// 📌 **What this is NOT: the agent's gate.** An MCP tool call never reaches this — the
+/// question at that door is *"may this agent act on my behalf"*, which `start_approvals`
+/// answers with a real prompt per call. That is a stronger mechanism than an Enter key, not a
+/// weaker one, so `ToolEntry` deliberately does not restate this field as an annotation
+/// nothing reads. The declaration is on the shared spec so both doors can read one fact when
+/// the approval model wants it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reversal {
+    /// A read, or a setting another call can restore. Safe to run the moment the palette is
+    /// certain of it.
+    Recoverable,
+    /// It leaves something behind that nothing can take back. Completes, then waits for Enter.
+    Permanent,
+}
+
 /// What a command acts on. `as_str` yields the `CommandRunRecord::target` vocabulary
 /// ("project | runtime | viewport | artifact | extension" — session.rs's doc), so the
 /// log and the catalog can never spell a target two ways.
@@ -108,6 +146,9 @@ pub struct CommandSpec {
     pub doc: String,
     pub target: TargetKind,
     pub args: Vec<ArgSpec>,
+    /// Whether running it can be taken back — see [`Reversal`], which owns the rule and the
+    /// reason it has no default.
+    pub reversal: Reversal,
 }
 
 // ---------------------------------------------------------------------------
@@ -400,12 +441,15 @@ fn builtin_specs() -> Vec<CommandSpec> {
             doc: "Append a note to the session log as a Message event".into(),
             target: TargetKind::Project,
             args: vec![ArgSpec { name: "text".into(), kind: ArgKind::Text, required: true }],
+            // It appends to the session log, which is append-only by design.
+            reversal: Reversal::Permanent,
         },
         CommandSpec {
             name: "console.echo".into(),
             doc: "Return the arguments unchanged (dispatch-machinery probe)".into(),
             target: TargetKind::Project,
             args: Vec::new(),
+            reversal: Reversal::Recoverable,
         },
     ]
 }
@@ -557,6 +601,7 @@ mod tests {
                 ArgSpec { name: "count".into(), kind: ArgKind::Int, required: false },
                 ArgSpec { name: "on".into(), kind: ArgKind::Bool, required: false },
             ],
+            reversal: Reversal::Recoverable,
         }
     }
 
@@ -750,6 +795,7 @@ mod tests {
                     required: false,
                 },
             ],
+            reversal: Reversal::Recoverable,
         });
         let mock = MockTarget::new();
         service.register_target(TargetKind::Runtime, Box::new(mock.handle()));

@@ -71,7 +71,8 @@ already.
 | **`CONTRIBUTING.md`** | **the process**: how to scope work, the tier pattern, the review cycle, the verification bar | read before scoping feature work |
 | **`SECURITY.md`** | how to report privately, and what the real attack surface is — including which parts are by design | update when you change a trust boundary |
 | **`LICENSING.md`** | why the licence is split across crates, and what that constrains | read before touching a `license` field |
-| **`CHANGELOG.md`** | per-release history | an entry per meaningful change |
+| **`CHANGELOG.md`** | per-release history. ⚠️ **Do not write into it** — new entries are one file each in `changelog.d/`, concatenated in at release time | an entry per meaningful change |
+| **`changelog.d/`** | **where a change gets recorded.** One Markdown fragment per change, named `YYYY-MM-DD-<branch-slug>.md`, in the same house style as `CHANGELOG.md`. `changelog.d/README.md` is the how; `.gitattributes` is the why | a fragment in the **same commit** as any meaningful change |
 
 **Hooks enforce the doc discipline** (`.claude/settings.json` — the file is the
 authority; re-count with
@@ -302,10 +303,14 @@ doc/          Organon Mind's public doc set (PRD, build plan, the honesty essay)
               A real directory, NOT a symlink: a git symlink here materialises as a
               24-byte text file on any Windows checkout and the skill silently
               does not load (#19).
+changelog.d/  one Markdown fragment per change, concatenated into CHANGELOG.md at
+              release by `native/tools/changelog.py`. Write your entry HERE, not in
+              CHANGELOG.md.                         → changelog.d/README.md
 ```
 
 That is all of it. This repository is Rust and its documentation — no npm, no
-TypeScript, no build step outside cargo.
+TypeScript, no build step outside cargo. (`native/tools/*.py` are repo tools run by
+hand, not a build step: stdlib only, nothing imports them, nothing compiles them.)
 
 For anything more specific — which file owns a subsystem, the `Shared` layout, the
 generator/surface/material tables, the render passes — read `ARCHITECTURE.md` (§19 is a

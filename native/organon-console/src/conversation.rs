@@ -153,6 +153,7 @@
 //! that ever needs a limit it belongs next to `max_elements`, with its own counter, not as
 //! a quiet `truncate()`.
 
+use organon_core::exhibit::{Exhibit, Item};
 use organon_core::kind::Kind;
 use std::collections::{HashMap, VecDeque};
 
@@ -681,6 +682,58 @@ pub enum ArtifactContent {
     Panel(PanelSpec),
     /// A rendered surface — a picture the engine draws, living in the flow.
     Surface(SurfaceSpec),
+    /// One or more pictures from files the human named, decoded off the frame thread.
+    Image(ExhibitSpec),
+    /// One or more Markdown documents from files the human named, drawn as text.
+    Markdown(ExhibitSpec),
+}
+
+/// The items an exhibit shows, as this front-end places them.
+///
+/// 🚨 **The arm names the kind; this carries only the items.** [`ArtifactContent`]'s arms are
+/// one per [`Kind`] and a spec holding its own `kind` field would break that — two arms could
+/// then answer one kind, or one arm two, and the renderer would switch on a field instead of
+/// on the thing the compiler checks. `organon_core::exhibit::Exhibit` *does* carry its kind,
+/// because it is the **resolution** result — what a typed path becomes before anyone has
+/// decided where to put it. [`ExhibitSpec::place`] is the one seam between the two shapes, and
+/// switching on the kind exactly once, there, is what keeps it one switch.
+///
+/// ⚠️ **A reference, never bytes** — see `organon_core::exhibit`. An item is a path, so a
+/// texture the budget evicts is re-decoded rather than lost, and this crate never holds a
+/// pixel. It could not: it has no decoder and must not gain one (`doc/arch/topology.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExhibitSpec {
+    /// At least one, in the order the human named them. Non-empty by construction —
+    /// `Exhibit::resolve` refuses an empty list before one of these is ever built.
+    pub items: Vec<Item>,
+}
+
+impl ExhibitSpec {
+    /// Turn a resolved exhibit into the arm that places it.
+    ///
+    /// The one place `Kind` → `ArtifactContent` is switched on for media. Every other consumer
+    /// reads the arm, which the compiler checks.
+    pub fn place(exhibit: Exhibit) -> ArtifactContent {
+        let spec = ExhibitSpec { items: exhibit.items };
+        match exhibit.kind {
+            Kind::Image => ArtifactContent::Image(spec),
+            Kind::Markdown => ArtifactContent::Markdown(spec),
+            // 🚨 Unreachable through `Exhibit::resolve`, which only ever answers a media kind —
+            // and a panic here would be a crash on a typed command. A scene is the console's
+            // own picture and the honest thing to fall back to when a future kind reaches this
+            // seam before its arm does.
+            Kind::Scene | Kind::Panel => ArtifactContent::Surface(SurfaceSpec::default()),
+        }
+    }
+
+    /// The single item, when there is exactly one — the common case, and the one the view
+    /// draws without a gallery.
+    pub fn single(&self) -> Option<&Item> {
+        match self.items.as_slice() {
+            [only] => Some(only),
+            _ => None,
+        }
+    }
 }
 
 impl ArtifactContent {
@@ -699,6 +752,8 @@ impl ArtifactContent {
         match self {
             ArtifactContent::Panel(_) => Kind::Panel,
             ArtifactContent::Surface(_) => Kind::Scene,
+            ArtifactContent::Image(_) => Kind::Image,
+            ArtifactContent::Markdown(_) => Kind::Markdown,
         }
     }
 }
@@ -889,6 +944,30 @@ pub enum Body {
     /// A permission request awaiting a human. Inserted by the console for the same reason
     /// an artifact is, and answered by [`Transcript::answer_approval`].
     Approval(ApprovalBlock),
+    /// One of **Organon's own editor panels**, put into the flow by `/organon`.
+    ///
+    /// 🚨 **Why this is a body of its own and not a third [`ArtifactContent`] arm.** That enum
+    /// is one arm per [`organon_core::kind::Kind`] — the vocabulary the *terminal* front-end
+    /// shares, pinned by `every_shared_kind_has_exactly_one_artifact_arm` — and an Organon
+    /// panel is not in it, because it cannot be: a `Kind` has to be placeable on a text lane
+    /// (`doc/console_patch_protocol.md`), and this is a live egui panel with dropdowns and
+    /// typed numeric entry. Forcing it into that enum would have meant either two arms
+    /// answering `Kind::Panel` — which that test calls "a kind this view cannot address" — or
+    /// widening the shared kind vocabulary with a kind the terminal lane can never honour.
+    /// Being unable to be an artifact is the *evidence* that it is its own body.
+    Organon(OrganonBlock),
+}
+
+/// One of Organon's editor panels, in the flow.
+///
+/// ⚠️ **The panel is carried resolved, as a `&'static`, not as a `(tab, slug)` pair.** The pair
+/// is checked once — where `/organon` is answered, which is the only place that can say
+/// *"Motion has no panel called surface"* while the words are still in the composer. An element
+/// holding the pair would push that check into every frame that draws it, and the failure would
+/// be a panel that renders an error message forever.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrganonBlock {
+    pub panel: &'static organon_core::panels::Panel,
 }
 
 /// One renderable thing, with stable identity and a turn it belongs to.
@@ -1632,6 +1711,14 @@ impl Transcript {
         Change::Appended(self.append(turn, Body::Artifact(artifact)))
     }
 
+    /// Put one of Organon's editor panels in the flow. [`Transcript::insert_artifact`]'s
+    /// sibling in every respect — same turn, same cap, same eviction — and separate only
+    /// because [`Body::Organon`] is not an artifact; that variant's doc owns the reason.
+    pub fn insert_organon(&mut self, block: OrganonBlock) -> Change {
+        let turn = self.ensure_turn();
+        Change::Appended(self.append(turn, Body::Organon(block)))
+    }
+
     /// Put a permission request in the flow — **where the agent is working**, which is the
     /// end of the current turn, exactly where an artifact lands.
     ///
@@ -1829,7 +1916,10 @@ impl Transcript {
                 // An artifact holds no correlation and no running-ness; the view's
                 // per-element widget state goes with it, keyed off an id that
                 // `Transcript::get` now answers `None` for.
-                Body::Human(_) | Body::RunEnd(_) | Body::Artifact(_) => {}
+                // An Organon panel keeps no side-map entry, exactly like an artifact: its live
+                // widget values are the *view*'s, keyed by `ElementId`, and the view drops them
+                // when the element stops resolving. Nothing to unregister here.
+                Body::Human(_) | Body::RunEnd(_) | Body::Artifact(_) | Body::Organon(_) => {}
             }
             if let Some(i) = self.turn_index(gone.turn) {
                 self.turns[i].retained = self.turns[i].retained.saturating_sub(1);
@@ -2390,6 +2480,8 @@ mod tests {
                 drives: ElementId(0),
             }),
             ArtifactContent::Surface(SurfaceSpec::default()),
+            ArtifactContent::Image(ExhibitSpec { items: vec![Item::new("/a.png")] }),
+            ArtifactContent::Markdown(ExhibitSpec { items: vec![Item::new("/a.md")] }),
         ];
         let mut covered: Vec<Kind> = arms.iter().map(ArtifactContent::kind).collect();
         covered.sort_by_key(|k| k.as_word());
@@ -2767,6 +2859,7 @@ mod tests {
                         Body::RunEnd(_) => "run_end",
                         Body::Artifact(_) => "artifact",
                         Body::Approval(_) => "approval",
+                        Body::Organon(_) => "organon",
                     };
                     let was = kinds.entry(e.id.0).or_insert(kind);
                     assert_eq!(*was, kind, "{ctx}: element {} changed kind", e.id.0);

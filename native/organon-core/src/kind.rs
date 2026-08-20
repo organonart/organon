@@ -66,9 +66,23 @@ use std::fmt;
 /// closed set of words rather than a payload: a claim that could carry a command would be a
 /// claim that could carry anything.
 ///
-/// It is also why the two arms are so unequal in what they *cost* and so equal in what they
+/// It is also why the arms are so unequal in what they *cost* and so equal in what they
 /// *say*. On the terminal side everything up to the paint — the claim, the anchor arithmetic,
 /// the per-pane ledger — is shared; the kind selects the last step and nothing before it.
+///
+/// 🚨 **A media kind names no file, and that is the whole reason the media kinds could be
+/// added here at all.** `patch <up> <rows> [kind]` has three positional fields and no payload
+/// slot (`console_ops::parse_console_op`), because the patch protocol's central property is
+/// that *a program which can print can ask for a rectangle without being able to drive the
+/// machine*. A kind that carried a path would end that property outright: any process able to
+/// write a line to the sidecar could make the console open any file the user can read.
+///
+/// So [`Kind::Image`] does not mean "this file" — it means **the exhibit the human loaded**,
+/// exactly as [`Kind::Scene`] means "the scene the console is rendering" rather than naming a
+/// generator. Both placements construct the payload from console-side state: the terminal one
+/// from the current exhibit, the conversation one from the `/media` line a human typed in the
+/// composer. `crate::exhibit` is where a path is turned into an exhibit, and it is reached from
+/// a typed command and from nowhere else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// The rendered scene, drawn by the engine. On the terminal side it is sampled through
@@ -76,6 +90,16 @@ pub enum Kind {
     Scene,
     /// A live control panel: real widgets living in the flow, not a picture of them.
     Panel,
+    /// A picture from a file the human named: PNG or JPEG, decoded off the frame thread into
+    /// a texture. See [`crate::exhibit`] for what an exhibit is and which files answer to it.
+    Image,
+    /// A Markdown document from a file the human named, drawn as text.
+    ///
+    /// 📌 **The second media kind exists to falsify the first.** One kind cannot show that
+    /// this vocabulary is kind-agnostic — it only shows that one thing works. Markdown needs
+    /// no decoder, no texture, no budget and no thread, so if adding it had touched anything
+    /// outside its own renderer, the kind registry would not have succeeded (#56 T4).
+    Markdown,
 }
 
 /// Every kind, in the order `--help` should list them.
@@ -85,7 +109,7 @@ pub enum Kind {
 /// entry into a list. `tests::every_word_round_trips_and_the_two_tables_agree` catches a
 /// word that resolves to nothing and a kind whose word is not offered — which is the pair
 /// that produces a CLI accepting something nothing can draw.
-pub const ALL: &[Kind] = &[Kind::Scene, Kind::Panel];
+pub const ALL: &[Kind] = &[Kind::Scene, Kind::Panel, Kind::Image, Kind::Markdown];
 
 /// The kind words, in [`ALL`]'s order.
 ///
@@ -93,7 +117,7 @@ pub const ALL: &[Kind] = &[Kind::Scene, Kind::Panel];
 /// by `--help` and by [`Kind::from_word`] — the arrangement `console background`'s materials
 /// use, for the reason recorded there: a second hand-maintained copy is how a CLI comes to
 /// accept a word nothing can draw.
-pub const KIND_WORDS: &[&str] = &["scene", "panel"];
+pub const KIND_WORDS: &[&str] = &["scene", "panel", "image", "markdown"];
 
 impl Kind {
     /// The word this kind travels as, on the wire and in `--help`.
@@ -101,6 +125,8 @@ impl Kind {
         match self {
             Kind::Scene => "scene",
             Kind::Panel => "panel",
+            Kind::Image => "image",
+            Kind::Markdown => "markdown",
         }
     }
 
@@ -114,6 +140,8 @@ impl Kind {
         match word {
             "scene" => Some(Kind::Scene),
             "panel" => Some(Kind::Panel),
+            "image" => Some(Kind::Image),
+            "markdown" => Some(Kind::Markdown),
             _ => None,
         }
     }

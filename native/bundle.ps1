@@ -120,7 +120,9 @@ function Main {
         throw "cargo not found on PATH. Install Rust from https://rustup.rs and reopen this shell."
     }
 
-    Invoke-Checked cargo @('build', '--release', '--bin', 'organic-math-visual')
+    # organon#49 T4c-ii — `-p organon-visual`: the visual moved to its own package. The
+    # built path (target\release\organic-math-visual.exe) is unchanged.
+    Invoke-Checked cargo @('build', '--release', '-p', 'organon-visual', '--bin', 'organic-math-visual')
     Invoke-Checked cargo @('xtask', 'bundle', 'organic-math-native', '--release')
 
     # The embedded llama.cpp runtime (#367 Tier 2c). Guarded on cmake exactly as

@@ -121,8 +121,19 @@ pub fn arbitrate(hand_last: Option<Instant>, now: Instant) -> Verdict {
 /// The console cannot *fix* it — the camera really did move, and it will be there the moment
 /// something draws the world — so it says so instead. This is the predicate that decides whether
 /// to say it.
-pub fn viewpoint_is_visible(portal_open: bool, backdrop_shows_world: bool) -> bool {
-    portal_open || backdrop_shows_world
+///
+/// ✏️ **`region_3d` is Tier 2b's addition, and leaving it out would have made this predicate
+/// lie.** A region holding `3d` shows the same camera the portal does — one camera, two
+/// presentations (§1.3, §1.14) — so a framing applied while one is on screen is emphatically
+/// visible, and a console that warned "nothing is showing the world" beside a live picture
+/// would be the console-knew-and-said-the-wrong-thing defect rather than the silence it exists
+/// to prevent.
+pub fn viewpoint_is_visible(
+    portal_open: bool,
+    region_3d: bool,
+    backdrop_shows_world: bool,
+) -> bool {
+    portal_open || region_3d || backdrop_shows_world
 }
 
 /// Who moved the viewpoint most recently.
@@ -189,6 +200,14 @@ pub struct Viewpoint {
     pub distance: f32,
     /// Measured: is the portal on screen?
     pub portal_open: bool,
+    /// Measured: is a **region** holding a live 3D viewport? (§1.14 Tier 2b.)
+    ///
+    /// 🚨 **A separate field from `portal_open` rather than folded into it**, because they are
+    /// different facts and an agent acts on them differently: the portal is something an agent
+    /// may open and close, and a region viewport is something a hand arranged and an agent
+    /// should not be second-guessing. Reporting a region as `portal_open: true` would invite
+    /// exactly that — `console.portal close` aimed at a rectangle it cannot touch.
+    pub region_3d: bool,
     /// Measured: is the backdrop drawing the world (rather than a substrate plane, or nothing)?
     pub backdrop_shows_world: bool,
     /// When a hand last moved this camera. See [`arbitrate`].
@@ -201,7 +220,7 @@ pub struct Viewpoint {
 impl Viewpoint {
     /// The reading as JSON, for a caller that will hand it to a model.
     ///
-    /// Three of the eight keys are derived, each by a rule stated where it lives:
+    /// Three of the nine keys are derived, each by a rule stated where it lives:
     /// `visible` = [`viewpoint_is_visible`], `moved_by` = [`last_mover`], and `hand_holds` =
     /// [`arbitrate`] against `now`. The rest are the measured fields, copied.
     ///
@@ -226,10 +245,15 @@ impl Viewpoint {
         axis("pitch", self.pitch);
         axis("distance", self.distance);
         out.insert("portal_open".into(), Value::Bool(self.portal_open));
+        out.insert("region_3d".into(), Value::Bool(self.region_3d));
         out.insert("backdrop_shows_world".into(), Value::Bool(self.backdrop_shows_world));
         out.insert(
             "visible".into(),
-            Value::Bool(viewpoint_is_visible(self.portal_open, self.backdrop_shows_world)),
+            Value::Bool(viewpoint_is_visible(
+                self.portal_open,
+                self.region_3d,
+                self.backdrop_shows_world,
+            )),
         );
         out.insert(
             "moved_by".into(),
@@ -369,6 +393,7 @@ mod tests {
             pitch: 0.45,
             distance: 520.0,
             portal_open: false,
+            region_3d: false,
             backdrop_shows_world: false,
             hand_last: None,
             agent_last: None,
@@ -390,11 +415,21 @@ mod tests {
         assert_eq!(report["pitch"], serde_json::json!(f64::from(0.45f32)));
         assert_eq!(report["distance"], serde_json::json!(16.0));
         assert_eq!(report["portal_open"], serde_json::json!(true));
+        assert_eq!(report["region_3d"], serde_json::json!(false));
         assert_eq!(report["backdrop_shows_world"], serde_json::json!(false));
         assert_eq!(report["visible"], serde_json::json!(true), "the portal alone is enough");
         assert_eq!(report["moved_by"], serde_json::json!("nobody"));
         assert_eq!(report["hand_holds"], serde_json::json!(false));
-        assert_eq!(report.as_object().unwrap().len(), 8, "no key added without a test");
+        assert_eq!(report.as_object().unwrap().len(), 9, "no key added without a test");
+
+        // ✏️ **And a region viewport alone is enough too**, with the portal shut — the fact
+        // Tier 2b added, and the one a reader of this report has to be able to tell apart from
+        // an open portal. Both are the same camera; only one of them is an agent's to close.
+        let region = Viewpoint { portal_open: false, region_3d: true, ..stock() };
+        let report = region.report(now);
+        assert_eq!(report["portal_open"], serde_json::json!(false));
+        assert_eq!(report["region_3d"], serde_json::json!(true));
+        assert_eq!(report["visible"], serde_json::json!(true), "a region viewport is showing it");
     }
 
     /// 🚨 A non-finite axis must be **absent**, never `null`. `serde_json` renders one as null,
@@ -484,15 +519,25 @@ mod tests {
         assert_eq!(reader.read(), Some(v));
     }
 
-    /// The advisory's whole truth table. Either surface showing the world is enough; neither is
-    /// the case worth a word on stderr.
+    /// The advisory's whole truth table, over all three surfaces. **Any one of them showing the
+    /// world is enough**; all three dark is the only case worth a word on stderr — checked over
+    /// the whole input space rather than by example, because this predicate's failure mode is a
+    /// console that shouts a correction at somebody looking at a live picture.
     #[test]
-    fn the_viewpoint_is_visible_through_the_portal_or_a_world_backdrop_and_nothing_else() {
-        assert!(viewpoint_is_visible(true, false), "the portal alone");
-        assert!(viewpoint_is_visible(false, true), "a world backdrop alone");
-        assert!(viewpoint_is_visible(true, true), "both");
+    fn the_viewpoint_is_visible_through_any_of_the_three_surfaces_and_nothing_else() {
+        for portal in [false, true] {
+            for region in [false, true] {
+                for backdrop in [false, true] {
+                    assert_eq!(
+                        viewpoint_is_visible(portal, region, backdrop),
+                        portal || region || backdrop,
+                        "portal={portal} region_3d={region} backdrop={backdrop}"
+                    );
+                }
+            }
+        }
         assert!(
-            !viewpoint_is_visible(false, false),
+            !viewpoint_is_visible(false, false, false),
             "nothing is drawing the world — the framing lands somewhere invisible"
         );
     }

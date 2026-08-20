@@ -44,7 +44,12 @@
 //! Remaining scope: no overlay bake yet (Tier 1); the display-decoupled HDR mastering
 //! target is driven from `bin/visual.rs` via `record_headroom()`.
 
-use organic_math_native::audio_ring::AudioRingReader;
+// ⚠️ ABSOLUTE, not `crate::` — and that is load-bearing. This file is compiled twice:
+// once as part of the library (through `world.rs`) and once through `bin/visual.rs`'s
+// `#[path = "../world.rs"]` include, where `crate::` means the BINARY. Only an absolute
+// path resolves in both. organon#49 T4b briefly rewrote this to `crate::` while the file
+// was in `organon-world`, and the library build stayed green while the visual broke.
+use crate::audio_ring::AudioRingReader;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};

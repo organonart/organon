@@ -114,6 +114,39 @@ description in the Rust**, then regenerating. The `match`es are exhaustive and
 `generated_reference_is_current` fails the build if the checked-in Markdown no longer
 matches what the code emits. Regenerate in the same commit.
 
+## How to record a change
+
+**Not by editing `CHANGELOG.md`.** New entries are one Markdown file each in
+`changelog.d/`, concatenated into `CHANGELOG.md` at release time:
+
+```bash
+python3 native/tools/changelog.py new "What changed, as a heading"
+python3 native/tools/changelog.py check
+```
+
+`new` prints the path it made — `changelog.d/YYYY-MM-DD-<your-branch>.md` — seeded with a
+`### ` heading. Write the entry into it and commit it alongside the rest of your change.
+
+A fragment is **exactly what would have gone under `## Unreleased`**: full paragraphs in
+this project's house style, explaining the why and the trap, with 🚨/⚠️/📌 and code fences
+where they earn their place. There is no frontmatter and no metadata to fill in,
+deliberately — a form-shaped fragment would push everyone toward one-line bullets, and
+that density is the part of the changelog worth keeping.
+
+**Why a directory rather than a file.** `CHANGELOG.md` had one shared insertion point, so
+any two open branches conflicted at the top of `## Unreleased` by construction, whether or
+not they touched a single common concern. `merge=union` in `.gitattributes` fixed that for
+`git` and not for GitHub — GitHub computes PR mergeability with its own three-way merge
+that ignores merge drivers, so a PR read `CONFLICTING` while `git` resolved it silently,
+and someone still had to merge `main` locally and push just to make the page agree. Two
+branches writing two different files do not conflict at all. `changelog.d/README.md` has
+the full story, including the ordering rule and the one residual collision case.
+
+**`CHANGELOG.md` itself is the record and is not being rewritten** — everything already in
+it stays where it is, `## Unreleased` included. That heading stays in the file
+permanently as the release step's second input, so an entry written under the old scheme
+on a long-lived branch is absorbed at the next release rather than orphaned.
+
 ## Two things specific to this repository
 
 **It is generated, so do not send tidying patches.** This repo is produced from a private

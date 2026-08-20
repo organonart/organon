@@ -9,8 +9,11 @@
 # whether live inference works. A green run means **"green and ready to deploy"**,
 # never "verified working". The Mac and a GPU-capable host own the rest.
 #
-# ── Why four jobs, and why none is redundant ────────────────────────────────────
+# ── Why every job, and why none is redundant ────────────────────────────────────
 # Two axes, not one: the EDITION (a default-off cargo feature) and the PLATFORM.
+# (This heading used to say "four jobs" and was already stale by one — the
+# console-edition leg landed and the count did not. Read them off the `jobs:` block;
+# a number written in prose here only ever rots.)
 #
 # `mind-edition` is a default-OFF cargo feature, so the two builds cover disjoint
 # code and each is blind where the other sees:
@@ -90,6 +93,101 @@
 # `windows-latest` build+test leg. Do that deliberately, with the cost above in
 # hand — do not let it happen by accident.
 #
+# ── macOS, and why it does NOT get the cheap half ───────────────────────────────
+# Until this leg, NOTHING in CI proved macOS for ANY edition — the platform the
+# plugin is actually developed and deployed on (`deploy.sh` is macOS-only) had zero
+# compile coverage. `build (macos)` closes that for the Console.
+#
+# 🚨 **THE WINDOWS CROSS-CHECK TRICK DOES NOT TRANSFER TO APPLE TARGETS, AND THE
+# REASON IS NOT THE ONE THE BLOCK ABOVE WOULD LEAD YOU TO EXPECT.** Read that block
+# and you would conclude a `check --target aarch64-apple-darwin` leg must work too:
+# no `build.rs` in `native/`, and `cargo check` does not link. Both facts are still
+# true, and the check still fails — because the blocker is a build script in a
+# DEPENDENCY, and `cargo check` runs those:
+#
+#     error: failed to run custom build command for `coreaudio-sys v0.2.18`
+#     coreaudio.h:1:10: fatal error: 'AudioUnit/AudioUnit.h' file not found
+#
+# `nih_plug` (features = ["standalone"]) → `cpal` → `coreaudio-rs` →
+# `coreaudio-sys`, whose build script runs **bindgen against the macOS SDK
+# headers**. There is no SDK on a Linux runner, so it dies before a single line of
+# our code is type-checked. Windows has no counterpart: its audio and windowing
+# reach WASAPI/Win32 through pure-Rust binding crates with nothing to generate.
+#
+# ⚠️ The `-sys` crates are NOT interchangeable in this respect and it is worth
+# knowing which is which before someone "fixes" the wrong one. `jack-sys` — also in
+# the Unix graph, also a `-sys` crate — cross-checks **clean** from Linux, because it
+# is `dlopen`-based (`libloading`) and needs no headers at all. Measured 2026-08-16 in
+# this container: `cargo check --target aarch64-apple-darwin -p jack-sys` exits 0.
+# `coreaudio-sys` and `coremidi-sys` are the bindgen ones, and they are the wall.
+#
+#   ► THE CHOICE MADE HERE: **one macOS job, no Apple cross-check leg beside it.**
+#
+# The cross-check leg is not merely blocked — even the version that WOULD work is
+# not worth a job. **Two** of the workspace's eleven members reach nih_plug and are
+# therefore blocked: the root crate `organic-math-native`, and `organon-visual`,
+# which depends on it. The other nine cross-check clean for `aarch64-apple-darwin`,
+# all targets, in well under a minute. But its coverage is a strict subset of what
+# the real macOS leg already sees, and the leg is free here. So the partial
+# cross-check lives in the contributor note below, as an inner loop, not as a job.
+#
+# ⚠️ **Write that exclusion as a DENY-list, never an allow-list**, for the same
+# reason `paths-ignore` below is one: a member added later must be covered by
+# default, not silently omitted. `-p a -p b -p c…` is the shape the `--workspace`
+# note further down exists to forbid, and it failed in exactly the predicted way
+# while this leg was being written — the first version of the recipe was typed from
+# CLAUDE.md's repository map and silently missed five real members
+# (`organon-agent`, `organon-visual`, `organon-world`, `xtask`, the vendored
+# `egui-wgpu`). `cargo metadata --no-deps` is the authority on who the members are;
+# a prose list anywhere, this comment included, is not.
+#
+# ── Spend for the macOS leg ─────────────────────────────────────────────────────
+# The Windows block above states its arithmetic in billing multipliers, so state
+# this one the same way and then state the thing that actually governs it:
+#
+#   * **This repository is PUBLIC, so standard GitHub-hosted runners are billed at
+#     $0 — Linux, Windows and macOS alike.** The 2x/10x multipliers are what these
+#     minutes *would* cost on a private repo, and they are the right shape to
+#     reason with if that ever changes. Today they are not the constraint.
+#   * `macos-latest` is the 3-core arm64 (M-series) standard runner. It is billed at
+#     10x on a private repo — the most expensive minute Actions sells — but it is
+#     also genuinely fast at the I/O-heavy work cargo does, unlike `windows-latest`.
+#   * The real constraint on a public repo is **concurrency**, not money: macOS
+#     runners have a much smaller concurrent-job allowance than Linux, so a macOS
+#     leg is the one most likely to sit queued. That is a wall-clock cost on a busy
+#     day, and it is the reason to add one macOS job rather than three.
+#
+# Measured on this leg's first-ever run (PR #96, cold cache, all six jobs in
+# parallel), so the next person has a baseline rather than the estimate above:
+#
+#   build (macos)          ~17m46s total    9m30s build + ~7m test + ~30s setup
+#
+# ⚠️ Two things in that number are worth reading carefully. It did **not queue** —
+# the runner was allocated in 1 s alongside the other five, so the concurrency
+# caveat above is a risk to plan for, not something observed. And it is the SLOWEST
+# leg here despite arm64 being fast per-core, because it is the only leg that both
+# builds a bin AND runs the whole workspace suite; the Linux legs' ~14m do the same
+# work on more cores. The test half is ~7 minutes, not the ~4 the Linux legs spend,
+# which is the part to watch if this leg ever needs trimming.
+#
+# ► **Console edition only, and build + test rather than a check.** Only-one-job is
+#   the concurrency argument above. Build-and-test rather than check is because this
+#   is the ONLY leg that can execute anything at all on macOS — a `check` here would
+#   buy the cheap half of a signal on the one platform where nothing was linking or
+#   running to begin with. And the edition is the Console's because that is what
+#   this leg was added to establish.
+#
+# ⚠️ **Organon and Organon Mind still have NO macOS coverage, and that is a gap, not
+# a considered trade like the Windows/Mind one above.** Two things soften it and
+# neither closes it: `--bin organon-console` builds the root crate's **lib** as well,
+# so almost all shared macOS ground (nih_plug, wgpu/Metal, winit, `window_macos.rs`)
+# is compiled by this leg anyway; and `cargo test --workspace` runs every workspace
+# member's suite on macOS regardless of edition. What is genuinely uncovered is the
+# `cfg(not(feature = "console-edition"))` arms — the plugin cdylib's own export
+# macros, `standalone.rs`, `mind_main.rs`. Promoting a second macOS leg is a
+# deliberate decision with the concurrency cost above in hand; do not let it happen
+# by accident, and do not read this leg as proving the plugin builds on a Mac.
+#
 # ── Native only ─────────────────────────────────────────────────────────────────
 # No `web/` job. The WebGPU port (#418) is parked; a green check on unpursued work
 # is exactly the waste #626 removes. `web/` is in `paths-ignore` below.
@@ -111,6 +209,27 @@
 # Use it as the inner loop for any `cfg(windows)` work — it is fast and it means
 # the Windows arms are compiler-verified rather than written blind. Read the
 # caveat above before quoting a green result at anyone.
+#
+# **The Apple equivalent exists but is PARTIAL, and the partiality is the whole
+# point of knowing about it.** From any Linux or macOS box, no Mac and no Xcode:
+#
+#   rustup target add aarch64-apple-darwin
+#   cd native && cargo check --target aarch64-apple-darwin --all-targets \
+#     --workspace --exclude organic-math-native --exclude organon-visual
+#
+# ⚠️ Note the shape: `--workspace` minus the two members that reach nih_plug, NOT a
+# `-p` list of the nine that do not. A member added later is then checked by
+# default; with an allow-list it would be silently skipped. `organon-visual` is on
+# the deny side only because it depends on the root crate — it is not itself a
+# nih_plug crate.
+#
+# That covers nine of eleven members — which is most of the Console — in well under
+# a minute, and it is the right inner loop for compositor work. What it CANNOT do is
+# reach the root crate: `cargo check` on `organic-math-native` for an Apple target
+# dies in `coreaudio-sys`'s build script with `'AudioUnit/AudioUnit.h' file not
+# found`, for the reason the macOS block above sets out. So `console_main.rs` — the
+# Console's actual entry point and window — is invisible to it. Only `build (macos)`
+# compiles that. Do not grow the excludes into a substitute for the real leg.
 
 name: CI
 
@@ -561,3 +680,53 @@ jobs:
       - name: Test (incl. offline WGSL validation, Windows)
         working-directory: native
         run: cargo test --release --workspace --no-fail-fast
+
+  # ── Leg 5: macOS — the Console, the first macOS coverage this repo has ever had ─
+  # See the macOS block in the header for why there is no cheap Apple
+  # cross-check leg beside this one (`coreaudio-sys` runs bindgen against the macOS
+  # SDK, so a Linux `cargo check` on the root crate never reaches our code), why it
+  # is console-edition only, and what it does NOT prove about Organon or Mind.
+  macos:
+    name: build (macos)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `Install system dev headers` step, and unlike the Windows cross-check
+      # this is not because nothing needs headers — `coreaudio-sys` and
+      # `coremidi-sys` very much do. It is because a macOS runner ships with the
+      # Xcode command-line tools and the SDK already, so `AudioUnit`, `CoreAudio`
+      # and `CoreMIDI` resolve with nothing installed. The ALSA/JACK/X11 packages
+      # the Linux legs install have no macOS counterpart to add: CoreAudio replaces
+      # the first pair, and Cocoa/Metal the rest. `jack-sys` is still in the graph
+      # here (it is a Unix dependency of nih-plug's standalone backends) and needs
+      # nothing — it is `dlopen`-based, so it compiles with no JACK installed.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: macos
+
+      # Same lesson 1 as every other leg: ONE profile and ONE feature set across
+      # build and test, so the dependency graph compiles once and is reused.
+      #
+      # `--bin organon-console` is what asks for the Console front-of-house
+      # specifically (the bin lives in the ROOT package and carries
+      # `required-features`; `-p organon-console` names the compositor lib and will
+      # not produce it — see leg 2b). It builds the root crate's lib too, which is
+      # why this one command covers nih_plug, wgpu-on-Metal, winit and
+      # `window_macos.rs` despite being scoped to the Console.
+      - name: Build Organon Console (macOS)
+        working-directory: native
+        run: cargo build --release --features console-edition --bin organon-console
+
+      # ⚠️ `--no-fail-fast` for the same reason `build (windows)` carries it, and
+      # with more force: this is the FIRST macOS run this repository has ever had,
+      # so if anything is wrong it is far more likely to be a platform-wide class
+      # (a `cfg` arm, a path assumption, a PTY behaviour) than one isolated defect.
+      # Learning those one per round trip is the failure mode the flag exists to
+      # prevent. Drop it only once this leg has a history of being green.
+      - name: Test (console-edition, incl. offline WGSL validation, macOS)
+        working-directory: native
+        run: cargo test --release --workspace --features console-edition --no-fail-fast

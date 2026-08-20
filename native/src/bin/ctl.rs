@@ -20,7 +20,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use organic_math_native::{agent, cli, ipc, scene_input};
 use organon_core::kind;
-use organon_console::{posture, theme};
+use organon_console::{posture, region, screen, theme};
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -84,6 +84,36 @@ fn rig_names() -> clap::builder::PossibleValuesParser {
 /// copy is how a CLI comes to offer a colour nothing can paint.
 fn theme_names() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(theme::Theme::NAMES.iter().copied())
+}
+
+/// Possible-values parser for `console screen <STATE>`. Built from
+/// `organon_console::screen::SCREEN_WORDS`, on [`patch_kinds`]' rule and for its reason.
+///
+/// 📌 **Unlike `console posture`, this one CAN be a `PossibleValuesParser`, and the contrast
+/// is the design showing through the CLI.** A posture's value space is two words *or* a
+/// scalar, which clap cannot state — so its gate has to move to `run_console` and its words do
+/// not tab-complete. A screen state has three words and nothing between them, because a window
+/// either covers the display or it does not. So the check lands at the clap boundary, where the
+/// error is best, and the words complete for free.
+fn screen_words() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(screen::SCREEN_WORDS.iter().copied())
+}
+
+/// Possible-values parsers for `console viewport <REGION> <CONTENT>`. Built from
+/// `organon_console::region`'s own two tables, on [`patch_kinds`]' rule and for its reason.
+///
+/// 📌 Both are closed lists with nothing between the words, so — like `screen` and unlike
+/// `posture` — the check lands at the clap boundary where the error is best, and both rings tab
+/// complete for free.
+fn region_words() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(region::REGION_WORDS.iter().copied())
+}
+
+/// See [`region_words`]. ⚠️ This list carries `off`, which is **not** a content kind — it
+/// empties the region. `region::CONTENT_WORDS` is the one table that says so, and this reads it
+/// rather than restating it, so a kind added there reaches `--help` and completion together.
+fn content_words() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(region::CONTENT_WORDS.iter().copied())
 }
 
 /// Possible-values parser for `console patch --kind <KIND>`.
@@ -358,6 +388,63 @@ enum ConsoleAction {
         /// refusal that names them. The cost is real and worth stating: `<POSTURE>` does not
         /// tab-complete the two words, which is why `--help` lists them twice over.
         word: String,
+    },
+    /// Fill the display with the console's window, or give it its edges back
+    #[command(after_help = "`full` is borderless full screen on the display the window is \
+                            already on; `windowed` is the ordinary window it opened as; \
+                            `toggle` is whichever it is not.\n\n\
+                            ⚠️ This is NOT a posture, and the distinction is load-bearing \
+                            rather than pedantic. A posture is a set of form tokens — margins, \
+                            corners, padding, line height — and full screen changes none of \
+                            them. The two are orthogonal: full screen at `terminal` posture and \
+                            full screen at `desktop` posture are both real consoles, and every \
+                            combination of the two verbs means exactly what it says.\n\n\
+                            📌 F11 flips it from inside the window, at any time, in any tab. \
+                            That is the way out, and it is a real one: no title bar means no \
+                            close button, and the function keys are the one band the terminal \
+                            has never sent to a child — so unlike Escape, claiming it takes \
+                            nothing away from `vim`.\n\n\
+                            ⚠️ It is NOT remembered, on `posture`'s rule: the console opens \
+                            windowed however you left it.")]
+    Screen {
+        /// full, windowed, or toggle
+        #[arg(value_parser = screen_words())]
+        state: String,
+    },
+    /// Divide the pane into regions and say what each one holds
+    #[command(after_help = "The window's ONE pane becomes up to four, and each region holds one \
+                            kind of thing. `full` is the whole pane — what the console opens \
+                            holding — then `left`/`right`/`top`/`bottom` are halves and \
+                            `topleft`/`topright`/`bottomleft`/`bottomright` are quarters. A \
+                            region never splits again: to get quarters, name the quarters.\n\n\
+                            Assigning a region that CONTAINS one already held, or is contained \
+                            by one, displaces it and says so — that is how `/viewport left \
+                            agent` works from a console holding `full`. An assignment that only \
+                            PARTLY overlaps (`top` while `left` is held) is refused by name: \
+                            neither contains the other, so there is nothing unambiguous to take \
+                            away.\n\n`off` empties a region. It is refused on a region that \
+                            already holds nothing, and refused on the last region holding an \
+                            `agent` — a console with nothing to talk to has no obvious way \
+                            back, since the verb that would fix it is typed at an agent.\n\n\
+                            `3d` is a LIVE 3D VIEWPORT — drag inside it to orbit, wheel to \
+                            zoom, and `organon set`/`generator`/`recipe` typed at a prompt drive \
+                            what it shows. ⚠️ Only ONE region may hold it, because its producer \
+                            is Organon and Organon draws at most one frame per console frame; a \
+                            second is refused by name. ⚠️ An open portal TAKES that frame — the \
+                            region then says so and `console portal close` gives it back.\n\n\
+                            ⚠️ `panel` is a NAMED PLACEHOLDER: the region says what belongs \
+                            there and a later tier gives it a body. `media` is not in the \
+                            vocabulary yet. ⚠️ Only one region can show the live tab — \
+                            a second `agent` region says so rather than drawing it twice.\n\n\
+                            📌 Orthogonal to `posture` and `screen` both, and it is NOT \
+                            remembered: the console opens undivided however you left it.")]
+    Viewport {
+        /// Which part of the pane (see the value list above)
+        #[arg(value_parser = region_words())]
+        region: String,
+        /// What it holds: agent, 3d, panel, or off to empty it
+        #[arg(value_parser = content_words())]
+        content: String,
     },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
@@ -655,6 +742,20 @@ fn run_console(action: ConsoleAction) -> ! {
                 std::process::exit(2);
             }
         },
+        // clap has already restricted this to `SCREEN_WORDS`, so it travels as typed — the
+        // `Theme` arm's arrangement, not the `Posture` arm's, because this value space is a
+        // closed list and `PossibleValuesParser` can say so. The console resolves it again on
+        // arrival, which is the gate for a line written straight onto the sidecar by hand.
+        ConsoleAction::Screen { state } => cli::ConsoleOp::Screen(state),
+        // Both words travel as typed, the `Screen` arm's arrangement: clap has already
+        // restricted each to its own closed table, and the console resolves them again on
+        // arrival — which is the gate that matters for a line written straight onto the
+        // sidecar by hand. Nothing is checked *between* them here on purpose: whether this
+        // region may hold this content depends on what the console is holding right now, which
+        // is state only the console has.
+        ConsoleAction::Viewport { region, content } => {
+            cli::ConsoleOp::Viewport { region, content }
+        }
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
         // here; the fallback rather than an `expect` because it is not a guess — it is the
@@ -1121,6 +1222,38 @@ mod tests {
         assert!(parse(&["console", "posture"]).is_err(), "a posture verb with no posture");
     }
 
+    /// CONTRACT: **`console screen` is gated by clap itself, which is the contrast the verb
+    /// above exists to be read against.** A posture's value space is two words *or* a scalar,
+    /// so `PossibleValuesParser` cannot state it and the gate has to move to `run_console`. A
+    /// screen state is three words and nothing between them — a window either covers the
+    /// display or it does not — so the whole value space is expressible, the check happens
+    /// before a byte is written, and the words tab-complete.
+    ///
+    /// ⚠️ The refusals below are asserted at the **clap** boundary, not the resolver's. That is
+    /// the point: `screen sideways` must never reach the sidecar at all, whereas
+    /// `posture sideways` does reach `run_console` and is stopped there.
+    #[test]
+    fn console_screen_is_a_closed_word_list_clap_can_state() {
+        for word in screen::SCREEN_WORDS.iter().copied() {
+            let c = parse(&["console", "screen", word]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Screen { state: got } } => {
+                    assert_eq!(got, word)
+                }
+                _ => panic!("`console screen {word}` parsed as something else"),
+            }
+            assert!(screen::ScreenCmd::resolve(word).is_ok(), "`{word}` must resolve");
+        }
+        // Refused by clap, unlike the posture verb's equivalents. `fullscreen` is the case
+        // worth naming: it is the word somebody reaches for first, and the console reserves
+        // that phrase for a portal state, so it must fail loudly rather than near-match.
+        for bad in ["fullscreen", "on", "off", "Full", "0", "sideways"] {
+            assert!(parse(&["console", "screen", bad]).is_err(), "clap must gate `{bad}`");
+            assert!(screen::ScreenCmd::resolve(bad).is_err(), "`{bad}` must be refused");
+        }
+        assert!(parse(&["console", "screen"]).is_err(), "a screen verb with no state");
+    }
+
     /// **`console block` is bounded at the clap boundary, which is the only place a row count
     /// can produce a good error.** The sidecar skips a malformed line in silence by design, so
     /// a count that slipped past here would become a command that vanishes — or, without the
@@ -1220,6 +1353,53 @@ mod tests {
         assert!(parse(&["console", "portal"]).is_err(), "there is no default state");
         assert!(parse(&["console", "portal", "ajar"]).is_err(), "an unknown state");
         assert!(parse(&["console", "portal", "open", "close"]).is_err(), "one state, not two");
+    }
+
+    /// **`console viewport` takes two words and neither is optional.** Every region word crosses
+    /// with every content word, reaches an op, and round-trips through the sidecar's own line
+    /// form — the whole cross product rather than a sample, because the cost of a pair that
+    /// survives one direction only is a command the console skips in silence, which looks
+    /// exactly like a split that failed to draw.
+    ///
+    /// ⚠️ **The bare and half-written cases are what this pins hardest.** `console viewport
+    /// left` looks like a command; there is no content it silently means, so it must fail here
+    /// where the error can name what is missing — not on the wire, where the answer is to drop
+    /// the line.
+    #[test]
+    fn console_viewport_takes_a_region_and_a_content_and_defaults_neither() {
+        for r in region::REGION_WORDS {
+            for w in region::CONTENT_WORDS {
+                let c = parse(&["console", "viewport", r, w]).unwrap();
+                match c.cmd {
+                    Cmd::Console { action: ConsoleAction::Viewport { region, content } } => {
+                        assert_eq!(&region, r);
+                        assert_eq!(&content, w);
+                        let op = cli::ConsoleOp::Viewport { region, content };
+                        assert_eq!(
+                            cli::parse_console_op(&cli::console_op_to_line(&op)),
+                            Some(op),
+                            "`viewport {r} {w}` must survive the sidecar round trip"
+                        );
+                    }
+                    _ => panic!("`console viewport {r} {w}` parsed as something else"),
+                }
+            }
+            assert!(parse(&["console", "viewport", r]).is_err(), "`{r}` alone is half a command");
+        }
+        assert!(parse(&["console", "viewport"]).is_err(), "neither word has a default");
+        assert!(parse(&["console", "viewport", "middle", "agent"]).is_err(), "no such region");
+        // ✏️ **This line used to read `"3d"`.** Tier 2b put that word in the vocabulary, so the
+        // assertion moved to `media` — the kind that is still absent (§1.13's placement question
+        // owns it). It is the CLI-side twin of the same edit in `console_main.rs`, and the pair is
+        // why the word list is worth exercising from both ends: this is the leg the four-leg bar
+        // only *type-checks*, and a `possible_values` table that has grown a word its negative
+        // assertion still denies compiles perfectly and fails only when somebody runs it.
+        assert!(parse(&["console", "viewport", "left", "media"]).is_err(), "not in the vocabulary");
+        assert!(parse(&["console", "viewport", "left", "agent", "right"]).is_err(), "one pair");
+        // 🚨 The clap gate is the *word* tables and nothing more — whether a region MAY hold a
+        // content depends on what the console is holding right now, which this process cannot
+        // see. `left off` is a legal line and a refusal waiting to happen at the other end.
+        assert!(parse(&["console", "viewport", "left", "off"]).is_ok());
     }
 
     /// **`console camera` takes any subset of four flags and round-trips through the sidecar.**

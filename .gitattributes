@@ -138,32 +138,62 @@ native/organon-render/src/BSC5 binary
 # uncovered the next failure.
 .claude/skills/**/SKILL.md text eol=lf
 
-# ─── CHANGELOG.md: every branch adds to the same line, so let git keep both ─────────────
+# ─── CHANGELOG.md: union was not enough, because GitHub ignores it ──────────────────────
 #
-# The file has one shared insertion point — a `## Unreleased` block that every PR adds a
-# section to the top of — so any two open branches conflict there by construction, whether or
-# not they touch a single common concern. Measured on 2026-08-13: four PRs open at once, four
-# hand-resolutions, each on a tree nobody had compiled, and the resolution was "keep both
-# sides" every single time. A conflict whose answer is always the same is a merge driver's
-# job, not a person's.
+# ✅ **RESOLVED by `changelog.d/` — new entries no longer go in this file at all.** The
+# rest of this block is why, kept because the measurements are what decided it and a bare
+# `merge=union` line with no history would look like superstition to whoever reads it next.
 #
-# `union` takes both sides of a conflicting hunk in order and emits no markers. It is built
-# into git, needs no `merge.*.driver` registration in anyone's config, and therefore works for
-# a fresh clone and for CI without a setup step — which a custom driver would not.
+# **The problem.** The file has one shared insertion point — a `## Unreleased` block that
+# every PR adds a section to the top of — so any two open branches conflict there by
+# construction, whether or not they touch a single common concern. Measured on 2026-08-13:
+# four PRs open at once, four hand-resolutions, each on a tree nobody had compiled, and the
+# resolution was "keep both sides" every single time. A conflict whose answer is always the
+# same is a merge driver's job, not a person's.
 #
-# ⚠️ **It is right for THIS file because of how this file is written, not in general.** Union
-# is correct when both sides *add* distinct blocks. If two branches edit the *same existing
-# line* — rewording one entry two ways — union silently keeps **both copies**, with no
-# conflict to warn anyone. That is a worse failure than a conflict, and it is why this is
-# scoped to one path rather than applied to Markdown at large. Keep adding new sections at the
-# top; do not reword a landed entry on a branch.
+# **The first answer, `merge=union`.** It takes both sides of a conflicting hunk in order
+# and emits no markers. It is built into git, needs no `merge.*.driver` registration in
+# anyone's config, and therefore works for a fresh clone and for CI without a setup step —
+# which a custom driver would not. Measured on 2026-08-14: merging `main` into a
+# conflicting PR branch locally reported *"Auto-merging CHANGELOG.md … Automatic merge went
+# well"*, no conflict, no markers. **It works — for `git`.**
 #
-# ⚠️ It does not make a conflicted PR mergeable on its own. The rebase that prompted this
+# 🚨 **GitHub does not honour it.** GitHub computes PR mergeability with its own three-way
+# merge, which ignores `.gitattributes` merge drivers, so the same PR displays
+# `CONFLICTING` while `git` resolves it silently. The tax simply moved: someone has to
+# merge `main` locally and push, purely to make the PR page agree with what git already
+# thinks. On 2026-08-14 that happened on **four separate branches in one day** — the same
+# count as the day before, which is the number that ended the argument. Union bought
+# nothing at the boundary where the cost is actually paid.
+#
+# **The answer that holds: `changelog.d/`.** One Markdown fragment per change, named from
+# the branch, concatenated into this file at release time by
+# `native/tools/changelog.py`. Two branches write two different files, and two different
+# files do not conflict — the shared insertion point is gone rather than tolerated. No
+# Action, no merge driver, nothing to configure in a fresh clone.
+# `changelog.d/README.md` is the contributor-facing half; the tool's module docstring is
+# the design.
+#
+# ⚠️ **The rejected alternative, recorded so it is not re-proposed:** an Action that
+# auto-resolves the conflict and pushes to PR branches. Wrong here, because this repo
+# routinely has many agent worktrees live at once — it would push to a branch someone is
+# mid-commit on.
+#
+# **`merge=union` STAYS, as a belt, and only for as long as it is one.** `## Unreleased`
+# remains in the file permanently as the release step's second input, and PRs opened before
+# this change still carry entries written into it. While any of those are in flight, two of
+# them can still collide, and union is still the right resolution for that collision.
+#
+# ⚠️ **It is right for THIS file because of how this file is written, not in general.**
+# Union is correct when both sides *add* distinct blocks. If two branches edit the *same
+# existing line* — rewording one entry two ways — union silently keeps **both copies**,
+# with no conflict to warn anyone. That is a worse failure than a conflict, and it is why
+# this is scoped to one path rather than applied to Markdown at large. Do not reword a
+# landed entry on a branch.
+#
+# ⚠️ It never made a conflicted PR mergeable on its own. The rebase that prompted it
 # conflicted in *two* files, and resolving the changelog half would not have unblocked it.
-# This removes a recurring tax, not the need to read a merge.
 #
-# If this stops being enough, the next step is `changelog.d/` fragments — one file per change,
-# concatenated at release — which removes the shared insertion point entirely. An Action that
-# auto-resolves and pushes to PR branches is the wrong answer with many agent worktrees live
-# at once: it would race them.
+# 📌 `changelog.d/**` needs no attribute of its own, and that is the point rather than an
+# omission: one branch owns one fragment file, so there is no hunk for a driver to resolve.
 CHANGELOG.md merge=union

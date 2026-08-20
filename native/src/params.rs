@@ -9970,7 +9970,9 @@ mod host_mirror_tests {
     /// `world.rs` fails here until someone decides where it belongs.
     #[test]
     fn every_param_type_world_names_is_in_core() {
-        let world = include_str!("world.rs");
+        // organon#49 T4c-ii — `world.rs` descended to `organon-world`. The test is unchanged
+        // in intent: it still scans the real file, from its real home.
+        let world = include_str!("../organon-world/src/world.rs");
 
         // Types confirmed resident in `organon_core::params` by #626 T3 and organon#49
         // T1/T2/T4a. `IndexedEnum` is core's trait; `Host*` names are the adapters and
@@ -10034,6 +10036,18 @@ mod host_mirror_tests {
     /// walks the plugin's own `Params` tree through `ParamPtr`, which is host-side by
     /// nature; #49 T2 predicted that risk and it landed on a test rather than on shipped
     /// code. Test code does not travel to a lower crate, so it does not block Tier 4.
+    ///
+    /// ⚠️ **Comment lines are skipped, which they were not until organon#49 T4c-i.** The
+    /// scan is a substring match, so a *prose* mention of the crate read as a dependency —
+    /// and `agent.rs`'s new module doc, whose whole subject is that the code below carries
+    /// no plugin binding, tripped its own guard. A comment reaches nothing; treating one as
+    /// coupling makes the test fire where there is no defect, which is how a check gets
+    /// dismissed. `every_param_type_world_names_is_in_core` above already skipped comments
+    /// for the same reason — these two now agree.
+    ///
+    /// 📌 A **trailing** comment on a code line still counts, deliberately. The check errs
+    /// toward a false positive, because the cost of one is a reworded line and the cost of
+    /// a false negative is a tier that cannot move.
     #[test]
     fn cli_and_agent_are_free_of_nih_plug_outside_tests() {
         for (name, src) in [
@@ -10044,6 +10058,7 @@ mod host_mirror_tests {
             let hits: Vec<_> = shipped
                 .lines()
                 .enumerate()
+                .filter(|(_, l)| !l.trim_start().starts_with("//"))
                 .filter(|(_, l)| l.contains("nih_plug"))
                 .map(|(i, l)| format!("  {name}:{}: {}", i + 1, l.trim()))
                 .collect();

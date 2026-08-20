@@ -684,11 +684,18 @@ fn material_textures(ctx: &egui::Context) -> MaterialTextures {
 // Installing the theme
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// Inter (latin subset), OFL 1.1 — vendored in `src/overlay/` for the #135 capture overlay.
-/// Reused here rather than adding a font dependency; see `src/overlay/FONTS.txt`.
-const FONT_REGULAR: &[u8] = include_bytes!("overlay/font_regular.ttf");
+/// Inter (latin subset), OFL 1.1 — vendored for the #135 capture overlay and reused here
+/// rather than adding a font dependency; see `organon-world/src/overlay/FONTS.txt`.
+///
+/// ⚠️ **organon#49 T4c-ii — the path reaches into `organon-world` on purpose.** The asset
+/// directory travelled with `overlay.rs`, which is the module that owns it (`include_bytes!`
+/// resolves against the includer, so they cannot be separated). This file is the *other*
+/// reader, and a second copy of two font binaries is a worse answer than a relative path:
+/// duplicated assets drift silently, and the licence file that documents their provenance
+/// lives beside the originals.
+const FONT_REGULAR: &[u8] = include_bytes!("../organon-world/src/overlay/font_regular.ttf");
 /// Inter Bold — same provenance.
-const FONT_BOLD: &[u8] = include_bytes!("overlay/font_bold.ttf");
+const FONT_BOLD: &[u8] = include_bytes!("../organon-world/src/overlay/font_bold.ttf");
 
 /// Marks a context as already having had its font atlas built, so [`install`] can be called
 /// unconditionally every frame.

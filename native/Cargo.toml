@@ -7,7 +7,17 @@
 # `export-public.sh`'s member guard fails on the one that is missing, rather than
 # shipping a manifest that names a member nobody exported. That failure is the system
 # working, not an obstacle to route around.
-members = ["xtask", "organon-core", "organon-mind", "organon-render", "organon-scene", "organon-console"]
+members = [
+    "xtask",
+    "organon-core",
+    "organon-mind",
+    "organon-render",
+    "organon-scene",
+    "organon-agent",
+    "organon-world",
+    "organon-visual",
+    "organon-console",
+]
 
 [package]
 name = "organic-math-native"
@@ -18,15 +28,24 @@ description = "Organon — native MIDI-responsive generative visualizer (Rust): 
 # `nih_plug` itself is ISC — but `nih_export_vst3!` (lib.rs, bottom) is implemented over
 # `vst3-sys`, which is `license = "GPLv3"`, and nih-plug's own README says so outright:
 # "any VST3 plugins built with NIH-plug need to be able to comply with the terms of the
-# GPLv3 license." So this crate is GPL because it exports a VST3, and everything in it
-# — the visual binary, the standalone, the `organon` CLI — inherits that, because they
-# are all this one crate.
+# GPLv3 license." So this crate is GPL because it exports a VST3, and every `[[bin]]` in
+# it — the standalone, the `organon` CLI — inherits that, because they are all this one
+# crate. ⚠️ `organic-math-visual` is NO LONGER among them: it moved to `organon-visual`,
+# which is GPL for a *different* reason — it depends UPWARD on this crate (for
+# `agent::core_catalog()`), so it inherits by dependency rather than by being the same
+# package. Same outcome, different mechanism, and the distinction is what tells you a
+# permissive module may not reuse the visual's host loop.
 #
-# ⚠️ The four sibling crates are `MIT OR Apache-2.0` and MUST STAY THAT WAY. They carry
+# ⚠️ The sibling crates are `MIT OR Apache-2.0` and MUST STAY THAT WAY. They carry
 # no nih_plug (enforced for organon-core by `cargo tree`), so the GPL does not reach
 # them, and they are the part of the engine an outside project can actually reuse. The
 # split is the whole licensing design; collapsing it "for consistency" would relicense
 # ~100k lines of reusable engine onto the terms of a plugin binding.
+#
+# 📌 Deliberately no count here. This line said "the four sibling crates" through three
+# more being added, and `doc/organon_modules_plan.md` §3 then cited it as the authority
+# for exactly that fact. Ask the manifests — `grep -E '^name|^license' */Cargo.toml` —
+# the same rule `doc/arch/topology.md` applies to the `members` list above.
 #
 # CLAP is not the constraint here: `clap-sys` is MIT/Apache-2.0. Only the VST3 arm is.
 # Dropping `nih_export_vst3!` (or replacing the bindings) is what would free this crate.
@@ -73,10 +92,11 @@ name = "organon-console"
 path = "src/console_main.rs"
 required-features = ["console-edition"]
 
-# Separate-process visual window (winit + wgpu). Reads params from shared memory.
-[[bin]]
-name = "organic-math-visual"
-path = "src/bin/visual.rs"
+# organon#49 T4c-ii — `[[bin]] organic-math-visual` MOVED to the `organon-visual`
+# package. It could not stay: it needs `organon-world/world`, and cargo features unify
+# across every target of a package, so asking for it here would hand the cdylib beside it
+# the +490 KB that gate exists to prevent. The binary NAME and its built path are both
+# unchanged (`target/release/organic-math-visual`) — see organon-visual/Cargo.toml.
 
 # #367 Tier 2 — synthetic activation-ring writer. Emits fake per-token model
 # activations into the mind ring so the Live-streaming visual can be exercised with
@@ -111,14 +131,29 @@ required-features = ["embedded-llm"]
 # FORWARDED to organon-core, which is where `edition.rs` now lives (#626 Tier 3).
 # One switch, not two that can disagree: turning this on here turns it on there,
 # so `EDITION` resolves to `Edition::Mind` in exactly one place.
-mind-edition = ["organon-core/mind-edition", "organon-mind/mind-edition"]
+mind-edition = [
+    "organon-core/mind-edition",
+    "organon-mind/mind-edition",
+    # organon#49 T4c-ii — `world` moved to organon-world behind a feature; this is where
+    # `#[cfg(any(mind-edition, console-edition))] pub mod world` used to sit. `mind-edition`
+    # is forwarded too, because `world.rs` carries 16 cfg sites that ask the crate they are
+    # compiled in — see organon-world/Cargo.toml.
+    "organon-world/world",
+    "organon-world/mind-edition",
+]
 
 # Console #3 T1 — the **Organon Console** edition switch, mind-symmetric:
 #   cargo build --release --features console-edition --bin organon-console
 # Forwarded to organon-core (EDITION's one resolution site) and through the
 # organon-console crate's own feature, so the two cannot disagree. Mutually exclusive
 # with mind-edition (compile_error! in organon-core's edition.rs).
-console-edition = ["organon-core/console-edition", "organon-console/console-edition"]
+console-edition = [
+    "organon-core/console-edition",
+    "organon-console/console-edition",
+    # Same reason as mind-edition above: the Console's embedded viewport renders `World`.
+    # No `organon-world/mind-edition` here — that cfg must stay OFF in a Console build.
+    "organon-world/world",
+]
 
 # Pulls in the llama.cpp binding (which statically links + builds llama.cpp itself).
 # OFF by default: the plugin, standalone, visual, and mind-writer bins never touch it.
@@ -134,6 +169,14 @@ organon-render = { path = "organon-render" }
 # organon#49 T3 — the substrate: scene look/materials/camera/epochs + overlay metadata,
 # below the plugin. Unconditional like its siblings; carries no nih_plug, wgpu or egui.
 organon-scene = { path = "organon-scene" }
+# organon#49 T4c-i — the AI Performer: action set, override lane, tool-call protocol and
+# the localhost chat client. `src/agent.rs` re-exports it and adds back the two functions
+# that read `param_table` / `preset`, so every `crate::agent::…` path still resolves.
+organon-agent = { path = "organon-agent" }
+# organon#49 T4b — the window layer: viewport input, the egui platform seam and the
+# two IPC rings. Carries egui on purpose (and wgpu + winit from T4c); carries no
+# nih_plug, which is the bar that matters for it.
+organon-world = { path = "organon-world" }
 # Console #3 T1 — the Console compositor UI. Unconditional like its siblings
 # (the lib is tiny and Edition-parametric); only the BIN is feature-gated.
 organon-console = { path = "organon-console" }
@@ -275,7 +318,12 @@ egui = "0.33.3"
 rfd = "0.17"
 # Radiance .hdr decode (→ linear f32 RGBA); "png" decodes the bundled #135 overlay
 # formula images (assets/overlay → src/overlay/formula_*.png).
-image = { version = "0.25", default-features = false, features = ["hdr", "png"] }
+# ⚠️ **"jpeg" is the Console's exhibit decoder, and the feature list is the real gate** — this
+# crate builds `image` with `default-features = false`, so a format absent here fails at run
+# time no matter what `organon_core::exhibit::IMAGE_EXTENSIONS` offers. Those two tables are a
+# pair: adding a format means adding it in both, in one change. `exhibit`'s own doc says so
+# from the other side, and `native/tests/exhibit_formats.rs` fails the build if they disagree.
+image = { version = "0.25", default-features = false, features = ["hdr", "png", "jpeg"] }
 # f32 → f16 conversion for the Rgba16Float env texture upload (bytemuck cast_slice).
 half = { version = "2", features = ["bytemuck"] }
 # CPU glyph rasterizer for the #135 capture-overlay text atlas (already in the tree

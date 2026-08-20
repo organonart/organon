@@ -13,10 +13,19 @@ extern crate self as organic_math_native;
 
 pub mod agent;
 pub mod audio;
-pub mod audio_ring;
 pub mod cli;
 pub mod clip;
 pub mod console_catalog;
+
+/// The Console's window icon (the aperture mark), embedded as PNG bytes.
+///
+/// Gated on `console-edition` for the reason every other gate in this file exists: the
+/// module is only ever reached from `console_main.rs`, and the shipping plugin cdylib
+/// should not carry 19 KB of icon it can never draw. The gate also keeps `winit`'s
+/// Windows platform extension off the plugin's compile path.
+#[cfg(feature = "console-edition")]
+pub mod console_icon;
+
 mod controller;
 
 /// #626 Tier 3 — **`organon-core`'s modules, re-exported so `crate::` paths still resolve.**
@@ -41,7 +50,7 @@ mod controller;
 /// **Named, never glob.** `pub use organon_core::*` would let core silently widen this
 /// crate's surface later; these are three named modules and nothing else. `ARCHITECTURE.md`
 /// §19 records the decision.
-pub use organon_core::{edition, gguf, gguf_data, ipc, math};
+pub use organon_core::{edition, gguf, gguf_data, ipc, math, panels};
 
 /// #626 Tier 4 — the Mind cluster is its own crate now (`organon-mind`, no nih-plug).
 /// Re-exported so every existing `crate::mind_ring::…` path in this crate still resolves,
@@ -64,16 +73,43 @@ pub use organon_mind::{mind_console, mind_log, mind_ring, mind_shell, mind_ui, m
 pub use organon_scene::{
     overlay_meta, substrate_camera, substrate_epochs, substrate_materials, substrate_scene,
 };
-/// #593 Tier 3 — **the egui platform seam**: how `ui_layer` takes input, without naming a
-/// window. `WindowGeometry` carries the two facts egui reads off a window (physical size,
-/// scale factor), because `baseview::Window` can answer neither; `EguiPlatform` is the trait
-/// the winit backend (`world::winit_platform`) and the baseview one (`baseview_input`, Tier 2)
-/// both satisfy.
+
+/// organon#49 Tier 4b — the **window layer** is its own crate now (`organon-world`: egui
+/// and wgpu on purpose, **no nih-plug**). Re-exported so every existing
+/// `crate::scene_input::…` / `crate::frame_ring::…` path in this crate still resolves —
+/// the same facade Tier 3 used for core, Tier 4 for Mind and T3 for the substrate.
 ///
-/// **Ungated on purpose.** `world` — and therefore `ui_layer` — does not exist in a default
-/// build, so a trait living there could never be implemented by the baseview arm. This is a
-/// trait plus two plain-data types; it pulls in nothing.
-pub mod egui_platform;
+/// ⚠️ **`agent` and `cli` are deliberately NOT in this list**, though `world.rs` imports
+/// them alongside these five. They carry `param_table` and `preset` — the plugin's own
+/// automation surface — so they are host-side until something changes that, and Tier 4c
+/// has to answer them rather than widen the crate to swallow them.
+///
+/// **Named, never glob**, for the reason core's re-export gives above.
+pub use organon_world::{audio_ring, egui_platform, scene_input};
+
+/// #554 Tier 1 — the **frame mirror**: the visual's rendered frames carried to the editor
+/// over their own mmap, so the editor can draw a live viewport inside its own window.
+/// Separate from `Shared` (high-rate payload); see the module docs for why the boundary is
+/// CPU memory rather than a shared GPU texture.
+///
+/// **#593 Tier 4 gated it out of Organon Mind, and gating is all it did.** The mirror is full
+/// Organon's *only* viewport path — inside Ableton the editor does not own its window and a GPU
+/// device must not enter the host's process — so deleting it, which #593's original text asked
+/// for, would delete the shipping plugin's viewport. In Mind the wgpu editor renders the world
+/// into the editor's own surface instead, and this whole subsystem has nothing left to do; the
+/// mind-edition build **not compiling** if anything on that path still names it is the tier's
+/// completion test. `MIND_ARCHITECTURE.md` §2.5 carries the per-item verdict.
+///
+/// ⚠️ **The gate is on the RE-EXPORT, and it has to be** (organon#49 T4b). `frame_ring`
+/// moved to `organon-world`, and a name inside a braced `pub use` list cannot be
+/// cfg'd — so it gets its own statement. Dropping the gate would silently hand Mind back
+/// a subsystem #593 T4 removed from it, and #593's completion test is precisely that a
+/// mind-edition build fails to compile if anything on that path still *names* it. That
+/// property is preserved: `crate::frame_ring` does not resolve under `mind-edition`.
+/// (`organon-world` still compiles the module itself either way — it is mmap plumbing
+/// with no side effects — but nothing on Mind's path can name it.)
+#[cfg(not(feature = "mind-edition"))]
+pub use organon_world::frame_ring;
 /// #593 Tier 3 — **the baseview arm** of the `EguiPlatform` seam, the counterpart to
 /// `winit_platform.rs`.
 ///
@@ -108,32 +144,21 @@ pub mod baseview_input;
 /// module docs for what only the Mac can settle.
 #[cfg(feature = "mind-edition")]
 pub mod wgpu_editor;
-/// #554 Tier 1 — the **frame mirror**: the visual's rendered frames carried to the editor
-/// over their own mmap, so the editor can draw a live viewport inside its own window.
-/// Separate from `Shared` (high-rate payload); see the module docs for why the boundary is
-/// CPU memory rather than a shared GPU texture.
-///
-/// **#593 Tier 4 gated it out of Organon Mind, and gating is all it did.** The mirror is full
-/// Organon's *only* viewport path — inside Ableton the editor does not own its window and a GPU
-/// device must not enter the host's process — so deleting it, which #593's original text asked
-/// for, would delete the shipping plugin's viewport. In Mind the wgpu editor renders the world
-/// into the editor's own surface instead, and this whole subsystem has nothing left to do; the
-/// mind-edition build **not compiling** if anything on that path still names it is the tier's
-/// completion test. `MIND_ARCHITECTURE.md` §2.5 carries the per-item verdict.
-#[cfg(not(feature = "mind-edition"))]
-pub mod frame_ring;
 mod keymap;
 pub mod material_graph;
 
+/// **Where an editor panel's control writes** (Console #7) — the `Sink` that lets one panel
+/// body serve both Organon's editor (writing through `nih_plug`) and Organon Console (writing
+/// a freely-mutable `PresetValues` mirror). Read its module doc before converting a panel: the
+/// wall it works around is a property of `nih_plug`, not of this crate.
+pub mod param_sink;
 pub mod param_table;
 pub mod params;
+/// The **Look ▸ Surface** panel's body — the first of Organon's 25 editor cards to be drawn in
+/// Organon Console as well as in the editor, from one source. See [`param_sink`].
+pub mod panel_surface;
 mod preset;
 pub mod recipe;
-/// #621 — **the viewport's camera input**: the backend-neutral `CameraInput` the world's winit
-/// arms and the wgpu editor both drive, and the egui-side region that produces it. Ungated,
-/// because both editions compile `editor_ui`; only a host that draws a scene behind the panel
-/// (`EditorCtx::scene_behind`) ever registers the region.
-pub mod scene_input;
 pub mod synth;
 /// #542 Tier 1 — the house style: design tokens, the egui theme, and the control-row
 /// grid. Everything that decides how the editor *looks* resolves here rather than being
@@ -157,8 +182,17 @@ pub mod theme_config;
 // third consumer of the world, and like Mind it ships no plugin, so the cdylib measurement
 // above still holds for the only build that has one (the default, where both features are
 // off and this module still does not exist).
+///
+/// ⚠️ **organon#49 T4c-ii — this is a RE-EXPORT now, and the gate did not move, only the
+/// manifest that states it.** `world.rs` and its nine `#[path]` submodules live in
+/// `organon-world` behind that crate's `world` feature, which this crate's `mind-edition` /
+/// `console-edition` forward. The `#[cfg]` here is therefore redundant with the feature —
+/// and kept anyway, because it is what makes `crate::world` fail to resolve in a default
+/// build, which is the property the +490 KB measurement above is really about. Without it a
+/// default build would still compile (the feature is off, so the module is absent) but the
+/// error would name a missing *feature* rather than a deliberate absence.
 #[cfg(any(feature = "mind-edition", feature = "console-edition"))]
-pub mod world;
+pub use organon_world::world;
 /// #520 Tier 2 — making the **standalone**'s window resizable. baseview opens it
 /// with no `Resizable` style bit and offers no API to change that, so this reaches
 /// the `NSWindow` through objc, the way `hdr_macos.rs` reaches wgpu's
@@ -4893,468 +4927,31 @@ pub(crate) fn editor_ui(
                 // column (moved from the Generator tab). Node-field
                 // generators only (raymarch generators have no nodes).
                 if !raymarch {
-                card(&mut c[0], "Surface", |ui| {
-                    param_combo_sized(ui, w2, "mode", &params.surface_mode, setter, 2.0 * COMBO_W);
-                    param_combo_sized(ui, w2, "palette", &params.palette, setter, 2.0 * COMBO_W);
-                    help(ui, "Palette = colour LUT for the sweep. Native keeps the current \
-                             look; any other applies across all surface modes.");
-                    // Node bevel: rounds the cube geometry (Original +
-                    // Flow-Aligned) from a sharp cube through a rounded cube
-                    // to a full sphere. Only these two modes draw cubes.
-                    if matches!(
-                        params.surface_mode.value(),
-                        crate::params::HostSurfaceMode::Original
-                            | crate::params::HostSurfaceMode::FlowAligned
-                    ) {
-                        srow(ui, w2, "node bevel", &params.bevel, setter);
-                        help(ui, "Rounds the cubes: 0 = sharp cube, 0.5 = wide \
-                                 rounded cube, 1 = sphere. In Flow-Aligned the \
-                                 rods round into smooth capsules.");
-                        // #472 Tier 1: procedural / texture-mapped PBR materials.
-                        // A folder of PNGs (albedo/normal/roughness/metallic/ao/
-                        // height) sampled onto the generator cubes; off = today.
-                        ui.separator();
-                        crow(ui, "material maps", &params.mat_enable, setter);
-                        if params.mat_enable.value() {
-                            // Only texture-MAPPING controls live here (how the maps
-                            // project + tile). The material qualities themselves —
-                            // roughness / metallic / normal / AO — come straight from
-                            // the loaded maps into the ONE material system (the main
-                            // Material card's roughness/metallic drive any channel a
-                            // set doesn't provide), so there are no per-map quality knobs.
-                            param_combo_sized(ui, w2, "projection", &params.mat_projection, setter, 2.0 * COMBO_W);
-                            srow(ui, w2, "mat scale", &params.mat_scale, setter);
-                            if ui
-                                .button("Load Material…")
-                                .on_hover_text(
-                                    "Pick a folder of PBR PNGs \
-                                     (albedo/normal/roughness/metallic/ao/height)",
-                                )
-                                .clicked()
-                            {
-                                pick_material_async(material_gen.clone());
-                            }
-                            help(ui, "Loads a folder of PBR maps as the surface's albedo / \
-                                     normal / roughness / metallic / AO — feeding the full \
-                                     material system, so the Material type (Chrome / Glass / \
-                                     Subsurface / …), GI, and reflections all apply on top. \
-                                     Triplanar needs no UVs; an absent channel falls back to \
-                                     the scalar Material sliders. Off = today's look.");
-                        }
-                        // #472 Tier 2: procedural noise layer — baked into
-                        // the routed channel by a compute pass (supersedes
-                        // the PNG for that channel). Off = today's look.
-                        ui.separator();
-                        crow(ui, "procedural (noise)", &params.mp_enable, setter);
-                        // #472 Tier 4: the declarative material.json graph —
-                        // human/agent-authorable, shareable, gallery-installed.
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button("Load Material Graph…")
-                                .on_hover_text(
-                                    "Load a material.json (procedural noise graph) — \
-                                     turns materials + procedural on and applies it.",
-                                )
-                                .clicked()
-                            {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Material Graph", &["json"])
-                                    .set_directory(preset::material_graphs_dir())
-                                    .pick_file()
-                                {
-                                    if let Ok(txt) = std::fs::read_to_string(&path) {
-                                        if let Ok(g) =
-                                            crate::material_graph::MaterialGraph::from_json(&txt)
-                                        {
-                                            g.apply(&params, setter);
-                                        }
-                                    }
-                                }
-                            }
-                            if ui
-                                .button("Save Material Graph…")
-                                .on_hover_text("Write the current material as a material.json graph")
-                                .clicked()
-                            {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Material Graph", &["json"])
-                                    .set_directory(preset::material_graphs_dir())
-                                    .set_file_name("material.json")
-                                    .save_file()
-                                {
-                                    let g = crate::material_graph::MaterialGraph::from_params(&params);
-                                    let _ = std::fs::write(&path, g.to_json());
-                                }
-                            }
-                        });
-                        if params.mp_enable.value() {
-                            param_combo_sized(ui, w2, "noise", &params.mp_noise, setter, 2.0 * COMBO_W);
-                            param_combo_sized(ui, w2, "→ channel", &params.mp_channel, setter, 2.0 * COMBO_W);
-                            srow(ui, w2, "noise scale", &params.mp_scale, setter);
-                            srow(ui, w2, "rotation", &params.mp_rotation, setter);
-                            srow(ui, w2, "offset X", &params.mp_offset_x, setter);
-                            srow(ui, w2, "offset Y", &params.mp_offset_y, setter);
-                            srow(ui, w2, "octaves", &params.mp_octaves, setter);
-                            srow(ui, w2, "lacunarity", &params.mp_lacunarity, setter);
-                            srow(ui, w2, "gain", &params.mp_gain, setter);
-                            srow(ui, w2, "domain warp", &params.mp_warp, setter);
-                            srow(ui, w2, "contrast", &params.mp_contrast, setter);
-                            srow(ui, w2, "gamma", &params.mp_gamma, setter);
-                            srow(ui, w2, "remap low", &params.mp_remap_lo, setter);
-                            srow(ui, w2, "remap high", &params.mp_remap_hi, setter);
-                            crow(ui, "invert", &params.mp_invert, setter);
-                            srow(ui, w2, "seed", &params.mp_seed, setter);
-                            param_combo_sized(ui, w2, "bake res", &params.mp_res, setter, 2.0 * COMBO_W);
-                            if params.mp_channel.value()
-                                == crate::params::MatChannel::Albedo
-                            {
-                                srow(ui, w2, "grad low R", &params.mp_lo_r, setter);
-                                srow(ui, w2, "grad low G", &params.mp_lo_g, setter);
-                                srow(ui, w2, "grad low B", &params.mp_lo_b, setter);
-                                srow(ui, w2, "grad high R", &params.mp_hi_r, setter);
-                                srow(ui, w2, "grad high G", &params.mp_hi_g, setter);
-                                srow(ui, w2, "grad high B", &params.mp_hi_b, setter);
-                            }
-                            help(ui, "Bakes a noise field into the chosen channel \
-                                     (albedo maps through the gradient; others write a \
-                                     scalar). FBM/Turbulence/Ridged use the octave/\
-                                     lacunarity/gain dials; scale snaps to whole tiles \
-                                     so an un-rotated bake tiles seamlessly.");
-                            // #472 Tier 3: overlay layer 2 (composites onto
-                            // layer 1's output for the same channel).
-                            ui.separator();
-                            crow(ui, "layer 2", &params.mp2_enable, setter);
-                            if params.mp2_enable.value() {
-                                param_combo_sized(ui, w2, "L2 noise", &params.mp2_noise, setter, 2.0 * COMBO_W);
-                                param_combo_sized(ui, w2, "L2 → channel", &params.mp2_channel, setter, 2.0 * COMBO_W);
-                                param_combo_sized(ui, w2, "L2 blend", &params.mp2_blend, setter, 2.0 * COMBO_W);
-                                srow(ui, w2, "L2 scale", &params.mp2_scale, setter);
-                                srow(ui, w2, "L2 rotation", &params.mp2_rotation, setter);
-                                srow(ui, w2, "L2 offset X", &params.mp2_offset_x, setter);
-                                srow(ui, w2, "L2 offset Y", &params.mp2_offset_y, setter);
-                                srow(ui, w2, "L2 octaves", &params.mp2_octaves, setter);
-                                srow(ui, w2, "L2 lacunarity", &params.mp2_lacunarity, setter);
-                                srow(ui, w2, "L2 gain", &params.mp2_gain, setter);
-                                srow(ui, w2, "L2 warp", &params.mp2_warp, setter);
-                                srow(ui, w2, "L2 contrast", &params.mp2_contrast, setter);
-                                srow(ui, w2, "L2 gamma", &params.mp2_gamma, setter);
-                                srow(ui, w2, "L2 remap low", &params.mp2_remap_lo, setter);
-                                srow(ui, w2, "L2 remap high", &params.mp2_remap_hi, setter);
-                                crow(ui, "L2 invert", &params.mp2_invert, setter);
-                                srow(ui, w2, "L2 seed", &params.mp2_seed, setter);
-                                if params.mp2_channel.value()
-                                    == crate::params::MatChannel::Albedo
-                                {
-                                    srow(ui, w2, "L2 grad low R", &params.mp2_lo_r, setter);
-                                    srow(ui, w2, "L2 grad low G", &params.mp2_lo_g, setter);
-                                    srow(ui, w2, "L2 grad low B", &params.mp2_lo_b, setter);
-                                    srow(ui, w2, "L2 grad high R", &params.mp2_hi_r, setter);
-                                    srow(ui, w2, "L2 grad high G", &params.mp2_hi_g, setter);
-                                    srow(ui, w2, "L2 grad high B", &params.mp2_hi_b, setter);
-                                }
-                            }
-                            // #472 Tier 3: derived maps (the correlation
-                            // principle — normal + AO agree with the surface).
-                            ui.separator();
-                            crow(ui, "derive normal", &params.mat_derive_normal, setter);
-                            crow(ui, "derive AO", &params.mat_derive_ao, setter);
-                            if params.mat_derive_normal.value()
-                                || params.mat_derive_ao.value()
-                            {
-                                crow(ui, "normal from albedo", &params.mat_normal_source_albedo, setter);
-                                srow(ui, w2, "normal strength", &params.mat_derive_normal_strength, setter);
-                                srow(ui, w2, "AO strength", &params.mat_derive_ao_strength, setter);
-                                srow(ui, w2, "AO radius", &params.mat_derive_ao_radius, setter);
-                                help(ui, "Derives a normal (Sobel of the height, or albedo \
-                                         luminance) and/or AO (cavity of the height) so the \
-                                         maps agree — bake a Height layer, then derive.");
-                            }
-                            // #472 Tier 5: temporal animation (re-bakes the
-                            // procedural layers each frame at a throttled rate)
-                            // + height→vertex displacement (geometry, not just
-                            // shading). Both inert at their defaults.
-                            ui.separator();
-                            crow(ui, "animate", &params.mat_anim_enable, setter);
-                            if params.mat_anim_enable.value() {
-                                param_combo_sized(ui, w2, "motion", &params.mat_anim_mode, setter, 2.0 * COMBO_W);
-                                srow(ui, w2, "anim speed", &params.mat_anim_speed, setter);
-                                if params.mat_anim_mode.value()
-                                    == crate::params::AnimMode::Drift
-                                {
-                                    srow(ui, w2, "flow X", &params.mat_flow_x, setter);
-                                    srow(ui, w2, "flow Y", &params.mat_flow_y, setter);
-                                }
-                                help(ui, "Drift pans the noise (flow X/Y), Evolve morphs \
-                                         it in place, Rotate spins each layer. Re-bakes at \
-                                         ~30 Hz — cost scales with layer count.");
-                            }
-                            srow(ui, w2, "height displace", &params.mat_displace, setter);
-                            help(ui, "Pushes vertices along the surface normal by the baked \
-                                     Height field (needs a Height layer). 0 = flat (shading \
-                                     only). Real geometry — casts shadows, catches silhouettes.");
-                        }
-                    }
-                    // Metaball-only: wrap the node set in one smooth skin.
-                    // Shown only in Metaball mode (was always visible).
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::Metaball
-                    {
-                        srow(ui, w2, "blob radius", &params.metaball_radius, setter);
-                        srow(ui, w2, "blob threshold", &params.metaball_threshold, setter);
-                        srow(ui, w2, "blob smoothness", &params.metaball_smooth, setter);
-                        help(ui, "Radius must exceed node spacing for blobs to fuse \
-                                 into a contiguous skin.");
-                    }
-                    // Splat-only: render the node set as anisotropic 3-D
-                    // Gaussians (the 3DGS primitive, synthesized directly).
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::Splat
-                    {
-                        param_combo_sized(ui, w2, "tier", &params.splat_mode, setter, 2.0 * COMBO_W);
-                        srow(ui, w2, "splat radius", &params.splat_radius, setter);
-                        srow(ui, w2, "splat opacity", &params.splat_opacity, setter);
-                        srow(ui, w2, "splat falloff", &params.splat_falloff, setter);
-                        srow(ui, w2, "splat cutoff", &params.splat_cutoff, setter);
-                        srow(ui, w2, "splat anisotropy", &params.splat_aniso, setter);
-                        srow(ui, w2, "splat scatter", &params.splat_scatter, setter);
-                        srow(ui, w2, "splat jitter", &params.splat_jitter, setter);
-                        srow(ui, w2, "splat solidity", &params.splat_solid, setter);
-                        help(ui, "Each node becomes an anisotropic Gaussian (no \
-                                 photogrammetry — synthesized from the node's matrix). \
-                                 Additive = unlit glow that blooms through HDR; Lit = \
-                                 sorted 2DGS disks shaded by the IBL + the Material card \
-                                 (Chrome/Glass reflect + refract the environment). \
-                                 Solidity 0 = soft Gaussian bokeh → 1 = opaque discs: \
-                                 raise it (with Opacity ~1 + enough Radius for the discs \
-                                 to meet) for a compact opaque SURFACE instead of a blur. \
-                                 Scatter sprays jittered sub-splats per node for density.");
-                    }
-                    // Swept-Tubes-only: weld the per-segment cylinders into
-                    // one smooth continuous tube per strand, with a shaped cap.
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::SweptTubes
-                    {
-                        crow(ui, "contiguous tube", &params.tube_weld, setter);
-                        srow(ui, w2, "tube profile", &params.tube_profile, setter);
-                        crow(ui, "end caps", &params.tube_end_cap, setter);
-                        srow(ui, w2, "cap rounding", &params.tube_cap_round, setter);
-                        srow(ui, w2, "cap bevel", &params.tube_cap_bevel, setter);
-                        help(ui, "'Contiguous' welds the segments into one smooth \
-                                 tube per strand (closing the gaps at bends). Tube \
-                                 profile 1 = round → 0 = sharp square (welded cubes). \
-                                 Cap rounding 0 = flat → 1 = dome; cap bevel 0 = \
-                                 rounded → 1 = chamfer.");
-                    }
-                    // Voxel-only: splat the node field into a lattice and
-                    // DDA-raymarch crisp grid-snapped cubes.
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::Voxel
-                    {
-                        srow(ui, w2, "voxel grid", &params.voxel_res, setter);
-                        srow(ui, w2, "voxel threshold", &params.voxel_threshold, setter);
-                        srow(ui, w2, "voxel radius", &params.voxel_radius, setter);
-                        srow(ui, w2, "voxel emission", &params.voxel_emission, setter);
-                        srow(ui, w2, "voxel AO", &params.voxel_ao, setter);
-                        srow(ui, w2, "voxel shadow", &params.voxel_shadow, setter);
-                        srow(ui, w2, "voxel quantize", &params.voxel_quantize, setter);
-                        srow(ui, w2, "voxel beat→threshold", &params.voxel_beat, setter);
-                        help(ui, "Crisp grid-snapped cubes (flat faces, voxel AO, soft \
-                                 shadows). Grid = perf dial; radius = strand thickness. \
-                                 Quantize posterizes colour; emission blooms.");
-                        // Voxel GI (#89): cone-traced bounced colour.
-                        crow(ui, "voxel GI", &params.voxel_gi, setter);
-                        if params.voxel_gi.value() {
-                            srow(ui, w2, "GI strength", &params.voxel_gi_strength, setter);
-                            srow(ui, w2, "GI distance", &params.voxel_gi_distance, setter);
-                            srow(ui, w2, "GI sky", &params.voxel_gi_sky, setter);
-                            help(ui, "Cone-traces the voxel field so emissive voxels bleed \
-                                     coloured light onto their neighbours + the world \
-                                     (raise emission for stronger bleed). A per-frame mip \
-                                     build — drop the grid on a projector.");
-                        }
-                    }
-                    // Volume-only (#152): raymarch the metaball field as
-                    // a glowing participating medium (nebula/fog).
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::Volume
-                    {
-                        srow(ui, w2, "volume radius", &params.volume_radius, setter);
-                        srow(ui, w2, "density", &params.volume_density, setter);
-                        srow(ui, w2, "emission", &params.volume_emission, setter);
-                        srow(ui, w2, "absorption", &params.volume_absorption, setter);
-                        srow(ui, w2, "steps", &params.volume_steps, setter);
-                        help(ui, "Emissive fog: density × emission glows (HDR → blooms), \
-                                 absorption thins it. Radius must exceed node spacing for \
-                                 a continuous cloud; steps = perf dial.");
-                        // Field Volume (#348): choose what the cloud bakes.
-                        ui.separator();
-                        param_combo_sized(ui, w2, "field source", &params.fv_source, setter, 2.0 * COMBO_W);
-                        srow(ui, w2, "smoothing", &params.fv_smooth, setter);
-                        srow(ui, w2, "exposure dB", &params.fv_exposure_db, setter);
-                        crow(ui, "calibrated brightness", &params.fv_calibrate, setter);
-                        srow(ui, w2, "gain", &params.fv_gain, setter);
-                        ui.separator();
-                        crow(ui, "field lines (flow)", &params.fv_lines, setter);
-                        srow(ui, w2, "line density", &params.fv_line_density, setter);
-                        srow(ui, w2, "line thickness", &params.fv_line_thickness, setter);
-                        help(ui, "Field lines (Acoustic / Maxwell): render the field as a dense cloud of \
-                                 thin glowing streamlines of both channels (pressure/velocity or E/B) \
-                                 — the tube-mode flow, without chunky tubes. Density = how many \
-                                 lines; raise glow (Lighting) for luminous filaments. \n\
-                                 Field source: Legacy = today's node metaball (byte-identical). \
-                                 Auto = Maxwell/Acoustic bake the analytic field ENERGY (a smooth \
-                                 cloud, no scraggly far-node spikes), every other generator bakes \
-                                 a smoothed node kernel. Smoothing widens the node kernel; \
-                                 calibrated brightness keys the glow to the measured loudness.");
-                    }
-                    // Membrane-only: loft sheets between adjacent strands.
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::Membrane
-                    {
-                        param_combo_sized(ui, w2, "membrane weave", &params.membrane_weave, setter, 2.0 * COMBO_W);
-                        crow(ui, "membrane: show strands", &params.membrane_show_strands, setter);
-                        crow(ui, "membrane: close seam (360°)", &params.membrane_close, setter);
-                        crow(ui, "membrane: skin arms", &params.membrane_arms, setter);
-                        if params.membrane_arms.value() {
-                            param_combo_sized(ui, w2, "arm build", &params.membrane_arm_build, setter, 2.0 * COMBO_W);
-                            srow(ui, w2, "arm radius (0=auto)", &params.membrane_arm_radius, setter);
-                        }
-                        crow(ui, "membrane: screen-space FX", &params.membrane_fx, setter);
-                        help(ui, "Skins a sheet between neighbouring strands \
-                                 (sail/bell/web). Close seam bridges the last row of strands \
-                                 back to the first when the form wraps a full 360°. Skin arms \
-                                 skins each strand (arm) as its own closed capped finger with \
-                                 gaps between arms (the volume-render hull) — built as cheap \
-                                 capsule Impostors or a welded Mesh. Screen-space FX draws the \
-                                 membrane into the depth prepass so VXGI (diffuse + reflections), \
-                                 SSAO, SSR, SSGI, DoF and TAA apply to it — on by default; turn \
-                                 off to skip the extra depth pass and keep membrane as a flat-lit sheet.");
-                    }
-                    // Neural Tissue (#260): living neural tissue built from
-                    // closed anatomical primitives. Best paired with the
-                    // Neural Network generator. Grouped by tier — soma/
-                    // membrane, dendritic arbor, myelin, synapse/context.
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::NeuralTissue
-                    {
-                        help(ui, "Living neural tissue: soma cell bodies, capped-capsule \
-                                 tracts + synaptic boutons. Pair with Generator = Neural \
-                                 Network. All morphology dials below are inert at 0 (a bare \
-                                 soma field) — raise them to grow the anatomy.");
-                        // Tier 1 — soma + membrane.
-                        srow(ui, w2, "soma size", &params.nt_soma_size, setter);
-                        srow(ui, w2, "soma shape", &params.nt_soma_shape, setter);
-                        srow(ui, w2, "bouton size", &params.nt_bouton_size, setter);
-                        srow(ui, w2, "membrane SSS", &params.nt_membrane_sss, setter);
-                        srow(ui, w2, "membrane iridescence", &params.nt_membrane_irid, setter);
-                        // Tier 2 — dendritic arbor + axon morphology.
-                        param_combo_sized(ui, w2, "neuron type", &params.nt_neuron_type, setter, 2.0 * COMBO_W);
-                        srow(ui, w2, "dendrite density", &params.nt_dendrite_density, setter);
-                        srow(ui, w2, "dendrite length", &params.nt_dendrite_length, setter);
-                        srow(ui, w2, "dendrite taper", &params.nt_dendrite_taper, setter);
-                        srow(ui, w2, "dendritic spines", &params.nt_spines, setter);
-                        help(ui, "Dendrite density 0 = a bare soma; raise it to grow \
-                                 branching arbors (type sets the class). Spines sprinkle \
-                                 tiny stubs — higher detail, off by default.");
-                        // Tier 3 — myelinated axons (saltatory conduction).
-                        srow(ui, w2, "myelin amount", &params.nt_myelin_amount, setter);
-                        srow(ui, w2, "Ranvier spacing", &params.nt_ranvier_spacing, setter);
-                        srow(ui, w2, "sheath scale", &params.nt_sheath_scale, setter);
-                        help(ui, "Myelin 0 = plain capped tracts; raise it to sheathe edges \
-                                 as nerve fibres (fatty internodes + Ranvier constrictions). \
-                                 The pulse jumps node-to-node — turn the firing sim on \
-                                 (Neural Network → Signal) to see saltatory conduction.");
-                        // Tier 4 — living synapse + tissue context.
-                        srow(ui, w2, "synapse cleft", &params.nt_synapse_cleft, setter);
-                        srow(ui, w2, "cytoplasm glow", &params.nt_synapse_glow, setter);
-                        srow(ui, w2, "vesicles", &params.nt_synapse_vesicles, setter);
-                        srow(ui, w2, "glia", &params.nt_glia, setter);
-                        srow(ui, w2, "capillaries", &params.nt_capillary, setter);
-                        help(ui, "Cleft opens a gap at each terminal; cytoplasm glow lights \
-                                 somata from within (tied to activation). Vesicles burst on \
-                                 each spike arrival (needs the firing sim). Glia + capillaries \
-                                 sprout faint scaffolding so the network sits in tissue.");
-                    }
-                    // Plexus (#8): the node cloud rebuilt as a proximity
-                    // web — struts between near neighbours + a marker per
-                    // node. Works on ANY node-emitting generator, either as
-                    // the surface itself OR as an OVERLAY (outer shell) on
-                    // top of another surface.
-                    crow(ui, "plexus overlay (outer shell)", &params.plexus_overlay_on, setter);
-                    if params.plexus_overlay_on.value() {
-                        srow(ui, w2, "shell scale", &params.plexus_shell_scale, setter);
-                        srow(ui, w2, "shell depth", &params.plexus_shell_depth, setter);
-                        srow(ui, w2, "shell resolution", &params.plexus_shell_bins, setter);
-                        help(ui, "Wraps the plexus web as an outer SHELL() around the CURRENT surface \
-                                 (Metaball, etc.) — like the Particle Aura, it reads the node cloud \
-                                 without replacing it, so the base surface still renders. Shell scale \
-                                 grows the cage outward; shell depth keeps the outer band of each \
-                                 direction (bigger = a thicker, steadier rind — raise it if nodes \
-                                 flicker); resolution sets the outline detail. It uses all the Plexus \
-                                 look controls below (impostors, materials, shape morph, signal).");
-                        ui.separator();
-                    }
-                    if params.surface_mode.value()
-                        == crate::params::HostSurfaceMode::Plexus
-                        || params.plexus_overlay_on.value()
-                    {
-                        srow(ui, w2, "link radius", &params.plexus_radius, setter);
-                        srow(ui, w2, "max links / node", &params.plexus_links, setter);
-                        srow(ui, w2, "strut thickness", &params.plexus_strut, setter);
-                        srow(ui, w2, "node size", &params.plexus_marker, setter);
-                        srow(ui, w2, "node shape (cube→sphere)", &params.plexus_node_shape, setter);
-                        srow(ui, w2, "edge shape (square→circle)", &params.plexus_edge_shape, setter);
-                        help(ui, "Wires each node to its nearest neighbours. All sizes are × the \
-                                 field's node spacing (auto-scaled per generator), so the same \
-                                 settings read consistently everywhere. Raise link radius for a \
-                                 denser web. Node shape morphs the markers cube → rounded → sphere; \
-                                 edge shape morphs the strut cross-section square → circle.");
-                        ui.separator();
-                        // Tier 2 — GPU impostors + independent materials.
-                        crow(ui, "impostors (spheres + tubes)", &params.plexus_impostor, setter);
-                        if params.plexus_impostor.value() {
-                            crow(ui, "draw edges", &params.plexus_edges, setter);
-                            srow(ui, w2, "node radius", &params.plexus_node_radius, setter);
-                            srow(ui, w2, "edge radius", &params.plexus_edge_radius, setter);
-                            ui.label("Node material");
-                            param_combo_sized(ui, w2, "node type", &params.plexus_node_type, setter, 2.0 * COMBO_W);
-                            srow(ui, w2, "node metallic", &params.plexus_node_metallic, setter);
-                            srow(ui, w2, "node roughness", &params.plexus_node_rough, setter);
-                            srow(ui, w2, "node IOR", &params.plexus_node_ior, setter);
-                            srow(ui, w2, "node hue", &params.plexus_node_hue, setter);
-                            srow(ui, w2, "node saturation", &params.plexus_node_sat, setter);
-                            srow(ui, w2, "node value", &params.plexus_node_val, setter);
-                            srow(ui, w2, "node emissive", &params.plexus_node_emissive, setter);
-                            ui.label("Edge material");
-                            param_combo_sized(ui, w2, "edge type", &params.plexus_edge_type, setter, 2.0 * COMBO_W);
-                            srow(ui, w2, "edge metallic", &params.plexus_edge_metallic, setter);
-                            srow(ui, w2, "edge roughness", &params.plexus_edge_rough, setter);
-                            srow(ui, w2, "edge IOR", &params.plexus_edge_ior, setter);
-                            srow(ui, w2, "edge hue", &params.plexus_edge_hue, setter);
-                            srow(ui, w2, "edge saturation", &params.plexus_edge_sat, setter);
-                            srow(ui, w2, "edge value", &params.plexus_edge_val, setter);
-                            srow(ui, w2, "edge emissive", &params.plexus_edge_emissive, setter);
-                            help(ui, "Nodes as sphere impostors, edges as capsule-tube impostors \
-                                     — each with its OWN full material (chrome nodes on glass \
-                                     filaments, emissive nodes on matte struts, whatever).");
-                        }
-                        ui.separator();
-                        // Tier 3 — beat-driven signal propagation.
-                        crow(ui, "signal propagation", &params.plexus_signal, setter);
-                        if params.plexus_signal.value() {
-                            srow(ui, w2, "signal speed (/beat)", &params.plexus_signal_speed, setter);
-                            srow(ui, w2, "signal gain", &params.plexus_signal_gain, setter);
-                            srow(ui, w2, "signal width", &params.plexus_signal_width, setter);
-                            help(ui, "A bright activation shell radiates from the web centre on \
-                                     the beat, firing the impostors it crosses (needs impostors \
-                                     on). Speed = shells per beat.");
-                        }
-                    }
+                card(&mut c[0], panels::LOOK_SURFACE.title, |ui| {
+                    // 🚨 **The body is not here any more — it is `panel_surface::surface_card`,
+                    // and Organon Console calls the same function** (Console #7). This is the
+                    // first panel to leave `editor_ui`'s one long pass, and the extraction is
+                    // most of what "transplanting a panel" means: a card in the middle of a
+                    // 4,700-line closure can only ever be drawn by that closure. The parameter
+                    // plumbing that looks like the hard part is `param_sink::Sink`, twenty
+                    // lines of it.
+                    //
+                    // ⚠️ **`Sink::Host` must stay byte-for-byte what this card used to do.**
+                    // The editor is the reference rendering of an Organon panel, not a second
+                    // opinion about one; if the two ever have to differ, the difference belongs
+                    // in the sink, where it can be named and tested, and never here.
+                    panel_surface::surface_card(
+                        ui,
+                        w2,
+                        &params,
+                        &mut param_sink::Sink::Host(setter),
+                        &material_gen,
+                    );
                 });
                 } // end Surface card (node-field generators only)
                 // Calibrated colour (#349) — a cross-cutting tint: colour that
                 // MEANS a measured level, applied across every surface mode.
-                card(&mut c[0], "Calibrated Colour (#349)", |ui| {
+                card(&mut c[0], panels::LOOK_COLOUR.title, |ui| {
                     param_combo_sized(ui, w2, "mode", &params.col_mode, setter, 2.0 * COMBO_W);
                     param_combo_sized(ui, w2, "LUT", &params.col_lut, setter, 2.0 * COMBO_W);
                     param_combo_sized(ui, w2, "source", &params.col_source, setter, 2.0 * COMBO_W);
@@ -5370,7 +4967,7 @@ pub(crate) fn editor_ui(
                 });
                 // Post-composite creative FX (#152) — screen-space, so it
                 // applies to EVERY generator (incl. KIFS). Off by default.
-                card(&mut c[2], "Post FX (#152)", |ui| {
+                card(&mut c[2], panels::LOOK_POST.title, |ui| {
                     crow(ui, "enable", &params.fx_enabled, setter);
                     if params.fx_enabled.value() {
                         param_combo(ui, w2, "style", &params.fx_style, setter);
@@ -5410,7 +5007,7 @@ pub(crate) fn editor_ui(
                 // fold of the resolved HDR scene — applies to EVERY generator +
                 // surface (folds the live PBR render, before bloom/composite).
                 // Off by default; always visible (works even over the KIFS field).
-                card(&mut c[2], "Scene Kaleidoscope (#361)", |ui| {
+                card(&mut c[2], panels::LOOK_KALEIDOSCOPE.title, |ui| {
                     crow(ui, "enable (fold the scene)", &params.kal_on, setter);
                     param_combo(ui, w2, "mode", &params.kal_mode, setter);
                     srow(ui, w2, "sectors", &params.kal_sectors, setter);
@@ -5438,7 +5035,7 @@ pub(crate) fn editor_ui(
                 // probes + an energy ledger + a Poynting-flux surface, read from
                 // the same kernels the visual draws. Only meaningful on the field
                 // generators (Maxwell / Acoustic / Cavity); inert (HUD off) by default.
-                card(&mut c[2], "Instrumentation (#391)", |ui| {
+                card(&mut c[2], panels::LOOK_INSTRUMENTATION.title, |ui| {
                     crow(ui, "HUD (draw read-outs)", &params.instr_hud, setter);
                     crow(ui, "field probe", &params.instr_probe_on, setter);
                     srow(ui, w2, "probe X", &params.instr_probe_x, setter);
@@ -5474,7 +5071,7 @@ pub(crate) fn editor_ui(
                 // + Minimal-surface still use the PBR material, so only KIFS
                 // hides them.)
                 if !kifs {
-                card(&mut c[1], "Cast Shadows (#152)", |ui| {
+                card(&mut c[1], panels::LOOK_SHADOWS.title, |ui| {
                     crow(ui, "enable (shadow map)", &params.shadow_enabled, setter);
                     srow(ui, w2, "bias", &params.shadow_bias, setter);
                     srow(ui, w2, "strength", &params.shadow_strength, setter);
@@ -5485,7 +5082,7 @@ pub(crate) fn editor_ui(
                              On an M3+ Mac, RT Shadows (Ray Tracing card) supersede this \
                              map with traced per-pixel occlusion — no bias tuning needed.");
                 });
-                card(&mut c[1], "Ambient Occlusion", |ui| {
+                card(&mut c[1], panels::LOOK_AO.title, |ui| {
                     crow(ui, "enable (depth AO)", &params.ssao, setter);
                     param_combo(ui, w2, "source", &params.ao_source, setter);
                     srow(ui, w2, "radius", &params.ssao_radius, setter);
@@ -5500,7 +5097,7 @@ pub(crate) fn editor_ui(
                              intensity apply to both; bias is GTAO-only; RT rays is the \
                              per-pixel ray count (pair with TAA — it integrates the noise).");
                 });
-                card(&mut c[0], "Material", |ui| {
+                card(&mut c[0], panels::LOOK_MATERIAL.title, |ui| {
                     param_combo(ui, w2, "type", &params.mat_type, setter);
                     srow(ui, w2, "metallic", &params.metallic, setter);
                     srow(ui, w2, "roughness", &params.roughness, setter);
@@ -5659,7 +5256,7 @@ pub(crate) fn editor_ui(
                              (0 = neutral, >1 = override). For cube-to-cube mirroring, also \
                              enable Reflections (SSR) →.");
                 });
-                card(&mut c[1], "Reflections (SSR)", |ui| {
+                card(&mut c[1], panels::LOOK_REFLECTIONS.title, |ui| {
                     crow(ui, "enable (screen-space)", &params.ssr, setter);
                     srow(ui, w2, "intensity", &params.ssr_intensity, setter);
                     srow(ui, w2, "max roughness", &params.ssr_max_roughness, setter);
@@ -5686,7 +5283,7 @@ pub(crate) fn editor_ui(
                              the structure; blend fades between infinite and box-projected. \
                              Reuses the env map (no extra passes); pair with SSR for cube-to-cube.");
                 });
-                card(&mut c[1], "Global Illumination", |ui| {
+                card(&mut c[1], panels::LOOK_GI.title, |ui| {
                     crow(ui, "enable (bounced GI)", &params.gi, setter);
                     srow(ui, w2, "intensity", &params.gi_intensity, setter);
                     srow(ui, w2, "reach", &params.gi_falloff, setter);
@@ -5712,7 +5309,7 @@ pub(crate) fn editor_ui(
                              by all its cubes, not just the top COUNT. Per-light RT shadowing is a \
                              follow-up.");
                 });
-                card(&mut c[1], "Screen-Space GI (#152)", |ui| {
+                card(&mut c[1], panels::LOOK_SSGI.title, |ui| {
                     crow(ui, "enable (SSGI)", &params.ssgi, setter);
                     srow(ui, w2, "intensity", &params.ssgi_intensity, setter);
                     srow(ui, w2, "radius", &params.ssgi_radius, setter);
@@ -5721,7 +5318,7 @@ pub(crate) fn editor_ui(
                              bleed colour onto neighbours. Noisy at low ray counts; pair with \
                              TAA (below) to clean it up. Instanced/node-field paths only.");
                 });
-                card(&mut c[1], "Voxel GI (#152)", |ui| {
+                card(&mut c[1], panels::LOOK_VXGI.title, |ui| {
                     crow(ui, "enable (VXGI)", &params.vxgi_enabled, setter);
                     srow(ui, w2, "intensity", &params.vxgi_intensity, setter);
                     srow(ui, w2, "rays", &params.vxgi_rays, setter);
@@ -5743,7 +5340,7 @@ pub(crate) fn editor_ui(
                              cone (0 = sharp, 1 = glossy blur); reach scales the march by the \
                              scene size; refl steps is the perf dial.");
                 });
-                card(&mut c[1], "Ray Tracing — Hardware (#195)", |ui| {
+                card(&mut c[1], panels::LOOK_RT.title, |ui| {
                     if !rt_available {
                         ui.label(
                             egui::RichText::new(
@@ -6001,7 +5598,7 @@ pub(crate) fn editor_ui(
                 // scale all live in the Neural Field GENERATOR card now, so the Look
                 // duplicate only caused confusion. `neural_enable` (neural[0]) stays
                 // in the params (inert, preset-captured) but no longer has a row.)
-                card(&mut c[2], "Temporal — TAA / Motion Blur (#152)", |ui| {
+                card(&mut c[2], panels::LOOK_TEMPORAL.title, |ui| {
                     crow(ui, "TAA (anti-alias)", &params.taa_enabled, setter);
                     srow(ui, w2, "TAA blend", &params.taa_blend, setter);
                     srow(ui, w2, "TAA sharpen", &params.taa_sharpen, setter);
@@ -6016,7 +5613,7 @@ pub(crate) fn editor_ui(
                              stacked Glass (needs TAA on to resolve the dither). Velocity is \
                              camera-only on node-field paths.");
                 });
-                card(&mut c[0], "Surface FX", |ui| {
+                card(&mut c[0], panels::LOOK_SURFACE_FX.title, |ui| {
                     srow(ui, w2, "translucency", &params.subsurface, setter);
                     srow(ui, w2, "  distortion", &params.sss_distortion, setter);
                     srow(ui, w2, "  power", &params.sss_power, setter);
@@ -6024,7 +5621,7 @@ pub(crate) fn editor_ui(
                     srow(ui, w2, "  scale", &params.irid_scale, setter);
                     srow(ui, w2, "  hue", &params.irid_shift, setter);
                 });
-                card(&mut c[1], "Bioluminescence", |ui| {
+                card(&mut c[1], panels::LOOK_BIOLUMINESCENCE.title, |ui| {
                     srow(ui, w2, "colour cycle", &params.color_cycle, setter);
                     srow(ui, w2, "ripple intensity", &params.ripple_intensity, setter);
                     srow(ui, w2, "  speed", &params.ripple_speed, setter);
@@ -6035,7 +5632,7 @@ pub(crate) fn editor_ui(
                              a travelling HDR emissive pulse through the field (push \
                              intensity > 1 to bloom). Both free-run.");
                 });
-                card(&mut c[1], "Reaction-Diffusion Skin", |ui| {
+                card(&mut c[1], panels::LOOK_SKIN.title, |ui| {
                     srow(ui, w2, "intensity", &params.rd_intensity, setter);
                     srow(ui, w2, "feed", &params.rd_feed, setter);
                     srow(ui, w2, "kill", &params.rd_kill, setter);
@@ -6046,14 +5643,14 @@ pub(crate) fn editor_ui(
                              spots ↔ stripes ↔ maze; pigment carves albedo.");
                 });
                 } // end KIFS-hidden look cards (Cast Shadows → reaction-diffusion)
-                card(&mut c[0], "Lighting (Direct)", |ui| {
+                card(&mut c[0], panels::LOOK_LIGHTING.title, |ui| {
                     srow(ui, w2, "ambient", &params.ambient, setter);
                     srow(ui, w2, "key", &params.key_intensity, setter);
                     srow(ui, w2, "fill", &params.fill_intensity, setter);
                     srow(ui, w2, "elevation", &params.elevation, setter);
                     srow(ui, w2, "azimuth", &params.azimuth, setter);
                 });
-                card(&mut c[0], "Environment (IBL)", |ui| {
+                card(&mut c[0], panels::LOOK_IBL.title, |ui| {
                     srow(ui, w2, "exposure", &params.exposure, setter);
                     srow(ui, w2, "intensity", &params.env_intensity, setter);
                     srow(ui, w2, "rotation", &params.env_rotation, setter);
@@ -6063,7 +5660,7 @@ pub(crate) fn editor_ui(
                     srow(ui, w2, "tint hue", &params.env_tint_hue, setter);
                     srow(ui, w2, "tint amount", &params.env_tint_amt, setter);
                 });
-                card(&mut c[2], "Particle Aura", |ui| {
+                card(&mut c[2], panels::LOOK_PARTICLES.title, |ui| {
                     param_combo(ui, w2, "tier", &params.particles_tier, setter);
                     srow(ui, w2, "speed", &params.particles_speed, setter);
                     srow(ui, w2, "lifetime", &params.particles_lifetime, setter);
@@ -6103,7 +5700,7 @@ pub(crate) fn editor_ui(
                     srow(ui, w2, "count (×1000)", &params.particles_count_k, setter);
                     srow(ui, w2, "grid resolution", &params.particles_grid_res, setter);
                 });
-                card(&mut c[2], "Fluid Ink (#182)", |ui| {
+                card(&mut c[2], panels::LOOK_INK.title, |ui| {
                     crow(ui, "enabled", &params.ink_enabled, setter);
                     // The same param as the Particle Aura's checkbox
                     // (one flag, surfaced in both cards — it already
@@ -6150,7 +5747,7 @@ pub(crate) fn editor_ui(
                              the aura grid dial (128 max is heavy); substeps \
                              stabilise fast stirs at full solver cost each.");
                 });
-                card(&mut c[2], "Liquid (#182 T3)", |ui| {
+                card(&mut c[2], panels::LOOK_LIQUID.title, |ui| {
                     crow(ui, "enabled", &params.liq_enabled, setter);
                     // The same shared flag as the Particle Aura /
                     // Fluid Ink cards — one param, surfaced wherever
@@ -6203,7 +5800,7 @@ pub(crate) fn editor_ui(
                              reseed the pool on change; substeps stabilise fast \
                              stirring at full solver cost each.");
                 });
-                card(&mut c[2], "Liquid Material", |ui| {
+                card(&mut c[2], panels::LOOK_LIQUID_MATERIAL.title, |ui| {
                     param_combo(ui, w2, "material", &params.liq_material, setter);
                     param_combo(ui, w2, "render", &params.liq_render, setter);
                     srow(ui, w2, "metallic", &params.liq_metallic, setter);
@@ -6230,7 +5827,7 @@ pub(crate) fn editor_ui(
                              depths), energy-conserving Fresnel. Absorption \
                              deepens the colour with path length.");
                 });
-                card(&mut c[2], "Fluid Coupling (#182 T4)", |ui| {
+                card(&mut c[2], panels::LOOK_COUPLING.title, |ui| {
                     srow(ui, w2, "fluid → GI (bounce)", &params.fgi_gi, setter);
                     srow(ui, w2, "fluid shadows scene", &params.fgi_shadow, setter);
                     crow(ui, "fluid receives shadows", &params.fgi_receive, setter);
@@ -6253,7 +5850,7 @@ pub(crate) fn editor_ui(
                              GI and the emissive-cube point lights — a pure \
                              GI/light emitter for the fluid. All inert at 0.");
                 });
-                card(&mut c[2], "Bloom", |ui| {
+                card(&mut c[2], panels::LOOK_BLOOM.title, |ui| {
                     srow(ui, w2, "bloom", &params.bloom_intensity, setter);
                     srow(ui, w2, "threshold", &params.bloom_threshold, setter);
                 });
@@ -6442,7 +6039,7 @@ fn pick_hdr_async(hdr_gen: Arc<AtomicU32>) {
 /// PNGs), write its path to the material sidecar, and bump `material_gen` (#472
 /// Tier 1; mirrors `pick_hdr_async`). The visual edge-detects the counter, reads the
 /// path, and (re)loads the channel maps into the GPU material texture set.
-fn pick_material_async(material_gen: Arc<AtomicU32>) {
+pub(crate) fn pick_material_async(material_gen: Arc<AtomicU32>) {
     std::thread::spawn(move || {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             if std::fs::write(ipc::material_sidecar_path(), dir.to_string_lossy().as_bytes()).is_ok()
@@ -7280,7 +6877,7 @@ struct UiDefaults {
 
 /// Stable hash of any `Hash` value (here a `ParamPtr`) → u64, so we can key by
 /// `ParamPtr` without naming the type.
-fn hash_of<T: std::hash::Hash>(t: &T) -> u64 {
+pub(crate) fn hash_of<T: std::hash::Hash>(t: &T) -> u64 {
     use std::hash::Hasher;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     t.hash(&mut h);
@@ -7333,7 +6930,7 @@ fn recorded_default<P: Param>(param: &P) -> Option<f32> {
 }
 
 /// Record the param's current value as its user default (persisted on flush).
-fn record_default<P: Param>(param: &P) {
+pub(crate) fn record_default<P: Param>(param: &P) {
     let v = param.unmodulated_normalized_value();
     UI_DEFAULTS.with(|c| {
         if let Some(u) = c.borrow_mut().as_mut() {
@@ -7347,7 +6944,7 @@ fn record_default<P: Param>(param: &P) {
 
 /// Reset one parameter to its default (gesture-safe, so the host records it).
 /// Targets the user-recorded default when present (#131), else the factory one.
-fn reset_one<P: Param>(param: &P, setter: &ParamSetter) {
+pub(crate) fn reset_one<P: Param>(param: &P, setter: &ParamSetter) {
     let norm = recorded_default(param).unwrap_or_else(|| param.default_normalized_value());
     setter.begin_set_parameter(param);
     setter.set_parameter_normalized(param, norm);
@@ -7356,14 +6953,14 @@ fn reset_one<P: Param>(param: &P, setter: &ParamSetter) {
 
 /// The little per-control reset affordance. Tooltip notes when a recorded
 /// default is in play so ⟲'s target isn't surprising.
-fn reset_btn(ui: &mut egui::Ui) -> bool {
+pub(crate) fn reset_btn(ui: &mut egui::Ui) -> bool {
     ui.small_button("⟲")
         .on_hover_text("Reset to default (your recorded default if set, else factory)")
         .clicked()
 }
 
 /// What the merged default button (`default_btn`) did this frame.
-enum DefaultAction {
+pub(crate) enum DefaultAction {
     Reset,
     Record,
 }
@@ -7374,7 +6971,7 @@ enum DefaultAction {
 /// glyph flips ⟲ → ● while the modifier is held so the mode is visible before
 /// committing. (`●` U+25CF renders in egui's default fonts; the media-record
 /// glyph U+23FA is often missing and shows as tofu.)
-fn default_btn(ui: &mut egui::Ui) -> Option<DefaultAction> {
+pub(crate) fn default_btn(ui: &mut egui::Ui) -> Option<DefaultAction> {
     let record = ui.input(|i| i.modifiers.command);
     let (glyph, hint) = if record {
         ("●", "Record the current value as this control's default")
@@ -7406,7 +7003,7 @@ fn default_btn(ui: &mut egui::Ui) -> Option<DefaultAction> {
 /// Card description, compressed behind a small "?" (sits at the bottom-left of
 /// its card). Hover shows the text as a tooltip; click pins it open as an
 /// in-card bubble; clicking the "?" (or the bubble itself) again collapses it.
-fn help(ui: &mut egui::Ui, text: &str) {
+pub(crate) fn help(ui: &mut egui::Ui, text: &str) {
     let id = ui.id().with("help_open").with(text);
     let mut open = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(false));
     if ui.small_button("?").on_hover_text(text).clicked() {
