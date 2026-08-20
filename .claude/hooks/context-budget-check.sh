@@ -165,8 +165,21 @@ while IFS= read -r name; do
   #
   # </dev/null because a SessionStart hook is handed a JSON payload on stdin; a loader
   # must never inherit it and block on a read.
+  # ⚠️ `timeout` is GNU and **stock macOS does not have it** — this project's primary
+  # dev/deploy platform. Calling it unguarded exits 127 with `$tmp` still empty, which
+  # this loop cannot tell apart from a loader that ran and printed nothing: the report
+  # would then announce NOTHING WAS INJECTED on a session where everything was. That is
+  # the same all-zero misdiagnosis this hook now exists to prevent, reached from the
+  # other side. `python-runner.sh::py_probe` guards the identical call the same way;
+  # `status-week-check.sh` is the repo's standing GNU/BSD convention for hooks.
   tmp=$(mktemp 2>/dev/null) || continue
-  timeout 5 bash "$script" </dev/null >"$tmp" 2>/dev/null
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 bash "$script" </dev/null >"$tmp" 2>/dev/null
+  else
+    # No cap available. A loader is a `cat` today; an unbounded one is still better
+    # than a false zero, and the harness's own 20 s SessionStart budget is the backstop.
+    bash "$script" </dev/null >"$tmp" 2>/dev/null
+  fi
   st=$?
   if [ "$st" -eq 124 ]; then
     rm -f "$tmp"
