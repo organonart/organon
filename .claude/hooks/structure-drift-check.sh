@@ -37,6 +37,27 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 0
 
 STATE=".claude/.structure-drift.json"
 
+# ⚠️ Every measurement below is Python, and until organon#1 T1 this hook spelled that
+# `python3 … 2>/dev/null || exit 0` — so on a machine without a working python3 it
+# exited 0 having printed nothing, which is exactly what "nothing moved" looks like.
+# It had never once run on the Windows workstation. python-runner.sh finds an
+# interpreter by RUNNING candidates (the Store stub is on PATH and fails), and this
+# hook now reports its own absence rather than impersonating a clean bill of health.
+RUNNER="$(dirname "${BASH_SOURCE[0]}")/python-runner.sh"
+if [ ! -f "$RUNNER" ]; then
+  # Saying nothing here would be the very bug this file was changed to remove.
+  echo "⚠️  🏗️  Structure watch (organon#618 T0c) did not run: $RUNNER is missing."
+  exit 0
+fi
+# shellcheck source=./python-runner.sh
+. "$RUNNER"
+
+if ! py_find; then
+  py_unavailable "🏗️  Structure watch (organon#618 T0c)" \
+    "nothing is watching function length or struct width this session."
+  exit 0
+fi
+
 read -r -d '' MEASURE <<'PY' || true
 import json, pathlib, re, sys
 
@@ -93,13 +114,23 @@ structs.sort(key=lambda x: -x[1])
 print(json.dumps({"fns": fns[:5], "structs": structs[:5]}))
 PY
 
-now=$(python3 -c "$MEASURE" 2>/dev/null) || exit 0
-[ -n "$now" ] || exit 0
+# The program travels on stdin, never in argv — see python-runner.sh on wsl.exe's
+# re-quoting. A failure here is a real failure (a syntax error, an unreadable tree),
+# not a missing interpreter: py_find already settled that question above — so stderr is
+# deliberately NOT swallowed. A traceback nobody sees is how this hook came to be broken.
+now=$(py_run <<<"$MEASURE")
+if [ -z "$now" ]; then
+  echo "⚠️  🏗️  Structure watch (organon#618 T0c) could not measure native/src."
+  echo "     $PY_LABEL ran but returned nothing. Reproduce with:"
+  echo "       bash .claude/hooks/structure-drift-check.sh"
+  exit 0
+fi
 
 prev=""
 [ -f "$STATE" ] && prev=$(cat "$STATE" 2>/dev/null)
 
-report=$(NOW="$now" PREV="$prev" python3 <<'PY'
+export NOW="$now" PREV="$prev"
+report=$(py_run NOW PREV <<'PY'
 import json, os
 
 now = json.loads(os.environ["NOW"])
@@ -137,7 +168,12 @@ if moved:
     lines += moved
 print("\n".join(lines))
 PY
-) || exit 0
+)
+if [ -z "$report" ]; then
+  echo "⚠️  🏗️  Structure watch (organon#618 T0c) measured native/src but could not"
+  echo "     format the report. The measurement is fine; the delta pass failed."
+  exit 0
+fi
 
 mkdir -p .claude
 printf '%s' "$now" > "$STATE"
