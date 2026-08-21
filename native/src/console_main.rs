@@ -666,11 +666,17 @@ fn console_specs() -> Vec<CommandSpec> {
             doc: "Divide the pane into regions and say what each one holds".into(),
             target: TargetKind::Viewport,
             args: vec![
-                // 🚨 **The one `ChoiceAliased` in the catalog**, and both halves are quoted from
-                // `region`'s own tables rather than restated: the ring is `REGION_WORDS` exactly
-                // as before, and the short forms are `REGION_ALIASES`. So `/viewport tl panel`
-                // works in the composer, `console.viewport` accepts `tl` over MCP, and neither
-                // surface *lists* a thirteenth region word.
+                // 🚨 **A `ChoiceAliased`, and both halves are quoted from `region`'s own tables
+                // rather than restated**: the ring is `REGION_WORDS` exactly as before, and the
+                // short forms are `REGION_ALIASES`. So `/viewport tl panel` works in the
+                // composer, `console.viewport` accepts `tl` over MCP, and neither surface
+                // *lists* a thirteenth region word.
+                //
+                // ⚠️ **This said "the one `ChoiceAliased` in the catalog" until #98 Tier C**,
+                // which gave `stack` a region slot of its own. The count is exactly the sort of
+                // fact that goes quietly wrong, so it is not restated here — `region_slots_all
+                // _accept_the_short_forms` enumerates the catalog and asserts the property
+                // instead of the number.
                 ArgSpec {
                     name: CMD_REGION.into(),
                     kind: ArgKind::ChoiceAliased {
@@ -737,6 +743,37 @@ fn console_specs() -> Vec<CommandSpec> {
                             .collect(),
                     ),
                     required: true,
+                },
+                // 🚨 **The third slot, and it is OPTIONAL — #98 Tier C.** There is a column per
+                // region now, so a command has to be able to say which; but the CLI door and
+                // the MCP door have no region to be typed into, so requiring it would break two
+                // of the four doors §1.8 says must stay one vocabulary. Absent, the console's
+                // own destination rule answers exactly as it did before this word existed.
+                //
+                // ⚠️ **[`CMD_REGION`] is shared with `viewport`, deliberately**, and that is
+                // [`CMD_ACTION`]'s rule read the same way: both slots are a region drawn from
+                // one table, and a palette heading "region" describes both correctly. A second
+                // name for one value space is how a schema comes to offer two rings over one
+                // list.
+                //
+                // 🚨 **And `ChoiceAliased`, for exactly the reason the slot is shared** — #109
+                // gave every region word its initials at all four front doors, and a slot that
+                // named the same table while refusing `tl` would be a thirteenth region
+                // vocabulary arriving as an oversight. One table, one set of short forms, both
+                // quoted rather than restated.
+                ArgSpec {
+                    name: CMD_REGION.into(),
+                    kind: ArgKind::ChoiceAliased {
+                        words: organon_console::region::REGION_WORDS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                        aliases: organon_console::region::REGION_ALIASES
+                            .iter()
+                            .map(|(w, a)| ((*w).to_string(), (*a).to_string()))
+                            .collect(),
+                    },
+                    required: false,
                 },
             ],
             // 🚨 **Permanent, and the classification is argued rather than assumed.** Nothing
@@ -1072,7 +1109,17 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             let p = word(CMD_PANEL)?;
             organon_console::panel_stack::StackCmd::resolve(&a, &p)
                 .map_err(|e| format!("{name}: {e}"))?;
-            Ok(cli::ConsoleOp::Stack { action: a, panel: p })
+            // The optional third word. **Resolved and the answer thrown away**, exactly as the
+            // two required ones are: membership was settled by `validate_args` against the
+            // `Choice`, so this is the belt for a call that skipped the schema. ⚠️ What is
+            // deliberately NOT checked is whether that region *holds a panel stack* — a fact
+            // about the layout at drain time, which `Console::set_stack` is the one gate on.
+            let r = args.get(CMD_REGION).and_then(|v| v.as_str()).map(str::to_string);
+            if let Some(word) = &r {
+                organon_console::region::Region::resolve(word)
+                    .map_err(|e| format!("{name}: {e}"))?;
+            }
+            Ok(cli::ConsoleOp::Stack { action: a, panel: p, region: r })
         }
         // 🚨 **The name check is a REAL gate here, not a belt** — the one difference from the two
         // arms above, and the reason is the transport. `ArgKind::Text` states no value space, so
@@ -1224,9 +1271,13 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         cli::ConsoleOp::Viewport { region, content } => {
             json!({ CMD_REGION: region, CMD_CONTENT: content })
         }
-        // Two more slots of its own, for the reason directly above.
-        cli::ConsoleOp::Stack { action, panel } => {
-            json!({ CMD_ACTION: action, CMD_PANEL: panel })
+        // Two more slots of its own, for the reason directly above — plus the optional region.
+        // ⚠️ **Spelled as `null` when absent** rather than omitted, on the camera's rule and for
+        // its reason: `validate_args` reads a present `null` and a missing key the same way for
+        // an optional argument, and `op_from` maps both to `None`, so what this buys is that a
+        // reader of `events.jsonl` sees the whole slot list rather than whichever subset was set.
+        cli::ConsoleOp::Stack { action, panel, region } => {
+            json!({ CMD_ACTION: action, CMD_PANEL: panel, CMD_REGION: region })
         }
         // ⚠️ **`CMD_ACTION` is shared with `stack` and `CMD_NAME` is its own**, which is the
         // slot-naming rule applied in both directions at once: the two verbs' action rings are
@@ -2112,18 +2163,48 @@ struct Console {
     /// undivided however it was left. A stored layout would be the first thing that could make
     /// a launch look broken with no command having been typed.
     layout: organon_console::region::Layout,
-    /// **The scrolling column of Organon panels a `panel` region shows.** Moved only by
+    /// **A scrolling column of Organon panels PER REGION.** Moved only by
     /// [`Console::set_stack`] and by a `/organon` line's answer.
     ///
-    /// 🚨 **ONE stack, console-wide, and every `panel` region is a view of it** —
-    /// `organon_console::panel_stack`'s header owns the argument. In short: two panel regions
-    /// are two views of one instrument (the same reason [`OrganonPanels`] is one mirror per
-    /// console, not one per card), and the add verb has no ring to spare for a region word, so
-    /// a per-region stack would give every region after the first a column nothing could ever
-    /// fill.
+    /// ✏️ **Was one stack, console-wide, until #98 Tier C** —
+    /// `organon_console::panel_stack`'s header owns the whole argument and was rewritten with
+    /// this. In short: the mechanical reason (the add verb having no ring to spare for a region
+    /// word) is dissolved by a region's own command line supplying it, and the architectural
+    /// one conflated two objects — the parameter **mirror** stays one per console, which is what
+    /// [`OrganonPanels`] is; a column's **composition** belongs to the column. James built the
+    /// four-region layout on a running console on 2026-08-20 and watched one `stack add surface`
+    /// fill both side columns identically, which is not what a person assembling two control
+    /// columns means.
     ///
-    /// 📌 Not written to `preferences.json`, on the layout's rule directly above.
-    panel_stack: organon_console::panel_stack::Stack,
+    /// 📌 Not written to `preferences.json`, on the layout's rule directly above — and note
+    /// `organon_console::layout` does not record stack contents either, so a saved arrangement
+    /// comes back with empty columns. That is §1.15's stated gap, made more visible by this
+    /// change rather than caused by it.
+    panel_stacks: organon_console::panel_stack::Stacks,
+    /// **Every region's own command line, and the console's one answer to who owns the
+    /// keyboard.** `organon_console::region_line`'s header owns the argument.
+    ///
+    /// 🚨 **The arbitration is the tier.** `conversation_view::composer_keys` consumes Tab,
+    /// Escape and the arrows out of the raw event list — two of them unconditionally on an empty
+    /// box — which was safe while the console had exactly one command input. Every frame this
+    /// hands `ConversationPane::set_keys` the answer to "did a region line have focus last
+    /// frame", measured off that widget's own `has_focus` rather than invented.
+    ///
+    /// 📌 Not persisted, on the layout's rule: a console opens with empty lines.
+    region_lines: organon_console::region_line::Lines,
+    /// **The vocabulary a region line resolves against** — built once from [`console_specs`],
+    /// which is the same `Vec<CommandSpec>` the MCP schemas and every conversation pane's own
+    /// registry are built from.
+    ///
+    /// 🚨 **A second `Registry` VALUE, never a second table.** `ConversationPane` builds its own
+    /// from the same specs, and a region line cannot borrow that one: a console may hold no
+    /// conversation pane at all, and even when it does, the pane is behind a `&mut` the region
+    /// walk is already using. What matters is that both are `Registry::new(&console_specs())` —
+    /// `every_console_verb_is_typeable_in_a_region_line` pins that the two agree.
+    ///
+    /// ⚠️ Built at construction rather than per frame: `Registry::new` clones every spec and
+    /// walks them for collisions, which is a cost per keystroke on the candidate path.
+    line_registry: organon_console::registry::Registry,
     /// **The viewport's render target — ONE texture serving both presentations.**
     ///
     /// 🚨 **One, not one each, and that is [`engine_plan`]'s guarantee spent rather than a
@@ -2373,17 +2454,47 @@ fn draw_regions(
     };
     let mut viewport_rect = None;
     let mut live_tab_taken = false;
+    // 🚨 **The command line's band, reserved from the region's rectangle before anything else
+    // is laid out.** A region holding an `agent` gets none: that rectangle already has the
+    // console's original command line in it, and two inputs in one rectangle with nothing to
+    // tell them apart is the arbitration problem made worse rather than solved. So a default
+    // console — one region, holding the agent — draws no line at all, which is invariant #4
+    // holding by construction rather than by a comparison.
+    let row = ui.text_style_height(&egui::TextStyle::Monospace);
+    let band = organon_console::region_line::band_height(row);
     for slot in &placed {
+        let takes_a_line = slot.content != Some(Content::Agent);
+        // ⚠️ **Split before either half is drawn, never read back from one of them.** The
+        // content's rectangle is an input to what it draws — a `3d` region's is what next
+        // frame's texture is sized to — so deriving it from the line's own allocation would make
+        // the picture's size depend on the order two widgets happened to run in.
+        let (content_rect, line_rect) = if takes_a_line && slot.rect.height() > band * 2.0 {
+            let cut = slot.rect.max.y - band;
+            (
+                egui::Rect::from_min_max(slot.rect.min, egui::pos2(slot.rect.max.x, cut)),
+                Some(egui::Rect::from_min_max(
+                    egui::pos2(slot.rect.min.x, cut),
+                    slot.rect.max,
+                )),
+            )
+        } else {
+            // ⚠️ **A region too short for both keeps its content**, and the line is the thing
+            // that goes. `plan` already refuses a layout whose regions fall under `MIN_SIDE`, so
+            // this is the band between "drawable" and "drawable with a command line in it" — and
+            // a rectangle that showed only its own command line would have hidden the thing
+            // somebody assigned it for. The vacancy notice below still names the verb.
+            (slot.rect, None)
+        };
         // A child `Ui` per region, salted by the region's own word so two regions cannot share
         // an egui id — and clipped, which is both meanings at once (`block_panel`'s comment):
         // what is painted, and what the pointer reaches.
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt(("organon-viewport", slot.region.as_word()))
-                .max_rect(slot.rect)
+                .max_rect(content_rect)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        child.set_clip_rect(slot.rect.intersect(ui.clip_rect()));
+        child.set_clip_rect(content_rect.intersect(ui.clip_rect()));
         match slot.content {
             Some(Content::Agent) if !live_tab_taken => {
                 live_tab_taken = true;
@@ -2391,7 +2502,7 @@ fn draw_regions(
             }
             Some(Content::Agent) => paint_region_notice(
                 &mut child,
-                slot.rect,
+                content_rect,
                 slot.region.as_word(),
                 "agent — waiting for a tab of its own. The live tab is drawn in the first agent \
                  region; a second one needs Tier 2's per-region tab",
@@ -2403,11 +2514,11 @@ fn draw_regions(
             // the console's own chrome ever becomes one (#17). The panel *bodies* come back
             // through `OrganonDraw`, exactly as they did when a panel was an element in a
             // transcript; only the address changed.
-            Some(Content::Panel) if !panels.stack.is_empty() => {
+            Some(Content::Panel) if !panels.stacks.get(slot.region).is_empty() => {
                 organon_console::panel_stack::draw(
                     &mut child,
                     slot.region,
-                    panels.stack,
+                    panels.stacks.get(slot.region),
                     theme,
                     panels.form,
                     panels.draw,
@@ -2415,15 +2526,30 @@ fn draw_regions(
             }
             // 🚨 **An empty column is a sentence, and it names the verb that fills it.** Same
             // rule as the vacant region below and with one thing more to say: a region that has
-            // been *assigned* and holds nothing looks exactly like one that is broken, and this
-            // is the only place the stack's own vocabulary is discoverable from.
+            // been *assigned* and holds nothing looks exactly like one that is broken.
+            //
+            // ✏️ **It no longer has to be the only place the vocabulary is discoverable from.**
+            // Tier C puts a command line under this rectangle whose band lists `add` and
+            // `remove` the moment a slash is typed, so the sentence names the shortest spelling
+            // rather than the CLI's.
+            // 🚨 **The sentence depends on whether a line was actually drawn**, which is the
+            // rule this file keeps re-learning: a notice that names a control the region is
+            // too short to show is a status line that cannot be right.
+            Some(Content::Panel) if line_rect.is_some() => paint_region_notice(
+                &mut child,
+                content_rect,
+                slot.region.as_word(),
+                "panel — an empty column. Type `/add surface` in the line below; \
+                 `/remove all` empties it again",
+                theme,
+            ),
             Some(Content::Panel) => paint_region_notice(
                 &mut child,
-                slot.rect,
+                content_rect,
                 slot.region.as_word(),
-                "panel — an empty stack. `organon console stack add <panel>` puts one of \
-                 Organon's editor panels here, or type `/organon look surface` at an agent; \
-                 `… stack remove all` empties it again",
+                "panel — an empty column, and this region is too short for a command line. \
+                 `organon console stack add <panel> --region <this one>` fills it from a \
+                 terminal, or make the region taller",
                 theme,
             ),
             // 🚨 **The live 3D viewport — the same mechanism the portal is, in a different
@@ -2431,10 +2557,10 @@ fn draw_regions(
             // site; nothing about the render, the texture, the gesture or the camera is
             // duplicated here.
             Some(Content::ThreeD) if !viewport.yielded_to_portal => {
-                viewport_rect = Some(slot.rect);
+                viewport_rect = Some(content_rect);
                 paint_viewport(
                     &mut child,
-                    slot.rect,
+                    content_rect,
                     viewport.image,
                     viewport.input,
                     // A region *is* "a pane inside the workstation, a widget among widgets" —
@@ -2452,7 +2578,7 @@ fn draw_regions(
             // is exactly what a broken viewport looks like.
             Some(Content::ThreeD) => paint_region_notice(
                 &mut child,
-                slot.rect,
+                content_rect,
                 slot.region.as_word(),
                 "3d — the portal has the world. Organon renders at most one frame per console \
                  frame, so the floating portal takes it while it is open; `organon console \
@@ -2463,13 +2589,52 @@ fn draw_regions(
             // scale of a sixth of a window: a region that draws nothing is indistinguishable
             // from one that is broken, and the console's running tally of "it knew and said
             // nothing" defects is long enough.
-            None => paint_region_notice(
+            None if line_rect.is_some() => paint_region_notice(
                 &mut child,
-                slot.rect,
+                content_rect,
                 slot.region.as_word(),
-                "empty — `organon console viewport <region> agent`, `… 3d` or `… panel` fills it",
+                "empty — type `/panel`, `/agent` or `/3d` in the line below",
                 theme,
             ),
+            None => paint_region_notice(
+                &mut child,
+                content_rect,
+                slot.region.as_word(),
+                "empty, and too short for a command line — \
+                 `organon console viewport <region> agent`, `… 3d` or `… panel` fills it",
+                theme,
+            ),
+        }
+        // 📌 **The region's own command line, last, so it sits under whatever the region
+        // holds.** Drawn into a child `Ui` of its own at the rectangle reserved above, never
+        // into the content's — a line that shared the content's `Ui` would inherit its layout
+        // cursor and land wherever the content happened to stop.
+        if let Some(rect) = line_rect {
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("organon-region-line-host", slot.region.as_word()))
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            child.set_clip_rect(rect.intersect(ui.clip_rect()));
+            let act = organon_console::region_line::draw(
+                &mut child,
+                organon_console::region_line::Context {
+                    region: slot.region,
+                    content: slot.content,
+                },
+                panels.registry,
+                panels.lines,
+                theme,
+                panels.form,
+            );
+            if let organon_console::region_line::Act::Run { name, args } = act {
+                // Collected rather than applied: dispatching needs `&mut self`, and `self` is
+                // split into disjoint field borrows for the whole of the frame closure. The
+                // same arrangement `theme_change` and `panel_wanted` already use, for its
+                // reason.
+                panels.ran.push((slot.region, name, args));
+            }
         }
     }
     paint_region_edges(ui, pane, &placed, theme);
@@ -2478,9 +2643,19 @@ fn draw_regions(
 
 /// What a `panel` region draws this frame, bundled for [`RegionViewport`]'s reason.
 struct RegionPanels<'a> {
-    /// **The console's one stack**, shown by every region holding `panel` — see
-    /// [`Console::panel_stack`] on why one and not one each.
-    stack: &'a organon_console::panel_stack::Stack,
+    /// **A column per region** — see [`Console::panel_stacks`] on why not one console-wide.
+    stacks: &'a organon_console::panel_stack::Stacks,
+    /// Every region's command line, and the keyboard owner they share. `&mut` because a line
+    /// holds the text somebody is typing into it.
+    lines: &'a mut organon_console::region_line::Lines,
+    /// The vocabulary a region line dispatches onto — **the console's own registry**, not a
+    /// second table. See `region_line`'s header.
+    registry: &'a organon_console::registry::Registry,
+    /// 🚨 **What a region line's Enter asked for, collected out of the frame closure.** Running
+    /// it needs `&mut self` and `self` is split into disjoint field borrows for the whole
+    /// closure — `theme_change` and `panel_wanted`'s arrangement, for its reason. The region is
+    /// carried so the receipt can be written back above the box that produced it.
+    ran: &'a mut Vec<(organon_console::region::Region, String, serde_json::Value)>,
     /// This frame's posture tokens, so a card in a stack and a card in the transcript are the
     /// same object at the same posture rather than two things that resemble each other.
     form: &'a organon_console::posture::Form,
@@ -2802,7 +2977,9 @@ impl Console {
             // One region, `Full`, holding the agent — invariant #4, and `redraw` compares
             // against this exact value to take the pre-region path unchanged.
             layout: organon_console::region::Layout::default(),
-            panel_stack: organon_console::panel_stack::Stack::default(),
+            panel_stacks: organon_console::panel_stack::Stacks::default(),
+            region_lines: organon_console::region_line::Lines::default(),
+            line_registry: organon_console::registry::Registry::new(&console_specs()),
             viewport: None,
             viewport_input: scene_input::SceneInput::default(),
             viewport_points: None,
@@ -3332,8 +3509,8 @@ impl Console {
         // Above the ledger for the reason directly above, one level in: this changes which
         // panels a region's column holds, and the backdrop behind that column is the same
         // picture wearing the same dressing.
-        if let cli::ConsoleOp::Stack { action, panel } = op {
-            self.set_stack(action, panel);
+        if let cli::ConsoleOp::Stack { action, panel, region } = op {
+            self.set_stack(action, panel, region.as_deref());
             return;
         }
         // Above the ledger for the reason the two directly above are: a saved arrangement is a
@@ -3666,8 +3843,16 @@ impl Console {
     /// only in memory would be a command that appears to work and changes no pixel, which is
     /// the defect this console keeps a running tally of. The refusal carries the `viewport`
     /// line that makes a region to show it in.
-    fn set_stack(&mut self, action_word: &str, panel_word: &str) {
-        use organon_console::panel_stack::{Home, Refusal, StackCmd};
+    ///
+    /// # 🚨 Which column — #98 Tier C
+    ///
+    /// `region` is the **optional** third word, and it is `None` for every door that has no
+    /// region to be typed into: a CLI line, an agent's tool call, and a `/organon` typed at a
+    /// conversation. `panel_stack::resolve_target` is the one place the two cases meet — a named
+    /// region is checked against the layout, an unnamed one falls to the destination rule — so
+    /// the answer cannot be spelled twice and drift.
+    fn set_stack(&mut self, action_word: &str, panel_word: &str, region_word: Option<&str>) {
+        use organon_console::panel_stack::{resolve_target, Refusal, StackCmd};
         let cmd = match StackCmd::resolve(action_word, panel_word) {
             Ok(c) => c,
             Err(e) => {
@@ -3675,50 +3860,69 @@ impl Console {
                 return;
             }
         };
+        // Resolved here rather than at `op_from`, for `set_viewport`'s reason: an unknown word
+        // is the schema's to refuse, but *which* regions hold a column is a fact about the
+        // layout at this instant and lives only on `self`.
+        let named = match region_word.map(organon_console::region::Region::resolve).transpose() {
+            Ok(named) => named,
+            Err(e) => {
+                eprintln!("organon-console: {e}");
+                return;
+            }
+        };
         // Asked first, and of every arm including `remove`: with nothing showing the column,
         // even emptying it is a change nobody can see.
-        let Home::Shown(region) = Home::of(&self.layout) else {
-            eprintln!("organon-console: {}", Refusal::NoRegion);
-            return;
+        let region = match resolve_target(&self.layout, named) {
+            Ok(region) => region,
+            Err(refusal) => {
+                eprintln!("organon-console: {refusal}");
+                return;
+            }
         };
+        // Read before the column is borrowed mutably below. It is a short string built from a
+        // handful of slugs, so taking it unconditionally costs nothing — and computing it
+        // inside the `NotHeld` arm would be a second borrow of `self` while `column` is live.
+        let held = self.held_panel_slugs(region);
+        let column = self.panel_stacks.get_mut(region);
         match cmd {
             StackCmd::Add(panel) => {
-                self.panel_stack.push(panel);
-                // The region is named for the reason `/organon`'s answer names it: there is one
-                // stack and possibly several views of it, so "it was added" leaves a person
-                // hunting the window for a panel that is on screen.
+                column.push(panel);
+                // The region is named for the reason `/organon`'s answer names it: several
+                // columns now hold different things, so "it was added" leaves a person hunting
+                // the window for a panel that is on screen.
                 eprintln!(
                     "organon-console: `{}` added to the panel stack in `{}` ({} now)",
                     panel.slug,
                     region.as_word(),
-                    self.panel_stack.len()
+                    column.len()
                 );
             }
-            StackCmd::Remove(panel) => match self.panel_stack.remove_last(panel.slug) {
+            StackCmd::Remove(panel) => match column.remove_last(panel.slug) {
                 Some(_) => eprintln!(
-                    "organon-console: `{}` taken out of the panel stack ({} left)",
+                    "organon-console: `{}` taken out of `{}`'s panel stack ({} left)",
                     panel.slug,
-                    self.panel_stack.len()
+                    region.as_word(),
+                    column.len()
                 ),
                 // Named rather than shrugged off — `region::Refusal::AlreadyEmpty`'s rule: a
                 // command that changes nothing and says nothing is indistinguishable from one
                 // that never arrived. The held list is what makes it actionable.
                 None => eprintln!(
                     "organon-console: {}",
-                    Refusal::NotHeld {
-                        slug: panel.slug.to_string(),
-                        held: self.held_panel_slugs(),
-                    }
+                    Refusal::NotHeld { slug: panel.slug.to_string(), held }
                 ),
             },
             StackCmd::Clear => {
-                if self.panel_stack.is_empty() {
+                if column.is_empty() {
                     eprintln!("organon-console: {}", Refusal::AlreadyEmpty);
                     return;
                 }
-                let n = self.panel_stack.len();
-                self.panel_stack.clear();
-                eprintln!("organon-console: the panel stack is empty ({n} taken out)");
+                let n = column.len();
+                column.clear();
+                eprintln!(
+                    "organon-console: `{}`'s panel stack is empty ({n} taken out)",
+                    region.as_word()
+                );
             }
         }
     }
@@ -3872,13 +4076,14 @@ impl Console {
         }
     }
 
-    /// What the column is holding, for a refusal to quote. `"nothing"` rather than an empty
-    /// string, so the sentence reads as a sentence.
-    fn held_panel_slugs(&self) -> String {
-        if self.panel_stack.is_empty() {
+    /// What **one region's** column is holding, for a refusal to quote. `"nothing"` rather than
+    /// an empty string, so the sentence reads as a sentence.
+    fn held_panel_slugs(&self, region: organon_console::region::Region) -> String {
+        let column = self.panel_stacks.get(region);
+        if column.is_empty() {
             return "nothing".to_string();
         }
-        self.panel_stack
+        column
             .entries()
             .iter()
             .map(|e| e.panel().slug)
@@ -5250,7 +5455,19 @@ impl Console {
         // than mutable: a `/organon` line asks for a push by leaving a value on
         // `ConversationOutput`, which is applied after the closure with `&mut self` in hand —
         // the same arrangement `theme_change` and `surface_requests` use, and for its reason.
-        let panel_stack = &self.panel_stack;
+        let panel_stacks = &self.panel_stacks;
+        // 🚨 **The frame's keyboard arbitration, taken before anything draws.** `begin` promotes
+        // last frame's observation to this frame's answer and starts a fresh one; every region
+        // line then records its own focus as it draws. Called unconditionally — including on a
+        // frame with no region lines at all — because that is what hands the keys back to the
+        // composer when the last line goes away. See `region_line::Lines::begin`.
+        self.region_lines.begin();
+        let composer_owns_keys = self.region_lines.composer_owns_keys();
+        let region_lines = &mut self.region_lines;
+        let registry_for_lines = &self.line_registry;
+        // What a region line's Enter asked for, collected out of the closure and applied below.
+        let mut region_ran: Vec<(organon_console::region::Region, String, serde_json::Value)> =
+            Vec::new();
         // 🚨 **Where a summoned panel would go**, computed from the layout before anything is
         // drawn and handed to the conversation front-end. This is what lets the refusal for
         // "no region holds a stack" be spoken *in the composer*, beside the words that are
@@ -5459,6 +5676,14 @@ impl Console {
                                 );
                             }
                             (Some(Pane::Conversation(chat)), _) => {
+                                // 🚨 **The one arbitration point between the console's several
+                                // command inputs**, told before the composer reads a key.
+                                // `composer_keys` consumes Tab, Escape and the arrows out of
+                                // the raw event list — two of them unconditionally on an empty
+                                // box — so a region line that had focus last frame would find
+                                // its own keys already gone. `true` whenever no region line has
+                                // focus, which is every console that has not divided its pane.
+                                chat.set_keys(composer_owns_keys);
                                 // No PTY, so no patch ledger and no block actions: `block_actions`
                                 // stays the empty `Vec` it was initialised to and the loop below
                                 // does nothing. An inline artifact needs none of that machinery —
@@ -5524,7 +5749,10 @@ impl Console {
                                 yielded_to_portal: portal_has_the_frame,
                             },
                             &mut RegionPanels {
-                                stack: panel_stack,
+                                stacks: panel_stacks,
+                                lines: region_lines,
+                                registry: registry_for_lines,
+                                ran: &mut region_ran,
                                 form,
                                 // 🚨 **The seam that used to be handed to the conversation
                                 // view**, unchanged and at its new address: this crate is the
@@ -5605,7 +5833,30 @@ impl Console {
         // the line was typed. Re-asking here would be a second gate that could only ever
         // disagree with the sentence a person has already been shown.
         if let Some(panel) = panel_wanted {
-            self.panel_stack.push(panel);
+            // ⚠️ **`Home` again, not a remembered answer.** With a column per region this is a
+            // real choice rather than a name for the only one — and it is asked of the same
+            // layout the frame drew, which is what `panel_home` was computed from, so the
+            // region the view *named* in its answer is the region written to here.
+            if let organon_console::panel_stack::Home::Shown(region) = panel_home {
+                self.panel_stacks.get_mut(region).push(panel);
+            }
+        }
+        // 🚨 **What a region's own command line asked for, applied through the SAME dispatch
+        // every other door uses.** Nothing is applied locally: the call goes to
+        // `Capabilities::local` — the composer's own lane — which writes the console's sidecar,
+        // which `drain_console` drains next frame through the real `CommandService`. So a line
+        // typed in a region leaves a `CommandRun` record exactly as a line typed in the composer
+        // does, and the receipt says **accepted**, never applied (§1.8).
+        for (region, name, args) in region_ran {
+            use organon_console::mcp::ToolDispatch;
+            // ⚠️ **A `ConsoleDispatch` built here rather than held**, exactly as the pane's
+            // `local` is built at tab construction: it is a cheap value over the published
+            // viewpoint cell, and holding one on `Console` would be a second handle to the same
+            // cells with nothing to gain by it.
+            let mut dispatch = ConsoleDispatch { viewpoint: self.viewpoint.clone() };
+            let result = dispatch.call(&name, args);
+            let receipt = organon_console::registry::receipt_of(&name, &result);
+            self.region_lines.note(region, receipt.text);
         }
         // What the next frame's `render_viewport` sizes its texture to — points, never pixels,
         // for `pane_points`' reason: it is the *ratio* to the window that survives a scale
@@ -7182,18 +7433,71 @@ mod cli_tests {
             .find(|s| s.name == CMD_STACK)
             .expect("console.stack is registered");
         assert_eq!(spec.target, TargetKind::Viewport, "what a region draws is the viewport");
-        assert_eq!(spec.args.len(), 2, "an action and a panel, never one fused word");
-        let ring = |slot: &str| -> Vec<String> {
+        assert_eq!(
+            spec.args.len(),
+            3,
+            "an action and a panel, never one fused word — plus the optional region"
+        );
+        // ⚠️ **Two closures rather than one, because the three slots are no longer one kind.**
+        // `closed` reads any slot with a stated value space; `plain` additionally insists the
+        // slot has no short forms. The action and panel rings are `Choice` and must stay so —
+        // neither table has declared abbreviations — while the region slot carries `region`'s.
+        let closed = |slot: &str| -> Vec<String> {
+            spec.args
+                .iter()
+                .find(|a| a.name == slot)
+                .expect("the slot")
+                .kind
+                .choices()
+                .unwrap_or_else(|| panic!("{slot} has no closed value space"))
+                .to_vec()
+        };
+        let plain = |slot: &str| -> Vec<String> {
             match &spec.args.iter().find(|a| a.name == slot).expect("the slot").kind {
                 ArgKind::Choice(v) => v.clone(),
                 other => panic!("{slot} is {other:?}, not a Choice"),
             }
         };
-        assert_eq!(ring(CMD_ACTION), STACK_ACTIONS.to_vec());
-        assert_eq!(ring(CMD_PANEL), panel_words());
-        for a in &spec.args {
-            assert!(a.required, "`{}` is not optional — half a command is not a command", a.name);
+        assert_eq!(plain(CMD_ACTION), STACK_ACTIONS.to_vec());
+        assert_eq!(plain(CMD_PANEL), panel_words());
+        // 🚨 **The region ring is `region::REGION_WORDS`, the same table `viewport`'s first ring
+        // is built from** — one region vocabulary, not a second one that resembles it. And it
+        // carries `REGION_ALIASES` for the same reason: #109 gave every region word its
+        // initials at all four front doors, so a slot naming that table while refusing `tl`
+        // would be a divergence rather than a narrower offer.
+        assert_eq!(closed(CMD_REGION), organon_console::region::REGION_WORDS.to_vec());
+        match &spec.args.iter().find(|a| a.name == CMD_REGION).expect("the slot").kind {
+            ArgKind::ChoiceAliased { words, aliases } => {
+                assert_eq!(
+                    aliases,
+                    &organon_console::region::REGION_ALIASES
+                        .iter()
+                        .map(|(w, a)| ((*w).to_string(), (*a).to_string()))
+                        .collect::<Vec<_>>(),
+                    "the short forms are quoted from `region`'s table, never restated here"
+                );
+                for (_, short) in organon_console::region::REGION_ALIASES {
+                    assert!(
+                        !words.contains(&(*short).to_string()),
+                        "`{short}` leaked into the ring — accepted everywhere, listed nowhere"
+                    );
+                }
+            }
+            other => panic!("the region ring is {other:?}, not a ChoiceAliased"),
         }
+        for a in &spec.args {
+            let optional = a.name == CMD_REGION;
+            assert_eq!(
+                a.required, !optional,
+                "`{}`: the two words a command is made of are required, and the region — which \
+                 three of the four front doors have no way to name — is not",
+                a.name
+            );
+        }
+        // ⚠️ **One slot name for one value space.** `panel_stack::REGION_ARG` is what
+        // `region_line` puts into the resolved arguments; this is what the schema declares.
+        // A second spelling is a comparison that silently stops matching.
+        assert_eq!(CMD_REGION, organon_console::panel_stack::REGION_ARG);
 
         // Every pair the schema offers converts, and every one of those lines is one the drain
         // reads back — `viewport`'s cross product, for its reason. ⚠️ `add all` is the one pair
@@ -7210,7 +7514,29 @@ mod cli_tests {
                 let op = asked.unwrap_or_else(|e| panic!("`{a} {p}`: {e}"));
                 assert_eq!(
                     op,
-                    cli::ConsoleOp::Stack { action: (*a).into(), panel: p.into() }
+                    cli::ConsoleOp::Stack {
+                        action: (*a).into(),
+                        panel: p.into(),
+                        region: None
+                    }
+                );
+                let line = cli::console_op_to_line(&op);
+                assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
+                // …and again with the optional region, which is the spelling a region's own
+                // command line produces. It has to survive the same trip, or a panel typed into
+                // one column would arrive in whichever one the destination rule picked.
+                let asked = op_from(
+                    CMD_STACK,
+                    &json!({ CMD_ACTION: a, CMD_PANEL: p, CMD_REGION: "topright" }),
+                );
+                let op = asked.unwrap_or_else(|e| panic!("`{a} {p} region topright`: {e}"));
+                assert_eq!(
+                    op,
+                    cli::ConsoleOp::Stack {
+                        action: (*a).into(),
+                        panel: p.into(),
+                        region: Some("topright".into())
+                    }
                 );
                 let line = cli::console_op_to_line(&op);
                 assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
@@ -7228,6 +7554,196 @@ mod cli_tests {
         assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "clear", CMD_PANEL: "all" })).is_err());
         assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "add" })).is_err(), "no default");
         assert!(op_from(CMD_STACK, &json!({})).is_err());
+    }
+
+    /// 🚨 **Every slot in the catalog that names a region accepts the short forms — asserted
+    /// over the catalog rather than over a remembered count.**
+    ///
+    /// ⚠️ **This exists because a comment said "the one `ChoiceAliased` in the catalog" and
+    /// #98 Tier C made it two.** The number was true when written, went quietly false in a
+    /// commit that had no reason to look at it, and nothing would have failed: a second region
+    /// slot built as a plain `Choice` refuses `tl` while its neighbour accepts it, which reads
+    /// as a typo rather than as a divergence. So the property is pinned instead of the count —
+    /// a *third* region slot added tomorrow either carries `REGION_ALIASES` or fails here, and
+    /// this test needs no edit either way.
+    ///
+    /// 📌 The converse is pinned too: a slot carrying region short forms while claiming some
+    /// other value space would be the same drift from the other side, so the walk keys on the
+    /// slot *name* and checks both directions.
+    #[test]
+    fn region_slots_all_accept_the_short_forms() {
+        use organon_console::region::{REGION_ALIASES, REGION_WORDS};
+        let expected: Vec<(String, String)> =
+            REGION_ALIASES.iter().map(|(w, a)| ((*w).to_string(), (*a).to_string())).collect();
+        let mut seen = 0usize;
+        for spec in console_specs() {
+            for arg in &spec.args {
+                let is_region_slot = arg.name == CMD_REGION;
+                match &arg.kind {
+                    ArgKind::ChoiceAliased { words, aliases } => {
+                        assert!(
+                            is_region_slot,
+                            "`{}`'s `{}` carries short forms but is not a region slot — either \
+                             it is a region under another name (one value space, one name) or \
+                             it has invented a second alias table",
+                            spec.name, arg.name
+                        );
+                        seen += 1;
+                        assert_eq!(
+                            words,
+                            &REGION_WORDS.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
+                            "`{}`'s region ring is not `REGION_WORDS`",
+                            spec.name
+                        );
+                        assert_eq!(
+                            aliases, &expected,
+                            "`{}`'s short forms are not `REGION_ALIASES`",
+                            spec.name
+                        );
+                        for (_, short) in REGION_ALIASES {
+                            assert!(
+                                !words.contains(&(*short).to_string()),
+                                "`{}` lists `{short}` — a short form is accepted everywhere and \
+                                 listed nowhere",
+                                spec.name
+                            );
+                        }
+                    }
+                    other => assert!(
+                        !is_region_slot,
+                        "`{}`'s `{}` names a region and is {other:?} — it would refuse `tl` \
+                         while every other region slot accepts it",
+                        spec.name, arg.name
+                    ),
+                }
+            }
+        }
+        // ⚠️ Not a count of *how many*, which is the fact that rotted — only that the walk
+        // found some. A catalog with no region slot at all would pass every assertion above
+        // vacuously, and that is the one way this test could go green while saying nothing.
+        assert!(seen >= 2, "expected the catalog to hold region slots; the walk found {seen}");
+    }
+
+    /// 🚨 **A region's own command line, resolved against the REAL catalog — the one binding
+    /// `organon-console` cannot make for itself.** `region_line`'s own tests build a fixture
+    /// whose shapes copy `console_specs()`; this is the only module that can see the real
+    /// thing, so it is the only place "`/add surface` in a panel column does what
+    /// `organon console stack add surface` does" can actually be asserted end to end.
+    ///
+    /// ⚠️ It walks the whole way — typed line → `region_line::act` → `op_from` → the sidecar
+    /// line → `parse_console_op` — because every one of those steps is a place the supplied
+    /// region can be dropped, and a dropped region does not fail: it edits a *different*
+    /// column, silently.
+    #[test]
+    fn a_region_line_expands_onto_the_real_console_specs() {
+        use organon_console::region::{Content, Region};
+        use organon_console::region_line::{act, Act, Context};
+        use organon_console::registry::Registry;
+
+        let registry = Registry::new(&console_specs());
+        let column = Context { region: Region::Left, content: Some(Content::Panel) };
+
+        let Act::Run { name, args } = act(&registry, column, "/add surface") else {
+            panic!("`/add surface` in a panel column did not resolve")
+        };
+        assert_eq!(name, CMD_STACK);
+        let op = op_from(&name, &args).expect("the real schema accepts what the line produced");
+        assert_eq!(
+            op,
+            cli::ConsoleOp::Stack {
+                action: "add".into(),
+                panel: "surface".into(),
+                region: Some("left".into()),
+            },
+            "the region the line was typed in did not reach the op"
+        );
+        let line = cli::console_op_to_line(&op);
+        assert_eq!(line, "stack add surface region left");
+        assert_eq!(cli::parse_console_op(&line), Some(op));
+
+        // …and the other family: a content word assigns the region it was typed in, through
+        // `viewport`, whose region is a required positional rather than an optional keyword.
+        let empty = Context { region: Region::TopRight, content: None };
+        for word in organon_console::region::CONTENT_WORDS {
+            let Act::Run { name, args } = act(&registry, empty, &format!("/{word}")) else {
+                panic!("`/{word}` in an empty region did not resolve")
+            };
+            assert_eq!(name, CMD_VIEWPORT);
+            let op = op_from(&name, &args).unwrap_or_else(|e| panic!("`/{word}`: {e}"));
+            assert_eq!(
+                op,
+                cli::ConsoleOp::Viewport {
+                    region: "topright".into(),
+                    content: (*word).into()
+                }
+            );
+        }
+    }
+
+    /// 🚨 **Prune discovery, never capability — asserted against the real table.** Every console
+    /// verb the composer answers must also run in a region line, whether or not that region
+    /// offers it; the pruning is about what is *listed*. A verb that resolved in one surface and
+    /// not the other would be the second vocabulary §1.8 exists to prevent, arriving through the
+    /// newest door.
+    ///
+    /// ⚠️ The line built for each verb is `Registry::usage` with its placeholders filled from
+    /// the verb's own rings, so this covers every verb the catalog has rather than a handful
+    /// somebody remembered — including any added later.
+    ///
+    /// 📌 **It also catches a shed word SHADOWING a verb, which is the one way this could go
+    /// wrong quietly.** If `add`, `remove` or a content word ever became a catalog verb, its
+    /// line would expand and run something else — and the assertion is on the resolved *name*,
+    /// not merely on "something ran", so the mismatch fails here rather than on a running
+    /// console.
+    #[test]
+    fn every_console_verb_still_runs_in_a_region_line() {
+        use organon_console::command::ArgKind;
+        use organon_console::region::{Content, Region};
+        use organon_console::region_line::{act, Act, Context};
+        use organon_console::registry::{Lane, Registry};
+
+        let registry = Registry::new(&console_specs());
+        let column = Context { region: Region::Left, content: Some(Content::Panel) };
+        for entry in registry.entries().iter().filter(|e| e.lane() == Lane::Console) {
+            // The shortest line that satisfies the verb: the first option of every required
+            // `Choice`, a number for an `Int`, the band's floor for a `Float`, a word for a
+            // `Text`. Optional arguments are left off, which is what "required" means.
+            let mut line = format!("/{}", entry.verb());
+            for arg in entry.args().iter().filter(|a| a.required) {
+                // ⚠️ **Matched exhaustively on purpose — no `_` arm.** `command.rs`'s own note
+                // says a wildcard here is how `ChoiceAliased` gets skipped, and this is the
+                // proof: the arm below did not exist until #109 landed under this branch, and
+                // a wildcard would have quietly fed `viewport` an `"x"` instead of a region.
+                // A new `ArgKind` should break this line and make somebody choose a word for
+                // it.
+                let word = match &arg.kind {
+                    ArgKind::Choice(options) => {
+                        options.first().cloned().expect("a Choice with no options")
+                    }
+                    // 📌 **The LONG word, never a short form.** The abbreviations have their
+                    // own coverage (`region_slots_all_accept_the_short_forms`, and the CLI's
+                    // round trip); what this test is for is that the canonical spelling of
+                    // every verb still runs in a region line, so it types what the ring lists.
+                    ArgKind::ChoiceAliased { words, .. } => {
+                        words.first().cloned().expect("a ChoiceAliased with no words")
+                    }
+                    ArgKind::Int => "1".to_string(),
+                    ArgKind::Float { min, .. } => min.to_string(),
+                    ArgKind::Bool => "true".to_string(),
+                    ArgKind::Text => "x".to_string(),
+                };
+                line.push(' ');
+                line.push_str(&word);
+            }
+            match act(&registry, column, &line) {
+                Act::Run { name, .. } => assert_eq!(
+                    name,
+                    entry.name(),
+                    "`{line}` ran a different verb in a region line"
+                ),
+                other => panic!("`{line}` is a console verb and did not run in a region: {other:?}"),
+            }
+        }
     }
 
     /// 🚨 **The layout verb's first ring is `layout.rs`'s own table, and its second ring is not a
@@ -7812,9 +8328,30 @@ mod cli_tests {
             // The second two-word op, with the same way to be wrong plus one of its own: the
             // emptying word rides the *panel* slot, so `remove all` has to survive the trip or
             // a column becomes unclearable.
-            cli::ConsoleOp::Stack { action: "add".into(), panel: "surface".into() },
-            cli::ConsoleOp::Stack { action: "remove".into(), panel: "bloom".into() },
-            cli::ConsoleOp::Stack { action: "remove".into(), panel: "all".into() },
+            cli::ConsoleOp::Stack {
+                action: "add".into(),
+                panel: "surface".into(),
+                region: None,
+            },
+            cli::ConsoleOp::Stack {
+                action: "remove".into(),
+                panel: "bloom".into(),
+                region: None,
+            },
+            cli::ConsoleOp::Stack { action: "remove".into(), panel: "all".into(), region: None },
+            // …and with the optional region, which is a third way to be wrong: a slot that is
+            // present in one direction and absent in the other reads as "no region named" and
+            // edits a column the caller did not mean.
+            cli::ConsoleOp::Stack {
+                action: "add".into(),
+                panel: "surface".into(),
+                region: Some("right".into()),
+            },
+            cli::ConsoleOp::Stack {
+                action: "remove".into(),
+                panel: "all".into(),
+                region: Some("bottomleft".into()),
+            },
             // The third two-word op. Its way to be wrong is its own: the second word is a NAME
             // rather than a table entry, so nothing downstream would notice the slots being
             // swapped by their contents — only the round trip would.

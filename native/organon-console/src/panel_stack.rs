@@ -25,25 +25,56 @@
 //! scrolls twenty panels exactly as a full-height column does, which is what makes assigning a
 //! small region worth doing at all.
 //!
-//! # 🚨 ONE stack, console-wide — every `panel` region is a view of it
+//! # 🚨 A stack PER REGION — and the two reasons that used to say otherwise
 //!
-//! There is a single [`Stack`] on the console, not one per region. Two reasons, and the first
-//! is the same argument `panel_surface::OrganonPanels` already makes one level down (§1.11,
-//! *"one mirror per console, not one per element"*): two `panel` regions are **two views of one
-//! instrument**, and a column that read differently in each would make the claim `/organon`
-//! exists to make — *this is the same panel* — false on sight.
+//! ✏️ **This section said the opposite until #98 Tier C, and both of its reasons are now
+//! answered rather than merely overruled.** It is rewritten in place rather than annotated,
+//! because a header asserting a constraint the code no longer has is worse than one that is
+//! merely out of date: somebody reads it and declines to do the thing that already works.
 //!
-//! The second is this module's own rule about unreachable arms. The add verb has two rings
+//! **Reason (a), the mechanical one, is dissolved.** It read: *"the add verb has two rings
 //! (`<action> <panel>`) and no room for a region word, so a per-region stack would give every
-//! region after the first a column **nothing can ever put anything into** — an untested branch
-//! pretending to be a design. A per-region stack becomes expressible when a region grows a
-//! command line of its own and *is* the context (issue #98 Tier C); until then one stack is the
-//! honest model.
+//! region after the first a column nothing can ever put anything into."* Tier C's command line
+//! makes the region **context** — `/add surface` typed inside a region names that region by
+//! being typed there — and the one dispatch path carries it as [`REGION_ARG`], an *optional*
+//! word rather than a third required ring. Every column is now fillable, so no arm is unreachable.
 //!
-//! ⚠️ What is genuinely per-region is the **scroll position**: the [`egui::ScrollArea`] is keyed
-//! by the region, so two regions showing one stack scroll independently. That is right — they
-//! are two viewports onto one column — and it is why the id namespace below has to carry the
-//! region.
+//! **Reason (b) conflated two objects, and only one of them was ever really console-wide.**
+//! It read: *"two `panel` regions are two views of one instrument"*, on
+//! `panel_surface::OrganonPanels`' precedent (§1.11, *"one mirror per console, not one per
+//! element"*). 🚨 **The mirror and the composition are different things.** The *mirror* — the
+//! `PresetValues` a control writes, which is what reaches `Shared` — genuinely stays **one per
+//! console**, and must: two mirrors would be two claims about one instrument's state. The
+//! *composition* — which panels a column lists, and in what order — is a property of the
+//! **column**, not of the instrument, and there was never an argument that two columns must
+//! list the same panels. Tier A could not tell them apart because there was only one column.
+//!
+//! 📌 **Measured rather than argued.** James built the four-region layout on a running console
+//! on 2026-08-20 (`left` panel, `topcenter` 3d, `right` panel, `bottomcenter` agent), typed one
+//! `stack add surface`, and both columns rendered an identical `organon · look · Surface`. His
+//! verdict: *"you can see why we need to have the update for the stacks because it addressed
+//! both of them."* One stack, two views, is a thing somebody has now looked at — and it is not
+//! what a person assembling two control columns means.
+//!
+//! ⚠️ **Two copies of one panel still share the instrument, and that is unchanged.** Surface in
+//! the left column and Surface in the right column drive the same parameters through the same
+//! mirror; what differs is only which panels each column *holds*. So `/organon`'s claim — *this
+//! is the same panel* — survives verbatim.
+//!
+//! ⚠️ The **scroll position** was already per-region (the [`egui::ScrollArea`] is keyed by the
+//! region) and still is. It is now the smaller half of the per-region story rather than the
+//! whole of it, and it is still why the id namespace below has to carry the region.
+//!
+//! # 🚨 A command that names no region still has to land somewhere
+//!
+//! Three of §1.8's four front doors have **no region to be typed into**: the CLI's
+//! `organon console stack add surface`, the agent's MCP tool, and a `/organon look surface`
+//! typed at a conversation. [`Home`] is their destination rule — **the first region holding
+//! `panel` in [`Region::ALL`] order**, largest first, the same determinism that already decides
+//! which `agent` region gets the live tab — and with several columns it is doing real work
+//! rather than merely naming the one that exists. [`resolve_target`] is the one place the two
+//! cases meet: a named region is checked against the layout and used, an unnamed one falls to
+//! [`Home`], and both refusals name what would have worked.
 //!
 //! # 🚨 The id namespace: WHERE it is drawn, never WHAT is drawn
 //!
@@ -84,7 +115,7 @@ use egui::{Frame, RichText};
 use organon_core::panels::{self, Panel};
 
 use crate::posture::Form;
-use crate::region::Region;
+use crate::region::{Content, Layout, Region, REGION_COUNT};
 use crate::theme::Theme;
 
 /// **How the console draws one of Organon's own panels** — the seam between the two crates.
@@ -123,7 +154,84 @@ impl Entry {
     }
 }
 
-/// The console's one scrolling column of Organon panels.
+/// **A column per region** — the console's panel stacks, indexed by [`Region::slot`].
+///
+/// 🚨 **An array over the whole vocabulary, not a map of the occupied ones**, which is
+/// [`crate::region::Layout`]'s own arrangement for its reason: a region that stops holding
+/// `panel` and is given it back should find its column where it left it, and a map keyed by
+/// what is *currently* held would throw the contents away on the way through `off`. ⚠️ The
+/// consequence is stated rather than hidden: a column belonging to a region that holds nothing
+/// is **kept and not drawn**, so `viewport left off` then `viewport left panel` restores the
+/// column. Nothing empties a column but `stack remove`.
+///
+/// ⚠️ **Serials are per column, and the egui key is `(region, serial)`** — see [`draw`]. Two
+/// columns each issuing serial 0 is therefore not a collision, and never was: the region half
+/// of the key is what separates them, which is exactly what
+/// `the_region_and_the_serial_are_both_doing_work` pins.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stacks {
+    columns: [Stack; REGION_COUNT],
+}
+
+impl Stacks {
+    /// The column this region holds. Every region has one; most are empty.
+    pub fn get(&self, region: Region) -> &Stack {
+        &self.columns[region.slot()]
+    }
+
+    pub fn get_mut(&mut self, region: Region) -> &mut Stack {
+        &mut self.columns[region.slot()]
+    }
+
+    /// How many panels are in every column together. **Counted, never tracked** — a second
+    /// number kept in step with the arrays is how the two come to disagree.
+    pub fn total(&self) -> usize {
+        self.columns.iter().map(Stack::len).sum()
+    }
+}
+
+/// Which column a stack command edits, or why none will do.
+///
+/// 🚨 **The one place a named region and an unnamed one meet.** Three of the four front doors
+/// (§1.8) cannot name a region — a CLI line, an agent's tool call and a `/organon` typed at a
+/// conversation are all region-less — and Tier C's region command line always can. Resolving
+/// both here rather than at each caller is what stops the destination rule from being spelled
+/// twice and drifting.
+///
+/// - `Some(region)` that holds `panel` → that column.
+/// - `Some(region)` holding anything else → [`Refusal::NotAPanelRegion`], naming what it holds
+///   and which regions do hold a stack. ⚠️ **Refused rather than redirected**: putting a panel
+///   in a column somebody did not name is the "refused, not clamped" rule (§1.3) at the scale
+///   of a rectangle.
+/// - `None` → [`Home::of`], i.e. the first `panel` region in [`Region::ALL`] order, or
+///   [`Refusal::NoRegion`] when no region holds one at all.
+pub fn resolve_target(layout: &Layout, named: Option<Region>) -> Result<Region, Refusal> {
+    let Some(region) = named else {
+        return match Home::of(layout) {
+            Home::Shown(region) => Ok(region),
+            Home::Nowhere => Err(Refusal::NoRegion),
+        };
+    };
+    match layout.get(region) {
+        Some(Content::Panel) => Ok(region),
+        held => Err(Refusal::NotAPanelRegion {
+            region: region.as_word().to_string(),
+            holding: held.map_or("nothing", Content::as_word).to_string(),
+            panel_regions: word_list(&layout.regions_holding(Content::Panel)),
+        }),
+    }
+}
+
+/// A region list for a refusal to quote — `"nothing"` rather than an empty string, so the
+/// sentence reads as a sentence. [`crate::region`]'s own arrangement in `held_panel_slugs`.
+fn word_list(regions: &[Region]) -> String {
+    if regions.is_empty() {
+        return "nothing".to_string();
+    }
+    regions.iter().map(|r| r.as_word()).collect::<Vec<_>>().join(", ")
+}
+
+/// One scrolling column of Organon panels — what **one region** holding `panel` holds.
 ///
 /// ⚠️ **Deliberately uncapped.** A cap would need a refusal, and the refusal could not reach
 /// the person who caused it: `/organon look surface` is answered in a conversation pane one
@@ -221,6 +329,21 @@ pub const STACK_ACTIONS: &[&str] = &["add", "remove"];
 /// a value in the enum the draw path must then match and refuse to draw.
 pub const ALL_WORD: &str = "all";
 
+/// The **optional** third slot on the stack verb: which region's column to edit.
+///
+/// 🚨 **Optional, and that is the whole of why it is not the "third ring" this module's header
+/// used to refuse.** The two required rings are unchanged, so `stack add surface` still means
+/// exactly what it meant — the destination rule answers, as it must for the CLI and the MCP
+/// door, neither of which has a region to be typed into. What the word adds is a way for the
+/// **one** dispatch path to carry a context the region command line already knows.
+///
+/// ⚠️ **Nobody is expected to type it.** `registry::parse_args` fills optional arguments by
+/// keyword, so the typed spelling is `/stack add surface region left` and the CLI's is
+/// `organon console stack add surface --region left` — both writing the same sidecar line, which
+/// is the property that keeps the four doors one vocabulary. In a region's own line you type
+/// `/add surface` and the line supplies this word.
+pub const REGION_ARG: &str = "region";
+
 /// The panel ring's whole value space: every slug, then [`ALL_WORD`].
 ///
 /// Built from `panels::slugs()` rather than restated, so a panel added to Organon's table
@@ -308,6 +431,9 @@ pub enum Refusal {
     /// meets the *first* time they type `/organon look surface`, and it is the whole of how
     /// they learn a region has to be declared first.
     NoRegion,
+    /// A region was named and it does not hold `panel`. **Refused rather than redirected** —
+    /// see [`resolve_target`].
+    NotAPanelRegion { region: String, holding: String, panel_regions: String },
 }
 
 impl std::fmt::Display for Refusal {
@@ -342,11 +468,20 @@ impl std::fmt::Display for Refusal {
                  `organon console viewport left panel` makes one (any region word will do), \
                  then ask again"
             ),
+            Refusal::NotAPanelRegion { region, holding, panel_regions } => write!(
+                f,
+                "`{region}` holds `{holding}`, not a panel stack — regions with a column: \
+                 {panel_regions}"
+            ),
         }
     }
 }
 
-/// Which region's stack a panel summoned from a conversation lands in.
+/// Which region's stack a panel summoned **without a region word** lands in.
+///
+/// ✏️ **Doing real work now that there are several columns.** With one console-wide stack this
+/// only decided which region's *name* an answer quoted; it now decides which column is written
+/// to, for every door that has no region to be typed into — see [`resolve_target`].
 ///
 /// 🚨 **A panel lives only in a stack; there is no transcript home.** James, 2026-08-20:
 /// *"Would we ever want a panel inline? A panel should not scroll away. That doesn't make
@@ -362,17 +497,20 @@ pub enum Home {
     /// The region a summoned panel goes to. **The first region holding `panel` in
     /// [`Region::ALL`] order**, which is largest-first — the same determinism `console_main`
     /// already uses to decide which `agent` region gets the live tab. Carried so the answer can
-    /// *say* which region it used, since there is one stack and possibly several views of it.
+    /// *say* which region it used — which is now the only way a person can tell, since the
+    /// several columns no longer read alike.
     Shown(Region),
 }
 
 impl Home {
-    /// Where a summoned panel goes, given what the console is holding.
+    /// Where a panel named without a region goes, given what the console is holding.
     ///
-    /// ⚠️ The rule is deliberately the plain one: there is a single console-wide stack, so this
-    /// picks the region whose *name* the answer will quote, not which column is written to.
-    pub fn of(layout: &crate::region::Layout) -> Self {
-        match layout.region_holding(crate::region::Content::Panel) {
+    /// ⚠️ **Largest-first is the whole rule, and it is deliberately not "the nearest" or "the
+    /// last one you typed at".** Both of those are guesses about intent that a fire-and-forget
+    /// lane has no way to check; `Region::ALL` order is a fact about the vocabulary, and the
+    /// answer quotes the region so a person can see where it went.
+    pub fn of(layout: &Layout) -> Self {
+        match layout.region_holding(Content::Panel) {
             Some(region) => Home::Shown(region),
             None => Home::Nowhere,
         }
@@ -609,6 +747,11 @@ mod tests {
             Refusal::NotHeld { slug: "bloom".into(), held: "surface".into() },
             Refusal::AlreadyEmpty,
             Refusal::NoRegion,
+            Refusal::NotAPanelRegion {
+                region: "bottomcenter".into(),
+                holding: "agent".into(),
+                panel_regions: "left, right".into(),
+            },
         ];
         for case in cases {
             let text = case.to_string();
@@ -778,6 +921,132 @@ mod tests {
         two.push(surface());
         let ids = body_ids(&[(Region::Left, &two)]);
         assert_ne!(ids[0], ids[1], "the serial is not part of the namespace");
+    }
+
+    // -----------------------------------------------------------------------
+    // A column per region — #98 Tier C
+    // -----------------------------------------------------------------------
+
+    /// 🚨 **Two columns are two columns.** The whole of what Tier C changed here, stated as the
+    /// thing James watched fail on a running console: one `stack add surface` filled both side
+    /// columns, and it should fill one.
+    #[test]
+    fn each_region_has_its_own_column() {
+        let mut stacks = Stacks::default();
+        stacks.get_mut(Region::Left).push(surface());
+        assert_eq!(stacks.get(Region::Left).len(), 1);
+        assert_eq!(stacks.get(Region::Right).len(), 0, "one push filled two columns");
+        stacks.get_mut(Region::Right).push(bloom());
+        assert_eq!(
+            stacks.get(Region::Right).entries()[0].panel().slug,
+            "bloom",
+            "the columns hold different panels"
+        );
+        assert_eq!(stacks.total(), 2);
+    }
+
+    /// Every region has a slot, and no two share one — the property the array rests on, walked
+    /// over the whole vocabulary rather than sampled.
+    #[test]
+    fn every_region_addresses_a_column_of_its_own() {
+        let mut stacks = Stacks::default();
+        for (n, region) in Region::ALL.iter().enumerate() {
+            for _ in 0..=n {
+                stacks.get_mut(*region).push(surface());
+            }
+        }
+        for (n, region) in Region::ALL.iter().enumerate() {
+            assert_eq!(
+                stacks.get(*region).len(),
+                n + 1,
+                "`{}` shares a column with another region",
+                region.as_word()
+            );
+        }
+        assert_eq!(stacks.total(), (1..=Region::ALL.len()).sum::<usize>());
+    }
+
+    /// ⚠️ **A column belongs to the region, not to what the region holds.** Clearing a region
+    /// and giving it `panel` again finds the column where it was left — `Layout`'s own
+    /// arrangement, and the reason `Stacks` is an array over the vocabulary rather than a map
+    /// of the occupied regions.
+    #[test]
+    fn a_column_survives_its_region_being_emptied() {
+        let mut stacks = Stacks::default();
+        stacks.get_mut(Region::Right).push(surface());
+        let layout = Layout::vacant()
+            .assign(Region::Left, ContentCmd::Hold(Content::Agent))
+            .expect("an agent first")
+            .layout
+            .assign(Region::Right, ContentCmd::Hold(Content::Panel))
+            .expect("right panel")
+            .layout;
+        let emptied = layout.assign(Region::Right, ContentCmd::Clear).expect("off").layout;
+        assert_eq!(resolve_target(&emptied, None), Err(Refusal::NoRegion));
+        assert_eq!(stacks.get(Region::Right).len(), 1, "the column was thrown away");
+        let back = emptied
+            .assign(Region::Right, ContentCmd::Hold(Content::Panel))
+            .expect("right panel again")
+            .layout;
+        assert_eq!(resolve_target(&back, None), Ok(Region::Right));
+        assert_eq!(stacks.get(Region::Right).len(), 1);
+    }
+
+    /// 🚨 **The destination rule, with and without a region word.** Three of the four front
+    /// doors cannot name one, so the unnamed case is not a fallback — it is what most commands
+    /// take.
+    #[test]
+    fn a_named_region_is_used_and_an_unnamed_one_falls_to_the_home_rule() {
+        let two = Layout::vacant()
+            .assign(Region::BottomCenter, ContentCmd::Hold(Content::Agent))
+            .expect("an agent first")
+            .layout
+            .assign(Region::Left, ContentCmd::Hold(Content::Panel))
+            .expect("left panel")
+            .layout
+            .assign(Region::Right, ContentCmd::Hold(Content::Panel))
+            .expect("right panel")
+            .layout;
+        // Unnamed: the first `panel` region in `Region::ALL` order, largest first.
+        assert_eq!(resolve_target(&two, None), Ok(Region::Left));
+        // Named: exactly what was named, whichever it is.
+        assert_eq!(resolve_target(&two, Some(Region::Right)), Ok(Region::Right));
+        assert_eq!(resolve_target(&two, Some(Region::Left)), Ok(Region::Left));
+    }
+
+    /// ⚠️ **Refused, never redirected.** Naming a region that holds something else is the
+    /// "refused, not clamped" rule at the scale of a rectangle — and the refusal has to name
+    /// what it holds *and* where the columns actually are, or it is a "no" with nothing to act
+    /// on.
+    #[test]
+    fn a_region_that_holds_no_column_is_refused_by_name() {
+        let split = Layout::vacant()
+            .assign(Region::BottomCenter, ContentCmd::Hold(Content::Agent))
+            .expect("an agent first")
+            .layout
+            .assign(Region::Left, ContentCmd::Hold(Content::Panel))
+            .expect("left panel")
+            .layout;
+        let e = resolve_target(&split, Some(Region::BottomCenter))
+            .expect_err("bottomcenter holds the agent");
+        let text = e.to_string();
+        assert!(text.contains("bottomcenter"), "{text}");
+        assert!(text.contains("agent"), "the refusal does not say what it holds: {text}");
+        assert!(text.contains("left"), "the refusal does not say where a column is: {text}");
+
+        // …and a region holding nothing at all reads as `nothing` rather than as an empty gap
+        // in the sentence.
+        let e = resolve_target(&split, Some(Region::TopRight)).expect_err("topright is vacant");
+        assert!(e.to_string().contains("nothing"), "{e}");
+    }
+
+    /// The refusal every door meets first: no region holds a column at all.
+    #[test]
+    fn a_console_with_no_column_refuses_by_name_whether_or_not_a_region_was_given() {
+        let plain = Layout::default();
+        assert_eq!(resolve_target(&plain, None), Err(Refusal::NoRegion));
+        let e = resolve_target(&plain, Some(Region::Left)).expect_err("left holds nothing");
+        assert!(e.to_string().contains("nothing"), "{e}");
     }
 
     /// An empty stack draws nothing and asks for no id at all — the region's own "empty" notice
