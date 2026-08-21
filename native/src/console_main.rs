@@ -666,11 +666,17 @@ fn console_specs() -> Vec<CommandSpec> {
             doc: "Divide the pane into regions and say what each one holds".into(),
             target: TargetKind::Viewport,
             args: vec![
-                // 🚨 **The one `ChoiceAliased` in the catalog**, and both halves are quoted from
-                // `region`'s own tables rather than restated: the ring is `REGION_WORDS` exactly
-                // as before, and the short forms are `REGION_ALIASES`. So `/viewport tl panel`
-                // works in the composer, `console.viewport` accepts `tl` over MCP, and neither
-                // surface *lists* a thirteenth region word.
+                // 🚨 **A `ChoiceAliased`, and both halves are quoted from `region`'s own tables
+                // rather than restated**: the ring is `REGION_WORDS` exactly as before, and the
+                // short forms are `REGION_ALIASES`. So `/viewport tl panel` works in the
+                // composer, `console.viewport` accepts `tl` over MCP, and neither surface
+                // *lists* a thirteenth region word.
+                //
+                // ⚠️ **This said "the one `ChoiceAliased` in the catalog" until #98 Tier C**,
+                // which gave `stack` a region slot of its own. The count is exactly the sort of
+                // fact that goes quietly wrong, so it is not restated here — `region_slots_all
+                // _accept_the_short_forms` enumerates the catalog and asserts the property
+                // instead of the number.
                 ArgSpec {
                     name: CMD_REGION.into(),
                     kind: ArgKind::ChoiceAliased {
@@ -749,14 +755,24 @@ fn console_specs() -> Vec<CommandSpec> {
                 // one table, and a palette heading "region" describes both correctly. A second
                 // name for one value space is how a schema comes to offer two rings over one
                 // list.
+                //
+                // 🚨 **And `ChoiceAliased`, for exactly the reason the slot is shared** — #109
+                // gave every region word its initials at all four front doors, and a slot that
+                // named the same table while refusing `tl` would be a thirteenth region
+                // vocabulary arriving as an oversight. One table, one set of short forms, both
+                // quoted rather than restated.
                 ArgSpec {
                     name: CMD_REGION.into(),
-                    kind: ArgKind::Choice(
-                        organon_console::region::REGION_WORDS
+                    kind: ArgKind::ChoiceAliased {
+                        words: organon_console::region::REGION_WORDS
                             .iter()
                             .map(|s| (*s).to_string())
                             .collect(),
-                    ),
+                        aliases: organon_console::region::REGION_ALIASES
+                            .iter()
+                            .map(|(w, a)| ((*w).to_string(), (*a).to_string()))
+                            .collect(),
+                    },
                     required: false,
                 },
             ],
@@ -7422,17 +7438,53 @@ mod cli_tests {
             3,
             "an action and a panel, never one fused word — plus the optional region"
         );
-        let ring = |slot: &str| -> Vec<String> {
+        // ⚠️ **Two closures rather than one, because the three slots are no longer one kind.**
+        // `closed` reads any slot with a stated value space; `plain` additionally insists the
+        // slot has no short forms. The action and panel rings are `Choice` and must stay so —
+        // neither table has declared abbreviations — while the region slot carries `region`'s.
+        let closed = |slot: &str| -> Vec<String> {
+            spec.args
+                .iter()
+                .find(|a| a.name == slot)
+                .expect("the slot")
+                .kind
+                .choices()
+                .unwrap_or_else(|| panic!("{slot} has no closed value space"))
+                .to_vec()
+        };
+        let plain = |slot: &str| -> Vec<String> {
             match &spec.args.iter().find(|a| a.name == slot).expect("the slot").kind {
                 ArgKind::Choice(v) => v.clone(),
                 other => panic!("{slot} is {other:?}, not a Choice"),
             }
         };
-        assert_eq!(ring(CMD_ACTION), STACK_ACTIONS.to_vec());
-        assert_eq!(ring(CMD_PANEL), panel_words());
+        assert_eq!(plain(CMD_ACTION), STACK_ACTIONS.to_vec());
+        assert_eq!(plain(CMD_PANEL), panel_words());
         // 🚨 **The region ring is `region::REGION_WORDS`, the same table `viewport`'s first ring
-        // is built from** — one region vocabulary, not a second one that resembles it.
-        assert_eq!(ring(CMD_REGION), organon_console::region::REGION_WORDS.to_vec());
+        // is built from** — one region vocabulary, not a second one that resembles it. And it
+        // carries `REGION_ALIASES` for the same reason: #109 gave every region word its
+        // initials at all four front doors, so a slot naming that table while refusing `tl`
+        // would be a divergence rather than a narrower offer.
+        assert_eq!(closed(CMD_REGION), organon_console::region::REGION_WORDS.to_vec());
+        match &spec.args.iter().find(|a| a.name == CMD_REGION).expect("the slot").kind {
+            ArgKind::ChoiceAliased { words, aliases } => {
+                assert_eq!(
+                    aliases,
+                    &organon_console::region::REGION_ALIASES
+                        .iter()
+                        .map(|(w, a)| ((*w).to_string(), (*a).to_string()))
+                        .collect::<Vec<_>>(),
+                    "the short forms are quoted from `region`'s table, never restated here"
+                );
+                for (_, short) in organon_console::region::REGION_ALIASES {
+                    assert!(
+                        !words.contains(&(*short).to_string()),
+                        "`{short}` leaked into the ring — accepted everywhere, listed nowhere"
+                    );
+                }
+            }
+            other => panic!("the region ring is {other:?}, not a ChoiceAliased"),
+        }
         for a in &spec.args {
             let optional = a.name == CMD_REGION;
             assert_eq!(
@@ -7502,6 +7554,74 @@ mod cli_tests {
         assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "clear", CMD_PANEL: "all" })).is_err());
         assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "add" })).is_err(), "no default");
         assert!(op_from(CMD_STACK, &json!({})).is_err());
+    }
+
+    /// 🚨 **Every slot in the catalog that names a region accepts the short forms — asserted
+    /// over the catalog rather than over a remembered count.**
+    ///
+    /// ⚠️ **This exists because a comment said "the one `ChoiceAliased` in the catalog" and
+    /// #98 Tier C made it two.** The number was true when written, went quietly false in a
+    /// commit that had no reason to look at it, and nothing would have failed: a second region
+    /// slot built as a plain `Choice` refuses `tl` while its neighbour accepts it, which reads
+    /// as a typo rather than as a divergence. So the property is pinned instead of the count —
+    /// a *third* region slot added tomorrow either carries `REGION_ALIASES` or fails here, and
+    /// this test needs no edit either way.
+    ///
+    /// 📌 The converse is pinned too: a slot carrying region short forms while claiming some
+    /// other value space would be the same drift from the other side, so the walk keys on the
+    /// slot *name* and checks both directions.
+    #[test]
+    fn region_slots_all_accept_the_short_forms() {
+        use organon_console::region::{REGION_ALIASES, REGION_WORDS};
+        let expected: Vec<(String, String)> =
+            REGION_ALIASES.iter().map(|(w, a)| ((*w).to_string(), (*a).to_string())).collect();
+        let mut seen = 0usize;
+        for spec in console_specs() {
+            for arg in &spec.args {
+                let is_region_slot = arg.name == CMD_REGION;
+                match &arg.kind {
+                    ArgKind::ChoiceAliased { words, aliases } => {
+                        assert!(
+                            is_region_slot,
+                            "`{}`'s `{}` carries short forms but is not a region slot — either \
+                             it is a region under another name (one value space, one name) or \
+                             it has invented a second alias table",
+                            spec.name, arg.name
+                        );
+                        seen += 1;
+                        assert_eq!(
+                            words,
+                            &REGION_WORDS.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
+                            "`{}`'s region ring is not `REGION_WORDS`",
+                            spec.name
+                        );
+                        assert_eq!(
+                            aliases, &expected,
+                            "`{}`'s short forms are not `REGION_ALIASES`",
+                            spec.name
+                        );
+                        for (_, short) in REGION_ALIASES {
+                            assert!(
+                                !words.contains(&(*short).to_string()),
+                                "`{}` lists `{short}` — a short form is accepted everywhere and \
+                                 listed nowhere",
+                                spec.name
+                            );
+                        }
+                    }
+                    other => assert!(
+                        !is_region_slot,
+                        "`{}`'s `{}` names a region and is {other:?} — it would refuse `tl` \
+                         while every other region slot accepts it",
+                        spec.name, arg.name
+                    ),
+                }
+            }
+        }
+        // ⚠️ Not a count of *how many*, which is the fact that rotted — only that the walk
+        // found some. A catalog with no region slot at all would pass every assertion above
+        // vacuously, and that is the one way this test could go green while saying nothing.
+        assert!(seen >= 2, "expected the catalog to hold region slots; the walk found {seen}");
     }
 
     /// 🚨 **A region's own command line, resolved against the REAL catalog — the one binding
@@ -7590,9 +7710,22 @@ mod cli_tests {
             // `Text`. Optional arguments are left off, which is what "required" means.
             let mut line = format!("/{}", entry.verb());
             for arg in entry.args().iter().filter(|a| a.required) {
+                // ⚠️ **Matched exhaustively on purpose — no `_` arm.** `command.rs`'s own note
+                // says a wildcard here is how `ChoiceAliased` gets skipped, and this is the
+                // proof: the arm below did not exist until #109 landed under this branch, and
+                // a wildcard would have quietly fed `viewport` an `"x"` instead of a region.
+                // A new `ArgKind` should break this line and make somebody choose a word for
+                // it.
                 let word = match &arg.kind {
                     ArgKind::Choice(options) => {
                         options.first().cloned().expect("a Choice with no options")
+                    }
+                    // 📌 **The LONG word, never a short form.** The abbreviations have their
+                    // own coverage (`region_slots_all_accept_the_short_forms`, and the CLI's
+                    // round trip); what this test is for is that the canonical spelling of
+                    // every verb still runs in a region line, so it types what the ring lists.
+                    ArgKind::ChoiceAliased { words, .. } => {
+                        words.first().cloned().expect("a ChoiceAliased with no words")
                     }
                     ArgKind::Int => "1".to_string(),
                     ArgKind::Float { min, .. } => min.to_string(),

@@ -55,7 +55,7 @@
 //! A verb silently absent is the defect this console keeps a tally of, arriving through the
 //! newest surface. [`RegionPalette::elsewhere`] is `Ring::Empty`'s precedent one scale up — a
 //! thing that cannot exist without its sentence — so the field is a `String` and never an
-//! `Option<String>`: *"`/background` belongs to the console line, not this panel column — it
+//! `Option<String>`: *"`/background` belongs to the console line, not this panel column, but it
 //! runs here anyway"* is an answer, and an absence is not.
 //!
 //! # 📌 What an unassigned region shows
@@ -334,7 +334,7 @@ pub fn palette(registry: &Registry, ctx: Context, line: &str) -> Option<RegionPa
 fn supplied_note(ctx: Context, supplied: Option<&str>, rest: String) -> String {
     match supplied {
         Some(name) => format!(
-            "`{name}` is supplied by the line you are typing in — it is `{}`. {rest}",
+            "`{name}` is supplied by the line you are typing in: it is `{}`. {rest}",
             ctx.region.as_word()
         ),
         None => rest,
@@ -395,7 +395,7 @@ fn elsewhere(registry: &Registry, ctx: Context, sheds: &[Shed], typed: &str) -> 
         .collect();
     if others.is_empty() {
         return format!(
-            "this list is `{}`'s own — it holds {held}. Nothing else in the console's \
+            "this list is `{}`'s own: it holds {held}. Nothing else in the console's \
              vocabulary begins `{typed}`; `/help` at an agent lists every verb",
             ctx.region.as_word()
         );
@@ -409,7 +409,7 @@ fn elsewhere(registry: &Registry, ctx: Context, sheds: &[Shed], typed: &str) -> 
     let tail = if hidden > 0 { format!(" +{hidden}") } else { String::new() };
     if typed.is_empty() {
         format!(
-            "this list is `{}`'s own — it holds {held}. The console line's verbs run here too: \
+            "this list is `{}`'s own: it holds {held}. The console line's verbs run here too: \
              {}{tail}",
             ctx.region.as_word(),
             named.join(", ")
@@ -423,7 +423,7 @@ fn elsewhere(registry: &Registry, ctx: Context, sheds: &[Shed], typed: &str) -> 
             ("belong", "they run")
         };
         format!(
-            "{}{tail} {belong} to the console line, not this `{}` region — {runs} here anyway",
+            "{}{tail} {belong} to the console line, not this `{}` region, but {runs} here anyway",
             named.join(", "),
             ctx.region.as_word()
         )
@@ -469,13 +469,13 @@ pub fn act(registry: &Registry, ctx: Context, line: &str) -> Act {
         // is no agent here to send one to, so there is nothing to do and nothing to say.
         Resolved::Message => Act::Idle,
         Resolved::Escaped(_) => Act::Refused(
-            "`//` escapes a line to the agent, and there is no agent in this region — type it \
+            "`//` escapes a line to the agent, and there is no agent in this region; type it \
              in a conversation instead"
                 .to_string(),
         ),
         Resolved::Refused(message) => Act::Refused(message),
         Resolved::Run { lane: Lane::View, name, .. } => Act::Refused(format!(
-            "`/{}` puts something in a conversation, and `{}` is not one — type it at an agent",
+            "`/{}` puts something in a conversation, and `{}` is not one; type it at an agent",
             verb_of(&name),
             ctx.region.as_word()
         )),
@@ -1179,13 +1179,23 @@ mod tests {
         }
     }
 
-    /// 🚨 **Every string this module draws is ASCII**, which is `conversation_view`'s glyph
+    /// 🚨 **Every string this module COMPOSES is ASCII**, which is `conversation_view`'s glyph
     /// allowlist reaching a surface that allowlist cannot see. That guard walks an enumerated
     /// list of draw sites in *that* file; these are draw sites in this one, and the defect it
     /// exists for shipped once already — a `✓` in none of egui's four bundled fonts, drawn as an
     /// empty box in the pane log and photographed on a running console.
+    ///
+    /// ⚠️ **"Composes" and not "draws", and the difference is a real boundary rather than a
+    /// hole cut to make the test pass.** A registry refusal — *"`/nonesuch` is not a command"* —
+    /// is the **console line's own words**, already drawn by the composer on every build that
+    /// has ever shipped; this module passes it through byte-for-byte and adds nothing. Asserting
+    /// a glyph policy over it would put a second copy of that policy here, and the copy would
+    /// win arguments it has no standing in: the first thing it would do is refuse a string the
+    /// composer draws happily two rectangles away. So the pass-through is pinned as
+    /// *unmodified* instead, which is the property this module is actually responsible for, and
+    /// the glyph question stays where the string is written.
     #[test]
-    fn no_string_this_line_draws_needs_a_glyph_egui_lacks() {
+    fn no_string_this_line_composes_needs_a_glyph_egui_lacks() {
         let reg = registry();
         let mut drawn: Vec<String> = vec![PROMPT.to_string(), HINT.to_string()];
         for ctx in [panel_ctx(), empty_ctx()] {
@@ -1202,7 +1212,10 @@ mod tests {
                     drawn.push(c.doc);
                 }
             }
-            for line in ["/help", "/nonesuch", "//x"] {
+            // `/help` is the view-lane refusal and `//x` the escape refusal — both written
+            // here, both this module's to answer for. `/nonesuch` is deliberately absent; it
+            // is the registry's, and it is checked below instead.
+            for line in ["/help", "//x"] {
                 if let Act::Refused(message) = act(&reg, ctx, line) {
                     drawn.push(message);
                 }
@@ -1211,10 +1224,36 @@ mod tests {
         for text in drawn {
             assert!(
                 text.is_ascii(),
-                "a region line draws a non-ASCII glyph, which egui's bundled fonts may not \
+                "a region line composes a non-ASCII glyph, which egui's bundled fonts may not \
                  have: {text:?}"
             );
         }
+    }
+
+    /// 🚨 **A registry refusal reaches the region line unmodified** — the other half of the
+    /// glyph rule above, and the more important half of the two.
+    ///
+    /// ⚠️ The tempting shape for a per-region line is to re-word the console's refusals so they
+    /// read as though the region wrote them. That is how one vocabulary becomes two: the same
+    /// mistyped verb would be refused in different words depending on which rectangle it was
+    /// typed in, and a person comparing the two would be right to conclude they are different
+    /// commands. So the message is carried, never rephrased — the region contributes the
+    /// *context*, and §1.8's registry keeps the *words*.
+    #[test]
+    fn a_registry_refusal_is_carried_not_rephrased() {
+        let reg = registry();
+        let Resolved::Refused(from_registry) = reg.resolve(&expand(panel_ctx(), "/nonesuch"))
+        else {
+            panic!("the registry refuses an unknown verb")
+        };
+        let Act::Refused(from_line) = act(&reg, panel_ctx(), "/nonesuch") else {
+            panic!("and the region line refuses it too")
+        };
+        assert_eq!(
+            from_line, from_registry,
+            "the region line rewrote the console's refusal; one verb must be refused in one \
+             set of words whichever rectangle it was typed in"
+        );
     }
 
     /// A line that is not a command line opens no band — the same `None` the registry answers,

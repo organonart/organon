@@ -5202,8 +5202,8 @@ merely convenient: this line's own band **is** its help, and it says what it lef
 
 `RegionPalette::elsewhere` is a `String`, never an `Option<String>` — `Ring::Empty`'s precedent one
 scale up, a thing that cannot exist without its sentence. Typing `/th` in a panel column shows no
-candidates and the line *"`/theme` belongs to the console line, not this `left` region — it runs
-here anyway"*; a bare `/` shows the region's own words and *"this list is `left`'s own — it holds
+candidates and the line *"`/theme` belongs to the console line, not this `left` region, but it runs
+here anyway"*; a bare `/` shows the region's own words and *"this list is `left`'s own: it holds
 `panel`. The console line's verbs run here too: `/background`, `/rig`, `/theme`, `/posture` +N"*.
 **Generated from the registry**, never a hand-kept list of
 "the other verbs", which would be the second vocabulary §1.8 exists to prevent arriving from the
@@ -5212,7 +5212,16 @@ friendliest direction.
 ⚠️ **A second absence gets its own sentence.** `stack`'s optional `region` keyword is a real part of
 the verb's grammar and the registry offers it — correctly — but in a line whose premise is that the
 region is context, offering the word would invite a second, contradicting one. It is dropped from
-the ring and named: *"`region` is supplied by the line you are typing in — it is `left`."*
+the ring and named: *"`region` is supplied by the line you are typing in: it is `left`."*
+
+⚠️ **Every one of those sentences is ASCII, and the rule has a boundary worth stating.**
+`region_line`'s glyph guard covers the strings this module *composes* — a `✓` in none of egui's
+four bundled fonts shipped once already and was photographed as an empty box. It deliberately does
+**not** cover a refusal the registry produced: that is the console line's own wording, already drawn
+by the composer on every build, and passed through here byte-for-byte. Re-wording it would make one
+mistyped verb read differently depending on which rectangle it was typed in, which is the second
+vocabulary from the other direction — so the pass-through is pinned as *unmodified* instead, and the
+glyph question stays where the string is written.
 
 ##### 📌 What an unassigned region shows
 

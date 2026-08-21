@@ -45,15 +45,27 @@ help.
 ⚠️ **The pruned surface says what it left out, and the type does not let it be silent.**
 `RegionPalette::elsewhere` is a `String`, never an `Option<String>` — `Ring::Empty`'s precedent one
 scale up. Typing `/th` in a panel column shows no candidates and the line *"`/theme` belongs to the
-console line, not this `left` region — it runs here anyway"*; a bare `/` shows the region's own
-words and *"this list is `left`'s own — it holds `panel`. The console line's verbs run here too:
+console line, not this `left` region, but it runs here anyway"*; a bare `/` shows the region's own
+words and *"this list is `left`'s own: it holds `panel`. The console line's verbs run here too:
 `/background`, `/rig`, `/theme`, `/posture` +N"*. It is
 **generated from the registry**, because a hand-kept list of "the other verbs" is the second
 vocabulary §1.8 exists to prevent, arriving from the friendliest possible direction. ⚠️ A second
 absence earns its own sentence: `stack`'s optional `region` keyword is a real part of the verb's
 grammar and the registry offers it, correctly — but in a line whose premise is that the region is
 context, offering the word would invite a second, contradicting one, so it is dropped from the ring
-and named (*"`region` is supplied by the line you are typing in — it is `left`"*).
+and named (*"`region` is supplied by the line you are typing in: it is `left`"*).
+
+⚠️ **Every sentence this module composes is ASCII, and the guard's boundary is the interesting
+half.** A `✓` in none of egui's four bundled fonts shipped once already and was photographed as an
+empty box on a running console, so the rule is real rather than stylistic — and writing the band
+found six em-dashes that had to go. But the guard stops at strings this module *composes*: a
+registry refusal (*"`/nonesuch` is not a command"*) is the **console line's own words**, drawn by
+the composer on every build that has ever shipped, and passed through here byte-for-byte. Asserting
+a glyph policy over it would put a second copy of that policy in this file, and the copy's first act
+would be to refuse a string the composer draws happily two rectangles away. So the pass-through is
+pinned as *unmodified* instead — which is also the property that matters: one mistyped verb must be
+refused in one set of words whichever rectangle it was typed in, and re-wording it per region is the
+second vocabulary arriving as politeness.
 
 📌 **An unassigned region is now self-describing.** It shows its own command line and a hint instead
 of apologising: type `/panel` into the empty rectangle and it holds a column. That was the standing
@@ -87,6 +99,32 @@ rather than defaulted: `stack add surface region` with nothing after it is **ski
 caller did name a column and the line lost the answer — defaulting there would edit whichever column
 the destination rule picked, which is precisely the one they did not name. A named region that does
 not hold `panel` is refused by name and never redirected.
+
+🚨 **The new `region` slot carries #109's short forms, and it did not get them by rebasing
+cleanly.** This branch was written before *region abbreviations* landed and merged onto it with
+**no textual conflict at all**, which is the misleading part: `git` had nothing to complain about
+while the two features had genuinely not been composed. Two things were wrong afterwards and
+neither was a merge marker. The new slot was a plain `ArgKind::Choice`, so `viewport tl panel`
+worked and `stack add surface --region tl` did **not** — one region vocabulary answering to its
+initials in one slot and refusing them in the next, which reads as a typo rather than as a
+divergence. And a comment in `console_main.rs` still said *"the one `ChoiceAliased` in the
+catalog"*, true when written and quietly false the moment this branch added the second. ⚠️ The
+count is not restated anywhere now: `region_slots_all_accept_the_short_forms` walks the catalog and
+asserts that **every** slot named `region` carries `REGION_ALIASES` — and that none of the others
+does — so a third region slot added tomorrow either composes or fails, with no edit here either
+way. The CLI door needed no change at all, because `--region` reuses `region_words()` rather than
+restating the table; the test that `tl` arrives **normalised to `topleft`** is the one worth
+having, since the wire deliberately passes an unknown region word through for the console to refuse
+by name, and a leaked alias would surface as a refusal quoting a word nobody typed.
+
+⚠️ **The third thing the clean rebase hid was a `match` that stopped being exhaustive.**
+`every_console_verb_still_runs_in_a_region_line` builds the shortest satisfying line for every verb
+in the catalog by matching on `ArgKind`, and `ChoiceAliased` did not exist when it was written. It
+fails to compile rather than misbehaving — which is exactly what `command.rs`'s own note asks for
+(*"a wildcard is how `ChoiceAliased` gets skipped"*), and is why that match still has no `_` arm: a
+wildcard would have fed `viewport` the string `"x"` in place of a region and gone green.
+⚠️ **None of the four cheap legs catches it**; it needs `cargo check --tests`, which is why that
+leg is in the bar.
 
 ⚠️ **A column belongs to the region, not to what the region currently holds.** `Stacks` is an array
 over the whole region vocabulary indexed by `Region::slot` — `Layout`'s own arrangement, for its

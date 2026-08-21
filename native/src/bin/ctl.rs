@@ -1701,6 +1701,24 @@ mod tests {
                 "`stack add surface --region {word}` must survive the sidecar round trip"
             );
         }
+        // 🚨 **The short forms reach this flag too, and clap NORMALISES them** — #109 gave
+        // every region word its initials at all four front doors, and this flag inherits that
+        // by sharing `region_words()` rather than by restating the table. The assertion worth
+        // making is not that `tl` parses but that it arrives as `topleft`: an alias that rode
+        // through unnormalised would put `region tl` on the sidecar, and the wire's own tests
+        // pin that an unknown region word passes through for the console to refuse out loud —
+        // so a leak here would surface as a refusal naming a word the person never typed.
+        for (word, short) in region::REGION_ALIASES {
+            let c = parse(&["console", "stack", "add", "surface", "--region", short]).unwrap();
+            let Cmd::Console { action: ConsoleAction::Stack { region, .. } } = c.cmd else {
+                panic!("`--region {short}` parsed as something else")
+            };
+            assert_eq!(
+                region.as_deref(),
+                Some(*word),
+                "`--region {short}` must arrive as `{word}`, not as itself"
+            );
+        }
         // The list is `region::REGION_WORDS` and nothing else — the same table `viewport`'s
         // first ring is built from, so a region added there reaches this flag with no edit.
         assert!(
