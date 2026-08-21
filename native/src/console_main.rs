@@ -438,7 +438,12 @@ const CMD_STACK: &str = "console.stack";
 /// 🚨 **A third verb rather than a fifth word on [`CMD_VIEWPORT`], and the split is the same one
 /// [`CMD_STACK`] made.** `viewport` says what *one region* holds; this says "all of that, under a
 /// name", so it needs no region word at all and neither sentence grows a ring.
-const CMD_LAYOUT: &str = "console.layout";
+///
+/// ⚠️ **An alias of `registry::VERB_LAYOUT`, not a second spelling**, on [`CMD_THEME`]'s rule
+/// and for a sharper version of its reason: the conversation view keys this verb's dependent
+/// ring on that constant, and a rename that moved only one of two literals would leave the verb
+/// working with its ring silently gone.
+const CMD_LAYOUT: &str = organon_console::registry::VERB_LAYOUT;
 /// The **read**: what is in the layout library. Not in [`console_specs`] — see [`mcp_specs`] for
 /// why a read has no sidecar spelling, and [`CMD_NAME`] for why it is a verb of its own rather
 /// than a fourth action word on [`CMD_LAYOUT`].
@@ -517,7 +522,11 @@ const CMD_PANEL: &str = "panel";
 /// (`panel_stack`'s `all` works there because `all` genuinely names a value in the panel ring,
 /// and no layout name means "every layout"), so the listing is [`CMD_LAYOUT_LIST`] — a **read**,
 /// on the precedent [`CMD_CAMERA_READ`] set.
-const CMD_NAME: &str = "layout";
+///
+/// ⚠️ **An alias of `registry::LAYOUT_NAME_ARG`**, for [`CMD_LAYOUT`]'s reason: the ring hook
+/// is offered one argument at a time *by name*, so a slot renamed here and not there would stop
+/// narrowing without stopping working.
+const CMD_NAME: &str = organon_console::registry::LAYOUT_NAME_ARG;
 /// [`CMD_CAMERA`]'s four slots. Named per axis rather than as one `axis` + `value` pair,
 /// because framing a shot is **one intent**: a caller that wants to be closer *and* a little
 /// above says so once and the viewpoint moves once, instead of travelling through an
@@ -783,18 +792,17 @@ fn console_specs() -> Vec<CommandSpec> {
             // reading wins, and the practical effect is that autorun can never fire this verb.
             reversal: Reversal::Permanent,
         },
-        // 📌 **One `Choice` and one `Text`, which is the first console verb whose two rings are
-        // not both closed lists** — and the asymmetry is honest rather than a shortcoming. The
-        // action ring is a table of three words. The name ring is whatever a person called their
-        // arrangement, so there is no value space to state and the palette says `layout: text`
-        // instead of offering options.
+        // 📌 **One `Choice` and one declared `Text` whose ring depends on the word before it.**
+        // The action ring is a table of three words. The name slot is `Text` because that is
+        // what it is for `save` — a name a person is inventing, with no value space to state —
+        // and `registry::layout_options` narrows it to the library for `load` and `delete`,
+        // where the name must already exist. ⚠️ **The declared kind stays `Text` and must**:
+        // it is what the MCP schema and `/help` say, and neither has the action word in hand.
         //
-        // ⚠️ **The names *could* be a ring, and deliberately are not — yet.** `Registry`'s
-        // `NarrowFn` can make an argument's options depend on an earlier word, which is how
-        // `/organon look surface` narrows; pointing it at the library would make `/layout load `
-        // complete to the layouts that exist. It is a **file read per keystroke**, on the
-        // candidate path that runs while somebody types, and that is a measurement nobody has
-        // taken. The seam is that `narrow` is one field on the spec.
+        // 🚨 **`save` is not narrowed, and that is the asymmetry the hook exists to express.**
+        // Offering the existing names there would make a new name look invalid at the moment a
+        // person is choosing one. See `registry::layout_options`, which owns the rule, and
+        // §1.15 for what the read costs per keystroke — it was measured before it was wired.
         //
         // 🚨 **What the schema cannot say is again the part that depends on state** — whether a
         // layout of that name exists, whether it still resolves against this build's vocabulary,
@@ -1409,7 +1417,7 @@ impl organon_console::mcp::ToolDispatch for ConsoleDispatch {
         // cached, on [`Console::set_layout`]'s rule: the file is the truth, and a cached copy
         // would fight a hand-edited one and win silently.
         if command == CMD_LAYOUT_LIST {
-            use organon_console::layout::{Library, LAYOUTS_FILE};
+            use organon_console::layout::{Library, LAYOUTS_FILE, NOTHING_SAVED};
             // 🚨 A missing data directory is a *failure*, not an empty library — an empty
             // answer would say "you have saved nothing" to somebody whose layouts are simply
             // unreachable. `camera.read`'s rule: an omitted answer beats an invented one.
@@ -1432,11 +1440,13 @@ impl organon_console::mcp::ToolDispatch for ConsoleDispatch {
             if library.layouts.is_empty() {
                 // An empty list is a true answer and a useless one on its own — it does not say
                 // whether the library is empty or the file is somewhere else. The note names
-                // both the file above and the verb that fills it.
-                out["note"] = json!(
-                    "nothing has been saved yet — `console layout save <name>` writes the \
-                     console's current arrangement to the file named above"
-                );
+                // the verb that fills it, and `file` above names the file.
+                //
+                // 🚨 **The sentence lives in `layout` because a second surface now says it**:
+                // `/layout load ` with nothing saved answers `Ring::Empty` carrying this exact
+                // string. Two copies would be two answers to one question. See
+                // [`organon_console::layout::NOTHING_SAVED`].
+                out["note"] = json!(NOTHING_SAVED);
             }
             return Ok(out);
         }
@@ -7787,6 +7797,21 @@ mod cli_tests {
         assert_eq!(CMD_ACTION, "action");
         assert_ne!(CMD_NAME, CMD_ARG, "a layout name is not the `name` that means a material");
         assert_ne!(CMD_NAME, CMD_PANEL);
+
+        // 🚨 **The join the completion ring hangs on, pinned as an alias rather than as an
+        // agreement.** `registry::layout_options` is keyed on the catalog name and offered the
+        // name slot *by name*, so two literals that merely matched would take the ring away the
+        // day either was renamed — and take it away **silently**, since the verb would keep
+        // working perfectly with no ring above it. Both are `const … = registry::…` here, so
+        // this reads back what the alias already guarantees; it is the sentence, not the check,
+        // that a reader needs. `CMD_THEME`'s arrangement, for the same reason.
+        assert_eq!(CMD_LAYOUT, organon_console::registry::VERB_LAYOUT);
+        assert_eq!(CMD_NAME, organon_console::registry::LAYOUT_NAME_ARG);
+        // ⚠️ And the declared kind stays `Text` *because* the ring is chosen by the action word:
+        // the MCP schema and `/help` have no action in hand, so the honest declaration is the one
+        // that states no value space. Narrowing this to the library would be a lie to the two
+        // surfaces that cannot ask. See §1.15.
+        assert_eq!(name.kind, ArgKind::Text);
 
         // Every action the schema offers converts, and every line it writes is one the drain
         // reads back — `stack`'s cross product, for its reason.

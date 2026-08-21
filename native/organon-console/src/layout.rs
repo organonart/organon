@@ -85,6 +85,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -94,6 +96,20 @@ use crate::session::SessionLog;
 
 /// The layout library, at the store root beside `harnesses.json` and `preferences.json`.
 pub const LAYOUTS_FILE: &str = "layouts.json";
+
+/// What an empty library says, in the **one** sentence every surface that meets one reads.
+///
+/// 🚨 **Two surfaces, one string.** `console.layout.list` answers a read against an empty
+/// library with it, and `registry`'s `layout_options` hands it to `Ring::Empty` so that
+/// `/layout load ` with nothing saved says the same thing rather than drawing a band with
+/// nothing in it — the precedent `Ring::Empty` exists for. A second sentence written for the
+/// ring would be a second answer to one question, and the two would drift the day the verb
+/// were renamed.
+///
+/// ⚠️ It names the verb that fills the library rather than the file, because only one of the
+/// two readers has a file path in hand — the read carries it separately, under `file`.
+pub const NOTHING_SAVED: &str = "nothing has been saved yet — `console layout save <name>` \
+                                 writes the console's current arrangement to the layout library";
 
 /// The longest name a layout may carry.
 ///
@@ -243,6 +259,23 @@ impl SavedLayout {
             extra: BTreeMap::new(),
         }
     }
+
+    /// What this arrangement holds, as one line — `left agent, right panel`.
+    ///
+    /// The doc beside a name in `/layout load `'s ring, on `/organon`'s arrangement: an option
+    /// carries what choosing it is *worth*, so a library of four names is not four words a
+    /// person has to remember the meaning of. **Read out of the stored regions**, so it cannot
+    /// describe an arrangement other than the one that would load.
+    ///
+    /// ⚠️ A layout that places nothing says so rather than rendering as an empty line. It is a
+    /// file `resolve` refuses ([`LayoutFault::Empty`]), and a blank doc would read as a ring
+    /// that had failed to describe it.
+    pub fn holds(&self) -> String {
+        if self.regions.is_empty() {
+            return "places nothing".to_string();
+        }
+        self.regions.iter().map(|(r, c)| format!("{r} {c}")).collect::<Vec<_>>().join(", ")
+    }
 }
 
 /// The layout library: what is stored, in file order.
@@ -258,6 +291,36 @@ pub struct Library {
 /// Distinguishes concurrent temp files written by this process — [`crate::prefs`]'s counter, for
 /// its reason: the pid separates processes, this separates two saves inside one.
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// How long [`Library::for_completion`] may answer from memory.
+///
+/// 🚨 **A ceiling on how wrong the ring may be, chosen against two clocks.** A person types at
+/// 5–10 keystrokes a second and the console draws at 60 frames a second, so anything above one
+/// frame collapses the ~12 draws between two keystrokes into one read; and 200 ms is under the
+/// ~250 ms at which a delay stops feeling immediate, so a file edited by hand or by a second
+/// console is in the ring before anybody could notice it was not. **This console's own writes
+/// do not wait for it at all** — see [`Library::forget_completion_cache`].
+const RING_TTL: Duration = Duration::from_millis(200);
+
+/// What [`Library::for_completion`] is holding, if anything.
+struct RingCache {
+    /// The store it was read from. Part of the key — see [`Library::for_completion`].
+    root: PathBuf,
+    /// ⚠️ **An `Arc`, so a caller pays a refcount rather than a clone.** The whole point is that
+    /// the walk asks n + 1 times per call; cloning a hundred-layout library that often would
+    /// have moved the cost from parsing to allocating rather than removed it.
+    library: Arc<Library>,
+    taken: Instant,
+}
+
+/// ⚠️ **Poisoning is absorbed, never unwrapped.** A panic elsewhere while this lock was held
+/// must not turn a completion ring into a second panic — [`Library::load`]'s totality rule, which
+/// is the module's posture throughout: a broken library costs you your layouts, never your
+/// console.
+fn ring_cache() -> &'static Mutex<Option<RingCache>> {
+    static CACHE: OnceLock<Mutex<Option<RingCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
 
 /// The layouts this console ships with. **Empty on purpose** — see the module header: naming the
 /// presets is James's call, and this tier builds the mechanism rather than the library.
@@ -313,6 +376,77 @@ impl Library {
         Self::store_root().map(|r| Self::load(&r)).unwrap_or_default()
     }
 
+    /// [`Library::load`] for a **completion ring** — the same answer, at a hundredth of the
+    /// cost, because this one is asked while somebody is typing.
+    ///
+    /// 🚨 **The measurement is why this exists, and it is the one `console_main`'s
+    /// `console.layout.list` note explicitly did not have.** `/layout load ` narrows to the
+    /// names that exist (`registry`'s `layout_options`), and the candidate walk runs on the
+    /// **draw path** — `ConversationPane::palette` is called while the composer band is drawn,
+    /// so it is per *frame*, not per keystroke. Worse, `value_candidates` asks the ring once
+    /// and then calls `settled` per candidate, each of which reaches `coerce` and asks again:
+    /// **n + 1** reads for a library of n. Measured in release by [`tests::library_read_cost`]
+    /// on organon-one, 2026-08-20:
+    ///
+    /// | n | read + parse (median of 3) | per call (n+1) |
+    /// |---|---|---|
+    /// | 1 | 24.2 µs | 0.05 ms |
+    /// | 10 | 24.5 µs | 0.27 ms |
+    /// | 100 | 100.2 µs | **10.1 ms** |
+    ///
+    /// A frame is 16.7 ms. So an uncached ring is fine at the size a library actually has and
+    /// falls over at a size it may reach — and it would fall over *while typing*, which is the
+    /// worst place to spend a frame. **A `stat` is not the fix**: 12 µs measured, so ×101 is
+    /// still 1.2 ms per call, and this is asked several times a frame.
+    ///
+    /// ⚠️ **Three runs, because the first one was wrong and said so.** A single run taken while
+    /// other builds were on the machine reported 75.2 µs at n=1 against 43.6 µs at n=10 — a
+    /// 138-byte file costing more than a 1182-byte one, which cannot be true and is the tell
+    /// that the number is measuring contention rather than the file. The spread across three
+    /// quiet runs is 23.1–27.3 / 24.0–27.1 / 98.8–101.4 µs. **Re-take it on a quiet machine and
+    /// distrust any run whose n=1 is not the cheapest.**
+    ///
+    /// 📌 The real library on organon-one is **197 bytes, one layout, four regions** — between
+    /// the n=1 and n=10 rows, so what ships today sits at the cheap end of this table. The
+    /// hundred-layout row is the one the cache exists for.
+    ///
+    /// ⚠️ **What invalidates it, and both halves are needed.** A `save` and a `delete` both
+    /// rewrite the file through [`Library::save_over`], which forgets this cache outright — so
+    /// a name you have just saved is in the ring on the very next frame, with no window in
+    /// which the console contradicts itself. Everything *else* — a hand-edited file, a second
+    /// console — is covered by [`RING_TTL`], which is why the cache cannot "fight a hand-edited
+    /// one and win silently": it can only win for 200 ms.
+    ///
+    /// ⚠️ **The reads keep re-reading.** `console.layout.list` and `Console::set_layout`'s own
+    /// load path deliberately do **not** use this: they are asked once, by a person, and for
+    /// them the file is the truth with no staleness worth trading for. This is the completion
+    /// surface's cache, not the module's.
+    pub fn for_completion(store_root: &Path) -> Arc<Self> {
+        let mut slot = ring_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = slot.as_ref() {
+            // The root is part of the key: a test store and the real one are two libraries, and
+            // a cache that answered one for the other would be a wrong ring rather than a slow
+            // one.
+            if cached.root == store_root && cached.taken.elapsed() < RING_TTL {
+                return Arc::clone(&cached.library);
+            }
+        }
+        let library = Arc::new(Self::load(store_root));
+        *slot = Some(RingCache {
+            root: store_root.to_path_buf(),
+            library: Arc::clone(&library),
+            taken: Instant::now(),
+        });
+        library
+    }
+
+    /// Drop what [`Library::for_completion`] is holding. Called by [`Library::save_over`] — the
+    /// **one** path every write takes, which is what makes "a save and a delete both invalidate
+    /// it" a property of the writer rather than of two call sites remembering.
+    fn forget_completion_cache() {
+        *ring_cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Write `<store_root>/layouts.json`, replacing any existing file **atomically**.
     ///
     /// Temp file in the *same directory*, then rename — [`crate::prefs::Preferences::save`]'s
@@ -352,7 +486,16 @@ impl Library {
         let temp = store_root.join(format!("{LAYOUTS_FILE}.tmp-{}-{seq}", std::process::id()));
         fs::write(&temp, json.as_bytes())?;
         match fs::rename(&temp, store_root.join(LAYOUTS_FILE)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // 🚨 **Here, because this is the one path a write can take.** `save`,
+                // `save_default` and every `delete` (which is a `remove` and then a rewrite)
+                // funnel through this function, so the completion ring cannot be left holding a
+                // name that has just been taken out — or missing one just put in. Doing it at
+                // the call sites instead would be two places to remember and a third the day a
+                // fourth action is added.
+                Self::forget_completion_cache();
+                Ok(())
+            }
             Err(e) => {
                 // One stranded temp per failed save would accumulate forever, and each looks
                 // like a torn write to anyone reading the directory.
@@ -1189,5 +1332,148 @@ mod tests {
         let text = fs::read_to_string(root.join(LAYOUTS_FILE)).unwrap();
         assert!(text.contains("desktop"), "an overridden built-in is the user's: {text}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 🚨 **A save and a delete are both visible to the completion ring immediately** — the
+    /// property [`Library::for_completion`]'s cache is only allowed to exist because of. A
+    /// person who saves `desk` and then types `/layout load ` must see `desk`, and one who
+    /// deletes it must not; a cache that made either wait on [`RING_TTL`] would be the console
+    /// contradicting itself about a file it wrote a moment ago.
+    ///
+    /// ⚠️ **The invalidation lives in [`Library::save_over`]**, the one path every write takes,
+    /// which is why `delete` — a `remove` and then a rewrite — needs no second call site.
+    #[test]
+    fn what_the_console_just_wrote_is_in_the_ring_on_the_next_frame() {
+        let root = temp_root("ring-cache");
+        assert!(Library::for_completion(&root).layouts.is_empty(), "nothing saved yet");
+
+        let mut lib = Library::default();
+        lib.upsert(SavedLayout::capture("desk", &two_columns()));
+        lib.save(&root).unwrap();
+        assert_eq!(
+            Library::for_completion(&root).names(),
+            vec!["desk"],
+            "a save is not waiting on a TTL"
+        );
+
+        let mut lib = Library::load(&root);
+        assert!(lib.remove("desk"));
+        lib.save(&root).unwrap();
+        assert!(
+            Library::for_completion(&root).layouts.is_empty(),
+            "a delete is not waiting on a TTL either"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// CONTRACT: the store the ring was asked about is the store it answers. ⚠️ The root is part
+    /// of the cache key precisely so a stale entry can only ever be *stale*, never *another
+    /// library* — which would be a wrong ring rather than a slow one.
+    #[test]
+    fn the_completion_cache_never_answers_one_store_with_another() {
+        let mine = temp_root("ring-mine");
+        let theirs = temp_root("ring-theirs");
+        let mut lib = Library::default();
+        lib.upsert(SavedLayout::capture("mine", &Layout::default()));
+        lib.save(&mine).unwrap();
+        let mut lib = Library::default();
+        lib.upsert(SavedLayout::capture("theirs", &Layout::default()));
+        lib.save(&theirs).unwrap();
+
+        for _ in 0..3 {
+            assert_eq!(Library::for_completion(&mine).names(), vec!["mine"]);
+            assert_eq!(Library::for_completion(&theirs).names(), vec!["theirs"]);
+        }
+        // ⚠️ **No assertion here that two calls return the same `Arc`**, tempting as it is: the
+        // cache is process-global and `cargo test` runs this module in parallel, so any other
+        // test's save legitimately clears it between the two calls. Sharing is a cost property
+        // and belongs to [`tests::library_read_cost`]'s `cached` column; a test that could fail
+        // because a *different* test wrote a file would be measuring the scheduler.
+        let _ = fs::remove_dir_all(&mine);
+        let _ = fs::remove_dir_all(&theirs);
+    }
+
+    /// **What a layout ring costs: `layouts.json` read and parsed, once.** A measurement rather
+    /// than a gate — the finding it produced is `CONSOLE_ARCHITECTURE.md` §1.15, and the
+    /// instrument is kept here so the number can be re-taken on another machine after a
+    /// `serde_json` bump rather than believed.
+    ///
+    /// The question it was built to answer: `/layout load ` narrows to the names that exist
+    /// (`registry`'s `layout_options`), and the candidate walk runs on **every keystroke**.
+    /// Worse than once — `value_candidates` asks the ring, then calls `settled` per candidate,
+    /// and `settled` runs `resolve` → `coerce`, which consults the same hook again. So one
+    /// keystroke against a library of `n` costs **n + 1** reads, which is the column that
+    /// decided the design.
+    ///
+    /// ```text
+    /// cargo test --release -p organon-console --lib -- --ignored --nocapture library_read_cost
+    /// ```
+    ///
+    /// ⚠️ **`--release`, because the console ships release** — `conversation_view::rewrap_bench`'s
+    /// rule, for its reason: `[profile.dev]` is `opt-level = 1` and reports high. `#[ignore]`
+    /// because a timing is not a correctness gate, and nothing here asserts a duration: a
+    /// machine slower than this one would then fail a suite for being slow.
+    #[test]
+    #[ignore]
+    fn library_read_cost() {
+        use std::time::Instant;
+        const ROUNDS: u32 = 200;
+        println!(
+            "   n | read+parse | stat only  | cached     | per call (n+1) raw → cached"
+        );
+        for n in [1usize, 10, 100] {
+            let root = temp_root(&format!("cost-{n}"));
+            let mut lib = Library::default();
+            for i in 0..n {
+                // The shape a real library has: a name somebody would type, a two-region
+                // arrangement. A library of empty layouts would measure the wrong file.
+                lib.upsert(SavedLayout::capture(&format!("desk-{i:03}"), &two_columns()));
+            }
+            lib.save(&root).unwrap();
+            let bytes = fs::metadata(root.join(LAYOUTS_FILE)).unwrap().len();
+            assert_eq!(Library::load(&root).names().len(), n, "the file really holds {n}");
+
+            // Warmed first: the question is what a keystroke costs while somebody is typing,
+            // and the very first read of a file nobody has touched is not that.
+            for _ in 0..20 {
+                std::hint::black_box(Library::load(&root));
+            }
+            let t = Instant::now();
+            for _ in 0..ROUNDS {
+                std::hint::black_box(Library::load(&root));
+            }
+            let read = t.elapsed().as_secs_f64() / f64::from(ROUNDS);
+
+            // The cheaper thing a cache would do instead, measured so that "cache it" is a
+            // comparison rather than an assumption.
+            let t = Instant::now();
+            for _ in 0..ROUNDS {
+                std::hint::black_box(fs::metadata(root.join(LAYOUTS_FILE)).map(|m| m.len()));
+            }
+            let stat = t.elapsed().as_secs_f64() / f64::from(ROUNDS);
+
+            // What the ring actually pays. ⚠️ The first call is a real read, so it is taken
+            // outside the loop — averaging it in would report a cache that does not exist.
+            std::hint::black_box(Library::for_completion(&root));
+            let t = Instant::now();
+            for _ in 0..ROUNDS {
+                std::hint::black_box(Library::for_completion(&root));
+            }
+            let cached = t.elapsed().as_secs_f64() / f64::from(ROUNDS);
+
+            println!(
+                "{n:>4} | {:>7.1} µs | {:>7.1} µs | {:>7.3} µs | {:>7.2} ms → {:>6.3} ms   \
+                 ({bytes} bytes)",
+                read * 1e6,
+                stat * 1e6,
+                cached * 1e6,
+                read * (n as f64 + 1.0) * 1e3,
+                cached * (n as f64 + 1.0) * 1e3,
+            );
+            // The cache is dropped between sizes, so the next `n` measures its own file rather
+            // than answering with this one's.
+            Library::forget_completion_cache();
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 }

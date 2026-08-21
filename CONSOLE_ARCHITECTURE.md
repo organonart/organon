@@ -5493,10 +5493,74 @@ bare comma-join would render a library holding `a,b` and `c` as `a,b, c`, indist
 three layouts. The fix belongs in the joining rather than in `check_name`: narrowing the names a
 person may choose to suit a separator would be a rule about the *display* leaking into the data.
 
-📌 **The names could be a ring and deliberately are not — yet.** `Registry`'s `NarrowFn` can make
-an argument's options depend on an earlier word (it is how `/organon look surface` narrows), so
-`/layout load ` could complete to the layouts that exist. That is a **file read per keystroke** on
-the candidate path, and nobody has measured it. The seam is one field on the spec.
+#### ✏️ The names ARE a ring now — for `load` and `delete`, and never for `save`
+
+📌 **The deferral above was "nobody has measured it", so the measurement is what closed it.**
+`registry::layout_options` is a `NarrowFn` on `console.layout`: `/layout load ` and
+`/layout delete ` complete to the layouts that exist, each option carrying what choosing it
+holds (`left agent, right panel`), and an unknown name is refused **in the composer**, while the
+words are still there to be edited, instead of after a round trip.
+
+🚨 **`save` is not narrowed, and that asymmetry is the whole reason the ring is chosen by the
+*action* rather than declared on the *argument*.** `load` and `delete` name something that must
+already exist, so the library is their value space. `save` takes a name a person is **inventing**
+— offering the existing names there would read as a closed list, and `coerce` would then refuse
+every new name in the world, which is the one thing `save` is for. So the hook reads the action
+word and answers `None` for `Save` **before the store is touched at all**, and the declared
+`ArgKind::Text` answers as usual.
+
+⚠️ **The declared kind stays `Text` and must.** It is what the MCP schema and `/help` are
+generated from, and neither has the action word in hand — one value list per argument is all a
+schema has. Same rule as `/organon`'s declared union being wider than any one ring.
+
+**What it costs, measured before it was wired** (`layout::tests::library_read_cost`, release,
+organon-one, 2026-08-20 — the instrument is in the tree so the numbers can be re-taken rather
+than believed):
+
+| layouts | read + parse | one `stat` | cached | per call (n+1 asks) |
+|---|---|---|---|---|
+| 1 | 24.2 µs | 12.0 µs | 0.08 µs | 0.05 ms → 0.000 ms |
+| 10 | 24.5 µs | 12.1 µs | 0.05 µs | 0.27 ms → 0.001 ms |
+| 100 | 100.2 µs | 12.6 µs | 0.05 µs | **10.1 ms** → 0.005 ms |
+
+Medians of three runs; the spread is 23.1–27.3 / 24.0–27.1 / 98.8–101.4 µs. ⚠️ **A fourth run,
+taken first and while other builds were on the machine, is kept here as the warning rather than
+discarded**: it reported 75.2 µs at n=1 against 43.6 µs at n=10 — a 138-byte file costing more
+than a 1182-byte one — and put n=100 at 16.4 ms, i.e. *over* frame budget. The impossible ordering
+is the tell that the run measured contention, not the file. **Distrust any run whose n=1 is not
+the cheapest row.** 📌 The real library here is **197 bytes, one layout, four regions**, so what
+ships today sits between the first two rows; the hundred-layout row is the one the cache is for.
+
+🚨 **Two things in that table changed the design.** The first is the **n + 1**:
+`value_candidates` asks the ring once and then calls `settled` per candidate, and `settled` runs
+`resolve` → `coerce`, which asks the same hook again — so a library of a hundred is a hundred and
+one reads. The second is *when*: `ConversationPane::palette` is called while the composer band is
+**drawn**, so this is per **frame**, not per keystroke. Straight from disk that is 10.1 ms against
+a 16.7 ms frame, and it would be spent while somebody is typing. ⚠️ **A `stat`-per-call cache is
+not the fix either** — 12 µs × 101 is still 1.2 ms, several times a frame.
+
+So the ring goes through `Library::for_completion`, which holds one `Arc<Library>` keyed on the
+store root. ⚠️ **What invalidates it, both halves needed:** `Library::save_over` — the one path
+every write takes, which is why a `delete` (a `remove` and then a rewrite) needs no second call
+site — **forgets it outright**, so a name just saved is in the ring on the very next frame and a
+name just deleted is gone from it. Everything else (a hand-edited file, a second console) is
+covered by a **200 ms TTL**, which is the answer to `console.layout.list`'s standing objection
+that *"a cached copy would fight a hand-edited one and win silently"*: it can only win for a fifth
+of a second, and the two **reads** — the listing and `set_layout`'s own load — deliberately do not
+use it at all. They are asked once, by a person, and for them the file is simply the truth.
+
+⚠️ **The empty library is `Ring::Empty` carrying `layout::NOTHING_SAVED`** — the same sentence
+`console.layout.list` answers an empty library with, moved into `layout` so both surfaces read one
+string rather than each keeping its own. A band with nothing in it is indistinguishable from a
+broken one; that is what `Ring::Empty` exists for. ⚠️ And **no data directory answers `None`, not
+`Empty`** — telling somebody whose layouts are merely *unreachable* that they have saved nothing
+is the mistake the listing already refuses to make.
+
+⚠️ **A comma survives.** Each option is its own `(label, doc)` pair all the way to the popup row,
+so the names are never joined; the only place they meet a separator is `coerce`'s refusal, which
+joins with ` | ` — unambiguous precisely because `check_name` makes whitespace impossible in a
+name. And matching stays exact: `Desk` and `desk` are two options, shown as two, because folding
+them would suggest a name that then fails to load.
 
 ## 2. Seams the next tiers consume
 
@@ -5513,7 +5577,7 @@ the candidate path, and nobody has measured it. The seam is one field on the spe
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
-| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. What is left of #98 there is **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D — it records whatever arrangement exists and derives every word from `Region::ALL`, which is why **Tier B landing under it changed nothing in it**. What it leaves behind is small and named: **the name ring is `Text` and could be a `NarrowFn` over the library** (a file read per keystroke on the candidate path — measure before building), and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ **Tier B's word-level break is the first real test of a layout's forward compatibility, and it is the expected behaviour rather than a bug**: a `layouts.json` written before it still loads (`left` and `right` resolve, and now mean the outer column), and one naming `topcenter` is refused **by name** in an older build rather than half-loaded — which is exactly the story §1.15's refusal table is arranged to give. ⚠️ Animated transitions and drag-to-resize are still after Tier C — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
+| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. What is left of #98 there is **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D — it records whatever arrangement exists and derives every word from `Region::ALL`, which is why **Tier B landing under it changed nothing in it**. What it leaves behind is small and named: ✏️ **the name ring has since become a `NarrowFn` over the library** — measured first, which is what the deferral asked for, and the measurement is why it is cached rather than read straight (§1.15: the candidate walk runs on the *draw* path and asks n + 1 times per call, so a hundred layouts is 10.1 ms against a 16.7 ms frame) — and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ **Tier B's word-level break is the first real test of a layout's forward compatibility, and it is the expected behaviour rather than a bug**: a `layouts.json` written before it still loads (`left` and `right` resolve, and now mean the outer column), and one naming `topcenter` is refused **by name** in an older build rather than half-loaded — which is exactly the story §1.15's refusal table is arranged to give. ⚠️ Animated transitions and drag-to-resize are still after Tier C — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
