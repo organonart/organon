@@ -5065,7 +5065,7 @@ over placements and there must never be one: "never half-apply" is a property of
 rather than discipline at the call site, and a partial apply that had evicted the last `agent`
 region is a console with nothing to type into — recoverable only by a verb typed at an agent.
 
-Seven checks, in the order a reader meets the file:
+Eight checks, in the order a reader meets the file:
 
 | Refused | Because |
 |---|---|
@@ -5075,11 +5075,22 @@ Seven checks, in the order a reader meets the file:
 | two regions whose cell sets intersect | the grid cannot be drawn, and **neither region asked**, so neither can be the one that gives way |
 | two regions holding `3d` | `Content::only_one_because`, quoted — the limit is Organon's, not the idea of a viewport's |
 | nothing holding `agent` | §1.14's last-agent invariant, met from the other end |
-| the window is too small for it **right now** | the pane it was measured against is named, and the sentence says the layout is fine and the window is not |
+| the pane is too **narrow** to seat the fixed side columns, and the layout uses a column word | `MIN_COLUMNS_WIDTH` (688 pt) is quoted with the region that needs the cut — and the sentence points at rows, which need none and work at any width |
+| some region would be under `MIN_SIDE` **right now** | the pane it was measured against is named, and the sentence says the layout is fine and the window is not |
 
-📌 **The last one is a fact about the window rather than about the file**, which is why it is
+📌 **The last two are facts about the window rather than about the file**, which is why they are
 checked only when a pane has been measured (`Console::pane_points`, one frame behind by
-construction) and why the same file loads once the window is bigger. The draw path's own *"the
+construction) and why the same file loads once the window is bigger.
+
+🚨 **They are two rules, not one, and telling them apart is a should-fix this tier earned in
+review.** `plan` returns `None` for either — and the first version of this refusal quoted only
+`MIN_SIDE`, so a three-column arrangement against a 500-point pane was told *"every region needs
+48 on a side"*: true, irrelevant, and misleading about what to do. The coarser rule is asked
+first, the sentence names the threshold that actually tripped, and the predicate deciding it is
+`Region::needs_column_cut` — extracted out of `region_rect` so the explanation and the geometry
+cannot come to disagree. ⚠️ Both can be true at once; the column rule wins, because widening is
+what makes the layout expressible at all and the height refusal is still there afterwards if it
+applies. One refusal at a time, each of them true. The draw path's own *"the
 window is too small for this layout"* sentence remains the backstop for every other route.
 
 ✏️ **The first two checks stopped being hypothetical during this tier's own review.** #98 Tier B

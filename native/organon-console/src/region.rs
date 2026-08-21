@@ -220,6 +220,20 @@ impl Region {
         }
     }
 
+    /// Does drawing this region require a **column cut** — does it span fewer than all three
+    /// columns?
+    ///
+    /// 🚨 **The narrow-pane rule's whole predicate, in one place.** [`region_rect`] asks it to
+    /// decide whether [`MIN_COLUMNS_WIDTH`] applies at all, and anything that wants to *explain*
+    /// the `None` it returns — [`crate::layout`]'s refusal, which has to say whether a load was
+    /// refused for the column width or for [`MIN_SIDE`] — asks the same function. Re-deriving it
+    /// from the cell mask outside this module would put a second copy of the geometry where the
+    /// first one could move without it.
+    pub fn needs_column_cut(self) -> bool {
+        let c = self.cells();
+        !(c & COL_LEFT != 0 && c & COL_CENTER != 0 && c & COL_RIGHT != 0)
+    }
+
     /// The word this region travels as — on the wire, in `--help`, and in every refusal.
     pub fn as_word(self) -> &'static str {
         match self {
@@ -853,9 +867,10 @@ pub fn region_rect(pane: egui::Rect, region: Region) -> Option<egui::Rect> {
     }
     let c = region.cells();
     // A region spanning every column is bounded by the pane itself and asks nothing of the cuts —
-    // which is what keeps `Full` the pane bit for bit (invariant #4) at any width at all.
-    let all_columns = c & COL_LEFT != 0 && c & COL_CENTER != 0 && c & COL_RIGHT != 0;
-    let (left, right) = if all_columns {
+    // which is what keeps `Full` the pane bit for bit (invariant #4) at any width at all. The
+    // predicate is [`Region::needs_column_cut`] so that a caller wanting to *explain* this
+    // refusal asks the same function rather than re-deriving it from the bitmask.
+    let (left, right) = if !region.needs_column_cut() {
         (pane.left(), pane.right())
     } else {
         if pw < MIN_COLUMNS_WIDTH {

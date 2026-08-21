@@ -41,9 +41,20 @@ refusal type would have meant inventing an `asked` region out of iteration order
 still `Region::cells`, uniqueness still `Content::only_one_because`, the agent rule still
 `Layout::has_agent`: one implementation, two doors.
 
-⚠️ **The window's size is the one refusal that is about the window rather than the file**, so it
-is checked only when a pane has been measured, names the pane that refused it, and says the layout
-is fine and the window is not. The same file loads once the window is bigger.
+⚠️ **The window's size is the refusal that is about the window rather than the file**, so it is
+checked only when a pane has been measured, names the pane that refused it, and says the layout is
+fine and the window is not. The same file loads once the window is bigger.
+
+🚨 **And it is TWO rules, which is a should-fix this tier earned in review.** `plan` says no
+either because a region falls under `MIN_SIDE` **or** — since #98 Tier B — because the pane is
+narrower than `MIN_COLUMNS_WIDTH` (688 pt) and the layout uses a column word, whatever room its
+rectangles would otherwise have had. Quoting only the first meant a three-column arrangement
+against a 500-point pane was told *"every region needs 48 on a side"*: true, irrelevant, and
+misleading about what to do. The coarser rule is asked first now and the sentence names the
+threshold that actually tripped, with the region that needs the cut and a pointer at rows, which
+need none. The predicate is `Region::needs_column_cut`, **extracted out of `region_rect`** rather
+than re-derived from the cell mask — one implementation, so the explanation and the geometry
+cannot come to disagree.
 
 🚨 **Three actions, and the listing is a verb of its own — the `/stack` lesson applied before it
 could bite.** `registry::parse_args` fills *required* arguments positionally and *optional* ones

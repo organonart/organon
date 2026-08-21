@@ -462,6 +462,30 @@ pub fn resolve(saved: &SavedLayout, pane: Option<egui::Rect>) -> Result<Layout, 
     let layout = Layout::from_placements(&places).map_err(Refusal::NotALayout)?;
     if let Some(pane) = pane {
         if region::plan(pane, &layout).is_none() {
+            // 🚨 **`plan` says no for two different reasons, and a refusal that quoted only one
+            // of them would be true-but-irrelevant** — raised in review on this tier, after #98
+            // Tier B added the second. A region needing a **column cut** is refused outright
+            // below `MIN_COLUMNS_WIDTH`, however much room its own rectangle would have had; a
+            // region that needs no cut is refused only when a *side* falls under `MIN_SIDE`. So
+            // the coarser rule is asked first, and the sentence names the threshold that
+            // actually tripped.
+            //
+            // ⚠️ Both can be true at once (a narrow pane and a short one). The column rule wins
+            // then, which is the right order to fix them in: widening is what makes the layout
+            // expressible at all, and the height refusal is still waiting afterwards if it
+            // applies. One refusal at a time, each of them true.
+            if pane.width() < region::MIN_COLUMNS_WIDTH {
+                if let Some((region, _)) =
+                    layout.occupied().into_iter().find(|(r, _)| r.needs_column_cut())
+                {
+                    return Err(Refusal::TooNarrowForColumns {
+                        region,
+                        width: pane.width(),
+                        min_width: region::MIN_COLUMNS_WIDTH,
+                        side: region::SIDE_COLUMN,
+                    });
+                }
+            }
             return Err(Refusal::TooSmall {
                 width: pane.width(),
                 height: pane.height(),
@@ -496,9 +520,16 @@ pub enum Refusal {
     /// ⚠️ **Carried rather than restated**, so [`LayoutFault`] and this cannot drift into two
     /// explanations of one rule.
     NotALayout(LayoutFault),
-    /// Today's window cannot draw it. Names the pane it was measured against, because the same
-    /// layout loads once the window is bigger and a refusal that did not say so would read as
-    /// the layout being broken.
+    /// The pane is too narrow to seat the fixed side columns at all, and this layout uses a
+    /// region that needs a column cut. **A different refusal from [`Refusal::TooSmall`] because
+    /// it is a different rule with a different threshold** — see [`resolve`], and
+    /// [`crate::region::region_rect`]'s narrow-pane rule for why the columns vanish rather than
+    /// shrink. It names the region that needs the cut, so the sentence says which word to drop.
+    TooNarrowForColumns { region: Region, width: f32, min_width: f32, side: f32 },
+    /// Today's window cannot draw it: some region's rectangle would be under
+    /// [`crate::region::MIN_SIDE`] on a
+    /// side. Names the pane it was measured against, because the same layout loads once the
+    /// window is bigger and a refusal that did not say so would read as the layout being broken.
     TooSmall { width: f32, height: f32, min_side: f32 },
     /// The library could not be written. ⚠️ Reported rather than swallowed, on
     /// [`crate::prefs::Preferences::save`]'s asymmetry: a read that fails has a sane answer to
@@ -540,6 +571,15 @@ impl std::fmt::Display for Refusal {
             Refusal::NotALayout(fault) => {
                 write!(f, "this layout cannot be drawn: {fault}. Nothing has changed")
             }
+            Refusal::TooNarrowForColumns { region, width, min_width, side } => write!(
+                f,
+                "the window is too narrow for this layout right now — it holds `{}`, which needs \
+                 a column cut, and the side columns are a fixed {side:.0} points each, so a pane \
+                 has to be {min_width:.0} wide to seat them. This one is {width:.0}. Nothing has \
+                 changed; widen the window and ask again, or load an arrangement of rows \
+                 (`top`/`bottom`), which need no cut and work at any width",
+                region.as_word()
+            ),
             Refusal::TooSmall { width, height, min_side } => write!(
                 f,
                 "the window is too small for this layout right now — the pane is {width:.0}×\
@@ -575,8 +615,12 @@ mod tests {
         root
     }
 
-    /// The two-half arrangement, built by the commands a person would type.
-    fn two_halves() -> Layout {
+    /// The two-column arrangement, built by the commands a person would type.
+    ///
+    /// ✏️ **Called `two_halves` until #98 Tier B**, which made `left` and `right` the outer
+    /// *columns* of three rather than the two halves — the one word-level break in that axis's
+    /// vocabulary. The commands are unchanged; only what they mean on screen moved.
+    fn two_columns() -> Layout {
         Layout::default()
             .assign(Region::Left, ContentCmd::Hold(Content::Agent))
             .expect("left")
@@ -598,7 +642,7 @@ mod tests {
     /// `save` then `load` mean anything at all.
     #[test]
     fn an_arrangement_survives_capture_and_resolution_unchanged() {
-        let live = two_halves();
+        let live = two_columns();
         let stored = SavedLayout::capture("desk", &live);
         assert_eq!(stored.name, "desk");
         assert_eq!(
@@ -722,22 +766,52 @@ mod tests {
     /// window is bigger, which the sentence says.
     #[test]
     fn a_layout_too_big_for_todays_window_is_refused_with_the_size_that_refused_it() {
-        let split = SavedLayout::capture("split", &two_halves());
+        let split = SavedLayout::capture("split", &two_columns());
         let narrow = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(80.0, 400.0));
-        let e = resolve(&split, Some(narrow)).expect_err("40pt halves are under MIN_SIDE");
+
+        // 🚨 **The COLUMN rule, which is the one a narrow pane actually trips.** Raised in
+        // review: `plan` says no for two reasons and this refusal used to quote only `MIN_SIDE`,
+        // so an 80-point pane holding `left`/`right` was told "every region needs 48 on a side"
+        // — true, irrelevant, and misleading about why the load was refused.
+        let e = resolve(&split, Some(narrow)).expect_err("80pt cannot seat two 320pt columns");
+        let Refusal::TooNarrowForColumns { region, width, min_width, side } = e.clone() else {
+            panic!("{e:?} is not the column refusal");
+        };
+        assert_eq!(region, Region::Left, "…and it names a region that needs the cut");
+        assert_eq!((width, min_width, side), (80.0, region::MIN_COLUMNS_WIDTH, region::SIDE_COLUMN));
+        let text = e.to_string();
+        assert!(text.contains("688") && text.contains("320"), "the real threshold: {text}");
+        assert!(text.contains("80"), "…and the pane that refused it: {text}");
+        assert!(!text.contains("48"), "the OTHER rule's number must not appear: {text}");
+        assert!(text.contains("`top`"), "…and the arrangement that works at any width: {text}");
+        assert!(text.contains("Nothing has changed"), "{text}");
+
+        // 🚨 **And `MIN_SIDE` is still its own refusal, reached by a pane wide enough for the
+        // columns and too short for the rows** — which is what makes the two genuinely different
+        // rules rather than one with two spellings.
+        let rows = saved("rows", &[("top", "agent"), ("bottom", "panel")]);
+        let short = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(700.0, 60.0));
+        let e = resolve(&rows, Some(short)).expect_err("30pt rows are under MIN_SIDE");
         assert!(matches!(e, Refusal::TooSmall { .. }), "{e:?}");
         let text = e.to_string();
-        assert!(text.contains("80") && text.contains("400"), "the size that refused it: {text}");
-        assert!(text.contains("Nothing has changed"), "{text}");
+        assert!(text.contains("700") && text.contains("60"), "the size that refused it: {text}");
+        assert!(text.contains("48"), "…and this rule's threshold: {text}");
+        assert!(!text.contains("688"), "the OTHER rule's number must not appear: {text}");
+        // ⚠️ `top`/`bottom` span all three columns, so the column rule cannot be what refused
+        // them — the premise the assertion above rests on, asked of the geometry rather than
+        // assumed.
+        assert!(!Region::Top.needs_column_cut() && !Region::Bottom.needs_column_cut());
+        assert!(Region::Left.needs_column_cut() && Region::TopCenter.needs_column_cut());
 
         // The same file, a window that can hold it.
         assert!(resolve(&split, Some(pane())).is_ok());
         // …and with nothing measured yet, the size question is not asked at all — the draw path
         // carries the sentence instead.
         assert!(resolve(&split, None).is_ok());
-        // The undivided default fits anywhere, so a too-small window never strands a person
-        // without the layout that gets them back.
+        // The undivided default fits anywhere — `full` spans every column and needs no cut — so
+        // no window is ever too small for the layout that gets a person back.
         assert!(resolve(&SavedLayout::capture("home", &Layout::default()), Some(narrow)).is_ok());
+        assert!(resolve(&SavedLayout::capture("home", &Layout::default()), Some(short)).is_ok());
     }
 
     /// 🚨 **A refusal yields no layout at all** — the property that makes a load transactional,
@@ -745,7 +819,7 @@ mod tests {
     /// caller could take a piece of.
     #[test]
     fn a_refused_layout_leaves_the_caller_with_what_it_already_had() {
-        let standing = two_halves();
+        let standing = two_columns();
         let mut live = standing;
         for bad in [
             saved("a", &[("left", "agent"), ("top", "panel")]),
@@ -847,7 +921,7 @@ mod tests {
     fn the_library_round_trips_through_the_store() {
         let root = temp_root("round-trip");
         let mut lib = Library::default();
-        assert!(!lib.upsert(SavedLayout::capture("desk", &two_halves())), "nothing to replace");
+        assert!(!lib.upsert(SavedLayout::capture("desk", &two_columns())), "nothing to replace");
         lib.save(&root).unwrap();
         assert_eq!(Library::load(&root), lib);
         assert_eq!(Library::load(&root).names(), vec!["desk"]);
@@ -922,7 +996,7 @@ mod tests {
     fn a_bom_is_never_written_and_is_not_tolerated_on_read() {
         let root = temp_root("bom");
         let mut lib = Library::default();
-        lib.upsert(SavedLayout::capture("desk", &two_halves()));
+        lib.upsert(SavedLayout::capture("desk", &two_columns()));
         lib.save(&root).unwrap();
         let bytes = fs::read(root.join(LAYOUTS_FILE)).unwrap();
         assert_ne!(&bytes[..3], b"\xEF\xBB\xBF".as_slice(), "a BOM here is silently unreadable");
@@ -986,7 +1060,7 @@ mod tests {
         assert_eq!(Library::load(&temp_root("empty-builtin")), Library::default());
 
         let seeded = vec![
-            SavedLayout::capture("desktop", &two_halves()),
+            SavedLayout::capture("desktop", &two_columns()),
             SavedLayout::capture("standalone", &Layout::default()),
         ];
         let user = Library {
@@ -1012,7 +1086,7 @@ mod tests {
     #[test]
     fn an_unchanged_builtin_is_not_written_into_the_user_file() {
         let root = temp_root("builtin-not-written");
-        let shipped = SavedLayout::capture("desktop", &two_halves());
+        let shipped = SavedLayout::capture("desktop", &two_columns());
         let seeded = vec![shipped];
         let mut lib = merge_over(seeded.clone(), Library::default());
         lib.upsert(SavedLayout::capture("mine", &Layout::default()));
