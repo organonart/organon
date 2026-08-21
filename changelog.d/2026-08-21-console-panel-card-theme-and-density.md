@@ -96,10 +96,13 @@ off disk, and a machine whose owner has used the theme editor would otherwise tu
 for a reason having nothing to do with the code. `CardStyle::of` and `paint::{card,silver}_stops_of`
 exist to make that possible.
 
-⚠️ **What is still Organon's palette inside a Console card**: the Surface panel's own row labels,
-which `param_sink` draws in `theme::TITANIUM()`. One of the twenty-five panels is `Live`, so it is
-one card's rows — but it is real, and it is the next thing to notice if the column still reads as
-half-themed.
+⚠️ **What is still Organon's palette inside a Console card**: the row *labels*, which
+`param_sink` draws in `theme::TITANIUM()` whether the body is hand-written (Surface) or declared
+(`panel_table`). This is the chrome around a body, not the body — and it is the next thing to
+notice if the column still reads as half-themed. ⚠️ **#126 made it four times bigger while this
+branch was open**: Lighting, Cast Shadows and Bloom went `Live` alongside Surface, so it is four
+cards' rows now rather than one, and every panel the table converts adds another. `Sink` is the
+seam where it would be fixed — the same argument as this change, one level in.
 
 📌 **Noticed, not fixed, and out of scope here**: `paint::card_stops` blends the palette's `card`
 toward two *fixed* blue-slate colours by `depth.card_gradient`, which ships at `1.0` — so at the

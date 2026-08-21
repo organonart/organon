@@ -4338,10 +4338,14 @@ strip and the tab bar, and left the panel column blue-slate. **The card is now d
   restoration and it says so in the same run);
   `panel_surface::two_editor_cards_leave_twelve_points_between_them` measures the *other product*
   and holds Organon's editor at 12.
-- ⚠️ **What is still Organon's palette inside a Console card**: the Surface panel's own row
-  labels, which `param_sink` draws in `theme::TITANIUM()`. Only one of the twenty-five panels is
-  `Live`, so it is one card's rows — but it is real, and it is the next thing to notice if the
-  column still looks half-themed.
+- ⚠️ **What is still Organon's palette inside a Console card**: the row *labels*, which
+  `param_sink` draws in `theme::TITANIUM()` whether the body is hand-written (Surface) or
+  declared (`panel_table`). The card's chrome follows `/theme`; the type inside a row does not
+  yet, and it is the next thing to notice if the column still looks half-themed. ⚠️ **#126
+  quadrupled it while this was in flight** — Lighting, Cast Shadows and Bloom went `Live`
+  alongside Surface, so it is four cards' rows now, and every panel the table converts adds
+  another. `param_sink::Sink` is where it would be fixed: the same "pigment is a parameter"
+  argument as this section, one level further in.
 
 #### 🚨 The wall: an Organon parameter cannot be written from outside `nih_plug`
 

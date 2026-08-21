@@ -1292,7 +1292,7 @@ mod tests {
     fn the_column_contributes_no_space_between_two_cards() {
         let mut stack = Stack::default();
         stack.push(surface());
-        stack.push(bloom());
+        stack.push(declared());
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
