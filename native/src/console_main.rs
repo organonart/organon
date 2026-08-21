@@ -2191,8 +2191,13 @@ struct Console {
     /// comes back with empty columns. That is §1.15's stated gap, made more visible by this
     /// change rather than caused by it.
     panel_stacks: organon_console::panel_stack::Stacks,
-    /// **Every region's own command line, and the console's one answer to who owns the
+    /// **Every panel column's add/remove control, and the console's one answer to who owns the
     /// keyboard.** `organon_console::region_line`'s header owns the argument.
+    ///
+    /// ✏️ **Narrowed from #98 Tier C's "a command line in every region".** Only a region holding
+    /// `panel` gets one now, and its whole vocabulary is `add <panel>` / `remove <panel>` —
+    /// James's own scope, which Tier C overshot. The array is still one line per region because
+    /// the *state* is per-region and cheap; what changed is which of them are ever drawn.
     ///
     /// 🚨 **The arbitration is the tier.** `conversation_view::composer_keys` consumes Tab,
     /// Escape and the arrows out of the raw event list — two of them unconditionally on an empty
@@ -2210,7 +2215,12 @@ struct Console {
     /// from the same specs, and a region line cannot borrow that one: a console may hold no
     /// conversation pane at all, and even when it does, the pane is behind a `&mut` the region
     /// walk is already using. What matters is that both are `Registry::new(&console_specs())` —
-    /// `every_console_verb_is_typeable_in_a_region_line` pins that the two agree.
+    /// `a_region_line_expands_onto_the_real_console_specs` pins that the two agree.
+    ///
+    /// ⚠️ **It is still the whole registry even though the control takes two words.** `act`
+    /// expands onto `console.stack` and lets the registry validate the panel name and produce the
+    /// refusal, which is what keeps the control and the CLI one vocabulary; narrowing this to a
+    /// stack-only table would be the second vocabulary §1.8 exists to prevent.
     ///
     /// ⚠️ Built at construction rather than per frame: `Registry::new` clones every spec and
     /// walks them for collisions, which is a cost per keystroke on the candidate path.
@@ -2464,16 +2474,20 @@ fn draw_regions(
     };
     let mut viewport_rect = None;
     let mut live_tab_taken = false;
-    // 🚨 **The command line's band, reserved from the region's rectangle before anything else
-    // is laid out.** A region holding an `agent` gets none: that rectangle already has the
-    // console's original command line in it, and two inputs in one rectangle with nothing to
-    // tell them apart is the arbitration problem made worse rather than solved. So a default
-    // console — one region, holding the agent — draws no line at all, which is invariant #4
-    // holding by construction rather than by a comparison.
+    // 🚨 **The panel column's control band, reserved from the region's rectangle before anything
+    // else is laid out — and ONLY for a region holding a `panel`.**
+    //
+    // ✏️ **Narrowed from "every region that is not an agent".** #98 Tier C put a command line in
+    // every region; James rejected that scope on a running console (*"I only particularly wanted
+    // to be able to add and remove panels from a panel section"*), so a region holding `3d`, and
+    // a region holding nothing, now get no band at all — the same answer an `agent` region
+    // already got, reached for a different reason. `region_line`'s header owns the argument, and
+    // note the consequence below: a vacant region's notice has to name the CLI again, because it
+    // no longer has a line of its own to point at.
     let row = ui.text_style_height(&egui::TextStyle::Monospace);
     let band = organon_console::region_line::band_height(row);
     for slot in &placed {
-        let takes_a_line = slot.content != Some(Content::Agent);
+        let takes_a_line = slot.content == Some(Content::Panel);
         // ⚠️ **Split before either half is drawn, never read back from one of them.** The
         // content's rectangle is an input to what it draws — a `3d` region's is what next
         // frame's texture is sized to — so deriving it from the line's own allocation would make
@@ -2539,9 +2553,8 @@ fn draw_regions(
             // been *assigned* and holds nothing looks exactly like one that is broken.
             //
             // ✏️ **It no longer has to be the only place the vocabulary is discoverable from.**
-            // Tier C puts a command line under this rectangle whose band lists `add` and
-            // `remove` the moment a slash is typed, so the sentence names the shortest spelling
-            // rather than the CLI's.
+            // The control under this rectangle lists `add` and `remove` on an empty box, so the
+            // sentence names the shortest spelling rather than the CLI's.
             // 🚨 **The sentence depends on whether a line was actually drawn**, which is the
             // rule this file keeps re-learning: a notice that names a control the region is
             // too short to show is a status line that cannot be right.
@@ -2549,8 +2562,8 @@ fn draw_regions(
                 &mut child,
                 content_rect,
                 slot.region.as_word(),
-                "panel — an empty column. Type `/add surface` in the line below; \
-                 `/remove all` empties it again",
+                "panel — an empty column. Type `add surface` in the line below; \
+                 `remove all` empties it again",
                 theme,
             ),
             Some(Content::Panel) => paint_region_notice(
@@ -2599,23 +2612,22 @@ fn draw_regions(
             // scale of a sixth of a window: a region that draws nothing is indistinguishable
             // from one that is broken, and the console's running tally of "it knew and said
             // nothing" defects is long enough.
-            None if line_rect.is_some() => paint_region_notice(
-                &mut child,
-                content_rect,
-                slot.region.as_word(),
-                "empty — type `/panel`, `/agent` or `/3d` in the line below",
-                theme,
-            ),
+            //
+            // ✏️ **One arm again, not two.** Tier C gave a vacant region its own command line and
+            // this notice named it (*"type `/panel` in the line below"*); the narrowing took that
+            // line away, so the sentence names the two doors that actually exist — the console
+            // line at an agent, and the CLI. A notice naming a control the region no longer
+            // draws is exactly the status line that cannot be right.
             None => paint_region_notice(
                 &mut child,
                 content_rect,
                 slot.region.as_word(),
-                "empty, and too short for a command line — \
-                 `organon console viewport <region> agent`, `… 3d` or `… panel` fills it",
+                "empty — `/viewport <region> panel` at an agent, or `organon console viewport \
+                 <region> agent`, `… 3d` or `… panel` from a terminal, fills it",
                 theme,
             ),
         }
-        // 📌 **The region's own command line, last, so it sits under whatever the region
+        // 📌 **The panel column's own control, last, so it sits under whatever the column
         // holds.** Drawn into a child `Ui` of its own at the rectangle reserved above, never
         // into the content's — a line that shared the content's `Ui` would inherit its layout
         // cursor and land wherever the content happened to stop.
@@ -2629,10 +2641,7 @@ fn draw_regions(
             child.set_clip_rect(rect.intersect(ui.clip_rect()));
             let act = organon_console::region_line::draw(
                 &mut child,
-                organon_console::region_line::Context {
-                    region: slot.region,
-                    content: slot.content,
-                },
+                organon_console::region_line::Context { region: slot.region },
                 panels.registry,
                 panels.lines,
                 theme,
@@ -7634,27 +7643,32 @@ mod cli_tests {
         assert!(seen >= 2, "expected the catalog to hold region slots; the walk found {seen}");
     }
 
-    /// 🚨 **A region's own command line, resolved against the REAL catalog — the one binding
+    /// 🚨 **A panel column's control, resolved against the REAL catalog — the one binding
     /// `organon-console` cannot make for itself.** `region_line`'s own tests build a fixture
     /// whose shapes copy `console_specs()`; this is the only module that can see the real
-    /// thing, so it is the only place "`/add surface` in a panel column does what
+    /// thing, so it is the only place "`add surface` in a panel column does what
     /// `organon console stack add surface` does" can actually be asserted end to end.
     ///
     /// ⚠️ It walks the whole way — typed line → `region_line::act` → `op_from` → the sidecar
     /// line → `parse_console_op` — because every one of those steps is a place the supplied
     /// region can be dropped, and a dropped region does not fail: it edits a *different*
     /// column, silently.
+    ///
+    /// ✏️ **The `viewport` half of this test is gone with the feature it covered.** Tier C let a
+    /// content word typed in a region assign that region; the control takes `add` and `remove`
+    /// only, so `/panel` is now refused here and `console.viewport` is reached from the composer
+    /// and the CLI, which have their own coverage.
     #[test]
     fn a_region_line_expands_onto_the_real_console_specs() {
-        use organon_console::region::{Content, Region};
+        use organon_console::region::Region;
         use organon_console::region_line::{act, Act, Context};
         use organon_console::registry::Registry;
 
         let registry = Registry::new(&console_specs());
-        let column = Context { region: Region::Left, content: Some(Content::Panel) };
+        let column = Context { region: Region::Left };
 
-        let Act::Run { name, args } = act(&registry, column, "/add surface") else {
-            panic!("`/add surface` in a panel column did not resolve")
+        let Act::Run { name, args } = act(&registry, column, "add surface") else {
+            panic!("`add surface` in a panel column did not resolve")
         };
         assert_eq!(name, CMD_STACK);
         let op = op_from(&name, &args).expect("the real schema accepts what the line produced");
@@ -7671,89 +7685,63 @@ mod cli_tests {
         assert_eq!(line, "stack add surface region left");
         assert_eq!(cli::parse_console_op(&line), Some(op));
 
-        // …and the other family: a content word assigns the region it was typed in, through
-        // `viewport`, whose region is a required positional rather than an optional keyword.
-        let empty = Context { region: Region::TopRight, content: None };
-        for word in organon_console::region::CONTENT_WORDS {
-            let Act::Run { name, args } = act(&registry, empty, &format!("/{word}")) else {
-                panic!("`/{word}` in an empty region did not resolve")
-            };
-            assert_eq!(name, CMD_VIEWPORT);
-            let op = op_from(&name, &args).unwrap_or_else(|e| panic!("`/{word}`: {e}"));
-            assert_eq!(
-                op,
-                cli::ConsoleOp::Viewport {
-                    region: "topright".into(),
-                    content: (*word).into()
-                }
-            );
-        }
+        // …and `remove all`, the emptying spelling, all the way through the same path.
+        let Act::Run { name, args } = act(&registry, column, "remove all") else {
+            panic!("`remove all` did not resolve")
+        };
+        let op = op_from(&name, &args).expect("the real schema accepts `remove all`");
+        assert_eq!(
+            op,
+            cli::ConsoleOp::Stack {
+                action: "remove".into(),
+                panel: "all".into(),
+                region: Some("left".into()),
+            }
+        );
     }
 
-    /// 🚨 **Prune discovery, never capability — asserted against the real table.** Every console
-    /// verb the composer answers must also run in a region line, whether or not that region
-    /// offers it; the pruning is about what is *listed*. A verb that resolved in one surface and
-    /// not the other would be the second vocabulary §1.8 exists to prevent, arriving through the
-    /// newest door.
+    /// 🚨 **The narrowing, asserted against the REAL table.** #98 Tier C made this control a front
+    /// door onto the whole catalog; James rejected that scope, so **every** console verb other
+    /// than `stack`'s two actions is now refused here — by name, and saying where it does work.
     ///
-    /// ⚠️ The line built for each verb is `Registry::usage` with its placeholders filled from
-    /// the verb's own rings, so this covers every verb the catalog has rather than a handful
-    /// somebody remembered — including any added later.
-    ///
-    /// 📌 **It also catches a shed word SHADOWING a verb, which is the one way this could go
-    /// wrong quietly.** If `add`, `remove` or a content word ever became a catalog verb, its
-    /// line would expand and run something else — and the assertion is on the resolved *name*,
-    /// not merely on "something ran", so the mismatch fails here rather than on a running
-    /// console.
+    /// ⚠️ This is the test that replaced `every_console_verb_still_runs_in_a_region_line`, and it
+    /// asserts the *opposite* of it on purpose. It walks the catalog rather than a handful of
+    /// verbs somebody remembered, so a verb added later is covered — and it would also catch the
+    /// one quiet way the narrowing could go wrong: if `add` or `remove` ever became a catalog
+    /// verb in its own right, the line would expand onto `stack` while the catalog meant
+    /// something else, and the `assert!(refused)` below would fire on it.
     #[test]
-    fn every_console_verb_still_runs_in_a_region_line() {
-        use organon_console::command::ArgKind;
-        use organon_console::region::{Content, Region};
+    fn no_console_verb_but_the_stack_actions_runs_in_a_panel_column() {
+        use organon_console::panel_stack::STACK_ACTIONS;
+        use organon_console::region::Region;
         use organon_console::region_line::{act, Act, Context};
         use organon_console::registry::{Lane, Registry};
 
         let registry = Registry::new(&console_specs());
-        let column = Context { region: Region::Left, content: Some(Content::Panel) };
+        let column = Context { region: Region::Left };
+        let mut seen = 0;
         for entry in registry.entries().iter().filter(|e| e.lane() == Lane::Console) {
-            // The shortest line that satisfies the verb: the first option of every required
-            // `Choice`, a number for an `Int`, the band's floor for a `Float`, a word for a
-            // `Text`. Optional arguments are left off, which is what "required" means.
-            let mut line = format!("/{}", entry.verb());
-            for arg in entry.args().iter().filter(|a| a.required) {
-                // ⚠️ **Matched exhaustively on purpose — no `_` arm.** `command.rs`'s own note
-                // says a wildcard here is how `ChoiceAliased` gets skipped, and this is the
-                // proof: the arm below did not exist until #109 landed under this branch, and
-                // a wildcard would have quietly fed `viewport` an `"x"` instead of a region.
-                // A new `ArgKind` should break this line and make somebody choose a word for
-                // it.
-                let word = match &arg.kind {
-                    ArgKind::Choice(options) => {
-                        options.first().cloned().expect("a Choice with no options")
-                    }
-                    // 📌 **The LONG word, never a short form.** The abbreviations have their
-                    // own coverage (`region_slots_all_accept_the_short_forms`, and the CLI's
-                    // round trip); what this test is for is that the canonical spelling of
-                    // every verb still runs in a region line, so it types what the ring lists.
-                    ArgKind::ChoiceAliased { words, .. } => {
-                        words.first().cloned().expect("a ChoiceAliased with no words")
-                    }
-                    ArgKind::Int => "1".to_string(),
-                    ArgKind::Float { min, .. } => min.to_string(),
-                    ArgKind::Bool => "true".to_string(),
-                    ArgKind::Text => "x".to_string(),
+            let verb = entry.verb();
+            assert!(
+                !STACK_ACTIONS.contains(&verb),
+                "`{verb}` is both a catalog verb and one of this control's two words; the \
+                 expansion onto `stack` would now shadow it"
+            );
+            for line in [verb.to_string(), format!("/{verb}")] {
+                let act = act(&registry, column, &line);
+                let Act::Refused(message) = act else {
+                    panic!("`{line}` is a console verb and still runs in a panel column: {act:?}")
                 };
-                line.push(' ');
-                line.push_str(&word);
+                assert!(message.contains(verb), "the refusal does not name `{verb}`: {message}");
+                for action in STACK_ACTIONS {
+                    assert!(message.contains(action), "{message}");
+                }
             }
-            match act(&registry, column, &line) {
-                Act::Run { name, .. } => assert_eq!(
-                    name,
-                    entry.name(),
-                    "`{line}` ran a different verb in a region line"
-                ),
-                other => panic!("`{line}` is a console verb and did not run in a region: {other:?}"),
-            }
+            seen += 1;
         }
+        // Not a count of how many — only that the walk found some. An empty catalog would pass
+        // every assertion above vacuously.
+        assert!(seen >= 4, "expected the catalog to hold console verbs; the walk found {seen}");
     }
 
     /// 🚨 **The layout verb's first ring is `layout.rs`'s own table, and its second ring is not a
