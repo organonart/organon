@@ -4943,6 +4943,162 @@ last agent and "there is nothing there to clear" are facts about the **current l
 lives on `Console` and nowhere else — and the lane gets no answer back, so a caller cannot read
 it before writing. Every refusal is therefore spoken at the console end, by name.
 
+### 1.15 Saved layouts — an arrangement with a name, and the load that refuses rather than half-applies
+
+**`organon-console/src/layout.rs`**, plus `Layout::from_placements` in `region.rs` and
+`Console::set_layout` in `console_main.rs`. `organon console layout <save|load|delete> <name>` —
+`/layout save desk` in a composer — writes the console's whole arrangement down under a name and
+brings it back. The listing is a separate verb, `/layout.list`, and the next heading says why.
+
+#### 🚨 Why this is not a convenience
+
+`doc/organon_is_the_product.md` §4 is the reframe this is built against: **a layout is the unit of
+product identity.** "Claude Code Desktop", "Organon standalone" and "an LLM visualiser" become
+*named arrangements of one program* rather than three programs. What is written to disk here is
+not a window position; it is what somebody means when they say which program they are running.
+
+⚠️ **That document is a proposal, not a ratified change.** Nothing here touches `Edition`, no
+edition is collapsed, and no preset is named — see "the library ships empty" below. The mechanism
+is worth having either way; the naming is not this tier's to do.
+
+#### 🚨 A load is a TRANSACTION, and that constraint decided the whole design
+
+§4 again, and it is not optional: *"a layout that cannot be drawn must say so and leave the
+current one standing, never half-apply."* A saved arrangement is an assignment that arrives **all
+at once, from a file, possibly written by someone else** — so it needs every refusal `/viewport`
+already has, and one more.
+
+`layout::resolve` validates the whole thing and answers **either one finished `region::Layout` or
+one sentence**. `Console::set_layout` then applies it in a *single assignment*. There is no loop
+over placements and there must never be one: "never half-apply" is a property of the signature
+rather than discipline at the call site, and a partial apply that had evicted the last `agent`
+region is a console with nothing to type into — recoverable only by a verb typed at an agent.
+
+Six checks, in the order a reader meets the file:
+
+| Refused | Because |
+|---|---|
+| a region word this build does not have | ⚠️ refused **whole**, never dropped — an arrangement missing a region is not the one that was saved, and nothing on screen would say so |
+| a content word this build does not have | the same rule, stated the same way |
+| `off` stored as what a region holds | it is what a *command* says to **empty** a region; a region holding nothing is simply absent from the file. Its own sentence, because "not a content" is a poor answer to a word the neighbouring verb takes |
+| two regions whose quadrant sets intersect | the grid cannot be drawn, and **neither region asked**, so neither can be the one that gives way |
+| two regions holding `3d` | `Content::only_one_because`, quoted — the limit is Organon's, not the idea of a viewport's |
+| nothing holding `agent` | §1.14's last-agent invariant, met from the other end |
+| the window is too small for it **right now** | the pane it was measured against is named, and the sentence says the layout is fine and the window is not |
+
+📌 **The last one is a fact about the window rather than about the file**, which is why it is
+checked only when a pane has been measured (`Console::pane_points`, one frame behind by
+construction) and why the same file loads once the window is bigger. The draw path's own *"the
+window is too small for this layout"* sentence remains the backstop for every other route.
+
+🚨 **`Layout::from_placements` is where the rules live, not `layout.rs`.** It is the whole-layout
+counterpart of `Layout::assign`, and it exists because a set of placements has **no order**: there
+is no "asked", so an overlap inside it is a contradiction rather than a displacement. Containment
+is the case worth naming — `full` beside `left` *displaces* when a command asks for one of them,
+and is simply refused when both arrive in a file. Reusing `Refusal` would have meant inventing an
+`asked` region out of iteration order, which is a guess about which half of a contradiction was
+meant, so the fault type is its own (`LayoutFault`). Disjointness is still `Region::quadrants`,
+uniqueness is still `Content::only_one_because` and the agent rule is still `Layout::has_agent` —
+one implementation, two doors.
+
+#### 🚨 Three actions, and why the listing is a verb of its own
+
+`registry::parse_args` fills **required** arguments positionally and **optional** ones by
+keyword. So a verb whose name argument were optional would be typed `/layout save name mine`
+while the CLI stayed `console layout save mine` — one verb with two spellings, which is the drift
+this tree spends its refusals preventing. `panel_stack::StackCmd` hit exactly this and is why
+`/stack`'s two rings are both required.
+
+Both words here are therefore required, which settles `save` / `load` / `delete` — all three name
+a layout — and rules `list` out: a name is not a thing a listing takes, and there is no honest
+word for that slot. `all` works in the panel ring because `all` genuinely names a value there;
+no layout name means "every layout".
+
+So the listing is **`console.layout.list`**, on the precedent `console.camera.read` set: a *read*
+is answered in-process, because `organon console …` is fire-and-forget with no return path.
+⚠️ **It differs from the camera's read in one way, stated rather than glossed:** the library is a
+*file*, so this read needs nothing from the running console and a CLI could answer it out of the
+same file. It does not today, because the CLI has no spelling for a dotted verb and inventing a
+second one (`console layouts`) would be one verb with two names. The gap is real and small:
+`layouts.json` is legible by design.
+
+⚠️ **`Reversal::Permanent`, and each action earns it separately.** `delete` takes a layout out of
+a file and nothing puts it back. `save` replaces what was stored under that name and nothing
+rebuilds it. `load` is the one worth arguing: it puts nothing in the transcript, which is
+`viewport`'s whole case for `Recoverable` — but what it *displaces* is the arrangement on screen,
+and no second command restores that unless it too was saved. `/viewport full agent` returns to the
+**default**, not to what you had. "Only if you had already saved it" is not the same as yes, so
+the conservative reading wins and autorun can never fire the verb — the right outcome for one
+that writes to a file.
+
+#### The file, and whose precedent it follows
+
+`layouts.json` at the store root, beside `harnesses.json` and `preferences.json` — one resolver
+(`SessionLog::store_root`), reused, never re-derived.
+
+`harness.rs` is the precedent §4 names — *built-ins seeded in code, a user's file merged over them
+by id, serde defaults, unknown fields tolerated* — and this follows the **discipline** rather than
+the literal shape: an object with a `layouts` array has room to grow a top-level key, which a bare
+array has not. Three properties come from `prefs.rs` instead, because unlike `harnesses.json` this
+file is one the product **writes**:
+
+1. **A write cannot destroy what is stored** — temp file in the *same directory*, then rename.
+2. **Reading is total** — missing, unreadable or malformed is "nothing saved". A corrupt library
+   must cost you your layouts, never your console. ⚠️ Never a BOM: `serde_json` refuses one
+   outright and a total reader turns that refusal into silence.
+3. 🚨 **Unknown fields survive a round trip, which is stronger than tolerating them.**
+   `harnesses.json` may tolerate-and-drop because nothing writes it back; `save` and `delete`
+   rewrite this file whole, so dropping would silently strip a newer console's fields off every
+   layout in the library — including the ones this build never touched.
+
+📌 **No environment variable overrides any of it**, on `prefs.rs`'s stated rule: a variable baked
+into a launch shim years ago silently outranking the file is indistinguishable from the
+evaporation a stored choice exists to end.
+
+⚠️ **The library is re-read per command rather than held in memory.** It is small and it is the
+truth; a copy cached at startup would fight a hand-edited file and win silently. The cost is
+stated: two consoles saving at once resolve as last-writer-wins — never a torn file, but the
+loser's layout is simply not there.
+
+#### 🚨 The library ships EMPTY, and that is the scope rather than an omission
+
+`builtin()` returns nothing. Naming the presets — "desktop", "standalone", "mind" — is **James's
+call**, and a preset nobody has looked at on a screen is worse than none: it would be a shape the
+product asserts is good, arrived at by a machine that cannot see it. The **seam** is built and
+tested — `merge_over` and `save_over` both take the built-ins as a parameter, `builtin_for`'s
+arrangement, precisely so the merge and the don't-write-an-unchanged-built-in rule are exercised
+against a seeded list rather than against nothing.
+
+#### What a layout does NOT record
+
+⚠️ **The panel stack.** A saved arrangement records that a region holds `panel`, never which
+panels are in the column. The stack is documented as not remembered across a launch (§1.14, Tier
+A), and changing that is a decision about the stack rather than about layouts. Also absent, and
+for the same "it is not part of the arrangement" reason: the theme, the posture, the screen state,
+the tabs and the camera.
+
+#### The lane
+
+`CommandSpec` in `console_specs()` → `ConsoleOp::Layout { action, name }` → the
+`layout <action> <name>` sidecar line → clap's `Layout` subcommand → `spec_name`/`op_from` →
+`Console::set_layout`. The action ring is `ArgKind::Choice` over `layout::LAYOUT_ACTIONS`; the
+name ring is `ArgKind::Text` — **the first console verb whose two rings are not both closed
+lists**, because a layout's name is whatever a person called it.
+
+🚨 **The name is checked at the clap boundary and again at dispatch, and that is a real gate
+rather than a belt.** `ArgKind::Text` states no value space, so `validate_args` has nothing to
+check — and the sidecar line is whitespace-delimited, so `layout save my desk` would arrive at the
+console as `layout save my` with the rest silently dropped, having saved something nobody named.
+`check_name` refuses whitespace, control characters, an empty name and anything over 64
+characters. ⚠️ Matching is **exact**: `Desk` and `desk` are two layouts, and the refusal for an
+unknown name lists every name that exists, which is what makes a case mismatch visible rather
+than silently folded.
+
+📌 **The names could be a ring and deliberately are not — yet.** `Registry`'s `NarrowFn` can make
+an argument's options depend on an earlier word (it is how `/organon look surface` narrows), so
+`/layout load ` could complete to the layouts that exist. That is a **file read per keystroke** on
+the candidate path, and nobody has measured it. The seam is one field on the spec.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -4958,7 +5114,7 @@ it before writing. Every refusal is therefore spoken at the console end, by name
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
-| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. Beside those, #98's own **Tier B** (three columns — four quadrant bits to six cells, a geometry change) and **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before those — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
+| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. Beside those, #98's own **Tier B** (three columns — four quadrant bits to six cells, a geometry change) and **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D (it records the arrangement that exists, whatever that vocabulary turns out to be, and derives everything from `Region::ALL`). What it leaves behind is small and named: **the name ring is `Text` and could be a `NarrowFn` over the library** (a file read per keystroke on the candidate path — measure before building), and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ Animated transitions and drag-to-resize are still after B–D — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does. ⚠️ **When Tier B widens the grid, a `layouts.json` written today keeps working and one written tomorrow is refused by an older build, by name** — which is the forward-compatibility story §1.15's refusal table is arranged to give. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
@@ -5287,6 +5443,32 @@ path silently breaks the three-products-simultaneously guarantee that
   `param_sink::value_box` builds, plus a companion that removes each half of the key and requires
   the collision back. That is a real test of the property; it is **not** a person clicking one
   value box and watching whether a text field opens in another.
+- 🚨 **No layout has ever been saved, loaded or deleted by a running console (§1.15).** Not once,
+  by anyone. What is verified is code, on a Linux container with no GPU: the four legs plus both
+  root-crate bin test runs, all green, and a test suite that exercises the *decisions* headlessly
+  — capture-and-resolve round trips over every arrangement two commands can reach, each refusal
+  by name, the file written and read back, an unknown field surviving a rewrite, and a refused
+  load leaving the caller holding exactly what it had. That last one is the strongest thing here
+  and it is worth being precise about what it proves: **`resolve` returns `Err` and no `Layout`,
+  so the transaction is a property of the signature.** It does **not** prove that
+  `Console::set_layout`'s single assignment reaches a window — no window has run this code.
+  ⚠️ Specifically unmeasured, and none of it answerable by green: whether a load *looks*
+  instantaneous or whether the pane visibly re-lays-out under the eye (§1.7 measured a re-wrap at
+  ~7.6 ms at 400 elements, and a load changes the same widths a split does — so the cost is
+  *inferred* from that number, never observed); whether the arrangement that comes back is the
+  one somebody meant, which is a question about `region::Layout` being a faithful description of
+  what a person sees and not about serialization; whether the receipt lines land anywhere a
+  person reads (they are `eprintln!`, on `set_viewport`'s existing route, which in a GUI launched
+  from Explorer goes nowhere — a standing defect of the whole console lane, not this verb's);
+  and whether `layouts.json` is legible enough to hand-edit, which is a claim about a file nobody
+  has opened.
+  ⚠️ **The store path itself is unconfirmed on this machine.** `Library::store_root` is
+  `SessionLog::store_root` by construction and a test pins the three files as siblings, so the
+  *sameness* is proven; the actual directory (`%APPDATA%\OrganonShell\` on Windows) has not been
+  looked at from a console that wrote to it.
+  📌 **Two absences are deliberate and are not gaps**: the library ships empty because naming the
+  presets is James's call, and a layout records no panel stack, theme, posture, screen state, tab
+  or camera. Both are stated in §1.15 rather than left to be discovered.
 - ✏️ **The `PresetValues` route is built and the counts are confirmed.** It was recorded as *"a
   reading of the code, not a working path"* with the caveat that no field had been checked for
   preset capture. All 167 of Surface's distinct parameter fields are present in `PresetValues`,

@@ -82,6 +82,8 @@ organon console theme <name>         # every colour the console paints — live,
 organon console posture <word>       # how it holds itself: terminal-tight or desktop-open
 organon console screen <state>       # whether the window covers the display (F11 flips it)
 organon console viewport <region> <content>   # divide the pane; `off` empties a region
+organon console stack <action> <panel>        # fill a `panel` region's scrolling column
+organon console layout <action> <name>        # save / load / delete a named arrangement
 organon console block <rows>         # reserve blank rows in the transcript
 organon console patch --up N --rows M --kind <kind>   # claim a gap you already printed
 organon console portal <state>       # float a live window onto the world over the transcript
@@ -115,7 +117,23 @@ to suit yourself. **`posture` is not remembered and it snaps** — no animation,
 console puts it back at `terminal`. `posture` also takes a bare number from 0 to 1 if you
 want somewhere between the two ends; the two words are what you want almost always.
 **`screen` and `viewport` are not remembered either**: the console opens windowed and
-undivided however you left it.
+undivided however you left it — and neither is the panel `stack`, which opens empty.
+
+⚠️ **`layout` is the second thing that outlives a launch, and it is the one that writes a file.**
+`organon console layout save <name>` records the whole arrangement — every region and what each
+one holds — into the console's `layouts.json`, and `load` brings it back; `delete` takes one out.
+Like `theme`, that makes it a *choice on the user's behalf*: save and delete when asked, not to
+tidy up after yourself. Three things to know before using it. A name is **one word with no
+whitespace** and is matched **exactly** (`Desk` and `desk` are two layouts) — a command crosses
+the console's channel as one whitespace-delimited line, so a name with a space in it is refused
+rather than truncated. `save` **replaces** whatever was stored under that name and nothing
+rebuilds what it replaced. And `load` is all-or-nothing: the arrangement is checked whole — every
+word, no two regions overlapping, only one `3d`, something holding an `agent`, and the window big
+enough — and if any part of it is refused, the refusal names what is wrong and **nothing moves**.
+A layout records the arrangement only: not the stack, the theme, the posture, the screen state or
+the camera. ⚠️ There is **no `list` on the CLI** — a listing needs an answer coming back and this
+lane has no return path. From inside a console tab it is `/layout.list`; from a terminal, read
+`layouts.json` in the console's store directory.
 
 `block` opens its rows in the **active tab**, just below the cursor, and the next
 prompt lands underneath them. They are ordinary scrollback rows, so they scroll away

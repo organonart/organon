@@ -83,6 +83,13 @@
 //! numbers rather than a second renderer, and one `t ∈ [0,1]` reaches every draw site as a
 //! resolved `&Form` beside the `&Theme`.
 //!
+//! [`layout`] is what makes an arrangement of [`region`]s **a thing with a name that survives the
+//! process**: `layouts.json` beside `harnesses.json`, the harness registry's discipline for the
+//! file and [`prefs`]'s for the writing of it. Its one hard rule is that a load is a
+//! **transaction** — a saved arrangement arrives all at once, possibly from another build's file,
+//! so it is validated whole and either replaces the layout or refuses by name, never half-applies.
+//! `doc/organon_is_the_product.md` §4 is why that is not a convenience.
+//!
 //! [`card_density`] is the **third**: how much room a tool call takes once it has stopped
 //! being news. Theme is what the console is made of, posture is how it holds itself, density
 //! is how long a thing keeps its weight. Success collapses to one line and a run of them to
@@ -102,6 +109,7 @@ pub mod command;
 pub mod conversation;
 pub mod conversation_view;
 pub mod harness;
+pub mod layout;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mock_agent;
