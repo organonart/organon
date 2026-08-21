@@ -11,37 +11,63 @@
 > **Audience:** an engineer, a technically literate reader, or a writer who needs an
 > accurate account of the whole system in one pass.
 >
-> **Status:** current as of ISO week 2026-33. Counts are re-measured at that date;
-> anything not yet merged to `main`, or not yet verified on real hardware, is explicitly
-> marked *in flight* or *pending verification*.
+> **Status:** counts current as of ISO week 2026-33 and re-measured at that date; anything
+> not yet merged to `main`, or not yet verified on real hardware, is explicitly marked *in
+> flight* or *pending verification*. ✏️ **§1 and §16 were reframed on 2026-08-21** to match
+> `doc/organon_prd.md` — that edit changed what this document says Organon *is*, and
+> deliberately re-measured nothing, so every count below still carries the week-33 date.
 
 ---
 
 ## 1. What Organon is
 
-Organon is a real-time generative visual engine, written in Rust on wgpu, that ships as
-an audio plugin. It has three defining properties:
+Organon is **one native application, written in Rust on wgpu, whose identity is assembled at
+runtime rather than compiled in.** You divide its window into regions, declare what each region
+holds, and save the arrangement under a name; that named arrangement is what somebody means when
+they say which program they are running. It has four defining properties:
 
-1. **It lives inside a DAW.** The product is a VST3/CLAP plugin (plus a standalone build
-   of the same editor). Every one of its ~1,370 parameters is host-automatable,
-   MIDI-learnable, and preset-captured. The host supplies tempo and transport for free.
-2. **Its renderer is a separate OS process.** The plugin is a thin control surface; a
-   second binary owns a fullscreen window, the animation clocks, the camera, and the
-   entire render pipeline. The two communicate through a shared-memory snapshot.
-3. **It is a physically based light-transport engine pointed at mathematics.** The thing
-   being lit is not a mesh someone modelled — it is the output of a *generator*: a
-   parametric mathematical system evaluated fresh every frame.
+1. **A layout is the unit of identity.** Up to six addressable regions over a 3×2 grid, each
+   declaring its content — an agent conversation, a column of instrument panels, a live 3D
+   viewport, a piece of media. An arrangement can be named and written to disk, and a load
+   applies whole or refuses with one sentence.
+2. **An agent is not optional.** Every valid arrangement contains a working agent harness, and
+   this is enforced rather than encouraged: any command whose *result* would leave no agent
+   region is refused, and a saved layout naming none does not load. The agent reaches the same
+   command vocabulary a human types and a script calls, and is bounded by a permission card
+   rather than by good behaviour (§13).
+3. **Its renderer draws everything, and runs as a separate OS process.** The chrome, the text
+   and the world are one renderer's output rather than a 3D view inside a widget toolkit. A
+   second binary owns a fullscreen window, the animation clocks, the camera and the whole
+   pipeline; the two communicate through a shared-memory snapshot.
+4. **It is a physically based light-transport engine pointed at whatever fills a region.** Today
+   the thing being lit is the output of a *generator* — a parametric mathematical system
+   evaluated fresh every frame — because that is the only producer built. The boundary is
+   deliberately smaller than that: a producer yields a texture the application can sample, at a
+   size it asks for.
 
-The founding algorithm is a cube-field visualizer that began life in 2000 as an OpenGL
-exercise. That algorithm is still generator zero. Everything else grew around it.
+🚨 **Organon is not the visualizer.** The generative-math visualizer is *one thing Organon
+hosts* — built in, and conceptually a module like any other. The founding algorithm is a
+cube-field visualizer that began life in 2000 as an OpenGL exercise; it is still generator zero,
+and everything else grew around it. The test for any description of this system: **would it still
+be true if the visualizer were deleted?** ⚠️ The tree does not currently pass that test — `3d` has
+exactly one producer — which is a reason not to claim a plurality of hosted things in the present
+tense, not a reason to mistake the instance for the identity.
 
-**It is all one product.** Organon builds two more faces of itself from the same
-workspace (§2.4): **Organon Mind** — the lane for watching a language model think,
-buildable as its own standalone instrument (§11) — and the **Organon Console** — an
-agent-operating workstation whose terminal runs over the live engine (§12). Editions of
-one engine, not separate products and not forks. This repository is the native engine
-and its documentation; a browser port of the founding algorithm exists in the project's
-history but is parked and does not live here.
+**It is all one product**, and the two other arrangements it builds from the same workspace (§2.4)
+are **Mind** — watching a language model think (§11) — and the **Console** — an agent-operating
+workstation (§12). ⚠️ **They are still three binaries today**, chosen by a compile-time edition
+rather than by a saved layout; collapsing that into one binary that opens into a named arrangement
+is issue #111 and has not started. `doc/organon_prd.md` is the product definition and its §12 is
+the honest state of play.
+
+🚨 **The one thing that cannot be a layout is the plugin.** A VST3/CLAP inside a DAW has a
+host-owned window, a host-controlled lifetime, an audio thread with hard real-time constraints,
+and a saved-session identity that outlives any decision here — so it stays a separate artifact.
+Every one of its ~1,370 parameters is host-automatable, MIDI-learnable and preset-captured, and
+the host supplies tempo and transport for free.
+
+This repository is the native engine and its documentation; a browser port of the founding
+algorithm exists in the project's history but is parked and does not live here.
 
 Everything below describes the native engine unless stated otherwise.
 
@@ -944,7 +970,10 @@ contract, from the original cube field and Frenet–Serret frames to Maxwell and
 fields, aperiodic tilings, minimal surfaces, arbitrary field equations with a PDE solver,
 and the live internals of a language model. Every parameter is host-automatable, the beat
 clock is phase-locked to the transport, and the camera, the modulation routing, the media
-simulations and the audio analysis all run off that one clock. It is one product that
-ships three ways from one workspace: the plugin, the Mind instrument for watching a
-language model think, and the console for working with agents, its terminal glowing
-from underneath.
+simulations and the audio analysis all run off that one clock. And all of that is one
+*arrangement* of one application — the window divides into named regions, each declaring what
+it holds, always including a live agent that reaches the same verbs a human types; the
+visualizer is the region content Organon grew out of rather than the thing Organon is. It ships three ways from one workspace today — the plugin,
+the Mind arrangement for watching a language model think, and the console for working with
+agents, its terminal glowing from underneath — and the plugin is the one of those that can never
+become a layout, because a host owns its window and its lifetime.

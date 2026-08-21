@@ -1,6 +1,12 @@
-# Using Organon
+# Using Organon — the visualizer
 
-Organon is a parametric generative visualizer. You pick a **generator** (what shape the
+> 📌 **This guide covers one of the things Organon hosts.** Organon itself is one native
+> application whose identity is data: you divide the window into regions, declare what each
+> holds, and save the arrangement under a name. What follows is how to play the
+> generative-math visualizer — the arrangement Organon grew out of. `doc/organon_prd.md` §1.1
+> describes the whole.
+
+The visualizer is parametric and generative. You pick a **generator** (what shape the
 maths builds), a **surface** (how that shape becomes geometry) and a **material** (how it
 is shaded), and then you play it — from your DAW's transport, from MIDI clips, from a pad
 controller, or from a terminal.

@@ -45,11 +45,19 @@
 ### 1.1 What Organon is — the canonical wording
 
 📌 **This section is the single source for the three lengths.** The README, the sites, `CLAUDE.md`
-and any deck quote it rather than re-authoring it. The identity claim is currently spelled five
-different ways across the tree (`README.md`, `doc/equations_into_light.md`,
-`doc/how_organon_works.md` twice, and `CLAUDE.md`'s naming section), which is how it came to be
-stale in five places at once. One source, several front doors — the same discipline
-`registry.rs` already applies to the command vocabulary, applied to prose.
+and any deck quote it rather than re-authoring it. The identity claim was once spelled **six**
+different ways across the tree — `README.md`, `doc/equations_into_light.md`,
+`doc/how_organon_works.md` twice, `doc/guide/README.md` and `CLAUDE.md`'s naming section — which
+is how it came to be stale in six places at once. One source, several front doors: the same
+discipline `registry.rs` already applies to the command vocabulary, applied to prose.
+
+✏️ **Five of the six were converted on 2026-08-21** and now point here. Two of them were
+*scoped* rather than rewritten, which is the more interesting outcome: `equations_into_light.md`
+and `doc/guide/` are genuinely about the **visualizer**, so the honest fix was to say so in their
+titles rather than to restate this section badly in each. A document about one arrangement is not
+a document about the product, and pretending otherwise is what produced six wordings.
+⚠️ **`CLAUDE.md`'s naming section is the one still outstanding**, deliberately: it is on #111's
+move list and describes the mechanism, so it moves when the mechanism does.
 
 **One or two sentences:**
 

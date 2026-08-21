@@ -1,43 +1,46 @@
 # Organon
 
-> 📌 **What Organon *is*: `doc/organon_prd.md` §1.1 is the canonical description**, in three
-> lengths, and every other surface quotes it rather than re-authoring it. In short: Organon is one
-> native application whose identity is data — you divide the window into regions, declare what each
-> holds, and save the arrangement under a name — and no arrangement is valid without a live agent
-> in it. The generative visualizer described below is **one of the things it hosts**, not what it
-> is.
->
-> ⚠️ **What follows describes what ships today** — three binaries selected by a compile-time
-> edition — which is still accurate and is not the product definition. It is rewritten when the
-> restructure (#111) lands, deliberately in that order: the editions are what currently make the
-> three arrangements work, and a rename that outruns the mechanism leaves documents describing a
-> thing that does not exist.
+**One native application whose identity is data.** You divide the window into regions, declare
+what each one holds, and save the arrangement under a name — and that named arrangement is what
+somebody means when they say which program they are running. No arrangement is valid without a
+live agent in it, taught by loadable skills to operate the application it is running inside.
 
-**A hyperscope for the space of possible forms.** Organon is a parametric generative
-visualizer: 27 generators, a PBR/HDR/ray-traced render stack, 50+ WGSL shaders, driven by
-MIDI, tempo and audio. It runs as a **VST3/CLAP plugin and as a standalone app**, with the
-visual in its own fullscreen process so it can own a projector while the host owns the
-parameters. → [organon.art](https://organon.art)
+📌 **`doc/organon_prd.md` §1.1 is the canonical description**, in three lengths. This file, the
+sites and `CLAUDE.md` quote it rather than re-authoring it — the identity claim was once spelled
+five different ways across this tree, which is how it came to be stale in five places at once.
 
-Two instruments are built on its engine:
+## What an arrangement holds
 
-| | What it is | |
+A region holds an agent conversation, a scrolling column of instrument panels, a live 3D
+viewport, or a piece of media. Three arrangements exist today:
+
+| Arrangement | What it is | |
 |---|---|---|
-| **Organon Mind** | A standalone instrument for **watching a language model think**. Load a `.gguf` and it draws the model's true wiring, read from the file, then lights it up while it runs. | [organonmind.org](https://organonmind.org) |
-| **Organon Console** | An agent-operating workstation: a GPU-composited terminal for working with AI agents. | |
+| **The visualizer** | A parametric generative visualizer: 27 generators, a PBR/HDR/ray-traced render stack, 50+ WGSL shaders, driven by MIDI, tempo and audio. What Organon grew out of — and **one of the things it hosts**, not what it is | [organon.art](https://organon.art) |
+| **Mind** | Load a `.gguf` and it draws the model's true wiring, read from the file, then lights it up while it runs | [organonmind.org](https://organonmind.org) |
+| **The Console** | An agent-operating workstation: a GPU-composited terminal for working with AI agents | |
 
-The direction is one-way: Mind and the Console are spin-outs of capabilities that live primarily
-in Organon, drawing on its engine, algorithm, shaders and preset store.
+They are the same engine with a different front-of-house. The algorithm (`math.rs`), every
+shader, the IPC snapshot layout and the preset store are identical across all three.
 
-They are **editions, not forks**. The algorithm (`math.rs`), every shader, the IPC snapshot
-layout and the preset store are identical across all three; a compile-time `Edition` chooses
-the product name, the IPC namespace and the visible surface.
+🚨 **The one thing that cannot be an arrangement is the plugin.** Inside a DAW a host owns the
+window, the audio thread has hard real-time constraints, and the plugin's identity appears in
+saved sessions that outlive any decision made here. `Organon.vst3` / `.clap` is a separate
+artifact with a separate lifetime, and stays one.
+
+## How it ships today
+
+⚠️ **Those three arrangements are still three binaries**, chosen by a compile-time `Edition`
+rather than by a saved layout. That is the mechanism which currently makes them work; collapsing
+it into one binary that opens into a named arrangement is issue #111, and it has not started.
+`doc/organon_prd.md` §12 is the honest state of play — what is enforced today, what is designed
+and unbuilt, and which claims are direction rather than mechanism.
 
 ```bash
 cd native
-cargo build --release                                              # Organon
-cargo build --release --features mind-edition  --bin organon-mind  # Organon Mind
-cargo build --release --features console-edition --bin organon-console # Organon Console
+cargo build --release                                              # the visualizer
+cargo build --release --features mind-edition  --bin organon-mind  # Mind
+cargo build --release --features console-edition --bin organon-console # the Console
 ```
 
 ## Build
