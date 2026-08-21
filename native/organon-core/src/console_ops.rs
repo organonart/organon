@@ -130,10 +130,22 @@ pub enum ConsoleOp {
     /// and panel vocabularies, and the refusals that name them, live in the console's own
     /// crate, and parsing here would put half of that knowledge on the wire side of the lane.
     ///
-    /// 📌 **Both words are required**, `viewport`'s arrangement exactly: there has never been a
-    /// one-word `stack` line, so a bare one is not an older spelling of anything and guessing
-    /// would add or remove a panel nobody named.
-    Stack { action: String, panel: String },
+    /// 📌 **The first two words are required**, `viewport`'s arrangement exactly: there has never
+    /// been a one-word `stack` line, so a bare one is not an older spelling of anything and
+    /// guessing would add or remove a panel nobody named.
+    ///
+    /// 🚨 **`region` is a THIRD word and it is optional — #98 Tier C.** There is a panel column
+    /// per region now, so a command has to be able to say which; but three of the four front
+    /// doors (§1.8) have no region to be typed into, so it cannot be required. Absent, the
+    /// console's own destination rule answers (`panel_stack::Home` — the first region holding
+    /// `panel`, largest first), which is exactly what every `stack` line meant before this word
+    /// existed. **A line written by an older build is therefore still a line this one reads
+    /// correctly**, which is the forward-compatibility story this whole format is shaped around.
+    ///
+    /// ⚠️ **Spelled `region <word>` on the wire, not as a bare third word**, because the
+    /// slash grammar fills optional arguments by keyword: a bare third word would make the typed
+    /// line and the sidecar line disagree, which is the drift the four doors exist to prevent.
+    Stack { action: String, panel: String, region: Option<String> },
     /// **Name an arrangement of the pane, bring one back, or take one out** — an action word
     /// (`organon_console::layout::LAYOUT_ACTIONS`) and the layout's name.
     ///
@@ -410,7 +422,12 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Posture(word) => format!("posture {word}"),
         ConsoleOp::Screen(word) => format!("screen {word}"),
         ConsoleOp::Viewport { region, content } => format!("viewport {region} {content}"),
-        ConsoleOp::Stack { action, panel } => format!("stack {action} {panel}"),
+        // The optional word is written **only when it is set**, so a command that named no
+        // region produces the byte-identical line it produced before the word existed.
+        ConsoleOp::Stack { action, panel, region } => match region {
+            Some(region) => format!("stack {action} {panel} region {region}"),
+            None => format!("stack {action} {panel}"),
+        },
         ConsoleOp::Layout { action, name } => format!("layout {action} {name}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
@@ -460,7 +477,21 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
         "stack" => {
             let action = it.next()?.to_string();
             let panel = it.next()?.to_string();
-            Some(ConsoleOp::Stack { action, panel })
+            // 🚨 **The optional third word, read by KEYWORD.** A bare word here would be
+            // ambiguous the day a fourth optional argument arrives, and it would disagree with
+            // the typed spelling — `registry::parse_args` tags optional arguments by name. A
+            // trailing `region` with no word after it is **malformed**, not "a command with a
+            // default": the caller said which region and the line lost it, and guessing at that
+            // point would put a panel in a column nobody named. ⚠️ An unknown keyword is
+            // likewise malformed rather than ignored, so a newer build's line does not
+            // half-apply here — this parser's whole contract is that a line it cannot read
+            // whole is skipped.
+            let region = match it.next() {
+                None => None,
+                Some("region") => Some(it.next()?.to_string()),
+                Some(_) => return None,
+            };
+            Some(ConsoleOp::Stack { action, panel, region })
         }
         // The `stack` arm's rule a third time — two required words, both unvalidated. ⚠️ The
         // second word being a **name** rather than a table entry is what makes the whitespace
@@ -591,9 +622,33 @@ mod tests {
                 // reason, and `all` above all: it is the only way to empty a column, so a
                 // spelling that survived one direction only would leave a stack somebody
                 // cannot clear.
-                ConsoleOp::Stack { action: "add".into(), panel: "surface".into() },
-                ConsoleOp::Stack { action: "remove".into(), panel: "surface".into() },
-                ConsoleOp::Stack { action: "remove".into(), panel: "all".into() },
+                ConsoleOp::Stack {
+                    action: "add".into(),
+                    panel: "surface".into(),
+                    region: None,
+                },
+                ConsoleOp::Stack {
+                    action: "remove".into(),
+                    panel: "surface".into(),
+                    region: None,
+                },
+                ConsoleOp::Stack { action: "remove".into(), panel: "all".into(), region: None },
+                // 🚨 **Both spellings of the optional word ride the trip, and the `None` above
+                // is half the point.** There is a column per region now, so a line that lost
+                // its region would edit a *different* column — and one that gained a region it
+                // never had would edit a column the caller could not have meant. `all` with a
+                // region is the sharpest of the three: it empties one column rather than the
+                // one the destination rule would have chosen.
+                ConsoleOp::Stack {
+                    action: "add".into(),
+                    panel: "surface".into(),
+                    region: Some("topright".into()),
+                },
+                ConsoleOp::Stack {
+                    action: "remove".into(),
+                    panel: "all".into(),
+                    region: Some("bottomleft".into()),
+                },
                 // An arrangement of the pane, under a name. The name is the first payload on
                 // this lane that is neither a table entry nor a count — an arbitrary word a
                 // person chose — so the round trip is what proves the format carries one at
@@ -655,9 +710,20 @@ mod tests {
             assert_eq!(
                 console_op_to_line(&ConsoleOp::Stack {
                     action: "add".into(),
-                    panel: "surface".into()
+                    panel: "surface".into(),
+                    region: None
                 }),
                 "stack add surface"
+            );
+            // 🚨 **The optional word appears only when it is set**, so every line an older build
+            // ever wrote is byte-identical to what this one writes for the same intent.
+            assert_eq!(
+                console_op_to_line(&ConsoleOp::Stack {
+                    action: "add".into(),
+                    panel: "surface".into(),
+                    region: Some("left".into())
+                }),
+                "stack add surface region left"
             );
             assert_eq!(
                 console_op_to_line(&ConsoleOp::Layout {
@@ -741,8 +807,30 @@ mod tests {
             assert_eq!(parse_console_op("stack add"), None, "half a command is not a command");
             assert_eq!(
                 parse_console_op("stack shuffle surface"),
-                Some(ConsoleOp::Stack { action: "shuffle".into(), panel: "surface".into() }),
+                Some(ConsoleOp::Stack {
+                    action: "shuffle".into(),
+                    panel: "surface".into(),
+                    region: None
+                }),
                 "the console refuses an unknown action out loud; the wire must not swallow it"
+            );
+            // 🚨 **The optional word is read by KEYWORD, and half of one is malformed.** A
+            // trailing `region` with nothing after it means the caller said which column and
+            // the line lost the answer; treating that as "no region" would edit whichever
+            // column the destination rule picked, which is precisely the one they did not name.
+            assert_eq!(parse_console_op("stack add surface region"), None);
+            // An unknown keyword is skipped whole rather than half-applied — this parser's
+            // forward-compatibility contract is per LINE, not per word.
+            assert_eq!(parse_console_op("stack add surface elsewhere left"), None);
+            // …and an unknown region word rides through, on the `viewport middle agent` rule
+            // above: only the console holds that table and only it can refuse out loud.
+            assert_eq!(
+                parse_console_op("stack add surface region middle"),
+                Some(ConsoleOp::Stack {
+                    action: "add".into(),
+                    panel: "surface".into(),
+                    region: Some("middle".into())
+                })
             );
             // `layout` is the third, and its second word is a NAME — so the two halves of the
             // rule are worth pinning apart. A half-written line is not a command…

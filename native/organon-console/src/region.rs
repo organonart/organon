@@ -297,6 +297,19 @@ impl Region {
             }
         })
     }
+
+    /// This region's position in [`Region::ALL`] — the index of every per-region array in this
+    /// console.
+    ///
+    /// ⚠️ **One derivation, two consumers, and that is why it is here rather than in either.**
+    /// [`Layout`] indexes its `held` array with it and [`crate::panel_stack::Stacks`] indexes
+    /// its columns with it; a second `position` walk written beside the second array is how the
+    /// two come to disagree about which slot `Center` is the day a word is inserted into the
+    /// middle of the list. Derived from `ALL` rather than written out, so the vocabulary is
+    /// what decides.
+    pub fn slot(self) -> usize {
+        Region::ALL.iter().position(|r| *r == self).expect("Region::ALL is total over Region")
+    }
 }
 
 /// The region words, in [`Region::ALL`] order — the order `--help` should list them.
@@ -364,7 +377,7 @@ pub const REGION_ALIASES: &[(&str, &str)] = &[
 /// than written down beside it.
 ///
 /// ⚠️ It was the literal `9` in three places before this tier, which is the shape of thing that
-/// goes wrong when a vocabulary grows: `Layout::slot` is a position in `ALL`, so the array and
+/// goes wrong when a vocabulary grows: `Region::slot` is a position in `ALL`, so the array and
 /// the list have to agree, and the only way to guarantee that is for one to *be* the other.
 pub const REGION_COUNT: usize = Region::ALL.len();
 
@@ -680,7 +693,7 @@ impl std::fmt::Display for LayoutFault {
 /// words, so the layout is `Copy`-cheap, has no allocation, and cannot hold a region twice.
 ///
 /// ✏️ **Was nine, over four cells.** The array is sized from the vocabulary rather than from a
-/// count somebody keeps in step: `Self::slot` is a position in [`Region::ALL`], and a test walks
+/// count somebody keeps in step: [`Region::slot`] is a position in [`Region::ALL`], and a test walks
 /// every region through it, so a mismatch is a panic in the suite rather than a silent
 /// out-of-bounds arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -719,13 +732,9 @@ impl Layout {
         Layout { held: [None; REGION_COUNT] }
     }
 
-    fn slot(region: Region) -> usize {
-        Region::ALL.iter().position(|r| *r == region).expect("Region::ALL is total over Region")
-    }
-
     /// What this region holds, if anything.
     pub fn get(&self, region: Region) -> Option<Content> {
-        self.held[Self::slot(region)]
+        self.held[region.slot()]
     }
 
     /// Every occupied region and what it holds, in [`Region::ALL`] order.
@@ -751,6 +760,17 @@ impl Layout {
         self.occupied().into_iter().find(|(_, c)| *c == content).map(|(r, _)| r)
     }
 
+    /// **Every** region holding `content`, in [`Region::ALL`] order.
+    ///
+    /// 🚨 **The plural exists because `panel` became plural.** [`Region::region_holding`]'s
+    /// singular answer is right for a kind [`Content::only_one_because`] limits and right for
+    /// "which agent region gets the live tab", and it was right for the panel stack while there
+    /// was one stack. With a column per region (#98 Tier C) a refusal that names *the* panel
+    /// region would be naming one of several, so the refusal reads this instead.
+    pub fn regions_holding(&self, content: Content) -> Vec<Region> {
+        self.occupied().into_iter().filter(|(_, c)| *c == content).map(|(r, _)| r).collect()
+    }
+
     /// Put `cmd` in `region`, or say why not. **Pure** — the layout that comes back is a new
     /// value and `self` is untouched, which is what lets the refusal path leave the console
     /// exactly as it was with no unwinding to get wrong.
@@ -768,7 +788,7 @@ impl Layout {
                 if self.get(region).is_none() {
                     return Err(Refusal::AlreadyEmpty { asked: region });
                 }
-                next.held[Self::slot(region)] = None;
+                next.held[region.slot()] = None;
             }
             ContentCmd::Hold(content) => {
                 let asked = region.cells();
@@ -815,9 +835,9 @@ impl Layout {
                     }
                 }
                 for r in &displaced {
-                    next.held[Self::slot(*r)] = None;
+                    next.held[r.slot()] = None;
                 }
-                next.held[Self::slot(region)] = Some(content);
+                next.held[region.slot()] = Some(content);
             }
         }
         if !next.has_agent() {
@@ -860,7 +880,7 @@ impl Layout {
                     return Err(LayoutFault::Twice { content, first, second: region, because });
                 }
             }
-            out.held[Self::slot(region)] = Some(content);
+            out.held[region.slot()] = Some(content);
         }
         // Asked of the finished layout, exactly as `assign` asks it of the result rather than of
         // the command — one invariant, checked once, however the layout was reached.
@@ -1034,7 +1054,7 @@ pub fn plan(pane: egui::Rect, layout: &Layout) -> Option<Vec<Placed>> {
             seen |= q;
         }
     }
-    out.sort_by_key(|p| Layout::slot(p.region));
+    out.sort_by_key(|p| p.region.slot());
     Some(out)
 }
 
@@ -1147,7 +1167,7 @@ mod tests {
         // `Layout`'s array is indexed by `ALL` position, so every region must have a slot.
         assert_eq!(REGION_COUNT, Region::ALL.len());
         for r in Region::ALL.iter().copied() {
-            assert!(Layout::slot(r) < REGION_COUNT, "{} has no slot", r.as_word());
+            assert!(r.slot() < REGION_COUNT, "{} has no slot", r.as_word());
         }
     }
 

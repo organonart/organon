@@ -261,6 +261,9 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         history_at: None,
         want_caret: false,
         receipt: None,
+        // The bench has no regions and no second command input, so the composer owns the
+        // keyboard exactly as it does in an undivided console.
+        keys: true,
         autorun: false,
         // The verbose list is off here for the same reason it is off in the product: the
         // primary panel is the one row, and a bench must measure what a person will see.

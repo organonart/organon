@@ -691,6 +691,25 @@ pub struct ConversationPane {
     /// [`PanelReceipt`] — this is the console's answer to a receipt that scrolls off the
     /// top of the transcript before anyone can read it.
     receipt: Option<PanelReceipt>,
+    /// 🚨 **Whether this composer may read the frame's Tab, Escape and arrows at all.**
+    ///
+    /// `composer_keys` consumes those out of the **raw event list**, not out of a focused
+    /// widget, and two of them unconditionally: `arrow_owner` hands Up to the history whenever
+    /// the box is empty. That was safe while the console had exactly one command input. #98
+    /// Tier C gives every non-`agent` region a command line of its own, and a second input
+    /// would have found its Up already taken before it ran.
+    ///
+    /// ⚠️ **Set from a measurement, not from a policy.** `console_main` writes this each frame
+    /// from `region_line::Lines::composer_owns_keys`, which is `true` unless some region's line
+    /// had egui focus on the **previous** frame — read off that widget's own
+    /// [`egui::Response::has_focus`], the same fact `composer_box` already uses to decide
+    /// whether Enter sends. Nothing here invents a focus state.
+    ///
+    /// ⚠️ **`true` is the default and that is invariant #4.** A console with no divided pane
+    /// draws no region line, so nothing ever records focus, and this composer keeps every key
+    /// it had before that module existed. It is deliberately **not** an `Option`: "nobody has
+    /// told me" and "the composer owns them" are the same state here.
+    keys: bool,
     /// Whether a command may run the instant the panel knows what it is, with no Enter.
     ///
     /// **On by default**, since the recoverability term joined [`Palette::autorun`]'s rule:
@@ -915,6 +934,8 @@ impl ConversationPane {
             // console around it yet.
             panel_home: panel_stack::Home::Nowhere,
             panel_wanted: None,
+            // The composer owns the keyboard until a region line takes it — see the field.
+            keys: true,
             // Read once, here, rather than per frame: they are switches for a session, and an
             // env lookup inside the draw path would be a syscall per keystroke.
             autorun: autorun_enabled(
@@ -928,6 +949,16 @@ impl ConversationPane {
     /// menu, the pie menu) reads instead of building a table of its own.
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Tell this composer whether it may read the frame's Tab, Escape and arrows.
+    ///
+    /// 🚨 **The console's one arbitration point between several command inputs**, and it is a
+    /// *setter* rather than a parameter on [`draw`] on purpose: the answer is `true` for every
+    /// caller that does not know about regions, so a console that never divides its pane —
+    /// and every test in this file — is untouched. See [`ConversationPane::keys`].
+    pub fn set_keys(&mut self, owned: bool) {
+        self.keys = owned;
     }
 
     /// Fold one mapped event into the transcript and keep the pane's derived state in step
@@ -4994,8 +5025,18 @@ pub fn compact_fit(words: &[CompactWord], columns: usize) -> (usize, usize) {
 /// Exists so the row can be *read* in a test and quoted to somebody who is not looking at the
 /// window. [`compact_band`] draws these same pieces; nothing here is a second derivation.
 pub fn compact_line(palette: &Palette, selected: usize, columns: usize) -> String {
-    let words = compact_words(palette, selected);
-    let (shown, hidden) = compact_fit(&words, columns);
+    compact_join(&compact_words(palette, selected), columns)
+}
+
+/// Fit a row of words to `columns` and join them — the row as one plain string.
+///
+/// 🚨 **Split out of [`compact_line`] so a SECOND producer of words gets the same row.**
+/// `region_line` builds its words from a pruned palette rather than from
+/// `Registry::candidates`, and a second joiner beside it would be a second answer to "what does
+/// a hidden count look like" — which is exactly the drift `compact_fit`'s own doc argues
+/// against. Two producers, one fitting rule, one separator, one `+N`.
+pub fn compact_join(words: &[CompactWord], columns: usize) -> String {
+    let (shown, hidden) = compact_fit(words, columns);
     let mut line = words
         .iter()
         .take(shown)
@@ -5464,10 +5505,16 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme
     // as it.** Both want Tab, the arrows and Escape, and only one of the two is ever on screen
     // — `command_panel` gives the band to the editor outright — so letting both read the same
     // frame's keys would move a highlight nobody can see.
-    if pane.theme_edit.is_some() {
-        theme_edit_keys(ui, pane);
-    } else if live {
-        composer_keys(ui, pane);
+    // 🚨 **…and only while this composer owns the keyboard.** Both readers below consume out
+    // of the raw event list, so a region command line that had focus last frame would find its
+    // Tab, Escape and arrows already gone. `keys` is the measurement that decides; it is `true`
+    // for every console that has not divided its pane, which is what keeps invariant #4.
+    if pane.keys {
+        if pane.theme_edit.is_some() {
+            theme_edit_keys(ui, pane);
+        } else if live {
+            composer_keys(ui, pane);
+        }
     }
     // Three disjoint fields, borrowed separately, so the box can own the text while
     // `submit` still needs the whole pane afterwards. The id comes back out because the

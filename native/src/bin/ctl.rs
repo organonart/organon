@@ -542,6 +542,13 @@ enum ConsoleAction {
         /// Which panel — a Look-tab slug, or `all` with `remove` to empty the column
         #[arg(value_parser = stack_panels())]
         panel: String,
+        /// Which region's column. Omitted, the first region holding `panel` gets it
+        ///
+        /// 🚨 There is a column PER REGION (#98 Tier C), so this is how a terminal names one.
+        /// A person sitting at the console does not type it: a region's own command line
+        /// supplies it, which is what `/add surface` typed inside a column means.
+        #[arg(long, value_parser = region_words())]
+        region: Option<String>,
     },
     /// Save the console's arrangement under a name, bring one back, or take one out
     #[command(after_help = "A LAYOUT is an arrangement of the whole pane — every region and what \
@@ -896,7 +903,9 @@ fn run_console(action: ConsoleAction) -> ! {
         // is the gate that matters for a line written straight onto the sidecar by hand — and
         // nothing is checked *between* them here, because whether the column can honour this
         // depends on what the console is holding right now.
-        ConsoleAction::Stack { action, panel } => cli::ConsoleOp::Stack { action, panel },
+        ConsoleAction::Stack { action, panel, region } => {
+            cli::ConsoleOp::Stack { action, panel, region }
+        }
         // 🚨 **The one console argument beside `posture` that is validated HERE rather than by
         // clap, and for a different reason: it has no list to be a member of.** A layout's name
         // is whatever a person called it, so `PossibleValuesParser` has nothing to say — but the
@@ -1648,10 +1657,11 @@ mod tests {
             for p in panel_stack::panel_words() {
                 let c = parse(&["console", "stack", a, p]).unwrap();
                 match c.cmd {
-                    Cmd::Console { action: ConsoleAction::Stack { action, panel } } => {
+                    Cmd::Console { action: ConsoleAction::Stack { action, panel, region } } => {
                         assert_eq!(&action, a);
                         assert_eq!(panel, p);
-                        let op = cli::ConsoleOp::Stack { action, panel };
+                        assert_eq!(region, None, "the third word is optional and was not given");
+                        let op = cli::ConsoleOp::Stack { action, panel, region };
                         assert_eq!(
                             cli::parse_console_op(&cli::console_op_to_line(&op)),
                             Some(op),
@@ -1670,6 +1680,33 @@ mod tests {
         // because it is the obvious guess and the CLI must not half-accept it.
         assert!(parse(&["console", "stack", "clear"]).is_err(), "clear is not an action");
         assert!(parse(&["console", "stack", "add", "surface", "bloom"]).is_err(), "one pair");
+    }
+
+    /// 🚨 **The optional region, and the round trip is the half that matters.** There is a
+    /// column per region now, so a line that lost its `--region` on the way to the sidecar would
+    /// edit whichever column the destination rule picked — a different one, silently.
+    #[test]
+    fn console_stack_takes_an_optional_region_and_it_survives_the_sidecar() {
+        for word in region::REGION_WORDS {
+            let c = parse(&["console", "stack", "add", "surface", "--region", word]).unwrap();
+            let Cmd::Console { action: ConsoleAction::Stack { action, panel, region } } = c.cmd
+            else {
+                panic!("`console stack add surface --region {word}` parsed as something else")
+            };
+            assert_eq!(region.as_deref(), Some(*word));
+            let op = cli::ConsoleOp::Stack { action, panel, region };
+            assert_eq!(
+                cli::parse_console_op(&cli::console_op_to_line(&op)),
+                Some(op),
+                "`stack add surface --region {word}` must survive the sidecar round trip"
+            );
+        }
+        // The list is `region::REGION_WORDS` and nothing else — the same table `viewport`'s
+        // first ring is built from, so a region added there reaches this flag with no edit.
+        assert!(
+            parse(&["console", "stack", "add", "surface", "--region", "middle"]).is_err(),
+            "no such region"
+        );
     }
 
     /// **`console layout` takes two words and neither is optional** — `stack`'s test, with the
