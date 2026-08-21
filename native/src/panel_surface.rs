@@ -685,11 +685,24 @@ impl OrganonPanels {
             self.dirty = true;
             return;
         }
-        // 🚨 Unreachable while `panels::Status::Live` is on Surface alone — [`Self::card`] is
-        // handed `absent` for every other panel and never gets here — so arriving here means the
-        // table and this match have drifted. It says so rather than drawing an empty box, for
-        // the reason `panel_stack::absent_body` gives about a `Declared` panel: a card that
-        // opens to nothing is indistinguishable from one that failed.
+        // Every other transplanted panel is *declared* rather than written
+        // (`crate::panel_table`), so the Console reaches it the same way Organon's own editor
+        // does: one generated body, two sinks. Surface stays above because its body is
+        // hand-written — it is the one Look panel with disclosure logic, file dialogs and a
+        // material-graph loader in it.
+        if let Some(body) = crate::panel_table::body_for(panel.slug) {
+            let mut sink = Sink::Mirror(&mut self.mirror);
+            body(ui, w2, &self.params, &mut sink);
+            self.dirty = true;
+            return;
+        }
+        // 🚨 Unreachable for a `panels::Status::Live` panel — [`Self::card`] is handed `absent`
+        // for every `Declared` one and never gets here — so arriving here means
+        // `panels::Status` and `panel_table::DECLARED` have drifted. It says so rather than
+        // drawing an empty box, for the reason `panel_stack::absent_body` gives about a
+        // `Declared` panel: a card that opens to nothing is indistinguishable from one that
+        // failed. `panel_table::a_declared_panel_is_exactly_a_live_one` is what stops that
+        // drift reaching a build.
         ui.label(
             egui::RichText::new(format!(
                 "`{}` is Live in the panel table but this console has no body for it",

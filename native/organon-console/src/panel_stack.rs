@@ -693,8 +693,19 @@ mod tests {
     fn surface() -> &'static Panel {
         &panels::LOOK_SURFACE
     }
-    fn bloom() -> &'static Panel {
-        &panels::LOOK_BLOOM
+    /// A panel this build cannot draw a body for — the fallback card's subject.
+    ///
+    /// 🚨 **Re-derived from the table, never named.** It was `&panels::LOOK_BLOOM`, and the
+    /// day Bloom was transplanted three tests here failed for a reason that had nothing to do
+    /// with what they assert: they wanted *a* `Declared` panel and had been handed *that*
+    /// one. Asking the table for the first one it still calls `Declared` keeps them about the
+    /// fallback card as more panels go `Live` — and on the day none is left, `expect` says so
+    /// out loud rather than quietly testing nothing.
+    fn declared() -> &'static Panel {
+        panels::PANELS
+            .iter()
+            .find(|p| p.status == panels::Status::Declared)
+            .expect("every panel is transplanted — these fallback-card tests have no subject left")
     }
 
     #[test]
@@ -702,11 +713,11 @@ mod tests {
         let mut stack = Stack::default();
         assert!(stack.is_empty());
         stack.push(surface());
-        stack.push(bloom());
+        stack.push(declared());
         assert_eq!(stack.len(), 2);
         assert_eq!(
             stack.entries().iter().map(|e| e.panel().slug).collect::<Vec<_>>(),
-            vec!["surface", "bloom"],
+            vec![surface().slug, declared().slug],
             "the column is in the order panels were added"
         );
     }
@@ -718,10 +729,10 @@ mod tests {
     fn a_serial_is_never_reused_after_a_removal() {
         let mut stack = Stack::default();
         let first = stack.push(surface());
-        let second = stack.push(bloom());
+        let second = stack.push(declared());
         assert_ne!(first, second);
-        stack.remove_last("bloom");
-        let third = stack.push(bloom());
+        stack.remove_last(declared().slug);
+        let third = stack.push(declared());
         assert_ne!(third, second, "the departed panel's serial came back");
         assert_ne!(third, first);
         stack.clear();
@@ -744,7 +755,7 @@ mod tests {
     fn remove_takes_the_last_copy_and_answers_none_for_a_panel_not_held() {
         let mut stack = Stack::default();
         let first = stack.push(surface());
-        stack.push(bloom());
+        stack.push(declared());
         let last = stack.push(surface());
         let gone = stack.remove_last("surface").expect("a surface was held");
         assert_eq!(gone.serial(), last, "the LAST copy came out, not the first");
@@ -909,8 +920,8 @@ mod tests {
     fn only_a_declared_panel_carries_the_not_transplanted_sentence() {
         assert_eq!(surface().status, panels::Status::Live);
         assert_eq!(absent_body(surface()), None);
-        assert_eq!(bloom().status, panels::Status::Declared);
-        assert_eq!(absent_body(bloom()), Some(NOT_TRANSPLANTED));
+        assert_eq!(declared().status, panels::Status::Declared);
+        assert_eq!(absent_body(declared()), Some(NOT_TRANSPLANTED));
     }
 
     // -----------------------------------------------------------------------
@@ -1047,10 +1058,10 @@ mod tests {
         stacks.get_mut(Region::Left).push(surface());
         assert_eq!(stacks.get(Region::Left).len(), 1);
         assert_eq!(stacks.get(Region::Right).len(), 0, "one push filled two columns");
-        stacks.get_mut(Region::Right).push(bloom());
+        stacks.get_mut(Region::Right).push(declared());
         assert_eq!(
             stacks.get(Region::Right).entries()[0].panel().slug,
-            "bloom",
+            declared().slug,
             "the columns hold different panels"
         );
         assert_eq!(stacks.total(), 2);
@@ -1179,9 +1190,9 @@ mod tests {
     #[test]
     fn every_panel_in_the_column_is_offered_to_the_caller_declared_ones_included() {
         let mut stack = Stack::default();
-        stack.push(bloom());
+        stack.push(declared());
         stack.push(surface());
-        assert_eq!(bloom().status, panels::Status::Declared);
+        assert_eq!(declared().status, panels::Status::Declared);
         assert_eq!(
             body_ids(&[(Region::Left, &stack)]).len(),
             2,
@@ -1200,7 +1211,7 @@ mod tests {
     #[test]
     fn a_console_with_no_organon_behind_it_still_draws_the_panel() {
         let mut stack = Stack::default();
-        stack.push(bloom());
+        stack.push(declared());
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1224,7 +1235,7 @@ mod tests {
         });
         let drawn = painted_text(&out);
         assert!(
-            drawn.iter().any(|t| t.contains(heading(bloom()))),
+            drawn.iter().any(|t| t.contains(heading(declared()))),
             "the fallback card drew no heading: {drawn:?}"
         );
         assert!(

@@ -447,6 +447,135 @@ pub(crate) fn write<P: Mirrored>(
 }
 
 // ---------------------------------------------------------------------------
+// Choosing the control from the param
+// ---------------------------------------------------------------------------
+
+/// **Which control a param gets, decided by the param's own type.**
+///
+/// 🚨 **This is a measurement, not a convention.** Across every one of the Look tab's **519**
+/// rows — the twenty-five cards of Organon's editor as they stood when [`crate::panel_table`]
+/// was written — there is **not one** case where the editor's choice of control disagrees with
+/// the Rust type of the param behind it:
+///
+/// | param | rows | control |
+/// |---|--:|---|
+/// | [`FloatParam`] / [`IntParam`] | 399 | [`scalar_row`] |
+/// | [`BoolParam`] | 83 | [`check_row`] |
+/// | [`EnumParam`] | 37 | [`choice_row`] |
+///
+/// So a declarative panel table does **not** have to carry the widget kind, and carrying it
+/// would be a second statement of something the type system already says. What the table
+/// carries instead is the label and the grouping, which the param genuinely cannot supply.
+///
+/// ⚠️ **`Param` is sealed, so this cannot be a blanket impl** — the same constraint
+/// [`Mirrored`] has, and the same right failure: a fifth param kind used in a panel is a
+/// compile error naming the missing impl rather than a control silently drawn as a slider.
+pub(crate) trait AutoRow: Mirrored {
+    /// Draw this param's row. `combo_w` is consulted only by the kinds that open a dropdown;
+    /// the others take their width from `avail` and the shared row grid, exactly as they do
+    /// when a panel body calls them by name.
+    fn auto(
+        &self,
+        ui: &mut egui::Ui,
+        avail: f32,
+        label: &str,
+        sink: &mut Sink,
+        get: FieldOf<Self::Field>,
+        combo_w: f32,
+    );
+}
+
+impl AutoRow for FloatParam {
+    fn auto(
+        &self,
+        ui: &mut egui::Ui,
+        avail: f32,
+        label: &str,
+        sink: &mut Sink,
+        get: FieldOf<f32>,
+        _combo_w: f32,
+    ) {
+        scalar_row(ui, avail, label, self, sink, get);
+    }
+}
+
+impl AutoRow for IntParam {
+    fn auto(
+        &self,
+        ui: &mut egui::Ui,
+        avail: f32,
+        label: &str,
+        sink: &mut Sink,
+        get: FieldOf<i32>,
+        _combo_w: f32,
+    ) {
+        scalar_row(ui, avail, label, self, sink, get);
+    }
+}
+
+/// ⚠️ **A checkbox ignores `avail`**, because [`check_row`] is a plain `ui.checkbox` rather than
+/// a row on [`theme::row_grid`]'s grid — `lib.rs`'s `crow` has never taken a width and this must
+/// keep drawing what it draws.
+impl AutoRow for BoolParam {
+    fn auto(
+        &self,
+        ui: &mut egui::Ui,
+        _avail: f32,
+        label: &str,
+        sink: &mut Sink,
+        get: FieldOf<bool>,
+        _combo_w: f32,
+    ) {
+        check_row(ui, label, self, sink, get);
+    }
+}
+
+impl<T: Enum + PartialEq> AutoRow for EnumParam<T> {
+    fn auto(
+        &self,
+        ui: &mut egui::Ui,
+        avail: f32,
+        label: &str,
+        sink: &mut Sink,
+        get: FieldOf<u32>,
+        combo_w: f32,
+    ) {
+        choice_row(ui, avail, label, self, sink, get, combo_w);
+    }
+}
+
+/// A control at the default dropdown width — `lib.rs`'s `srow` / `crow` / `param_combo`, chosen
+/// by the param. See [`AutoRow`].
+pub(crate) fn auto_row<P: AutoRow>(
+    ui: &mut egui::Ui,
+    avail: f32,
+    label: &str,
+    param: &P,
+    sink: &mut Sink,
+    get: FieldOf<P::Field>,
+) {
+    param.auto(ui, avail, label, sink, get, theme::COMBO_W);
+}
+
+/// A control at `2 × COMBO_W` — `param_combo_sized`'s hero width, for the few dropdowns whose
+/// variant names need the room (`generator`, `palette`, `surface_mode`, …). Identical to
+/// [`auto_row`] for every control that does not open a dropdown.
+// ⚠️ No caller until a declared panel has a `wide` item in it — the three panels the table
+// starts with are sliders and a checkbox. `panel_table`'s `@draw`/`@one` arms reach it the
+// moment one does, and the `allow` comes off then.
+#[allow(dead_code)]
+pub(crate) fn auto_row_wide<P: AutoRow>(
+    ui: &mut egui::Ui,
+    avail: f32,
+    label: &str,
+    param: &P,
+    sink: &mut Sink,
+    get: FieldOf<P::Field>,
+) {
+    param.auto(ui, avail, label, sink, get, 2.0 * theme::COMBO_W);
+}
+
+// ---------------------------------------------------------------------------
 // The identity join
 // ---------------------------------------------------------------------------
 //

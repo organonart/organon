@@ -157,6 +157,11 @@ pub mod params;
 /// The **Look ▸ Surface** panel's body — the first of Organon's 25 editor cards to be drawn in
 /// Organon Console as well as in the editor, from one source. See [`param_sink`].
 pub mod panel_surface;
+/// **Organon's editor panels, declared as data** — the one table Organon's editor, Organon
+/// Console and a preset-built panel all render from (organon#124). Read its module doc before
+/// converting a panel: it says what the table carries and, more usefully, what it deliberately
+/// does not because the param already says it.
+pub mod panel_table;
 mod preset;
 pub mod recipe;
 pub mod synth;
@@ -5071,16 +5076,20 @@ pub(crate) fn editor_ui(
                 // + Minimal-surface still use the PBR material, so only KIFS
                 // hides them.)
                 if !kifs {
+                // 🚨 **The body is `panel_table::shadows`, and Organon Console draws the same
+                // one** (organon#124). The rows, their labels, their order and the help text
+                // below them are declared once, as data, so that a panel built from a preset's
+                // diff groups them the way this card does without a second list to keep in
+                // step. `Sink::Host` must stay byte-for-byte what this card used to do — the
+                // editor is the reference rendering of an Organon panel, never a second
+                // opinion about one.
                 card(&mut c[1], panels::LOOK_SHADOWS.title, |ui| {
-                    crow(ui, "enable (shadow map)", &params.shadow_enabled, setter);
-                    srow(ui, w2, "bias", &params.shadow_bias, setter);
-                    srow(ui, w2, "strength", &params.shadow_strength, setter);
-                    help(ui, "Off by default. A world-space depth map from the KEY light — \
-                             cubes cast real shadows on each other. Raise bias if you see \
-                             shadow acne (stippling), lower it if shadows detach. \
-                             Instanced/cube paths only (raymarch + membrane don't cast). \
-                             On an M3+ Mac, RT Shadows (Ray Tracing card) supersede this \
-                             map with traced per-pixel occlusion — no bias tuning needed.");
+                    panel_table::shadows::body(
+                        ui,
+                        w2,
+                        &params,
+                        &mut param_sink::Sink::Host(setter),
+                    );
                 });
                 card(&mut c[1], panels::LOOK_AO.title, |ui| {
                     crow(ui, "enable (depth AO)", &params.ssao, setter);
@@ -5643,12 +5652,14 @@ pub(crate) fn editor_ui(
                              spots ↔ stripes ↔ maze; pigment carves albedo.");
                 });
                 } // end KIFS-hidden look cards (Cast Shadows → reaction-diffusion)
+                // Declared in `panel_table::lighting` — see the Shadows card above.
                 card(&mut c[0], panels::LOOK_LIGHTING.title, |ui| {
-                    srow(ui, w2, "ambient", &params.ambient, setter);
-                    srow(ui, w2, "key", &params.key_intensity, setter);
-                    srow(ui, w2, "fill", &params.fill_intensity, setter);
-                    srow(ui, w2, "elevation", &params.elevation, setter);
-                    srow(ui, w2, "azimuth", &params.azimuth, setter);
+                    panel_table::lighting::body(
+                        ui,
+                        w2,
+                        &params,
+                        &mut param_sink::Sink::Host(setter),
+                    );
                 });
                 card(&mut c[0], panels::LOOK_IBL.title, |ui| {
                     srow(ui, w2, "exposure", &params.exposure, setter);
@@ -5850,9 +5861,9 @@ pub(crate) fn editor_ui(
                              GI and the emissive-cube point lights — a pure \
                              GI/light emitter for the fluid. All inert at 0.");
                 });
+                // Declared in `panel_table::bloom` — see the Shadows card above.
                 card(&mut c[2], panels::LOOK_BLOOM.title, |ui| {
-                    srow(ui, w2, "bloom", &params.bloom_intensity, setter);
-                    srow(ui, w2, "threshold", &params.bloom_threshold, setter);
+                    panel_table::bloom::body(ui, w2, &params, &mut param_sink::Sink::Host(setter));
                 });
             }); // end Look-tab columns
             } // end Look tab
