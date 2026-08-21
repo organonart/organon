@@ -3060,10 +3060,12 @@ benchmark itself is `#[ignore]`d; §8 of the document is the list of what it did
 
 ### 1.8 The command registry — one table, four front doors
 
-✏️ **Five, since #98 Tier C.** A region's own command line is the newest, and the heading is left
-standing because "four front doors" is the phrase this file and `registry.rs`'s header use
-throughout; the table below carries the fifth. §1.14's Tier C subsection owns it, including the
-one property the others do not have — the region is *context*, so a verb sheds a word.
+✏️ **Four again.** #98 Tier C briefly made it five — a command line in every region, dispatching
+this whole table — and **that was cut back to a two-word control**, which is not a front door onto
+the vocabulary and is not counted as one. §1.14's Tier C subsection owns the reversal and the
+argument for it. The panel column's control still *expands onto* `console.stack` and reaches the
+same dispatch, so it is not a second vocabulary either; it simply is not a way of reaching the
+table.
 
 **The console's own verbs now have one vocabulary and several spellings, and the newest
 spelling is a slash command a human types into the composer.** `organon-console/src/registry.rs`
@@ -3090,7 +3092,7 @@ the assumption afterwards.
 | `organon console background slate` | a terminal, a script, a harness with no other way in | clap → `cli::ConsoleOp` → the sidecar |
 | `mcp__organon__console_background` | an agent, on its own initiative | MCP tool → `ConsoleDispatch` → the sidecar |
 | `/background slate` | **a human, in the composer** | `Registry::resolve` → `ConsoleDispatch` → the sidecar |
-| `/add surface` in a region | **a human, in the rectangle it acts on** | `region_line` → `Registry::resolve` → the same `ConsoleDispatch` (§1.14, Tier C) |
+| `add surface` in a panel column | **a human, in the rectangle it acts on** — ✏️ **two words only**, not a door onto this table | `region_line` → expands onto `console.stack` → `Registry::resolve` → the same `ConsoleDispatch` (§1.14, Tier C) |
 | a pie-menu wedge | a human, with a pointer | **not built** — the registry is shaped for it |
 
 They already converged on `Console::apply_console(&ConsoleOp)`, which is what makes several
@@ -3240,8 +3242,9 @@ possible direction. The brackets mark the word Tab would take; a bracket rather 
 alone, because colour is a weak signal in a row of same-sized words and dies in a screenshot,
 and rather than the verbose list's `>`, which reads as a bullet when there is only one row.
 `conversation_view::compact_line` is that row as a plain string, so it can be read in a test
-rather than looked at. ✏️ **`compact_join` was split out of it for #98 Tier C**: a region's command
-line builds its words from a *pruned* palette rather than from `Registry::candidates`, and it gets
+rather than looked at. ✏️ **`compact_join` was split out of it for #98 Tier C**: a panel column's
+control builds its words from its own two-verb palette rather than from `Registry::candidates`,
+and it gets
 the same fitting rule, the same ` | ` separator and the same `+N` count by calling the same
 function. Two producers of words, one row — a second joiner is exactly how the two would come to
 disagree about what a hidden count looks like.
@@ -3496,7 +3499,9 @@ one was pruned. Reading back the session log is the honest way to make it surviv
 ✏️ **All four keys are now conditional on one more thing: whether this composer owns the keyboard
 at all** (#98 Tier C). `composer_keys` and `theme_edit_keys` both read from the raw event list, and
 `arrow_owner` hands Up to the history unconditionally on an empty box — safe while the console had
-exactly one command input, and not once every non-`agent` region has a command line of its own.
+exactly one command input, and not once a panel column has an input of its own. ✏️ **Narrower than
+it was**: Tier C gave every non-`agent` region a command line, and only a `panel` region has one
+now, so a console with no panel column never leaves the composer.
 `ConversationPane::set_keys` is the gate, written each frame from
 `region_line::Lines::composer_owns_keys`, which is a **measurement** of which widget had egui focus
 last frame rather than a policy. It is `true` for every console that has not divided its pane, so
@@ -4994,10 +4999,11 @@ that already works.
 
 **Reason (a), the mechanical one, is dissolved.** It read: *"the add verb has two rings
 (`<action> <panel>`) and no room for a region word, so a per-region stack would give every region
-after the first a column nothing could ever put anything into."* Tier C's command line makes the
+after the first a column nothing could ever put anything into."* Tier C's control makes the
 region **context** — a line typed inside a rectangle names that rectangle by being typed there —
 and the one dispatch path carries it as an **optional** third word. Every column is fillable, so
-no arm is unreachable.
+no arm is unreachable. ✏️ **Narrowing Tier C did not weaken this**: `add`/`remove` is exactly the
+part of that line the dissolution rests on, and it is the part that survived.
 
 **Reason (b) conflated two objects, and only one of them was ever console-wide.** It read: *"two
 `panel` regions are two views of one instrument"*, on §1.11's `OrganonPanels` precedent (*"one
@@ -5129,37 +5135,93 @@ listing only the one `/organon` names would leave a wheel over the second scroll
 near the pointer. ⚠️ The conversation front-end needs nothing: its scrollback is an
 `egui::ScrollArea` and the region `Ui`s are clipped, so egui's own hover test already answers.
 
-#### 🚨 A command line inside a region — the fifth front door — Tier C
+#### 🚨 A panel column's add/remove control — Tier C, narrowed after use
 
-**`organon-console/src/region_line.rs`.** Every region that does not hold an `agent` gets a
-command line of its own along its bottom edge. It is **not a fifth vocabulary**: every line goes
-through `Registry::resolve` and arrives at the same dispatch the CLI, the MCP tool and the
-composer reach (§1.8). What the region adds is **context** — the rectangle you typed into is a
-word you no longer have to say.
+**`organon-console/src/region_line.rs`.** A region holding `panel` gets a one-line control along
+its bottom edge. It takes exactly two words — `panel_stack::STACK_ACTIONS`, i.e. `add` and
+`remove` — each followed by a panel name from `panel_stack::panel_words()`, with `remove all`
+emptying the column. **A region holding `agent` or `3d`, and a region holding nothing, gets no
+line at all.**
 
-**`/add surface` typed in a panel column does what `organon console stack add surface` does**, in
-that column. `/panel`, `/agent`, `/3d` and `/off` assign the region they are typed in. Those two
-families are the two shapes the shedding takes, and both are the same claim — *you did not type
-the region*:
+**`add surface` in a panel column does what `organon console stack add surface` does**, in that
+column. The line expands onto `/stack add surface` and `Registry::resolve` validates it, so the
+control and the CLI stay one vocabulary with one set of refusals — but the control is **not a
+front door onto the table** (§1.8): the two words are all it takes.
 
-| Typed | The registry hears | The region supplies |
-|---|---|---|
-| `/panel` | `viewport <this region> panel` | the region, as a **required positional**, spelled into the words |
-| `/add surface` | `stack add surface` | the region, as the **optional keyword**, put into the resolved arguments |
+##### ✏️ This REVERSES what Tier C shipped, and the reversal is recorded rather than quietly applied
 
-They differ because the two verbs' grammars differ, and neither could take the other's shape: a
-required positional cannot be skipped, and an optional keyword is filled by name after the
-required words, so it cannot be a prefix. The expansion is therefore a **head swap and nothing
-else** — the first word is replaced, every later character survives byte for byte — which is what
-makes a completion built against the expanded line un-expandable back to the line a person is
-looking at.
+#98 Tier C shipped a command line in **every** region, dispatching the **whole** console registry,
+under the rule **prune discovery, never capability**: the band listed a region's own verbs and
+`region_line::act` accepted every verb in the catalog, so `/theme dark` typed into a panel column
+ran. It had a test defending exactly that and a review round behind it. **It no longer runs, by
+design.**
 
-##### 🚨 The hard part is focus, not parsing
+James used it and rejected the scope: *"I don't want every region to have commands like this. At
+least that wasn't my original intention. … What I envisioned is not that I want to be able to
+have slash commands to set each region to be what it could be. I only particularly wanted to be
+able to add and remove panels from a panel section."*
 
-`conversation_view::composer_keys` consumes Tab, Escape and the arrows out of the **raw event
-list**, not out of a focused widget — and two of them unconditionally: `arrow_owner` hands Up to
-the history whenever the composer is empty. That was safe while the console had exactly one
-command input. A second input would have found its own Up already gone before it ran.
+⚠️ **The old rule is not wrong; it is about a different object, and that is the whole
+reconciliation.** "Prune discovery, never capability" guards a **general command surface** against
+becoming a jail: a surface that offers ten verbs and secretly refuses the eleventh has taught the
+person using it that its list is a lie, and loosening a refusal later is far harder than widening
+an offer. This is no longer a general command surface. It is a **dedicated control for one job** —
+the way a scrollbar is not a crippled command line and a volume knob is not a pruned synthesiser.
+A control that does one thing is not a pruned version of a thing that does everything, so the rule
+does not reach it: there is no hidden capability to discover, and the list **is** the vocabulary.
+
+⚠️ **What was given up, said plainly.** `/theme dark`, `/posture`, `/background` and every other
+console verb no longer run in a region. Assigning a region is `/viewport <region> panel` at an
+agent, or `organon console viewport …` from a terminal — which is what it was before Tier C. An
+unknown first word is refused **by name**, and the refusal says what the control does take and
+where the rest of the vocabulary lives. Nothing was made unreachable; it was made un-typeable
+*here*.
+
+⚠️ **What went with it, so nobody looks for it**: the `Shed` table and the `Context::content`
+field (there is no content to branch on when only one kind gets a line), the `RegionPalette::
+elsewhere` sentence (nothing is pruned any more, so there is nothing for it to name), the
+view-lane refusal (subsumed by the one refusal), and the `dismissed` latch with its Escape
+handling — the two words are the control's own label and are always shown, so there is no band to
+shut. **Escape is now left alone on purpose**, which means egui's `TextEdit` does what it does
+everywhere else with it: surrender focus, handing the composer its keys back.
+
+##### 🚨 The defect this also fixed: egui gave the box a new id every time the palette opened
+
+James, on the shipped Tier C build: *"When I type slash in one of the regions, I just get a list
+of choices and some text below it, and I can't type or select anything."*
+
+**The cause was `egui::TextEdit`'s id, and it had nothing to do with key consumption.** The box
+was added with no explicit id, so egui derived one from `Ui::next_auto_id` — a counter over the
+widgets allocated before it. The palette's rows are drawn *above* the box, so the instant a `/`
+opened the band two more labels existed ahead of it, the box's id changed, egui saw a **different
+widget**, and focus was stranded on an id nothing drew any more. The first keystroke landing and
+none of the rest is the signature of that, and it is what a headless probe measured. `BOX_ID` is
+the fix: an explicit salt, so the box is the same widget whatever is drawn around it.
+
+⚠️ **A second, independent defect was measured on the way, and stopping at the first would have
+left it.** In a 320 pt side column the old band's `elsewhere` sentence wrapped to several rows and
+pushed the box **35.6 pt past the band's own clip rect** (measured: content `529.5 → 635.6` in a
+band ending at `600.0`) — invisible and unclickable even with a stable id. Two faults, one
+symptom.
+
+**The row order is therefore a safety property rather than a taste: candidate row, then the box,
+then the note.** The candidate row is `compact_join`, which fits itself to the available columns
+and is exactly one row, always. The note is the only unbounded thing in the band — a refusal
+naming every panel wraps — so it goes **last**, below the box. Anything that overflows pushes the
+*explanation* out of the clip rect and never the *input*. Put the note first and a long refusal
+hides the box that would let you correct it.
+
+⚠️ **The mutation table is in `a_note_appearing_does_not_take_the_box_with_it`'s doc, and it
+corrects the obvious assumption**: on today's code, deleting `BOX_ID` does **not** fail the suite,
+because the narrowing made the candidate row unconditional and the widget count above the box
+stopped varying. Only "salt deleted **and** note moved above the box" fails. Both fixes are kept
+because each covers the other's gap, and a later edit is then free to move a row.
+
+##### 🚨 The hard part is still focus, not parsing
+
+`conversation_view::composer_keys` consumes Tab and the arrows out of the **raw event list**, not
+out of a focused widget — and two of them unconditionally: `arrow_owner` hands Up to the history
+whenever the composer is empty. That was safe while the console had exactly one command input.
 
 **The owner is measured, never asserted.** `region_line::Lines::owner` is the region whose line had
 egui focus **last frame**, recorded by `region_line::draw` from the `TextEdit`'s own
@@ -5180,92 +5242,68 @@ carries no keystroke: **focus moves by a click, and a click is not a key.**
 keys back when the last line goes away. A latch cleared only by an explicit blur would leave the
 composer's keys held by a rectangle that no longer exists.
 
-⚠️ **A region holding `agent` gets no line**, and that is the arbitration made cheaper rather than
-a limitation: that rectangle already has the console's original command line in it, and two inputs
-in one rectangle with nothing to tell them apart is the problem made worse. So a default
-console — one region, holding the agent — draws no region line at all, and invariant #4 holds by
-construction rather than by a comparison.
+⚠️ **A console with no panel column has no region line at all**, so invariant #4 holds by
+construction: the default console — one region, holding the agent — draws nothing here, and the
+composer behaves exactly as it did before this module existed.
 
-##### 🚨 Prune discovery, never capability
+##### 📌 What an empty column and a vacant region show
 
-**The list is narrow; the table is whole.** The band offers a region's *own* verbs and nothing
-else. `region_line::act` accepts **every console verb in the registry**: `/theme dark` typed into a
-panel column works, because a palette is a console-wide setting and refusing it here would turn a
-region into a jail — and loosening a refusal later is far harder than tightening an offer.
+An empty **panel column** names the two words its own control takes (*"panel — an empty column.
+Type `add surface` in the line below; `remove all` empties it again"*), and the control's box says
+the same thing in its hint on an empty line — a control that does exactly two things should say
+which two the moment you look at it.
 
-⚠️ **The one genuine refusal is the view lane**, by name. `/surface`, `/media`, `/organon` and
-`/help` put something in *a transcript*, and a region holding a column is not one; the refusal says
-so and names where the verb does work. `/help` falls under it too, which is right rather than
-merely convenient: this line's own band **is** its help, and it says what it left out.
+✏️ **A vacant region's notice went back to naming the other doors**, because it no longer has a
+line of its own to point at: *"empty — `/viewport <region> panel` at an agent, or `organon console
+viewport …` from a terminal, fills it"*. Tier C's version named a control that is no longer drawn
+there, which is exactly the status line that cannot be right — the two arms it used to have (one
+for "a line was drawn", one for "too short") collapse back into one.
 
-##### ⚠️ The pruned surface says what it left out
-
-`RegionPalette::elsewhere` is a `String`, never an `Option<String>` — `Ring::Empty`'s precedent one
-scale up, a thing that cannot exist without its sentence. Typing `/th` in a panel column shows no
-candidates and the line *"`/theme` belongs to the console line, not this `left` region, but it runs
-here anyway"*; a bare `/` shows the region's own words and *"this list is `left`'s own: it holds
-`panel`. The console line's verbs run here too: `/background`, `/rig`, `/theme`, `/posture` +N"*.
-**Generated from the registry**, never a hand-kept list of
-"the other verbs", which would be the second vocabulary §1.8 exists to prevent arriving from the
-friendliest direction.
-
-⚠️ **A second absence gets its own sentence.** `stack`'s optional `region` keyword is a real part of
-the verb's grammar and the registry offers it — correctly — but in a line whose premise is that the
-region is context, offering the word would invite a second, contradicting one. It is dropped from
-the ring and named: *"`region` is supplied by the line you are typing in: it is `left`."*
-
-⚠️ **Every one of those sentences is ASCII, and the rule has a boundary worth stating.**
-`region_line`'s glyph guard covers the strings this module *composes* — a `✓` in none of egui's
-four bundled fonts shipped once already and was photographed as an empty box. It deliberately does
-**not** cover a refusal the registry produced: that is the console line's own wording, already drawn
-by the composer on every build, and passed through here byte-for-byte. Re-wording it would make one
-mistyped verb read differently depending on which rectangle it was typed in, which is the second
-vocabulary from the other direction — so the pass-through is pinned as *unmodified* instead, and the
-glyph question stays where the string is written.
-
-##### 📌 What an unassigned region shows
-
-Its own command line and a hint. A rectangle that holds nothing stops apologising for itself and
-becomes the thing that fixes it: type `/panel` into it and it holds a column. That is the standing
-question §1.14 left open, answered by the region being context.
-
-##### ⚠️ What the region line deliberately does NOT do
+##### ⚠️ What the control deliberately does NOT do
 
 **No self-completion and no autorun.** Both are §1.9 rules of the composer's and both rest on
 `completion_held` — the latch that keeps a completion from undoing a backspace on the frame it
 happens, read off a shadow copy taken at the top of the frame. Reproducing them here without that
-measurement would reintroduce the worst defect the command panel has had (*"once I have typed slash
-surface, I am no longer able to backspace out of it"*). **Tab accepts, Enter runs**, which is the
-pair §1.9 says must never be one key, and every candidate answers `fires: false` — the honest
-reading of a switch that is off, rather than a value copied from the entry.
+measurement would reintroduce the worst defect the command panel has had (*"once I have typed
+slash surface, I am no longer able to backspace out of it"*). **Tab accepts, Enter runs**, which is
+the pair §1.9 says must never be one key, and every candidate answers `fires: false`.
 
-**No history.** Up and Down move the highlight. The composer's recall buffer exists because that
-box is also where prose is written; a region line holds one command at a time and the last one is
-still in the box until it is replaced.
+**No history.** Up and Down move the highlight.
+
+⚠️ **The leading slash is tolerated, not required.** `add surface` is the natural thing to type at
+a control; but Tier C shipped a slash line and taught one, so `/add surface` still works — one
+grammar with an optional ornament, rather than a refusal aimed at the only spelling anybody has in
+their fingers.
 
 ##### The lane, and the row
 
 Full console lane. `region_line::Act::Run` carries a catalog name and arguments and `console_main`
-hands them to the **same** `ConsoleDispatch` a `/`-command in the composer reaches, which writes the
-console's sidecar, which `drain_console` drains next frame through the real `CommandService`. A
-line typed in a region leaves a `CommandRun` record exactly as one typed in the composer does, and
-the receipt says **accepted**, never applied.
+hands them to the **same** `ConsoleDispatch` a `/`-command in the composer reaches, which writes
+the console's sidecar, which `drain_console` drains next frame through the real `CommandService`.
+A line typed in a column leaves a `CommandRun` record exactly as one typed in the composer does,
+and the receipt says **accepted**, never applied.
+
+⚠️ **The column this control lives in is supplied, never offered — and never forced.**
+`panel_stack::REGION_ARG` is dropped from the ring, because offering it inside a control whose
+premise is that it edits *this* column would invite a second, contradicting one. It is still
+*accepted* if typed in full: `add surface region right` typed in the `left` column reaches
+`right`, because the caller named it. The supplied word only ever fills an empty slot.
 
 ⚠️ **The band's row is `conversation_view`'s own.** `compact_join` was split out of `compact_line`
 so a second *producer* of words gets the same fitting rule, the same ` | ` separator and the same
-`+N` count. Two producers, one row — a second joiner is how the two would come to disagree about
-what a hidden count looks like. ⚠️ The band is a **fixed four rows** rather than a measured one: a
-note long enough to wrap is clipped by the region's own clip rect, because a band that changed
-height under a hand typing into somebody's assigned content is a worse trade here than in the
-composer, which owns its whole pane.
-
+`+N` count. Two producers, one row. ⚠️ The band is a **fixed four rows** — candidate row, box, and
+two for a note — rather than a measured one: a note longer than that is clipped by the region's
+own clip rect, which the row order makes survivable.
 #### What Tier A leaves to B, C and D
 
-✏️ **Three columns landed, and so did Tier C** — the two subsections above own them. The command
-line made a per-region stack addressable and answered "what does an unassigned region show", both
-as scoped. **A tab per agent region** is Tier D, still blocked on the borrow and nothing else, and
-Tier C did not touch it: an `agent` region gets no command line precisely because it already has
-one. Saved layouts landed early (§1.15); animated transitions and drag-to-resize stay after Tier D,
+✏️ **Three columns landed, and so did Tier C — then Tier C was cut back to a two-word control**;
+the two subsections above own both. What survives of it is the half James asked for: a per-region
+stack is addressable from the column it acts on. ⚠️ **What it no longer answers is "what does an
+unassigned region show"** — a vacant region has no line again and its notice names the composer
+and the CLI instead, which is a smaller answer and an honest one. **A tab per agent region** is
+Tier D, still blocked on the borrow and nothing else, and Tier C never touched it: an `agent`
+region gets no line, now because only a `panel` region does and formerly because it already had a
+composer. Saved layouts landed early (§1.15); animated transitions and drag-to-resize stay after Tier D,
 for §1.14's own reason — and Tier B sharpened one of them: a divider a hand can move is now a change
 to *two* cuts whose positions come from a constant, so it is the constant that would become state,
 not a ratio that already exists.
@@ -5577,7 +5615,7 @@ them would suggest a name that then fails to load.
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
-| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. What is left of #98 there is **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D — it records whatever arrangement exists and derives every word from `Region::ALL`, which is why **Tier B landing under it changed nothing in it**. What it leaves behind is small and named: ✏️ **the name ring has since become a `NarrowFn` over the library** — measured first, which is what the deferral asked for, and the measurement is why it is cached rather than read straight (§1.15: the candidate walk runs on the *draw* path and asks n + 1 times per call, so a hundred layouts is 10.1 ms against a 16.7 ms frame) — and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ **Tier B's word-level break is the first real test of a layout's forward compatibility, and it is the expected behaviour rather than a bug**: a `layouts.json` written before it still loads (`left` and `right` resolve, and now mean the outer column), and one naming `topcenter` is refused **by name** in an older build rather than half-loaded — which is exactly the story §1.15's refusal table is arranged to give. ⚠️ Animated transitions and drag-to-resize are still after Tier C — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
+| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. ✏️ **Tier C landed and was then cut back**: it shipped as a command line inside each region dispatching the whole registry, James rejected that scope on a running console, and what remains is a two-word `add`/`remove` control in `panel` regions only — which is still what makes a *per-region* stack addressable, and is all it was wanted for (§1.14). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D — it records whatever arrangement exists and derives every word from `Region::ALL`, which is why **Tier B landing under it changed nothing in it**. What it leaves behind is small and named: ✏️ **the name ring has since become a `NarrowFn` over the library** — measured first, which is what the deferral asked for, and the measurement is why it is cached rather than read straight (§1.15: the candidate walk runs on the *draw* path and asks n + 1 times per call, so a hundred layouts is 10.1 ms against a 16.7 ms frame) — and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ **Tier B's word-level break is the first real test of a layout's forward compatibility, and it is the expected behaviour rather than a bug**: a `layouts.json` written before it still loads (`left` and `right` resolve, and now mean the outer column), and one naming `topcenter` is refused **by name** in an older build rather than half-loaded — which is exactly the story §1.15's refusal table is arranged to give. ⚠️ Animated transitions and drag-to-resize are still after Tier C — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
@@ -5662,20 +5700,29 @@ path silently breaks the three-products-simultaneously guarantee that
   `mind_main.rs` — are not. Unlike the Windows/Mind asymmetry, which `ci.yml` argues for, this
   one is a gap rather than a considered trade.
 
-- 🚨 **NOBODY HAS TYPED A CHARACTER INTO A REGION COMMAND LINE** (#98 Tier C). Every claim in
-  §1.14's Tier C subsection about *vocabulary* is measured headless — the expansion, the pruning,
-  the sentence, the refusals, the arbitration value — and **not one about the surface** is. No
-  band has been drawn on a screen, no box has been clicked, and the arbitration itself has only
-  ever been exercised as a value: `Lines::begin`/`owner`/`composer_owns_keys` are unit-tested,
-  and the thing they are *for* — clicking from the composer into a column's line and back, and
-  Tab meaning the right thing on each side — needs a hand. ⚠️ **The failure mode this names: the
-  focus story is the part of the tier most likely to be subtly wrong and the part a green suite
+- 🚨 **THE COLUMN'S CONTROL IS NOW DRIVEN HEADLESS, BUT STILL NOBODY HAS TYPED INTO IT ON A
+  SCREEN** (#98 Tier C, narrowed). ✏️ **This entry used to read "nobody has typed a character into
+  a region command line", and that was the entry that mattered**: James then typed into one and
+  found it would not accept input at all. The suite has since gained real egui frames —
+  `typing_survives_the_palette_opening`, `a_note_appearing_does_not_take_the_box_with_it` and
+  `tab_takes_the_highlighted_candidate` drive `egui::Event::Text` and `Event::Key` through
+  `region_line::draw` at a real 320 pt column width — so *"a character reaches the box"* and
+  *"Tab takes the highlighted candidate"* are now measured rather than asserted, and the
+  measurement is what found the defect. ⚠️ **What is still unmeasured is everything about the
+  surface as a surface.** No band has been looked at, no box has been clicked with a mouse, and
+  the arbitration is exercised only as a value: `Lines::begin`/`owner`/`composer_owns_keys` are
+  unit-tested, and the thing they are *for* — clicking from the composer into a column's line and
+  back, and Tab meaning the right thing on each side — needs a hand. ⚠️ **The failure mode this
+  names: the focus story is the part most likely to be subtly wrong and the part a green suite
   says least about.** The one-frame-behind gate is argued from "focus moves by a click and a
   click is not a key"; if some route moves focus *with* a keystroke in the same frame, that frame
   goes to the wrong reader, and the symptom is one lost Tab rather than anything that looks
   broken. ⚠️ Nor has anyone judged the band: four fixed rows against `MIN_SIDE`-adjacent regions,
-  a note that clips rather than wraps, and a sentence that is deliberately long enough to say
-  something — all taste calls, all James's.
+  a note that clips rather than wraps, and whether a control that is always showing two words
+  reads as a control or as clutter — all taste calls, all James's.
+  ⚠️ **And the general lesson, which cost this tier a round trip**: a headless suite that never
+  drives the framework's own input path can be entirely green about a widget nobody can type
+  into. The three tests above are cheap and were available the whole time.
   ⚠️ **The per-region stack is one measurement extended by argument.** James saw one `stack add
   surface` fill both side columns and said the columns should differ; that is a real observation
   and it is the whole of what forced the change. **Nobody has assembled two genuinely different
