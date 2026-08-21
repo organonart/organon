@@ -6034,6 +6034,108 @@ joins with ` | ` — unambiguous precisely because `check_name` makes whitespace
 name. And matching stays exact: `Desk` and `desk` are two options, shown as two, because folding
 them would suggest a name that then fails to load.
 
+### 1.16 The status log — where the console says things that are not the conversation
+
+**`organon-console/src/status_log.rs`**, drawn by `conversation_view::log_panel` and pointed at by
+`log_indicator` on the status band. Every line the console writes about a session is recorded here.
+The conversation shows the exceptions. The band shows one small mark. `/trace on` — or a click on
+that mark — opens the panel.
+
+#### 🚨 The rule is where a line LIVES, not a judgement somebody has to remember
+
+Before this, a line the console wanted to say had exactly two futures: **in James's conversation, or
+gone.** That is why status chrome kept leaking back — somebody judges a line important enough to
+show, and the only way to show it *is* the transcript — and why `/trace on` was no help: it made the
+flow **noisier** rather than opening a different window. James, 2026-08-20: *"I like the idea that
+there is a status log somehow, but it should not be present normally. … it should not feel like part
+of the conversational flow. When everything is moving right, I generally don't care about this stuff
+unless there is some exception or problem."*
+
+So there are now three places a line can be, and only the first is a decision anyone makes:
+
+| | What it holds | Who decides |
+|---|---|---|
+| **The log** | everything, successes included | nobody — `StatusLog::push` classifies nothing |
+| **The conversation** | exceptions only | `Remark::always`, read at draw time by `StatusLog::exceptions` |
+| **The band** | one mark, quiet or lit | derived from the log's contents by `StatusLog::slot` |
+
+📌 **Nothing is classified show-or-hide when it is *written*, only when it is *drawn*** — which is
+`Remark::seen`'s old argument, kept and strengthened. One flag serves both surfaces, so the
+conversation and the indicator cannot come to disagree about which lines are exceptional. What is
+gone is the *mode*: `seen(tracing)` no longer exists, because there is no state in which the
+scrollback shows more than the exceptions.
+
+#### 🚨 The indicator has to be trustworthy, which is the hard part
+
+This tree keeps finding the same defect — a status line that cannot be wrong is not a status line
+(`organon-swap` reading `failed` while swap was active; a lighting renderer printing `ambient is
+OFF` while running `--ambient glow`). An indicator that is silent when healthy is worth having
+**only if it reliably lights when things are not.** So:
+
+- `StatusLog::unread` walks the lines **on every call**. There is no cached flag to drift from them.
+- The only carried state is a **high-water mark**, and it cannot disagree with the log about *which*
+  lines exist: a line's identity is its sequence number, computed from the count of everything ever
+  written minus what is still held.
+- Both directions are tested, and both are mutation-checked. Making the filter ignore `always` fails
+  five tests, the first with *"machinery lit the indicator — it will stop being read"*; making it
+  never light fails seven, the first with *"an exception left the indicator dark — the badge is a
+  lie"*; dropping `set_tracing`'s `acknowledge` fails one with *"opening the log did not clear the
+  indicator"*.
+
+⚠️ **It clears by being read, not by ageing**, and the two rejected rules are worth recording. *Never
+clears* is a badge permanently lit, which is a badge nobody reads — the silent failure by another
+road. *Ages out* would go quiet precisely because somebody stepped away, which is the case it exists
+for. Opening the log is the one event that is evidence a human looked; a new exception written
+afterwards lights it again, because it has not been looked at either.
+
+#### The panel is chrome, and its placement says so
+
+It is drawn **immediately above the band**, in the band's own fill and edge — in a bottom-up column
+the second child sits directly over the first, so the log opens as a drawer out of the mark that was
+clicked. Not a window over the page, and above all not a region of the transcript: *"it should not
+feel like part of the conversational flow"* is the governing sentence, and a log rendered inline
+fails it however it is styled. Bounded by the smaller of nine rows and 45% of what the pane has
+left — the fraction alone would swallow a tall window, the row count alone a short one.
+
+⚠️ **The panel shows the log whole**, exceptions and machinery alike, newest at the bottom. There is
+no filter and no mode: the quiet/loud decision has already been spent on which lines reach the
+*conversation*, and spending it twice would give this surface its own opinion about what is worth
+keeping — which is exactly the judgement that kept leaking chrome back into the flow.
+
+#### What moved, and what `/trace` means now
+
+`/trace on` **opens the log**; it no longer widens the scrollback, and `scrollback` no longer reads
+the flag at all. It still selects the band's own quiet half (`StatusReading::narration`,
+`Chip::narration`) — "show me the machinery" is one request and the band is chrome — but it is now
+forbidden from reaching the transcript, so **`element_seen` lost its mode parameter**: the
+`— turn complete` caption on a *successful* turn is simply not drawn, in either state. A click on
+the indicator that also put a caption under every reply would be this change's own leak, arriving by
+a new route.
+
+Four `Remark`s were reclassified from the conversation to the log, each because the thing it
+describes is visible some other way or is not the console's own statement at all:
+
+| Line | Why |
+|---|---|
+| `stdout: …` / `stderr: …` off the child | the CLI's chatter, including the `Warning: no stdin data received…` it opens every real run with. The console did not write it and cannot say what it means; a genuinely broken stream still sets `failure` |
+| `the console is asking again — …-for-this-session revoked` | a confirmation of what the reader just did, and the band's standing-allow marker vanishes on the same frame |
+| `/help`'s verb table | nineteen true, routine lines in the middle of a conversation. It now writes to the log **and opens it**, so the table appears in the surface built to hold exactly this |
+
+⚠️ **The empty-transcript hint is gone entirely** rather than reclassified. It was already drawn only
+while tracing, and `tracing` now means "the log is open" — which has nothing to say about whether a
+conversation has started.
+
+#### The band's width budget gained a fixed item
+
+What used to sit at the left of the band's dim half was a **line of the log**, deliberately excluded
+from `strip_right_reserve` because it was the second flexible item and truncating into slack was its
+whole behaviour. An indicator cannot truncate: it is two or five characters saying whether anything
+is wrong, and an ellipsis where it should be loses the one item the band is least allowed to lose.
+So it is measured — in `Monospace`, the face it is drawn in, or a wider mono face would let the
+reading creep back over it — and the flexible reading gives way to it. That is the property `#125`'s
+`◆ What are we working on?ession $1.18` overlap taught, applied to a new item rather than
+rediscovered.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |

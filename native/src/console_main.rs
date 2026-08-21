@@ -3248,9 +3248,14 @@ impl Console {
             // and onto stderr for whoever started it from a terminal.
             //
             // ⚠️ **stderr is unconditional; the pane is not.** `CwdNote::always` decides which
-            // lines a quiet console shows — the bare-project warning always, the resolution
-            // itself only under `/trace on` — and the terminal keeps both either way, which is
-            // what stops the quiet default from costing a diagnostic rather than a distraction.
+            // lines reach the *conversation* — the bare-project warning does, the resolution
+            // itself does not — and the terminal keeps both either way, which is what stops the
+            // quiet default from costing a diagnostic rather than a distraction.
+            //
+            // ✏️ **The quiet half is no longer hidden, it is filed.** It goes to the pane's
+            // status log (`organon_console::status_log`), which is one hover away on the band and
+            // one click from being open — so `trace` here means "this is machinery", not "throw
+            // this away unless somebody guessed to turn a mode on".
             for note in harness::cwd_notes(&resolved) {
                 eprintln!("organon-console: {} — {}", spec.name, note.text);
                 if note.always {

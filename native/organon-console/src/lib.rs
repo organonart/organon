@@ -124,6 +124,7 @@ pub mod registry;
 pub mod screen;
 pub mod scroll_anchor;
 pub mod session;
+pub mod status_log;
 pub mod tabs;
 pub mod term;
 pub mod term_view;
