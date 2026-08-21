@@ -1,9 +1,15 @@
 # Organon is the product; a layout is what used to be an app
 
-> **Status: a proposal to ratify, not a change already made.** Nothing in this document has
-> been executed. It names one decision, states precisely what that decision would and would
-> not dissolve, and lists what has to move if it is taken. No identifier has been renamed and
-> no code has been touched.
+> **Status: RATIFIED as words, 2026-08-21. Not yet executed as code.** The decision named here
+> is taken, and `doc/organon_prd.md` is where it now lives as a product definition — writing that
+> PRD *is* §5's *"ratify the words first"* step. ⚠️ **Everything else in §5 is still ahead of us,
+> and the ordering is unchanged**: no identifier has been renamed, no edition has been collapsed
+> and no code has been touched. **#111** owns the restructure and is not started.
+>
+> ✏️ This block previously read *"a proposal to ratify, not a change already made"*, while #110 and
+> #111 both described the position as already ratified. Two documents disagreeing about whether a
+> decision had been taken is exactly the drift this tree spends its refusals preventing, so the
+> disagreement is resolved here rather than left for a reader to arbitrate.
 >
 > James, 2026-08-20, on seeing a panel stack and a live 3D viewport in one window:
 > *"it's not Organon Console. This is Organon. This is the one thing that it is. It starts
@@ -94,7 +100,9 @@ Listed so the size is visible. **None of it is urgent**, and none of it should h
 
 | | |
 |---|---|
+| ✅ `doc/organon_prd.md` | **done, 2026-08-21** — the one product definition, absorbing `doc/organon_mind_prd.md`. The words, which §5 says go first |
 | `CLAUDE.md` | the naming-convention section, which currently defines *Organon* as the visualizer product and *Organon Console* as a separate thing |
+| ⚠️ `README.md`, `doc/how_organon_works.md` (§1 **and** §16), `doc/equations_into_light.md` | **missing from this list until 2026-08-21, and from #111's too** — each carries its own wording of the identity claim, so fixing one leaves four. `doc/organon_prd.md` §1.1 is now the single source they quote |
 | `ARCHITECTURE.md` §4.1 | owns the edition mechanism |
 | `organon-core/src/edition.rs` | the `Edition` enum and its six behaviours |
 | `MIND_ARCHITECTURE.md`, `CONSOLE_ARCHITECTURE.md` | their opening claims about being separate products |

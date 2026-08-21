@@ -580,3 +580,93 @@ and design the trust model against a real second producer rather than against im
 
 2. **Decide whether a `deny.toml` is wanted** before the dependency surface grows a module
    ecosystem, rather than after. This one *is* cheap.
+
+---
+
+## 12. ✏️ Amendment — a **skill** is a third unit of extension, and its boundary is the approval
+
+> Added 2026-08-21, extending §4 and §10. §4 settles that there are exactly two module kinds and
+> rules out the tempting third. That table is still right about *modules* and it is incomplete
+> about *extension*, because this application acquired a resident agent, and an agent can be
+> extended by text.
+>
+> James, 2026-08-21: *"core to every Organon app is that there is an agentic harness, such as Pi
+> or Claude Code, available to you, and that can be dynamically updated with skills that teach it
+> how to interact with everything we are doing in Organon … soon I will be building Organon from
+> inside of Organon."*
+
+### 12.1 The unit §4 does not cover
+
+A **skill** is instructions — a document the resident agent loads from the project it is standing
+in, teaching it a part of the application. It changes what the application can be asked to do,
+between recompiles, from outside the binary. That is extension by any useful definition, and it is
+neither of §4's kinds.
+
+🚨 **Its trust profile is genuinely different, and the difference is not a matter of degree.**
+
+| | **Linked** | **Hosted** | **Skill** |
+|---|---|---|---|
+| Boundary | none — your address space, filesystem, GPU | the process | **none of its own** |
+| Why | you are running it as yourself | the protocol bounds it | it contains no code; it **steers an agent that already holds your permissions** |
+| The control | source audit, the only one | the protocol *is* the permission set | 🚨 **the approval** |
+| Source | required | optional | it *is* source — there is nothing else to it |
+| Review target | `build.rs`, proc macros, the transitive tree | every verb the protocol grants | what it tells the agent to want |
+
+📌 **So the control moves from the artifact to the moment of action**, and this repo already built
+the mechanism that makes that a real boundary rather than a hope. The console serves its own MCP
+endpoint **in-process over loopback**, specifically so the permission hook is a direct call into the
+state the UI is already drawing rather than a round trip through a separate process; and the client
+is launched with a permission-prompt tool, so **one card answers for every tool the agent calls,
+shell commands included**. ⚠️ **A skill can tell an agent what to want. It cannot get it past the
+card.** The companion rule is §1.3's arbitration: a hand outranks an agent, enforced rather than
+remembered.
+
+⚠️ **What that does NOT make a skill is harmless.** A person who approves fluently is the whole
+attack surface, and *"the agent asked, so I clicked allow"* is the skill-shaped version of §11.5's
+finding that nobody reads their dependencies. The controls that follow from this are the same
+family as §11.4's diff: **what changed in a skill since the one you last read** is the tractable
+question, and a skill is text, so the diff is even cheaper than a module's.
+
+### 12.2 The distribution story is already §11's, unchanged
+
+A skill is a file in a repository. So the unit of trust is a **commit**, hosting is open, forking
+works, and *"this skill changed since you last read it"* is one `git diff`. Nothing in §11 needs
+amending for it — which is a point in that section's favour rather than a coincidence: it was
+written about *bytes you run*, and a skill is bytes that steer something that runs.
+
+📌 **And this repo already treats a skill as a durable document with a same-change obligation.**
+`.claude/skills/organon-cli/SKILL.md` is a row in `.claude/hooks/doc-rules.sh`, accountable to
+`ctl.rs` and `cli.rs` exactly the way an architecture doc is accountable to its subsystem. The
+discipline for keeping a skill honest as the thing it describes moves is therefore not new work; it
+is a table entry that already exists.
+
+### 12.3 🚨 Why this belongs in the *modules* plan rather than beside it
+
+Because it changes what §1's three levels are for. A **level-1** change is a contribution to
+Organon; a **level-2 module** is capability Organon does not want to own; a **level-3
+application** is a thing made with one. A skill cuts across all three: it is how an agent is taught
+to *operate* any of them, and the most valuable skills will be written by whoever wrote the module,
+shipped in the module's own repository, and loaded when a person is standing in it.
+
+⚠️ **Which means the hosted-module protocol (M3) has a second consumer nobody had named**: not only
+a person adding a module, but an agent being taught to drive one. The protocol's surface is the
+permission set (§10), and a skill is the thing that makes that surface *reachable in practice*. A
+verb no skill teaches is a verb an agent finds by trial, which is how thirteen seconds and a chunk
+of context got spent on a command somebody had already decided on (`CONSOLE_ARCHITECTURE.md` §1.8).
+
+### 12.4 What this changes now
+
+**Nothing is scheduled**, and §10's ordering still stands. Three things are worth recording so they
+are not rediscovered:
+
+1. **The skill is the delivery vehicle for "extensible from within."** The mechanism that makes it
+   work is already built and was built *because it was failing*: an agent that cannot see the
+   project it is standing in loads no skills at all, and until `harness::conversation_cwd` landed,
+   the only symptom was an agent that seemed oddly ignorant. That resolution — four rules, a unit
+   test each, and an unconditional report of which rule chose the directory — is the precondition
+   for everything in this section.
+2. **M3 should be specified with a skill in mind**, because the protocol and the document that
+   teaches it are the same design decision seen twice.
+3. ⚠️ **Do not let "a skill can do it" become a reason to skip a refusal.** A skill teaches an agent
+   the happy path; the refusals are what protect the person when the agent is wrong, and they are
+   read by a human, not by the skill.
