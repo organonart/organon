@@ -102,7 +102,7 @@ Listed so the size is visible. **None of it is urgent**, and none of it should h
 |---|---|
 | ✅ `doc/organon_prd.md` | **done, 2026-08-21** — the one product definition, absorbing `doc/organon_mind_prd.md`. The words, which §5 says go first |
 | `CLAUDE.md` | the naming-convention section, which currently defines *Organon* as the visualizer product and *Organon Console* as a separate thing |
-| ⚠️ `README.md`, `doc/how_organon_works.md` (§1 **and** §936), `doc/equations_into_light.md` | **missing from this list until 2026-08-21, and from #111's too** — each carries its own wording of the identity claim, so fixing one leaves four. `doc/organon_prd.md` §1.1 is now the single source they quote |
+| ⚠️ `README.md`, `doc/how_organon_works.md` (§1 **and** §16), `doc/equations_into_light.md` | **missing from this list until 2026-08-21, and from #111's too** — each carries its own wording of the identity claim, so fixing one leaves four. `doc/organon_prd.md` §1.1 is now the single source they quote |
 | `ARCHITECTURE.md` §4.1 | owns the edition mechanism |
 | `organon-core/src/edition.rs` | the `Edition` enum and its six behaviours |
 | `MIND_ARCHITECTURE.md`, `CONSOLE_ARCHITECTURE.md` | their opening claims about being separate products |
