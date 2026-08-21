@@ -26,8 +26,10 @@ runtime rather than compiled in.** You divide its window into regions, declare w
 holds, and save the arrangement under a name; that named arrangement is what somebody means when
 they say which program they are running. It has four defining properties:
 
-1. **A layout is the unit of identity.** Up to six addressable regions over a 3×2 grid, each
-   declaring its content — an agent conversation, a column of instrument panels, a live 3D
+1. **A layout is the unit of identity.** A 3×2 grid of cells, addressed by **twelve** region
+   words — `full`, the two rows, the three columns, the six cells — of which **up to six** can
+   be held at once, since two regions may coexist only if their cell sets are disjoint. Each
+   declares its content: an agent conversation, a column of instrument panels, a live 3D
    viewport, a piece of media. An arrangement can be named and written to disk, and a load
    applies whole or refuses with one sentence.
 2. **An agent is not optional.** Every valid arrangement contains a working agent harness, and
