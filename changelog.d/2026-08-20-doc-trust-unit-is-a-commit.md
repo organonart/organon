@@ -17,13 +17,25 @@ than naming a name that points at bytes.
 
 🚨 **The unit is a COMMIT, not a repo, and this workspace is currently on the wrong side of
 it.** A repo says where bytes live; a commit says which bytes. Tags move, branches move, and
-force-push rewrites history. ⚠️ Measured: `nih_plug` and `nih_plug_egui` are declared with **no
-`rev`, no `tag`, no `branch`** — the plugin's entire framework floats on a default branch —
-while `baseview` three lines below shows the right shape. `Cargo.lock` is committed and pins
-all three entries to `f36931f7…`, so today's builds are safe, but **`cargo update` moves it
-silently** and **a lockfile does not protect a consumer**: cargo ignores a dependency's
-lockfile, so the pin is a property of building *this* repo rather than of the dependency. The
-moment `organon-core` is published, the float is somebody else's.
+force-push rewrites history. ⚠️ Measured from `native/Cargo.lock` rather than from the
+manifest: **three** crates resolve from `nih-plug.git` with **no `rev`, no `tag`, no `branch`**
+— `nih_plug`, `nih_plug_xtask`, and 🚨 **`nih_plug_derive`, a proc-macro crate**
+(`proc-macro = true`, reached through `#[derive(Params)]` at `native/src/params.rs:4060`). All
+three are pinned by the lock at `f36931f7…`, so today's builds are safe, but **`cargo update`
+moves them silently** and **a lockfile does not protect a consumer**: cargo ignores a
+dependency's lockfile, so the pin is a property of building *this* repo rather than of the
+dependency. `baseview` shows the right shape, pinned at `237d323c…`.
+
+🚨 **That the middle one is a proc macro is the whole of §11.6 sitting in this tree** — code
+fetched from a moving reference and executed at compile time with the builder's privileges,
+which is exactly where "complete visibility into all code" is true and insufficient.
+
+⚠️ **`nih_plug_egui` is not a floater, though it looks like one.** It is declared as a git
+dependency and then overridden by a `[patch]` block to a vendored in-tree copy, so its lock
+entry has no `source` field and it never resolves via git. ✏️ An earlier draft named it as one;
+review caught it, and the lesson is worth the correction: **a manifest line is not where a
+dependency's identity is settled — the lock is**, and a `[patch]` makes the two disagree on
+purpose.
 
 📌 **The affordance that makes this worth doing is one no package manager ships.** Trust is
 renewed at every update, not granted once — the code that was audited is not the code that

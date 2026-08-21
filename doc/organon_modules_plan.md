@@ -428,13 +428,34 @@ A repo says *where the bytes live*. A commit says *which bytes*. The difference 
 pedantry: **tags move, branches move, and force-push rewrites history.** Only a commit hash is
 immutable.
 
-⚠️ **Live example, in this workspace, today.** `nih_plug` and `nih_plug_egui` are declared with
-**no `rev`, no `tag`, no `branch`** — they float on whatever the default branch says. The
-plugin's entire framework. `baseview`, three lines below, shows the correct shape.
+⚠️ **Live example, in this workspace, today.** Three crates resolve from
+`robbert-vdh/nih-plug.git` with **no `rev`, no `tag`, no `branch`** — they float on whatever the
+default branch says. Read from `native/Cargo.lock`, which pins all three at
+`f36931f7af4646065488a9845d8f8c2f95252c23`:
 
-The practical safety net holds *for us*: `native/Cargo.lock` is committed and pins
-`nih_plug` to `f36931f7af4646065488a9845d8f8c2f95252c23`. But two things about that are worth
-stating rather than assuming:
+| crate | declared in | what it is |
+|---|---|---|
+| `nih_plug` | `native/Cargo.toml` | the plugin framework |
+| `nih_plug_derive` | pulled in by `nih_plug` | 🚨 **a proc-macro crate** (`proc-macro = true`), reached here through `#[derive(Params)]` at `native/src/params.rs:4060` |
+| `nih_plug_xtask` | `native/xtask/Cargo.toml` | the bundling task |
+
+`baseview` shows the correct shape — `rev = "237d323c…"`, pinned.
+
+🚨 **The middle row is §11.6's hazard sitting in this tree.** A floating git dependency that is
+a **proc macro** is code fetched from a moving reference and executed *at compile time, with the
+builder's privileges*. It is the exact case where "we have complete visibility into all code"
+is true and load-bearingly insufficient, and it is not a hypothetical.
+
+⚠️ **`nih_plug_egui` is NOT one of them, and the reason is worth recording** because it looks
+like one in `Cargo.toml`. It is declared as a git dependency and then **overridden by a
+`[patch]` block** (`native/Cargo.toml:454`) to `vendor/nih_plug_egui`, a local in-tree copy — so
+its `Cargo.lock` entry has **no `source` field at all** and it never resolves via git. It does
+not float, and "pin it" would be a no-op. ✏️ An earlier draft of this section named it as a
+third floater; a review caught it, and the correction is instructive rather than embarrassing:
+**a manifest line is not where a dependency's identity is settled — the lock is**, and a
+`[patch]` makes the two disagree on purpose.
+
+Two things about the lockfile safety net are worth stating rather than assuming:
 
 - **`cargo update` moves it, silently**, because the manifest expresses no constraint to stop it.
 - **A lockfile does not protect a consumer.** Cargo ignores a dependency's lockfile, so the
@@ -531,8 +552,11 @@ and design the trust model against a real second producer rather than against im
 
 Two things are cheap and can happen whenever someone is passing:
 
-1. **Pin `nih_plug` and `nih_plug_egui` to the rev `Cargo.lock` already holds.** It changes no
-   bytes in any build today and removes a silent-drift path. ⚠️ Check `nih_plug_xtask` in
-   `xtask/Cargo.toml` at the same time — it floats too.
+1. **Pin the three floating declarations to `f36931f7…`, the rev `Cargo.lock` already holds** —
+   `nih_plug` in `native/Cargo.toml` and `nih_plug_xtask` in `native/xtask/Cargo.toml`, which are
+   the two that are *declared*; `nih_plug_derive` arrives transitively through `nih_plug`, so
+   pinning the parent settles it. It changes **no bytes in any build today** and removes a
+   silent-drift path. ⚠️ **Not `nih_plug_egui`** — it is `[patch]`ed to a vendored in-tree copy
+   and does not resolve via git, so pinning it would be a no-op (§11.3).
 2. **Decide whether a `deny.toml` is wanted** before the dependency surface grows a module
    ecosystem, rather than after.
