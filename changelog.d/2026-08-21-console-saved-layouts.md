@@ -28,7 +28,7 @@ all, so there is nothing partial for a caller to take a piece of.
 A region word that was renamed, a content kind that was removed, `off` stored as what a region
 holds — each earns a sentence naming what is missing. Loading the rest would hand somebody a
 different arrangement from the one they saved, and nothing on screen would say so. Beside those,
-a saved layout meets every refusal a typed one meets: two regions whose quadrant sets intersect,
+a saved layout meets every refusal a typed one meets: two regions whose cell sets intersect,
 two regions holding `3d` (refused with `Content::only_one_because`'s reason, so it still says the
 limit is *Organon's* rather than the idea of a viewport's), and nothing holding an `agent`.
 
@@ -38,7 +38,7 @@ command meeting a layout that already exists* and resolves containment by **disp
 is what makes `viewport left agent` work from a console holding `full`. A file has no "asked", so
 `full` beside `left` in one file is a contradiction rather than a move, and reusing `assign`'s
 refusal type would have meant inventing an `asked` region out of iteration order. Disjointness is
-still `Region::quadrants`, uniqueness still `Content::only_one_because`, the agent rule still
+still `Region::cells`, uniqueness still `Content::only_one_because`, the agent rule still
 `Layout::has_agent`: one implementation, two doors.
 
 ⚠️ **The window's size is the one refusal that is about the window rather than the file**, so it
@@ -97,6 +97,16 @@ screen state, tabs or camera.
 
 📌 **Default-inert.** A console nobody has typed `/layout` at reads no file, writes no file and
 runs the identical code it did before.
+
+✏️ **#98 Tier B landed under this while it was in review, and nothing here had to change for it.**
+The grid went from four quadrant bits to six cells and `left`/`right` came to mean the outer
+*column* rather than the half — and a layout records whatever arrangement exists, deriving every
+word from `Region::ALL`, so the only edits were a renamed accessor (`quadrants` → `cells`, one
+call site) and one test's example word. That test used `topcenter` as its stand-in for *"a region
+a newer build has and this one does not"*, which Tier B made real: it now uses `middleleft`, and
+gained the other half of the story — a file naming `topcenter` **loads**, because this build has
+the word. So both directions of the forward-compatibility claim are measured rather than argued,
+by an event nobody staged.
 
 ⚠️ **What a green build does not prove.** No layout has ever been saved, loaded or deleted by a
 running console — this was built on a Linux container with no GPU and no window. Whether a load

@@ -647,15 +647,31 @@ mod tests {
     /// 🚨 **A word this build does not have is refused by name, and the layout does NOT half
     /// load.** The constraint `doc/organon_is_the_product.md` §4 makes non-negotiable, from the
     /// direction it is likeliest to arrive: a file written by another build.
+    ///
+    /// ✏️ **The example word used to be `topcenter`, and #98 Tier B made it real while this was
+    /// in review** — which is the case this test exists for, arriving in the space of one merge.
+    /// The word here is now one no grid has: `middleleft` is what a future 3×3 would call its
+    /// middle row, so it stands for a *newer* build's vocabulary rather than for a typo. ⚠️ Do
+    /// not re-point this at a word somebody is about to add; the assertion is about the refusal,
+    /// and it stops meaning anything the moment the word resolves.
     #[test]
     fn a_layout_naming_something_this_build_lacks_is_refused_whole() {
-        let renamed = saved("future", &[("left", "agent"), ("topcenter", "3d")]);
-        let e = resolve(&renamed, Some(pane())).expect_err("`topcenter` is not a region here");
+        assert!(Region::resolve("middleleft").is_err(), "the premise: no such region today");
+        let renamed = saved("future", &[("left", "agent"), ("middleleft", "3d")]);
+        let e = resolve(&renamed, Some(pane())).expect_err("`middleleft` is not a region here");
         assert!(matches!(e, Refusal::UnknownRegion(_)), "{e:?}");
         let text = e.to_string();
-        assert!(text.contains("topcenter"), "the refusal drops what is missing: {text}");
+        assert!(text.contains("middleleft"), "the refusal drops what is missing: {text}");
         assert!(text.contains("left"), "…and lists what would have worked: {text}");
         assert!(text.contains("refused whole"), "…and says it loaded nothing: {text}");
+
+        // 🚨 **And the half that Tier B just proved in the field: a word this build HAS still
+        // loads, whatever it came to mean.** `topcenter` was the unknown word in this test's
+        // first version and is a region now, so a file naming it is a layout rather than a
+        // refusal — which is the forward-compatibility story stated from the other side.
+        let widened = saved("newer", &[("left", "agent"), ("topcenter", "3d")]);
+        let built = resolve(&widened, Some(pane())).expect("`topcenter` resolves in this build");
+        assert_eq!(built.get(Region::TopCenter), Some(Content::ThreeD));
 
         let gone = saved("future", &[("left", "agent"), ("right", "media")]);
         let e = resolve(&gone, Some(pane())).expect_err("`media` is not in the vocabulary yet");

@@ -2430,7 +2430,7 @@ fn draw_regions(
             // 🚨 **The loser of [`engine_plan`]'s arbitration says who has the frame and what
             // gives it back — it does not go blank, and it does not show the stale texture it
             // held a moment ago.** §1.14's vacancy rule applies with more force to a picture
-            // than to an empty quarter: a rectangle that was rendering a world and now is not
+            // than to an empty cell: a rectangle that was rendering a world and now is not
             // is exactly what a broken viewport looks like.
             Some(Content::ThreeD) => paint_region_notice(
                 &mut child,
@@ -2442,7 +2442,7 @@ fn draw_regions(
                 theme,
             ),
             // 🚨 **Vacant is a sentence, never a blank.** §1.9's `Ring::Empty` argument at the
-            // scale of a quarter of a window: a region that draws nothing is indistinguishable
+            // scale of a sixth of a window: a region that draws nothing is indistinguishable
             // from one that is broken, and the console's running tally of "it knew and said
             // nothing" defects is long enough.
             None => paint_region_notice(
