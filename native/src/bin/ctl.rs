@@ -426,11 +426,19 @@ enum ConsoleAction {
         state: String,
     },
     /// Divide the pane into regions and say what each one holds
-    #[command(after_help = "The window's ONE pane becomes up to four, and each region holds one \
-                            kind of thing. `full` is the whole pane — what the console opens \
-                            holding — then `left`/`right`/`top`/`bottom` are halves and \
-                            `topleft`/`topright`/`bottomleft`/`bottomright` are quarters. A \
-                            region never splits again: to get quarters, name the quarters.\n\n\
+    #[command(after_help = "The window's ONE pane becomes up to six, on a grid of THREE COLUMNS \
+                            by two rows, and each region holds one kind of thing. `full` is the \
+                            whole pane — what the console opens holding. `top`/`bottom` are the \
+                            two rows, full width. `left`/`center`/`right` are the three columns, \
+                            full height. And `topleft`/`topcenter`/`topright` / \
+                            `bottomleft`/`bottomcenter`/`bottomright` are the six cells. A \
+                            region never splits again: to get cells, name the cells.\n\n\
+                            ⚠️ `left` and `right` are the OUTER COLUMNS, not halves. They are a \
+                            fixed 320 points wide and the centre takes whatever is left — the \
+                            same shape Organon's own editor has, where the side docks are fixed \
+                            and the instrument absorbs the rest. Below 688 points of pane there \
+                            is no room for two sides and a centre, so the column words refuse \
+                            and only `full`/`top`/`bottom` still divide.\n\n\
                             Assigning a region that CONTAINS one already held, or is contained \
                             by one, displaces it and says so — that is how `/viewport left \
                             agent` works from a console holding `full`. An assignment that only \

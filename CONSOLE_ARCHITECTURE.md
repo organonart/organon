@@ -4435,9 +4435,13 @@ buffer before anything can object.
 
 **`organon-console/src/region.rs`**, plus the walk in `console_main.rs`'s `draw_regions`.
 `organon console viewport <region> <content>` — `/viewport` in a conversation composer — divides
-the console's single pane into up to four rectangles and says what each one holds. James asked
+the console's single pane into up to six rectangles and says what each one holds. James asked
 for *"split the viewports … into four or two and two or one on one side and two on the other"*,
 and those three shapes are the module's own acceptance test.
+
+✏️ **Up to SIX, on three columns — #98 Tier B.** The grid was 2×2 through Tier 1, 2b and A; the
+subsection *"Three columns"* below owns the change, including the two words in this file's own
+vocabulary that now mean something different.
 
 **Tier 1 is the model, the geometry, the lane and the seam. It is not yet the content.** Only
 `agent` draws something live — the tab the console is already showing. `panel` is a **named
@@ -4466,24 +4470,104 @@ and each of the three verbs means exactly what it says in every one of them.
 
 #### 🚨 Flat, never nested — and the reason is the vocabulary, not the geometry
 
-`Region` is nine words over a 2×2 grid: `full`, the four halves, the four quarters. **A region
-holds one thing and never splits again.** The tree is the obvious model and it is the wrong one
-here because **a tree has no names**. `/viewport left agent` is a sentence a person says and an
-agent writes; the same intent in a tree is a path through splits that must already exist, and the
-console lane is fire-and-forget with no return path (`console_ops::console_cmd_path`) — so a
-caller cannot ask what the tree currently looks like in order to describe a place in it. Nine
-fixed words are addressable from a line that gets no answer, which is the only transport this
-verb has.
+`Region` is twelve words over a 3×2 grid: `full`, the two rows, the three columns, the six cells.
+**A region holds one thing and never splits again.** The tree is the obvious model and it is the
+wrong one here because **a tree has no names**. `/viewport left agent` is a sentence a person says
+and an agent writes; the same intent in a tree is a path through splits that must already exist,
+and the console lane is fire-and-forget with no return path
+(`console_ops::console_cmd_path`) — so a caller cannot ask what the tree currently looks like in
+order to describe a place in it. Twelve fixed words are addressable from a line that gets no
+answer, which is the only transport this verb has.
 
-What that costs is stated rather than hidden: **no thirds, no uneven splits, no dragging a
-divider.** Those are real wants and they are a later tier's. The seam for them is that
-`region_rect` is the only place a rectangle is computed.
+What that costs is stated rather than hidden: **no uneven splits and no dragging a divider.**
+Those are real wants and they are a later tier's. The seam for them is that `region_rect` is the
+only place a rectangle is computed.
+
+#### 🚨 Three columns, and the vocabulary is DERIVED — #98 Tier B
+
+`topcenter` was never a missing word; it was a missing **rectangle**. Four bits over a 2×2 grid
+has no middle column to name, so the target layout — two control columns flanking the instrument,
+with the agent beneath it — could not be spelled at all. Tier B is **four cells to six**, three
+columns by two rows, and every property survives verbatim: a region is a set of cells,
+coexistence is disjointness, refusals name the obstacle, `only_one_because` still attributes the
+3D limit to Organon, the last `agent` cannot be evicted, and a console nobody has typed
+`/viewport` at is unchanged.
+
+**The twelve words are a cross product, not a list**, which is what makes the count defensible
+rather than curated. A region has to be an axis-aligned run of cells or `region_rect` has no
+rectangle to return; over a 3×2 grid there are eighteen such runs (six column-spans × three
+row-spans). The discriminator is the module's own rule that **a region is a word a person says**:
+the column-spans English names are *left*, *center*, *right* and *all three*, and the row-spans
+are *top*, *bottom* and *both*.
+
+| row span ╲ column span | all three | left | center | right |
+|---|---|---|---|---|
+| **both rows** | `full` | `left` | `center` | `right` |
+| **top** | `top` | `topleft` | `topcenter` | `topright` |
+| **bottom** | `bottom` | `bottomleft` | `bottomcenter` | `bottomright` |
+
+The six excluded runs are the **two-column** ones — *left and centre*, *centre and right*. Naming
+them (`leftcenter`?) would mint a word nobody says to complete a table, and nothing breaks by
+leaving them out: `plan`'s vacancy walk reports a two-column gap as two vacant regions, exactly
+as the 2×2 grid already reported a three-quarter gap as two.
+
+⚠️ **`left` and `right` CHANGED MEANING, and that is the intended change rather than a
+regression.** They were **half** the pane; they are now the **outer column** of three, at a fixed
+`SIDE_COLUMN` width. Anyone with muscle memory gets a narrower column than they got yesterday, and
+`/viewport left panel` does not look the way it looked before. It is said out loud here, in
+`region.rs`'s own header and in the changelog fragment, because a word quietly meaning something
+new is exactly the drift this axis spends its refusals preventing.
+
+#### 🚨 Fixed side columns, and the centre takes the remainder — NOT equal thirds
+
+`region_rect` grows **two vertical cuts**, and their positions come from a width rather than from
+a ratio: `SIDE_COLUMN = 320.0` points in from each edge, with the centre absorbing what is left.
+The **row** split is still the exact midpoint — two rows, nothing to choose.
+
+James's decision, and it stands on what this tree already does rather than on taste. Organon's own
+editor sizes control columns absolutely and lets the subject take the rest: `SidePanel::right`'s
+`default_width(320.0)` for the theme dock, `exact_width(150.0)` for the presets rail, and
+`mind_shell::DockSizes::default()`'s `left: 260.0, right: 300.0` beside a viewport that absorbs the
+remainder. Equal thirds would pin the instrument to a third of the window whatever the window is.
+**320 is the widest fixed control column in the tree**, chosen so a panel that fits Organon's own
+side dock fits a console `panel` region without the region being what decides.
+
+📌 **It is a width, never a ratio**, so it does not scale with the pane — which is the point, and
+is also why the next paragraph has to exist.
+
+#### ⚠️ The narrow-pane rule: the columns vanish, the rows survive
+
+A fixed side means a pane can be too narrow to seat two of them. Below **`MIN_COLUMNS_WIDTH` =
+2 × `SIDE_COLUMN` + `MIN_SIDE` = 688 pt** the two cuts would cross and `left` and `right` would
+overlap in the middle. The rule is **decided rather than discovered**:
+
+> **The side columns keep their width or there are no columns.** A region that needs a cut —
+> anything not spanning all three columns — returns `None`. A region that spans all three
+> (`full`, `top`, `bottom`) needs no cut and is unaffected.
+
+So a narrow console still splits into **rows**, and every column word refuses until the window is
+wide enough; `plan` then answers `None` for a column layout and the seam says the window is too
+small for it, naming the command that undoes it. That is actionable, where a 20-point `left` is a
+sliver somebody has to guess about. Pinned at the boundary from both sides — at exactly 688 the
+centre is `MIN_SIDE` wide and stands; one point under, every column word refuses.
+
+⚠️ **The rejected rule was "the sides shrink"**, and `mind_shell::layout_workstation` is the
+precedent for it — its docks yield proportionally so the viewport survives. Right there, wrong
+here: those docks are *chrome* around a subject, while every region here is somebody's assigned
+content and none outranks the others. Shrinking would also make `left` mean a different width at
+different window sizes with no word explaining it, and a side column narrowed to `MIN_SIDE` can no
+longer hold what it exists to hold — which is §1.3's "refused, not clamped" arriving as geometry.
+
+🚨 **What green does NOT say.** Nobody has looked at a three-column console. Whether 320 is the
+right width, whether the instrument reads as the subject at 1100 points, and whether two control
+columns beside a live transcript look like Organon's editor or like a cramped imitation of it are
+all questions a hand and a screen answer — §3's ledger carries them.
 
 #### The overlap rule, which is a bitmask and nothing else
 
-Every region is a set of the four **quadrants**. Two may be held at once **iff their quadrant
-sets are disjoint** — that is the whole geometry model, so there is no layout arithmetic to get
-wrong. An assignment that meets something already held is resolved by containment:
+Every region is a set of the six **cells**. Two may be held at once **iff their cell sets are
+disjoint** — that is the whole geometry model, so there is no layout arithmetic to get wrong. An
+assignment that meets something already held is resolved by containment:
 
 | Relation | Answer |
 |---|---|
@@ -4702,10 +4786,15 @@ dies with the window.
 `plan` returns every occupied region **and every unassigned one**, each with its rectangle.
 §1.9's `Ring::Empty` argument at the scale of a quarter of a window: a region that draws nothing
 is indistinguishable from one that is broken. Vacancy is **coalesced largest-first**, so a layout
-holding only `left` reports one vacant `right` rather than two vacant corners — the word in the
-notice is then the word a person would type. A pane too small for the layout (any region under
-`MIN_SIDE`) yields no plan at all, and the console says so across the whole pane with the command
-that undoes it, rather than drawing slivers.
+holding only `topleft` reports one vacant `bottom` rather than three vacant cells — the word in
+the notice is then the word a person would type. A pane too small for the layout (any region under
+`MIN_SIDE`, or any column word under the narrow-pane rule) yields no plan at all, and the console
+says so across the whole pane with the command that undoes it, rather than drawing slivers.
+
+✏️ **A gap two columns wide is two vacant regions, and that is the honest answer rather than a
+hole in the coalescing.** The vocabulary has no word for *left and centre* (above), so a layout
+holding only `right` reports a vacant `left` **and** a vacant `center`. The 2×2 grid already
+behaved this way for the three-quarters case; three columns simply make it commoner.
 
 #### ⚠️ Only one region shows the live tab, and that is the borrow checker
 
@@ -4914,11 +5003,13 @@ near the pointer. ⚠️ The conversation front-end needs nothing: its scrollbac
 
 #### What Tier A leaves to B, C and D
 
-**Three columns (`topcenter`)** is Tier B and it is *geometry* — four quadrant bits become six
-cells — so `region.rs`'s bitmask is untouched here. **A command line inside the stack** is Tier C,
-and it is what makes a per-region stack addressable and answers "what does an unassigned region
-show". **A tab per agent region** is Tier D, still blocked on the borrow and nothing else. Saved
-layouts, animated transitions and drag-to-resize stay after all of them, for §1.14's own reason.
+✏️ **Three columns landed** — the subsection above owns it. **A command line inside the stack** is
+Tier C, and it is what makes a per-region stack addressable and answers "what does an unassigned
+region show". **A tab per agent region** is Tier D, still blocked on the borrow and nothing else.
+Saved layouts, animated transitions and drag-to-resize stay after all of them, for §1.14's own
+reason — and Tier B sharpened one of them: a divider a hand can move is now a change to *two*
+cuts whose positions come from a constant, so it is the constant that would become state, not a
+ratio that already exists.
 
 #### The lane
 
@@ -4958,7 +5049,7 @@ it before writing. Every refusal is therefore spoken at the console end, by name
 | The pie menu, and the context menu | §1.8's `Registry` is the table both read: `groups()` is the root ring, `verbs_in(group)` the second, and an argument's `ArgKind::Choice` the third — already a closed, validated value space, because those options were built from `substrate_materials`' own tables rather than restated. A wedge press builds the same `(name, args)` pair a typed line builds and hands it to the same dispatch, so the menu is a **second renderer of one table, never a second table**. ⚠️ The one thing it needs that the slash surface did not: `Int` and `Text` arguments have no closed value space (`block`'s row count, `patch`'s two counts), so a wedge for those has to open a field rather than a ring — and `patch`'s anchor arithmetic makes it a poor menu candidate at all. ⚠️ Do **not** give the menu its own vocabulary for "what the console can do"; the failure that costs is the one §1.8 exists to prevent | James's own framing: *"mirror the command hierarchy of the slash commands on the context menu, pie menu that we have in the works"* |
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
-| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. Beside those, #98's own **Tier B** (three columns — four quadrant bits to six cells, a geometry change) and **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before those — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
+| Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. What is left of #98 there is **Tier C** (a command line inside each region, which is also what makes a *per-region* stack addressable). ⚠️ Do not reach for saved layouts, animated transitions or drag-to-resize before it — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes
@@ -5042,6 +5133,34 @@ path silently breaks the three-products-simultaneously guarantee that
   `cfg(not(feature = "console-edition"))` arms — the plugin's export macros, `standalone.rs`,
   `mind_main.rs` — are not. Unlike the Windows/Mind asymmetry, which `ci.yml` argues for, this
   one is a gap rather than a considered trade.
+
+- 🚨 **THREE COLUMNS ARE GREEN AND HAVE NEVER BEEN LOOKED AT — and the one number the tier turns
+  on is a taste call nobody has judged** (#98 Tier B). The geometry is arithmetic and the tests
+  cover it: four cells to six, twelve region words, two vertical cuts, the narrow-pane boundary
+  pinned from both sides. **None of that says the layout is any good.** `SIDE_COLUMN = 320.0` was
+  chosen from precedent — the widest fixed control column in this tree, Organon's own theme dock —
+  and precedent is an argument, not an observation. Whether a 320-point column beside a
+  460-point instrument reads as Organon's editor or as a cramped imitation of it, whether the
+  instrument still looks like the subject at 1100 points, and whether a `panel` stack is legible
+  at that width are questions a hand and a screen answer. **Nobody has typed `/viewport topcenter
+  3d` on a running console.** ⚠️ The failure mode this entry exists to name: the tier is *most*
+  convincing exactly where it is least verified — a fixed width produces a clean, confident,
+  reproducible rectangle whether or not the rectangle is the right size.
+  ⚠️ **`left` and `right` mean something new, and no test can tell you whether that is a problem.**
+  They were halves; they are the outer columns. The suite proves the new meaning is consistent
+  everywhere, which is a different claim from "somebody who typed `/viewport left panel` yesterday
+  will not be surprised today". §1.14 and the changelog say it out loud because saying it is the
+  only mitigation available without a hand.
+  ✅ **What IS measured**, on `main` @ `6443ba4`: `organon-console --lib` **719 passed, 3 ignored**
+  (717 before — the two are Tier B's, the editor layout and the narrow-pane boundary);
+  `organon-core` **594** unchanged; the console bin **62** and the `organon` bin **16**, both
+  unchanged, and both **run** rather than type-checked, on the ledger entry below's rule. Both
+  `cargo check` legs clean.
+  📌 **No root-crate test needed editing**, which is worth recording because the entry below
+  predicts the opposite: the region ring's *value space* grew from nine words to twelve, and
+  `the_compact_panel_shows_the_real_table` counts **verbs**, not values, so its string, its
+  character count and its hidden `+N` were all untouched. The prediction was right about the
+  hazard and wrong about this instance — checked by running both bins, not by reasoning about them.
 
 - ✅ **Tier 2b was BUILT, RUN AND LOOKED AT on a GPU — this is the first region tier that is not
   "green and ready to deploy".** A release `organon-console` from the worktree was launched on
