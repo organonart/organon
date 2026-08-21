@@ -21,24 +21,57 @@
 //!
 //! # 🚨 Flat, never nested — a region holds one thing and never splits again
 //!
-//! [`Region`] is nine words over a 2×2 grid, not a tree. The tree is the obvious model and it
+//! [`Region`] is twelve words over a 3×2 grid, not a tree. The tree is the obvious model and it
 //! is the wrong one here for a reason that is about the *vocabulary* rather than the geometry:
 //! a tree has no names. `/viewport left agent` is a sentence a person says and an agent writes;
 //! the same intent in a tree is a path through splits that have to have been created first, and
 //! a command lane with no return path (`console_ops::console_cmd_path`) cannot ask what the
-//! tree currently looks like in order to describe a place in it. Nine fixed words are
+//! tree currently looks like in order to describe a place in it. Twelve fixed words are
 //! addressable from a fire-and-forget line, which is the only transport this verb has.
 //!
-//! What that costs is stated rather than hidden: **no thirds, no uneven splits, no dragging a
-//! divider**. Those are real wants and they are a later tier's; the seam for them is that
-//! [`region_rect`] is the only place a rectangle is computed.
+//! What that costs is stated rather than hidden: **no uneven splits and no dragging a divider**.
+//! Those are real wants and they are a later tier's; the seam for them is that [`region_rect`]
+//! is the only place a rectangle is computed.
+//!
+//! # 🚨 Three columns, and the vocabulary is DERIVED rather than listed
+//!
+//! Tier 1 was four cells over a 2×2 grid, and `topcenter` was not a missing word — it was a
+//! missing rectangle. The grid is now **3 columns × 2 rows**, and the words follow from it by a
+//! rule rather than by a list, which is what makes the count defensible:
+//!
+//! A region has to be an **axis-aligned run of cells**, or [`region_rect`] has no rectangle to
+//! return. Over a 3×2 grid there are eighteen such runs — six contiguous column-spans times
+//! three contiguous row-spans. Twelve of them get words and six do not, and the discriminator is
+//! the module's own rule that **a region is a word a person says**: the column-spans English
+//! names are *left*, *center*, *right* and *all three*; the row-spans are *top*, *bottom* and
+//! *both*. Four times three is the vocabulary, exactly:
+//!
+//! | row span ╲ column span | all three | left | center | right |
+//! |---|---|---|---|---|
+//! | **both rows** | `full` | `left` | `center` | `right` |
+//! | **top** | `top` | `topleft` | `topcenter` | `topright` |
+//! | **bottom** | `bottom` | `bottomleft` | `bottomcenter` | `bottomright` |
+//!
+//! The six with no word are the two-column runs — *left and centre*, *centre and right* — and
+//! they are excluded because naming them (`leftcenter`?) would mint a word nobody says in order
+//! to complete a table. ⚠️ **Nothing breaks by leaving them out**: [`plan`]'s vacancy walk
+//! describes a two-column gap as two vacant regions, which is the same honest decomposition it
+//! already gives for the three-quarters case a 2×2 grid had no word for either.
+//!
+//! ⚠️ **`left` and `right` changed meaning, and that is the intended change rather than a
+//! regression.** They were **half** the pane; they are now the **outer column** of three, at a
+//! fixed width ([`SIDE_COLUMN`]). Anyone with muscle memory gets a narrower column than they got
+//! yesterday, and `/viewport left panel` does not look the way it looked before. It is said out
+//! loud here, in `CONSOLE_ARCHITECTURE.md` §1.14 and in the changelog, because a word quietly
+//! meaning something new is exactly the drift this module's refusals exist to prevent.
 //!
 //! # The grid, and the one rule that makes an assignment decidable
 //!
-//! Every region is a set of the four **quadrants** ([`Region::quadrants`]) — `Full` is all
-//! four, `Left` is the two on the left, `TopLeft` is one. Two regions may be occupied at once
-//! **iff their quadrant sets are disjoint**, which is the whole of the geometry: there is no
-//! layout arithmetic to get wrong, only a bitmask.
+//! Every region is a set of the six **cells** ([`Region::cells`]) — `Full` is all six, `Left` is
+//! the two in the left column, `TopLeft` is one. Two regions may be occupied at once **iff their
+//! cell sets are disjoint**, which is the whole of the geometry: there is no layout arithmetic to
+//! get wrong, only a bitmask. 📌 Every property the four-cell model had survives verbatim; what
+//! changed is the width of the mask.
 //!
 //! An assignment that overlaps something already held is resolved by *containment*:
 //!
@@ -101,32 +134,52 @@
 //! only a machine with a window server can answer. `console_main.rs` owns the child `Ui`s, the
 //! notices and the clip rects, and maps [`plan`]'s answer onto them.
 
-/// One of the nine addressable parts of the pane.
+/// One of the twelve addressable parts of the pane.
 ///
 /// ⚠️ **Flat on purpose** — see the module header. The ordering is **largest first**, and it is
 /// load-bearing twice: [`plan`] walks it to coalesce vacant space into the widest word that
 /// describes it, and `console_main.rs` walks it to decide which [`Content::Agent`] region gets
-/// the live tab.
+/// the live tab. Within one size the order is the grid's own: rows before columns, then reading
+/// order — which is what puts `Center` between `Left` and `Right` rather than at the end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Region {
     /// The whole pane. What the console opens holding.
     Full,
     Top,
     Bottom,
+    /// ⚠️ **The outer LEFT COLUMN, not the left half** — see the module header. A fixed
+    /// [`SIDE_COLUMN`] wide.
     Left,
+    /// The middle column, which takes whatever the two side columns leave. **The word Tier 1
+    /// could not spell**, and the reason three columns are a geometry change rather than a
+    /// vocabulary one.
+    Center,
+    /// ⚠️ **The outer RIGHT COLUMN, not the right half** — see [`Region::Left`].
     Right,
     TopLeft,
+    TopCenter,
     TopRight,
     BottomLeft,
+    BottomCenter,
     BottomRight,
 }
 
-/// Bit per quadrant, in reading order. Private because it is an implementation of the overlap
-/// rule and not a thing a caller should be reasoning in.
-const Q_TL: u8 = 1 << 0;
-const Q_TR: u8 = 1 << 1;
-const Q_BL: u8 = 1 << 2;
-const Q_BR: u8 = 1 << 3;
+/// Bit per cell, in reading order across a 3×2 grid. Private because it is an implementation of
+/// the overlap rule and not a thing a caller should be reasoning in.
+const C_TL: u8 = 1 << 0;
+const C_TC: u8 = 1 << 1;
+const C_TR: u8 = 1 << 2;
+const C_BL: u8 = 1 << 3;
+const C_BC: u8 = 1 << 4;
+const C_BR: u8 = 1 << 5;
+
+/// The three columns and the two rows, as cell masks — the axes [`region_rect`] cuts along, and
+/// the terms the vocabulary table in the module header is a cross product of.
+const COL_LEFT: u8 = C_TL | C_BL;
+const COL_CENTER: u8 = C_TC | C_BC;
+const COL_RIGHT: u8 = C_TR | C_BR;
+const ROW_TOP: u8 = C_TL | C_TC | C_TR;
+const ROW_BOTTOM: u8 = C_BL | C_BC | C_BR;
 
 impl Region {
     /// Every region, **largest first**. The order [`plan`] and the seam both walk.
@@ -135,26 +188,35 @@ impl Region {
         Region::Top,
         Region::Bottom,
         Region::Left,
+        Region::Center,
         Region::Right,
         Region::TopLeft,
+        Region::TopCenter,
         Region::TopRight,
         Region::BottomLeft,
+        Region::BottomCenter,
         Region::BottomRight,
     ];
 
-    /// The quadrants this region covers, as a bitmask. **The whole of the geometry model** —
+    /// The cells this region covers, as a bitmask. **The whole of the geometry model** —
     /// overlap, containment and disjointness are all read off this one number.
-    pub fn quadrants(self) -> u8 {
+    ///
+    /// ✏️ **Was `quadrants` over four bits.** The word was renamed with the grid rather than
+    /// kept: a quadrant is a quarter, and six of them is a sentence that cannot be true.
+    pub fn cells(self) -> u8 {
         match self {
-            Region::Full => Q_TL | Q_TR | Q_BL | Q_BR,
-            Region::Top => Q_TL | Q_TR,
-            Region::Bottom => Q_BL | Q_BR,
-            Region::Left => Q_TL | Q_BL,
-            Region::Right => Q_TR | Q_BR,
-            Region::TopLeft => Q_TL,
-            Region::TopRight => Q_TR,
-            Region::BottomLeft => Q_BL,
-            Region::BottomRight => Q_BR,
+            Region::Full => ROW_TOP | ROW_BOTTOM,
+            Region::Top => ROW_TOP,
+            Region::Bottom => ROW_BOTTOM,
+            Region::Left => COL_LEFT,
+            Region::Center => COL_CENTER,
+            Region::Right => COL_RIGHT,
+            Region::TopLeft => C_TL,
+            Region::TopCenter => C_TC,
+            Region::TopRight => C_TR,
+            Region::BottomLeft => C_BL,
+            Region::BottomCenter => C_BC,
+            Region::BottomRight => C_BR,
         }
     }
 
@@ -165,10 +227,13 @@ impl Region {
             Region::Top => "top",
             Region::Bottom => "bottom",
             Region::Left => "left",
+            Region::Center => "center",
             Region::Right => "right",
             Region::TopLeft => "topleft",
+            Region::TopCenter => "topcenter",
             Region::TopRight => "topright",
             Region::BottomLeft => "bottomleft",
+            Region::BottomCenter => "bottomcenter",
             Region::BottomRight => "bottomright",
         }
     }
@@ -197,12 +262,23 @@ pub const REGION_WORDS: &[&str] = &[
     "top",
     "bottom",
     "left",
+    "center",
     "right",
     "topleft",
+    "topcenter",
     "topright",
     "bottomleft",
+    "bottomcenter",
     "bottomright",
 ];
+
+/// How many regions there are — [`Layout`]'s array size, **read off [`Region::ALL`]** rather
+/// than written down beside it.
+///
+/// ⚠️ It was the literal `9` in three places before this tier, which is the shape of thing that
+/// goes wrong when a vocabulary grows: `Layout::slot` is a position in `ALL`, so the array and
+/// the list have to agree, and the only way to guarantee that is for one to *be* the other.
+pub const REGION_COUNT: usize = Region::ALL.len();
 
 /// What a region holds.
 ///
@@ -394,12 +470,16 @@ impl std::fmt::Display for Refusal {
 
 /// Which region holds what, right now.
 ///
-/// A fixed array indexed by [`Region::ALL`] position rather than a map: the vocabulary is nine
-/// words and will stay nine, so the layout is `Copy`-cheap, has no allocation, and cannot hold
-/// a region twice.
+/// A fixed array indexed by [`Region::ALL`] position rather than a map: the vocabulary is twelve
+/// words, so the layout is `Copy`-cheap, has no allocation, and cannot hold a region twice.
+///
+/// ✏️ **Was nine, over four cells.** The array is sized from the vocabulary rather than from a
+/// count somebody keeps in step: `Self::slot` is a position in [`Region::ALL`], and a test walks
+/// every region through it, so a mismatch is a panic in the suite rather than a silent
+/// out-of-bounds arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
-    held: [Option<Content>; 9],
+    held: [Option<Content>; REGION_COUNT],
 }
 
 impl Default for Layout {
@@ -409,7 +489,7 @@ impl Default for Layout {
     /// compares against this value and draws the pre-region path unchanged when they match,
     /// so the default is not merely equivalent but *the same code*.
     fn default() -> Self {
-        let mut held = [None; 9];
+        let mut held = [None; REGION_COUNT];
         held[0] = Some(Content::Agent); // Region::Full is ALL[0].
         Layout { held }
     }
@@ -430,7 +510,7 @@ impl Layout {
     /// The empty layout. **Not reachable through [`Layout::assign`]** — every command's result
     /// must hold an agent — and it exists for tests and for building a layout from scratch.
     pub fn vacant() -> Self {
-        Layout { held: [None; 9] }
+        Layout { held: [None; REGION_COUNT] }
     }
 
     fn slot(region: Region) -> usize {
@@ -485,13 +565,13 @@ impl Layout {
                 next.held[Self::slot(region)] = None;
             }
             ContentCmd::Hold(content) => {
-                let asked = region.quadrants();
+                let asked = region.cells();
                 let mut partial = Vec::new();
                 for (held, _) in self.occupied() {
                     if held == region {
                         continue;
                     }
-                    let theirs = held.quadrants();
+                    let theirs = held.cells();
                     if asked & theirs == 0 {
                         continue; // Disjoint — it stands.
                     }
@@ -549,6 +629,30 @@ impl Layout {
 /// defensiveness [`crate::portal::portal_rect`] carries for a pane egui has not laid out yet.
 pub const MIN_SIDE: f32 = 48.0;
 
+/// How wide a **side column** is, in points — `left` and `right`, and the six cells in them.
+///
+/// 🚨 **Fixed, and the centre takes the remainder — NOT equal thirds.** James's decision, and it
+/// is grounded in what this tree already does rather than in taste: Organon's own editor sizes
+/// its control columns absolutely and lets the subject absorb the rest — `SidePanel::right`'s
+/// `default_width(320.0)` for the theme dock, `exact_width(150.0)` for the presets rail, and
+/// `mind_shell::DockSizes::default()`'s `left: 260.0, right: 300.0` beside a viewport that takes
+/// what is left. Equal thirds would pin the instrument to a third of the window whatever the
+/// window is, which is not what anyone wants to look at.
+///
+/// **320 is the widest fixed control column in the tree** (the theme dock), chosen so a panel
+/// that fits Organon's own side dock fits a console `panel` region without the region being the
+/// thing that decides. It is the one number here that is a **taste call standing on a
+/// precedent**: nobody has yet looked at a three-column console, and whether 320 reads right
+/// beside a live transcript is a question only a hand and a screen answer (§3).
+///
+/// ⚠️ **It is a width, never a ratio**, so it does not scale with the pane — which is the whole
+/// point, and is also why the narrow-pane rule on [`region_rect`] has to exist.
+pub const SIDE_COLUMN: f32 = 320.0;
+
+/// The narrowest pane that can be divided into columns at all: two fixed sides plus a centre
+/// worth drawing. **688 points** — see [`region_rect`] for what happens below it.
+pub const MIN_COLUMNS_WIDTH: f32 = 2.0 * SIDE_COLUMN + MIN_SIDE;
+
 /// A region's rectangle inside a pane — **derived from the pane every frame, never remembered**,
 /// exactly as [`crate::portal::portal_rect`] is and for its reason: it is a function of where
 /// the window is now.
@@ -562,21 +666,76 @@ pub const MIN_SIDE: f32 = 48.0;
 /// small for the layout, which is actionable, whereas a two-point-wide region is a sliver
 /// somebody has to guess about.
 ///
-/// ⚠️ **The split is the exact midpoint and there is no gutter.** A gutter would need a rule
-/// about which side owns it, and the rule would be the first thing a drag-to-resize tier had to
-/// undo. Separation is drawn, not reserved.
+/// ⚠️ **There is no gutter, on either axis.** A gutter would need a rule about which side owns
+/// it, and the rule would be the first thing a drag-to-resize tier had to undo. Separation is
+/// drawn, not reserved.
+///
+/// # 🚨 Two vertical cuts at a fixed width — the rows are still halves
+///
+/// The **row** split is the exact midpoint, unchanged since Tier 1: two rows, nothing to choose.
+/// The **column** cuts are at [`SIDE_COLUMN`] in from each edge, so `left` and `right` are a
+/// fixed width and `center` is whatever is left. See [`SIDE_COLUMN`] for why fixed rather than
+/// thirds.
+///
+/// # ⚠️ The narrow-pane rule — the columns vanish, the rows survive
+///
+/// Fixed sides mean a pane can be too narrow to seat them: below
+/// [`MIN_COLUMNS_WIDTH`] (**688 pt** — two sides plus a centre of at least [`MIN_SIDE`]) the two
+/// cuts would cross, and `left` and `right` would overlap each other in the middle. The rule is
+/// **decided rather than discovered**, and it is:
+///
+/// > **The side columns keep their width or there are no columns.** A region that needs a cut —
+/// > anything not spanning all three columns — returns `None`. A region that spans all three
+/// > (`full`, `top`, `bottom`) needs no cut and is unaffected.
+///
+/// So a narrow console can still be split into **rows**, and every column word refuses until the
+/// window is wide enough. [`plan`] then answers `None` for a column layout and the seam says the
+/// window is too small for it, naming the command that undoes it — which is actionable, where a
+/// 20-point `left` is a sliver somebody has to guess about.
+///
+/// ⚠️ **The rejected rule was "the sides shrink"**, and `mind_shell::layout_workstation` is the
+/// precedent for it — its docks yield proportionally so the viewport survives. It is right there
+/// and wrong here: those docks are *chrome* around a subject, while every region here is somebody's
+/// assigned content and none of them outranks the others. Shrinking would also make `left` mean a
+/// different width at different window sizes with no word to explain it, and a side column
+/// narrowed to `MIN_SIDE` is a column that can no longer hold what it exists to hold — which is
+/// this module's "refused, not clamped" rule arriving as geometry.
 pub fn region_rect(pane: egui::Rect, region: Region) -> Option<egui::Rect> {
     let (pw, ph) = (pane.width(), pane.height());
     if !pw.is_finite() || !ph.is_finite() || pw <= 0.0 || ph <= 0.0 {
         return None;
     }
-    let mid_x = pane.left() + pw * 0.5;
+    let c = region.cells();
+    // A region spanning every column is bounded by the pane itself and asks nothing of the cuts —
+    // which is what keeps `Full` the pane bit for bit (invariant #4) at any width at all.
+    let all_columns = c & COL_LEFT != 0 && c & COL_CENTER != 0 && c & COL_RIGHT != 0;
+    let (left, right) = if all_columns {
+        (pane.left(), pane.right())
+    } else {
+        if pw < MIN_COLUMNS_WIDTH {
+            return None; // The narrow-pane rule above.
+        }
+        let cut_l = pane.left() + SIDE_COLUMN;
+        let cut_r = pane.right() - SIDE_COLUMN;
+        let left = if c & COL_LEFT != 0 {
+            pane.left()
+        } else if c & COL_CENTER != 0 {
+            cut_l
+        } else {
+            cut_r
+        };
+        let right = if c & COL_RIGHT != 0 {
+            pane.right()
+        } else if c & COL_CENTER != 0 {
+            cut_r
+        } else {
+            cut_l
+        };
+        (left, right)
+    };
     let mid_y = pane.top() + ph * 0.5;
-    let q = region.quadrants();
-    let left = if q & (Q_TL | Q_BL) != 0 { pane.left() } else { mid_x };
-    let right = if q & (Q_TR | Q_BR) != 0 { pane.right() } else { mid_x };
-    let top = if q & (Q_TL | Q_TR) != 0 { pane.top() } else { mid_y };
-    let bottom = if q & (Q_BL | Q_BR) != 0 { pane.bottom() } else { mid_y };
+    let top = if c & ROW_TOP != 0 { pane.top() } else { mid_y };
+    let bottom = if c & ROW_BOTTOM != 0 { pane.bottom() } else { mid_y };
     let rect = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
     (rect.width() >= MIN_SIDE && rect.height() >= MIN_SIDE).then_some(rect)
 }
@@ -597,21 +756,28 @@ pub struct Placed {
 /// empty band that draws nothing is indistinguishable from a broken one, and the same is true a
 /// hundred times over for a quarter of a window. A region nobody has filled has to say what it
 /// is and how to fill it, which it can only do if something tells the seam it is there. Vacancy
-/// is **coalesced largest-first**, so a layout holding only `Left` reports one vacant `right`
-/// rather than two vacant corners — the word in the notice is then the word a person would type.
+/// is **coalesced largest-first**, so a layout holding only `TopLeft` reports one vacant `bottom`
+/// rather than three vacant cells — the word in the notice is then the word a person would type.
 ///
-/// `None` when the pane cannot hold this layout: some region's rectangle is degenerate or below
-/// [`MIN_SIDE`]. The caller says so rather than drawing slivers.
+/// ⚠️ **A gap two columns wide is two vacant regions, and that is the honest answer rather than a
+/// gap in the coalescing.** The vocabulary has no word for *left and centre* (the module header
+/// says why), so a layout holding only `right` reports a vacant `left` **and** a vacant `center`.
+/// The 2×2 grid already behaved this way for the three-quarters case; three columns simply make
+/// it commoner.
+///
+/// `None` when the pane cannot hold this layout: some region's rectangle is degenerate, below
+/// [`MIN_SIDE`], or refused by [`region_rect`]'s narrow-pane rule. The caller says so rather than
+/// drawing slivers.
 pub fn plan(pane: egui::Rect, layout: &Layout) -> Option<Vec<Placed>> {
     let mut out = Vec::new();
     let mut seen: u8 = 0;
     for (region, content) in layout.occupied() {
         out.push(Placed { region, content: Some(content), rect: region_rect(pane, region)? });
-        seen |= region.quadrants();
+        seen |= region.cells();
     }
     // Largest-first, so vacancy is described by the widest word that fits it exactly.
     for region in Region::ALL.iter().copied() {
-        let q = region.quadrants();
+        let q = region.cells();
         if q & seen == 0 {
             out.push(Placed { region, content: None, rect: region_rect(pane, region)? });
             seen |= q;
@@ -667,37 +833,70 @@ mod tests {
     }
 
     /// 🚨 **The whole geometry model, as a table.** Two regions may be occupied at once iff
-    /// their quadrant sets are disjoint, so this pins the sets themselves — every other rule in
+    /// their cell sets are disjoint, so this pins the sets themselves — every other rule in
     /// this module reads off them.
+    ///
+    /// ✏️ **Six cells now, not four**, and the structure of the assertion is deliberately the
+    /// same: each named span is the union of the cells under it, so a mistyped bit in `cells`
+    /// fails here rather than showing up as two regions quietly sharing a rectangle.
     #[test]
-    fn a_regions_quadrants_are_the_whole_of_the_geometry() {
-        assert_eq!(Region::Full.quadrants(), Q_TL | Q_TR | Q_BL | Q_BR);
-        assert_eq!(Region::Top.quadrants(), Region::TopLeft.quadrants() | Region::TopRight.quadrants());
+    fn a_regions_cells_are_the_whole_of_the_geometry() {
+        assert_eq!(Region::Full.cells(), C_TL | C_TC | C_TR | C_BL | C_BC | C_BR);
         assert_eq!(
-            Region::Bottom.quadrants(),
-            Region::BottomLeft.quadrants() | Region::BottomRight.quadrants()
+            Region::Top.cells(),
+            Region::TopLeft.cells() | Region::TopCenter.cells() | Region::TopRight.cells()
         );
-        assert_eq!(Region::Left.quadrants(), Region::TopLeft.quadrants() | Region::BottomLeft.quadrants());
         assert_eq!(
-            Region::Right.quadrants(),
-            Region::TopRight.quadrants() | Region::BottomRight.quadrants()
+            Region::Bottom.cells(),
+            Region::BottomLeft.cells()
+                | Region::BottomCenter.cells()
+                | Region::BottomRight.cells()
         );
-        // The four corners partition the pane: disjoint, and together they are `Full`.
-        let corners =
-            [Region::TopLeft, Region::TopRight, Region::BottomLeft, Region::BottomRight];
+        assert_eq!(Region::Left.cells(), Region::TopLeft.cells() | Region::BottomLeft.cells());
+        assert_eq!(
+            Region::Center.cells(),
+            Region::TopCenter.cells() | Region::BottomCenter.cells()
+        );
+        assert_eq!(Region::Right.cells(), Region::TopRight.cells() | Region::BottomRight.cells());
+        // 🚨 **`topcenter` exists and is disjoint from both side columns** — the one thing Tier B
+        // is for, stated as a fact about the bitmask rather than about the word.
+        assert_eq!(Region::TopCenter.cells() & Region::Left.cells(), 0);
+        assert_eq!(Region::TopCenter.cells() & Region::Right.cells(), 0);
+        // The six cells partition the pane: disjoint, and together they are `Full`.
+        let cells = [
+            Region::TopLeft,
+            Region::TopCenter,
+            Region::TopRight,
+            Region::BottomLeft,
+            Region::BottomCenter,
+            Region::BottomRight,
+        ];
         let mut union = 0u8;
-        for c in corners {
-            assert_eq!(union & c.quadrants(), 0, "{} overlaps an earlier corner", c.as_word());
-            assert_eq!(c.quadrants().count_ones(), 1, "a corner is one quadrant");
-            union |= c.quadrants();
+        for c in cells {
+            assert_eq!(union & c.cells(), 0, "{} overlaps an earlier cell", c.as_word());
+            assert_eq!(c.cells().count_ones(), 1, "a cell is one bit");
+            union |= c.cells();
         }
-        assert_eq!(union, Region::Full.quadrants());
+        assert_eq!(union, Region::Full.cells());
+        // The three columns partition it too, and so do the two rows — which is what makes the
+        // vocabulary a cross product of spans rather than a list somebody curated.
+        assert_eq!(
+            Region::Left.cells() | Region::Center.cells() | Region::Right.cells(),
+            Region::Full.cells()
+        );
+        assert_eq!(Region::Top.cells() | Region::Bottom.cells(), Region::Full.cells());
+        assert_eq!(Region::Top.cells() & Region::Bottom.cells(), 0);
         // No two distinct regions have the same footprint — otherwise two words would name one
         // rectangle and the refusals would be describing something invisible.
         for (i, a) in Region::ALL.iter().enumerate() {
             for b in &Region::ALL[i + 1..] {
-                assert_ne!(a.quadrants(), b.quadrants(), "{a:?} and {b:?} are one rectangle");
+                assert_ne!(a.cells(), b.cells(), "{a:?} and {b:?} are one rectangle");
             }
+        }
+        // `Layout`'s array is indexed by `ALL` position, so every region must have a slot.
+        assert_eq!(REGION_COUNT, Region::ALL.len());
+        for r in Region::ALL.iter().copied() {
+            assert!(Layout::slot(r) < REGION_COUNT, "{} has no slot", r.as_word());
         }
     }
 
@@ -731,7 +930,9 @@ mod tests {
             ]
         );
 
-        // "four"
+        // "four" — ✏️ **and it is now four regions with a vacant CENTRE column**, not four
+        // quarters. `left` and `right` are the outer columns, so this shape lost nothing it could
+        // express before; what it gained is that the middle is addressable rather than implied.
         let four = one_and_two
             .assign(Region::TopLeft, agent())
             .expect("topleft displaces left")
@@ -837,7 +1038,7 @@ mod tests {
                 for (i, (x, _)) in held.iter().enumerate() {
                     for (y, _) in &held[i + 1..] {
                         assert_eq!(
-                            x.quadrants() & y.quadrants(),
+                            x.cells() & y.cells(),
                             0,
                             "{} and {} are both held and overlap",
                             x.as_word(),
@@ -906,24 +1107,152 @@ mod tests {
     /// that describes it — so the notice a person reads names the region they would type.
     #[test]
     fn vacant_space_is_planned_and_named_by_the_widest_word_that_fits() {
+        // ✏️ **Two vacant regions here, where the 2×2 grid reported one.** `left` no longer means
+        // half the pane, so what it leaves is a centre column and a right column — and the
+        // vocabulary has no word for the two of them together, deliberately (module header). The
+        // decomposition is the honest one rather than a hole in the coalescing.
         let left = Layout::default().assign(Region::Left, agent()).expect("left").layout;
         let p = plan(pane(), &left).expect("the pane holds it");
-        assert_eq!(p.len(), 2, "one held and one vacant: {p:?}");
+        assert_eq!(p.len(), 3, "one held and two vacant: {p:?}");
         assert_eq!(p[0].region, Region::Left);
         assert_eq!(p[0].content, Some(Content::Agent));
-        assert_eq!(p[1].region, Region::Right, "two vacant corners are one vacant `right`");
-        assert_eq!(p[1].content, None);
+        assert_eq!(
+            p.iter().filter(|q| q.content.is_none()).map(|q| q.region).collect::<Vec<_>>(),
+            vec![Region::Center, Region::Right],
+        );
         // Together they are the pane, with no overlap and nothing left over.
-        assert_eq!(p[0].rect.union(p[1].rect), pane());
-        assert!(flat(p[0].rect.intersect(p[1].rect)), "the two halves overlap");
+        let union = p.iter().fold(egui::Rect::NOTHING, |u, q| u.union(q.rect));
+        assert_eq!(union, pane());
+        for (i, a) in p.iter().enumerate() {
+            for b in &p[i + 1..] {
+                assert!(flat(a.rect.intersect(b.rect)), "{:?} and {:?} overlap", a.region, b.region);
+            }
+        }
+        // 🚨 …and the side columns are the fixed width, with the centre taking the remainder —
+        // the one arithmetic claim this tier makes, checked against real numbers rather than a
+        // ratio. 1100 − 320 − 320 = 460.
+        assert_eq!(p[0].rect.width(), SIDE_COLUMN);
+        assert_eq!(p[2].rect.width(), SIDE_COLUMN);
+        assert_eq!(p[1].rect.width(), 1100.0 - 2.0 * SIDE_COLUMN);
 
-        // A corner held alone leaves three quarters, and no word covers exactly three quarters —
-        // so it is described as the largest pieces that do fit, not approximated by one.
+        // A cell held alone leaves five, and no word covers exactly five — so it is described as
+        // the largest pieces that do fit, not approximated by one.
         let corner = Layout::vacant().assign(Region::TopLeft, agent()).expect("topleft").layout;
         let p = plan(pane(), &corner).expect("the pane holds it");
         let vacant: Vec<Region> =
             p.iter().filter(|q| q.content.is_none()).map(|q| q.region).collect();
-        assert_eq!(vacant, vec![Region::Bottom, Region::TopRight]);
+        assert_eq!(vacant, vec![Region::Bottom, Region::TopCenter, Region::TopRight]);
+    }
+
+    /// 🚨 **James's layout, the one Tier B exists for**, reached from the default by the words a
+    /// person would actually type: two scrolling control columns flanking the instrument, with
+    /// the agent beneath it.
+    ///
+    /// This is the acceptance test for the tier in the same sense
+    /// `the_three_shapes_asked_for_are_all_reachable_from_the_default` was Tier 1's: the geometry
+    /// is only worth changing if the shape it was changed for can be *spelled*.
+    ///
+    /// ⚠️ **The order of the four commands is not arbitrary and the test says so.** The console
+    /// opens holding `full agent`, so the agent has to be re-homed **first** — every other
+    /// assignment displaces `full` and would leave no agent, which is `Refusal::LastAgent`. That
+    /// is Tier 1's rule unchanged, and it is the one thing about this layout somebody typing it
+    /// for the first time will meet.
+    #[test]
+    fn the_editor_layout_two_columns_flanking_the_instrument_is_reachable() {
+        let three_d = ContentCmd::Hold(Content::ThreeD);
+        // The agent moves out of `full` first, or nothing else may be assigned at all.
+        let too_soon = Layout::default().assign(Region::Left, panel());
+        assert_eq!(too_soon, Err(Refusal::LastAgent { asked: Region::Left }));
+
+        let editor = Layout::default()
+            .assign(Region::BottomCenter, agent())
+            .expect("the agent moves under the instrument")
+            .layout
+            .assign(Region::TopCenter, three_d)
+            .expect("topcenter is the word Tier 1 could not spell")
+            .layout
+            .assign(Region::Left, panel())
+            .expect("a control column on the left")
+            .layout
+            .assign(Region::Right, panel())
+            .expect("and one on the right")
+            .layout;
+        assert_eq!(
+            editor.occupied(),
+            vec![
+                (Region::Left, Content::Panel),
+                (Region::Right, Content::Panel),
+                (Region::TopCenter, Content::ThreeD),
+                (Region::BottomCenter, Content::Agent),
+            ],
+        );
+        // Nothing is vacant: the four regions are the whole pane.
+        let p = plan(pane(), &editor).expect("a 1100x690 pane holds it");
+        assert_eq!(p.len(), 4, "the layout leaves nothing unassigned: {p:?}");
+        assert!(p.iter().all(|q| q.content.is_some()));
+        // The instrument gets the remainder and the columns get their fixed width — which is the
+        // whole argument against equal thirds, as a number.
+        let rect = |r: Region| p.iter().find(|q| q.region == r).expect("planned").rect;
+        assert_eq!(rect(Region::Left).width(), SIDE_COLUMN);
+        assert_eq!(rect(Region::Right).width(), SIDE_COLUMN);
+        assert_eq!(rect(Region::TopCenter).width(), 1100.0 - 2.0 * SIDE_COLUMN);
+        assert!(
+            rect(Region::TopCenter).width() > rect(Region::Left).width(),
+            "equal thirds would have pinned the instrument to a third of the window",
+        );
+        // …and one command puts it back exactly where it started, from four regions as from one.
+        assert_eq!(
+            editor.assign(Region::Full, agent()).expect("full").layout,
+            Layout::default(),
+            "`/viewport full agent` is still the way home",
+        );
+    }
+
+    /// 🚨 **The narrow-pane rule: the columns vanish and the rows survive.** Decided rather than
+    /// discovered — [`region_rect`]'s doc carries the reasoning, and this pins the boundary.
+    ///
+    /// ⚠️ **The boundary is exact and both sides of it are checked**, because "somewhere around
+    /// 688" is how a rule becomes a thing people rediscover. At exactly `MIN_COLUMNS_WIDTH` the
+    /// centre is `MIN_SIDE` wide and stands; one point under, every column word refuses.
+    #[test]
+    fn a_pane_too_narrow_for_two_fixed_sides_keeps_its_rows_and_loses_its_columns() {
+        let narrow = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(500.0, 400.0));
+        // Spans every column, so it asks nothing of the cuts.
+        assert_eq!(region_rect(narrow, Region::Full), Some(narrow));
+        assert!(region_rect(narrow, Region::Top).is_some(), "a narrow console still splits rows");
+        assert!(region_rect(narrow, Region::Bottom).is_some());
+        // Everything that needs a cut refuses — including the sides, which is the part that would
+        // otherwise silently overlap in the middle.
+        for r in [
+            Region::Left,
+            Region::Center,
+            Region::Right,
+            Region::TopLeft,
+            Region::TopCenter,
+            Region::TopRight,
+            Region::BottomLeft,
+            Region::BottomCenter,
+            Region::BottomRight,
+        ] {
+            assert_eq!(region_rect(narrow, r), None, "{} drew on a 500pt pane", r.as_word());
+        }
+        // A row split still plans; a column split does not, and the seam says so.
+        let rows = Layout::default().assign(Region::Bottom, agent()).expect("bottom").layout;
+        assert!(plan(narrow, &rows).is_some(), "rows are unaffected by a narrow pane");
+        let cols = Layout::default().assign(Region::Center, agent()).expect("center").layout;
+        assert_eq!(plan(narrow, &cols), None, "no plan rather than two sides overlapping");
+
+        // The boundary itself, from both sides.
+        let at = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(MIN_COLUMNS_WIDTH, 400.0));
+        assert_eq!(MIN_COLUMNS_WIDTH, 688.0, "two fixed sides plus a centre worth drawing");
+        let centre = region_rect(at, Region::Center).expect("the centre is exactly MIN_SIDE wide");
+        assert_eq!(centre.width(), MIN_SIDE);
+        assert_eq!(region_rect(at, Region::Left).map(|r| r.width()), Some(SIDE_COLUMN));
+        let under =
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(MIN_COLUMNS_WIDTH - 1.0, 400.0));
+        assert_eq!(region_rect(under, Region::Center), None);
+        assert_eq!(region_rect(under, Region::Left), None, "the sides do not shrink to fit");
+        assert!(region_rect(under, Region::Full).is_some(), "the whole pane always draws");
     }
 
     /// Every planned rectangle sits inside the pane, no two overlap, and together they are the
@@ -973,7 +1302,11 @@ mod tests {
         // instead of drawing a two-point-wide agent.
         let narrow = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(80.0, 400.0));
         assert!(region_rect(narrow, Region::Full).is_some());
-        assert_eq!(region_rect(narrow, Region::Left), None, "40pt is under MIN_SIDE");
+        // ✏️ **Refused by the narrow-pane rule now, not by `MIN_SIDE`** — 80pt cannot seat two
+        // fixed side columns at all. The observable answer is the one this test always asserted;
+        // `a_pane_too_narrow_for_two_fixed_sides_keeps_its_rows_and_loses_its_columns` is where
+        // the new boundary itself is pinned.
+        assert_eq!(region_rect(narrow, Region::Left), None, "80pt cannot hold a side column");
         let split = Layout::default().assign(Region::Left, agent()).expect("left").layout;
         assert_eq!(plan(narrow, &split), None, "no plan rather than a sliver");
         assert!(plan(narrow, &Layout::default()).is_some(), "the default still draws");
@@ -1082,6 +1415,15 @@ mod tests {
     fn an_unknown_word_is_refused_with_the_words_that_would_have_worked() {
         for bad in ["Left", "LEFT", "lef", "left ", "centre", "middle", "", "0.5"] {
             assert!(Region::resolve(bad).is_err(), "`{bad}` resolved and must not");
+        }
+        // ✏️ **`centre` stays on that list and `center` is now a region** — the spelling that
+        // resolves is the one the Rust identifier and the grid's own axis use, and the other is
+        // still refused rather than folded, on this module's no-approximation rule.
+        assert!(Region::resolve("center").is_ok());
+        // 🚨 **The two-column runs are deliberately unnamed**, so a plausible-looking word for one
+        // must refuse rather than resolve to something near it. The module header says why.
+        for unnamed in ["leftcenter", "centerright", "centerleft", "twothirds"] {
+            assert!(Region::resolve(unnamed).is_err(), "`{unnamed}` resolved and must not");
         }
         for bad in ["Agent", "AGENT", "3D", "3", "media", "on", ""] {
             assert!(ContentCmd::resolve(bad).is_err(), "`{bad}` resolved and must not");
