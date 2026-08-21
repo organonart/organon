@@ -6,8 +6,12 @@
 > **Update it in the same change as every Mind PR.**
 >
 > **How it relates to the other docs:**
-> - `doc/organon_mind_prd.md` — the **product definition** (what Organon Mind *is*:
->   vision, principles, the lens catalog, the requirements). Above the issues.
+> - `doc/organon_prd.md` — the **product definition**, and it is Organon's rather than Mind's:
+>   ✏️ **`doc/organon_mind_prd.md` was absorbed into it on 2026-08-21** and is now a stub, because
+>   there is one product. **§6.2 there is the Mind layout** — the reverse-engineering frame, the
+>   lens catalog and the honesty stance — and FR-1 … FR-32 keep their numbers. Above the issues.
+>   ⚠️ This file's own opening claim to be a *separate product* is on **#111**'s move list and is
+>   deliberately not rewritten here; the words go first, the code after.
 > - `doc/organon_mind_buildplan.md` — the **tactical order** (phases, what's next, the
 >   execution protocol in §8).
 > - Root `ARCHITECTURE.md` — the durable **shared-engine** architecture (`math.rs`, the

@@ -1,5 +1,18 @@
 # Organon
 
+> 📌 **What Organon *is*: `doc/organon_prd.md` §1.1 is the canonical description**, in three
+> lengths, and every other surface quotes it rather than re-authoring it. In short: Organon is one
+> native application whose identity is data — you divide the window into regions, declare what each
+> holds, and save the arrangement under a name — and no arrangement is valid without a live agent
+> in it. The generative visualizer described below is **one of the things it hosts**, not what it
+> is.
+>
+> ⚠️ **What follows describes what ships today** — three binaries selected by a compile-time
+> edition — which is still accurate and is not the product definition. It is rewritten when the
+> restructure (#111) lands, deliberately in that order: the editions are what currently make the
+> three arrangements work, and a rename that outruns the mechanism leaves documents describing a
+> thing that does not exist.
+
 **A hyperscope for the space of possible forms.** Organon is a parametric generative
 visualizer: 27 generators, a PBR/HDR/ray-traced render stack, 50+ WGSL shaders, driven by
 MIDI, tempo and audio. It runs as a **VST3/CLAP plugin and as a standalone app**, with the
