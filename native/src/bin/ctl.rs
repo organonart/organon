@@ -1701,22 +1701,45 @@ mod tests {
                 "`stack add surface --region {word}` must survive the sidecar round trip"
             );
         }
-        // 🚨 **The short forms reach this flag too, and clap NORMALISES them** — #109 gave
-        // every region word its initials at all four front doors, and this flag inherits that
-        // by sharing `region_words()` rather than by restating the table. The assertion worth
-        // making is not that `tl` parses but that it arrives as `topleft`: an alias that rode
-        // through unnormalised would put `region tl` on the sidecar, and the wire's own tests
-        // pin that an unknown region word passes through for the console to refuse out loud —
-        // so a leak here would surface as a refusal naming a word the person never typed.
+        // 🚨 **The short forms reach this flag too, and clap does NOT normalise them.** #109 gave
+        // every region word its initials at all four front doors, and this flag inherits that by
+        // sharing `region_words()` rather than by restating the table — which means it inherits
+        // the *whole* of that parser's behaviour, including the half that is easy to guess
+        // backwards. `PossibleValuesParser::parse` returns the string it matched (`Ok(value)`),
+        // never the canonical name, so `tl` travels onto the sidecar line as `tl`. Re-derived
+        // from `region_words()`'s own ⚠️ paragraph and from the sibling
+        // `console_viewport_takes_the_short_form_of_every_region_and_lists_none_of_them`, which
+        // pins the identical rule on the identical parser two arguments away: an earlier version
+        // of this block asserted the opposite and could not have passed while both doors shared
+        // one parser.
+        //
+        // 📌 **So the assertion worth making is not about spelling, it is about the DESTINATION.**
+        // The worry the pass-through raises — a refusal naming a word the person never typed — is
+        // answered at the far end rather than here: `region::Region::resolve` rewrites the alias
+        // to its canonical word *before* it searches, so the short form and the long form land on
+        // the same `Region`. That is what is checked below, alongside the round trip that carries
+        // it there.
         for (word, short) in region::REGION_ALIASES {
             let c = parse(&["console", "stack", "add", "surface", "--region", short]).unwrap();
-            let Cmd::Console { action: ConsoleAction::Stack { region, .. } } = c.cmd else {
+            let Cmd::Console { action: ConsoleAction::Stack { action, panel, region } } = c.cmd
+            else {
                 panic!("`--region {short}` parsed as something else")
             };
             assert_eq!(
                 region.as_deref(),
-                Some(*word),
-                "`--region {short}` must arrive as `{word}`, not as itself"
+                Some(*short),
+                "`--region {short}` must travel as typed, not as `{word}`"
+            );
+            let op = cli::ConsoleOp::Stack { action, panel, region };
+            assert_eq!(
+                cli::parse_console_op(&cli::console_op_to_line(&op)),
+                Some(op),
+                "`stack add surface --region {short}` must survive the sidecar round trip"
+            );
+            assert_eq!(
+                region::Region::resolve(short),
+                region::Region::resolve(word),
+                "`{short}` and `{word}` must be the same region at the console"
             );
         }
         // The list is `region::REGION_WORDS` and nothing else — the same table `viewport`'s

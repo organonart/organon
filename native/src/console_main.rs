@@ -7168,9 +7168,15 @@ mod cli_tests {
             // declares it there — beside the two verbs whose work it records — and
             // `layout.list` sits after `camera.read` because `mcp_specs` pushes the reads at
             // the end, in the order it pushes them. The order here is the table's, read out.
+            // ✏️ `trace` sits between `help` and `media` because `view_entries` declares it
+            // there — after the verb it shares a lane-tail with and before the exhibit. Read
+            // off the table rather than appended: `Registry::new` lays the console specs down
+            // first and extends with `view_entries()`, so the row is `mcp_specs()` in its own
+            // order followed by the view lane in its own order, and `trace`'s position in the
+            // row is exactly its position in that function.
             "[background] | rig | theme | posture | screen | viewport | stack | layout | block | \
-             patch | portal | camera | camera.read | layout.list | surface | help | media | \
-             organon"
+             patch | portal | camera | camera.read | layout.list | surface | help | trace | \
+             media | organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
@@ -7188,7 +7194,12 @@ mod cli_tests {
         // 12) and the seventeen separators 51. The two new words are 6 and 11 and they bring two
         // separators with them, so 147 + 17 + 6 = 170 — the arithmetic and the number agree by
         // construction rather than by my having added twenty-three.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 170);
+        // ✏️ **178 with `trace`** (#117) — the nineteenth verb and the seventh change to this
+        // line. **Re-derived, not nudged**, on the paragraph below's rule: the nineteen words are
+        // 124 characters (`background` in brackets counts 12) and the eighteen separators 54. The
+        // new word is 5 and it brings one separator, so 170 + 3 + 5 = 178 — the arithmetic and
+        // the number agree by construction rather than by my having added eight.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 178);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -7213,7 +7224,13 @@ mod cli_tests {
         // paragraph above is the reason for: two verbs are shown at this width, `mcp_specs()`
         // yields fourteen (twelve on the sidecar plus two reads) and the view lane four, so
         // sixteen are hidden.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +16");
+        // ✏️ **Nineteen verbs now, so `+17`** — re-derived rather than incremented, which the
+        // paragraph above is the reason for: `mcp_specs()` yields fourteen (twelve on the sidecar
+        // plus two reads) and `view_entries()` five — `surface`, `help`, `trace`, `media`,
+        // `organon` — and two are shown at this width, so seventeen are hidden. The width
+        // arithmetic is why two is still the answer and not three: three words plus the note is
+        // 12 + 3 + 5 + two separators + `" | +16"` = 33 characters against 30.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +17");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -7303,6 +7320,13 @@ mod cli_tests {
                 // do not append to it and assume the order.
                 ("surface", false),
                 ("help", true),
+                // ✏️ **`trace` is Recoverable, and it is the cleanest case on this side of the
+                // table.** It changes what is *drawn* from here on and appends no element to the
+                // transcript, and its inverse is the other word of a two-word ring — `/trace off`
+                // undoes `/trace on` exactly, which is what this column asks. Re-derived from
+                // `view_entries()` rather than appended: `trace` is declared between `help` and
+                // `media` there, so it is between them here.
+                ("trace", true),
                 ("media", false),
                 ("organon", false),
             ],
