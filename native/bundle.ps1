@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Windows counterpart of bundle.sh — build the plugin bundles with the visual

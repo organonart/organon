@@ -612,12 +612,44 @@ jobs:
       # bundle.ps1 then asserting `Find-PluginBinaryDir` exists is a second, smaller
       # check — it proves the "run unless dot-sourced" gate at the bottom of that
       # file still works, which is what keeps its helpers testable without building.
+      #
+      # 🚨 THE ENCODING CHECK BELOW IS NOT DECORATION — the AST parse above cannot
+      # replace it, and for four months it did not. This step runs under `pwsh`
+      # (PowerShell 7), which reads a .ps1 as UTF-8 by default. **Windows PowerShell
+      # 5.1 reads a BOM-less .ps1 as ANSI/CP1252**, and that is what ships in the box:
+      # 5.1 is the only PowerShell present on a stock Windows 11, and `pwsh` is a
+      # separate install. So a BOM-less file holding non-ASCII parses clean HERE and
+      # is unparseable THERE — this gate was green while `deploy.ps1` could not run
+      # at all on the machine it exists to serve, which is the precise failure the
+      # comment above says this step prevents.
+      #
+      # The mechanism is worth naming, because "it is only a comment character" is
+      # the reason it looks harmless: `→` (U+2192) is UTF-8 `E2 86 92`, and read as
+      # CP1252 the final byte becomes **U+2019, a right single quote** — which
+      # PowerShell honours as a string delimiter. Ten arrows in a comment block are
+      # ten stray delimiters; the parser ran off the end of the file hunting a
+      # terminator and reported a missing brace 200 lines from the real cause.
+      #
+      # The rule is therefore about BYTES, not syntax: a .ps1 must be pure ASCII, or
+      # carry a UTF-8 BOM so 5.1 is told what it is holding. Either is fine and the
+      # repo picks the BOM, which keeps the house typography (→, ⚠️, em dashes).
       - name: Validate the PowerShell deploy scripts
         shell: pwsh
         working-directory: native
         run: |
           $failed = $false
           foreach ($f in @('bundle.ps1', 'deploy.ps1')) {
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path $f))
+            $hasBom = $bytes.Length -ge 3 -and
+                      $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+            $nonAscii = @($bytes | Where-Object { $_ -gt 0x7F }).Count
+            if ($nonAscii -gt 0 -and -not $hasBom) {
+              $failed = $true
+              Write-Host "::error file=native/$f::holds $nonAscii non-ASCII byte(s) and has no UTF-8 BOM — Windows PowerShell 5.1 will read it as CP1252 and fail to parse it. Add a BOM or make the file pure ASCII."
+            } else {
+              $how = if ($hasBom) { 'BOM' } else { 'pure ASCII' }
+              Write-Host "OK  native/$f encoding ($how)"
+            }
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
               (Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
