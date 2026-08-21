@@ -836,6 +836,92 @@ mod tests {
         }
     }
 
+    /// 🚨 **Whichever of the two window rules a refusal names, that is the rule that actually
+    /// refused it** — checked over every layout two placements can build, at panes that trip each
+    /// rule, both, and neither.
+    ///
+    /// The property is stated as a *counterfactual* rather than by re-deriving the classification
+    /// (which would just be the implementation, asserted against itself): if the answer is
+    /// [`Refusal::TooSmall`], then **widening the pane must not rescue it** — because if widening
+    /// did rescue it, the width was the real reason and the sentence quoting `MIN_SIDE` was
+    /// describing something else.
+    ///
+    /// ⚠️ **This is the edge case the review of this fix went looking for, pinned rather than
+    /// argued.** `region::plan` calls `region_rect` on the *vacant* regions it fills in as well
+    /// as the occupied ones, while [`resolve`] inspects only what the layout holds — so a
+    /// column-shaped **gap** would fail the plan with no occupied region needing a cut, and the
+    /// refusal would fall through to the wrong sentence. Today that is unreachable: the only
+    /// regions needing no cut are `full`, `top` and `bottom`, and a layout built from those
+    /// leaves a filler that is itself `top`, `bottom` or nothing. That is a fact about **this**
+    /// grid, and #98 Tier B is the proof that the grid moves — so it is measured here instead of
+    /// resting on the walk somebody did once.
+    #[test]
+    fn a_window_refusal_always_names_the_rule_that_actually_refused_it() {
+        let sizes = [
+            (80.0, 400.0),   // too narrow for columns, tall enough for rows
+            (500.0, 800.0),  // the review's own example: narrow only
+            (700.0, 60.0),   // wide enough for columns, too short for rows
+            (600.0, 60.0),   // both rules at once
+            (1100.0, 690.0), // neither
+        ];
+        let mut seen_narrow = 0;
+        let mut seen_small = 0;
+        for a in Region::ALL.iter().copied() {
+            for b in Region::ALL.iter().copied() {
+                for kind in Content::ALL.iter().copied() {
+                    let Ok(built) =
+                        Layout::from_placements(&[(a, Content::Agent), (b, kind)])
+                    else {
+                        continue;
+                    };
+                    let stored = SavedLayout::capture("x", &built);
+                    for (w, h) in sizes {
+                        let pane =
+                            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h));
+                        match resolve(&stored, Some(pane)) {
+                            Ok(_) => assert!(
+                                region::plan(pane, &built).is_some(),
+                                "{a:?}/{b:?} at {w}×{h} loaded but does not plan"
+                            ),
+                            Err(Refusal::TooNarrowForColumns { region, width, .. }) => {
+                                seen_narrow += 1;
+                                assert!(width < region::MIN_COLUMNS_WIDTH);
+                                assert!(
+                                    region.needs_column_cut(),
+                                    "{region:?} was named and needs no cut"
+                                );
+                                assert!(
+                                    built.get(region).is_some(),
+                                    "{region:?} was named and the layout does not hold it"
+                                );
+                            }
+                            Err(Refusal::TooSmall { .. }) => {
+                                seen_small += 1;
+                                // 🚨 The counterfactual: the same layout, the same height, a pane
+                                // wide enough for the columns. If it plans there, the width was
+                                // the reason and this refusal named the wrong rule.
+                                let wide = egui::Rect::from_min_size(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::vec2(w.max(region::MIN_COLUMNS_WIDTH), h),
+                                );
+                                assert!(
+                                    region::plan(wide, &built).is_none(),
+                                    "{a:?}/{b:?} at {w}×{h} was refused for MIN_SIDE, but \
+                                     widening to {} rescues it — the width was the real reason",
+                                    region::MIN_COLUMNS_WIDTH
+                                );
+                            }
+                            Err(other) => panic!("{a:?}/{b:?} at {w}×{h}: {other:?}"),
+                        }
+                    }
+                }
+            }
+        }
+        // Both arms were actually reached — a property test that silently exercised neither
+        // would pass on a `resolve` that never refuses at all.
+        assert!(seen_narrow > 0 && seen_small > 0, "{seen_narrow} narrow, {seen_small} small");
+    }
+
     /// CONTRACT: the actions are exactly the three the table carries, and the listing is not one
     /// of them — see [`LayoutCmd`] on why.
     #[test]

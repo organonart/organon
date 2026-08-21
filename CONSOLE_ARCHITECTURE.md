@@ -5090,7 +5090,18 @@ first, the sentence names the threshold that actually tripped, and the predicate
 `Region::needs_column_cut` — extracted out of `region_rect` so the explanation and the geometry
 cannot come to disagree. ⚠️ Both can be true at once; the column rule wins, because widening is
 what makes the layout expressible at all and the height refusal is still there afterwards if it
-applies. One refusal at a time, each of them true. The draw path's own *"the
+applies. One refusal at a time, each of them true.
+
+⚠️ **The edge case that fix could have missed is pinned rather than argued.** `plan` measures the
+*vacant* regions it fills in as well as the occupied ones, while `resolve` inspects only what the
+layout holds — so a column-shaped **gap** would fail the plan with no occupied region needing a
+cut, and the refusal would fall through to the wrong sentence. Today that is unreachable (the only
+regions needing no cut are `full`, `top` and `bottom`, and a layout built from those leaves a
+filler that is itself `top`, `bottom` or nothing) — but that is a fact about *this* grid, and
+Tier B is the proof that the grid moves. So the property is a test stated as a **counterfactual**:
+whenever the answer is the `MIN_SIDE` refusal, widening the pane must not rescue the layout,
+because if it did the width was the real reason. ⚠️ It is mutation-checked — reverting the split
+makes it fail, naming the case (`Top`/`BottomLeft` at 80×400) rather than merely going red. The draw path's own *"the
 window is too small for this layout"* sentence remains the backstop for every other route.
 
 ✏️ **The first two checks stopped being hypothetical during this tier's own review.** #98 Tier B

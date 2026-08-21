@@ -56,6 +56,15 @@ need none. The predicate is `Region::needs_column_cut`, **extracted out of `regi
 than re-derived from the cell mask — one implementation, so the explanation and the geometry
 cannot come to disagree.
 
+⚠️ **And the edge case that split could have missed is pinned as a counterfactual rather than
+argued.** `plan` measures the *vacant* regions it fills in as well as the occupied ones, while the
+refusal inspects only what the layout holds — so a column-shaped **gap** would fail the plan with
+no occupied region needing a cut, and the sentence would fall through to the wrong rule. It is
+unreachable on today's grid, and Tier B is the proof that the grid moves, so the test asserts the
+thing that matters instead: whenever the `MIN_SIDE` refusal is the answer, **widening the pane
+must not rescue the layout** — because if it did, the width was the real reason. Reverting the
+split makes it fail and name the case.
+
 🚨 **Three actions, and the listing is a verb of its own — the `/stack` lesson applied before it
 could bite.** `registry::parse_args` fills *required* arguments positionally and *optional* ones
 by keyword, so a verb with an optional name would be typed `/layout save name mine` while the CLI
