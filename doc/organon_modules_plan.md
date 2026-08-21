@@ -381,3 +381,182 @@ Nothing here is scheduled, and the ordering is deliberate. Modules want at least
 second producer to exist before the protocol is designed against imagination — §4 makes that
 point about the game and it applies twice as hard to a permission surface. **Build #98's tiers,
 get a layout worth sharing, and design this against something real.**
+
+---
+
+## 11. ✏️ Amendment — the unit of trust is a **commit**, and git is the distribution mechanism
+
+> Added 2026-08-20, extending §10. James: *"I want to make Git a first class participant in
+> this system in that the unit of trust will be a Git repo, not some distributable binary …
+> those Git repos may be hosted on GitHub, or they may be hosted locally, or they may be hosted
+> on a VPN you share with your company. The important point is that we can build on Git and the
+> whole idea that we have complete visibility into all code, and that we can make use of things
+> like forking and other Git primitives as we see fit."*
+
+### 11.1 This is not new infrastructure — it is what a linked module already is
+
+Cargo consumes git repositories natively, and **this workspace already does it**:
+
+```toml
+nih_plug      = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+baseview      = { git = "https://github.com/RustAudio/baseview.git", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3", … }
+```
+
+So for a **linked** module, "the unit is a git repo" costs nothing to adopt: it is the
+mechanism the build system already has. Hosting is genuinely open — GitHub, a machine on your
+desk, a company VPN — because git is distributable by nature and cargo does not care which
+remote a URL points at.
+
+### 11.2 🚨 §10 does not merely permit this. It requires it.
+
+§10 establishes that a linked module has no boundary — your address space, your filesystem,
+your GPU — and that **"auditing the source is the only control."**
+
+If source audit is the only control, then **source distribution is not a preference, it is the
+entire security model.** A linked module shipped as a binary would be a module whose only
+defence has been removed. The two sections agree; this one makes the consequence explicit.
+
+📌 **And the registry question in §9.5 largely dissolves.** *"Who owns the module registry"*
+becomes: nobody needs to. A URL is the identity and a commit hash is a content address. That is
+a stronger guarantee than a version number in an index, because it names bytes rather than
+naming a name that points at bytes.
+
+### 11.3 🚨 The unit is a COMMIT, not a repo — and this repo is currently on the wrong side of it
+
+A repo says *where the bytes live*. A commit says *which bytes*. The difference is not
+pedantry: **tags move, branches move, and force-push rewrites history.** Only a commit hash is
+immutable.
+
+⚠️ **Live example, in this workspace, today.** Three crates resolve from
+`robbert-vdh/nih-plug.git` with **no `rev`, no `tag`, no `branch`** — they float on whatever the
+default branch says. Read from `native/Cargo.lock`, which pins all three at
+`f36931f7af4646065488a9845d8f8c2f95252c23`:
+
+| crate | declared in | what it is |
+|---|---|---|
+| `nih_plug` | `native/Cargo.toml` | the plugin framework |
+| `nih_plug_derive` | pulled in by `nih_plug` | 🚨 **a proc-macro crate** (`proc-macro = true`), reached here through `#[derive(Params)]` at `native/src/params.rs:4060` |
+| `nih_plug_xtask` | `native/xtask/Cargo.toml` | the bundling task |
+
+`baseview` shows the correct shape — `rev = "237d323c…"`, pinned.
+
+🚨 **The middle row is §11.6's hazard sitting in this tree.** A floating git dependency that is
+a **proc macro** is code fetched from a moving reference and executed *at compile time, with the
+builder's privileges*. It is the exact case where "we have complete visibility into all code"
+is true and load-bearingly insufficient, and it is not a hypothetical.
+
+⚠️ **`nih_plug_egui` is NOT one of them, and the reason is worth recording** because it looks
+like one in `Cargo.toml`. It is declared as a git dependency and then **overridden by a
+`[patch]` block** (`native/Cargo.toml:454`) to `vendor/nih_plug_egui`, a local in-tree copy — so
+its `Cargo.lock` entry has **no `source` field at all** and it never resolves via git. It does
+not float, and "pin it" would be a no-op. ✏️ An earlier draft of this section named it as a
+third floater; a review caught it, and the correction is instructive rather than embarrassing:
+**a manifest line is not where a dependency's identity is settled — the lock is**, and a
+`[patch]` makes the two disagree on purpose.
+
+Two things about the lockfile safety net are worth stating rather than assuming:
+
+- **`cargo update` moves it, silently**, because the manifest expresses no constraint to stop it.
+- **A lockfile does not protect a consumer.** Cargo ignores a dependency's lockfile, so the
+  pin is a property of *building this repo*, not a property of the dependency. The moment
+  `organon-core` is published (M1) or another module depends on us, the float is theirs.
+
+**So the rule the trust model needs is: pin the commit.** A module reference in a layout or a
+manifest names a hash, and a reference that names only a branch is a reference that has not
+decided what it trusts.
+
+### 11.4 The affordance git gives us that no package manager ships
+
+**Trust is not granted once. It is renewed at every update**, and the update is the moment that
+matters — the code you audited is not the code that arrived.
+
+Git is the only distribution mechanism where the console can answer the question that actually
+matters at that moment:
+
+> *"This module has changed 14 files since the commit you last trusted. Here they are."*
+
+`git diff <last-trusted>..<candidate>` is one command. npm, PyPI and crates.io *could* offer
+this and do not, because their unit is a tarball and diffing tarballs is nobody's habit. Ours
+is a commit graph, and the diff is the native operation.
+
+📌 **This is the strongest argument for the whole approach**, and it is stronger than "you have
+complete visibility" — see 11.5. It does not ask anyone to read a module. It asks them to read
+*what changed*, which is a tractable amount of text and is exactly where a supply-chain attack
+has to appear.
+
+**Forking is the companion primitive.** If an update is unacceptable, the answer is not to
+argue with an upstream or wait for a fix: pin the previous commit, or fork and carry the
+divergence with full history. That is a real option a binary distribution cannot offer at all.
+
+### 11.5 ⚠️ Visibility is not review, and the gap is where supply-chain attacks live
+
+The honest counter to *"we have complete visibility into all code"*: **npm, PyPI and crates.io
+are all completely source-visible, and supply-chain compromises happen in them constantly.**
+Nobody reads their dependencies. Visibility is a **precondition** for auditing, not a substitute
+for it, and a trust model that rests on *"you could read it"* rests on something almost nobody
+does.
+
+That is not an argument against source distribution — it is an argument that source
+distribution buys the *possibility* of the controls, and the controls still have to be built.
+11.4 is the cheapest one: not "read this module", but "read this diff".
+
+### 11.6 🚨 The build is the attack surface that visibility does not cover
+
+A cargo dependency runs **`build.rs` at build time, with your privileges**, and **proc macros
+execute during compilation**. A linked git module can take a machine *before a line of its code
+runs inside the application* — and `build.rs` is precisely the file nobody opens when they say
+they have "looked at" a dependency.
+
+⚠️ **So for linked modules the review target is not "the module." It is `build.rs`, any proc
+macro, and the dependency tree** — and the tree is the part the unit of trust does not reach:
+you may trust a repo whose forty transitive dependencies you have never named. `cargo deny` and
+`cargo vet` exist for this and **this workspace configures neither** (no `deny.toml`, no
+`supply-chain/`). That is a gap worth naming here even though closing it is not this document's
+job.
+
+### 11.7 The division: source is required for linked, optional for hosted
+
+This falls out of §10's table rather than being a new rule.
+
+| | **Linked** | **Hosted** |
+|---|---|---|
+| Boundary | none | the process |
+| Source | **required** — it is the only control | **optional** |
+| Why | you are running it as yourself | you can run what you have not read, because the protocol bounds it |
+
+📌 **That a hosted module need not be source is a feature, not a concession.** It is what lets
+the ecosystem include things written in other languages, or by people you have no relationship
+with, without pretending you audited them. Requiring source there would pay the linked kind's
+cost for none of its benefit.
+
+### 11.8 What git supplies for identity, and what it does not
+
+A URL says **where**. It does not say **who** — and §10's tiers are about people (family,
+friends, colleagues, contributors), so identity is the thing the model actually needs.
+
+**Git already has it: signed commits and signed tags** (GPG or SSH). That gives an author
+identity that survives across repos and across hosting moves, without inventing a mechanism.
+Worth adopting when the trust model is built; nothing to do now.
+
+⚠️ **What git does not supply is revocation.** *This was fine and now is not* has no answer in
+git — a signature stays valid, a commit stays fetchable, and a fork keeps the history. Whatever
+the trust model becomes, revocation is the part that must be designed rather than inherited,
+and §10's warning applies: **a layout referencing a module you have stopped trusting must not
+fail to open.**
+
+### 11.9 What this changes now
+
+**Nothing is scheduled.** §10's ordering stands: build #98's tiers, get a layout worth sharing,
+and design the trust model against a real second producer rather than against imagination.
+
+Two things are cheap and can happen whenever someone is passing:
+
+1. **Pin the three floating declarations to `f36931f7…`, the rev `Cargo.lock` already holds** —
+   `nih_plug` in `native/Cargo.toml` and `nih_plug_xtask` in `native/xtask/Cargo.toml`, which are
+   the two that are *declared*; `nih_plug_derive` arrives transitively through `nih_plug`, so
+   pinning the parent settles it. It changes **no bytes in any build today** and removes a
+   silent-drift path. ⚠️ **Not `nih_plug_egui`** — it is `[patch]`ed to a vendored in-tree copy
+   and does not resolve via git, so pinning it would be a no-op (§11.3).
+2. **Decide whether a `deny.toml` is wanted** before the dependency surface grows a module
+   ecosystem, rather than after.
