@@ -128,7 +128,7 @@ use crate::theme::Theme;
 /// crate's layout, at the point in the column the panel occupies.
 ///
 /// ⚠️ It moved here from `conversation_view` when the transcript stopped being a home for
-/// panels; the contract kept its shape through that move and changed *width* in #116.
+/// panels; the contract kept its shape through that move and changed *width* in #117.
 ///
 /// # 🚨 It hands over the whole CARD now, not only the body — and that is the tier
 ///
@@ -544,7 +544,7 @@ impl Home {
 
 /// The heading one panel wears, wherever it is drawn: **its own name, and nothing else.**
 ///
-/// ✏️ **It said `◈ organon · look · Surface` until #116.** James, holding this column up against
+/// ✏️ **It said `◈ organon · look · Surface` until #117.** James, holding this column up against
 /// Organon's own editor stack: *"it just has the one word for the panel and not all of the words
 /// you have now."* Organon's card says `Surface`, so this does.
 ///
@@ -875,7 +875,7 @@ mod tests {
     }
 
     /// 🚨 **One word, and it is the panel's own** — the heading Organon's editor draws over the
-    /// same card. ✏️ This asserted `"◈ organon · look · Surface"` until #116; [`heading`] carries
+    /// same card. ✏️ This asserted `"◈ organon · look · Surface"` until #117; [`heading`] carries
     /// why the mark and the breadcrumb went.
     ///
     /// ⚠️ **Walked over the whole table rather than sampled**, because "one word" is a claim
@@ -1166,7 +1166,7 @@ mod tests {
     /// right while the console drew the card and asked down only for a body — a panel with no
     /// body had nothing to ask for. Now the caller draws the *card*, so it must be offered every
     /// panel or twenty-four of the twenty-five would wear the console's chrome while one wore
-    /// Organon's, which is the opposite of what #116 is for. [`NOT_TRANSPLANTED`] has not moved;
+    /// Organon's, which is the opposite of what #117 is for. [`NOT_TRANSPLANTED`] has not moved;
     /// [`absent_body`] is what says which panels get it, and `console_main` places it inside the
     /// card it draws.
     #[test]

@@ -6824,10 +6824,10 @@ fn neural_network_card(
 /// ⚠️ **Its doc paragraph had come loose from it.** The two sentences above were floating a
 /// hundred lines up, attached to nothing, with `neural_network_card`'s own doc directly beneath
 /// them — so `cargo doc` showed them on that function and this one had none at all. Reunited in
-/// #116, which is when somebody went looking for the card chrome and could not find it by name.
+/// #117, which is when somebody went looking for the card chrome and could not find it by name.
 ///
 /// 🚨 **Two callers now, in two products.** `editor_ui` draws every one of Organon's ~105 cards
-/// through here, and — since #116 — so does `panel_surface::OrganonPanels::card`, which is what
+/// through here, and — since #117 — so does `panel_surface::OrganonPanels::card`, which is what
 /// Organon Console's panel column calls through `panel_stack::OrganonDraw`. That is the whole of
 /// how the Console's column comes to have the editor's padding, corners and one-word heading:
 /// not a copied spec, the same function. **So a change here is visible in both**, and the

@@ -3156,7 +3156,7 @@ implicit in a dotted string.
 `Lane::Console` verbs are handed down by `console_main` and act on the console. `Lane::View`
 verbs are answered inside the conversation view and never leave it: `view.surface` (`/surface`,
 unchanged in spelling and behaviour), `view.help`, `view.media`, `view.organon` and — since
-#116 — `view.trace`, which decides whether *this pane* narrates itself (§1.9). They share the
+#117 — `view.trace`, which decides whether *this pane* narrates itself (§1.9). They share the
 registry because a human types them in one box and a menu should draw them in one tree; they are
 marked because the code that runs them is not the same code.
 
@@ -3690,7 +3690,7 @@ line, and is already where the eye is.
   has shipped and every earlier fix was site-local, so the guard now checks
   `registry::receipt`'s **output** from the file that draws it.
 
-##### 🚨 …and the console is quiet about all of it by default — #116 Tier 1, `/trace`
+##### 🚨 …and the console is quiet about all of it by default — #117 Tier 1, `/trace`
 
 James, 2026-08-20: *"I don't want to see any of the things presently visible in the status
 panel. Or anything like that. My working model here is Claude Desktop. That's the level of
@@ -4107,7 +4107,7 @@ takes this parameter at all. What travels into the conversation view now is the 
 (`panel_stack::Home`), not a way to draw, which is what lets `/organon` refuse **in the composer**
 when nothing holds a stack rather than on a stderr nobody reads.
 
-##### ✏️ …and in #116 it widened from the BODY to the whole CARD
+##### ✏️ …and in #117 it widened from the BODY to the whole CARD
 
 `panel_stack::OrganonDraw` is now `&mut dyn FnMut(&mut egui::Ui, &'static Panel) -> bool`, and it
 is handed **every** panel in the column rather than only the `Live` ones.
@@ -5237,7 +5237,7 @@ its bottom edge. It takes exactly two words — `panel_stack::STACK_ACTIONS`, i.
 emptying the column. **A region holding `agent` or `3d`, and a region holding nothing, gets no
 line at all.**
 
-##### 🚨 It is literally one line now — #116 Tier 2
+##### 🚨 It is literally one line now — #117 Tier 2
 
 ✏️ **`BAND_ROWS` was 4 and is 1.** The band drew a candidate row, the box, and two rows for a
 note; James, 2026-08-20, having used it: *"completely remove the status lines in the add remove
@@ -5332,7 +5332,7 @@ pushed the box **35.6 pt past the band's own clip rect** (measured: content `529
 band ending at `600.0`) — invisible and unclickable even with a stable id. Two faults, one
 symptom.
 
-✏️ **The fix was the row order, and #116 replaced it rather than inheriting it.** That paragraph
+✏️ **The fix was the row order, and #117 replaced it rather than inheriting it.** That paragraph
 read: *candidate row, then the box, then the note* — the note last because it is the only
 unbounded row, so an overflow costs the tail of an explanation and never the input. The reasoning
 was right and there are no other rows now.
@@ -6151,7 +6151,7 @@ path silently breaks the three-products-simultaneously guarantee that
   them**, and the id-namespace test, which is the strongest thing in this tier, proves only that
   four Surface bodies get four distinct egui ids — not that a knob in one moves the picture,
   which §1.11's item (0) still records as unchecked.
-- 🚨 **#116 is the largest purely-visual change this console has had and NOTHING in it has been
+- 🚨 **#117 is the largest purely-visual change this console has had and NOTHING in it has been
   seen on a screen.** Three tiers, all of which are claims about how something *looks* or how
   quiet it *feels*, and every one of them is green rather than verified:
   - **Tier 1, quiet by default.** The tests pin the *rule* — which line is `always`, that a
