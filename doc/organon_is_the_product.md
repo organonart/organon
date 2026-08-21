@@ -95,8 +95,20 @@ Consequences worth stating before anyone builds it:
 
 ## 5. What actually has to move, if this is ratified
 
-Listed so the size is visible. **None of it is urgent**, and none of it should happen before
-#98's tiers land.
+Listed so the size is visible. **None of it is urgent.**
+
+🚨 **The rows split into two kinds, and only one of them waits.** A row that changes **words a
+person reads** may go as soon as the decision is ratified — that is what this section's closing
+paragraph means by *"ratify the words first"*. A row that changes a **mechanism something else
+reads** — the edition enum, the binaries, the architecture docs that describe them — must not
+happen before #98's tiers land, because the editions are what currently make the three
+arrangements work.
+
+✏️ **This distinction was implicit until 2026-08-21 and the ✅ rows below made it load-bearing.**
+Until then every row was pending, so a flat *"none of it should happen before #98's tiers land"*
+read consistently; with word-rows marked done under that sentence, the section contradicted
+itself about what it had permitted. The words/mechanism split is what the closing paragraph
+always meant, now said where a reader meets the table rather than six lines later.
 
 | | |
 |---|---|

@@ -35,3 +35,11 @@ rather than remembered.
 mechanism — the edition, the binaries, which identifiers are load-bearing because something else
 reads them — so it moves when the mechanism moves, under #111. And ✏️ `doc/guide/README.md` was a
 **sixth** copy that neither §5's move list nor #111 had named; both lists now record all of them.
+
+✏️ **And §5's own preamble is fixed, because the ✅ rows are what broke it.** It read *"none of it
+should happen before #98's tiers land"* — consistent while every row was pending, and
+self-contradicting the moment word-rows above it were marked done. The split it always meant is
+now stated where a reader meets the table: **a row that changes words a person reads may go as
+soon as the decision is ratified; a row that changes a mechanism something else reads waits for
+#98.** That is the same distinction this change rests on, and leaving it six lines below the
+table is how a document comes to forbid what it is simultaneously recording as done.
