@@ -7,7 +7,9 @@ live agent in it, taught by loadable skills to operate the application it is run
 
 📌 **`doc/organon_prd.md` §1.1 is the canonical description**, in three lengths. This file, the
 sites and `CLAUDE.md` quote it rather than re-authoring it — the identity claim was once spelled
-five different ways across this tree, which is how it came to be stale in five places at once.
+a different way in every document that mentioned it, which is how it came to be stale in all of
+them at once. ⚠️ The count lives in §1.1 and deliberately not here: a number copied out of its
+source is a number that drifts from it, which is the defect this whole arrangement exists to end.
 
 ## What an arrangement holds
 
