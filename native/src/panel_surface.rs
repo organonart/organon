@@ -560,6 +560,63 @@ pub(crate) fn surface_card(
 // The Console's side of it
 // ---------------------------------------------------------------------------
 
+/// **Organon's card, cut from the Console's palette** (#120) — the one place the two colour
+/// systems are joined.
+///
+/// 🚨 **It lives here because this file is the only one that can see both.** `theme::CardStyle`
+/// is the root crate's and `organon_console::theme::Theme` is the compositor's; the crate that
+/// owns the second cannot see the first (`doc/arch/topology.md` — the root crate depends on
+/// *it*), and `organon-core` is host-free by acceptance test and can see neither. This module
+/// already sits on the Console's side of `panel_stack::OrganonDraw`, so the translation is a
+/// function here rather than a dependency anywhere.
+///
+/// # ⚠️ Three colours are read and the rest are derived, which is the decision
+///
+/// The palette is asked for what it already has an opinion about — the plate a panel is drawn
+/// on, its edge, and its title — and [`crate::theme::CardStyle::from_plate`] steps the two
+/// gradients off the plate in the palette's own hue.
+///
+/// **The rejected alternative was four new `Theme` fields** (`card_body`, `card_header`, …).
+/// It is the more explicit design and it costs more than it buys here: every one of the four
+/// shipped palettes would have to answer four questions it has no opinion about, the coverage
+/// test would need a fifth palette disagreeing on each to see them, and — the part that
+/// decides it — **a palette James writes later would have to fill them to look right**, when
+/// the whole complaint is that the column ignores the palette he wrote. Derivation means a new
+/// palette needs only the fields it already sets. If a palette ever *wants* a card that does
+/// not follow its panel plate, that is the day the fields earn their place.
+///
+/// ⚠️ **`panel_fill` is premultiplied and translucent — the card is opaque.** The plate reads
+/// as glass because `panel_stack::draw` paints it over whatever is behind the column; painting
+/// the card in the same translucent colour would darken that region twice, and the card would
+/// disappear into its own background rather than sit on it. The premultiplied components are
+/// exactly the colour the column contributes over black, which is what makes them the right
+/// base to step from.
+pub fn console_card_style(theme: &organon_console::theme::Theme) -> crate::theme::CardStyle {
+    crate::theme::CardStyle {
+        gap: PANEL_COLUMN_GAP,
+        ..crate::theme::CardStyle::from_plate(theme.panel_fill, theme.panel_edge, theme.panel_title)
+    }
+}
+
+/// **The space between two cards in a Console panel column, in points.**
+///
+/// ✏️ **Organon's editor leaves `theme::CARD_GAP` (6) and this leaves 0.** James, on the live
+/// column: *"we need to remove that spacing. See the dark spacing between them? We need to
+/// tighten it up and stack them more tightly together."*
+///
+/// 🚨 **Zero here is not zero on screen, and that is why the two surfaces need two numbers.**
+/// A card's trailing space is only half the seam: egui inserts `item_spacing.y` between the
+/// stack's entries as well, and the two surfaces run different ones — Organon's editor sets 6
+/// (`theme::install` → `apply_style`), the Console takes egui's default 3.
+/// `panel_stack::draw` zeroes its own contribution around the loop, so what is left is exactly
+/// this number, and a card in the column now sits directly against the one above it.
+///
+/// ⚠️ **What made the seam *read* as a dark band was never only its width.** The column's
+/// background is the Console's near-black `panel_fill` and the card was blue slate, so every
+/// gap was a stripe of a different colour system. [`console_card_style`] is most of that fix;
+/// this is the rest of it.
+const PANEL_COLUMN_GAP: f32 = 0.0;
+
 /// **The state behind a `/organon` panel element in Organon Console**: Organon's parameter set
 /// as *metadata*, and a freely writable mirror of it that the panel's controls actually move.
 ///
@@ -656,14 +713,26 @@ impl OrganonPanels {
     /// ⚠️ The heading is `panel.title` — `panels::Panel`'s own field, which is the string
     /// Organon's editor already draws over this same card. Nothing is composed here, and
     /// `panel_stack::heading` is the Console's one reader of the same field.
+    ///
+    /// ✏️ **`theme` arrived in #120, and it is what stops the shared card from also sharing
+    /// Organon's palette.** #117 bought the padding, the corners and the one-word heading by
+    /// calling `crate::card`; what came with them was blue slate, in a window whose every other
+    /// surface follows `/theme`. The card is drawn through [`console_card_style`] now, so the
+    /// column answers the same palette as the terminal beside it.
     pub fn card(
         &mut self,
         ui: &mut egui::Ui,
         panel: &'static organon_core::panels::Panel,
         absent: Option<&str>,
+        theme: &organon_console::theme::Theme,
     ) {
-        crate::card(ui, panel.title, |ui| match absent {
+        let style = console_card_style(theme);
+        crate::card_styled(ui, panel.title, &style, |ui| match absent {
             None => self.draw(ui, panel),
+            // ⚠️ `.weak()` rather than `theme.dim`, deliberately: it resolves through
+            // `Visuals::weak_text_color()`, and the Console sets its visuals from the palette
+            // (`Theme::visuals`), so this sentence already follows `/theme`. Naming a field
+            // here would be a second answer to a question the palette has answered once.
             Some(sentence) => {
                 ui.label(egui::RichText::new(sentence).italics().weak());
             }
@@ -837,5 +906,181 @@ mod tests {
         let mut dst = OrganicMathParams::default().to_shared();
         panels.overlay(&mut dst);
         assert_eq!(dst.material_gen, 1);
+    }
+
+    // ── The card's palette and its density (#120) ───────────────────────────
+
+    use organon_console::theme::Theme as ConsoleTheme;
+
+    /// 🚨 **The complaint, as a test.** James: *"the colors stay fixed no matter how I set the
+    /// theme of the panels I'm talking about."* Every colour a card paints has to move when the
+    /// palette does — so no two of the four shipped palettes may produce the same card, and none
+    /// of them may produce Organon's.
+    ///
+    /// ⚠️ Compares whole styles rather than one field. A derivation that read, say, only the
+    /// title from the palette and left the gradients blue-slate would still be the bug, and a
+    /// single-field assertion would pass it.
+    #[test]
+    fn a_console_card_is_cut_from_the_console_palette() {
+        let organon = crate::theme::CardStyle::of(&crate::theme_config::ThemeConfig::default());
+        let mut seen: Vec<(&str, crate::theme::CardStyle)> = Vec::new();
+        for name in ConsoleTheme::NAMES {
+            let theme = ConsoleTheme::by_name(name).expect("a name out of NAMES resolves");
+            let style = console_card_style(&theme);
+            assert_ne!(
+                style, organon,
+                "the `{name}` palette still paints Organon's own blue-slate card"
+            );
+            for (other, prior) in &seen {
+                assert_ne!(
+                    &style, prior,
+                    "`{name}` and `{other}` paint the same card — the palette is not being read"
+                );
+            }
+            seen.push((name, style));
+        }
+        assert_eq!(seen.len(), ConsoleTheme::NAMES.len(), "a palette was skipped");
+    }
+
+    /// ⚠️ **No shipped palette's plate sits close enough to an end of the range to clip**, which
+    /// is the one way a neutral step stops being neutral: `step` saturates per channel, so a
+    /// plate with a channel within a step of 0 or 255 would come back with a hue it did not
+    /// have. `theme.rs` pins the neutrality of the arithmetic; this pins that the four palettes
+    /// actually in the window are inside the range where it holds — and a fifth palette that
+    /// reaches for near-black or near-white fails here rather than looking subtly tinted.
+    #[test]
+    fn no_shipped_palette_clips_its_way_to_a_tint() {
+        for name in ConsoleTheme::NAMES {
+            let theme = ConsoleTheme::by_name(name).expect("a name out of NAMES resolves");
+            let plate = theme.panel_fill;
+            let s = console_card_style(&theme);
+            for (field, c) in [
+                ("body_top", s.body_top),
+                ("body_bottom", s.body_bottom),
+                ("header_mid", s.header_mid),
+                ("header_lip", s.header_lip),
+                ("header_foot", s.header_foot),
+            ] {
+                let d = |a: u8, b: u8| a as i32 - b as i32;
+                let (dr, dg, db) =
+                    (d(c.r(), plate.r()), d(c.g(), plate.g()), d(c.b(), plate.b()));
+                assert!(
+                    dr == dg && dg == db,
+                    "{name}: {field} stepped {dr},{dg},{db} — a channel clipped and tinted it"
+                );
+            }
+        }
+    }
+
+    /// The three colours the palette gets to state outright arrive unchanged; only the two
+    /// gradients are derived. If this ever needs relaxing, the honest move is the four `Theme`
+    /// fields [`console_card_style`] rejects — not a quiet fudge here.
+    #[test]
+    fn the_palettes_own_answers_are_used_verbatim() {
+        for name in ConsoleTheme::NAMES {
+            let theme = ConsoleTheme::by_name(name).expect("a name out of NAMES resolves");
+            let style = console_card_style(&theme);
+            assert_eq!(style.border, theme.panel_edge, "{name}: border is not `panel_edge`");
+            assert_eq!(style.title, theme.panel_title, "{name}: title is not `panel_title`");
+        }
+    }
+
+    /// ⚠️ **The card is opaque even though the plate it is cut from is not.** `panel_fill` is
+    /// premultiplied translucent glass, painted by `panel_stack::draw` as the column's own
+    /// background; a card in the same translucent colour would darken that region twice and
+    /// vanish into it. Checked rather than left to the reader, because `Color32` carries the
+    /// alpha silently and a `from_rgba_premultiplied` slipping through here would look fine on
+    /// a black backdrop and wrong on a lit one.
+    #[test]
+    fn a_cut_card_is_opaque() {
+        for name in ConsoleTheme::NAMES {
+            let theme = ConsoleTheme::by_name(name).expect("a name out of NAMES resolves");
+            assert!(theme.panel_fill.a() < 255, "{name}: the plate stopped being glass");
+            let s = console_card_style(&theme);
+            for (field, c) in [
+                ("body_top", s.body_top),
+                ("body_bottom", s.body_bottom),
+                ("header_lip", s.header_lip),
+                ("header_mid", s.header_mid),
+                ("header_foot", s.header_foot),
+            ] {
+                assert_eq!(c.a(), 255, "{name}: {field} carried the plate's alpha through");
+            }
+        }
+    }
+
+    /// 🚨 **The two spellings of "no gap", in two crates, compared rather than described.**
+    /// `panel_stack::GAP` is what the Console's own fallback card leaves under itself and
+    /// [`PANEL_COLUMN_GAP`] is what Organon's card leaves in the same column. They are drawn in
+    /// the same stack, so a column that mixed them would step unevenly — and the compiler has
+    /// nothing to say about it, because the constants live either side of a crate boundary. This
+    /// direction of the graph can see both, which makes it the only place the agreement is
+    /// checkable at all.
+    #[test]
+    fn the_fallback_leaves_the_same_gap_organons_card_does() {
+        assert_eq!(PANEL_COLUMN_GAP, organon_console::panel_stack::GAP);
+    }
+
+    /// ⚠️ **Organon's editor keeps its own density.** The gap is the one geometry a surface
+    /// names, so the risk is that tightening the column tightened the editor with it — 105 cards
+    /// that nobody in this change was looking at.
+    #[test]
+    fn the_editors_own_cards_keep_their_spacing() {
+        let organon = crate::theme::CardStyle::of(&crate::theme_config::ThemeConfig::default());
+        assert_eq!(organon.gap, crate::theme::CARD_GAP);
+        assert_eq!(organon.gap, 6.0, "the editor's inter-card gap moved");
+        assert!(
+            PANEL_COLUMN_GAP < organon.gap,
+            "the column is supposed to be the tighter of the two"
+        );
+    }
+
+    /// 🚨 **The seam two cards actually leave, laid out, in points** — the constants above are
+    /// only half of it, and this is the composed answer.
+    ///
+    /// Measured on `main` before #120 touched anything: **12 pt in Organon's editor and 9 pt in
+    /// the Console's column**, because a card's own trailing space is 6 in both while
+    /// `item_spacing.y` is 6 in one and egui's default 3 in the other. That is the number
+    /// James's *"remove that spacing"* is about, and it is also why the column was already the
+    /// **tighter** of the two — so cutting only the card's constant would have left a 3 pt floor
+    /// and looked like the fix failing.
+    ///
+    /// ⚠️ **The editor's 12 is the assertion that matters here.** The column's half is pinned on
+    /// the other side of the seam (`panel_stack::the_column_contributes_no_space_between_two_cards`,
+    /// which measures the stack's own contribution at 0); what this file can see is that the
+    /// 105 cards nobody in this change was looking at still sit exactly where they sat.
+    ///
+    /// ⚠️ The card's rect is `scope − gap`: `add_space` extends the scope that contains it, so
+    /// the frame ends `style.gap` above the scope's own bottom. Subtracting it is what makes the
+    /// number below the gap between two *frames* rather than between two layout scopes.
+    #[test]
+    fn two_editor_cards_leave_twelve_points_between_them() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let style = crate::theme::CardStyle::organon();
+        let mut frames: Vec<egui::Rect> = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(300.0);
+                for i in 0..2 {
+                    let scope = ui.push_id(i, |ui| {
+                        crate::card(ui, "Surface", |ui| {
+                            ui.label("body");
+                        });
+                    });
+                    let r = scope.response.rect;
+                    frames.push(egui::Rect::from_min_max(
+                        r.min,
+                        egui::pos2(r.max.x, r.max.y - style.gap),
+                    ));
+                }
+            });
+        });
+        assert_eq!(frames.len(), 2);
+        let seam = frames[1].top() - frames[0].bottom();
+        assert_eq!(
+            seam, 12.0,
+            "Organon's editor stack changed density: {seam} pt between two cards, not 12"
+        );
     }
 }

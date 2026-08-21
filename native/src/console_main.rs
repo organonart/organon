@@ -5804,11 +5804,18 @@ impl Console {
                                 // outside `nih_plug` at all: `param_sink` owns that account,
                                 // and `OrganonPanels::overlay` is where the mirror reaches the
                                 // world.
+                                //
+                                // ⚠️ **The palette crosses with it** (#120). Without that
+                                // argument the card reads Organon's own `theme_config` and a
+                                // `/theme` switch moves every other surface in the window and
+                                // leaves the column blue-slate — which is what James was looking
+                                // at. `panel_surface::console_card_style` is the translation.
                                 draw: &mut |ui, panel| {
                                     organon_panels.card(
                                         ui,
                                         panel,
                                         organon_console::panel_stack::absent_body(panel),
+                                        theme,
                                     );
                                     true
                                 },

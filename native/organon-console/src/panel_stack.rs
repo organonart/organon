@@ -581,13 +581,21 @@ pub const NOT_TRANSPLANTED: &str = "no controls yet";
 
 /// The gap under a [`plain_card`], in points.
 ///
-/// ✏️ **It used to be the gap between *every* two panels, added by [`draw`].** It is now the
-/// fallback's own trailing space, because Organon's `card()` adds its own 6 pt after each card
-/// and a stack that added a second one would be 12 pt where the editor is 6 — which is exactly
-/// the padding James asked to match. The two spellings agree at 6.0 by arithmetic rather than by
-/// coincidence: this is the number `lib.rs`'s card ends on, and the fallback exists to look like
-/// it.
-const GAP: f32 = 6.0;
+/// ✏️ **It used to be the gap between *every* two panels, added by [`draw`].** It became the
+/// fallback's own trailing space in #117, because Organon's `card()` adds its own after each
+/// card and a stack that added a second one would have been twice the editor's — which is
+/// exactly the padding James asked to match.
+///
+/// ✏️ **6.0 → 0.0 in #120**, following the card it exists to look like: `card()`'s trailing
+/// space in a Console column is `panel_surface::PANEL_COLUMN_GAP`, which is now zero, and this
+/// fallback is drawn in the same column beside cards that use it.
+///
+/// ⚠️ **`pub` so the agreement can be *asserted* rather than described.** The root crate's
+/// number is not visible from here and a dependency on it would point the wrong way through the
+/// graph — but the root crate can see both, and
+/// `panel_surface::the_fallback_leaves_the_same_gap_organons_card_does` compares them. A
+/// constant two crates keep equal by comment is a constant that stops being equal.
+pub const GAP: f32 = 0.0;
 
 /// The namespace every stacked panel hangs under. A constant rather than a literal at the
 /// `push_id` site so the test below is naming the same thing the draw path is.
@@ -603,6 +611,21 @@ const STACK_ID: &str = "organon-panel-stack";
 /// ⚠️ **`auto_shrink` is off on both axes**, which is what makes the region's size independent
 /// of the panel count: the scroll area fills the rectangle it was given whether it holds one
 /// panel or twenty.
+///
+/// # 🚨 The column owns its own half of the seam between two cards (#120)
+///
+/// A card's trailing space is not the whole gap. egui inserts `item_spacing.y` between the
+/// entries of a vertical layout as well, and **the two surfaces that draw this card run
+/// different ones** — Organon's editor sets 6 (`theme::install` → `apply_style`), the Console
+/// never touches spacing and takes egui's default 3. So the card's own constant cannot decide
+/// the gap on its own, and a stack that left `item_spacing` alone would have had a floor of
+/// 3 pt no card setting could reach.
+///
+/// The loop therefore zeroes it and **each card restores it inside its own scope**, which is
+/// what keeps this from being a change to the panels: the rows *within* a card — labels,
+/// sliders, value boxes — space themselves exactly as they did, because the child `Ui` is
+/// handed back the spacing its parent had before the loop touched it. Only the distance
+/// *between* two cards moves, and it is then exactly what the card leaves under itself.
 pub fn draw(
     ui: &mut egui::Ui,
     region: Region,
@@ -615,8 +638,13 @@ pub fn draw(
     ui.push_id((STACK_ID, region.as_word()), |ui| {
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            let inherited = ui.spacing().item_spacing;
+            ui.spacing_mut().item_spacing.y = 0.0;
             for entry in stack.entries() {
-                ui.push_id(entry.serial(), |ui| card(ui, entry.panel(), theme, form, organon));
+                ui.push_id(entry.serial(), |ui| {
+                    ui.spacing_mut().item_spacing = inherited;
+                    card(ui, entry.panel(), theme, form, organon)
+                });
             }
         });
     });
@@ -1242,6 +1270,69 @@ mod tests {
             drawn.iter().any(|t| t.contains(NOT_TRANSPLANTED)),
             "the fallback card lost the sentence that says why it is empty: {drawn:?}"
         );
+    }
+
+    /// 🚨 **The column adds nothing between two cards** (#120), measured rather than argued.
+    ///
+    /// James, on the live build: *"we need to remove that spacing. See the dark spacing between
+    /// them? We need to tighten it up and stack them more tightly together."* A card's own
+    /// trailing space is the root crate's number; **this** is the other half — egui's
+    /// `item_spacing.y` between the stack's entries, which the Console inherits from egui's
+    /// default at 3 pt and which no card constant could have reached below.
+    ///
+    /// ⚠️ **The seam is measured between what the SEAM callback was handed**, not between
+    /// painted rects, because the property is about layout rather than about pigment: each card
+    /// allocates a known height and the distance between consecutive allocations is exactly what
+    /// [`draw`] contributed. Delete the `item_spacing.y = 0.0` line and this reports 3.
+    ///
+    /// ⚠️ And the restoration is asserted in the same breath: the spacing a card sees *inside*
+    /// its own scope is still the caller's, or tightening the column would silently have
+    /// tightened every row inside every panel.
+    #[test]
+    fn the_column_contributes_no_space_between_two_cards() {
+        let mut stack = Stack::default();
+        stack.push(surface());
+        stack.push(declared());
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(500.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(egui::Rect, f32)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        const BODY_H: f32 = 40.0;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // A caller with a spacing of its own, so "restored" means something other than
+                // "happened to equal egui's default".
+                ui.spacing_mut().item_spacing.y = 7.0;
+                let mut seam = |ui: &mut egui::Ui, _panel: &'static Panel| {
+                    let inside = ui.spacing().item_spacing.y;
+                    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), BODY_H));
+                    sink.lock().expect("no panic in the closure").push((rect, inside));
+                    true
+                };
+                draw(ui, Region::Left, &stack, &Theme::default(), &Form::TERMINAL, &mut seam);
+            });
+        });
+        let seen = seen.lock().expect("no panic").clone();
+        assert_eq!(seen.len(), 2, "both panels should have been offered a card");
+        let seam = seen[1].0.top() - seen[0].0.bottom();
+        assert_eq!(
+            seam, 0.0,
+            "the column put {seam} pt between two cards; the card's own gap is the only seam"
+        );
+        for (i, (_, inside)) in seen.iter().enumerate() {
+            assert_eq!(
+                *inside, 7.0,
+                "card {i} was drawn with the column's zeroed spacing instead of the caller's — \
+                 every row inside every panel would tighten with it"
+            );
+        }
     }
 
     /// Every string this frame actually painted, in draw order.

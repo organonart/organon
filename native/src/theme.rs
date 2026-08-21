@@ -319,31 +319,61 @@ pub mod paint {
     /// stops are computed *from* the middle one, so editing "header" in the UI panel moves the
     /// whole gradient coherently instead of desynchronising its ends.
     pub fn silver_stops() -> [(f32, Color32); 3] {
-        let mid = CARD_HEADER();
-        let k = crate::theme_config::active().depth.header_gradient.clamp(0.0, 1.0);
+        silver_stops_of(&crate::theme_config::active())
+    }
+
+    /// [`silver_stops`] against a **named** config rather than the live one.
+    ///
+    /// ⚠️ **The live form reads a file** — `theme_config::active()` resolves through
+    /// `ThemeConfig::load()`, so a machine with a saved theme has different colours than a
+    /// cloud checkout. A test that pins the shipped look therefore has to name
+    /// `ThemeConfig::default()`; this is what lets it, and it is the same reasoning
+    /// `surfaces()` states at the bottom of this file.
+    pub fn silver_stops_of(cfg: &crate::theme_config::ThemeConfig) -> [(f32, Color32); 3] {
+        let mid = to_col(cfg.palette.card_header);
+        let k = cfg.depth.header_gradient.clamp(0.0, 1.0);
         // At k = 0 every stop collapses onto the midpoint: a flat fill, no gradient.
         let lip = lerp_col(mid, Color32::from_rgb(0x20, 0x29, 0x30), k);
         let foot = lerp_col(mid, Color32::from_rgb(0x2B, 0x35, 0x3D), k);
-        [(0.00, lip), (0.42, mid), (1.00, foot)]
+        [(0.00, lip), (HEADER_MID_STOP, mid), (1.00, foot)]
     }
 
+    /// Where the *bright* stop sits down a header band. Above the middle, so the convexity
+    /// reads as light falling from above rather than as a symmetrical bulge.
+    ///
+    /// ⚠️ A constant because [`super::card_header_band`] paints the band from a
+    /// [`super::CardStyle`]'s three colours rather than from this list, and a second spelling of
+    /// `0.42` is a place for the two to disagree about where the light is.
+    pub const HEADER_MID_STOP: f32 = 0.42;
+
     /// [`silver_stops`] as a paintable shape.
+    ///
+    /// ⚠️ **Not what a card's header band paints any more** — that goes through
+    /// [`super::CardStyle`], because a card is now drawn in two products' palettes. This
+    /// remains the *shape* form of Organon's own stops for any other raised face that wants
+    /// them, and [`super::CardStyle::organon`] is the reader that keeps the card on them.
     pub fn silver_face(rect: Rect, chamfer: f32) -> Shape {
         gradient_v(rect, &silver_stops(), chamfer)
     }
 
-    /// The card-body gradient (§6): a weak top-to-bottom darkening over the panel colour.
-    pub fn card_face(rect: Rect, chamfer: f32) -> Shape {
-        let base = CARD();
-        let k = crate::theme_config::active().depth.card_gradient.clamp(0.0, 1.0);
-        gradient_v(
-            rect,
-            &[
-                (0.0, lerp_col(base, Color32::from_rgb(0x24, 0x2E, 0x35), k)),
-                (1.0, lerp_col(base, Color32::from_rgb(0x1D, 0x25, 0x2B), k)),
-            ],
-            chamfer,
-        )
+    /// The card-body gradient's two stops (§6): a weak top-to-bottom darkening over the panel
+    /// colour, scaled by `depth.card_gradient`.
+    ///
+    /// ✏️ **A stop list rather than a shape**, since #120: [`super::CardStyle`] reads the
+    /// colours and the painting happens once, in [`super::card_chrome`], against whichever
+    /// palette that style came from.
+    pub fn card_stops() -> [(f32, Color32); 2] {
+        card_stops_of(&crate::theme_config::active())
+    }
+
+    /// [`card_stops`] against a named config — see [`silver_stops_of`] for why that exists.
+    pub fn card_stops_of(cfg: &crate::theme_config::ThemeConfig) -> [(f32, Color32); 2] {
+        let base = to_col(cfg.palette.card);
+        let k = cfg.depth.card_gradient.clamp(0.0, 1.0);
+        [
+            (0.0, lerp_col(base, Color32::from_rgb(0x24, 0x2E, 0x35), k)),
+            (1.0, lerp_col(base, Color32::from_rgb(0x1D, 0x25, 0x2B), k)),
+        ]
     }
 
     /// The application shell gradient (§3) — a weak top-to-bottom darkening, full bleed.
@@ -907,6 +937,171 @@ pub fn card_frame() -> egui::Frame {
     ))
 }
 
+/// **Every colour a card's chrome asks for, gathered into one value** — so that one card body
+/// can be painted in more than one product's palette (#120).
+///
+/// 🚨 **This exists because #117 shared the card and the palette came with it.** `lib.rs`'s
+/// `card()` is now drawn by Organon's editor *and* by Organon Console's panel column, and every
+/// colour in it resolved through the accessors at the top of this module — so a Console theme
+/// switch moved the terminal, the composer, the status strip and the tab bar, and left the panel
+/// column blue-slate. James, on the live build: *"I didn't want to adopt the blue, gray color
+/// theme for all of these. I want them to adapt to the current theme colors."*
+///
+/// ⚠️ **The colour is parameterised and the GEOMETRY is not, deliberately.** Corner radius,
+/// inner margin, the header band's bleed, the grain and the bevel stay where they are and stay
+/// shared: they are what "it should use the same exact code somehow" was asking for, and a
+/// second card function is the drift #117 existed to prevent. What a palette gets to decide is
+/// pigment.
+///
+/// ⚠️ **The three-stop trick is preserved as a trio of fields rather than as a base colour plus
+/// a derivation.** The middle header stop is *lighter than both ends*, which is what makes the
+/// band read as convex rolled metal (§5); a struct holding one `header` colour would leave every
+/// caller to re-derive the other two, and one of them would eventually do it with two stops.
+///
+/// [`Self::organon`] is the value Organon's own editor passes, and it is read from the live
+/// palette exactly as the accessors did before this type existed — which is why this is a
+/// refactor for Organon and a change only for the Console.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CardStyle {
+    /// The body gradient's top and bottom stops (§6).
+    pub body_top: egui::Color32,
+    pub body_bottom: egui::Color32,
+    /// The header band's three stops (§5), in painting order. `mid` must be the *lightest*.
+    pub header_lip: egui::Color32,
+    pub header_mid: egui::Color32,
+    pub header_foot: egui::Color32,
+    /// The hairline rule along the band's lower edge.
+    pub header_rule: egui::Color32,
+    /// The card's 1 px border.
+    pub border: egui::Color32,
+    /// The heading's type colour.
+    pub title: egui::Color32,
+    /// **The space a card leaves under itself, in points** — the one field here that is not
+    /// pigment, and the one geometry a surface is allowed to name.
+    ///
+    /// 🚨 **It is here because it is the only part of the card's geometry the two surfaces
+    /// genuinely disagree about, and they disagree for a measurable reason.** Organon's editor
+    /// runs `item_spacing.y = 6` ([`install`] → `apply_style`) and the Console runs egui's
+    /// default `3`, so one number cannot produce one gap in both. James, on the Console column:
+    /// *"we need to remove that spacing. See the dark spacing between them? We need to tighten
+    /// it up and stack them more tightly together."*
+    ///
+    /// ⚠️ **Everything else about a card's geometry stays shared and stays out of this struct.**
+    /// Radius, inner margin, band bleed and header layout are what "the same exact code" was
+    /// asking for; a struct that accumulated them would become a spec two surfaces each keep half
+    /// of. The test for a field belonging here is that a surface has a *reason* to differ, not
+    /// that it *could*.
+    pub gap: f32,
+}
+
+impl CardStyle {
+    /// **Organon's own card, read from the live [`crate::theme_config`] palette.**
+    ///
+    /// 🚨 Every field is the expression the corresponding draw site held before [`CardStyle`]
+    /// existed, so `card()` painting through this style is arithmetic-for-arithmetic what it
+    /// painted before — `organon_card_style_is_the_look_that_shipped` pins each one against the
+    /// palette it came from, and that test is the whole of the claim that Organon is unchanged.
+    pub fn organon() -> Self {
+        Self::of(&crate::theme_config::active())
+    }
+
+    /// [`Self::organon`] against a **named** config rather than the live one.
+    ///
+    /// ⚠️ `theme_config::active()` resolves through `ThemeConfig::load()`, which reads a file —
+    /// so a test that pins the shipped card has to name `ThemeConfig::default()` or it is
+    /// asserting something about the machine it runs on. Same reasoning as `surfaces()` at the
+    /// bottom of this file, and the reason `organon_card_style_is_the_look_that_shipped` can
+    /// state literal bytes at all.
+    pub fn of(cfg: &crate::theme_config::ThemeConfig) -> Self {
+        let [(_, body_top), (_, body_bottom)] = paint::card_stops_of(cfg);
+        let [(_, header_lip), (_, header_mid), (_, header_foot)] = paint::silver_stops_of(cfg);
+        Self {
+            body_top,
+            body_bottom,
+            header_lip,
+            header_mid,
+            header_foot,
+            header_rule: egui::Color32::from_rgb(0x30, 0x3A, 0x41),
+            border: crate::theme_config::to_col(cfg.palette.hairline),
+            title: crate::theme_config::to_col(cfg.palette.bone),
+            gap: CARD_GAP,
+        }
+    }
+
+    /// **A card cut from a plate colour a different palette already owns**, plus that palette's
+    /// own answers for its border and its heading.
+    ///
+    /// 🚨 **The steps are neutral — the same number on all three channels — and that is the
+    /// point.** Organon's own table tilts blue as it lightens (`+3,+4,+5` from card to body top),
+    /// because §2's rule is `blue − red ∈ 8..=15` and every blue-slate surface obeys it. Carrying
+    /// those per-channel deltas onto a green or a warm plate would drag it toward blue-slate,
+    /// which is the exact complaint this answers. The **magnitudes** are Organon's, rounded from
+    /// the mean of its three channels, so a card cut this way has the reference's compressed
+    /// 5–15-level tonal steps (§14) in the caller's own hue.
+    ///
+    /// ⚠️ **`plate` is not required to differ from the surface behind the card, and Organon's
+    /// does not** — `palette.panel` and `palette.card` are the same value in blue slate. A card
+    /// is separated from what it sits on by its gradient, its border and its bevel highlight, not
+    /// by its fill, which is why passing a column's own background here is right rather than a
+    /// mistake to correct with an arbitrary lightening.
+    ///
+    /// ⚠️ **Steps go *up* for the raised parts whatever the plate's lightness**, so a pale plate
+    /// gets a paler band rather than a darker one. Checked against the Console's light palette
+    /// (`0xc2c3c4` → band `0xd3d4d5`) rather than assumed: nothing clips, and raised-is-lighter
+    /// is the convention the bevel highlight already commits this chrome to.
+    pub fn from_plate(
+        plate: egui::Color32,
+        border: egui::Color32,
+        title: egui::Color32,
+    ) -> Self {
+        let mid = step(plate, HEADER_STEP);
+        Self {
+            body_top: step(plate, BODY_TOP_STEP),
+            body_bottom: step(plate, BODY_BOTTOM_STEP),
+            header_lip: step(mid, HEADER_LIP_STEP),
+            header_mid: mid,
+            header_foot: step(mid, HEADER_FOOT_STEP),
+            header_rule: step(mid, HEADER_RULE_STEP),
+            border,
+            title,
+            // Organon's own, so a caller that says nothing about density gets the editor's.
+            // The Console overrides it — see `panel_surface::console_card_style`.
+            gap: CARD_GAP,
+        }
+    }
+}
+
+/// The space Organon's editor leaves under a card, in points. [`CardStyle::gap`]'s default and,
+/// until #120, the only value there was.
+pub const CARD_GAP: f32 = 6.0;
+
+/// One tonal step of `d` levels on every channel, saturating at both ends. Alpha is dropped:
+/// a card's chrome is an opaque plate, and a translucent gradient over a surface that already
+/// painted the same colour would darken it twice.
+///
+/// ⚠️ **The saturation is the one way this stops being neutral**, and it is deliberately not
+/// worked around here: a plate with a channel within a step of `0` or `255` comes back with a
+/// hue it did not have, because that channel stops moving while the others keep going. Scaling
+/// every channel by the worst-case headroom instead would trade a rare tint for a flattened
+/// gradient on *every* dark plate, which is worse and harder to notice.
+/// `panel_surface::no_shipped_palette_clips_its_way_to_a_tint` is what says the palettes in the
+/// window are inside the range where it holds — and fails for a fifth palette that is not.
+fn step(c: egui::Color32, d: i16) -> egui::Color32 {
+    let f = |x: u8| (x as i16 + d).clamp(0, 255) as u8;
+    egui::Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
+}
+
+// The blue-slate table's own steps from `palette.card`, averaged across its three channels.
+// `card 0x212A30` → body top `0x242E35` (+3,+4,+5), body bottom `0x1D252B` (−4,−5,−5),
+// header `0x303B43` (+15,+17,+19); and from the header, lip `0x202930` (−16,−18,−19),
+// foot `0x2B353D` (−5,−6,−6), rule `0x303A41` (0,−1,−2).
+const BODY_TOP_STEP: i16 = 4;
+const BODY_BOTTOM_STEP: i16 = -5;
+const HEADER_STEP: i16 = 17;
+const HEADER_LIP_STEP: i16 = -18;
+const HEADER_FOOT_STEP: i16 = -6;
+const HEADER_RULE_STEP: i16 = -1;
+
 /// Every shape making up a card's chrome (§6): gradient body, grain, 1 px cool border, and the
 /// inset top highlight + lower seam that make it read as machined rather than drawn.
 ///
@@ -914,13 +1109,23 @@ pub fn card_frame() -> egui::Frame {
 /// *after* its contents have been laid out. Callers reserve a slot with `painter.add(Shape::Noop)`
 /// before the content and `painter.set(idx, …)` after — the standard egui way to paint behind
 /// something you have not measured yet.
-pub fn card_chrome(ui: &egui::Ui, rect: egui::Rect) -> egui::Shape {
-    let mut v = vec![paint::card_face(rect, radius() as f32)];
+///
+/// ⚠️ **The grain and the bevel are not in [`CardStyle`]** and take no palette argument. They are
+/// surface *material* — a noise texture and two fixed-alpha hairlines from
+/// [`crate::theme_config`]'s `Material`/`Depth` — rather than pigment, and they are exactly the
+/// treatments the module header calls load-bearing. Handing a second palette its own copy of
+/// them would be a second look, not a themed card.
+pub fn card_chrome(ui: &egui::Ui, rect: egui::Rect, style: &CardStyle) -> egui::Shape {
+    let mut v = vec![paint::gradient_v(
+        rect,
+        &[(0.0, style.body_top), (1.0, style.body_bottom)],
+        radius() as f32,
+    )];
     v.extend(paint::grain(ui.ctx(), rect));
     v.push(egui::Shape::rect_stroke(
         rect,
         egui::CornerRadius::same(radius()),
-        egui::Stroke::new(1.0, HAIRLINE()),
+        egui::Stroke::new(1.0, style.border),
         egui::StrokeKind::Inside,
     ));
     v.extend(paint::bevel(rect));
@@ -929,13 +1134,21 @@ pub fn card_chrome(ui: &egui::Ui, rect: egui::Rect) -> egui::Shape {
 
 /// A card's **header band** (§5): the three-stop silver gradient plus a hairline rule along its
 /// lower edge. Deferred like [`card_chrome`], for the same reason.
-pub fn card_header_band(rect: egui::Rect) -> egui::Shape {
+pub fn card_header_band(rect: egui::Rect, style: &CardStyle) -> egui::Shape {
     egui::Shape::Vec(vec![
-        paint::silver_face(rect, radius() as f32),
+        paint::gradient_v(
+            rect,
+            &[
+                (0.00, style.header_lip),
+                (paint::HEADER_MID_STOP, style.header_mid),
+                (1.00, style.header_foot),
+            ],
+            radius() as f32,
+        ),
         egui::Shape::hline(
             rect.x_range(),
             rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x3A, 0x41)),
+            egui::Stroke::new(1.0, style.header_rule),
         ),
     ])
 }
@@ -944,9 +1157,11 @@ pub fn card_header_band(rect: egui::Rect) -> egui::Shape {
 ///
 /// **Bone white, not an accent.** Card titles were the single largest consumer of the old amber —
 /// 112 call sites all shouting at once. Making them type-coloured and reserving chroma for live
-/// data is most of what separates the pre-#542 UI from the reference (§11).
-pub fn card_title(title: &str) -> egui::RichText {
-    egui::RichText::new(title).heading().color(BONE())
+/// data is most of what separates the pre-#542 UI from the reference (§11). ✏️ The colour now
+/// arrives on the [`CardStyle`] rather than from [`BONE`] directly; [`CardStyle::organon`] is
+/// what keeps it bone white in Organon's editor.
+pub fn card_title(title: &str, style: &CardStyle) -> egui::RichText {
+    egui::RichText::new(title).heading().color(style.title)
 }
 
 /// A hairline rule across the full width of the current `Ui`.
@@ -987,10 +1202,14 @@ pub fn preset_tile_chrome(ui: &egui::Ui, rect: egui::Rect, selected: bool) -> eg
 ///
 /// The deferred-paint dance in one place so call sites never repeat it: reserve a shape slot,
 /// lay out the content, then fill the slot once the rect is known.
-pub fn framed<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+pub fn framed<R>(
+    ui: &mut egui::Ui,
+    style: &CardStyle,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     let slot = ui.painter().add(egui::Shape::Noop);
     let out = card_frame().show(ui, add);
-    ui.painter().set(slot, card_chrome(ui, out.response.rect));
+    ui.painter().set(slot, card_chrome(ui, out.response.rect, style));
     out.inner
 }
 
@@ -1507,5 +1726,105 @@ mod tests {
         assert!(size(egui::TextStyle::Body) > size(egui::TextStyle::Small));
         assert_eq!(size(egui::TextStyle::Body), size(egui::TextStyle::Button), "rows and buttons align");
         assert!(size(egui::TextStyle::Small) >= 10.0, "smallest style is still readable");
+    }
+
+    // ── The card style (#120) ───────────────────────────────────────────────
+
+    /// 🚨 **The whole of the claim that #120 changed nothing about Organon.** Every colour the
+    /// card painted before [`CardStyle`] existed is written out here as a literal, against the
+    /// *shipped* config — so a refactor that quietly re-derived one of them, or reached for a
+    /// different palette accessor, fails rather than shifting the editor by a few levels where
+    /// nobody would look for it.
+    ///
+    /// ⚠️ Reads `ThemeConfig::default()` rather than `active()`, for `surfaces()`'s reason: the
+    /// live config comes off disk, and a machine whose owner has used the theme editor would
+    /// otherwise turn this red for a reason having nothing to do with the code.
+    #[test]
+    fn organon_card_style_is_the_look_that_shipped() {
+        let s = CardStyle::of(&crate::theme_config::ThemeConfig::default());
+        let rgb = egui::Color32::from_rgb;
+        // The body gradient: `paint::card_stops` at `card_gradient = 1.0`.
+        assert_eq!(s.body_top, rgb(0x24, 0x2E, 0x35), "card body top");
+        assert_eq!(s.body_bottom, rgb(0x1D, 0x25, 0x2B), "card body bottom");
+        // The §5 three-stop band at `header_gradient = 1.0`, middle stop = `palette.card_header`.
+        assert_eq!(s.header_lip, rgb(0x20, 0x29, 0x30), "header lip");
+        assert_eq!(s.header_mid, rgb(0x30, 0x3B, 0x43), "header midpoint");
+        assert_eq!(s.header_foot, rgb(0x2B, 0x35, 0x3D), "header foot");
+        assert_eq!(s.header_rule, rgb(0x30, 0x3A, 0x41), "the rule under the band");
+        assert_eq!(s.border, rgb(0x3A, 0x46, 0x4F), "the 1 px border is HAIRLINE");
+        assert_eq!(s.title, rgb(0xD1, 0xD6, 0xD9), "the heading is BONE");
+        assert_eq!(s.gap, 6.0, "the editor's inter-card gap is unchanged");
+    }
+
+    /// §5's actual trick, asserted rather than described: the band's **middle** stop is lighter
+    /// than both ends, which is what makes it read as convex rolled metal. Flattening it to two
+    /// stops, or letting a derivation put the bright stop at an end, loses the header treatment
+    /// while everything still compiles.
+    #[test]
+    fn a_header_band_is_brightest_in_the_middle() {
+        let lum = |c: egui::Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+        let organon = CardStyle::of(&crate::theme_config::ThemeConfig::default());
+        // …and the same must hold for a card cut from someone else's plate, or the Console's
+        // column gets a flat band while Organon's keeps the treatment.
+        let cut = CardStyle::from_plate(
+            egui::Color32::from_rgb(0x0b, 0x12, 0x0e),
+            egui::Color32::from_rgb(0x3e, 0x7a, 0x52),
+            egui::Color32::from_rgb(0x8f, 0xe0, 0xa8),
+        );
+        for (name, s) in [("organon", organon), ("from_plate", cut)] {
+            assert!(
+                lum(s.header_mid) > lum(s.header_lip) && lum(s.header_mid) > lum(s.header_foot),
+                "{name}: the band's bright stop must be the middle one"
+            );
+            assert!(
+                lum(s.body_top) > lum(s.body_bottom),
+                "{name}: the body gradient darkens downward"
+            );
+        }
+    }
+
+    /// 🚨 **A card cut from a plate keeps that plate's hue.** The steps are neutral on purpose —
+    /// Organon's own table tilts blue as it lightens, and carrying those per-channel deltas onto
+    /// a green plate would drag the Console's column back toward blue slate, which is the exact
+    /// complaint #120 answers.
+    #[test]
+    fn a_cut_card_does_not_tint_the_plate_it_came_from() {
+        // A deliberately green plate: any blue tilt shows up as b rising past r.
+        let plate = egui::Color32::from_rgb(0x0b, 0x20, 0x0e);
+        let s = CardStyle::from_plate(plate, egui::Color32::BLACK, egui::Color32::WHITE);
+        for (name, c) in [
+            ("body_top", s.body_top),
+            ("body_bottom", s.body_bottom),
+            ("header_mid", s.header_mid),
+            ("header_lip", s.header_lip),
+            ("header_foot", s.header_foot),
+        ] {
+            let (dr, dg, db) = (
+                c.r() as i32 - plate.r() as i32,
+                c.g() as i32 - plate.g() as i32,
+                c.b() as i32 - plate.b() as i32,
+            );
+            assert!(
+                dr == dg && dg == db,
+                "{name} stepped unevenly across channels: {dr}, {dg}, {db} — a hue tilt"
+            );
+        }
+        // The border and the title are the palette's own answers, never derived.
+        assert_eq!(s.border, egui::Color32::BLACK);
+        assert_eq!(s.title, egui::Color32::WHITE);
+    }
+
+    /// A near-white plate must not clip its way to a flat band — the one case where "steps go
+    /// up" could have collapsed the treatment, checked rather than assumed.
+    #[test]
+    fn a_pale_plate_still_has_a_gradient() {
+        let s = CardStyle::from_plate(
+            egui::Color32::from_rgb(0xc2, 0xc3, 0xc4),
+            egui::Color32::BLACK,
+            egui::Color32::BLACK,
+        );
+        assert_ne!(s.header_mid, s.header_lip, "the band flattened on a pale plate");
+        assert_ne!(s.body_top, s.body_bottom, "the body gradient flattened on a pale plate");
+        assert!(s.header_mid.r() < 0xFF, "the band clipped to white");
     }
 }
