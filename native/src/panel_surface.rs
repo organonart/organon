@@ -634,8 +634,44 @@ impl OrganonPanels {
         dst.material_gen = self.material_gen.load(Ordering::Relaxed);
     }
 
-    /// Draw one panel's body into `ui`. The frame and heading belong to the conversation view;
-    /// this supplies only what goes inside them.
+    /// **Draw one of Organon's editor cards into a console panel column — the same `card()` the
+    /// Look tab draws, around the same body.**
+    ///
+    /// 🚨 **This function exists so that "it should use the same exact code" is a fact rather
+    /// than a resemblance.** James, 2026-08-20, holding the Console's panel column up against
+    /// Organon's own stack: *"I want us to adopt the styling … so that it looks just like it
+    /// does here in terms of the padding and the fact that it just has the one word for the
+    /// panel … In fact, it should use the same exact code somehow."* The chrome is
+    /// [`crate::card`] — `theme::framed`, the silver header band, an `egui::CollapsingHeader` —
+    /// and `organon-console` cannot call it, because that crate is *beneath* this one in the
+    /// graph. So the Console asks: `panel_stack::OrganonDraw` hands this the panel and takes a
+    /// card back. There is one card function in the tree and both surfaces call it.
+    ///
+    /// ⚠️ **`absent` is the Console's sentence, carried rather than written.** Twenty-four of the
+    /// twenty-five panels have no body here, and what they say instead
+    /// (`panel_stack::NOT_TRANSPLANTED`) belongs to the crate that decides what a Console panel
+    /// is. Placing it *inside* the card is the point — a declared panel that skipped the chrome
+    /// would be the one card in a column of twenty-five that looked like something else.
+    ///
+    /// ⚠️ The heading is `panel.title` — `panels::Panel`'s own field, which is the string
+    /// Organon's editor already draws over this same card. Nothing is composed here, and
+    /// `panel_stack::heading` is the Console's one reader of the same field.
+    pub fn card(
+        &mut self,
+        ui: &mut egui::Ui,
+        panel: &'static organon_core::panels::Panel,
+        absent: Option<&str>,
+    ) {
+        crate::card(ui, panel.title, |ui| match absent {
+            None => self.draw(ui, panel),
+            Some(sentence) => {
+                ui.label(egui::RichText::new(sentence).italics().weak());
+            }
+        });
+    }
+
+    /// Draw one panel's body into `ui`. The frame and heading belong to the caller — [`Self::card`]
+    /// for the Console, `lib.rs`'s Look tab for the editor; this supplies only what goes inside.
     ///
     /// ⚠️ **`dirty` is set unconditionally rather than from a `changed()` response.** Every row
     /// writes through a `Sink`, and threading a "did anything move" answer back out of five
@@ -649,11 +685,11 @@ impl OrganonPanels {
             self.dirty = true;
             return;
         }
-        // 🚨 Unreachable while `panels::Status::Live` is on Surface alone — `conversation_view`
-        // gates on that status — so arriving here means the table and this match have drifted.
-        // It says so rather than drawing an empty box, for the reason `organon_element` gives
-        // about a `Declared` panel: an element that opens to nothing is indistinguishable from
-        // one that failed.
+        // 🚨 Unreachable while `panels::Status::Live` is on Surface alone — [`Self::card`] is
+        // handed `absent` for every other panel and never gets here — so arriving here means the
+        // table and this match have drifted. It says so rather than drawing an empty box, for
+        // the reason `panel_stack::absent_body` gives about a `Declared` panel: a card that
+        // opens to nothing is indistinguishable from one that failed.
         ui.label(
             egui::RichText::new(format!(
                 "`{}` is Live in the panel table but this console has no body for it",

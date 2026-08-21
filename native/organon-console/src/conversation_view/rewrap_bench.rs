@@ -223,6 +223,9 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         failure: None,
         composer: String::new(),
         log: VecDeque::new(),
+        // A bench draws no log and no receipt, so the mode cannot change what it measures —
+        // `false` because that is what a real tab opens with.
+        tracing: false,
         pinned: false,
         want_focus: false,
         composer_height: 0.0,

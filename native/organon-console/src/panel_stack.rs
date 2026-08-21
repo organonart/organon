@@ -128,12 +128,37 @@ use crate::theme::Theme;
 /// crate's layout, at the point in the column the panel occupies.
 ///
 /// ⚠️ It moved here from `conversation_view` when the transcript stopped being a home for
-/// panels; the contract is unchanged, only its address.
+/// panels; the contract kept its shape through that move and changed *width* in #116.
 ///
-/// A console that draws nothing (every test in this crate) passes a closure that ignores its
-/// arguments. The stack then draws each panel's frame and heading with an empty body, which is
-/// honest — the panel is in the column, and this build cannot fill it.
-pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &'static Panel);
+/// # 🚨 It hands over the whole CARD now, not only the body — and that is the tier
+///
+/// James, looking at this column beside Organon's own editor stack: *"I want us to adopt the
+/// styling … so that it looks just like it does here in terms of the padding and the fact that
+/// it just has the one word for the panel. **In fact, it should use the same exact code
+/// somehow.**"*
+///
+/// The chrome he is pointing at is `lib.rs`'s `card()` — `theme::framed`, the three-stop silver
+/// header band, an `egui::CollapsingHeader` — and it lives in the **root** crate, which this one
+/// cannot depend on (`doc/arch/topology.md`: the root crate depends on *this*). There are two
+/// ways to run one copy of that code: move the chrome down into a crate both can see, or widen
+/// this seam so the crate that already owns the chrome draws it. There is nowhere to move it —
+/// `organon-core` is host-free *by acceptance test* (`cargo tree -p organon-core` must show no
+/// egui) and `theme.rs` reaches `nih_plug_egui`, `theme_config` and the paint helpers. So the
+/// seam widened.
+///
+/// The callback is therefore handed **every** panel in the column, `Declared` ones included, and
+/// draws the card around whatever it decides to put inside. [`NOT_TRANSPLANTED`] is still this
+/// crate's sentence — the caller reads the constant and places it *inside* the card, which is
+/// what stops twenty-four of the twenty-five panels from being the ones with different chrome.
+///
+/// # ⚠️ The `bool` is not decoration
+///
+/// `false` means **this build drew no card**: every test in this crate, and any front-of-house
+/// with no Organon editor behind it. The stack then draws [`plain_card`], which is the frame and
+/// heading it drew before this widened. Without that answer an inert callback would render a
+/// column of nothing, and a panel that is in the column but invisible is precisely the failure
+/// [`NOT_TRANSPLANTED`] exists to prevent, one level up.
+pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &'static Panel) -> bool;
 
 /// One panel in the column, and the number that gives it its egui namespace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -517,16 +542,26 @@ impl Home {
     }
 }
 
-/// The heading one panel wears, wherever it is drawn.
+/// The heading one panel wears, wherever it is drawn: **its own name, and nothing else.**
 ///
-/// ⚠️ **One caller today, and it is `pub` on purpose rather than by habit.** The same sentence
-/// used to be `format!`ed inside `conversation_view`'s panel element, which is now retired; a
-/// second surface that ever draws a panel — a pie menu's preview, a per-region command line's
-/// echo — asks this rather than writing `"◈ organon · "` again. It is pinned by a test for the
-/// same reason: the mark and the separator are the console's house style, not this module's
-/// taste.
-pub fn heading(panel: &Panel) -> String {
-    format!("◈ organon · {} · {}", panel.tab.word(), panel.title)
+/// ✏️ **It said `◈ organon · look · Surface` until #116.** James, holding this column up against
+/// Organon's own editor stack: *"it just has the one word for the panel and not all of the words
+/// you have now."* Organon's card says `Surface`, so this does.
+///
+/// 🚨 **The breadcrumb was answering a question this surface no longer asks.** It was written
+/// when a panel was an *element in a transcript*, scrolling past between an agent's messages —
+/// where "which of Organon's tabs is this from" is a real question, because nothing around the
+/// card says. In a panel column every card is one of Organon's, the column is the answer, and
+/// repeating it on all twenty-five headings is the console explaining itself to somebody who
+/// built it.
+///
+/// ⚠️ **Still a function, and still `pub`.** It is a one-liner over a field, which looks like
+/// something to inline — but it is the one place that decides what a panel is *called on
+/// screen*, it is pinned by a test, and the caller that matters is `console_main`, which passes
+/// the same value to Organon's own `card()`. A second surface that ever draws a panel asks here
+/// rather than reaching for a field and quietly picking a different one.
+pub fn heading(panel: &Panel) -> &'static str {
+    panel.title
 }
 
 /// What a [`panels::Status::Declared`] panel says where its controls would be.
@@ -537,9 +572,14 @@ pub fn heading(panel: &Panel) -> String {
 pub const NOT_TRANSPLANTED: &str =
     "this panel is named in Organon's editor but has not been transplanted into the console yet";
 
-/// The gap between two panels in the column, in points. Half a line, so the cards read as a
-/// stack rather than as one long form — and small enough that a region's own edge is still the
-/// strongest horizontal line in the rectangle.
+/// The gap under a [`plain_card`], in points.
+///
+/// ✏️ **It used to be the gap between *every* two panels, added by [`draw`].** It is now the
+/// fallback's own trailing space, because Organon's `card()` adds its own 6 pt after each card
+/// and a stack that added a second one would be 12 pt where the editor is 6 — which is exactly
+/// the padding James asked to match. The two spellings agree at 6.0 by arithmetic rather than by
+/// coincidence: this is the number `lib.rs`'s card ends on, and the fallback exists to look like
+/// it.
 const GAP: f32 = 6.0;
 
 /// The namespace every stacked panel hangs under. A constant rather than a literal at the
@@ -570,17 +610,22 @@ pub fn draw(
             ui.set_width(ui.available_width());
             for entry in stack.entries() {
                 ui.push_id(entry.serial(), |ui| card(ui, entry.panel(), theme, form, organon));
-                ui.add_space(GAP);
             }
         });
     });
 }
 
-/// One panel's frame, heading and body.
+/// One panel in the column — **Organon's own card if this build has one, else [`plain_card`].**
 ///
-/// The frame is the conversation view's card frame — same fill, same corner, same stroke —
-/// because the whole claim of `/organon` is that this is *the same instrument*, not a
-/// console-flavoured imitation of it.
+/// ✏️ **The whole card is the caller's now.** This used to draw the frame and heading here and
+/// call down only for the body; [`OrganonDraw`] carries why that changed and why it could not be
+/// done the other way round.
+///
+/// 🚨 **No `Status` match here any more, and that is deliberate rather than an omission.** The
+/// caller draws the card, so the caller is the only place that can decide what goes *inside*
+/// it — and a status test on this side would be a second copy of that decision, differing from
+/// the first the day a twenty-sixth panel goes `Live`. [`plain_card`] keeps the test, because
+/// there the console really is the one drawing.
 fn card(
     ui: &mut egui::Ui,
     panel: &'static Panel,
@@ -588,6 +633,21 @@ fn card(
     form: &Form,
     organon: OrganonDraw,
 ) {
+    if organon(ui, panel) {
+        return;
+    }
+    plain_card(ui, panel, theme, form);
+}
+
+/// What a panel looks like with **no Organon behind the console** — a frame, the panel's name,
+/// and the sentence [`NOT_TRANSPLANTED`] when there is nothing to put in it.
+///
+/// ⚠️ **Reachable in this crate's tests and nowhere in `console_main`, and it still has to be
+/// right.** `organon-console` is a library: it compiles, draws and is tested without the root
+/// crate, and the alternative to this function is a column that renders as blank space whenever
+/// the seam is unfilled. That is the same failure `NOT_TRANSPLANTED` answers one level up —
+/// a panel that opened to nothing would be indistinguishable from one that failed.
+fn plain_card(ui: &mut egui::Ui, panel: &'static Panel, theme: &Theme, form: &Form) {
     let mut framed = Frame::new()
         .fill(theme.panel_fill)
         .corner_radius(form.card_corner())
@@ -598,13 +658,24 @@ fn card(
     framed.show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(heading(panel)).monospace().strong().color(theme.panel_title));
-        match panel.status {
-            panels::Status::Live => organon(ui, panel),
-            panels::Status::Declared => {
-                ui.label(RichText::new(NOT_TRANSPLANTED).color(theme.dim).italics());
-            }
+        if let Some(absent) = absent_body(panel) {
+            ui.label(RichText::new(absent).color(theme.dim).italics());
         }
     });
+    ui.add_space(GAP);
+}
+
+/// What a panel says where its controls would be, or `None` when it has controls to draw.
+///
+/// Pure, and split out of the drawing, so the rule is checkable without an `egui::Ui` — and so
+/// `console_main` can ask the same question when it fills Organon's card, instead of writing a
+/// second `match` on [`panels::Status`] that would answer differently the day a twenty-sixth
+/// panel goes `Live`.
+pub fn absent_body(panel: &Panel) -> Option<&'static str> {
+    match panel.status {
+        panels::Status::Live => None,
+        panels::Status::Declared => Some(NOT_TRANSPLANTED),
+    }
 }
 
 #[cfg(test)]
@@ -803,22 +874,52 @@ mod tests {
         assert_eq!(Home::of(&corners), Home::Shown(Region::TopLeft));
     }
 
-    /// The heading is the one both surfaces read. If this string moves, it moves once.
+    /// 🚨 **One word, and it is the panel's own** — the heading Organon's editor draws over the
+    /// same card. ✏️ This asserted `"◈ organon · look · Surface"` until #116; [`heading`] carries
+    /// why the mark and the breadcrumb went.
+    ///
+    /// ⚠️ **Walked over the whole table rather than sampled**, because "one word" is a claim
+    /// about every panel: the failure this forbids is a heading that quietly grows a prefix, and
+    /// a prefix added to a shared formatter would show up on all twenty-five at once while a
+    /// single-panel assertion caught it just as well. What it *cannot* catch — a `title` in the
+    /// table that is itself two words — is not this module's to police; `organon_core::panels`
+    /// owns those strings and the editor draws the same ones.
     #[test]
-    fn a_panel_heading_names_its_tab_and_its_editor_title() {
-        assert_eq!(heading(surface()), "◈ organon · look · Surface");
+    fn a_panel_heading_is_its_editor_title_and_nothing_else() {
+        assert_eq!(heading(surface()), "Surface");
+        for panel in panels::PANELS {
+            assert_eq!(
+                heading(panel),
+                panel.title,
+                "`{}`'s heading is not simply its title",
+                panel.slug
+            );
+        }
+    }
+
+    /// A panel with controls has nothing to say where they go; one without says so.
+    #[test]
+    fn only_a_declared_panel_carries_the_not_transplanted_sentence() {
+        assert_eq!(surface().status, panels::Status::Live);
+        assert_eq!(absent_body(surface()), None);
+        assert_eq!(bloom().status, panels::Status::Declared);
+        assert_eq!(absent_body(bloom()), Some(NOT_TRANSPLANTED));
     }
 
     // -----------------------------------------------------------------------
     // The id namespace, on a real headless egui context
     // -----------------------------------------------------------------------
 
-    /// Draw `stacks` — one per region — in one frame, and answer the egui `Id` each panel body
-    /// was handed, in draw order.
+    /// Draw `stacks` — one per region — in one frame, and answer the egui `Id` each panel's
+    /// **card** was handed, in draw order.
     ///
-    /// ⚠️ **`ui.id()` is what the body actually gets**, and it is the same value
+    /// ⚠️ **`ui.id()` is what the caller actually gets**, and it is the same value
     /// `param_sink::value_box` folds into its typed-value key. Recording anything else would be
     /// testing a proxy for the property rather than the property.
+    ///
+    /// ✏️ **Every panel is offered now, `Declared` ones included** — see [`OrganonDraw`]. The
+    /// closure answers `true`, i.e. it stands in for a build that *has* Organon behind it; the
+    /// declining case is [`a_console_with_no_organon_behind_it_still_draws_the_panel`].
     fn body_ids(stacks: &[(Region, &Stack)]) -> Vec<egui::Id> {
         let ctx = egui::Context::default();
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -854,7 +955,10 @@ mod tests {
                         stack,
                         &Theme::default(),
                         &Form::TERMINAL,
-                        &mut |ui, _panel| sink.lock().expect("no panic in the closure").push(ui.id()),
+                        &mut |ui, _panel| {
+                            sink.lock().expect("no panic in the closure").push(ui.id());
+                            true
+                        },
                     );
                 }
             });
@@ -1056,19 +1160,80 @@ mod tests {
         assert!(body_ids(&[(Region::Full, &Stack::default())]).is_empty());
     }
 
-    /// A `Declared` panel never reaches the body callback: it draws [`NOT_TRANSPLANTED`]
-    /// instead. ⚠️ Twenty-four of the twenty-five panels are in this state, so a stack full of
-    /// them must still be a stack rather than twenty-four empty boxes.
+    /// 🚨 **A `Declared` panel is offered to the caller too, and that reverses this test.**
+    ///
+    /// ✏️ It read *"only the transplanted panel asked for a body"* and expected **1**. That was
+    /// right while the console drew the card and asked down only for a body — a panel with no
+    /// body had nothing to ask for. Now the caller draws the *card*, so it must be offered every
+    /// panel or twenty-four of the twenty-five would wear the console's chrome while one wore
+    /// Organon's, which is the opposite of what #116 is for. [`NOT_TRANSPLANTED`] has not moved;
+    /// [`absent_body`] is what says which panels get it, and `console_main` places it inside the
+    /// card it draws.
     #[test]
-    fn a_declared_panel_draws_its_own_line_instead_of_a_body() {
+    fn every_panel_in_the_column_is_offered_to_the_caller_declared_ones_included() {
         let mut stack = Stack::default();
         stack.push(bloom());
         stack.push(surface());
         assert_eq!(bloom().status, panels::Status::Declared);
         assert_eq!(
             body_ids(&[(Region::Left, &stack)]).len(),
-            1,
-            "only the transplanted panel asked for a body"
+            2,
+            "a declared panel was not offered a card"
         );
+    }
+
+    /// 🚨 **A console with an inert seam still draws a visible panel.** The `bool` in
+    /// [`OrganonDraw`] is the whole of what stops a column from rendering as blank space when
+    /// nothing behind it can draw a card, and a claim about pixels is worth asserting *on*
+    /// pixels — so this reads the frame's own text shapes rather than a return value.
+    ///
+    /// ⚠️ **Mutation-checked rather than merely asserted**: make [`card`] return early on a
+    /// `false` answer instead of falling through to [`plain_card`] and this fails on both
+    /// counts, with `drawn` empty.
+    #[test]
+    fn a_console_with_no_organon_behind_it_still_draws_the_panel() {
+        let mut stack = Stack::default();
+        stack.push(bloom());
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(500.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                draw(
+                    ui,
+                    Region::Left,
+                    &stack,
+                    &Theme::default(),
+                    &Form::TERMINAL,
+                    // The declining seam: this build has no Organon card to draw.
+                    &mut |_ui, _panel| false,
+                );
+            });
+        });
+        let drawn = painted_text(&out);
+        assert!(
+            drawn.iter().any(|t| t.contains(heading(bloom()))),
+            "the fallback card drew no heading: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|t| t.contains(NOT_TRANSPLANTED)),
+            "the fallback card lost the sentence that says why it is empty: {drawn:?}"
+        );
+    }
+
+    /// Every string this frame actually painted, in draw order.
+    fn painted_text(out: &egui::FullOutput) -> Vec<String> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
     }
 }

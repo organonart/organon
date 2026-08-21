@@ -3155,9 +3155,10 @@ implicit in a dotted string.
 
 `Lane::Console` verbs are handed down by `console_main` and act on the console. `Lane::View`
 verbs are answered inside the conversation view and never leave it: `view.surface` (`/surface`,
-unchanged in spelling and behaviour) and `view.help`. They share the registry because a human
-types them in one box and a menu should draw them in one tree; they are marked because the code
-that runs them is not the same code.
+unchanged in spelling and behaviour), `view.help`, `view.media`, `view.organon` and — since
+#116 — `view.trace`, which decides whether *this pane* narrates itself (§1.9). They share the
+registry because a human types them in one box and a menu should draw them in one tree; they are
+marked because the code that runs them is not the same code.
 
 ⚠️ **The slash namespace is flat while the registry is not**, so two groups can collide on a
 verb word. The first claimant wins and the loser is **reported** — into the pane's log, where a
@@ -3689,6 +3690,57 @@ line, and is already where the eye is.
   has shipped and every earlier fix was site-local, so the guard now checks
   `registry::receipt`'s **output** from the file that draws it.
 
+##### 🚨 …and the console is quiet about all of it by default — #116 Tier 1, `/trace`
+
+James, 2026-08-20: *"I don't want to see any of the things presently visible in the status
+panel. Or anything like that. My working model here is Claude Desktop. That's the level of
+interactivity I want to default to in terms of showing your process as the agent or harness.
+**Consider you are building this for me, not for some unknown user.**"*
+
+Almost everything the pane printed above the first message was explaining the console to a
+stranger — which directory the tab started in, that `/viewport center agent` was accepted, that
+an empty transcript is empty. **The rule that replaced it, and the only rule:**
+
+> **A refusal is always seen. An acceptance is seen only under `/trace on`.**
+
+- `conversation_view::Remark { text, always }` carries it **per line**, and
+  `Remark::seen(tracing)` is the one predicate — used by both surfaces that draw the log (the
+  head of the scrollback and the status band's slot), because a band saying something the
+  scrollback above it is hiding reads as a bug in whichever one you distrust.
+- 🚨 **The default is deliberately the loud one.** `ConversationPane::note` keeps its signature
+  and its meaning, so a line written by somebody who did not think about this is **seen**;
+  `ConversationPane::trace` is the opt-in for the quiet half. A surface whose default is silence
+  eventually swallows the one message that mattered — which is the defect this tree keeps
+  finding, at every scale.
+- **The test for the quiet half is not "is this routine".** It is whether the thing the line
+  describes is visible some *other* way. A console command's acceptance is: the layout moves, the
+  panel appears, the palette repaints. A refusal is not, and neither is `⚠ no .claude/, CLAUDE.md
+  or .git here` — so `harness::cwd_notes` now answers a `CwdNote` per line and only the
+  *resolution* is traced. **stderr keeps both either way**, which is what stops the quiet default
+  from costing a diagnostic rather than a distraction.
+- **A successful receipt band is held but not drawn.** `pane.receipt` is still set and still
+  ages; only the drawing is gated, so `/trace on` mid-receipt shows one already in hand. The
+  refusal band is untouched — `receipt_holds`' asymmetry above is extended by this, not replaced.
+- **What else went quiet**: `no messages yet — type below and press Enter…` (an empty transcript
+  is self-evidently empty and the composer below it has its own hint), and `/organon`'s
+  *"Surface → the panel stack in `left`"*.
+
+⚠️ **`/trace` is a *view-lane* verb, so it is per TAB, not per console.** Everything it un-hides
+is one pane narrating itself; a console-lane spelling would mean a sidecar line and an MCP tool
+for a preference about how loudly the console talks to the person in front of it. Two
+conversations can therefore disagree about it, which is the honest consequence of that scope
+rather than an oversight. `ORGANON_TRACE=1` opens every tab tracing, the same escape hatch
+`ORGANON_PALETTE_VERBOSE` has.
+
+⚠️ **`on` and `off`, no toggle** — `console.screen`'s rule: a verb meaning "the other one" cannot
+be read back and answers differently depending on a state the person typing it may be wrong
+about. Switching **on** echoes and switching **off** does not, which falls out of the rule rather
+than being a second decision: the acknowledgement goes to the quiet half, whose visibility the
+mode it just set decides.
+
+⚠️ **One thing this cost, recorded because it is a vocabulary fact rather than a bug**: `/t` no
+longer settles. `theme` and `trace` share the letter, so the completion cascade needs `/th`.
+
 ⚠️ **`/help` is now the third-best way to find a verb**, behind typing `/` and behind the pie
 menu that will read the same table. Its body still lands at the head of the scrollback, which
 is the limitation §1.8 named; this tier routes around it for *receipts* rather than fixing it
@@ -4054,6 +4106,48 @@ occupies"* — a panel occupies a point in a **stack**, and `conversation_view::
 takes this parameter at all. What travels into the conversation view now is the *destination*
 (`panel_stack::Home`), not a way to draw, which is what lets `/organon` refuse **in the composer**
 when nothing holds a stack rather than on a stderr nobody reads.
+
+##### ✏️ …and in #116 it widened from the BODY to the whole CARD
+
+`panel_stack::OrganonDraw` is now `&mut dyn FnMut(&mut egui::Ui, &'static Panel) -> bool`, and it
+is handed **every** panel in the column rather than only the `Live` ones.
+
+James, holding the Console's panel column up against Organon's own editor stack: *"I want us to
+adopt the styling … so that it looks just like it does here in terms of the padding and the fact
+that it just has the one word for the panel and not all of the words you have now. **In fact, it
+should use the same exact code somehow.**"*
+
+The chrome he is pointing at is `lib.rs`'s `card()` — `theme::framed`, the three-stop silver
+header band, an `egui::CollapsingHeader` — and it lives in the **root crate**. There are exactly
+two ways to run one copy of it:
+
+| option | why not / why |
+|---|---|
+| move the chrome down into a crate both can see | **rejected.** There is no such crate. `organon-core` is host-free *by acceptance test* (`cargo tree -p organon-core` must show no egui), and `theme.rs` reaches `nih_plug_egui`, `theme_config` and the paint helpers. Creating one is a topology change to run a 25-line function. |
+| widen the seam so the crate that already owns the chrome draws it | **taken.** The seam already existed and already pointed the right way — the body crossed it every frame. |
+
+- **`panel_surface::OrganonPanels::card` is the new caller of `crate::card`**, and `lib.rs`'s
+  Look tab is the other. One card function in the tree, two products. ⚠️ So a change to `card()`
+  is visible in both, and the Console has no compile-time way to notice.
+- **`NOT_TRANSPLANTED` is still `organon-console`'s sentence**, and it is placed *inside* the
+  card by the caller. It has to be: twenty-four of the twenty-five panels are `Declared`, and a
+  declared panel that skipped the chrome would be the one card in a column of twenty-five wearing
+  something else. `panel_stack::absent_body` is the single place that decides which panels get
+  it — `console_main` asks it rather than matching on `Status` a second time.
+- 🚨 **The `bool` is the whole reason `organon-console` still compiles and draws on its own.**
+  `false` = this build drew no card, and the stack falls through to `panel_stack::plain_card` —
+  the frame and heading it drew before this widened. Every test in this crate takes that arm, and
+  `a_console_with_no_organon_behind_it_still_draws_the_panel` reads the frame's own text shapes
+  rather than a return value, because the claim is about pixels.
+- ✏️ **`panel_stack::heading` is now `panel.title` and nothing else** — `Surface`, where it said
+  `◈ organon · look · Surface`. The breadcrumb was answering a question this surface no longer
+  asks: it was written when a panel was an element scrolling past in a **transcript**, where
+  "which of Organon's tabs is this from" is real. In a panel column every card is one of
+  Organon's and the column is the answer.
+- ⚠️ **The inter-card gap moved with the chrome.** `card()` ends on its own `add_space(6.0)`, so
+  `panel_stack::draw` no longer adds one — two would be 12 pt where the editor is 6, which is the
+  padding this tier is about. `panel_stack::GAP` survives as `plain_card`'s own trailing space
+  and is 6.0 by arithmetic rather than by coincidence.
 
 #### 🚨 The wall: an Organon parameter cannot be written from outside `nih_plug`
 
@@ -5143,6 +5237,40 @@ its bottom edge. It takes exactly two words — `panel_stack::STACK_ACTIONS`, i.
 emptying the column. **A region holding `agent` or `3d`, and a region holding nothing, gets no
 line at all.**
 
+##### 🚨 It is literally one line now — #116 Tier 2
+
+✏️ **`BAND_ROWS` was 4 and is 1.** The band drew a candidate row, the box, and two rows for a
+note; James, 2026-08-20, having used it: *"completely remove the status lines in the add remove
+inputs on the panels. It should just be a single line. If we need to pop something up over top
+of it, we can do that, but it's way too messy. We have to clean all this up."*
+
+So the band holds the `TextEdit` and nothing else. The candidate row and the refusal became
+`region_line::popover` — a floating `egui::Area` anchored `LEFT_BOTTOM` to the box's own top-left,
+so it grows **upwards over** the column rather than out of it. `region_line::overlay` is the pure
+rule that decides what it says, and it has exactly one asymmetry:
+
+| state | what floats |
+|---|---|
+| nothing typed, no focus | **nothing** — the resting state of a panel column |
+| focused, words to offer | the candidates, one row, `compact_join` |
+| a refusal outstanding | the refusal, **whether or not the line has focus** |
+
+**A success is discoverable; a refusal is news.** Candidates answer a hand already in the box, so
+focus is the right gate for them. A refusal answers something that did not happen, and the person
+who has clicked away is exactly the one who would otherwise never learn it. A refusal also
+outranks the candidates outright, on `command_panel`'s rule — one rectangle cannot say two things
+at once, and an edit clears the note, so the candidates return the moment you type.
+
+🚨 **The third row went too: `console_main` no longer writes an accepted dispatch back to the
+line.** `console.stack — {"accepted":"stack add surface region left"}` restated a line still on
+screen and announced a panel that had just appeared above it. The write is now gated on
+`receipt.ok`, so a **refusal** from dispatch still reaches the box that produced it — that is the
+only route by which one can.
+
+⚠️ **The hint text changed with the row that used to carry the words**: `> add | remove`, not
+`> add or remove a panel in this column`. A sentence describing the control has to earn its width
+against the words you would actually type, and against a person who built the console.
+
 **`add surface` in a panel column does what `organon console stack add surface` does**, in that
 column. The line expands onto `/stack add surface` and `Registry::resolve` validates it, so the
 control and the CLI stay one vocabulary with one set of refusals — but the control is **not a
@@ -5204,18 +5332,28 @@ pushed the box **35.6 pt past the band's own clip rect** (measured: content `529
 band ending at `600.0`) — invisible and unclickable even with a stable id. Two faults, one
 symptom.
 
-**The row order is therefore a safety property rather than a taste: candidate row, then the box,
-then the note.** The candidate row is `compact_join`, which fits itself to the available columns
-and is exactly one row, always. The note is the only unbounded thing in the band — a refusal
-naming every panel wraps — so it goes **last**, below the box. Anything that overflows pushes the
-*explanation* out of the clip rect and never the *input*. Put the note first and a long refusal
-hides the box that would let you correct it.
+✏️ **The fix was the row order, and #116 replaced it rather than inheriting it.** That paragraph
+read: *candidate row, then the box, then the note* — the note last because it is the only
+unbounded row, so an overflow costs the tail of an explanation and never the input. The reasoning
+was right and there are no other rows now.
+
+🚨 **What holds the guarantee up today.** The band holds exactly one widget and it is a
+*single-line* `TextEdit`, which does not wrap — so its height is one row whatever is typed, and
+nothing above it can move it. Everything unbounded is in a floating `Area`, which allocates
+nothing in the band's `Ui` and therefore cannot displace the box at any height. **The property is
+structural where it used to be ordinal — and structural only while nothing else is put in the
+band.** `BAND_ROWS`' doc carries that rule for whoever next wants a row.
+`the_box_stays_inside_the_band_however_long_the_refusal_is` drives a real refusal at 320 pt and
+asserts `band.contains_rect(box)`; **mutation-measured**, drawing the note as a label in the band
+puts the box at `y 657.9…673.0` against a band of `574.9…600.0` — **73 pt outside**, twice #112's
+original, because a one-row band has less slack to absorb a wrap than a four-row one did.
 
 ⚠️ **The mutation table is in `a_note_appearing_does_not_take_the_box_with_it`'s doc, and it
 corrects the obvious assumption**: on today's code, deleting `BOX_ID` does **not** fail the suite,
-because the narrowing made the candidate row unconditional and the widget count above the box
-stopped varying. Only "salt deleted **and** note moved above the box" fails. Both fixes are kept
-because each covers the other's gap, and a later edit is then free to move a row.
+because nothing is drawn in the band above the box at all and the widget count never varies. Only
+"salt deleted **and** note moved into the band above the box" fails. Both fixes are kept because
+each covers the other's gap — and that test still *passes* under the mutation the geometry test
+catches, which is why there are two.
 
 ##### 🚨 The hard part is still focus, not parsing
 
@@ -6013,6 +6151,29 @@ path silently breaks the three-products-simultaneously guarantee that
   them**, and the id-namespace test, which is the strongest thing in this tier, proves only that
   four Surface bodies get four distinct egui ids — not that a knob in one moves the picture,
   which §1.11's item (0) still records as unchecked.
+- 🚨 **#116 is the largest purely-visual change this console has had and NOTHING in it has been
+  seen on a screen.** Three tiers, all of which are claims about how something *looks* or how
+  quiet it *feels*, and every one of them is green rather than verified:
+  - **Tier 1, quiet by default.** The tests pin the *rule* — which line is `always`, that a
+    refusal survives a quiet console, that a held receipt comes back under `/trace on`. What no
+    test can say is whether a conversation with the narration removed reads as calm or as
+    broken: an acceptance really does disappear, and the argument that "the layout moving is the
+    receipt" is a claim about James's eye, not about the code.
+  - **Tier 2, one line.** `band.contains_rect(box)` at 320 pt is measured. Whether a popover
+    floating over a panel column is *better* than three rows under it — whether it lands where
+    the eye is, whether it obscures the card it sits on, whether a refusal that persists without
+    focus is reassuring or nagging — is entirely unlooked-at. James permitted the popover
+    (*"if we need to pop something up over top of it, we can do that"*); he has not seen one.
+  - **Tier 3, Organon's card.** This is the one where "green" says least. The Console now calls
+    Organon's real `card()`, so the padding, the corner radius, the silver header band and the
+    collapsing header are the editor's **by construction** — but a card sized for a 3-column
+    editor pass is now drawing in a region column of unknown width, and nothing checks that it
+    survives that. The `CollapsingHeader` is also new here: **a stacked panel can now be folded**,
+    which nobody has asked for or tried. And the twenty-four `Declared` panels now wear the full
+    chrome around one italic sentence, which the bullet above already flags as the worry that is
+    *sharper* in a column than in a transcript.
+
+  **Only James can say whether it now looks right, and none of this claims it does.**
 - ⚠️ **The egui-id collision, third instance — reasoned and now *tested*, but still not
   reproduced.** §1.11's two fixes were read out of the code rather than found by running
   anything, and this one was too: a stack plus two regions is the same case from a third
