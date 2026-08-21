@@ -4712,30 +4712,32 @@ fn strip_box(
                                 egui::vec2(room, ui.available_height()),
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    // ⚠️ **`.monospace()` is the tofu fix, not a style
-                                    // choice.** `status_reading` builds these strings with
-                                    // `◈` (U+25C8) and `●` (U+25CF); egui's PROPORTIONAL
-                                    // face has neither, so `● generating` drew as a box.
-                                    // The mono face carries them — it renders `htop`'s box
-                                    // drawing in the terminal tab next door — and this is
-                                    // the same fix the approval card's own `◈ may I`
-                                    // already carries. Leave it on, or the band's symbols
-                                    // come back as boxes.
-                                    //
-                                    // Full size, not `.small()`: this is a *reading*, the
-                                    // second thing a hand looks for after the model name,
-                                    // and it is the only item between the plates and the
-                                    // dim half. Left small it would be the one shrunken
-                                    // word in a band that is otherwise one size, which
-                                    // reads as a mistake rather than as a hierarchy.
-                                    RichText::new(reading_text)
-                                        .color(standing_color(reading.standing, theme))
-                                        .monospace(),
-                                )
-                                .truncate(),
-                            );
+                                    ui.add(
+                                        egui::Label::new(
+                                            // ⚠️ **`.monospace()` is the tofu fix, not a
+                                            // style choice.** `status_reading` builds these
+                                            // strings with `◈` (U+25C8) and `●` (U+25CF);
+                                            // egui's PROPORTIONAL face has neither, so
+                                            // `● generating` drew as a box. The mono face
+                                            // carries them — it renders `htop`'s box drawing
+                                            // in the terminal tab next door — and this is the
+                                            // same fix the approval card's own `◈ may I`
+                                            // already carries. Leave it on, or the band's
+                                            // symbols come back as boxes.
+                                            //
+                                            // Full size, not `.small()`: this is a *reading*,
+                                            // the second thing a hand looks for after the
+                                            // model name, and it is the only item between the
+                                            // plates and the dim half. Left small it would be
+                                            // the one shrunken word in a band that is
+                                            // otherwise one size, which reads as a mistake
+                                            // rather than as a hierarchy.
+                                            RichText::new(reading_text)
+                                                .color(standing_color(reading.standing, theme))
+                                                .monospace(),
+                                        )
+                                        .truncate(),
+                                    );
                                 },
                             );
                         }
