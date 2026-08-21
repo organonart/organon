@@ -134,6 +134,37 @@ pub enum ConsoleOp {
     /// one-word `stack` line, so a bare one is not an older spelling of anything and guessing
     /// would add or remove a panel nobody named.
     Stack { action: String, panel: String },
+    /// **Name an arrangement of the pane, bring one back, or take one out** — an action word
+    /// (`organon_console::layout::LAYOUT_ACTIONS`) and the layout's name.
+    ///
+    /// 🚨 **A layout is not a fifth axis; it is a *recording* of the fourth.** `viewport` says
+    /// what one region holds and this says "all of that, under a name" — which is why it takes
+    /// no region word and why `doc/organon_is_the_product.md` §4 calls the result the unit of
+    /// product identity rather than a convenience.
+    ///
+    /// 🚨 **`load` is a TRANSACTION, and the whole of that is on the console's side.** A saved
+    /// arrangement arrives all at once, from a file this build may not have written, so it is
+    /// validated whole — every word, every pair of regions, the uniqueness and last-agent rules,
+    /// and whether today's window can draw it — and then either replaces the layout or is
+    /// refused by name with nothing changed. A half-applied layout that had evicted the last
+    /// agent region would be a console nobody can type into.
+    ///
+    /// Two `String`s rather than parsed values, on [`ConsoleOp::Viewport`]'s rule: the action
+    /// table, the name rules and the refusals that quote them live in the console's own crate.
+    ///
+    /// ⚠️ **The name cannot contain whitespace, and that is a fact about THIS line** — the
+    /// format is whitespace-delimited, so a two-word name would arrive truncated.
+    /// `organon_console::layout::check_name` is the gate, at the clap boundary and again at
+    /// dispatch; here the payload travels unvalidated like every other name on this lane.
+    ///
+    /// 📌 **Both words are required**, `viewport`'s arrangement exactly: there has never been a
+    /// one-word `layout` line, so a bare one is not an older spelling of anything and guessing
+    /// would save, load or delete something nobody named.
+    ///
+    /// 📌 **There is no `list` here, and the absence is the design.** A listing is a *read*, and
+    /// this lane is fire-and-forget with no return path — so it lives where a read can be
+    /// answered, in-process on the MCP lane, exactly as `console.camera.read` does.
+    Layout { action: String, name: String },
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -380,6 +411,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Screen(word) => format!("screen {word}"),
         ConsoleOp::Viewport { region, content } => format!("viewport {region} {content}"),
         ConsoleOp::Stack { action, panel } => format!("stack {action} {panel}"),
+        ConsoleOp::Layout { action, name } => format!("layout {action} {name}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
@@ -429,6 +461,17 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
             let action = it.next()?.to_string();
             let panel = it.next()?.to_string();
             Some(ConsoleOp::Stack { action, panel })
+        }
+        // The `stack` arm's rule a third time — two required words, both unvalidated. ⚠️ The
+        // second word being a **name** rather than a table entry is what makes the whitespace
+        // rule in `organon_console::layout::check_name` load-bearing rather than tidy: this
+        // parser splits on whitespace, so a name with a space in it would arrive here as a name
+        // and a stray word, and the stray word would be silently dropped. The gate is at the
+        // clap boundary and again at dispatch, where a human can read the refusal.
+        "layout" => {
+            let action = it.next()?.to_string();
+            let name = it.next()?.to_string();
+            Some(ConsoleOp::Layout { action, name })
         }
         // A row count that does not parse — or does not fit — is a malformed line, and a
         // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/
@@ -551,6 +594,15 @@ mod tests {
                 ConsoleOp::Stack { action: "add".into(), panel: "surface".into() },
                 ConsoleOp::Stack { action: "remove".into(), panel: "surface".into() },
                 ConsoleOp::Stack { action: "remove".into(), panel: "all".into() },
+                // An arrangement of the pane, under a name. The name is the first payload on
+                // this lane that is neither a table entry nor a count — an arbitrary word a
+                // person chose — so the round trip is what proves the format carries one at
+                // all, and `delete` above all: a spelling that survived one direction only
+                // would leave a layout somebody cannot take out.
+                ConsoleOp::Layout { action: "save".into(), name: "desk".into() },
+                ConsoleOp::Layout { action: "load".into(), name: "desk".into() },
+                ConsoleOp::Layout { action: "delete".into(), name: "desk".into() },
+                ConsoleOp::Layout { action: "save".into(), name: "james.two-up_1".into() },
                 // Tier 5: the payload is a count, not a name — the first op on this lane whose
                 // argument is not a word.
                 ConsoleOp::Block(1),
@@ -606,6 +658,13 @@ mod tests {
                     panel: "surface".into()
                 }),
                 "stack add surface"
+            );
+            assert_eq!(
+                console_op_to_line(&ConsoleOp::Layout {
+                    action: "load".into(),
+                    name: "desk".into()
+                }),
+                "layout load desk"
             );
             assert_eq!(console_op_to_line(&ConsoleOp::Block(12)), "block 12");
             assert_eq!(
@@ -684,6 +743,23 @@ mod tests {
                 parse_console_op("stack shuffle surface"),
                 Some(ConsoleOp::Stack { action: "shuffle".into(), panel: "surface".into() }),
                 "the console refuses an unknown action out loud; the wire must not swallow it"
+            );
+            // `layout` is the third, and its second word is a NAME — so the two halves of the
+            // rule are worth pinning apart. A half-written line is not a command…
+            assert_eq!(parse_console_op("layout"), None);
+            assert_eq!(parse_console_op("layout save"), None, "a save with no name is not a save");
+            // …and a name this build cannot store is still carried, because the console is the
+            // end that can say why. 🚨 The truncation the whitespace rule exists to prevent,
+            // measured rather than argued: a two-word name arrives as its first word.
+            assert_eq!(
+                parse_console_op("layout save my desk"),
+                Some(ConsoleOp::Layout { action: "save".into(), name: "my".into() }),
+                "whitespace cannot travel on this lane — `check_name` is what stops it upstream"
+            );
+            assert_eq!(
+                parse_console_op("layout rename desk"),
+                Some(ConsoleOp::Layout { action: "rename".into(), name: "desk".into() }),
+                "an unknown action is the console's to refuse out loud"
             );
             // ⚠️ An unknown palette or posture is NOT skipped here, and that is the one place
             // this lane deliberately parses something it cannot use. `theme phosphor` is a

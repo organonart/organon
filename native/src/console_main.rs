@@ -429,6 +429,20 @@ const CMD_VIEWPORT: &str = "console.viewport";
 /// type it expecting the old thing. `stack` also names what this verb edits: `panel` is what a
 /// *region* holds.
 const CMD_STACK: &str = "console.stack";
+/// See [`CMD_BACKGROUND`]. **An arrangement of the pane, under a name** — save what the console
+/// is holding, bring one back, take one out. `organon_console::layout`'s header owns the
+/// argument, and `doc/organon_is_the_product.md` §4 owns why it matters: a layout is the unit of
+/// product identity rather than a convenience, so "Claude Code Desktop" and "Organon standalone"
+/// can be named arrangements of one program instead of two programs.
+///
+/// 🚨 **A third verb rather than a fifth word on [`CMD_VIEWPORT`], and the split is the same one
+/// [`CMD_STACK`] made.** `viewport` says what *one region* holds; this says "all of that, under a
+/// name", so it needs no region word at all and neither sentence grows a ring.
+const CMD_LAYOUT: &str = "console.layout";
+/// The **read**: what is in the layout library. Not in [`console_specs`] — see [`mcp_specs`] for
+/// why a read has no sidecar spelling, and [`CMD_NAME`] for why it is a verb of its own rather
+/// than a fourth action word on [`CMD_LAYOUT`].
+const CMD_LAYOUT_LIST: &str = "console.layout.list";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
@@ -489,6 +503,21 @@ const CMD_CONTENT: &str = "content";
 const CMD_ACTION: &str = "action";
 /// See [`CMD_ACTION`].
 const CMD_PANEL: &str = "panel";
+/// [`CMD_LAYOUT`]'s second slot: which saved arrangement. **Not [`CMD_ARG`]**, on [`CMD_ROWS`]'
+/// rule — `name` there is a `Choice` over the materials and rigs, and this is free text a person
+/// invented. [`CMD_ACTION`] *is* shared with [`CMD_STACK`], deliberately: both are the same kind
+/// of slot (a closed table of verbs-within-a-verb) and a palette heading "action" describes both
+/// correctly, which is the test [`CMD_ROWS`] states.
+///
+/// 🚨 **Both slots are required, and that is what forces the listing to be a separate verb.**
+/// `registry::parse_args` fills required arguments positionally and optional ones **by keyword**,
+/// so an optional name would make the typed line `/layout save name mine` while the CLI stayed
+/// `console layout save mine` — one verb, two spellings, the drift this tree spends its refusals
+/// preventing. With both required there is no honest word to put in this slot for a `list`
+/// (`panel_stack`'s `all` works there because `all` genuinely names a value in the panel ring,
+/// and no layout name means "every layout"), so the listing is [`CMD_LAYOUT_LIST`] — a **read**,
+/// on the precedent [`CMD_CAMERA_READ`] set.
+const CMD_NAME: &str = "layout";
 /// [`CMD_CAMERA`]'s four slots. Named per axis rather than as one `axis` + `value` pair,
 /// because framing a shot is **one intent**: a caller that wants to be closer *and* a little
 /// above says so once and the viewpoint moves once, instead of travelling through an
@@ -705,6 +734,54 @@ fn console_specs() -> Vec<CommandSpec> {
             // reading wins, and the practical effect is that autorun can never fire this verb.
             reversal: Reversal::Permanent,
         },
+        // 📌 **One `Choice` and one `Text`, which is the first console verb whose two rings are
+        // not both closed lists** — and the asymmetry is honest rather than a shortcoming. The
+        // action ring is a table of three words. The name ring is whatever a person called their
+        // arrangement, so there is no value space to state and the palette says `layout: text`
+        // instead of offering options.
+        //
+        // ⚠️ **The names *could* be a ring, and deliberately are not — yet.** `Registry`'s
+        // `NarrowFn` can make an argument's options depend on an earlier word, which is how
+        // `/organon look surface` narrows; pointing it at the library would make `/layout load `
+        // complete to the layouts that exist. It is a **file read per keystroke**, on the
+        // candidate path that runs while somebody types, and that is a measurement nobody has
+        // taken. The seam is that `narrow` is one field on the spec.
+        //
+        // 🚨 **What the schema cannot say is again the part that depends on state** — whether a
+        // layout of that name exists, whether it still resolves against this build's vocabulary,
+        // and whether today's window can draw it. That is [`Console::set_layout`]'s job, through
+        // `layout::resolve`, and it refuses by name with nothing changed.
+        CommandSpec {
+            name: CMD_LAYOUT.into(),
+            doc: "Save the console's arrangement under a name, bring one back, or take one out"
+                .into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: CMD_ACTION.into(),
+                    kind: ArgKind::Choice(
+                        organon_console::layout::LAYOUT_ACTIONS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec { name: CMD_NAME.into(), kind: ArgKind::Text, required: true },
+            ],
+            // 🚨 **Permanent, and every one of the three actions earns it separately.** `delete`
+            // takes a layout out of a file and nothing puts it back. `save` replaces whatever
+            // was stored under that name, and nothing rebuilds the arrangement it replaced.
+            // `load` is the one worth arguing: it puts nothing in the transcript, which is
+            // `viewport`'s whole case for the other column — but what it *displaces* is the
+            // arrangement that was on screen, and no second command restores that unless it too
+            // was saved. `/viewport full agent` returns to the **default**, not to what you had.
+            // So the answer to "can a second command put back what this displaced" is *only if
+            // you had already saved it*, which is not the same as yes. The practical effect is
+            // that autorun can never fire this verb — the right outcome for a verb that writes
+            // to a file.
+            reversal: Reversal::Permanent,
+        },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
         // therefore lives in TWO places that are both real gates rather than one that is
@@ -820,9 +897,13 @@ fn console_specs() -> Vec<CommandSpec> {
 /// contrast, runs *inside this process* — [`ConsoleDispatch`] can simply hand back the console's
 /// own state.
 ///
-/// So the two sets differ by exactly one verb, and the difference is a fact about transports
+/// So the two sets differ by exactly the **reads**, and the difference is a fact about transports
 /// rather than an oversight. Giving the CLI a read means building the request/reply sidecar
 /// SHELL_ARCHITECTURE.md §2 names; it is not in scope here and is not quietly half-done.
+///
+/// ✏️ There are **two** reads now — the camera's and the layout library's. The second arrived for
+/// the same reason and with one difference stated at its push site: it reads a file rather than
+/// the frame path, so it is the read a future CLI could answer without any new transport at all.
 ///
 /// ⚠️ **A separate verb, not a zero-argument spelling of `console.camera`.** Every axis on that
 /// spec is already optional, so `{}` is a shape it can be called with — and it currently earns
@@ -848,6 +929,24 @@ fn mcp_specs() -> Vec<CommandSpec> {
         // A read changes nothing, which is the cleanest case the rule has.
         reversal: Reversal::Recoverable,
     });
+    // The second read, and it is here for the *same* reason rather than by analogy: a listing
+    // has no answer on a channel with no return path. ⚠️ It differs from the camera's in one
+    // way worth naming — the library is a **file**, so this read needs nothing from the running
+    // console and a CLI could in principle answer it out of the same file. It does not today,
+    // because the CLI has no spelling for a dotted verb and inventing a second one
+    // (`console layouts`) would be one verb with two names. Meanwhile `layouts.json` is legible
+    // by design, which is what makes that gap a gap rather than a wall.
+    specs.push(CommandSpec {
+        name: CMD_LAYOUT_LIST.into(),
+        doc: "What is in the layout library: every saved arrangement, what each one holds, and \
+              the file they live in. Read this before `console.layout load` — the names are \
+              exact, and this is the only place they are listed"
+            .into(),
+        target: TargetKind::Viewport,
+        // No arguments — `CMD_CAMERA_READ`'s shape, and its schema note applies verbatim.
+        args: Vec::new(),
+        reversal: Reversal::Recoverable,
+    });
     specs
 }
 
@@ -861,6 +960,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Screen(_) => CMD_SCREEN,
         cli::ConsoleOp::Viewport { .. } => CMD_VIEWPORT,
         cli::ConsoleOp::Stack { .. } => CMD_STACK,
+        cli::ConsoleOp::Layout { .. } => CMD_LAYOUT,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -955,6 +1055,24 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             organon_console::panel_stack::StackCmd::resolve(&a, &p)
                 .map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Stack { action: a, panel: p })
+        }
+        // 🚨 **The name check is a REAL gate here, not a belt** — the one difference from the two
+        // arms above, and the reason is the transport. `ArgKind::Text` states no value space, so
+        // `validate_args` has nothing to check; a name with a space in it would then be written
+        // onto a whitespace-delimited sidecar line and arrive at the console truncated, having
+        // saved or deleted something nobody named. `check_name` is where a caller learns that,
+        // with a record, instead of watching a command appear to work.
+        //
+        // 🚨 **What is deliberately NOT checked here is whether the layout exists, still
+        // resolves, or fits today's window.** All three are facts about state at the moment the
+        // op is *drained* — the library may be written between now and then, and the window may
+        // be resized. [`Console::set_layout`] is the one gate, and it refuses by name.
+        CMD_LAYOUT => {
+            let a = word(CMD_ACTION)?;
+            let n = word(CMD_NAME)?;
+            organon_console::layout::LayoutCmd::resolve(&a).map_err(|e| format!("{name}: {e}"))?;
+            organon_console::layout::check_name(&n).map_err(|e| format!("{name}: {e}"))?;
+            Ok(cli::ConsoleOp::Layout { action: a, name: n })
         }
         CMD_BLOCK => {
             let n = args
@@ -1092,6 +1210,13 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         cli::ConsoleOp::Stack { action, panel } => {
             json!({ CMD_ACTION: action, CMD_PANEL: panel })
         }
+        // ⚠️ **`CMD_ACTION` is shared with `stack` and `CMD_NAME` is its own**, which is the
+        // slot-naming rule applied in both directions at once: the two verbs' action rings are
+        // the same *kind* of slot and a palette heading "action" describes both, while a layout
+        // name is free text and is not the `name` that means a material.
+        cli::ConsoleOp::Layout { action, name } => {
+            json!({ CMD_ACTION: action, CMD_NAME: name })
+        }
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
         // optional argument and `op_from` maps straight back to `None`. Omitting the key
         // entirely would do the same thing; spelling it keeps the dispatch record — which is
@@ -1209,6 +1334,43 @@ impl organon_console::mcp::ToolDispatch for ConsoleDispatch {
                 )),
             };
         }
+        // The second read, and the one that needs nothing from the console at all: the library
+        // is a file. It is answered here rather than on the sidecar for the camera read's
+        // reason — that channel has no return path — and it is re-read per call rather than
+        // cached, on [`Console::set_layout`]'s rule: the file is the truth, and a cached copy
+        // would fight a hand-edited one and win silently.
+        if command == CMD_LAYOUT_LIST {
+            use organon_console::layout::{Library, LAYOUTS_FILE};
+            // 🚨 A missing data directory is a *failure*, not an empty library — an empty
+            // answer would say "you have saved nothing" to somebody whose layouts are simply
+            // unreachable. `camera.read`'s rule: an omitted answer beats an invented one.
+            let Some(root) = Library::store_root() else {
+                return Err(format!(
+                    "{command}: this platform has no data directory, so there is nowhere for \
+                     layouts to be stored. Nothing has been lost — nothing was ever written."
+                ));
+            };
+            let library = Library::load(&root);
+            let mut out = json!({
+                "file": root.join(LAYOUTS_FILE).display().to_string(),
+                "count": library.layouts.len(),
+                "layouts": library
+                    .layouts
+                    .iter()
+                    .map(|l| json!({ "name": l.name, "regions": l.regions }))
+                    .collect::<Vec<_>>(),
+            });
+            if library.layouts.is_empty() {
+                // An empty list is a true answer and a useless one on its own — it does not say
+                // whether the library is empty or the file is somewhere else. The note names
+                // both the file above and the verb that fills it.
+                out["note"] = json!(
+                    "nothing has been saved yet — `console layout save <name>` writes the \
+                     console's current arrangement to the file named above"
+                );
+            }
+            return Ok(out);
+        }
         // The same conversion the sidecar drain performs, from the same one place — so a
         // tool call and a `organon console …` line cannot come to mean different things.
         // This is also where `block`'s row range is caught, since `ArgKind::Int` carries no
@@ -1312,7 +1474,13 @@ fn console_step(
         // already owned; the backdrop behind that rectangle is the same picture, wearing the
         // same dressing, rendered once.
         | cli::ConsoleOp::Viewport { .. }
-        | cli::ConsoleOp::Stack { .. } => return None,
+        | cli::ConsoleOp::Stack { .. }
+        // **And a saved arrangement is a recording of the split above, so it is not a look
+        // either** — for the split's reason exactly. What `load` changes is how many rectangles
+        // the glyphs are drawn into; the backdrop behind them is still rendered once, at the
+        // whole pane's size, wearing the identical dressing. `save` and `delete` do not change
+        // even that: they write a file.
+        | cli::ConsoleOp::Layout { .. } => return None,
     }
     Some((source, look))
 }
@@ -3150,6 +3318,12 @@ impl Console {
             self.set_stack(action, panel);
             return;
         }
+        // Above the ledger for the reason the two directly above are: a saved arrangement is a
+        // recording of the split, and `save`/`delete` do not touch the console's drawing at all.
+        if let cli::ConsoleOp::Layout { action, name } = op {
+            self.set_layout(action, name);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -3527,6 +3701,155 @@ impl Console {
                 let n = self.panel_stack.len();
                 self.panel_stack.clear();
                 eprintln!("organon-console: the panel stack is empty ({n} taken out)");
+            }
+        }
+    }
+
+    /// Write the console's arrangement down under a name, bring one back, or take one out —
+    /// **or say why not**.
+    ///
+    /// # 🚨 A load is a TRANSACTION, and this is the line where that is spent
+    ///
+    /// `doc/organon_is_the_product.md` §4: *"a layout that cannot be drawn must say so and leave
+    /// the current one standing, never half-apply."* `layout::resolve` validates the whole
+    /// arrangement and answers either one finished `region::Layout` or one sentence, so the
+    /// application below is a **single assignment**. There is no loop over placements here, and
+    /// there must never be one: a partial apply that had evicted the last agent region is a
+    /// console with nothing to type into, and the verb that would fix it is typed at an agent.
+    ///
+    /// # 🚨 The one gate, for [`Console::set_viewport`]'s reason
+    ///
+    /// clap restricts the action word, and [`op_from`] resolves it and the name again — but
+    /// neither can answer the questions that decide this command: *is a layout stored under that
+    /// name*, *does it still resolve against this build's vocabulary*, and *can today's window
+    /// draw it?* The first is a fact about a file that may be written between dispatch and drain;
+    /// the last is a fact about a window that may be resized in the same gap. So every refusal is
+    /// spoken here, by name.
+    ///
+    /// ⚠️ **The library is re-read per command rather than held in memory.** It is a small file
+    /// and it is the truth: a copy cached at startup would fight a hand-edited `layouts.json` and
+    /// win silently. The cost is that two consoles saving at once resolve as last-writer-wins —
+    /// never a torn file (the write is a rename), but the loser's layout is simply not there.
+    fn set_layout(&mut self, action_word: &str, name: &str) {
+        use organon_console::layout::{self, LayoutCmd, Library, Refusal, SavedLayout};
+        let cmd = match LayoutCmd::resolve(action_word) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("organon-console: {e}");
+                return;
+            }
+        };
+        // Checked again at this end because a line written straight onto the sidecar by hand
+        // never met `op_from` — and a name that cannot travel is exactly what such a line has.
+        if let Err(e) = layout::check_name(name) {
+            eprintln!("organon-console: {e}");
+            return;
+        }
+        let Some(root) = Library::store_root() else {
+            eprintln!(
+                "organon-console: this platform has no data directory, so layouts cannot be \
+                 stored or read"
+            );
+            return;
+        };
+        let mut library = Library::load(&root);
+        // ⚠️ **The pane, as the console last measured it — one frame behind, exactly as
+        // `pane_points` is documented to be.** Only the *size* reaches `region_rect` (it splits
+        // at midpoints and measures the sides), so the origin is arbitrary. `None` — no frame
+        // drawn yet — means the size question is not asked at all, and the draw path's own
+        // "the window is too small for this layout" sentence is the backstop.
+        let pane = self
+            .pane_points
+            .map(|(w, h)| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h)));
+        match cmd {
+            LayoutCmd::Save => {
+                let replaced = library.upsert(SavedLayout::capture(name, &self.layout));
+                match library.save(&root) {
+                    // The replacement is said out loud: overwriting an arrangement somebody
+                    // assembled is a change they did not name in so many words, and no command
+                    // rebuilds the one that was there.
+                    Ok(()) => eprintln!(
+                        "organon-console: `{name}` {} — {} ({} saved)",
+                        if replaced { "replaced the layout that was saved under it" } else { "saved" },
+                        self.layout
+                            .occupied()
+                            .iter()
+                            .map(|(r, c)| format!("{} {}", r.as_word(), c.as_word()))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        library.layouts.len()
+                    ),
+                    Err(e) => eprintln!(
+                        "organon-console: {}",
+                        Refusal::NotWritten {
+                            path: root.join(layout::LAYOUTS_FILE).display().to_string(),
+                            error: e.to_string(),
+                        }
+                    ),
+                }
+            }
+            LayoutCmd::Load => {
+                let Some(saved) = library.get(name) else {
+                    eprintln!(
+                        "organon-console: {}",
+                        Refusal::NoSuchLayout {
+                            name: name.to_string(),
+                            known: library.names_or_nothing(),
+                        }
+                    );
+                    return;
+                };
+                match layout::resolve(saved, pane) {
+                    // 🚨 One assignment. See this function's header.
+                    Ok(next) => {
+                        let same = next == self.layout;
+                        self.layout = next;
+                        eprintln!(
+                            "organon-console: `{name}` loaded — {}{}",
+                            self.layout
+                                .occupied()
+                                .iter()
+                                .map(|(r, c)| format!("{} {}", r.as_word(), c.as_word()))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            // Said rather than swallowed, on `region::Refusal::AlreadyEmpty`'s
+                            // rule: a command that changes nothing and says nothing is
+                            // indistinguishable from one that never arrived. It is not a refusal
+                            // — loading the arrangement you are already in is a perfectly good
+                            // way to be sure of it.
+                            if same { " (which is what it was already holding)" } else { "" }
+                        );
+                    }
+                    // The layout is untouched — `resolve` is pure, so there is no half-applied
+                    // state to unwind and the console goes on drawing exactly what it was.
+                    Err(refusal) => eprintln!("organon-console: {refusal}"),
+                }
+            }
+            LayoutCmd::Delete => {
+                if !library.remove(name) {
+                    eprintln!(
+                        "organon-console: {}",
+                        Refusal::NoSuchLayout {
+                            name: name.to_string(),
+                            known: library.names_or_nothing(),
+                        }
+                    );
+                    return;
+                }
+                match library.save(&root) {
+                    Ok(()) => eprintln!(
+                        "organon-console: `{name}` deleted ({} left: {})",
+                        library.layouts.len(),
+                        library.names_or_nothing()
+                    ),
+                    Err(e) => eprintln!(
+                        "organon-console: {}",
+                        Refusal::NotWritten {
+                            path: root.join(layout::LAYOUTS_FILE).display().to_string(),
+                            error: e.to_string(),
+                        }
+                    ),
+                }
             }
         }
     }
@@ -6119,21 +6442,37 @@ mod cli_tests {
             served.contains(&"mcp__organon__console_camera_read".to_string()),
             "the read is what a conversation tab has that the CLI does not: {served:?}"
         );
+        // ✏️ The second read, and the second dotted name flattened by the same rule — which is
+        // worth pinning separately because `console.layout` and `console.layout.list` differ by
+        // one dot and would collide if the flattening ever dropped a segment instead of
+        // replacing it.
+        assert!(
+            served.contains(&"mcp__organon__console_layout_list".to_string()),
+            "the layout listing is served under its flattened name: {served:?}"
+        );
+        assert!(served.contains(&"mcp__organon__console_layout".to_string()), "{served:?}");
     }
 
-    /// 🚨 **The MCP table is the sidecar table plus exactly one verb, and the extra one is a
-    /// read.** Both halves matter. If `mcp_specs` ever *dropped* a console verb an agent would
-    /// silently lose a capability the CLI still has; if it gained a second extra verb, that verb
-    /// would be one `op_from` refuses and [`ConsoleDispatch`] does not special-case, so every
-    /// call to it would fail with "no console op for …" — a tool served and unusable.
+    /// 🚨 **The MCP table is the sidecar table plus exactly the READS, and every extra verb has
+    /// to be one.** Both halves matter. If `mcp_specs` ever *dropped* a console verb an agent
+    /// would silently lose a capability the CLI still has; if it gained an extra verb that is
+    /// **not** answered in-process, that verb would be one `op_from` refuses and
+    /// [`ConsoleDispatch`] does not special-case, so every call to it would fail with "no console
+    /// op for …" — a tool served and unusable.
     ///
-    /// ⚠️ The read is deliberately **absent** from `console_specs()`: it has no `ConsoleOp`, no
-    /// sidecar line and no clap subcommand, because that transport has no return path. See
+    /// ⚠️ The reads are deliberately **absent** from `console_specs()`: they have no `ConsoleOp`,
+    /// no sidecar line and no clap subcommand, because that transport has no return path. See
     /// [`mcp_specs`].
+    ///
+    /// ✏️ **The list was `[camera.read]` and is now two**, which is the edit this test exists to
+    /// force. It is spelled as a literal rather than as a count so the diff names the verb that
+    /// arrived; ⚠️ **re-derive it from `mcp_specs()` when it moves, never append and assume the
+    /// order** — a list of the whole vocabulary is the thing a merge invalidates without a
+    /// conflict, which the two tests below record happening twice.
     ///
     /// ⚠️ `cargo check --profile test` only in this session; CI executes it.
     #[test]
-    fn the_mcp_table_is_the_sidecar_table_plus_the_one_verb_only_this_process_can_answer() {
+    fn the_mcp_table_is_the_sidecar_table_plus_the_verbs_only_this_process_can_answer() {
         let sidecar: Vec<String> = console_specs().into_iter().map(|s| s.name).collect();
         let served: Vec<String> = mcp_specs().into_iter().map(|s| s.name).collect();
 
@@ -6141,24 +6480,42 @@ mod cli_tests {
             assert!(served.contains(name), "`{name}` is reachable from the CLI but not from MCP");
         }
         let extra: Vec<&String> = served.iter().filter(|n| !sidecar.contains(n)).collect();
-        assert_eq!(extra, [&CMD_CAMERA_READ.to_string()], "one extra verb, and it is the read");
+        assert_eq!(
+            extra,
+            [&CMD_CAMERA_READ.to_string(), &CMD_LAYOUT_LIST.to_string()],
+            "the extra verbs are the reads, in the order `mcp_specs` pushes them"
+        );
 
-        // …and the read really has no sidecar spelling, rather than merely being omitted from
-        // the list: `op_from` is what a call would fall through to, and it must refuse.
-        assert!(
-            op_from(CMD_CAMERA_READ, &json!({})).is_err(),
-            "a read must never convert into a line written onto a fire-and-forget channel"
+        // …and neither read has a sidecar spelling, rather than merely being omitted from the
+        // list: `op_from` is what a call would fall through to, and it must refuse.
+        for read in [CMD_CAMERA_READ, CMD_LAYOUT_LIST] {
+            assert!(
+                op_from(read, &json!({})).is_err(),
+                "a read must never convert into a line written onto a fire-and-forget channel"
+            );
+        }
+        // 🚨 **The write verb beside the listing is a different verb, and is NOT a read.** The
+        // two are one dot apart in the catalog, so a dispatch that fell through to the listing's
+        // in-process arm would answer a `layout load` with a directory listing.
+        assert!(sidecar.contains(&CMD_LAYOUT.to_string()), "the write verb is on the sidecar");
+        assert_eq!(
+            op_from(CMD_LAYOUT, &json!({ CMD_ACTION: "load", CMD_NAME: "desk" }))
+                .map(|op| cli::console_op_to_line(&op)),
+            Ok("layout load desk".to_string())
         );
 
         // A read takes no arguments at all — the point of a separate verb rather than a
         // zero-argument spelling of `console.camera`, whose axes are all optional and whose
         // empty call therefore already means something else.
-        let read = mcp_specs()
-            .into_iter()
-            .find(|s| s.name == CMD_CAMERA_READ)
-            .expect("console.camera.read is registered");
-        assert!(read.args.is_empty(), "a read has nothing to say");
-        assert_eq!(read.target, TargetKind::Viewport, "where the viewer stands is the viewport");
+        for name in [CMD_CAMERA_READ, CMD_LAYOUT_LIST] {
+            let read = mcp_specs()
+                .into_iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            assert!(read.args.is_empty(), "{name}: a read has nothing to say");
+            assert_eq!(read.target, TargetKind::Viewport, "{name}: the pane is the viewport");
+            assert_eq!(read.reversal, Reversal::Recoverable, "{name}: a read changes nothing");
+        }
 
         // The empty framing still earns its own message on the write verb — proof the two did
         // not get conflated.
@@ -6244,6 +6601,13 @@ mod cli_tests {
                 // the pair that is always accepted at this gate: Surface is the one panel with
                 // a body, and adding never depends on what the column is holding.
                 CMD_STACK => json!({ CMD_ACTION: "add", CMD_PANEL: "surface" }),
+                // 🚨 **Named words on a fourth verb, and here the name ring has no table to
+                // index at all** — `ArgKind::Text` states no value space, which is exactly why
+                // `op_from` checks the name itself. `load` is chosen over `delete` for
+                // `CMD_VIEWPORT`'s reason: this gate is about the *line being written*, and
+                // picking the action that also destroys something would be one edit away from
+                // a test that deletes from whatever library the machine running it has.
+                CMD_LAYOUT => json!({ CMD_ACTION: "load", CMD_NAME: "desk" }),
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -6469,8 +6833,13 @@ mod cli_tests {
             // ✏️ `stack` sits between `viewport` and `block` because `console_specs` declares
             // it there — beside the verb it splits a sentence with, not beside the two verbs
             // it shares a `Reversal` with. The order here is the table's, read out.
-            "[background] | rig | theme | posture | screen | viewport | stack | block | patch | \
-             portal | camera | camera.read | surface | help | media | organon"
+            // ✏️ `layout` sits after `stack` and before `block` because `console_specs`
+            // declares it there — beside the two verbs whose work it records — and
+            // `layout.list` sits after `camera.read` because `mcp_specs` pushes the reads at
+            // the end, in the order it pushes them. The order here is the table's, read out.
+            "[background] | rig | theme | posture | screen | viewport | stack | layout | block | \
+             patch | portal | camera | camera.read | layout.list | surface | help | media | \
+             organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
@@ -6482,7 +6851,13 @@ mod cli_tests {
         // are 102 characters (`background` in brackets counts 12) and the fifteen separators
         // 45 — the word is five letters and its separator three, so the arithmetic and the
         // number agree by construction rather than by my having added eight.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 147);
+        // ✏️ **170 with `layout` and `layout.list`** (§1.15) — the seventeenth and eighteenth
+        // verbs, and the sixth change to this line. **Re-derived, not nudged**, on the paragraph
+        // below's rule: the eighteen words are 119 characters (`background` in brackets counts
+        // 12) and the seventeen separators 51. The two new words are 6 and 11 and they bring two
+        // separators with them, so 147 + 17 + 6 = 170 — the arithmetic and the number agree by
+        // construction rather than by my having added twenty-three.
+        assert_eq!(compact_line(&all, 0, 200).chars().count(), 170);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -6503,7 +6878,11 @@ mod cli_tests {
         // at this width, `mcp_specs()` yields twelve and the view lane four, so fourteen are
         // hidden. The paragraph above is why that sentence is written out instead of the
         // number simply being bumped.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +14");
+        // ✏️ **Eighteen verbs now, so `+16`** — re-derived rather than incremented, which the
+        // paragraph above is the reason for: two verbs are shown at this width, `mcp_specs()`
+        // yields fourteen (twelve on the sidecar plus two reads) and the view lane four, so
+        // sixteen are hidden.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +16");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -6558,12 +6937,26 @@ mod cli_tests {
                 // it**, which is `block`'s case for this one. Wrong is *many* commands away
                 // from right, so it waits for an Enter.
                 ("stack", false),
+                // ✏️ **`layout` sits with `stack` and not with `viewport`**, and each of its
+                // three actions earns that separately. `delete` takes a layout out of a file and
+                // nothing puts it back; `save` replaces what was stored under a name and nothing
+                // rebuilds it. `load` is the one worth arguing: it puts nothing in the
+                // transcript, which is `viewport`'s whole case for the other column — but what
+                // it *displaces* is the arrangement on screen, and no second command restores
+                // that unless it too was saved. `/viewport full agent` returns to the DEFAULT,
+                // not to what you had. "Only if you had already saved it" is not yes, so it
+                // waits for an Enter.
+                ("layout", false),
                 // Rows in the transcript, and a rectangle claimed in somebody else's output.
                 ("block", false),
                 ("patch", false),
                 ("portal", true),
                 ("camera", true),
                 ("camera.read", true),
+                // ✏️ **The second read, beside the first** — `mcp_specs` pushes the reads at the
+                // end, so this is where the table puts it rather than beside the verb it lists
+                // for. A read changes nothing, which is the cleanest case the rule has.
+                ("layout.list", true),
                 // The view lane. `surface`, `media` and `organon` put an element in the
                 // transcript; `help` writes a few log lines and reads a table.
                 //
@@ -6741,6 +7134,78 @@ mod cli_tests {
         assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "clear", CMD_PANEL: "all" })).is_err());
         assert!(op_from(CMD_STACK, &json!({ CMD_ACTION: "add" })).is_err(), "no default");
         assert!(op_from(CMD_STACK, &json!({})).is_err());
+    }
+
+    /// 🚨 **The layout verb's first ring is `layout.rs`'s own table, and its second ring is not a
+    /// table at all** — the first console verb whose arguments are not both closed lists.
+    ///
+    /// That asymmetry is the thing to pin. A layout's name is whatever a person called it, so
+    /// `ArgKind::Text` is honest where a `Choice` would be a lie — and it means `validate_args`
+    /// checks *nothing* about the name, which is why `op_from` has to. ⚠️ **The name rule is a
+    /// fact about the transport**: the sidecar line is whitespace-delimited, so a name with a
+    /// space in it would arrive at the console truncated, having saved or deleted something
+    /// nobody named. This is the gate that stops it, and the last assertion measures the
+    /// truncation it is stopping.
+    ///
+    /// ⚠️ What it deliberately does **not** check is whether the layout exists, still resolves,
+    /// or fits today's window. All three are state at drain time; `Console::set_layout` is the
+    /// one gate for them, exactly as `set_viewport` is for an assignment.
+    ///
+    /// ⚠️ `cargo check --profile test` only in this session; CI executes it.
+    #[test]
+    fn the_layout_verbs_rings_are_its_own_table_and_a_name_it_checks_rather_than_lists() {
+        use organon_console::layout::{check_name, LAYOUT_ACTIONS, MAX_NAME};
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_LAYOUT)
+            .expect("console.layout is registered");
+        assert_eq!(spec.target, TargetKind::Viewport, "the arrangement of the pane is the viewport");
+        assert_eq!(spec.args.len(), 2, "an action and a name, never one fused word");
+        let action = spec.args.iter().find(|a| a.name == CMD_ACTION).expect("the action slot");
+        match &action.kind {
+            ArgKind::Choice(v) => assert_eq!(v, &LAYOUT_ACTIONS.to_vec()),
+            other => panic!("the action ring is {other:?}, not a Choice"),
+        }
+        let name = spec.args.iter().find(|a| a.name == CMD_NAME).expect("the name slot");
+        assert_eq!(name.kind, ArgKind::Text, "a name a person invented has no value space");
+        for a in &spec.args {
+            assert!(a.required, "`{}` is not optional — see CMD_NAME on why", a.name);
+        }
+        // 🚨 **The two slots do not collide with the neighbouring verb's.** `action` is shared
+        // with `stack` on purpose (one kind of slot, one palette heading) and `layout` is its
+        // own, so a call built for one verb cannot validate against the other.
+        assert_eq!(CMD_ACTION, "action");
+        assert_ne!(CMD_NAME, CMD_ARG, "a layout name is not the `name` that means a material");
+        assert_ne!(CMD_NAME, CMD_PANEL);
+
+        // Every action the schema offers converts, and every line it writes is one the drain
+        // reads back — `stack`'s cross product, for its reason.
+        for a in LAYOUT_ACTIONS {
+            let op = op_from(CMD_LAYOUT, &json!({ CMD_ACTION: a, CMD_NAME: "desk" }))
+                .unwrap_or_else(|e| panic!("`{a} desk`: {e}"));
+            assert_eq!(op, cli::ConsoleOp::Layout { action: (*a).into(), name: "desk".into() });
+            let line = cli::console_op_to_line(&op);
+            assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
+        }
+        // `list` was never an action word — the listing is a verb of its own, because a name is
+        // not a thing a listing takes. Exercised because it is the obvious guess.
+        assert!(op_from(CMD_LAYOUT, &json!({ CMD_ACTION: "list", CMD_NAME: "desk" })).is_err());
+        assert!(op_from(CMD_LAYOUT, &json!({ CMD_ACTION: "save" })).is_err(), "no default");
+        assert!(op_from(CMD_LAYOUT, &json!({})).is_err());
+
+        // 🚨 The name gate, and the failure it exists to prevent, measured rather than argued.
+        for bad in ["", "two words", "a\tb", &"x".repeat(MAX_NAME + 1)] {
+            assert!(check_name(bad).is_err(), "`{bad}` must not be storable");
+            let e = op_from(CMD_LAYOUT, &json!({ CMD_ACTION: "save", CMD_NAME: bad }))
+                .expect_err("a name that cannot travel must not reach the sidecar");
+            assert!(e.starts_with(CMD_LAYOUT), "the refusal names the verb: {e}");
+        }
+        // …and this is what would happen if it did not: the line is whitespace-delimited, so the
+        // console would act on `my` and never see `desk`.
+        assert_eq!(
+            cli::parse_console_op("layout save my desk"),
+            Some(cli::ConsoleOp::Layout { action: "save".into(), name: "my".into() })
+        );
     }
 
     /// A block is not a look, and `console_step` must say so rather than quietly folding it
@@ -7256,6 +7721,12 @@ mod cli_tests {
             cli::ConsoleOp::Stack { action: "add".into(), panel: "surface".into() },
             cli::ConsoleOp::Stack { action: "remove".into(), panel: "bloom".into() },
             cli::ConsoleOp::Stack { action: "remove".into(), panel: "all".into() },
+            // The third two-word op. Its way to be wrong is its own: the second word is a NAME
+            // rather than a table entry, so nothing downstream would notice the slots being
+            // swapped by their contents — only the round trip would.
+            cli::ConsoleOp::Layout { action: "save".into(), name: "desk".into() },
+            cli::ConsoleOp::Layout { action: "load".into(), name: "desk".into() },
+            cli::ConsoleOp::Layout { action: "delete".into(), name: "james.two-up_1".into() },
             cli::ConsoleOp::Camera(cli::CameraFraming { reset: true, ..Default::default() }),
             cli::ConsoleOp::Camera(cli::CameraFraming {
                 distance: Some(40.0),

@@ -20,7 +20,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use organic_math_native::{agent, cli, ipc, scene_input};
 use organon_core::kind;
-use organon_console::{panel_stack, posture, region, screen, theme};
+use organon_console::{layout, panel_stack, posture, region, screen, theme};
 
 /// Possible-values parser over the Tier-1 actuatable param ids — powers both
 /// validation ("did you mean") and shell completion of `<ID>` arguments.
@@ -128,6 +128,18 @@ fn stack_actions() -> clap::builder::PossibleValuesParser {
 /// and completion cannot come to offer different sets.
 fn stack_panels() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(panel_stack::panel_words())
+}
+
+/// Possible-values parser for `console layout <ACTION> <NAME>`'s **first** word. Built from
+/// `organon_console::layout::LAYOUT_ACTIONS`, on [`patch_kinds`]' rule and for its reason.
+///
+/// ⚠️ **There is no parser for the second word, and there cannot be one.** A layout's name is
+/// whatever a person called it, so the value space is open — the check that *does* apply
+/// (`layout::check_name`: no whitespace, no control characters, non-empty, bounded) is a fact
+/// about the sidecar line rather than a list, and it lands in [`run_console`] where the error
+/// can say which rule was broken.
+fn layout_actions() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(layout::LAYOUT_ACTIONS.iter().copied())
 }
 
 /// Possible-values parser for `console patch --kind <KIND>`.
@@ -503,6 +515,44 @@ enum ConsoleAction {
         #[arg(value_parser = stack_panels())]
         panel: String,
     },
+    /// Save the console's arrangement under a name, bring one back, or take one out
+    #[command(after_help = "A LAYOUT is an arrangement of the whole pane — every region and what \
+                            each one holds — written down under a name and brought back by it. \
+                            `console viewport` and `console stack` build one; this records it.\n\n\
+                            🚨 `load` is a TRANSACTION. A saved layout arrives all at once, from \
+                            a file this build may not have written, so it is checked WHOLE — \
+                            every region word, every content word, that no two regions overlap, \
+                            that only one region holds `3d`, that something holds an `agent`, \
+                            and that today's window is big enough to draw it. If any part of it \
+                            is refused, the refusal names what is wrong and the arrangement you \
+                            are looking at does not move. It never half-applies: a layout that \
+                            had evicted the last `agent` region would be a console with nothing \
+                            to type into.\n\n\
+                            ⚠️ A layout naming a region or a content kind THIS BUILD DOES NOT \
+                            HAVE is refused by name, not loaded in part — an arrangement missing \
+                            a region is not the one that was saved, and nothing on screen would \
+                            say so.\n\n\
+                            `save` replaces whatever was stored under that name and says so. \
+                            Names are EXACT — `Desk` and `desk` are two layouts — and cannot \
+                            contain whitespace, because a command crosses the console's channel \
+                            as one whitespace-delimited line.\n\n\
+                            📌 The library is `layouts.json` at the console's store root, beside \
+                            `harnesses.json`. It is plain, legible JSON you may edit by hand; \
+                            fields this build does not know are kept, not dropped. It ships \
+                            EMPTY — no layout is named for you.\n\n\
+                            ⚠️ A layout records that a region holds `panel`, NOT which panels are \
+                            in the stack: the stack is not remembered across a launch.\n\n\
+                            ⚠️ There is no `list` here. A listing is a READ, and this lane is \
+                            fire-and-forget with no return path — so it lives where a read can be \
+                            answered: `/layout.list` in a conversation composer, or the tool \
+                            `console.layout.list`. Meanwhile the file above is legible.")]
+    Layout {
+        /// save, load, or delete
+        #[arg(value_parser = layout_actions())]
+        action: String,
+        /// What the layout is called — one word, no whitespace
+        name: String,
+    },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
                             the next prompt lands underneath them. They are ordinary \
@@ -819,6 +869,21 @@ fn run_console(action: ConsoleAction) -> ! {
         // nothing is checked *between* them here, because whether the column can honour this
         // depends on what the console is holding right now.
         ConsoleAction::Stack { action, panel } => cli::ConsoleOp::Stack { action, panel },
+        // 🚨 **The one console argument beside `posture` that is validated HERE rather than by
+        // clap, and for a different reason: it has no list to be a member of.** A layout's name
+        // is whatever a person called it, so `PossibleValuesParser` has nothing to say — but the
+        // sidecar line is whitespace-delimited, so a name with a space in it would arrive at the
+        // console truncated, having saved or deleted something nobody named. Refusing here is
+        // the difference between a human seeing which rule was broken and seeing
+        // `queued: layout save my` followed by silence from a window they may not be looking at.
+        // The console checks it again on arrival, which is the gate for a hand-written line.
+        ConsoleAction::Layout { action, name } => match layout::check_name(&name) {
+            Ok(()) => cli::ConsoleOp::Layout { action, name },
+            Err(e) => {
+                eprintln!("organon: {e}");
+                std::process::exit(2);
+            }
+        },
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
         // here; the fallback rather than an `expect` because it is not a guess — it is the
@@ -1502,6 +1567,68 @@ mod tests {
         // because it is the obvious guess and the CLI must not half-accept it.
         assert!(parse(&["console", "stack", "clear"]).is_err(), "clear is not an action");
         assert!(parse(&["console", "stack", "add", "surface", "bloom"]).is_err(), "one pair");
+    }
+
+    /// **`console layout` takes two words and neither is optional** — `stack`'s test, with the
+    /// one difference that decides the whole verb: **the second word has no table to be a member
+    /// of.**
+    ///
+    /// 🚨 So this is the one console argument beside `posture` that clap cannot gate, and unlike
+    /// `posture` (whose value space is two words *or* a number) the reason is that a layout's
+    /// name is whatever a person called it. The check that does apply is a fact about the
+    /// **sidecar line**: it is whitespace-delimited, so a two-word name would arrive at the
+    /// console truncated, having saved or deleted something nobody named. `layout::check_name`
+    /// runs in `run_console`, where the error can say which rule was broken.
+    ///
+    /// ⚠️ **`load nonesuch` is legal HERE and refused at the other end**, the same shape as
+    /// `viewport left off` and `stack add all`: clap's gate is the action word and nothing more,
+    /// and whether a layout of that name exists — or still resolves, or fits today's window — is
+    /// state this process cannot see. Pinning it as `is_ok()` is what stops somebody "fixing" it
+    /// into the CLI, where the refusal would then exist in two places and could disagree.
+    #[test]
+    fn console_layout_takes_an_action_and_a_name_and_defaults_neither() {
+        for a in layout::LAYOUT_ACTIONS {
+            for n in ["desk", "two-up", "james.mind", "café"] {
+                let c = parse(&["console", "layout", a, n]).unwrap();
+                match c.cmd {
+                    Cmd::Console { action: ConsoleAction::Layout { action, name } } => {
+                        assert_eq!(&action, a);
+                        assert_eq!(name, n);
+                        assert_eq!(layout::check_name(&name), Ok(()), "`{n}` is a good name");
+                        let op = cli::ConsoleOp::Layout { action, name };
+                        assert_eq!(
+                            cli::parse_console_op(&cli::console_op_to_line(&op)),
+                            Some(op),
+                            "`layout {a} {n}` must survive the sidecar round trip"
+                        );
+                    }
+                    _ => panic!("`console layout {a} {n}` parsed as something else"),
+                }
+            }
+            assert!(parse(&["console", "layout", a]).is_err(), "`{a}` alone is half a command");
+        }
+        assert!(parse(&["console", "layout"]).is_err(), "neither word has a default");
+        assert!(parse(&["console", "layout", "rename", "desk"]).is_err(), "no such action");
+        // `list` was never an action word: a listing takes no name, so it is a verb of its own
+        // (`console.layout.list`, on the MCP lane). Pinned because it is the obvious guess, and
+        // the CLI must not half-accept it.
+        assert!(parse(&["console", "layout", "list"]).is_err(), "list is not an action");
+        assert!(parse(&["console", "layout", "list", "all"]).is_err(), "…nor with a word after it");
+        assert!(parse(&["console", "layout", "save", "a", "b"]).is_err(), "one pair");
+
+        // 🚨 **A name clap cannot refuse still parses here, and `run_console` is what stops it.**
+        // Both halves are pinned: clap accepts the string, and the name rule rejects it — which
+        // is the division of labour the verb rests on.
+        let c = parse(&["console", "layout", "save", "two words"]).unwrap();
+        match c.cmd {
+            Cmd::Console { action: ConsoleAction::Layout { name, .. } } => {
+                assert_eq!(name, "two words", "clap has no table to refuse it against");
+                assert!(layout::check_name(&name).is_err(), "and the name rule does");
+            }
+            _ => panic!("parsed as something else"),
+        }
+        // A layout the state cannot honour is still a well-formed line here.
+        assert!(parse(&["console", "layout", "load", "nonesuch"]).is_ok());
     }
 
     /// **`console camera` takes any subset of four flags and round-trips through the sidecar.**

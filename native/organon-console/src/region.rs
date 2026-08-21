@@ -220,6 +220,20 @@ impl Region {
         }
     }
 
+    /// Does drawing this region require a **column cut** — does it span fewer than all three
+    /// columns?
+    ///
+    /// 🚨 **The narrow-pane rule's whole predicate, in one place.** [`region_rect`] asks it to
+    /// decide whether [`MIN_COLUMNS_WIDTH`] applies at all, and anything that wants to *explain*
+    /// the `None` it returns — [`crate::layout`]'s refusal, which has to say whether a load was
+    /// refused for the column width or for [`MIN_SIDE`] — asks the same function. Re-deriving it
+    /// from the cell mask outside this module would put a second copy of the geometry where the
+    /// first one could move without it.
+    pub fn needs_column_cut(self) -> bool {
+        let c = self.cells();
+        !(c & COL_LEFT != 0 && c & COL_CENTER != 0 && c & COL_RIGHT != 0)
+    }
+
     /// The word this region travels as — on the wire, in `--help`, and in every refusal.
     pub fn as_word(self) -> &'static str {
         match self {
@@ -307,6 +321,14 @@ pub enum Content {
 }
 
 impl Content {
+    /// Every content **kind**, in the order `--help` lists them. [`Region::ALL`]'s arrangement,
+    /// and the table [`CONTENT_KIND_WORDS`] is the words of.
+    ///
+    /// ⚠️ **Not the same set as [`CONTENT_WORDS`]**, which carries [`CLEAR_WORD`] as well — that
+    /// is the whole reason [`ContentCmd`] exists beside this enum, and the difference is pinned
+    /// by [`tests::the_word_tables_and_the_resolvers_are_one_vocabulary`].
+    pub const ALL: &'static [Content] = &[Content::Agent, Content::Panel, Content::ThreeD];
+
     /// The word this content travels as.
     pub fn as_word(self) -> &'static str {
         match self {
@@ -314,6 +336,25 @@ impl Content {
             Content::Panel => "panel",
             Content::ThreeD => "3d",
         }
+    }
+
+    /// The kind a word names, or a refusal carrying the kinds that do. [`Region::resolve`]'s
+    /// rule: exact, never approximated.
+    ///
+    /// 🚨 **This refuses [`CLEAR_WORD`], and [`ContentCmd::resolve`] accepts it** — which is the
+    /// difference between the two resolvers rather than an inconsistency. A *command* may say
+    /// "empty this region"; a region cannot **hold** emptiness, so anything describing what a
+    /// region holds — a saved layout, say — reads its words through here.
+    pub fn resolve(word: &str) -> Result<Self, UnknownWord> {
+        Content::ALL
+            .iter()
+            .copied()
+            .find(|c| c.as_word() == word)
+            .ok_or_else(|| UnknownWord {
+                word: word.to_string(),
+                kind: "content",
+                known: CONTENT_KIND_WORDS,
+            })
     }
 
     /// Why at most one region may hold this kind — `None` when any number may.
@@ -355,8 +396,18 @@ pub enum ContentCmd {
 /// The word [`ContentCmd::Clear`] is spelled as.
 pub const CLEAR_WORD: &str = "off";
 
-/// The content words, in the order `--help` should list them — the three kinds in [`Content`]'s
-/// own order, then the clearing word. [`REGION_WORDS`]' arrangement, for its reason.
+/// The content **kind** words, in [`Content::ALL`] order — what a region can hold, with no
+/// clearing word. [`Content::resolve`]'s refusal quotes it, and so does anything describing an
+/// arrangement rather than commanding one.
+pub const CONTENT_KIND_WORDS: &[&str] = &["agent", "panel", "3d"];
+
+/// The content **command** words, in the order `--help` should list them — the kinds above, then
+/// the clearing word. [`REGION_WORDS`]' arrangement, for its reason.
+///
+/// ⚠️ Spelled out rather than built from [`CONTENT_KIND_WORDS`] because a `const` cannot
+/// concatenate two slices; the two tables are held together by
+/// [`tests::the_word_tables_and_the_resolvers_are_one_vocabulary`], which asserts this one is
+/// exactly the kinds plus [`CLEAR_WORD`].
 pub const CONTENT_WORDS: &[&str] = &["agent", "panel", "3d", CLEAR_WORD];
 
 impl ContentCmd {
@@ -463,6 +514,71 @@ impl std::fmt::Display for Refusal {
                 content.as_word(),
                 by.as_word(),
                 by.as_word(),
+            ),
+        }
+    }
+}
+
+/// Why a **complete set of placements** is not a layout.
+///
+/// 🚨 **A different type from [`Refusal`], because it answers a different question.** `Refusal`
+/// is about *one assignment meeting a layout that already exists*: it names what was `asked` for
+/// and what stood in the way, and its containment arm resolves an overlap by displacing. A set
+/// of placements arriving **all at once** — from a file, possibly written by somebody else — has
+/// no "asked" and nothing to displace: there is no order to it, so an overlap inside it is a
+/// contradiction rather than a move. Reusing `Refusal` would have meant inventing an `asked`
+/// region out of iteration order, which is a guess about which half of a contradiction was
+/// meant.
+///
+/// ⚠️ **The two rules that are the same rule are computed from the same functions**, not restated:
+/// disjointness is [`Region::cells`], uniqueness is [`Content::only_one_because`], and the
+/// last-agent invariant is [`Layout::has_agent`] — so a layout built here obeys exactly what a
+/// layout built by [`Layout::assign`] obeys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutFault {
+    /// No placements at all. A layout that names nothing is not a small layout; it is not one.
+    Empty,
+    /// One region placed twice. Unreachable from a map keyed by region word — [`Region::as_word`]
+    /// is injective — and reachable from any other caller, which is why it is named rather than
+    /// resolved by last-wins.
+    Repeated { region: Region },
+    /// Two placements whose quadrant sets intersect. **Both are named**, in the order they were
+    /// given: neither is the one that "asked", so neither can be the one that gives way.
+    Overlap { a: Region, b: Region },
+    /// A kind [`Content::only_one_because`] limits, placed twice.
+    Twice { content: Content, first: Region, second: Region, because: &'static str },
+    /// Nothing holds an agent — [`Refusal::LastAgent`]'s invariant, met from the other end.
+    NoAgent,
+}
+
+impl std::fmt::Display for LayoutFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayoutFault::Empty => write!(
+                f,
+                "it places nothing at all — a layout has to say what at least one region holds"
+            ),
+            LayoutFault::Repeated { region } => {
+                write!(f, "it places `{}` twice, and a region holds one thing", region.as_word())
+            }
+            LayoutFault::Overlap { a, b } => write!(
+                f,
+                "`{}` and `{}` overlap, so the grid it describes cannot be drawn — neither is \
+                 the one that asked, so neither can give way",
+                a.as_word(),
+                b.as_word()
+            ),
+            LayoutFault::Twice { content, first, second, because } => write!(
+                f,
+                "`{}` is placed in both `{}` and `{}`, and there can be only one: {because}",
+                content.as_word(),
+                first.as_word(),
+                second.as_word()
+            ),
+            LayoutFault::NoAgent => write!(
+                f,
+                "no region in it holds an `agent` — a console with nothing to talk to has no \
+                 obvious way back, because the verb that would fix it is typed at an agent"
             ),
         }
     }
@@ -619,6 +735,50 @@ impl Layout {
         }
         Ok(Change { layout: next, displaced })
     }
+
+    /// Build a layout from a **complete** set of placements — or say why they are not one.
+    ///
+    /// 🚨 **The whole-layout counterpart of [`Layout::assign`], and the reason it exists is
+    /// [`crate::layout`].** A saved arrangement arrives all at once: there is no "before", so
+    /// there is nothing to displace and no order in which one placement could be said to have
+    /// met another. Every rule this module enforces still has to hold on the result, and the
+    /// only honest way to enforce them on an unordered set is to refuse the whole set by name.
+    ///
+    /// 📌 **Pure, like `assign`, and that is what makes a load transactional.** The caller
+    /// either receives a whole layout or receives a sentence; there is no partially-built value
+    /// to leak, so a refused load cannot half-apply — the property
+    /// `doc/organon_is_the_product.md` §4 makes non-negotiable is a consequence of the
+    /// signature rather than of discipline at the call site.
+    pub fn from_placements(places: &[(Region, Content)]) -> Result<Layout, LayoutFault> {
+        if places.is_empty() {
+            return Err(LayoutFault::Empty);
+        }
+        let mut out = Layout::vacant();
+        for (i, (region, content)) in places.iter().copied().enumerate() {
+            if out.get(region).is_some() {
+                return Err(LayoutFault::Repeated { region });
+            }
+            // Against everything already placed, in the order given — so the sentence names the
+            // pair in the order a reader of the file would meet them.
+            for (earlier, _) in places[..i].iter().copied() {
+                if earlier.cells() & region.cells() != 0 {
+                    return Err(LayoutFault::Overlap { a: earlier, b: region });
+                }
+            }
+            if let Some(because) = content.only_one_because() {
+                if let Some(first) = out.region_holding(content) {
+                    return Err(LayoutFault::Twice { content, first, second: region, because });
+                }
+            }
+            out.held[Self::slot(region)] = Some(content);
+        }
+        // Asked of the finished layout, exactly as `assign` asks it of the result rather than of
+        // the command — one invariant, checked once, however the layout was reached.
+        if !out.has_agent() {
+            return Err(LayoutFault::NoAgent);
+        }
+        Ok(out)
+    }
 }
 
 /// The smallest side, in points, a region is worth drawing at.
@@ -707,9 +867,10 @@ pub fn region_rect(pane: egui::Rect, region: Region) -> Option<egui::Rect> {
     }
     let c = region.cells();
     // A region spanning every column is bounded by the pane itself and asks nothing of the cuts —
-    // which is what keeps `Full` the pane bit for bit (invariant #4) at any width at all.
-    let all_columns = c & COL_LEFT != 0 && c & COL_CENTER != 0 && c & COL_RIGHT != 0;
-    let (left, right) = if all_columns {
+    // which is what keeps `Full` the pane bit for bit (invariant #4) at any width at all. The
+    // predicate is [`Region::needs_column_cut`] so that a caller wanting to *explain* this
+    // refusal asks the same function rather than re-deriving it from the bitmask.
+    let (left, right) = if !region.needs_column_cut() {
         (pane.left(), pane.right())
     } else {
         if pw < MIN_COLUMNS_WIDTH {
@@ -1343,6 +1504,126 @@ mod tests {
         // `Content`. If they ever match, a clearing word has become something a region holds.
         assert_eq!(CONTENT_WORDS.len(), 4);
         assert!(!["agent", "panel", "3d"].contains(&CLEAR_WORD));
+
+        // …and the kind table is exactly that difference, spelled out: the commands minus the
+        // clearing word. `CONTENT_WORDS` cannot be built from `CONTENT_KIND_WORDS` in a `const`,
+        // so this is what holds the two in step.
+        let kinds_then_clear: Vec<&str> =
+            CONTENT_KIND_WORDS.iter().copied().chain([CLEAR_WORD]).collect();
+        assert_eq!(kinds_then_clear, CONTENT_WORDS.to_vec());
+        for word in CONTENT_KIND_WORDS {
+            let c = Content::resolve(word).unwrap_or_else(|_| panic!("`{word}` is unresolvable"));
+            assert_eq!(c.as_word(), *word, "`{word}` does not spell itself back");
+        }
+        for c in Content::ALL.iter().copied() {
+            assert!(CONTENT_KIND_WORDS.contains(&c.as_word()), "{c:?} is unlisted");
+        }
+        assert_eq!(CONTENT_KIND_WORDS.len(), Content::ALL.len());
+        // 🚨 **The one place the two resolvers deliberately disagree.** A command may say
+        // "empty this region"; a region cannot hold emptiness, so a description of what a
+        // region holds refuses the same word `ContentCmd` accepts.
+        assert_eq!(ContentCmd::resolve(CLEAR_WORD), Ok(ContentCmd::Clear));
+        let e = Content::resolve(CLEAR_WORD).expect_err("`off` is not a kind");
+        assert!(e.to_string().contains(CLEAR_WORD), "{e}");
+        for word in CONTENT_KIND_WORDS {
+            assert!(e.to_string().contains(word), "`{word}` is missing from the refusal: {e}");
+        }
+    }
+
+    /// 🚨 **A layout arriving all at once obeys exactly what a layout built one command at a
+    /// time obeys** — and refuses, by name, everything a set of placements can get wrong.
+    ///
+    /// This is the gate under `/layout load`, so every arm here is a saved file somebody could
+    /// hand the console: two regions that cannot both be drawn, two live pictures, a layout with
+    /// nothing to talk to. ⚠️ **`Repeated` is the one arm the file path cannot reach** — a map
+    /// keyed by region word cannot hold a region twice — and it is named rather than resolved by
+    /// last-wins because `from_placements` is public and a slice can.
+    #[test]
+    fn a_complete_set_of_placements_is_refused_by_name_or_it_is_a_layout() {
+        // The three shapes James asked for, built whole rather than reached by commands — and
+        // equal to what the commands build, which is what makes a saved layout the same object.
+        let two = Layout::from_placements(&[
+            (Region::Left, Content::Agent),
+            (Region::Right, Content::Panel),
+        ])
+        .expect("two halves");
+        let by_command = Layout::default()
+            .assign(Region::Left, agent())
+            .expect("left")
+            .layout
+            .assign(Region::Right, panel())
+            .expect("right")
+            .layout;
+        assert_eq!(two, by_command, "the two routes to one arrangement must agree");
+        assert_eq!(
+            Layout::from_placements(&[(Region::Full, Content::Agent)]).expect("the default"),
+            Layout::default(),
+            "the default layout is one placement, and this is that placement"
+        );
+
+        assert_eq!(Layout::from_placements(&[]), Err(LayoutFault::Empty));
+        assert_eq!(
+            Layout::from_placements(&[(Region::Left, Content::Agent), (Region::Left, Content::Panel)]),
+            Err(LayoutFault::Repeated { region: Region::Left })
+        );
+        // Partial overlap and containment are both contradictions here — `left` inside `full` is
+        // a displacement only when one of them *asked*, and in a file neither did.
+        assert_eq!(
+            Layout::from_placements(&[(Region::Left, Content::Agent), (Region::Top, Content::Panel)]),
+            Err(LayoutFault::Overlap { a: Region::Left, b: Region::Top })
+        );
+        assert_eq!(
+            Layout::from_placements(&[(Region::Full, Content::Agent), (Region::Left, Content::Panel)]),
+            Err(LayoutFault::Overlap { a: Region::Full, b: Region::Left }),
+            "containment is a displacement only when something asked; a file asks nothing"
+        );
+        let twice = Layout::from_placements(&[
+            (Region::Left, Content::Agent),
+            (Region::TopRight, Content::ThreeD),
+            (Region::BottomRight, Content::ThreeD),
+        ])
+        .expect_err("two live pictures");
+        let LayoutFault::Twice { content, first, second, because } = twice.clone() else {
+            panic!("{twice:?} is not the uniqueness fault");
+        };
+        assert_eq!((content, first, second), (Content::ThreeD, Region::TopRight, Region::BottomRight));
+        assert_eq!(Some(because), Content::ThreeD.only_one_because());
+        assert!(twice.to_string().contains("Organon"), "whose limit it is: {twice}");
+        assert_eq!(
+            Layout::from_placements(&[(Region::Full, Content::Panel)]),
+            Err(LayoutFault::NoAgent)
+        );
+
+        // Every fault says what was asked and what stood in the way.
+        for fault in [
+            LayoutFault::Empty,
+            LayoutFault::Repeated { region: Region::Left },
+            LayoutFault::Overlap { a: Region::Left, b: Region::Top },
+            LayoutFault::NoAgent,
+        ] {
+            let text = fault.to_string();
+            assert!(!text.is_empty() && !text.ends_with("no"), "{text}");
+        }
+        assert!(LayoutFault::NoAgent.to_string().contains("agent"));
+        assert!(LayoutFault::Overlap { a: Region::Left, b: Region::Top }
+            .to_string()
+            .contains("left"));
+
+        // 🚨 **Whatever it accepts is a layout the rest of this module accepts**, which is the
+        // property that makes a saved arrangement safe to load: walked over every pair of
+        // regions and every pair of kinds, anything that builds also plans and holds an agent.
+        let p = pane();
+        for a in Region::ALL.iter().copied() {
+            for b in Region::ALL.iter().copied() {
+                for ca in Content::ALL.iter().copied() {
+                    let Ok(built) = Layout::from_placements(&[(a, ca), (b, Content::Agent)]) else {
+                        continue;
+                    };
+                    assert!(built.has_agent(), "{a:?}/{b:?} built without an agent");
+                    assert!(plan(p, &built).is_some(), "{a:?}/{b:?} builds but does not plan");
+                }
+            }
+        }
     }
 
     /// 🚨 **At most one region holds `3d`, and the refusal says whose limit it is.**
