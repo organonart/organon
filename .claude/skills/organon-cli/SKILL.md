@@ -104,6 +104,10 @@ how the pane inside it is divided. Every combination is a real console, so none 
 value of another. ⚠️ `viewport` takes **two** words (a region and a content) and refuses an
 assignment the current layout cannot hold — an overlap it cannot draw, or one that would leave
 no `agent` region at all. `organon console viewport full agent` is the way back from any split.
+⚠️ Every **region** word also answers to its initials — `f t b l c r`, and `tl tc tr bl bc br`
+for the six cells — so `viewport tl panel` is `viewport topleft panel`. They are accepted at
+every door (this CLI, `/viewport` in a composer, the MCP tool) and **listed at none**: `--help`
+shows the twelve long words, because that is how many shapes there are. Only regions have them.
 `background` and `rig` say what is *behind* the glyphs; these four say what the glyphs and
 their chrome are made of, how they are arranged, and how much room they get. All take effect
 on the next frame; ask `--help` for the palettes, posture words, screen states and region

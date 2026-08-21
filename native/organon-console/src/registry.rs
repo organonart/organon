@@ -495,6 +495,20 @@ impl Registry {
                         ArgKind::Choice(options) => {
                             out.push(format!("      {}: {}", arg.name, options.join(" | ")));
                         }
+                        // The long words exactly as a `Choice` lists them, plus the one clause
+                        // that says the short forms exist. `/help` is where a person goes to
+                        // find out what there is — an abbreviation absent from it is one nobody
+                        // finds except by being told.
+                        ArgKind::ChoiceAliased { words, aliases } => {
+                            out.push(format!(
+                                "      {}: {}{}",
+                                arg.name,
+                                words.join(" | "),
+                                crate::command::short_form_note(
+                                    aliases.iter().map(|(w, a)| (w.as_str(), a.as_str()))
+                                ),
+                            ));
+                        }
                         ArgKind::Float { min, max } => {
                             out.push(format!("      {}: {min} … {max}", arg.name));
                         }
@@ -798,6 +812,27 @@ fn coerce(entry: &Entry, arg: &ArgSpec, word: &str, positional: &[&str]) -> Resu
                 ))
             }
         }
+        // 🚨 **The word travels as TYPED, short form and all.** It is not expanded here, and
+        // that is the choice that keeps the four front doors agreeing: clap's
+        // `PossibleValuesParser` returns the string it matched rather than the canonical name
+        // (`clap_builder`'s `parse` returns `value`, not `v.get_name()`), so `organon console
+        // viewport tl panel` puts `tl` on the sidecar line. Expanding here and not there would
+        // make the same command read two ways in the session log depending on which door it
+        // came through. `region::Region::resolve` is the one place a short form becomes a
+        // region, and both doors reach it.
+        ArgKind::ChoiceAliased { words, aliases } => {
+            if words.iter().any(|o| o == word) || aliases.iter().any(|(_, a)| a == word) {
+                Ok(Value::String(word.to_string()))
+            } else {
+                Err(format!(
+                    "`{head}`: `{word}` is not one of {}{}",
+                    words.join(" | "),
+                    crate::command::short_form_note(
+                        aliases.iter().map(|(w, a)| (w.as_str(), a.as_str()))
+                    ),
+                ))
+            }
+        }
         ArgKind::Text => Ok(Value::String(word.to_string())),
         ArgKind::Int => word
             .parse::<i64>()
@@ -997,7 +1032,9 @@ impl Palette {
         }
         let Slot::Value { arg, .. } = &self.slot else { return None };
         match &arg.kind {
-            ArgKind::Choice(_) | ArgKind::Bool => None,
+            // `ChoiceAliased` sits with `Choice`: both have a full ring to show, and a hint
+            // beside a complete list is a second copy of it.
+            ArgKind::Choice(_) | ArgKind::ChoiceAliased { .. } | ArgKind::Bool => None,
             kind => Some(format!("{}: {}", arg.name, value_space(kind))),
         }
     }
@@ -1072,6 +1109,9 @@ impl Palette {
 fn value_space(kind: &ArgKind) -> String {
     match kind {
         ArgKind::Choice(options) => options.join(" | "),
+        // The long words only. This string is a *value space*, and a short form is a second
+        // spelling of a value rather than another value.
+        ArgKind::ChoiceAliased { words, .. } => words.join(" | "),
         ArgKind::Float { min, max } => format!("a number from {min} to {max}"),
         ArgKind::Int => "a whole number".to_string(),
         ArgKind::Bool => "true or false".to_string(),
@@ -1308,6 +1348,23 @@ impl Registry {
                         ArgKind::Choice(options) => {
                             options.iter().map(|o| (o.clone(), String::new())).collect()
                         }
+                        // 🚨 **The short form rides in the DOC slot, not as a candidate.** The
+                        // ring stays twelve words long — a person is choosing between twelve
+                        // shapes, and twenty-four entries would say otherwise — and each one
+                        // carries its abbreviation the way any other candidate carries the one
+                        // line about it. That is the whole of the discoverability answer: you
+                        // learn `tl` by looking at `topleft`, in the band you were already
+                        // reading.
+                        ArgKind::ChoiceAliased { words, aliases } => words
+                            .iter()
+                            .map(|w| {
+                                let doc = aliases
+                                    .iter()
+                                    .find(|(full, _)| full == w)
+                                    .map_or(String::new(), |(_, short)| short.clone());
+                                (w.clone(), doc)
+                            })
+                            .collect(),
                         ArgKind::Bool => vec![
                             ("true".to_string(), String::new()),
                             ("false".to_string(), String::new()),
@@ -1410,6 +1467,77 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::new(&console())
+    }
+
+    /// A one-verb catalog whose only argument has **declared short forms** — the shape
+    /// `console.viewport`'s region slot has. Its own registry rather than a row in
+    /// [`console`], because every assertion about the fixture table's verb list would then
+    /// have to learn about it, and the point here is one argument.
+    fn aliased() -> Registry {
+        Registry::new(&[CommandSpec {
+            name: "console.viewport".into(),
+            doc: "Divide the pane".into(),
+            target: TargetKind::Viewport,
+            args: vec![ArgSpec {
+                name: "region".into(),
+                kind: ArgKind::ChoiceAliased {
+                    words: vec!["full".into(), "topleft".into(), "bottomright".into()],
+                    aliases: vec![
+                        ("full".into(), "f".into()),
+                        ("topleft".into(), "tl".into()),
+                        ("bottomright".into(), "br".into()),
+                    ],
+                },
+                required: true,
+            }],
+            reversal: Reversal::Recoverable,
+        }])
+    }
+
+    /// 🚨 **A `ChoiceAliased` accepts the short form, offers only the long words, and shows the
+    /// short one BESIDE its word.**
+    ///
+    /// All three in one test because they are one property with three faces: an abbreviation
+    /// that is accepted but never shown is a secret, one that is shown as a peer doubles the
+    /// apparent size of the vocabulary, and one that is shown but not accepted is a lie. The
+    /// ring is where a person looks; [`Candidate::doc`] is the slot that already exists for
+    /// "one line about this word", so the short form goes there and the ring stays the length
+    /// of the vocabulary.
+    #[test]
+    fn an_aliased_choice_accepts_the_short_form_and_offers_only_the_long_ones() {
+        let reg = aliased();
+        let ring = reg.candidates("/viewport ").expect("the value ring");
+        assert_eq!(
+            ring.candidates.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["full", "topleft", "bottomright"],
+            "the ring is the long words — a short form is not a thirteenth region"
+        );
+        assert_eq!(
+            ring.candidates.iter().map(|c| c.doc.as_str()).collect::<Vec<_>>(),
+            ["f", "tl", "br"],
+            "…each carrying its own short form, which is how anybody discovers one"
+        );
+        // Accepted at the composer, long or short, and it travels as typed either way.
+        for word in ["full", "topleft", "bottomright", "f", "tl", "br"] {
+            match reg.resolve(&format!("/viewport {word}")) {
+                Resolved::Run { args, .. } => {
+                    assert_eq!(args["region"], json!(word), "`{word}` was rewritten");
+                }
+                other => panic!("`/viewport {word}` did not resolve: {other:?}"),
+            }
+        }
+        // A near miss still refuses — a declared short form is a second exact word, not a
+        // prefix rule — and the refusal says the short forms exist.
+        let Resolved::Refused(why) = reg.resolve("/viewport tlx") else {
+            panic!("`tlx` resolved and must not");
+        };
+        assert!(why.contains("full | topleft | bottomright"), "{why}");
+        assert!(why.contains("short form"), "the refusal keeps them secret: {why}");
+        assert!(why.contains("`f`") && why.contains("`br`"), "{why}");
+        // …and so does `/help`, which is where a person goes to find out what exists.
+        let help = reg.help_lines().join("\n");
+        assert!(help.contains("region: full | topleft | bottomright"), "{help}");
+        assert!(help.contains("short form"), "`/help` keeps them secret: {help}");
     }
 
     fn run(line: &str) -> Resolved {

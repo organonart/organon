@@ -65,6 +65,25 @@
 //! loud here, in `CONSOLE_ARCHITECTURE.md` §1.14 and in the changelog, because a word quietly
 //! meaning something new is exactly the drift this module's refusals exist to prevent.
 //!
+//! # 🚨 Every word also answers to its initials, and that table is DECLARED
+//!
+//! `bottomcenter` is twelve characters, and `/viewport` is a verb somebody types while looking at
+//! the window it rearranges. [`REGION_ALIASES`] pairs each word with a short form — `f t b l c r`
+//! for the first six, `tl tc tr bl bc br` for the six cells — accepted by [`Region::resolve`] and,
+//! through that one table, by the composer, the MCP schema, the CLI's `--help` parser and tab
+//! completion alike. A word that existed for one caller and not another is the second vocabulary
+//! `registry.rs` was built to prevent.
+//!
+//! ⚠️ **The inverse arrangement to the words themselves, on purpose.** The twelve words are
+//! *derived* (the cross product above) and the twelve short forms are *written out*, because an
+//! algorithm producing them could not be contradicted: a future region word whose initials
+//! collided with an existing short form would silently shadow it. The rule lives in the tests —
+//! one derives each compound's parts from the grid and asserts its short form is theirs joined,
+//! another asserts nothing collides.
+//!
+//! ⚠️ **[`REGION_WORDS`] stays canonical-only.** It is the *display* table; a short form is
+//! accepted everywhere and listed nowhere, shown beside its word instead.
+//!
 //! # The grid, and the one rule that makes an assignment decidable
 //!
 //! Every region is a set of the six **cells** ([`Region::cells`]) — `Full` is all six, `Left` is
@@ -257,12 +276,26 @@ impl Region {
     /// ⚠️ **No case folding and no prefixes** — [`crate::screen::ScreenCmd::resolve`]'s rule and
     /// [`crate::posture::Posture::resolve`]'s before it. An approximation here would rearrange a
     /// window somebody is looking at into a shape they did not name.
+    ///
+    /// 📌 **[`REGION_ALIASES`] is not an exception to that rule, and the distinction is the whole
+    /// of why it is a table rather than an algorithm.** A prefix rule would make `lef` and `l`
+    /// and `le` all resolve, which is a guess; a declared short form is a *second exact word*,
+    /// and `lef` still refuses. The lookup is exact in both directions.
     pub fn resolve(word: &str) -> Result<Self, UnknownWord> {
-        Region::ALL
-            .iter()
-            .copied()
-            .find(|r| r.as_word() == word)
-            .ok_or_else(|| UnknownWord { word: word.to_string(), kind: "region", known: REGION_WORDS })
+        // The alias is rewritten to its canonical word *before* the search, so there is one
+        // matching rule rather than two — a short form cannot come to resolve to something the
+        // long form does not.
+        let canonical =
+            REGION_ALIASES.iter().find(|(_, short)| *short == word).map_or(word, |(full, _)| *full);
+        Region::ALL.iter().copied().find(|r| r.as_word() == canonical).ok_or_else(|| {
+            // ⚠️ `word` and not `canonical` — the refusal quotes what was typed, unmodified.
+            UnknownWord {
+                word: word.to_string(),
+                kind: "region",
+                known: REGION_WORDS,
+                shorts: REGION_ALIASES,
+            }
+        })
     }
 }
 
@@ -271,6 +304,12 @@ impl Region {
 /// One table, read by `bin/ctl.rs`'s possible-values parser, by the console's command schema
 /// and by [`Region::resolve`]'s refusal — [`crate::screen::SCREEN_WORDS`]' arrangement, for its
 /// reason: a second hand-maintained copy is how a CLI comes to accept a word nothing can act on.
+///
+/// 🚨 **This list is CANONICAL-ONLY and stays that way.** Every word here also answers to a short
+/// form ([`REGION_ALIASES`] — `tl` is `topleft`), and none of those belong in this table: this is
+/// the **display** vocabulary, so twelve extra entries would present a grid with twelve shapes in
+/// it as a list of twenty-four words. The short forms are accepted at every door and shown
+/// *beside* their word, never as peers of it.
 pub const REGION_WORDS: &[&str] = &[
     "full",
     "top",
@@ -284,6 +323,41 @@ pub const REGION_WORDS: &[&str] = &[
     "bottomleft",
     "bottomcenter",
     "bottomright",
+];
+
+/// The **short form** of each region word — `topleft` is also `tl` — in [`REGION_WORDS`] order.
+///
+/// 🚨 **Declared, never derived at runtime, and this is the one table.** The rule the words obey
+/// is *initials of the parts*: `full` → `f`, `bottomright` → `br`. Computing that instead of
+/// writing it down would be an algorithm nobody could contradict — a region word whose initials
+/// collided with another's would silently shadow it, and a word whose natural short form is not
+/// its initials would have nowhere to say so. Writing the pairs out makes both cases a diff.
+/// [`tests::every_region_word_has_exactly_one_short_form_and_none_of_them_collide`] holds the
+/// table to the rule, to [`REGION_WORDS`], and to itself.
+///
+/// ⚠️ **These are NOT peer region words and must never be listed as though they were.**
+/// [`REGION_WORDS`] stays canonical-only: it is what `--help`, the MCP schema's `enum`, the
+/// palette's rings and every refusal *display*, and twelve more entries there would double the
+/// apparent size of a vocabulary that still has twelve shapes in it. The short forms are
+/// **accepted everywhere and displayed beside their word**, which is a different job.
+///
+/// 📌 One table, read by `bin/ctl.rs`'s possible-values parser (as clap aliases), by the
+/// console's command schema (as `ArgKind::ChoiceAliased`), by [`Region::resolve`] and by
+/// [`UnknownWord`]'s refusal — [`REGION_WORDS`]' own arrangement, for its reason: a second
+/// hand-maintained copy is how a CLI comes to accept a word nothing can act on.
+pub const REGION_ALIASES: &[(&str, &str)] = &[
+    ("full", "f"),
+    ("top", "t"),
+    ("bottom", "b"),
+    ("left", "l"),
+    ("center", "c"),
+    ("right", "r"),
+    ("topleft", "tl"),
+    ("topcenter", "tc"),
+    ("topright", "tr"),
+    ("bottomleft", "bl"),
+    ("bottomcenter", "bc"),
+    ("bottomright", "br"),
 ];
 
 /// How many regions there are — [`Layout`]'s array size, **read off [`Region::ALL`]** rather
@@ -354,6 +428,10 @@ impl Content {
                 word: word.to_string(),
                 kind: "content",
                 known: CONTENT_KIND_WORDS,
+                // ⚠️ **Deliberately none.** Three kinds, none of them compound, and `3d` is
+                // already two characters — a short form here would be a second spelling with
+                // nothing to buy. See [`REGION_ALIASES`] for what earns one.
+                shorts: &[],
             })
     }
 
@@ -431,6 +509,7 @@ impl ContentCmd {
                 word: word.to_string(),
                 kind: "content",
                 known: CONTENT_WORDS,
+                shorts: &[], // See [`Content::resolve`]: the content words have none.
             }),
         }
     }
@@ -449,11 +528,22 @@ pub struct UnknownWord {
     pub kind: &'static str,
     /// The table that would have worked.
     pub known: &'static [&'static str],
+    /// The short forms of the words in [`UnknownWord::known`], paired with them — **empty for a
+    /// vocabulary that has none**, which is what the content words are.
+    ///
+    /// 🚨 **Carried rather than looked up at the display site.** A refusal that listed the long
+    /// words while a caller's short form sat in a table it could not see is how an abbreviation
+    /// becomes a secret: the person who typed a wrong word is exactly the person who has not
+    /// been told the right ones are shorter.
+    pub shorts: &'static [(&'static str, &'static str)],
 }
 
 impl std::fmt::Display for UnknownWord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "`{}` is not a {} — known: {}", self.word, self.kind, self.known.join(", "))
+        write!(f, "`{}` is not a {} — known: {}", self.word, self.kind, self.known.join(", "))?;
+        // One shared sentence for every surface that has to say this, so the four front doors
+        // cannot come to describe the same table in four ways. See [`crate::command::short_form_note`].
+        write!(f, "{}", crate::command::short_form_note(self.shorts.iter().copied()))
     }
 }
 
@@ -1473,6 +1563,116 @@ mod tests {
         assert!(plan(narrow, &Layout::default()).is_some(), "the default still draws");
     }
 
+    /// 🚨 **[`REGION_ALIASES`] covers [`REGION_WORDS`] exactly, one short form each, and no two
+    /// of them are the same word.**
+    ///
+    /// A collision is the failure that cannot announce itself: two regions sharing a short form
+    /// means one of them is simply unreachable by it, and a short form that is *also* a long
+    /// word means `/viewport c panel` divides the pane one way today and another way the day
+    /// somebody adds a region called `c`. Both are silent, and both are one line of table away.
+    ///
+    /// ⚠️ Asserted over the real table, never a copy — a second list here would be the very
+    /// thing [`REGION_ALIASES`]' doc comment refuses.
+    #[test]
+    fn every_region_word_has_exactly_one_short_form_and_none_of_them_collide() {
+        // Same words, same order. Order because `bin/ctl.rs` and the console's schema read the
+        // two tables together, and because the refusal's two examples are its first and last.
+        assert_eq!(
+            REGION_ALIASES.len(),
+            REGION_WORDS.len(),
+            "every region word gets a short form, and nothing else does"
+        );
+        for (i, (word, _)) in REGION_ALIASES.iter().enumerate() {
+            assert_eq!(*word, REGION_WORDS[i], "the two tables disagree at position {i}");
+        }
+        for (word, short) in REGION_ALIASES {
+            assert!(!short.is_empty(), "`{word}` has an empty short form");
+            assert!(
+                !REGION_WORDS.contains(short),
+                "`{short}` is the short form of `{word}` AND a region word in its own right"
+            );
+            assert!(short.len() < word.len(), "`{short}` is no shorter than `{word}`");
+        }
+        for (i, (a_word, a)) in REGION_ALIASES.iter().enumerate() {
+            for (b_word, b) in &REGION_ALIASES[i + 1..] {
+                assert_ne!(a, b, "`{a_word}` and `{b_word}` both answer to `{a}`");
+            }
+        }
+        // 📌 The display surface stays canonical-only. `REGION_WORDS` is what `--help`, the MCP
+        // `enum`, the palette ring and every refusal list, and a short form appearing there
+        // would present twelve shapes as twenty-four words.
+        for (_, short) in REGION_ALIASES {
+            assert!(!REGION_WORDS.contains(short), "`{short}` leaked into the display table");
+        }
+    }
+
+    /// 🚨 **A short form is the INITIALS of the word's parts**, and that rule is what makes the
+    /// next region's abbreviation predictable instead of invented.
+    ///
+    /// The parts are read off the grid rather than listed: a cell word is a row word followed by
+    /// a column word, so `bottomcenter` must be `b` + `c`. Anything that is not such a compound
+    /// is a single word and takes its first letter. ⚠️ **This is a test and not the
+    /// implementation** — [`REGION_ALIASES`]' doc says why the pairs are written out rather than
+    /// computed: a rule that cannot be contradicted cannot be told it has produced a collision.
+    #[test]
+    fn a_short_form_is_the_initials_of_the_words_parts() {
+        let short_for = |word: &str| -> &'static str {
+            REGION_ALIASES
+                .iter()
+                .find(|(w, _)| *w == word)
+                .map(|(_, s)| *s)
+                .unwrap_or_else(|| panic!("`{word}` has no short form"))
+        };
+        // The two row words and the three column words, as the module header names them.
+        let rows = ["top", "bottom"];
+        let cols = ["left", "center", "right"];
+        let mut compounds = 0;
+        for word in REGION_WORDS {
+            let split = rows
+                .iter()
+                .find_map(|row| word.strip_prefix(row).map(|rest| (*row, rest)))
+                .filter(|(_, rest)| cols.iter().any(|c| c == rest));
+            match split {
+                Some((row, col)) => {
+                    compounds += 1;
+                    assert_eq!(
+                        short_for(word),
+                        format!("{}{}", short_for(row), short_for(col)),
+                        "`{word}` is `{row}` + `{col}`, so its short form is theirs joined"
+                    );
+                }
+                None => assert_eq!(
+                    short_for(word),
+                    &word[..1],
+                    "`{word}` has one part, so its short form is its first letter"
+                ),
+            }
+        }
+        // The grid has six cells; if this ever reads zero the split above stopped splitting and
+        // every assertion in the loop quietly became the easy one.
+        assert_eq!(compounds, 6, "six cells, six compound words");
+    }
+
+    /// 🚨 **Every short form resolves to exactly the region its long word does — and the region
+    /// still spells itself back long.** An alias is a way *in*, never a way out: nothing in a
+    /// saved layout, a refusal or a session line is written as `tl`, because [`Region::as_word`]
+    /// is untouched.
+    #[test]
+    fn every_short_form_resolves_to_the_region_its_long_word_does() {
+        for (word, short) in REGION_ALIASES {
+            let long = Region::resolve(word).unwrap_or_else(|e| panic!("`{word}`: {e}"));
+            let brief = Region::resolve(short).unwrap_or_else(|e| panic!("`{short}`: {e}"));
+            assert_eq!(long, brief, "`{short}` and `{word}` must name one region");
+            assert_eq!(brief.as_word(), *word, "`{short}` must spell itself back long");
+        }
+        // ⚠️ **A declared short form is a second exact word, NOT a prefix rule.** These are the
+        // near misses that must still refuse, and they are the whole difference between this
+        // table and the approximation `resolve` has always refused to make.
+        for near in ["le", "lef", "to", "bot", "tle", "t l", "L", "TL", "b r", "brr", "fu"] {
+            assert!(Region::resolve(near).is_err(), "`{near}` resolved and must not");
+        }
+    }
+
     /// 🚨 **The two word tables are exactly the sets the two resolvers accept.** A word listed
     /// but unresolvable is a CLI offering a shape the console cannot reach; a resolvable word
     /// that is unlisted is a shape `--help` never mentions. Both directions, and the round trip
@@ -1714,6 +1914,33 @@ mod tests {
         for word in REGION_WORDS {
             assert!(e.contains(word), "`{word}` is missing from the refusal: {e}");
         }
+        // 🚨 **…and it says the short forms exist.** An abbreviation nobody can discover is a
+        // secret, and the person who just typed a wrong region word is exactly the person who
+        // has not been told the right ones are two letters long.
+        assert!(e.contains("short form"), "the refusal keeps the short forms secret: {e}");
+        let (first_word, first_short) = REGION_ALIASES[0];
+        let (last_word, last_short) = REGION_ALIASES[REGION_ALIASES.len() - 1];
+        assert!(e.contains(first_short), "the example short form is missing: {e}");
+        assert!(e.contains(last_short), "the example short form is missing: {e}");
+        assert!(e.contains(first_word) && e.contains(last_word));
+        // ⚠️ **Two examples, not twenty-four.** The rule is legible from one short word and one
+        // compound; the whole table in a refusal is a wall nobody reads. Ten of the twelve short
+        // forms are therefore absent, and that is the design rather than a gap — `f` and `br`
+        // are the two the sentence names.
+        let named = [first_short, last_short];
+        for (word, short) in REGION_ALIASES {
+            if named.contains(short) {
+                continue;
+            }
+            assert!(
+                !e.contains(&format!("`{short}`")),
+                "the refusal is listing every short form (`{short}` for `{word}`): {e}"
+            );
+        }
+        // The content refusal has no such clause, because the content words have no short forms
+        // — the sentence is derived from the table, so an empty table says nothing.
+        let e = ContentCmd::resolve("media").expect_err("not yet").to_string();
+        assert!(!e.contains("short form"), "the content words have none: {e}");
         let e = ContentCmd::resolve("media").expect_err("not yet").to_string();
         assert!(e.contains("media"), "{e}");
         for word in CONTENT_WORDS {

@@ -392,8 +392,9 @@ pub fn tool_name_for(command: &str) -> String {
 /// | `Bool` | `{"type":"boolean"}` |
 /// | `Text` | `{"type":"string"}` |
 /// | `Choice(v)` | `{"type":"string","enum":v}` |
+/// | `ChoiceAliased { words, aliases }` | `{"type":"string","enum":words,"description":…}` |
 ///
-/// Two places where the two vocabularies do not line up, both handled here rather than
+/// Three places where the two vocabularies do not line up, all handled here rather than
 /// left to surprise someone:
 ///
 /// - ⚠️ **A non-finite bound is dropped, not emitted.** `serde_json` cannot represent
@@ -401,6 +402,12 @@ pub fn tool_name_for(command: &str) -> String {
 ///   `"minimum": null`, which is not a schema, in a document a model reads. Only finite
 ///   bounds are written; an unbounded axis simply carries no `minimum`/`maximum`, which
 ///   is what "unbounded" means in JSON Schema anyway.
+/// - ⚠️ **`ChoiceAliased`'s `enum` carries the LONG words only, and the short forms go in the
+///   `description`.** They are two different jobs: `enum` is what a model is told to choose
+///   from, and twelve extra entries there would present a twelve-shape vocabulary as a
+///   twenty-four-word one. The description is where "you may also type `tl`" belongs, and it is
+///   the same sentence every other door says (`command::short_form_note`). Dispatch accepts
+///   both — under-advertising here is the same deliberate looseness as the note below.
 /// - **`additionalProperties` is `true`, deliberately.** `command.rs` tolerates
 ///   undeclared arguments and passes them to the target; a closed schema here would
 ///   describe a stricter service than the one that actually runs. The schema is the
@@ -445,6 +452,17 @@ fn arg_schema(kind: &ArgKind) -> Value {
         ArgKind::Bool => json!({ "type": "boolean" }),
         ArgKind::Text => json!({ "type": "string" }),
         ArgKind::Choice(options) => json!({ "type": "string", "enum": options }),
+        ArgKind::ChoiceAliased { words, aliases } => json!({
+            "type": "string",
+            "enum": words,
+            // `trim_start` because the shared clause is written to follow a list ("… — each has
+            // a short form: …"); on its own it is a sentence, not a continuation.
+            "description": crate::command::short_form_note(
+                aliases.iter().map(|(w, a)| (w.as_str(), a.as_str())),
+            )
+            .trim_start_matches(" — ")
+            .to_string(),
+        }),
     }
 }
 

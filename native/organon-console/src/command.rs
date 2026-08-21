@@ -119,6 +119,73 @@ pub enum ArgKind {
     Bool,
     Text,
     Choice(Vec<String>),
+    /// A [`ArgKind::Choice`] whose words also answer to **declared short forms** — the region
+    /// vocabulary, where `tl` is `topleft` (`crate::region::REGION_ALIASES`).
+    ///
+    /// 🚨 **A separate variant rather than a richer `Choice`, and the reason is arithmetic.**
+    /// Counted rather than estimated: `ArgKind::Choice` appears **43** times across the tree,
+    /// **21** of them constructions, and `ArgSpec { … }` **50** times — so widening `Choice`'s
+    /// payload or adding a field to [`ArgSpec`] would drag every vocabulary in the console into a
+    /// change exactly one of them asked for. This is additive: one construction converts, the
+    /// other twenty are untouched and inert (`CLAUDE.md` invariant #4), and because every reader
+    /// matches `ArgKind` exhaustively the compiler names each renderer that has to learn the new
+    /// arm rather than leaving one to be discovered on a running console.
+    ///
+    /// 🚨 **`words` is the whole DISPLAY vocabulary and `aliases` is never added to it.** The
+    /// rings, `--help` and the MCP `enum` show `words`; the short forms are *accepted* and shown
+    /// **beside** their word (the palette puts one in [`crate::registry::Candidate::doc`]).
+    /// Listing twenty-four words where the vocabulary has twelve shapes would be the second
+    /// vocabulary this registry exists to prevent, wearing the first one's clothes.
+    ChoiceAliased {
+        /// The canonical words, in the order they should be listed.
+        words: Vec<String>,
+        /// `(word, short form)`, one per aliased word. A word with no short form simply has no
+        /// pair here — the two lists are not required to be the same length.
+        aliases: Vec<(String, String)>,
+    },
+}
+
+impl ArgKind {
+    /// The canonical words of a closed value space — `None` for the kinds that have none.
+    ///
+    /// 📌 **The one place the two choice variants are read as the same thing.** Everything that
+    /// wants "what words may go here" asks this, so a caller cannot handle `Choice` and silently
+    /// skip `ChoiceAliased` — which is the failure the exhaustive matches elsewhere catch and
+    /// this one, being a helper, would otherwise hide.
+    pub fn choices(&self) -> Option<&[String]> {
+        match self {
+            ArgKind::Choice(words) | ArgKind::ChoiceAliased { words, .. } => Some(words),
+            ArgKind::Float { .. } | ArgKind::Int | ArgKind::Bool | ArgKind::Text => None,
+        }
+    }
+
+}
+
+/// The one sentence saying that a closed vocabulary **also answers to short forms** — empty when
+/// it does not.
+///
+/// 🚨 **One phrasing for every surface that has to say this.** The composer's refusal, the
+/// dispatch gate's refusal, the console's own `UnknownWord` and the MCP schema's `description`
+/// all reach for the same clause, and four hand-written versions of it would be four chances to
+/// describe one table differently — which is the same defect as a second copy of the table,
+/// arriving as prose instead of as data.
+///
+/// ⚠️ **Two examples, not the whole list.** Twenty-four words in a refusal is not a readable
+/// sentence, and the rule (initials of the parts) is legible from one short word and one
+/// compound. The examples are the **first and last** pairs, which in a largest-first vocabulary
+/// is exactly that pair — and they are read out of the table rather than written here, so a
+/// renamed word takes the sentence with it.
+pub fn short_form_note<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
+    let pairs: Vec<(&str, &str)> = pairs.into_iter().collect();
+    let (Some(first), Some(last)) = (pairs.first(), pairs.last()) else {
+        return String::new();
+    };
+    let examples = if first == last {
+        format!("`{}` is `{}`", first.0, first.1)
+    } else {
+        format!("`{}` is `{}`, `{}` is `{}`", first.0, first.1, last.0, last.1)
+    };
+    format!(" — each has a short form: {examples}")
 }
 
 /// One declared argument. Validation guards the declared schema only: **undeclared
@@ -527,6 +594,28 @@ fn check_kind(spec: &CommandSpec, arg: &ArgSpec, value: &Value) -> Result<(), Co
                 spec,
                 &arg.name,
                 format!("'{s}' is not one of [{}]", options.join(", ")),
+            )),
+            None => Err(invalid(spec, &arg.name, format!("expected a string, got {}", type_name(value)))),
+        },
+        // 🚨 **This gate is what lets an abbreviation reach the MCP door at all.** The schema's
+        // `enum` advertises the long words only, so a caller that read the schema is never
+        // wrong — but a short form arriving here is a word the console *can* act on, and
+        // refusing it would make the schema a stricter service than the one that runs, which is
+        // the very thing `input_schema`'s `additionalProperties: true` note refuses to do.
+        ArgKind::ChoiceAliased { words, aliases } => match value.as_str() {
+            Some(s)
+                if words.iter().any(|o| o == s) || aliases.iter().any(|(_, a)| a == s) =>
+            {
+                Ok(())
+            }
+            Some(s) => Err(invalid(
+                spec,
+                &arg.name,
+                format!(
+                    "'{s}' is not one of [{}]{}",
+                    words.join(", "),
+                    short_form_note(aliases.iter().map(|(w, a)| (w.as_str(), a.as_str()))),
+                ),
             )),
             None => Err(invalid(spec, &arg.name, format!("expected a string, got {}", type_name(value)))),
         },

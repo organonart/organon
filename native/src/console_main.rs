@@ -666,11 +666,23 @@ fn console_specs() -> Vec<CommandSpec> {
             doc: "Divide the pane into regions and say what each one holds".into(),
             target: TargetKind::Viewport,
             args: vec![
+                // 🚨 **The one `ChoiceAliased` in the catalog**, and both halves are quoted from
+                // `region`'s own tables rather than restated: the ring is `REGION_WORDS` exactly
+                // as before, and the short forms are `REGION_ALIASES`. So `/viewport tl panel`
+                // works in the composer, `console.viewport` accepts `tl` over MCP, and neither
+                // surface *lists* a thirteenth region word.
                 ArgSpec {
                     name: CMD_REGION.into(),
-                    kind: ArgKind::Choice(
-                        organon_console::region::REGION_WORDS.iter().map(|s| (*s).to_string()).collect(),
-                    ),
+                    kind: ArgKind::ChoiceAliased {
+                        words: organon_console::region::REGION_WORDS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                        aliases: organon_console::region::REGION_ALIASES
+                            .iter()
+                            .map(|(w, a)| ((*w).to_string(), (*a).to_string()))
+                            .collect(),
+                    },
                     required: true,
                 },
                 ArgSpec {
@@ -1026,8 +1038,14 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             Ok(cli::ConsoleOp::Screen(w))
         }
         // Both words resolved and both answers thrown away, on `CMD_SCREEN`'s rule: membership
-        // was settled by `validate_args` against the two `Choice`s, so this is the belt that
-        // catches a call reaching the service by a route that skipped the schema.
+        // was settled by `validate_args` against the region's `ChoiceAliased` and the content's
+        // `Choice`, so this is the belt that catches a call reaching the service by a route that
+        // skipped the schema.
+        //
+        // ⚠️ **The region word may be a short form here, and it stays one.** `Region::resolve`
+        // accepts `tl`, and the op is built from `r` as typed rather than from what it resolved
+        // to — the sidecar line is the same line the CLI would have written for the same
+        // command, and expanding it here would make the two doors disagree in the session log.
         //
         // 🚨 **What is deliberately NOT checked here is whether the assignment is legal.** That
         // depends on the layout the console is holding *at the moment the op is drained*, and
@@ -6685,6 +6703,16 @@ mod cli_tests {
                 typed.push(' ');
                 typed.push_str(&match &arg.kind {
                     ArgKind::Choice(options) => options[0].clone(),
+                    // ✏️ **The SHORT form, deliberately.** This loop walks every verb from the
+                    // composer through `op_from` to the sidecar line and back out of the drain,
+                    // which is exactly the chain an abbreviation has to survive — and typing
+                    // the long word here would leave the whole chain untested for the one
+                    // argument that has a second spelling. The fallback is the long word, so a
+                    // future `ChoiceAliased` that aliases only some of its words still types.
+                    ArgKind::ChoiceAliased { words, aliases } => aliases
+                        .iter()
+                        .find(|(full, _)| *full == words[0])
+                        .map_or_else(|| words[0].clone(), |(_, short)| short.clone()),
                     ArgKind::Int => "2".to_string(),
                     ArgKind::Float { min, .. } => format!("{min}"),
                     ArgKind::Bool => "true".to_string(),
@@ -7020,21 +7048,68 @@ mod cli_tests {
     /// layout the console is holding when the op lands, and this function runs before that.
     #[test]
     fn the_viewport_verbs_rings_are_the_region_tables_and_it_checks_words_not_layouts() {
-        use organon_console::region::{CONTENT_WORDS, REGION_WORDS};
+        use organon_console::region::{CONTENT_WORDS, REGION_ALIASES, REGION_WORDS};
         let spec = console_specs()
             .into_iter()
             .find(|s| s.name == CMD_VIEWPORT)
             .expect("console.viewport is registered");
         assert_eq!(spec.target, TargetKind::Viewport, "dividing the pane is the viewport");
         assert_eq!(spec.args.len(), 2, "a region and a content, never one fused word");
-        let ring = |slot: &str| -> Vec<String> {
-            match &spec.args.iter().find(|a| a.name == slot).expect("the slot").kind {
-                ArgKind::Choice(v) => v.clone(),
-                other => panic!("{slot} is {other:?}, not a Choice"),
-            }
+        let slot = |name: &str| -> ArgKind {
+            spec.args.iter().find(|a| a.name == name).expect("the slot").kind.clone()
+        };
+        // ✏️ **The region slot is a `ChoiceAliased` and the content slot is still a plain
+        // `Choice`** — the one asymmetry in this verb, and it is asserted rather than allowed
+        // to be inferred: the regions have declared short forms and the content words do not.
+        let ring = |name: &str| -> Vec<String> {
+            slot(name).choices().unwrap_or_else(|| panic!("{name} has no closed value space")).to_vec()
         };
         assert_eq!(ring(CMD_REGION), REGION_WORDS.to_vec());
         assert_eq!(ring(CMD_CONTENT), CONTENT_WORDS.to_vec());
+        match slot(CMD_CONTENT) {
+            ArgKind::Choice(_) => {}
+            other => panic!("the content ring is {other:?} — it has no short forms to carry"),
+        }
+        // 🚨 **The ring the schema DISPLAYS is twelve words and no short forms.** That is the
+        // whole constraint on this feature: an abbreviation is accepted everywhere and listed
+        // nowhere, so a vocabulary with twelve shapes never reads as one with twenty-four.
+        match slot(CMD_REGION) {
+            ArgKind::ChoiceAliased { words, aliases } => {
+                assert_eq!(words, REGION_WORDS.to_vec());
+                assert_eq!(
+                    aliases,
+                    REGION_ALIASES
+                        .iter()
+                        .map(|(w, a)| ((*w).to_string(), (*a).to_string()))
+                        .collect::<Vec<_>>(),
+                    "the short forms are quoted from `region`'s table, never restated here"
+                );
+                for (_, short) in REGION_ALIASES {
+                    assert!(!words.contains(&(*short).to_string()), "`{short}` leaked into the ring");
+                }
+            }
+            other => panic!("the region ring is {other:?}, not a ChoiceAliased"),
+        }
+        // …and the MCP tool's JSON Schema says the same: twelve in the `enum`, the short forms
+        // named in the `description` where a model can read them without being told to pick one.
+        let schema = organon_console::mcp::input_schema(&spec);
+        let region_schema = &schema["properties"][CMD_REGION];
+        assert_eq!(
+            region_schema["enum"].as_array().expect("an enum").len(),
+            REGION_WORDS.len(),
+            "the schema enum is the twelve canonical words: {region_schema}"
+        );
+        for word in REGION_WORDS {
+            assert!(region_schema["enum"].as_array().unwrap().iter().any(|v| v == word));
+        }
+        for (_, short) in REGION_ALIASES {
+            assert!(
+                !region_schema["enum"].as_array().unwrap().iter().any(|v| v == short),
+                "`{short}` is in the schema enum and must not be: {region_schema}"
+            );
+        }
+        let described = region_schema["description"].as_str().expect("a description");
+        assert!(described.contains("short form"), "the schema keeps them secret: {described}");
         for a in &spec.args {
             assert!(a.required, "`{}` is not optional — half a command is not a command", a.name);
         }
@@ -7049,6 +7124,25 @@ mod cli_tests {
                 assert_eq!(
                     op,
                     cli::ConsoleOp::Viewport { region: (*r).into(), content: (*c).into() }
+                );
+                let line = cli::console_op_to_line(&op);
+                assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
+            }
+        }
+        // 🚨 **Every short form is accepted at THIS door too, and it travels as typed.** The
+        // MCP tool is the door the schema under-describes on purpose (the `enum` is twelve
+        // words), so it is the one where "advertised" and "accepted" could quietly come apart —
+        // and it is checked over the whole cross product for the reason the loop above is: a
+        // pair that survives one direction only is a command the console skips in silence.
+        for (word, short) in REGION_ALIASES {
+            for c in CONTENT_WORDS {
+                let op = op_from(CMD_VIEWPORT, &json!({ CMD_REGION: short, CMD_CONTENT: c }))
+                    .unwrap_or_else(|e| panic!("`{short} {c}`: {e}"));
+                assert_eq!(
+                    op,
+                    cli::ConsoleOp::Viewport { region: (*short).into(), content: (*c).into() },
+                    "`{short}` must reach the console as typed — `region::Region::resolve` is \
+                     the one place it becomes `{word}`, so both doors agree on the line"
                 );
                 let line = cli::console_op_to_line(&op);
                 assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
