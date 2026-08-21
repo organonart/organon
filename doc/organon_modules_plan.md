@@ -550,13 +550,33 @@ fail to open.**
 **Nothing is scheduled.** §10's ordering stands: build #98's tiers, get a layout worth sharing,
 and design the trust model against a real second producer rather than against imagination.
 
-Two things are cheap and can happen whenever someone is passing:
+1. 🚨 **Pinning the floaters is NOT cheap here, and an earlier draft of this section said it
+   was.** The claim was *"pin `nih_plug` and `nih_plug_xtask` to the rev `Cargo.lock` already
+   holds; it changes no bytes in any build today."* **It was tried, and it is false.** Measured
+   on 2026-08-20: adding `rev = "f36931f7…"` to both declarations and re-resolving with
+   `cargo metadata` takes `nih_plug` from **one package entry to two**, and `nih_plug_derive`
+   likewise. The lock ends up carrying both source spellings —
+   `nih-plug.git#f36931f7…` *and* `nih-plug.git?rev=f36931f7…#f36931f7…` — which are the same
+   commit and, to cargo, **two different sources**.
 
-1. **Pin the three floating declarations to `f36931f7…`, the rev `Cargo.lock` already holds** —
-   `nih_plug` in `native/Cargo.toml` and `nih_plug_xtask` in `native/xtask/Cargo.toml`, which are
-   the two that are *declared*; `nih_plug_derive` arrives transitively through `nih_plug`, so
-   pinning the parent settles it. It changes **no bytes in any build today** and removes a
-   silent-drift path. ⚠️ **Not `nih_plug_egui`** — it is `[patch]`ed to a vendored in-tree copy
-   and does not resolve via git, so pinning it would be a no-op (§11.3).
+   ⚠️ **The reason is `vendor/nih_plug_egui`, and it says so itself.** That vendored crate
+   declares `nih_plug = { git = "…nih-plug.git", default-features = false }` — deliberately
+   **unpinned** — with a comment at `Cargo.toml:19` explaining that the *"workspace already
+   resolves [it], so cargo unifies it to a SINGLE `nih_plug`"*, and a further note that
+   otherwise *"options become different types across the boundary."* Pinning one side breaks
+   the URL match that unification depends on, and two `nih_plug`s means two incompatible sets
+   of its types meeting at the egui boundary.
+
+   📌 **So the rule is sharper than "pin the commit":** a rev pin must be applied at **every
+   declaration of the same git source in the graph**, including vendored and patched crates,
+   or cargo stops unifying them and silently duplicates the dependency. A half-applied pin is
+   worse than none. Pinning here is therefore a real change with a real blast radius — worth
+   doing deliberately, with a build behind it, and **not** while passing.
+
+   ✏️ This correction is the section's own thesis arriving as evidence: a claim about what a
+   dependency will do is not settled by reading a manifest, and *"changes no bytes"* is a
+   measurement, not an argument. It cost nothing to find because the check — edit, re-resolve,
+   diff the lock — needs no compiler.
+
 2. **Decide whether a `deny.toml` is wanted** before the dependency surface grows a module
-   ecosystem, rather than after.
+   ecosystem, rather than after. This one *is* cheap.
