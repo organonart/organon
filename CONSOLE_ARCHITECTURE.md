@@ -4518,6 +4518,75 @@ regression.** They were **half** the pane; they are now the **outer column** of 
 `region.rs`'s own header and in the changelog fragment, because a word quietly meaning something
 new is exactly the drift this axis spends its refusals preventing.
 
+#### 🚨 Every region word also answers to its INITIALS, at all four front doors
+
+`REGION_ALIASES` in `region.rs` pairs each word with a short form — `f t b l c r` for the first
+six, `tl tc tr bl bc br` for the six cells — so `/viewport tl panel` and
+`console viewport tl panel` are `topleft` exactly. Regions only: the content words, the stack
+actions, the panels, `screen`, `posture`, the patch kinds and the verbs themselves have none, and
+that is a scope decision rather than an oversight — a region word is the long one, and `3d` is
+already two characters.
+
+The four doors, and then the one gate they all arrive at:
+
+| where | what it accepts | what it **lists** |
+|---|---|---|
+| door — `/viewport` composer | long + short (`ArgKind::ChoiceAliased`, `registry::coerce`) | the twelve, each carrying its short form in `Candidate::doc` |
+| door — MCP `console.viewport` | long + short (`command::check_kind`) | the twelve in `enum`, the short forms in `description` |
+| door — `organon console viewport` | long + short (clap `PossibleValue::alias`) | the twelve — a clap alias is *hidden* by construction |
+| door — tab completion | nothing to accept; it only offers | the twelve (the palette's ring, and the generated shell completions) |
+| gate — `Region::resolve` | long + short | the twelve, plus one clause saying short forms exist |
+
+🚨 **All four, because a word that exists for one caller and not another is exactly what
+`registry.rs`'s header forbids.** A region word passes three independent gates before `resolve`
+ever sees it — the `ArgKind` the composer and the MCP schema share, the CLI's own
+`PossibleValuesParser`, and the completion ring reading the first — so a composer-only
+abbreviation would not have been a small feature with a gap in it. It would have been a second
+vocabulary.
+
+🚨 **`REGION_WORDS` stays canonical-only, and that is the constraint the whole shape is built
+around.** It is what `--help`, the MCP `enum`, the palette's rings and every refusal *display*;
+twelve more entries in it would present a vocabulary with twelve shapes as one with twenty-four
+words. So the short forms are **accepted everywhere and listed nowhere**, and shown *beside* their
+word instead: the palette puts one in each candidate's doc slot, and `/help`, the refusals and the
+MCP `description` share one clause built from the table's first and last pairs — *"each has a
+short form: `full` is `f`, `bottomright` is `br`"*. Two examples, because the rule is legible from
+one short word and one compound and twenty-four in a refusal is a wall nobody reads.
+
+🚨 **The table is DECLARED and the rule is a test, which is the inverse of the arrangement the
+twelve words themselves have.** The vocabulary is derived (a cross product of spans, above); the
+abbreviations are written out. Deriving them would be an algorithm nobody could contradict — a
+future region word whose initials collided with an existing short form would silently shadow it,
+and one whose natural abbreviation is not its initials would have nowhere to say so. So
+`region.rs` holds the pairs and three tests hold the pairs to the rule: no alias equals a region
+word and no two collide; every compound word's short form is its parts' joined, with the parts
+read off the grid rather than listed; and every short form resolves to the same variant its long
+word does.
+
+⚠️ **A declared short form is a second exact word, never a prefix rule.** `l` resolves; `le`,
+`lef`, `L` and `TL` still refuse. That is `Region::resolve`'s no-approximation rule intact — the
+alias is rewritten to its long word *before* the search, so there is one matching rule rather than
+two, and a short form cannot come to resolve to something the long form does not.
+
+⚠️ **The word travels as TYPED and is expanded once, at the console.** clap's
+`PossibleValuesParser` returns the string it matched rather than the canonical name
+(`clap_builder`'s `parse` yields `value`, not `v.get_name()`), and the composer passes the typed
+word through for its own reasons — so both doors put `tl` on the sidecar line and
+`Region::resolve` is the single place it becomes a region. Expanding at one door and not the other
+would make one command read two ways in the session log depending on which door it came through.
+`Region::as_word` is untouched, so nothing is ever *written* short: a saved layout, a displacement
+notice and a refusal all still say `topleft`.
+
+📌 **`ArgKind::ChoiceAliased` is additive, and the arithmetic is why.** Counted on `main`:
+`ArgKind::Choice` appears **43** times across the tree, **21** of them constructions, and
+`ArgSpec { … }` **50** times — so widening `Choice`'s payload or adding a field to `ArgSpec` is a
+change to every vocabulary in the console, deferred ones included. The new variant converts one
+construction and leaves the other twenty untouched and inert (`CLAUDE.md` invariant #4), and
+because every reader matches `ArgKind` exhaustively the compiler named the **seven** renderers
+that had to learn it rather than leaving one to surface on a running console.
+`ArgKind::choices()` is the one place the two choice variants are read as the same thing, for
+callers that only want "what words may go here".
+
 #### 🚨 Fixed side columns, and the centre takes the remainder — NOT equal thirds
 
 `region_rect` grows **two vertical cuts**, and their positions come from a width rather than from

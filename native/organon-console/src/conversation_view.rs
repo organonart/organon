@@ -8477,6 +8477,17 @@ mod tests {
         check("the compact row's selection marks", PALETTE_PICKED.1);
         check("the compact row's remainder note", PALETTE_MORE);
         check("the compact row's run marker", PALETTE_RUNS);
+        // ⚠️ **The one clause an aliased ring adds to a drawn string.** It appears in a
+        // composer refusal and in `/help`, both of which this console draws, and it is not
+        // reachable from `palette_specs()` — that fixture has no `ChoiceAliased` and cannot
+        // gain one without moving the two compact-row witnesses below. So it is checked
+        // directly, against the real region table rather than a made-up pair.
+        check(
+            "an aliased ring's short-form clause",
+            &crate::command::short_form_note(
+                crate::region::REGION_ALIASES.iter().copied(),
+            ),
+        );
         let registry = Registry::new(&palette_specs());
         // ⚠️ `/surface` and `/surface ` are here for the run marker's sake: they are the two
         // lines whose whole row IS that string, and they are the reason it is a constant

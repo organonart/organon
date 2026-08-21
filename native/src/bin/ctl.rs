@@ -105,8 +105,30 @@ fn screen_words() -> clap::builder::PossibleValuesParser {
 /// 📌 Both are closed lists with nothing between the words, so — like `screen` and unlike
 /// `posture` — the check lands at the clap boundary where the error is best, and both rings tab
 /// complete for free.
+///
+/// 🚨 **The short forms are clap ALIASES, which is what keeps `--help` twelve words long.**
+/// `PossibleValue::alias` is documented as a *hidden* alias: `matches` tests the name and every
+/// alias, while `--help`, the invalid-value error's suggestion list and the generated shell
+/// completions all read `get_name()`. So `organon console viewport tl panel` parses and nothing
+/// anywhere offers `tl` as though it were a thirteenth region.
+///
+/// ⚠️ **Built by zipping `REGION_WORDS` with `REGION_ALIASES` by NAME, not by index.** The two
+/// tables are declared in the same order and a test in `region.rs` holds them there, but a
+/// positional zip would turn a future reordering of one into silently wrong aliases rather than
+/// into a failing test.
+///
+/// ⚠️ **clap returns the string it MATCHED, not the canonical name** (`PossibleValuesParser`'s
+/// `parse` yields `value` once any `PossibleValue::matches`), so `tl` travels onto the sidecar
+/// line as `tl` and `region::Region::resolve` expands it on arrival. That is deliberate and it
+/// is what makes this door agree with the composer, which also passes the typed word through.
 fn region_words() -> clap::builder::PossibleValuesParser {
-    clap::builder::PossibleValuesParser::new(region::REGION_WORDS.iter().copied())
+    clap::builder::PossibleValuesParser::new(region::REGION_WORDS.iter().map(|word| {
+        let value = clap::builder::PossibleValue::new(*word);
+        match region::REGION_ALIASES.iter().find(|(full, _)| full == word) {
+            Some((_, short)) => value.alias(*short),
+            None => value,
+        }
+    }))
 }
 
 /// See [`region_words`]. ⚠️ This list carries `off`, which is **not** a content kind — it
@@ -445,6 +467,12 @@ enum ConsoleAction {
                             full height. And `topleft`/`topcenter`/`topright` / \
                             `bottomleft`/`bottomcenter`/`bottomright` are the six cells. A \
                             region never splits again: to get cells, name the cells.\n\n\
+                            Every region word also answers to its INITIALS — `f t b l c r` for \
+                            the first six, `tl tc tr bl bc br` for the six cells — so \
+                            `console viewport tl panel` is `console viewport topleft panel`. \
+                            The long words are what this help, the tab completions and every \
+                            refusal list; the short ones are accepted everywhere the long ones \
+                            are, including `/viewport` in a conversation composer.\n\n\
                             ⚠️ `left` and `right` are the OUTER COLUMNS, not halves. They are a \
                             fixed 320 points wide and the centre takes whatever is left — the \
                             same shape Organon's own editor has, where the side docks are fixed \
@@ -1528,6 +1556,81 @@ mod tests {
         // content depends on what the console is holding right now, which this process cannot
         // see. `left off` is a legal line and a refusal waiting to happen at the other end.
         assert!(parse(&["console", "viewport", "left", "off"]).is_ok());
+    }
+
+    /// 🚨 **`console viewport tl panel` is `console viewport topleft panel`, and `--help` still
+    /// lists twelve words.**
+    ///
+    /// Both halves matter and only one of them is obvious. The short forms have to *parse* here
+    /// or the CLI is the one front door where an abbreviation the composer accepts is refused —
+    /// the second vocabulary `registry.rs` exists to prevent. And they have to stay **out of
+    /// clap's own listings**, which is what `PossibleValue::alias` buys: a hidden alias matches
+    /// but never renders, so `--help`, the invalid-value error's suggestion list and the
+    /// generated completions all keep showing the twelve shapes there actually are.
+    ///
+    /// ⚠️ **This leg is only TYPE-CHECKED by the four-command bar**, exactly as the sibling test
+    /// above warns: an alias table that has come apart from `region::REGION_ALIASES` compiles
+    /// perfectly and fails only when somebody runs this.
+    #[test]
+    fn console_viewport_takes_the_short_form_of_every_region_and_lists_none_of_them() {
+        for (word, short) in region::REGION_ALIASES {
+            let c = parse(&["console", "viewport", short, "panel"])
+                .unwrap_or_else(|e| panic!("`viewport {short} panel` was refused: {e}"));
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Viewport { region, content } } => {
+                    // ⚠️ **As typed, not expanded.** `PossibleValuesParser` returns the string it
+                    // matched rather than the canonical name, and that is what makes this door
+                    // agree with the composer — both put `tl` on the sidecar line and
+                    // `region::Region::resolve` turns it into `{word}` at the console.
+                    assert_eq!(&region, short, "`{short}` must travel as typed, not as `{word}`");
+                    assert_eq!(&content, "panel");
+                    let op = cli::ConsoleOp::Viewport { region, content };
+                    assert_eq!(
+                        cli::parse_console_op(&cli::console_op_to_line(&op)),
+                        Some(op),
+                        "`viewport {short} panel` must survive the sidecar round trip"
+                    );
+                }
+                _ => panic!("`console viewport {short} panel` parsed as something else"),
+            }
+            assert!(
+                parse(&["console", "viewport", short]).is_err(),
+                "`{short}` alone is half a command, exactly as `{word}` alone is"
+            );
+        }
+        // The short forms are region words only — the content slot has none and must not have
+        // grown any by accident.
+        assert!(parse(&["console", "viewport", "left", "a"]).is_err(), "`agent` has no short form");
+        assert!(parse(&["console", "viewport", "left", "p"]).is_err(), "`panel` has no short form");
+        // A near miss is still a near miss: a declared short form is a second exact word, never
+        // a prefix rule.
+        for near in ["lef", "le", "bot", "tle", "L", "TL"] {
+            assert!(parse(&["console", "viewport", near, "panel"]).is_err(), "`{near}` parsed");
+        }
+
+        // 🚨 **What clap DISPLAYS.** Read off the parser rather than off a rendered help string,
+        // so the assertion is about the values themselves and not about clap's layout.
+        let listed: Vec<String> = Cli::command()
+            .find_subcommand("console")
+            .expect("the console subcommand")
+            .find_subcommand("viewport")
+            .expect("the viewport subcommand")
+            .get_arguments()
+            .find(|a| a.get_id() == "region")
+            .expect("the region argument")
+            .get_possible_values()
+            .iter()
+            .filter(|v| !v.is_hide_set())
+            .map(|v| v.get_name().to_string())
+            .collect();
+        assert_eq!(
+            listed,
+            region::REGION_WORDS.iter().map(|w| (*w).to_string()).collect::<Vec<_>>(),
+            "`--help` lists the twelve canonical words, in the table's order, and nothing else"
+        );
+        for (_, short) in region::REGION_ALIASES {
+            assert!(!listed.contains(&(*short).to_string()), "`{short}` is listed and must not be");
+        }
     }
 
     /// **`console stack` takes two words and neither is optional** — `viewport`'s test one
