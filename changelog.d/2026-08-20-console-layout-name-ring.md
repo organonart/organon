@@ -24,9 +24,11 @@ Two facts came out of measuring it (`layout::tests::library_read_cost`, kept in 
 numbers can be re-taken rather than believed). First, it is not one read: `value_candidates` asks
 the ring once and then calls `settled` per candidate, and `settled` reaches the same hook again —
 **n + 1** reads for a library of n. Second, the walk runs while the composer band is **drawn**, so
-it is per *frame*, not per keystroke. Measured in release on organon-one: 27.6 µs to read and
-parse a one-layout library, 33.9 µs at ten, **109.9 µs at a hundred** — which is 11.1 ms per call
-against a 16.7 ms frame, spent while somebody is typing.
+it is per *frame*, not per keystroke. Measured in release on organon-one, medians of three runs:
+24.2 µs to read and parse a one-layout library, 24.5 µs at ten, **100.2 µs at a hundred** — which
+is 10.1 ms per call against a 16.7 ms frame, spent while somebody is typing. ⚠️ A first run taken
+while other builds were on the machine put n=1 *above* n=10 and n=100 at 16.4 ms; an n=1 that is
+not the cheapest row is the tell that a run measured contention rather than the file.
 
 ⚠️ **So it is cached, and what invalidates it is stated rather than hoped.** `Library::save_over`
 is the one path every write takes — which is why `delete` (a `remove` and then a rewrite) needs no

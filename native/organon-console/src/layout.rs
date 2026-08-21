@@ -388,16 +388,27 @@ impl Library {
     /// **n + 1** reads for a library of n. Measured in release by [`tests::library_read_cost`]
     /// on organon-one, 2026-08-20:
     ///
-    /// | n | read + parse | per call (n+1) |
+    /// | n | read + parse (median of 3) | per call (n+1) |
     /// |---|---|---|
-    /// | 1 | 27.6 µs | 0.06 ms |
-    /// | 10 | 33.9 µs | 0.37 ms |
-    /// | 100 | 109.9 µs | **11.10 ms** |
+    /// | 1 | 24.2 µs | 0.05 ms |
+    /// | 10 | 24.5 µs | 0.27 ms |
+    /// | 100 | 100.2 µs | **10.1 ms** |
     ///
     /// A frame is 16.7 ms. So an uncached ring is fine at the size a library actually has and
     /// falls over at a size it may reach — and it would fall over *while typing*, which is the
-    /// worst place to spend a frame. **A `stat` is not the fix**: 13 µs measured, so ×101 is
-    /// still 1.3 ms per call, and this is asked several times a frame.
+    /// worst place to spend a frame. **A `stat` is not the fix**: 12 µs measured, so ×101 is
+    /// still 1.2 ms per call, and this is asked several times a frame.
+    ///
+    /// ⚠️ **Three runs, because the first one was wrong and said so.** A single run taken while
+    /// other builds were on the machine reported 75.2 µs at n=1 against 43.6 µs at n=10 — a
+    /// 138-byte file costing more than a 1182-byte one, which cannot be true and is the tell
+    /// that the number is measuring contention rather than the file. The spread across three
+    /// quiet runs is 23.1–27.3 / 24.0–27.1 / 98.8–101.4 µs. **Re-take it on a quiet machine and
+    /// distrust any run whose n=1 is not the cheapest.**
+    ///
+    /// 📌 The real library on organon-one is **197 bytes, one layout, four regions** — between
+    /// the n=1 and n=10 rows, so what ships today sits at the cheap end of this table. The
+    /// hundred-layout row is the one the cache exists for.
     ///
     /// ⚠️ **What invalidates it, and both halves are needed.** A `save` and a `delete` both
     /// rewrite the file through [`Library::save_over`], which forgets this cache outright — so

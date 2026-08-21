@@ -746,7 +746,7 @@ fn console_narrow(name: &str) -> Option<NarrowFn> {
 /// [`Registry::value_candidates`] asks the ring once and then calls [`Registry::settled`] per
 /// candidate, each of which reaches [`coerce`] and asks again — `n + 1` reads for a library of
 /// `n`, on the *draw* path, which is per frame rather than per keystroke. Read straight from
-/// disk that is 11.1 ms per call at a hundred layouts against a 16.7 ms frame. So it goes
+/// disk that is 10.1 ms per call at a hundred layouts against a 16.7 ms frame. So it goes
 /// through [`Library::for_completion`], which owns the cache, the numbers and what invalidates
 /// it; `crate::layout`'s `library_read_cost` is the instrument and `CONSOLE_ARCHITECTURE.md`
 /// §1.15 carries the finding.
