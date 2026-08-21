@@ -5579,9 +5579,25 @@ path silently breaks the three-products-simultaneously guarantee that
   "whether an editor card reads as an element in a conversation flow" is not a thing anybody
   has to answer any more; **"still not seen" survives verbatim**, now about a card in a
   scrolling column beside the transcript instead of one inside it.
-- 🚨 **The panel stack has never been looked at either, and that is the whole of what a green
-  build leaves open here.** What is verified is code: the four legs plus the root-crate bin
-  tests. What is not: whether a column of Organon's controls **beside** a live transcript reads
+- ✏️ **The panel stack has now been looked at — 2026-08-20, two columns of it, beside a live
+  transcript and a `3d` region.** This bullet opened *"has never been looked at either"*; that is
+  retired. What the sitting proves is narrow and worth stating exactly: two `panel` regions each
+  drew a complete `organon · look · Surface` body — mode, palette, node bevel, material maps,
+  procedural, the two graph buttons, the plexus toggle — **simultaneously, in one frame, with no
+  visible id collision**. That is the first evidence outside the headless test below that the
+  `param_sink` id namespacing holds when two Surface bodies are on screen at once. ⚠️ It is
+  evidence about *drawing*, not about *writing*: §1.11's item (0) is still unchecked, because
+  nobody has yet turned a knob in one of those columns and watched the picture move.
+
+  🚨 **And the sitting produced a verdict against the current design.** Both columns rendered the
+  **same** panel, because one `/stack add surface` populates the single console-wide stack that
+  every `panel` region is a view of. James, seeing it: *"you can see why we need to have the
+  update for the stacks because it addressed both of them."* That is what settled #98 Tier C's
+  per-region-stack question — by observation rather than by argument, which is the outcome this
+  ledger exists to make possible.
+
+  What remains open is the part no green and no screenshot answers, and it is still James's
+  call: whether a column of Organon's controls **beside** a live transcript reads
   as the instrument's own editor or as a cramped imitation of it; whether the gap between cards,
   the scroll bar and the region's own hairline settle into one object or three; whether
   twenty-four "not transplanted yet" lines stacked in a column read as an honest inventory or
@@ -5599,29 +5615,45 @@ path silently breaks the three-products-simultaneously guarantee that
   `param_sink::value_box` builds, plus a companion that removes each half of the key and requires
   the collision back. That is a real test of the property; it is **not** a person clicking one
   value box and watching whether a text field opens in another.
-- 🚨 **No layout has ever been saved, loaded or deleted by a running console (§1.15).** Not once,
-  by anyone. What is verified is code, on a Linux container with no GPU: the four legs plus both
-  root-crate bin test runs, all green, and a test suite that exercises the *decisions* headlessly
-  — capture-and-resolve round trips over every arrangement two commands can reach, each refusal
-  by name, the file written and read back, an unknown field surviving a rewrite, and a refused
-  load leaving the caller holding exactly what it had. That last one is the strongest thing here
-  and it is worth being precise about what it proves: **`resolve` returns `Err` and no `Layout`,
-  so the transaction is a property of the signature.** It does **not** prove that
-  `Console::set_layout`'s single assignment reaches a window — no window has run this code.
-  ⚠️ Specifically unmeasured, and none of it answerable by green: whether a load *looks*
-  instantaneous or whether the pane visibly re-lays-out under the eye (§1.7 measured a re-wrap at
-  ~7.6 ms at 400 elements, and a load changes the same widths a split does — so the cost is
-  *inferred* from that number, never observed); whether the arrangement that comes back is the
-  one somebody meant, which is a question about `region::Layout` being a faithful description of
-  what a person sees and not about serialization; whether the receipt lines land anywhere a
-  person reads (they are `eprintln!`, on `set_viewport`'s existing route, which in a GUI launched
-  from Explorer goes nowhere — a standing defect of the whole console lane, not this verb's);
-  and whether `layouts.json` is legible enough to hand-edit, which is a claim about a file nobody
-  has opened.
-  ⚠️ **The store path itself is unconfirmed on this machine.** `Library::store_root` is
-  `SessionLog::store_root` by construction and a test pins the three files as siblings, so the
-  *sameness* is proven; the actual directory (`%APPDATA%\OrganonShell\` on Windows) has not been
-  looked at from a console that wrote to it.
+- ✏️ **A layout has now been saved and loaded by a running console — 2026-08-20, by James, on the
+  workstation.** This bullet used to open *"No layout has ever been saved, loaded or deleted by a
+  running console. Not once, by anyone."* That is no longer true and the correction is recorded
+  rather than the sentence quietly deleted, because what it proves is narrower than "layouts
+  work" and the difference is the whole point of this ledger.
+
+  **What a hand actually did.** Four regions typed one at a time — `topcenter` `3d`, `left`
+  `panel`, `right` `panel`, `bottomcenter` `agent` — then `/layout save organon`, then
+  `/layout load organon`. The library came back through `/layout.list` and the console rendered
+  the receipt `ok /layout load organon — {"accepted":"layout load organon"}`. So **three of this
+  bullet's open questions are answered by that single run**: `Console::set_layout`'s assignment
+  *does* reach a window; the **store path is confirmed** at
+  `C:\Users\james\AppData\Roaming\OrganonShell\layouts.json` (197 bytes, written 21:12), which
+  retires the separate "unconfirmed on this machine" note that stood here; and `layouts.json`
+  **is** legible — pretty-printed, one `regions` object of plain word pairs, obviously
+  hand-editable. ⚠️ The receipt question is answered in the *opposite direction to what this
+  bullet predicted*: it warned the lines are `eprintln!` and "in a GUI launched from Explorer
+  goes nowhere", but the conversation front-end renders them in its own transcript, where they
+  were read. The prediction was about the terminal lane; it did not survive contact with the
+  front-end the verb is actually typed into.
+
+  🚨 **`delete` is still untouched by a hand** — the verb has three actions and two of them have
+  now been exercised. Do not round this up to "saved layouts are verified".
+
+  ⚠️ **Still unmeasured, and the live run did not answer them**: whether a load *looks*
+  instantaneous or whether the pane visibly re-lays-out under the eye (§1.7's ~7.6 ms re-wrap at
+  400 elements is still the only number, still inferred rather than observed — the run confirms
+  the arrangement arrives, not what the arrival looked like); and forward compatibility against a
+  build predating Tier B's `left`/`right` word change, which no older binary has been asked to
+  load. The headless suite below is unchanged and still carries the transactional property:
+  **`resolve` returns `Err` and no `Layout`, so the refusal is a property of the signature.**
+
+  📌 **The run produced one finding that belongs to the stack, not to layouts.** With `left` and
+  `right` both holding `panel`, a single `/stack add surface` populated **both** columns with an
+  identical `organon · look · Surface` — one stack, two views, exactly as `panel_stack.rs`'s
+  header describes. Seeing it is what settled #98 Tier C's open question in favour of per-region
+  stacks; James: *"you can see why we need to have the update for the stacks because it addressed
+  both of them."* Recorded here because the layout run is where it was observed, and argued where
+  it belongs, in §1.14 and the tier's own work.
   📌 **Two absences are deliberate and are not gaps**: the library ships empty because naming the
   presets is James's call, and a layout records no panel stack, theme, posture, screen state, tab
   or camera. Both are stated in §1.15 rather than left to be discovered.
