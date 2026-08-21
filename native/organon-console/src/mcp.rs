@@ -535,6 +535,23 @@ impl ExposureAudit {
         self.reported > 0
     }
 
+    /// **Did this audit prove §7's withholding guarantee is holding?**
+    ///
+    /// 🚨 **Two failures, one answer, and the caller must not have to enumerate them.** The
+    /// guarantee is confirmed only when the session reported a list *and* the handler is not
+    /// on it; an audit against an empty list has proved nothing, which is a different fact
+    /// from a breach but is not a pass either. Both are anomalies and both must be said out
+    /// loud — [`Self::summary`] already phrases them so, and this is the predicate that
+    /// decides whether the sentence is news.
+    ///
+    /// ⚠️ **`capabilities_withheld` is deliberately not consulted.** A served name absent
+    /// from the model's list is the ordinary deferred-loading case this struct's own field
+    /// documents, and folding it in here would make the expected world read as a fault on
+    /// every cold start.
+    pub fn confirms_withholding(&self) -> bool {
+        self.reported_anything() && !self.handler_offered
+    }
+
     /// One line for the log, phrased so that the dangerous case cannot read as the safe
     /// one. **Says what did not work as plainly as what did** — an audit against an empty
     /// list announces that it proved nothing rather than staying silent.

@@ -569,8 +569,15 @@ pub fn heading(panel: &Panel) -> &'static str {
 /// ⚠️ **It says so rather than drawing an empty box**, for `Ring::Empty`'s reason one scale up:
 /// a panel that opened to nothing at all would be indistinguishable from one that failed. Only
 /// Look ▸ Surface is `Live` today and the other twenty-four earn this line.
-pub const NOT_TRANSPLANTED: &str =
-    "this panel is named in Organon's editor but has not been transplanted into the console yet";
+///
+/// ✏️ **Three words, where it was a sixteen-word sentence.** The sentence explained the
+/// console's own construction — *"named in Organon's editor but has not been transplanted into
+/// the console yet"* — to a reader who is doing the transplanting; and with twenty-four of the
+/// twenty-five panels `Declared`, it was that explanation repeated two dozen times down a 320 pt
+/// column. What a person needs from the card is the **fact**: this panel is real, and its
+/// controls are not here. That is what survives. The empty-box hazard above is unchanged — the
+/// card still says something rather than nothing, which is the whole reason the constant exists.
+pub const NOT_TRANSPLANTED: &str = "no controls yet";
 
 /// The gap under a [`plain_card`], in points.
 ///

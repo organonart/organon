@@ -520,12 +520,39 @@ fn start_approvals(
 /// This is deliberately the *whole* of the check the console can make by itself: it reads
 /// what the CLI reports, and a CLI that reported the list wrongly would fool it. That is
 /// still strictly more than a measurement nobody re-runs.
-fn audit_line(wiring: Option<&ApprovalWiring>, offered: &[String]) -> String {
+///
+/// ✏️ **It returns a [`Remark`] rather than a string, because the expected world is not
+/// news.** James, on the live build, striking out `approvals: handler withheld from the
+/// model as measured, 14 of 14 console tools visible (47 offered)` where it stood at the head
+/// of the scrollback *and* on the status band: *"Remove all this too."* A guarantee that is
+/// holding, restated on every launch and after every deferred re-`init`, is the console
+/// explaining its own machinery to somebody who did not build it.
+///
+/// 🚨 **The rule is "loud when anomalous", never "quiet".** [`ExposureAudit::confirms_withholding`]
+/// is what decides, so the two anomalies — a handler the model can call, and an audit that
+/// proved nothing — keep their unconditional line, and so does an unwired pane. Silence here
+/// means exactly one thing: the property was checked and it held. `/trace on` shows it either
+/// way, and stderr carries it unconditionally at the call site.
+fn audit_line(wiring: Option<&ApprovalWiring>, offered: &[String]) -> Remark {
     let Some(wiring) = wiring else {
-        return "approvals are not wired — nothing was served and nothing could be checked"
-            .to_string();
+        // Nothing was served, so nothing was checked — an absence of proof, said out loud.
+        return Remark {
+            text: "approvals are not wired — nothing was served and nothing could be checked"
+                .to_string(),
+            always: true,
+        };
     };
-    ExposureAudit::of(&wiring.handler, &wiring.served, offered).summary()
+    audit_remark(&wiring.handler, &wiring.served, offered)
+}
+
+/// The wired half of [`audit_line`], from three plain lists.
+///
+/// ⚠️ **Split out because [`ApprovalWiring`] holds a live server and a temp file**, neither of
+/// which a test can conjure — and the thing worth pinning is not the plumbing but *which of
+/// the three verdicts is news*.
+fn audit_remark(handler: &str, served: &[String], offered: &[String]) -> Remark {
+    let audit = ExposureAudit::of(handler, served, offered);
+    Remark { text: audit.summary(), always: !audit.confirms_withholding() }
 }
 
 /// One conversation tab: a live agent, the transcript it is writing, and the composer.
@@ -1145,7 +1172,8 @@ impl ConversationPane {
             changed |= self.receive_control(&response);
         }
         for offered in audits {
-            let line = audit_line(self.approvals.as_ref(), &offered);
+            let audit = audit_line(self.approvals.as_ref(), &offered);
+            let line = audit.text.clone();
             // ⚠️ **Only when the verdict changes, and an init recurs.** `system/init` is
             // re-sent as deferred MCP tools finish loading — measured going 33 → 128 tools
             // between two inits with nothing asked to change — so an unconditional line
@@ -1158,9 +1186,16 @@ impl ConversationPane {
             }
             // On stderr as well as in the band's log, because the log slot holds one
             // truncated line and the next diagnostic replaces it.
+            //
+            // ⚠️ **Unconditionally on stderr, even when the pane keeps quiet about it.** The
+            // screen is where a repeated confirmation costs something; a launch log is where
+            // the audit trail lives, and a security property that is only recorded when it
+            // fails is a record nobody can check afterwards.
             eprintln!("organon-console: {line}");
-            self.last_audit = Some(line.clone());
-            self.note(line);
+            self.last_audit = Some(line);
+            // 🚨 The remark carries its own loudness — see [`audit_line`]. Not `note`, which
+            // would put the expected world back on the band it was just taken off.
+            self.remark(audit);
             changed = true;
         }
         // The model plate's confirmation, and the only one there is: a repeat
@@ -1560,7 +1595,11 @@ impl ConversationPane {
         // ⚠️ **The region is named, not merely implied.** There is one stack and possibly
         // several regions showing it, so "it went somewhere" would leave a person hunting the
         // window for a panel that is on screen.
-        self.note(format!("{} → the panel stack in `{}`", panel.title, region.as_word()));
+        //
+        // ✏️ **…and it is `trace`, like every other console-lane acceptance.** The panel is
+        // *in* the region a frame later, which is the strongest possible statement of where it
+        // went; every refusal above stays on `note`. Recorded either way.
+        self.trace(format!("{} → the panel stack in `{}`", panel.title, region.as_word()));
         Receipt { ok: true, text: typed.to_string() }
     }
 
@@ -1749,7 +1788,13 @@ impl ConversationPane {
     fn open_editor_receipt(&mut self, typed: &str, theme: &Theme, name: &str) -> Receipt {
         self.open_theme_editor(theme, name, None);
         let text = format!("{typed} - editing `{name}` live; nothing is stored until you save");
-        self.note(text.clone());
+        // ✏️ **`trace`, not `note`.** James circled two of these at the head of a transcript:
+        // *"it should not feel like part of the conversational flow… when everything is moving
+        // right, I generally don't care about this stuff unless there is some exception or
+        // problem."* An editor that opened is not an exception — the editor is on screen, and
+        // the band's own last row names its keys. The line is still **recorded**, so `/trace on`
+        // and anything that later reads the log still have it; it simply is not drawn.
+        self.trace(text.clone());
         Receipt { ok: true, text }
     }
 
@@ -1799,7 +1844,11 @@ impl ConversationPane {
             // Not ours. Somebody else repainted; the session is over and the palette on screen
             // is the truth.
             self.theme_edit = None;
-            self.note(
+            // ✏️ **`trace`, not `note`** — the third of the lines James circled. It explains a
+            // *normal* outcome of a thing he just did: the palette he repainted is the palette
+            // on screen, and the editor for the old one closed because it was no longer editing
+            // anything. Recorded, not drawn.
+            self.trace(
                 "the palette changed while the theme editor was open, so the editor closed — \
                  `/theme edit` reopens it on the new one"
                     .to_string(),
@@ -2260,6 +2309,12 @@ fn scrollback(
                 // to be, because there are now two callers: the ordinary walk, and the
                 // members of a group a hand has opened. The body is untouched.
                 let mut draw_body = |ui: &mut egui::Ui, element: &Element| {
+                    // 🚨 The quiet/loud rule, applied to the transcript itself — see
+                    // [`element_seen`]. Skipped **whole**, its trailing `card_gap` included,
+                    // so a hidden element leaves no space behind it.
+                    if !element_seen(&element.body, tracing) {
+                        return;
+                    }
                     match &element.body {
                         // The one body drawn here rather than in `draw_element`: it is the only
                         // one that needs state to survive between frames, and `draw_element`
@@ -2511,6 +2566,34 @@ fn join_drives(laid_out: Vec<LaidOutSurface>, drives: Vec<PanelDrive>) -> Vec<Su
         target.sliders = drive.sliders;
     }
     surfaces
+}
+
+/// **Is this transcript element on screen, given the mode?**
+///
+/// 🚨 **`— turn complete` was the harness narrating itself, and James's model is Claude
+/// Desktop, where a finished turn is simply a finished turn.** The reply is on the page and
+/// the composer is live again; both say it without a caption, and the caption said it after
+/// every single turn for the life of the tab.
+///
+/// This is the pane's standing rule ([`Remark`]) reaching one surface further out: an
+/// **acceptance** is seen only while tracing, a **failure** always. `Error` and `Cancelled`
+/// therefore keep their captions unconditionally — they are the two a reader cannot infer
+/// from a page that has merely stopped growing, and a turn that was cancelled looks exactly
+/// like one that finished if nothing says otherwise.
+///
+/// ⚠️ **[`RunEnd::detail`] goes with the element it rides on.** On the failure arms — where a
+/// detail carries a reason — it is still drawn. On a success it is the same post-turn
+/// narration by another name, which is what the wire's `status_detail` is; the band's own
+/// echo of that field is hidden on the identical argument ([`StatusReading::narration`]).
+///
+/// ⚠️ Every other body returns `true` **by falling through, not by being listed** — a new
+/// `Body` variant is visible until somebody decides otherwise, which is the safe default for
+/// a surface whose failure mode is swallowing something.
+fn element_seen(body: &Body, tracing: bool) -> bool {
+    match body {
+        Body::RunEnd(end) => end.outcome != RunOutcome::Ok || tracing,
+        _ => true,
+    }
 }
 
 fn draw_element(ui: &mut egui::Ui, element: &Element, theme: &Theme, form: &Form) {
@@ -3679,6 +3762,14 @@ fn diff_body(ui: &mut egui::Ui, diff: &EditDiff, theme: &Theme) {
 // written beside the field it belongs to.
 const CONTEXT_RING_STROKE: f32 = 2.0;
 
+/// What joins two chips on the band's dim right-hand half.
+///
+/// ⚠️ **A constant because it is now measured as well as drawn.** [`strip_right_reserve`] lays
+/// the chip run out to find how wide it is, and a separator spelled twice would make the
+/// measurement and the drawing able to disagree by exactly the width of a separator per gap —
+/// which is precisely how much overlap it takes to put one segment under the next.
+const CHIP_SEP: &str = " · ";
+
 /// Where the ring turns amber — **a display decision, and the console's own.**
 ///
 /// Nothing on the wire says when the CLI will compact a conversation, so any threshold
@@ -4065,6 +4156,30 @@ pub struct StatusReading {
     pub standing: Standing,
     /// Empty is legal and means "draw nothing" — the model plate is already saying it.
     pub text: String,
+    /// **Whether this reading is the harness narrating rather than a live condition.**
+    ///
+    /// 🚨 **The band's own half of [`Remark::seen`], and it has to be decided where the
+    /// reading is built.** Two of the seven readings are echoes of what the agent last said
+    /// about itself — `needs_action`, which is its own sentence, and `last_status_detail`,
+    /// which is its summary of a turn already on the page above. Both are `Asking`/`Ready`,
+    /// the same standings a pending approval and an idle session produce, so nothing
+    /// downstream could tell them apart from the standing alone; a caller re-deriving it from
+    /// the *text* would be a second rule to keep in step. See [`Self::seen_text`].
+    pub narration: bool,
+}
+
+impl StatusReading {
+    /// The text a person sees, given the mode. Empty means the band draws nothing here.
+    ///
+    /// ⚠️ **The field is left whole rather than blanked at construction**, so the reading a
+    /// test pins and the reading `/trace on` shows are the same value — the mode is a
+    /// question asked at the drawing, not a fact about what was read.
+    pub fn seen_text(&self, tracing: bool) -> &str {
+        if self.narration && !tracing {
+            return "";
+        }
+        &self.text
+    }
 }
 
 /// Everything one frame of the strip draws, decided before anything is laid out.
@@ -4095,12 +4210,46 @@ pub struct StripContent {
     pub context: ContextSlot,
     /// Dim, right-aligned, joined with `·`. Bounded by construction: at least one — the
     /// session's cost is on the band from the first frame — and at most three.
-    pub chips: Vec<String>,
+    ///
+    /// ⚠️ **Each carries whether it is narration**, exactly as [`Remark`] and
+    /// [`StatusReading`] do. Read them through [`StripContent::chips_seen`] rather than
+    /// filtering here: the marker is set where the chip is built, and a second rule written
+    /// at a draw site is the drift this band already spends its comments preventing.
+    pub chips: Vec<Chip>,
     /// The most recent diagnostic line off the child, if any. Drawn truncated.
     pub log: Option<String>,
 }
 
+/// One dim right-hand chip, and whether a person sees it without asking.
+///
+/// 🚨 **The quiet/loud rule, third instance.** [`Remark`] carries it for the console's own log
+/// lines and [`StatusReading::narration`] for the band's standing; this is the same decision
+/// for the band's numbers. The session's spend and the last turn's duration are **harness
+/// telemetry** — true, measured, and not what James is looking at the band for; a tally of
+/// permission decisions *he* made is not, because it is the console reporting its own
+/// authority and nothing else on screen says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chip {
+    pub text: String,
+    /// False = seen whatever the mode. True = only under `/trace on`.
+    pub narration: bool,
+}
+
 impl StripContent {
+    /// The chips a person sees, given the mode, in the order the band draws them.
+    ///
+    /// ⚠️ **The vector is left whole rather than pruned at construction**, on
+    /// [`StatusReading::seen_text`]'s rule: what the band *knows* does not change with the
+    /// mode, only what it draws, and a test that pins the arithmetic should not have to open
+    /// a pane to do it.
+    pub fn chips_seen(&self, tracing: bool) -> Vec<&str> {
+        self.chips
+            .iter()
+            .filter(|chip| tracing || !chip.narration)
+            .map(|chip| chip.text.as_str())
+            .collect()
+    }
+
     /// Mark the plate as carrying a model change that has not been confirmed yet.
     ///
     /// A builder rather than a parameter of [`strip_content`] because it is the one input
@@ -4181,7 +4330,11 @@ pub fn status_reading(
     live: LiveCounts,
     facts: &SessionFacts,
 ) -> StatusReading {
-    let say = |standing, text: String| StatusReading { standing, text };
+    // Two constructors, and which one a branch reaches for is the decision — see
+    // [`StatusReading::narration`]. `say` is a live condition; `echo` is the agent's own
+    // account of itself, which the transcript directly above the band already carries.
+    let say = |standing, text: String| StatusReading { standing, text, narration: false };
+    let echo = |standing, text: String| StatusReading { standing, text, narration: true };
     if let Some(failure) = failure {
         return say(Standing::Dead, failure.to_string());
     }
@@ -4202,16 +4355,24 @@ pub fn status_reading(
         return say(Standing::Generating, "● generating".to_string());
     }
     if let Some(action) = &facts.needs_action {
-        return say(Standing::Asking, format!("◈ {action}"));
+        // ✏️ **An echo, so it is off the band unless the pane is tracing.** James struck
+        // `◈ What are we working on?` out of the live build: it is the agent's closing line,
+        // and it is already the last thing in the transcript a few pixels above. The reading
+        // is still *taken* — `/trace on` shows it, and it still colours the standing — but
+        // the band no longer repeats the page.
+        return echo(Standing::Asking, format!("◈ {action}"));
     }
     if !live.has_session {
         // Empty on purpose: the model plate already reads "no model yet", and a band that
         // says "connecting…" twice reads as a bug rather than as one state.
         return say(Standing::Connecting, String::new());
     }
+    // Both arms are narration on the same argument as `needs_action` above: the detail is the
+    // harness's own summary of a turn that is already on the page, and a bare "ready" is a
+    // console with nothing to report saying so. A live composer is what "ready" looks like.
     match &facts.last_status_detail {
-        Some(detail) => say(Standing::Ready, detail.clone()),
-        None => say(Standing::Ready, "ready".to_string()),
+        Some(detail) => echo(Standing::Ready, detail.clone()),
+        None => echo(Standing::Ready, "ready".to_string()),
     }
 }
 
@@ -4329,7 +4490,7 @@ pub fn strip_content(
     };
     // Three at most, in reading order. Each is either a measurement or absent — there is no
     // arm here that computes one number out of two.
-    let mut chips: Vec<String> = Vec::new();
+    let mut chips: Vec<Chip> = Vec::new();
     // 🚨 **Always, and zero before the first `result` is a measurement rather than a
     // placeholder.** Nothing has been spent, so nought is simply what the session has
     // cost — there is none of the honesty tension the ring's arc has, because this is a
@@ -4341,7 +4502,18 @@ pub fn strip_content(
     //
     // "session" is not decoration: `cost_usd` accumulates on the wire and the sibling
     // token counts do not, so the one number on the band says which kind it is.
-    chips.push(format!("session {}", cost_label(facts.cost_usd.unwrap_or(0.0))));
+    //
+    // ✏️ **Narration, so it is off the default band and lives under `/trace on`.** Everything
+    // above is still true about the *number*; what changed is who it is for. James, striking
+    // it out on the live build alongside the approvals audit: his model is Claude Desktop,
+    // which shows you which model you are talking to and not what the last turn cost. The
+    // reading is still taken, still bounded, still `$0.0000` from the first frame — it simply
+    // is not what the band is for. ⚠️ **The cold-start argument above therefore now applies to
+    // the traced band**, which is the only place the reformat could ever be seen.
+    chips.push(Chip {
+        text: format!("session {}", cost_label(facts.cost_usd.unwrap_or(0.0))),
+        narration: true,
+    });
     // ⚠️ **This one stays conditional, and the asymmetry with the cost above is the
     // decision.** "0 remembered decisions" is *true*, but it is a tally of things the
     // human did rather than a meter that runs on its own, and there is nothing to watch
@@ -4349,10 +4521,15 @@ pub fn strip_content(
     // themself caused — they answered a permission card and asked for it to be
     // remembered — so it is not something that happens *to* the band. Band height is
     // unaffected either way; [`STRIP_CHROME`] reserves one row of text regardless.
+    //
+    // 🚨 **And it is the one chip that is NOT narration.** It reports how far the console has
+    // delegated its own authority — the same class of fact as the standing-allow marker and
+    // the mode marker beside it — and nothing else on screen states it. A band that hid this
+    // while hiding the spend would be quiet about the wrong one of the two.
     if live.remembered > 0 {
         let n = live.remembered;
         let plural = if n == 1 { "decision" } else { "decisions" };
-        chips.push(format!("{n} remembered {plural}"));
+        chips.push(Chip { text: format!("{n} remembered {plural}"), narration: false });
     }
     // ⚠️ **The one right-hand element with no honest cold-start form, so it is omitted.**
     // There is no last turn before the first turn, and `last turn 0.0s` would be a
@@ -4363,8 +4540,11 @@ pub fn strip_content(
     // arrives at the first `result`, alongside the ring's first arc, and the band's
     // *height* does not move when it does — which is the property James asked for and the
     // one `the_strip_is_one_band_and_leaves_the_scrollback_the_rest` pins.
+    //
+    // ✏️ **Narration too, for the cost chip's reason**: how long the harness took is the
+    // harness's own account of itself.
     if let Some(ms) = facts.last_turn_duration_ms {
-        chips.push(format!("last turn {}", duration_label(ms)));
+        chips.push(Chip { text: format!("last turn {}", duration_label(ms)), narration: true });
     }
     // The marker is derived, never remembered: it is true exactly while the reported mode
     // is non-default, which is the property the persistent-warning decision asked for.
@@ -4457,7 +4637,7 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
     )
     .switching_to(pane.pending_model.as_ref().map(|p| p.label.as_str()));
     let rows = model_rows(&pane.models, pane.mapper.facts().model.as_deref());
-    match strip_box(ui, &content, &rows, theme) {
+    match strip_box(ui, &content, &rows, theme, pane.tracing) {
         Some(StripAct::ChooseModel(row)) => pane.choose_model(&row),
         Some(StripAct::ChooseMode(mode)) => pane.choose_permission_mode(mode),
         Some(StripAct::RevokeSessionAllow) => pane.revoke_session_allow(),
@@ -4479,6 +4659,10 @@ fn strip_box(
     content: &StripContent,
     models: &[ModelRow],
     theme: &Theme,
+    // Whether this pane is narrating — the one input the band takes that is a *mode* rather
+    // than a reading. It selects between what `StripContent` holds and what it draws; see
+    // `StripContent::chips_seen` and `StatusReading::seen_text`.
+    tracing: bool,
 ) -> Option<StripAct> {
     // ⚠️ **The reserved row must cover the tallest face the band actually draws**, not one
     // of them. Two are in play and neither is decorative: the model name and the standing
@@ -4509,7 +4693,25 @@ fn strip_box(
                         // them apart would be reading half the answer.
                         act = act.or(session_allow_plate(ui, content, theme));
                         let reading = &content.reading;
-                        if !reading.text.is_empty() {
+                        // 🚨 `seen_text`, not `text`: an echo of the agent's own last line is
+                        // off the band unless the pane is tracing. See `StatusReading`.
+                        let reading_text = reading.seen_text(tracing);
+                        // 🚨 `chips_seen`, not `chips`: the spend and the last turn's duration
+                        // are harness telemetry and are drawn only while tracing. See `Chip`.
+                        // Read here rather than at the draw site below because the reading's
+                        // width budget depends on how wide they are — `strip_right_reserve`.
+                        let chips = content.chips_seen(tracing);
+                        let room = reading_room(ui.available_width(), strip_right_reserve(ui, &chips));
+                        if !reading_text.is_empty() && room > 0.0 {
+                            // 🚨 **Bounded, not merely truncating.** `Label::truncate` measures
+                            // against the `Ui` it is added to, so the bound has to be the `Ui`:
+                            // this allocation is what stops the reading from claiming the width
+                            // the ring and the chips are about to need. It shrinks to the text
+                            // when the text is short, so nothing moves on an ordinary band.
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(room, ui.available_height()),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
                             ui.add(
                                 egui::Label::new(
                                     // ⚠️ **`.monospace()` is the tofu fix, not a style
@@ -4528,11 +4730,13 @@ fn strip_box(
                                     // dim half. Left small it would be the one shrunken
                                     // word in a band that is otherwise one size, which
                                     // reads as a mistake rather than as a hierarchy.
-                                    RichText::new(&reading.text)
+                                    RichText::new(reading_text)
                                         .color(standing_color(reading.standing, theme))
                                         .monospace(),
                                 )
                                 .truncate(),
+                            );
+                                },
                             );
                         }
                         // The dim half. Right-aligned so the eye lands on the model and the
@@ -4557,10 +4761,11 @@ fn strip_box(
                                 // that is true continuously belongs and where the eye
                                 // learns to find it without reading.
                                 context_ring(ui, &content.context, theme);
-                                if !content.chips.is_empty() {
-                                    ui.label(
-                                        RichText::new(content.chips.join(" · ")).color(theme.dim),
-                                    );
+                                // The same `chips` the reading's budget was measured
+                                // against, drawn with the separator that measurement used
+                                // — see `CHIP_SEP`.
+                                if !chips.is_empty() {
+                                    ui.label(RichText::new(chips.join(CHIP_SEP)).color(theme.dim));
                                 }
                                 if let Some(log) = &content.log {
                                     ui.add(
@@ -4598,6 +4803,50 @@ fn strip_box(
 /// `convex_polygon` tessellation produces a folded-over shape for one — it would draw
 /// *wrongly* exactly as the reading became urgent. A thick stroked polyline has no such
 /// case and is what the indicator this copies looks like anyway.
+/// **What the band's right-hand fixed items need, before the flexible reading is laid out.**
+///
+/// 🚨 **The band had no width budget at all, and one segment painted over the next.** James,
+/// on the live build: `◈ What are we working on?ession $1.18 · last turn 5.1s` — the echo's
+/// tail running *under* the chips. The cause is egui's ordinary idiom used with an unbounded
+/// left-hand item: the reading is added to the horizontal first and `Label::truncate` truncates
+/// to `available_width`, which at that moment is *everything*; the right-aligned group added
+/// after it is then handed a zero-width rect and lays out leftwards over what is already there.
+/// Truncating "to what is left" is only a bound when something has already been taken.
+///
+/// So the fixed items are **measured first** and the reading is given the remainder. The ring
+/// allocates a Body-height square every frame, measured or not ([`context_ring`]), and the
+/// chips are one non-wrapping Body run — both are exactly as wide as they are and neither can
+/// give way. The **log** is deliberately not counted: it is the other flexible item and already
+/// truncates into whatever slack it is left, which is the behaviour its own comment describes.
+///
+/// ⚠️ **Fixed items keep their space, the variable one gives way** — and at a width too narrow
+/// for even the fixed set, [`reading_room`] returns nought and the reading is simply not drawn.
+fn strip_right_reserve(ui: &egui::Ui, chips: &[&str]) -> f32 {
+    let spacing = ui.spacing().item_spacing.x;
+    // The ring's own rule: a Body-height square, allocated whether or not it has an arc.
+    let mut width = ui.text_style_height(&egui::TextStyle::Body);
+    if !chips.is_empty() {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let run = chips.join(CHIP_SEP);
+        // Through the painter rather than `Ui::fonts`: laying a galley out takes the font
+        // cache mutably, and the painter is the handle that has it.
+        let chips_width = ui.painter().layout_no_wrap(run, font, egui::Color32::WHITE).size().x;
+        width += spacing + chips_width;
+    }
+    // One more gap, between the reading and the first thing to its right.
+    width + spacing
+}
+
+/// How much of the band the flexible reading may take.
+///
+/// Pure, and a function rather than the subtraction written inline, because the property worth
+/// pinning is the one a narrow window breaks: **the reading never takes room the fixed items
+/// need**, and it never asks for a negative width. See
+/// [`tests::the_band_gives_the_fixed_items_their_width_before_the_echo`].
+fn reading_room(available: f32, reserved: f32) -> f32 {
+    (available - reserved).max(0.0)
+}
+
 fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot, theme: &Theme) {
     // 🚨 **Allocated and drawn every frame, measured or not** — see [`ContextSlot`] for the
     // track/fill split and for the decision this reverses. The allocation is the half that
@@ -5061,10 +5310,6 @@ const PALETTE_STROKE: f32 = 1.0;
 const PALETTE_HERE: &str = ">";
 const PALETTE_THERE: &str = " ";
 
-/// What the panel teaches while it is open. One line, at the right of the head row, because
-/// the whole point of the surface is that it never asks anyone to remember.
-const PALETTE_KEYS: &str = "Tab completes - Enter runs";
-
 /// What sits between two words of the compact row. James wrote the row out himself —
 /// `surface|theme|posture|…` — and this is that, given room to breathe.
 const PALETTE_SEP: &str = " | ";
@@ -5083,8 +5328,14 @@ const PALETTE_MORE: &str = "+";
 /// takes no arguments: there is nothing to offer, so the row had nothing in it and (with a
 /// space typed after the verb) the panel disappeared altogether. James: *"slash surface shows
 /// no options."* True, and beside the point — what the console knew and did not say is that
-/// Enter would run the line. ⚠️ The wording is [`PALETTE_KEYS`]' own second half, so the two
-/// surfaces teach one vocabulary rather than two. ASCII, for [`PALETTE_HERE`]'s reason.
+/// Enter would run the line. ASCII, for [`PALETTE_HERE`]'s reason.
+///
+/// ✏️ **It outlived the head row's permanent key legend, and deliberately.** That line —
+/// `Tab completes - Enter runs`, whose second half this used to borrow — was on screen for
+/// as long as the panel was, teaching two keystrokes to a reader who wrote them. This one
+/// appears **only** in the state where the panel would otherwise be blank, and a blank panel
+/// reads as a broken one. Instruction that is always there is chrome; the same words shown
+/// exactly where the surface has nothing else to say are the surface not lying about itself.
 const PALETTE_RUNS: &str = "Enter runs";
 
 /// One word of the compact row, already carrying whatever marks it as chosen.
@@ -5470,9 +5721,12 @@ fn candidate_panel(
             if !note.is_empty() {
                 ui.add(egui::Label::new(label(ui, note, theme.dim, form)).truncate());
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(egui::Label::new(label(ui, PALETTE_KEYS, theme.dim, form)).truncate());
-            });
+            // ✏️ **The right of this row used to carry `Tab completes - Enter runs`.** It was
+            // the panel teaching its own keystrokes for as long as the panel was open, which
+            // is chrome on every frame for a reader who already types them. The row keeps its
+            // height either way — [`palette_band`] reserves rows, not content — so the title
+            // and its usage line simply have the width back. [`PALETTE_RUNS`] is the one
+            // place the words survive, and its doc says why that case is different.
         });
         for (index, candidate) in palette.candidates.iter().take(shown).enumerate() {
             let here = index == selected;
@@ -5654,12 +5908,33 @@ const COMPOSER_STROKE: f32 = 1.0;
 // The composer's plate and its three edges are [`Theme`]'s `composer_fill`,
 // `composer_edge`, `composer_edge_focus` and `composer_edge_dead`.
 
-/// What the hint teaches while the box is empty. The keystroke contract is written here
-/// rather than shown as a permanent caption, because a caption that is always on screen is
-/// a row of chrome the box pays for on every frame — and this one stops being news after
-/// the first message.
-const COMPOSER_HINT: &str = "message the agent — Enter sends, Shift+Enter for a new line";
-const COMPOSER_HINT_DEAD: &str = "the agent is not running";
+/// What an empty composer says.
+///
+/// ✏️ **A live one says nothing, and that is the whole of it.** It read `message the agent —
+/// Enter sends, Shift+Enter for a new line`, which is the first thing James saw on the build
+/// after #117 and the reason for this change: *"Consider you are building this for me, not
+/// for some unknown user."* He knows Enter sends. He knows what the box under a conversation
+/// is for. A hint that is only news the first time is chrome on every frame after it.
+///
+/// 🚨 **A *dead* one still speaks, and the asymmetry is the rule rather than an exception.**
+/// An empty box with no hint reads as *ready*; a **disabled** box with no hint reads as
+/// broken, and the reason it is disabled is a fact about the world that no pixel carries.
+/// So the live hint goes and this one stays — trimmed from a sentence to the label it always
+/// was, since the composer it sits in is what "not running" is about.
+const COMPOSER_HINT_DEAD: &str = "not running";
+
+/// What an empty composer says, given whether the agent is alive.
+///
+/// A function rather than the conditional written at the widget, so the asymmetry
+/// [`COMPOSER_HINT_DEAD`] argues for is something a test can hold rather than something a
+/// reader has to find inside a builder chain.
+fn composer_hint(live: bool) -> &'static str {
+    if live {
+        ""
+    } else {
+        COMPOSER_HINT_DEAD
+    }
+}
 
 fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme_name: &str) {
     let live = pane.failure.is_none();
@@ -6185,7 +6460,9 @@ fn composer_box(
                             // See this function's doc: the flag the FOCUS manager tests, not
                             // a taste about indenting.
                             .lock_focus(true)
-                            .hint_text(if live { COMPOSER_HINT } else { COMPOSER_HINT_DEAD });
+                            // Empty while live — see [`COMPOSER_HINT_DEAD`] for why only the
+                            // disabled box carries one.
+                            .hint_text(composer_hint(live));
                         let response = ui.add_enabled(live, edit);
                         if *want_focus && live {
                             response.request_focus();
@@ -7699,7 +7976,7 @@ mod tests {
         let content = strip_content(None, live(0, 2), &facts, Some("abc"), None);
         let band = format!(
             "{} {} {:?}",
-            content.chips.join(" · "),
+            content.chips_seen(true).join(CHIP_SEP),
             content.reading.text,
             content.identity
         );
@@ -7900,8 +8177,11 @@ mod tests {
         // first `result`, which is the reshuffle this tier removes. The cost is now on the
         // band from the first frame at its true value; the other two are still absent, and
         // `the_cold_band_reports_a_cost_and_a_ring_and_does_not_grow` says why.
+        // ⚠️ `chips_seen(true)` — the **traced** band, which is where the spend now lives.
+        // The arithmetic is unchanged and is what this pins; `the_default_band_carries_no_
+        // harness_telemetry` pins the other half, that a quiet band shows none of it.
         assert_eq!(
-            content.chips,
+            content.chips_seen(true),
             vec!["session $0.0000"],
             "the session's spend is on the band from the first frame, and it is nought"
         );
@@ -8112,10 +8392,10 @@ mod tests {
         let counts = LiveCounts { remembered: 2, ..live(0, 0) };
         let content = strip_content(None, counts, &facts, Some("abc"), None);
         assert_eq!(
-            content.chips,
+            content.chips_seen(true),
             vec!["session $0.1234", "2 remembered decisions", "last turn 7.4s"]
         );
-        let band = content.chips.join(" · ");
+        let band = content.chips_seen(true).join(CHIP_SEP);
         assert!(!band.contains("token"), "no token figure is shown at all: {band}");
         for figure in ["12000", "12,000", "12.0k", "400", "50000", "62900"] {
             assert!(!band.contains(figure), "nor anything derived from one ({figure}): {band}");
@@ -8438,8 +8718,193 @@ mod tests {
     #[test]
     fn an_unwired_pane_reports_that_nothing_was_checked() {
         let line = audit_line(None, &["Bash".to_string()]);
-        assert!(line.contains("not wired"), "{line}");
-        assert!(!line.contains("withheld"), "silence must not read as a clean bill: {line}");
+        assert!(line.text.contains("not wired"), "{}", line.text);
+        assert!(
+            !line.text.contains("withheld"),
+            "silence must not read as a clean bill: {}",
+            line.text
+        );
+        assert!(line.always, "an audit that proved nothing is not something to keep quiet about");
+    }
+
+    /// 🚨 CONTRACT: **the approvals audit is silent exactly when the withholding property
+    /// holds, and loud in every other case.** James struck the passing line out of the live
+    /// build — it appeared at the head of the scrollback and again on the status band, on
+    /// every launch and after every deferred re-`init`. What must never become quiet is the
+    /// case it exists for: the handler reachable by the model, or an init that reported no
+    /// tools at all and therefore proved nothing.
+    ///
+    /// ⚠️ The two anomalous arms are asserted **by the flag**, not by their wording, so a
+    /// later rewording of [`crate::mcp::ExposureAudit::summary`] cannot silently make one of
+    /// them quiet.
+    #[test]
+    fn the_approvals_audit_speaks_only_when_the_guarantee_is_not_holding() {
+        let handler = "mcp__organon__approve_tool";
+        let served = ["mcp__organon__console_portal".to_string()];
+        let line = |offered: &[&str]| {
+            let offered: Vec<String> = offered.iter().map(|s| (*s).to_string()).collect();
+            audit_remark(handler, &served, &offered)
+        };
+
+        // The expected world: a list was reported and the handler is not on it.
+        let quiet = line(&["Bash", "mcp__organon__console_portal"]);
+        assert!(quiet.text.contains("withheld"), "{}", quiet.text);
+        assert!(!quiet.always, "a guarantee that is holding is not news: {}", quiet.text);
+        assert!(quiet.seen(true), "…and `/trace on` still shows it");
+        assert!(!quiet.seen(false), "…while a quiet pane does not");
+
+        // 🚨 The breach.
+        let breach = line(&[handler]);
+        assert!(breach.always, "a handler the model can call must never be quiet: {}", breach.text);
+
+        // And an init that reported nothing has proved nothing, which is also not a pass.
+        let unproven = line(&[]);
+        assert!(unproven.always, "an unchecked guarantee is not a held one: {}", unproven.text);
+
+        // ⚠️ A served name the model cannot see is the ordinary deferred-loading case and
+        // must NOT make the line loud — otherwise every cold start reads as a fault.
+        let deferred = line(&["Bash"]);
+        assert!(
+            !deferred.always,
+            "a withheld capability is not a breach of the handler guarantee: {}",
+            deferred.text
+        );
+    }
+
+    /// 🚨 CONTRACT: **the default band carries no harness telemetry and no echo of the page
+    /// above it.** James, on the live build, striking out `session $1.18 · last turn 5.1s` and
+    /// `◈ What are we working on?`: his model is Claude Desktop, which tells you which model
+    /// you are talking to and nothing about what the last turn cost or how long it took.
+    ///
+    /// ⚠️ **What must survive is asserted alongside**, because a rule that only says what to
+    /// hide is one careless edit away from hiding the band. The model, the mode and the
+    /// console's own remembered-decisions tally are facts about the world, not narration.
+    #[test]
+    fn the_default_band_carries_no_harness_telemetry() {
+        let mut facts = started("claude-opus-5[1m]");
+        facts.cost_usd = Some(1.18);
+        facts.last_turn_duration_ms = Some(5_100);
+        facts.needs_action = Some("What are we working on?".into());
+        let counts = LiveCounts { remembered: 2, ..live(0, 0) };
+        let content = strip_content(None, counts, &facts, Some("abc"), None);
+
+        // Quiet: the tally, and nothing else.
+        assert_eq!(
+            content.chips_seen(false),
+            vec!["2 remembered decisions"],
+            "the spend and the turn's duration are the harness talking about itself"
+        );
+        assert_eq!(
+            content.reading.seen_text(false),
+            "",
+            "the agent's own closing line is already the last thing in the transcript"
+        );
+
+        // Tracing: everything, in the order it was built.
+        assert_eq!(
+            content.chips_seen(true),
+            vec!["session $1.18", "2 remembered decisions", "last turn 5.1s"],
+            "`/trace on` is where the machinery lives, and it is unchanged"
+        );
+        assert_eq!(content.reading.seen_text(true), "◈ What are we working on?");
+
+        // ⚠️ And the readings that are NOT narration are on the quiet band, unconditionally.
+        // A pane that hid these would be quiet about the only three things it can tell you
+        // that the page above it cannot.
+        let dead = strip_content(Some("the agent stopped listening"), live(0, 0), &facts, None, None);
+        assert_eq!(dead.reading.seen_text(false), "the agent stopped listening");
+        let asking = strip_content(None, live(1, 0), &facts, Some("abc"), None);
+        assert_eq!(asking.reading.seen_text(false), "◈ 1 permission request — waiting on you");
+        let working = strip_content(None, live(0, 2), &facts, Some("abc"), None);
+        assert_eq!(working.reading.seen_text(false), "● 2 tools running");
+        assert_eq!(
+            content.model,
+            ModelSlot::Named(model_label("claude-opus-5[1m]")),
+            "the model chip is not telemetry — it is who you are talking to"
+        );
+    }
+
+    /// 🚨 CONTRACT: **the band gives its fixed items their width before the flexible one
+    /// takes any**, so no segment can be painted over by its neighbour.
+    ///
+    /// James, on the live build: `◈ What are we working on?ession $1.18 · last turn 5.1s` —
+    /// the echo's tail running *under* the chips, because `Label::truncate` had truncated it
+    /// to "everything left", which is not a bound when nothing has been taken yet. This is
+    /// the arithmetic [`strip_right_reserve`] and [`reading_room`] replaced it with, and the
+    /// property is the one a narrow window breaks first.
+    ///
+    /// ⚠️ **Mutation-checked**: spell [`reading_room`] as a bare subtraction and the narrow
+    /// case below fails with a negative width — which egui turns into a panic on the
+    /// allocation, not into a smaller label.
+    #[test]
+    fn the_band_gives_the_fixed_items_their_width_before_the_echo() {
+        // Ordinary: the reading gets everything the fixed items do not need, and no more.
+        assert_eq!(reading_room(600.0, 180.0), 420.0);
+        assert!(
+            reading_room(600.0, 180.0) + 180.0 <= 600.0,
+            "the two halves must not add up to more band than there is"
+        );
+        // Narrow: the fixed items alone outgrow the band, and the flexible one gives way
+        // entirely rather than asking for a negative allocation.
+        assert_eq!(reading_room(120.0, 180.0), 0.0);
+        assert_eq!(reading_room(0.0, 0.0), 0.0);
+
+        // And the reservation itself grows with what is actually on the right, so hiding the
+        // telemetry hands the width back to the reading rather than leaving a hole.
+        let ctx = egui::Context::default();
+        let (bare, full) = {
+            let mut pair = (0.0_f32, 0.0_f32);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    pair.0 = strip_right_reserve(ui, &[]);
+                    pair.1 = strip_right_reserve(ui, &["session $1.18", "last turn 5.1s"]);
+                });
+            });
+            pair
+        };
+        assert!(bare > 0.0, "the ring is allocated every frame, measured or not: {bare}");
+        assert!(full > bare, "chips take width and the reading must be told: {full} vs {bare}");
+    }
+
+    /// 🚨 CONTRACT: **a turn that ended well leaves no caption; a turn that failed or was
+    /// cancelled always does.** See [`element_seen`] — this is the pane's quiet/loud rule
+    /// reaching the transcript.
+    ///
+    /// ⚠️ **Mutation-checked**: make the arm `_ => tracing` and the two failure rows fail;
+    /// make it `_ => true` and the success row fails.
+    #[test]
+    fn a_finished_turn_says_nothing_and_a_broken_one_always_does() {
+        let end = |outcome| Body::RunEnd(crate::conversation::RunEnd { outcome, detail: None });
+        for (outcome, quiet, loud) in [
+            (RunOutcome::Ok, false, true),
+            (RunOutcome::Error, true, true),
+            (RunOutcome::Cancelled, true, true),
+        ] {
+            assert_eq!(element_seen(&end(outcome), false), quiet, "quiet pane, {outcome:?}");
+            assert_eq!(element_seen(&end(outcome), true), loud, "tracing pane, {outcome:?}");
+        }
+        // Everything else is unconditional, and stays so by falling through rather than by
+        // being listed — a new `Body` must be visible until somebody decides otherwise.
+        let human = Body::Human(crate::conversation::HumanBlock { text: "hello".into() });
+        assert!(element_seen(&human, false) && element_seen(&human, true));
+    }
+
+    /// 🚨 CONTRACT: **a live composer hints nothing; a dead one says why.** It read `message
+    /// the agent — Enter sends, Shift+Enter for a new line`, which is the console explaining
+    /// itself to somebody who has not seen it before — and the first thing James saw on the
+    /// build after #117. See [`COMPOSER_HINT_DEAD`] for why the asymmetry is the rule.
+    #[test]
+    fn only_a_dead_composer_carries_a_hint() {
+        assert_eq!(composer_hint(true), "", "an empty box under a conversation reads as ready");
+        assert_eq!(
+            composer_hint(false),
+            "not running",
+            "a DISABLED box with no hint reads as broken, which is the case that earns words"
+        );
+        assert!(
+            !composer_hint(false).contains("Enter"),
+            "and what it says is the fact, not the keystroke contract"
+        );
     }
 
     /// 🚨 CONTRACT: **the standing-allow marker is on the band for exactly as long as the
@@ -8521,7 +8986,7 @@ mod tests {
         let counts = LiveCounts { session_allow: true, remembered: 0, ..live(0, 0) };
         let content = strip_content(None, counts, &facts, Some("abc"), None);
         assert!(
-            !content.chips.iter().any(|c| c.contains("remembered")),
+            !content.chips_seen(true).iter().any(|c| c.contains("remembered")),
             "no entries, so no chip: {:?}",
             content.chips
         );
@@ -8648,7 +9113,9 @@ mod tests {
             ("writing", strip_content(None, live_generating(0, 0), &facts, Some("abc"), None)),
         ] {
             check(name, &content.reading.text);
-            check(name, &content.chips.join(" · "));
+            // The traced set, which is a superset of the quiet one — the glyph guard has to
+            // walk every string the band CAN draw, not only the ones it draws by default.
+            check(name, &content.chips_seen(true).join(CHIP_SEP));
         }
 
         // The subagent card's step markers — the site the band-only guard did not reach.
@@ -8688,7 +9155,6 @@ mod tests {
         // schema, since a range or an option list is exactly where a stray glyph hides.
         check("the panel's highlight", PALETTE_HERE);
         check("the panel's other rows", PALETTE_THERE);
-        check("the panel's key legend", PALETTE_KEYS);
         check("the compact row's separator", PALETTE_SEP);
         check("the compact row's selection marks", PALETTE_PICKED.0);
         check("the compact row's selection marks", PALETTE_PICKED.1);
@@ -8859,7 +9325,9 @@ mod tests {
                     let before = ui.available_height();
                     // No rows: the menu is only built while the popup is open, and a
                     // headless single frame never opens one.
-                    let _ = strip_box(ui, content, &[], &Theme::organon());
+                    // Quiet, like a real tab: the band's reserved height is one row whatever
+                    // the mode hides, which is the property this harness measures.
+                    let _ = strip_box(ui, content, &[], &Theme::organon(), false);
                     band = before - ui.available_height();
                     ui.add_space(4.0);
                     let _ = composer_box(
@@ -8965,7 +9433,7 @@ mod tests {
 
         // (1) There is something on the right from the first frame, and it is true.
         assert_eq!(
-            cold.chips,
+            cold.chips_seen(true),
             vec!["session $0.0000"],
             "nought spent is a measurement, not a placeholder"
         );
@@ -8976,7 +9444,7 @@ mod tests {
             "which draws the empty track — present, and not a claim of 0%"
         );
         assert!(
-            !cold.chips.iter().any(|c| c.contains("last turn")),
+            !cold.chips_seen(true).iter().any(|c| c.contains("last turn")),
             "there has been no last turn, so no duration is invented for one: {:?}",
             cold.chips
         );

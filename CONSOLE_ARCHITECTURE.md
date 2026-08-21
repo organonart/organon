@@ -3754,6 +3754,132 @@ site. The glyph allowlist test in `conversation_view` walks every string the pan
 **including the ones derived from a schema** and the compact row as a whole assembled line at
 three widths, since a range, an option list or a separator is where a stray glyph hides.
 
+##### 🚨 …and #120 finished the job: the instructional chrome, the harness telemetry, and a band that painted over itself
+
+#117 removed the *receipts*. What it left behind was everything shaped like a **caption** —
+text whose only reader is somebody who does not already know how this console works. James,
+looking at the build the morning after and quoting the first thing on it:
+
+> `message the agent — Enter sends, Shift+Enter for a new line`
+
+and then, circling the block at the head of the transcript: *"We don't want this status
+information showing here. … **it should not feel like part of the conversational flow.** …
+**When everything is moving right, I generally don't care about this stuff unless there is some
+exception or problem.**"*
+
+**The rule, which is #117's own rule pointed at a wider class:**
+
+> **Delete text whose only reader is a stranger. Keep text carrying a fact he cannot already
+> have — a failure, a refusal, or a state no pixel states.**
+
+**What went, and why each one is not a fact:**
+
+| Was | Now | Because |
+|---|---|---|
+| `COMPOSER_HINT` — *"message the agent — Enter sends, Shift+Enter for a new line"* | nothing | An empty box under a conversation reads as *ready*. He knows Enter sends. |
+| `COMPOSER_HINT_DEAD` — *"the agent is not running"* | `not running` | The fact survives; the sentence was a label wearing a verb. |
+| `PALETTE_KEYS` — *"Tab completes - Enter runs"*, right of the command panel's head row | nothing | On screen for as long as the panel was, teaching two keystrokes to the person typing them. |
+| `NOT_TRANSPLANTED` — *"this panel is named in Organon's editor but has not been transplanted into the console yet"* | `no controls yet` | Twenty-four of twenty-five panels are `Declared`; it was one sentence about the console's own construction, repeated two dozen times down a 320 pt column. |
+| `— turn complete`, after every successful turn | nothing | Precisely *"showing your process as the agent or harness"*. The reply is on the page and the composer is live; both say it. |
+| `approvals: handler withheld …, 14 of 14 console tools visible (47 offered)` | only when anomalous | See below — this one is a **security property** and could not simply go. |
+| `session $1.18 · last turn 5.1s` | `/trace on` | Harness telemetry. Claude Desktop tells you which model you are talking to, not what the turn cost. |
+| `◈ What are we working on?` | `/trace on` | The agent's own closing line, echoed a few pixels below the transcript that already has it. |
+| `/theme edit - editing 'dark' live; nothing is stored until you save` | `/trace on` | The editor is on screen. An acceptance, under #117's existing rule, reaching a `note()` that should always have been a `trace()`. |
+| *"the palette changed while the theme editor was open, so the editor closed"* | `/trace on` | An explanation of a normal outcome of a thing he just did. |
+| `Surface → the panel stack in 'left'` | `/trace on` | This file already claimed it was quiet; the code still said `note`. Now it is true. |
+
+⚠️ **Nothing is discarded — only undrawn.** Every line above still enters `pane.log` as a
+`Remark`, still ages out of it at `LOG_LINES`, and still comes back whole under `/trace on`.
+That is deliberate: James's *"I like the idea that there is a status log somehow, but it should
+not be present normally"* is a surface nobody has built yet, and a change that dropped the
+entries at the source would make building it harder rather than easier.
+
+🚨 **The approvals audit is the one that could not simply be hidden, and the rule it earned is
+worth keeping.** It reports §7's withholding guarantee — whether the permission handler is
+absent from the model's own tool list — and a **silent** failure of that is the exact class of
+defect this tree exists to prevent. It is now **loud when anomalous, quiet when the property
+holds**, decided by `mcp::ExposureAudit::confirms_withholding` rather than by reading the
+summary string:
+
+- handler **on** the model's list → always seen (the console's authority is decorative);
+- the session reported **no tools** → always seen (an audit that proved nothing is not a pass);
+- served names the model cannot see → **not** an anomaly; that is ordinary deferred MCP loading,
+  and folding it in would make every cold start read as a fault;
+- otherwise → recorded, and drawn only under `/trace on`.
+
+⚠️ **stderr keeps it unconditionally.** The screen is where a repeated confirmation costs
+something; a launch log is where an audit trail lives, and a security property recorded only
+when it fails is a record nobody can check afterwards. ⚠️ There were **two** render sites, not
+one — the head of the scrollback and the status band's slot — and both are fed from the same
+`Remark`, which is why one predicate fixed both. A string removed from one surface and left on
+the other is the shape of bug a per-site fix produces.
+
+🚨 **And the band had no width budget at all, which is a defect rather than a matter of taste.**
+James saw `◈ What are we working on?ession $1.18 · last turn 5.1s` — the echo's tail painted
+*under* the chips. The cause is egui's ordinary idiom used with an unbounded left-hand item:
+the reading is added to the horizontal first and `Label::truncate` truncates to
+`available_width`, which at that moment is *everything*; the right-aligned group added after it
+is then handed a zero-width rect and lays out leftwards over what is already there. **Truncating
+"to what is left" is only a bound when something has already been taken.**
+
+`strip_right_reserve` measures the fixed right-hand items first — the ring (a Body-height square
+allocated every frame, measured or not) and the chip run, laid out through the painter with
+`CHIP_SEP`, now a constant because it is measured as well as drawn — and `reading_room` hands
+the flexible reading the remainder, floored at nought. The reading is then drawn inside an
+allocation of exactly that width, so `truncate` has something real to truncate against; it
+shrinks to the text when the text is short, so an ordinary band does not move. The **log** is
+deliberately not reserved for: it is the *other* flexible item and already truncates into its
+slack. ⚠️ **This was fixed rather than hidden.** Both offending segments are now trace-only, so
+the overlap would only have surfaced under `/trace on` — and would have come back the moment
+anything was added to that band.
+
+**How the three visibility rules are spelled**, each next to the thing it decides, none of them
+re-derived at a draw site:
+
+| Carrier | Decides | Predicate |
+|---|---|---|
+| `Remark { text, always }` | one line of the console's own log | `Remark::seen(tracing)` |
+| `StatusReading { …, narration }` | the band's standing text | `StatusReading::seen_text(tracing)` |
+| `Chip { text, narration }` | one dim right-hand chip | `StripContent::chips_seen(tracing)` |
+| — | one transcript element | `element_seen(&body, tracing)` |
+
+⚠️ **`narration` is set where the value is built, never inferred downstream.** Two of the seven
+status readings are echoes — `needs_action` and `last_status_detail` — and both produce the same
+`Standing` as live conditions do (`Asking`, `Ready`), so nothing downstream could tell them
+apart; a caller re-deriving it from the *text* would be a second rule to keep in step. Same for
+the chips: `2 remembered decisions` stays on the quiet band because it reports how far the
+console has delegated its own authority, which is the mode marker's class rather than the
+spend's.
+
+⚠️ **`element_seen` returns `true` by falling through, not by listing the other variants** — a
+new `Body` is visible until somebody decides otherwise, which is the safe default for a surface
+whose failure mode is swallowing something. `RunEnd::detail` rides on the element it belongs to:
+drawn on the `Error` and `Cancelled` arms where it carries a reason, gone with the success.
+
+**Judged and kept, so the next sweep does not re-litigate them:** `region_line`'s `> add |
+remove` (the vocabulary you would type, not a description of the control); `PALETTE_RUNS`
+(*"Enter runs"* — it appears **only** where the panel would otherwise be blank, and a blank
+panel reads as a broken one); `theme_edit`'s `EDIT_KEYS` and its two button hovers (a modal ring
+driven by Tab/arrows/Esc with no on-screen affordance, present only while `/theme edit` is open
+— and removing the row would mean changing the band's reserved row count, i.e. a relayout);
+`/help`'s body (a direct answer to a typed request); the child's own `stdout:`/`stderr:` lines
+(a line the *harness* printed is not the console explaining itself, and swallowing it is the
+silence-on-failure defect); and *"the console is asking again — everything-for-this-session
+revoked"* (a change in the console's permission authority, and the acknowledgement of a click
+whose own doc argues for it).
+
+📌 **`app.rs` is not touched and is not an oversight.** The Tier-1 skeleton carries the most
+explanatory text in the crate — *"The agent workspace — conversation, plans, tool events, diffs,
+artifacts, and live surfaces land here."*, `⌘K — command palette`, `The primary agent connects
+in Console #7` — and `ConsoleApp` is constructed by nothing outside its own tests. It is not on
+James's screen, so it is not chrome; it is dead UI, and deleting it is a different change.
+
+🚨 **Nothing here has been seen on a screen.** Every claim is about how quiet something feels.
+What is established is that the rules hold and the arithmetic is pinned — that the audit is loud
+in both anomalous arms, that a failed turn keeps its caption, that the reading never asks for
+width the fixed items need. Whether a band holding a model chip and a mode plate reads as calm
+or as broken is James's to judge.
+
 ### 1.10 The window icon — the aperture mark, and the two defaults it replaces
 
 The Console opened with the operating system's default icon. `native/src/console_icon.rs`
