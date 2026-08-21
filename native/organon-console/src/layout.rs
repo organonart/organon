@@ -407,11 +407,22 @@ impl Library {
 
     /// The names as one sentence fragment, or `"nothing"` — [`crate::panel_stack`]'s
     /// `held_panel_slugs` arrangement, so a refusal reads as a sentence on an empty library.
+    ///
+    /// 🚨 **Each name is backticked, and that is not decoration — it is what makes the list
+    /// unambiguous.** [`check_name`] refuses whitespace because the *wire* cannot carry it, and
+    /// deliberately refuses nothing else about what a person may call their arrangement — so a
+    /// comma is a perfectly legal name character. A bare `join(", ")` would then render a library
+    /// holding `a,b` and `c` as `a,b, c`, which is indistinguishable from three layouts, and the
+    /// whole job of this fragment is to let somebody spot the name they actually typed (§1.15's
+    /// exact matching leans on it: `Desk` and `desk` are two layouts and the list is where you
+    /// see both). ⚠️ **The fix belongs here rather than in `check_name`** — narrowing the names a
+    /// person may choose to suit a separator would be a rule about the *display* leaking into the
+    /// data, where the whitespace rule is a genuine fact about the transport.
     pub fn names_or_nothing(&self) -> String {
         if self.layouts.is_empty() {
             return "nothing".to_string();
         }
-        self.names().join(", ")
+        self.names().iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
     }
 }
 
@@ -779,6 +790,40 @@ mod tests {
         lib.upsert(SavedLayout::capture("Desk", &Layout::default()));
         assert!(lib.get("desk").is_none(), "case is not folded");
         assert_eq!(lib.get("Desk").map(|l| l.name.as_str()), Some("Desk"));
+    }
+
+    /// 🚨 **The list of names a refusal quotes has to be readable as a LIST**, and a comma is a
+    /// legal name character — [`check_name`] refuses whitespace because the wire cannot carry it
+    /// and refuses nothing else about what a person may call their arrangement.
+    ///
+    /// Raised in review on this tier: joined bare, a library holding `a,b` and `c` renders as
+    /// `a,b, c`, which is exactly what three layouts called `a`, `b` and `c` would render as. The
+    /// fragment's whole job is to let somebody find the name they typed, so an ambiguous one
+    /// undercuts §1.15's exact-matching argument at the moment it matters most.
+    #[test]
+    fn a_comma_in_a_name_cannot_make_the_list_read_as_more_layouts_than_there_are() {
+        assert_eq!(check_name("a,b"), Ok(()), "a comma is not a transport problem");
+        let mut lib = Library::default();
+        lib.upsert(saved("a,b", &[("full", "agent")]));
+        lib.upsert(saved("c", &[("full", "agent")]));
+        assert_eq!(lib.names(), vec!["a,b", "c"], "two layouts, whatever they are called");
+        assert_eq!(lib.names_or_nothing(), "`a,b`, `c`", "…and the list says two");
+
+        let mut three = Library::default();
+        for n in ["a", "b", "c"] {
+            three.upsert(saved(n, &[("full", "agent")]));
+        }
+        assert_ne!(
+            three.names_or_nothing(),
+            lib.names_or_nothing(),
+            "three layouts must not render as two do"
+        );
+        // The empty case is still a word rather than an empty quote, so the sentence reads.
+        assert_eq!(Library::default().names_or_nothing(), "nothing");
+        // …and the refusal that quotes it names both the miss and the library.
+        let e = Refusal::NoSuchLayout { name: "a".into(), known: lib.names_or_nothing() };
+        let text = e.to_string();
+        assert!(text.contains("`a,b`") && text.contains("`c`"), "{text}");
     }
 
     /// CONTRACT: saved, then loaded from the file, is the same library.

@@ -5092,7 +5092,12 @@ console as `layout save my` with the rest silently dropped, having saved somethi
 `check_name` refuses whitespace, control characters, an empty name and anything over 64
 characters. ⚠️ Matching is **exact**: `Desk` and `desk` are two layouts, and the refusal for an
 unknown name lists every name that exists, which is what makes a case mismatch visible rather
-than silently folded.
+than silently folded. ✏️ **That list backticks each name, and the reason came out of review:** a
+comma is a legal name character — `check_name` refuses whitespace because the *wire* cannot carry
+it, and deliberately refuses nothing else about what somebody may call their arrangement — so a
+bare comma-join would render a library holding `a,b` and `c` as `a,b, c`, indistinguishable from
+three layouts. The fix belongs in the joining rather than in `check_name`: narrowing the names a
+person may choose to suit a separator would be a rule about the *display* leaking into the data.
 
 📌 **The names could be a ring and deliberately are not — yet.** `Registry`'s `NarrowFn` can make
 an argument's options depend on an earlier word (it is how `/organon look surface` narrows), so
