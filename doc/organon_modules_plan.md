@@ -293,3 +293,91 @@ they are not in this tree; the corrections recorded here travelled with them:
    0.x means, and what the churn number honestly supports.
 5. **Who owns the module registry** once there is more than one module — a file, a repo, an
    index? Not urgent, and cheap to defer until M3.
+
+---
+
+## 10. ✏️ Amendment — trust is the axis this plan was missing, and it is the same decision as §4
+
+> Added 2026-08-20. §9.5 defers *"who owns the module registry"* as not urgent. That deferral
+> is still right, but it hid a question that is **not** about a registry and is not deferrable
+> in the same way, because it decides §4's answer rather than following from it.
+>
+> James, 2026-08-20: *"I can imagine a system of modules and a trust system whereby you have
+> your core modules, but then you might have modules that you trust because you're working with
+> someone … peer-to-peer connections, starting with those you trust, such as your family first,
+> and then your friends, and then your people that you are friendly with in the workforce …
+> and then open source contributors."*
+
+### 🚨 The process boundary is the trust boundary
+
+§4 settles that there are exactly two module kinds and rules out the tempting third
+(`dlopen`ing a Rust cdylib — no stable ABI, fails at runtime in a graphics driver on someone
+else's machine). What §4 presents as an engineering trade-off is also, and more importantly, a
+**security** one:
+
+| | **Linked module** | **Hosted module** |
+|---|---|---|
+| §4's framing | a cargo dependency, full engine access, zero overhead, rebuild to adopt | a separate process, composited, a protocol, ~a texture copy per frame |
+| **What that means for trust** | **no boundary exists.** It is your address space, your filesystem, your GPU. Auditing the source is the *only* control | **the process is the boundary.** What it may touch is what the protocol exposes, and that is enforceable rather than promised |
+
+📌 **So "how far do I trust this?" and "which kind of module is this?" are one question asked
+twice.** A trust tier does not select a *policy* applied to a module; it selects the module's
+**kind**. That is why this belongs in §4 rather than in a registry design.
+
+### The tiers, and where the line falls
+
+- **Core** — in this repo, in this workspace. Linked by definition.
+- **Family-level trust** — someone whose code you would run without reading. Linked is
+  *defensible* here, and the honest framing is that you are trusting a person, not a mechanism.
+- **Everything further out** — friends, colleagues, open-source contributors — **hosted**. Not
+  because those people are suspect, but because a boundary you can point at is the only thing
+  that survives one of them having a bad day, a compromised account, or a dependency that did.
+
+⚠️ **The failure mode to design against is social, not technical.** Trust tiers make it *easy*
+to promote a module as a favour. A system where "I know them" is spelled the same as "grant
+full address-space access" will drift upward until the tiers mean nothing. Whatever the
+mechanism, **promoting to linked should be visibly different from installing**, and it should
+say what it is granting.
+
+### What this repo already has, and what it does not
+
+**Has**, and both are load-bearing precedents §4 already names:
+
+- **The harness registry** (`organon-console/src/harness.rs`) — identity, launch command,
+  detection, where to obtain it; built-ins in code, a user's file merged over them by id, with
+  serde defaults and unknown fields tolerated. A module manifest is that shape (M3 says so).
+- **`ipc.rs::ns_file`** — every channel namespaced, which is what already lets three products
+  run at once and is the same mechanism a hosted module's surface would arrive through.
+
+**Does not have**, and none of it should be built before #98's tiers land:
+
+- Any notion of a module *identity* that survives a machine — a key, a signature, an author.
+- Any statement of what a hosted module may ask for. ⚠️ **The protocol is the permission set.**
+  A hosted module can do exactly what the protocol lets it do, so the protocol's surface *is*
+  the security model, and every verb added to it is a grant. That is worth writing down before
+  the first verb, not after the tenth.
+- Any answer to revocation — what happens to a layout that references a module you have since
+  stopped trusting. ⚠️ It must not be "the window fails to open."
+
+### Where the peer-to-peer half already lives
+
+**#6 (`organon-remote` — one session, many clients)** was filed as *"the console on a phone"*
+and is really the collaboration primitive: a session with an authority and attached clients.
+Trust tiers and P2P module distribution both land on it rather than beside it, and it should
+be read as that rather than as a phone feature when either is scoped.
+
+### Consequences for §9's open questions
+
+- **§9.5 gains a prerequisite.** Whoever owns the registry has to say what an entry *asserts*
+  about its module. An index of names is not a trust model, and a registry that implies one
+  without having one is worse than no registry.
+- **§9.4 is unaffected.** Publishing `0.x` early is orthogonal to trust: crates.io already has
+  its own identity and revocation story, and a linked module is a cargo dependency whether or
+  not we publish.
+
+### 🚨 Not now
+
+Nothing here is scheduled, and the ordering is deliberate. Modules want at least one real
+second producer to exist before the protocol is designed against imagination — §4 makes that
+point about the game and it applies twice as hard to a permission surface. **Build #98's tiers,
+get a layout worth sharing, and design this against something real.**
