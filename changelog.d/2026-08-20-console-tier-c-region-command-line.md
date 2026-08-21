@@ -53,7 +53,14 @@ vocabulary §1.8 exists to prevent, arriving from the friendliest possible direc
 absence earns its own sentence: `stack`'s optional `region` keyword is a real part of the verb's
 grammar and the registry offers it, correctly — but in a line whose premise is that the region is
 context, offering the word would invite a second, contradicting one, so it is dropped from the ring
-and named (*"`region` is supplied by the line you are typing in: it is `left`"*).
+and named (*"`region` is supplied by the line you are typing in: it is `left`"*). ⚠️ **Dropped from
+the ring is not dropped from the table**: type it anyway and the typed word wins. The supplied
+region fills the slot only when it is empty, so `/add surface region right` in the `left` region's
+own line reaches `right` — the same answer the full `/stack add surface region right` gives at that
+box. Overwriting it would have edited a column nobody named, silently, which is the one failure this
+module is written against; refusing it would have made the pruned surface reject what the whole
+table accepts, which is the jail rule 2 exists to prevent. A bare trailing `region` with no value is
+still malformed rather than defaulted — `parse_args` answers it before the region gets a chance.
 
 ⚠️ **Every sentence this module composes is ASCII, and the guard's boundary is the interesting
 half.** A `✓` in none of egui's four bundled fonts shipped once already and was photographed as an

@@ -459,6 +459,10 @@ pub enum Act {
 /// transcript, and there is no honest thing for them to do here. `/help` is view-lane too and
 /// falls under the same sentence — which is right rather than merely convenient: this line's
 /// own band *is* its help, and it names what it left out.
+///
+/// ⚠️ **What the region supplies fills an empty slot and never overwrites a typed one.** See
+/// the `Lane::Console` arm: the region is the word you did not have to say, not a word you are
+/// forbidden to say.
 pub fn act(registry: &Registry, ctx: Context, line: &str) -> Act {
     if line.trim().is_empty() {
         return Act::Idle;
@@ -485,7 +489,24 @@ pub fn act(registry: &Registry, ctx: Context, line: &str) -> Act {
                 .and_then(|s| s.supplies)
             {
                 if let Value::Object(map) = &mut args {
-                    map.insert(key, Value::String(value));
+                    // 🚨 **Filled only when the slot is empty — a typed word is never
+                    // overwritten.** The region is *context*, and context is what you did not
+                    // say; the moment somebody says it, they have said it. `stack`'s `region`
+                    // is a real optional keyword in the table, so `/add surface region right`
+                    // resolves with `right` already in hand — and an unconditional insert
+                    // replaced it with this region's own word, silently editing a column
+                    // nobody named. That is the *"edits a different column, silently"* defect
+                    // this whole module is written against, arriving from inside.
+                    //
+                    // ⚠️ **Honouring it rather than refusing it is rule 2** — prune discovery,
+                    // never capability. `palette` declines to *offer* the keyword and
+                    // `elsewhere` says so, but the table accepts it and `/stack add surface
+                    // region right` typed in full works here already; a refusal would make the
+                    // pruned surface reject what the whole table takes, which is the jail the
+                    // rule exists to prevent. The malformed case is untouched and still
+                    // refused upstream: a bare trailing `region` with no value never reaches
+                    // here, because `parse_args` answers it first — named, not defaulted.
+                    map.entry(key).or_insert(Value::String(value));
                 }
             }
             Act::Run { name, args }
@@ -1068,6 +1089,48 @@ mod tests {
         );
         assert!(p.elsewhere.contains(crate::panel_stack::REGION_ARG), "{}", p.elsewhere);
         assert!(p.elsewhere.contains("left"), "{}", p.elsewhere);
+    }
+
+    /// 🚨 **Not offered is not the same as not accepted, and a typed word wins.** The keyword
+    /// above is pruned from the *ring*; the *table* still takes it, so `/add surface region
+    /// right` typed into the `left` region's own line has to reach `right`. An unconditional
+    /// insert of the supplied word made it reach `left` instead — silently editing a column
+    /// nobody named, which is the one failure this module is written against.
+    ///
+    /// ⚠️ **Four assertions because the bug lives between two of them**: the shed form with no
+    /// keyword must still default (or "honour what was typed" has quietly become "supply
+    /// nothing"), and the shed form must agree with the full form typed at the same box (or the
+    /// pruned surface has become a jail). The malformed case is here to pin that honouring a
+    /// *value* did not start defaulting a *bare* keyword — `console_ops`'s rule, from inside.
+    #[test]
+    fn a_typed_region_keyword_beats_the_one_this_region_supplies() {
+        let reg = registry();
+        let region_of = |line: &str| match act(&reg, panel_ctx(), line) {
+            Act::Run { name, args } => {
+                assert_eq!(name, "console.stack", "{line}");
+                args[crate::panel_stack::REGION_ARG].clone()
+            }
+            other => panic!("{line}: {other:?}"),
+        };
+
+        // Typed in the `left` region's line, naming `right`.
+        assert_eq!(
+            region_of("/add surface region right"),
+            "right",
+            "the region a person typed was replaced by the one they were standing in"
+        );
+        // The same words through the unshed door, at the same box: the two must agree, or the
+        // pruned surface answers a line differently from the whole table.
+        assert_eq!(region_of("/stack add surface region right"), "right");
+        // …and saying nothing still means "here", which is the tier's own sentence.
+        assert_eq!(region_of("/add surface"), "left");
+
+        // A named column with no name is malformed, never defaulted — the caller reached for a
+        // column and the line lost it, and filling in this one would edit the one they did not
+        // name. `parse_args` answers first, so the supplied word never gets the chance.
+        let act = act(&reg, panel_ctx(), "/add surface region");
+        let Act::Refused(message) = act else { panic!("{act:?}") };
+        assert!(message.contains(crate::panel_stack::REGION_ARG), "{message}");
     }
 
     /// A shed verb that still wants an argument opens its ring when it is taken;
