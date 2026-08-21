@@ -52,23 +52,35 @@
 //! around it — and it is pinned by [`tests::a_note_appearing_does_not_take_the_box_with_it`],
 //! which drives real `egui::Event::Text` through a real frame. ⚠️ **That test's doc carries the
 //! measured mutation table, and it corrects an easy assumption**: on today's code, deleting the
-//! salt does *not* fail the suite, because the narrowing made the candidate row unconditional and
-//! the widget count above the box therefore stopped varying. The salt is kept so the property
-//! holds **by construction** rather than by that coincidence.
+//! salt does *not* fail the suite, because nothing is drawn in the band above the box at all any
+//! more and the widget count therefore never varies. The salt is kept so the property holds **by
+//! construction** rather than by that coincidence — and the coincidence is now one edit thinner
+//! than it was, since the only way to reintroduce the defect is to put a widget back in the band.
 //!
-//! ⚠️ **A second, independent defect was measured on the way and is fixed by the ordering
-//! below**: in a 320 pt column the old band's `elsewhere` sentence wrapped to several rows and
-//! pushed the box **35.6 pt past the band's own clip rect** — invisible and unclickable even
-//! with a stable id. Two faults, one symptom; do not stop at the first.
+//! ⚠️ **A second, independent defect was measured on the way**: in a 320 pt column the old
+//! band's `elsewhere` sentence wrapped to several rows and pushed the box **35.6 pt past the
+//! band's own clip rect** — invisible and unclickable even with a stable id. Two faults, one
+//! symptom; do not stop at the first.
 //!
-//! # ⚠️ The row order is a safety property, not a taste
+//! # 🚨 ONE line, and where the other three rows went
 //!
-//! **Candidate row, then the box, then the note.** The candidate row is [`compact_join`], which
-//! fits itself to the available columns and is therefore *exactly one row*, always. The note is
-//! the only thing here whose height is unbounded — a refusal naming every panel wraps — so it
-//! goes **last**, below the box. Anything that overflows the band pushes the *explanation* out
-//! of the clip rect and never the *input*. Put the note first and a long refusal hides the box
-//! that would let you correct it, which is the worst possible thing for a refusal to do.
+//! ✏️ **This section replaces "the row order is a safety property".** That section said:
+//! *candidate row, then the box, then the note* — the note last because it is the only row whose
+//! height is unbounded, so an overflow costs the tail of an explanation and never the input.
+//! The reasoning was right and it no longer applies, because **there are no other rows**.
+//!
+//! James, 2026-08-20: *"completely remove the status lines in the add remove inputs on the
+//! panels. It should just be a single line. If we need to pop something up over top of it, we
+//! can do that, but it's way too messy. We have to clean all this up."*
+//!
+//! So the band is the box alone ([`BAND_ROWS`] = 1), and the candidate row and the refusal are
+//! [`popover`] — a floating [`egui::Area`] anchored above the box. **The clip guarantee did not
+//! survive by inheritance; it was re-established.** An `Area` allocates nothing in the band's
+//! `Ui`, so it cannot displace the box at any height, and the band itself now holds exactly one
+//! single-line `TextEdit`, which does not wrap. That makes the property structural where it used
+//! to be ordinal — and structural *only while nothing else is put in the band*. [`BAND_ROWS`]
+//! carries the rule for anyone adding a row; a test drives a real refusal at 320 pt and asserts
+//! the box is still inside the clip rect.
 //!
 //! # 🚨 The hard part is still focus
 //!
@@ -463,9 +475,14 @@ impl Lines {
 /// mark nobody re-checks.
 const PROMPT: &str = ">";
 
-/// The hint an empty box carries. It names the job rather than a key, because this control has
-/// no mode to enter — the two words are already on the row above it.
-const HINT: &str = "add or remove a panel in this column";
+/// The hint an empty box carries.
+///
+/// ✏️ **It was `add or remove a panel in this column` and is now the two words themselves.** The
+/// candidate row that used to carry them is no longer in the band ([`BAND_ROWS`]), so this is the
+/// whole of what a resting column offers — and a sentence describing the control has to earn its
+/// line against the words you would actually type. It does not: James built this console, and
+/// `add | remove` tells him everything the sentence did in a third of the width.
+const HINT: &str = "add | remove";
 
 /// 🚨 **The box's own id, and it is the fix for the defect in the module header.** Without it
 /// egui derives one from `Ui::next_auto_id`, which counts the widgets drawn before the box — so
@@ -477,15 +494,29 @@ const BOX_ID: &str = "organon-region-line-box";
 /// spelling in `f32` is a number to keep in step.
 const PAD: i8 = 4;
 
-/// How many rows the band reserves: the candidate row, the box, and two for a note.
+/// How many rows the band reserves. **One: the box.**
 ///
-/// ⚠️ **A fixed reservation rather than a measured one, and the consequence is stated**: a note
-/// long enough to wrap past two rows is clipped by the region's own clip rect rather than growing
-/// the band. That is survivable *because of the row order* — the note is drawn last, so what a
-/// long refusal costs is the tail of its own sentence and never the box. Measuring the band would
-/// need the previous frame's content size (`composer_box`'s arrangement), and a band that changed
-/// height under a hand typing into somebody's assigned content is a worse trade here than there.
-pub const BAND_ROWS: usize = 4;
+/// ✏️ **It was four** — a candidate row, the box, and two for a note. James, 2026-08-20:
+/// *"completely remove the status lines in the add remove inputs on the panels. It should just be
+/// a single line. If we need to pop something up over top of it, we can do that, but it's way too
+/// messy."* So the other three rows did not move up or shrink; they left the band entirely and
+/// became [`popover`], which floats over the column instead of claiming a share of it.
+///
+/// # 🚨 The clip hazard changed shape rather than going away — read this before adding a row
+///
+/// #112 measured the old band pushing its `TextEdit` **35.6 pt past its own clip rect** in a
+/// 320 pt column, because an unbounded wrapping row was drawn above it. The fix then was the row
+/// *order* (the only unbounded row goes last, so a long refusal clips its own tail). That
+/// argument is gone with the rows, and this is what replaces it:
+///
+/// **The band holds exactly one widget, and it is a single-line [`egui::TextEdit`].** A
+/// single-line box does not wrap, so its height is one row whatever is typed into it and nothing
+/// above it can move it. The property is now structural rather than ordinal — but it is
+/// structural *only while nothing else is added to the band*. Anything with an unbounded height
+/// belongs in the popover, which is a floating [`egui::Area`] and therefore cannot displace the
+/// box no matter how tall it grows.
+/// [`tests::the_box_stays_inside_the_band_however_long_the_refusal_is`] pins it at a real width.
+pub const BAND_ROWS: usize = 1;
 
 /// How tall the whole band is, in points.
 pub fn band_height(row: f32) -> f32 {
@@ -505,6 +536,10 @@ pub fn band_height(row: f32) -> f32 {
 /// deliberately left alone**, because a single-line `TextEdit` surrenders focus on it and
 /// `lost_focus` is the reliable read; and **Escape is left alone** so egui's own defocus is the
 /// way out (module header).
+///
+/// ✏️ **The band is one row now** and everything it used to say is in [`popover`], drawn after
+/// the box because it is anchored to the box's own rectangle. [`BAND_ROWS`] carries what that
+/// changed about the clip guarantee.
 pub fn draw(
     ui: &mut egui::Ui,
     ctx: Context,
@@ -529,15 +564,12 @@ pub fn draw(
             let line = lines.line(region).clone();
             let pal = palette(registry, ctx, &line.text);
 
-            // ⚠️ **One row, always** — `compact_join` fits itself to the columns available and
-            // drops from the tail with a `+N` count. See the module header on why the only
-            // unbounded row is drawn *after* the box rather than before it.
+            // What the popover will say, decided before the box is drawn (so it reads this
+            // frame's palette) and *shown* after it (so it can be anchored to the box). The
+            // note is re-read below rather than taken from `line`, for the same reason it
+            // always was: a refusal produced by this frame's Enter has to appear on this frame.
             let columns = columns_in(ui);
-            ui.label(
-                RichText::new(compact_join(&compact_words(&pal, line.selected), columns))
-                    .monospace()
-                    .color(theme.panel_title),
-            );
+            let words = compact_join(&compact_words(&pal, line.selected), columns);
 
             if owns {
                 consume_keys(ui, lines, region, &pal);
@@ -597,11 +629,11 @@ pub fn draw(
                     Act::Idle => {}
                 }
             }
-            // 📌 **Last, and read back rather than taken from the clone above** — a refusal
-            // produced by this frame's Enter is drawn on this frame rather than the next one.
-            if let Some(note) = lines.line(region).note.clone() {
-                ui.label(RichText::new(note).monospace().color(theme.dim));
-            }
+            // 📌 **Over the top, never under the box.** The `Area` allocates nothing in this
+            // `Ui`, so however long a refusal is it cannot move the thing that would let you
+            // correct it — the guarantee [`BAND_ROWS`] used to get from the row order.
+            let said = overlay(lines.line(region).note.as_deref(), &words, owns);
+            popover(ui, region, response.rect, said, theme, form);
         }
         framed.frame.stroke = egui::Stroke::new(
             1.0_f32,
@@ -610,6 +642,97 @@ pub fn draw(
         framed.end(ui);
     });
     act
+}
+
+/// What floats over the column this frame, if anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Said<'a> {
+    /// Nothing. **The resting state of a panel column**, and the whole of what Tier 2 is for.
+    Nothing,
+    /// The words this line could become next — offered only while a hand is in the box.
+    Words(&'a str),
+    /// Why the last line was refused. **Shown whatever the focus is doing** — see [`overlay`].
+    Refusal(&'a str),
+}
+
+/// **The one rule about what the popover says**, pure and separate from the drawing so it can be
+/// read without an `egui::Ui`.
+///
+/// 🚨 **A refusal outranks the candidates, and it is not conditional on focus.** The two mean
+/// opposite things — one answers a line already sent, the other a line still being typed — which
+/// is `conversation_view::command_panel`'s rule arriving on a second surface, and one rectangle
+/// cannot say two things at once. What is *added* here is the focus asymmetry, and it is the
+/// whole of the quiet/loud split this change turns on: **a success is discoverable, a refusal is
+/// news.** Candidates appear because a hand is in the box asking what comes next; a refusal
+/// appears because something did not happen, and a person who has clicked away is exactly the
+/// person who would otherwise never learn it.
+///
+/// ⚠️ An empty `words` is `Nothing` rather than an empty plate — [`compact_join`] answers `""`
+/// when there is nothing left to offer, and a bordered rectangle with no text in it reads as a
+/// rendering fault.
+pub fn overlay<'a>(note: Option<&'a str>, words: &'a str, owns: bool) -> Said<'a> {
+    if let Some(note) = note {
+        return Said::Refusal(note);
+    }
+    if owns && !words.trim().is_empty() {
+        return Said::Words(words);
+    }
+    Said::Nothing
+}
+
+/// Draw [`Said`] in a floating layer sitting **on** the column, immediately above `anchor`.
+///
+/// 🚨 **An [`egui::Area`], not a row.** An `Area` is its own layer: it allocates nothing in the
+/// calling `Ui`, so it cannot push the box out of the band however tall it grows — which is the
+/// guarantee `BAND_ROWS` used to buy with the row order, now bought structurally. It is also
+/// what makes James's *"if we need to pop something up over top of it, we can do that"* a
+/// different object from the rows he asked to remove: this one is **over** the column's content
+/// rather than carved out of it, and it is gone the moment there is nothing to say.
+///
+/// ⚠️ **`Align2::LEFT_BOTTOM` about the box's own top-left**, so the popover grows *upwards* from
+/// a rectangle whose position is already known. Anchoring the top instead would need the
+/// popover's height a frame before it is laid out, which is the measured-band problem this
+/// change exists to stop having.
+///
+/// ⚠️ **`interactable(false)`.** Nothing here is a control — the words are taken with Tab, and a
+/// layer that swallowed clicks would sit between the pointer and the column it floats over.
+fn popover(
+    ui: &egui::Ui,
+    region: Region,
+    anchor: egui::Rect,
+    said: Said<'_>,
+    theme: &Theme,
+    form: &Form,
+) {
+    let (text, color) = match said {
+        Said::Nothing => return,
+        Said::Words(words) => (words, theme.panel_title),
+        Said::Refusal(note) => (note, theme.bad),
+    };
+    // Clear of the band's own top edge, so the plate does not read as a fifth side of the box.
+    let above = anchor.left_top() - egui::vec2(PAD as f32, PAD as f32 + 2.0);
+    egui::Area::new(egui::Id::new(("organon-region-line-popover", region.as_word())))
+        .order(egui::Order::Foreground)
+        .fixed_pos(above)
+        .pivot(egui::Align2::LEFT_BOTTOM)
+        .constrain(true)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            // The band's own width, so a refusal wraps inside the column rather than across
+            // whatever happens to sit beside it.
+            ui.set_max_width(anchor.width());
+            let mut framed = Frame::new()
+                .fill(theme.composer_fill)
+                .stroke(egui::Stroke::new(1.0_f32, theme.composer_edge))
+                .corner_radius(form.card_corner())
+                .inner_margin(egui::Margin::symmetric(6, PAD));
+            if let Some(shadow) = form.card_stroke(theme.panel_edge) {
+                framed = framed.stroke(shadow);
+            }
+            framed.show(ui, |ui| {
+                ui.label(RichText::new(text).monospace().color(color));
+            });
+        });
 }
 
 /// How many monospace cells fit across this `Ui`. `compact_fit` measures in **columns**, which is
@@ -1109,13 +1232,19 @@ mod tests {
     /// being pinned is about what happens *inside* that clip rect. `egui::RawInput::default()`
     /// carries `focused: true`, which is what makes `Response::has_focus` mean anything with no
     /// window in sight.
+    ///
+    /// Answers the band rectangle it reserved, so a test can ask whether what was drawn stayed
+    /// inside it. ⚠️ **Recomputed here rather than taken from a constant**, because the row
+    /// height is a font measurement and a hard-coded band would be a second spelling of
+    /// [`band_height`] that could agree with it and stop.
     fn frame(
         ctx: &egui::Context,
         reg: &Registry,
         lines: &mut Lines,
         events: Vec<egui::Event>,
         width: f32,
-    ) {
+    ) -> egui::Rect {
+        let mut band_rect = egui::Rect::NOTHING;
         let input = egui::RawInput {
             events,
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1132,6 +1261,7 @@ mod tests {
                     egui::pos2(0.0, 600.0 - band),
                     egui::pos2(width, 600.0),
                 );
+                band_rect = rect;
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(rect)
@@ -1148,6 +1278,7 @@ mod tests {
                 );
             });
         });
+        band_rect
     }
 
     fn typed(s: &str) -> Vec<egui::Event> {
@@ -1169,13 +1300,13 @@ mod tests {
     /// the wide case for the id reason.
     ///
     /// 🚨 **On today's code this test does NOT fail if [`BOX_ID`] is deleted, and that is worth
-    /// knowing rather than hiding.** Measured: remove the salt and all 22 tests here still pass.
-    /// The reason is the narrowing — the candidate row is now drawn *unconditionally*, so the
-    /// widget count above the box never changes and the auto id happens to be stable. The salt
-    /// is kept as the thing that makes the property true **by construction** rather than by a
-    /// coincidence of the current layout, and
-    /// [`tests::a_note_appearing_does_not_take_the_box_with_it`] is the case that does catch its
-    /// removal.
+    /// knowing rather than hiding.** Measured: remove the salt and every test here still passes.
+    /// The reason was the narrowing (the candidate row became unconditional, so the widget count
+    /// above the box stopped varying) and is now the *popover* — nothing at all is drawn in the
+    /// band above the box, so the auto id cannot move. The salt is kept as the thing that makes
+    /// the property true **by construction** rather than by a coincidence of the current layout,
+    /// and [`tests::a_note_appearing_does_not_take_the_box_with_it`] is the case that does catch
+    /// its removal.
     #[test]
     fn typing_survives_the_palette_opening() {
         for width in [320.0_f32, 2400.0] {
@@ -1209,17 +1340,21 @@ mod tests {
     ///
     /// | [`BOX_ID`] | note drawn | this test |
     /// |---|---|---|
-    /// | present | after the box | **passes** — as shipped |
-    /// | deleted | after the box | passes — the order alone happens to hold the id still |
-    /// | deleted | **before** the box | **FAILS**, `left: ""` — #112's defect exactly |
-    /// | present | before the box | passes — the salt alone holds it |
+    /// | present | in the popover | **passes** — as shipped |
+    /// | deleted | in the popover | passes — a floating layer allocates nothing, so the id holds |
+    /// | deleted | **before** the box, in the band | **FAILS**, `left: ""` — #112's defect exactly |
+    /// | present | before the box, in the band | passes — the salt alone holds it |
+    ///
+    /// ✏️ The middle two rows read *"after the box"* / *"the order alone happens to hold the id
+    /// still"* before Tier 2; the note is not in the band at all now, which is a stronger version
+    /// of the same protection rather than a different one.
     ///
     /// 🚨 **Read the table rather than the two fixes.** Neither is redundant and neither is
     /// sufficient on its own for the reason the other exists: the salt makes focus survive
-    /// *whatever* is drawn around the box, and the ordering makes a long refusal clip its own
-    /// tail instead of the box. Together, a later edit is free to move a row without silently
-    /// re-opening the defect — which is the only arrangement in which this stays fixed once
-    /// nobody remembers why.
+    /// *whatever* is drawn around the box, and keeping the unbounded text out of the band makes a
+    /// long refusal clip its own tail instead of the box. Together, a later edit is free to move
+    /// a row without silently re-opening the defect — which is the only arrangement in which this
+    /// stays fixed once nobody remembers why.
     #[test]
     fn a_note_appearing_does_not_take_the_box_with_it() {
         let ctx = egui::Context::default();
@@ -1297,5 +1432,86 @@ mod tests {
             "remove ",
             "Tab did not take the highlighted candidate"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 2 — one line, and the guarantee that replaced the row order
+    // -----------------------------------------------------------------------
+
+    /// 🚨 **The clip guarantee, re-established after the rows it used to rest on were removed.**
+    ///
+    /// #112 measured the old band pushing its box **35.6 pt past its own clip rect** in a 320 pt
+    /// column, because an unbounded wrapping row shared the band with it. The answer then was the
+    /// row order; the answer now is that the band holds one single-line widget and everything
+    /// unbounded floats in an [`egui::Area`]. That is a claim about geometry, so it is asserted
+    /// on geometry rather than inferred from typing still working.
+    ///
+    /// ⚠️ **The box is found through egui's own focus rather than by rebuilding its id.** The id
+    /// is `push_id` ∘ [`BOX_ID`] ∘ whatever `Ui` the caller supplied — reconstructing that here
+    /// would be a copy of the very arrangement under test, and it would keep passing if the
+    /// production path stopped using it.
+    ///
+    /// ⚠️ **Mutation-checked, and the number is the point**: draw the note as a `ui.label` in the
+    /// band above the box instead of in the popover and this fails at 320 pt with the box at
+    /// `y 657.9…673.0` against a band of `574.9…600.0` — **73 pt outside**, twice #112's
+    /// original 35.6, because a one-row band has less slack to absorb a wrap than a four-row one
+    /// did. ⚠️ `a_note_appearing_does_not_take_the_box_with_it` still *passes* under that
+    /// mutation, which is exactly what its own table says and why both tests exist.
+    #[test]
+    fn the_box_stays_inside_the_band_however_long_the_refusal_is() {
+        for width in [320.0_f32, 2400.0] {
+            let ctx = egui::Context::default();
+            let reg = registry();
+            let mut lines = Lines::default();
+            lines.line_mut(Region::Left).want_focus = true;
+            let Act::Refused(message) = act(&reg, column(), "add nonesuch") else {
+                panic!("the fixture no longer refuses an unknown panel")
+            };
+            assert!(message.len() > 60, "the refusal got short; this no longer tests wrapping");
+            lines.note(Region::Left, message);
+            let mut band = egui::Rect::NOTHING;
+            for _ in 0..3 {
+                lines.begin();
+                band = frame(&ctx, &reg, &mut lines, Vec::new(), width);
+            }
+            let focused = ctx.memory(|m| m.focused()).expect("the box asked for focus");
+            let box_rect =
+                ctx.read_response(focused).expect("the focused widget drew last frame").rect;
+            assert!(
+                band.contains_rect(box_rect),
+                "at {width} pt the box at {box_rect:?} left its band {band:?} — a refusal \
+                 pushed the input somebody needs in order to correct it out of the clip rect"
+            );
+        }
+    }
+
+    /// **The resting state of a panel column is one line and nothing else** — the whole of what
+    /// James asked for, as an assertion rather than a screenshot.
+    #[test]
+    fn a_column_nobody_is_typing_in_floats_nothing_over_itself() {
+        assert_eq!(overlay(None, "add | remove", false), Said::Nothing);
+    }
+
+    /// 🚨 **A refusal is shown whatever the focus is doing; candidates are not.** The asymmetry
+    /// is the rule — errors always reach a person, offers only answer a hand already in the box —
+    /// and it is the one thing about [`overlay`] that a reader might reasonably assume the other
+    /// way round.
+    #[test]
+    fn a_refusal_outranks_the_candidates_and_survives_losing_focus() {
+        assert_eq!(overlay(Some("no such panel"), "add | remove", true), Said::Refusal("no such panel"));
+        assert_eq!(
+            overlay(Some("no such panel"), "add | remove", false),
+            Said::Refusal("no such panel"),
+            "a refusal vanished because the pointer moved on"
+        );
+        assert_eq!(overlay(None, "add | remove", true), Said::Words("add | remove"));
+    }
+
+    /// An empty word list is nothing at all, never a bordered rectangle with no text in it —
+    /// which reads as a rendering fault rather than as silence.
+    #[test]
+    fn nothing_to_offer_draws_no_plate() {
+        assert_eq!(overlay(None, "", true), Said::Nothing);
+        assert_eq!(overlay(None, "   ", true), Said::Nothing);
     }
 }

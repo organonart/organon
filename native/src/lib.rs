@@ -6679,10 +6679,6 @@ fn fixed_columns(ui: &mut egui::Ui, add: impl FnOnce(&mut [egui::Ui])) {
     );
 }
 
-/// A titled "card": a filled, grouped frame with an amber collapsing header.
-/// Replaces the bare collapsing sections so the panel reads as grouped controls
-/// rather than one long wall of sliders.
-
 /// The **Neural Network generator** card (#226), shared by two call sites (#520 Tier 1).
 ///
 /// It lives on the Generator tab, where it appears when that generator is selected — and
@@ -6822,6 +6818,20 @@ fn neural_network_card(
         });
 }
 
+/// **A titled card**: a grouped frame with a painted header band and a collapsing header, so a
+/// panel reads as grouped controls rather than one long wall of sliders.
+///
+/// ⚠️ **Its doc paragraph had come loose from it.** The two sentences above were floating a
+/// hundred lines up, attached to nothing, with `neural_network_card`'s own doc directly beneath
+/// them — so `cargo doc` showed them on that function and this one had none at all. Reunited in
+/// #117, which is when somebody went looking for the card chrome and could not find it by name.
+///
+/// 🚨 **Two callers now, in two products.** `editor_ui` draws every one of Organon's ~105 cards
+/// through here, and — since #117 — so does `panel_surface::OrganonPanels::card`, which is what
+/// Organon Console's panel column calls through `panel_stack::OrganonDraw`. That is the whole of
+/// how the Console's column comes to have the editor's padding, corners and one-word heading:
+/// not a copied spec, the same function. **So a change here is visible in both**, and the
+/// Console has no compile-time way to notice.
 fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     theme::framed(ui, |ui| {
         ui.set_width(ui.available_width());

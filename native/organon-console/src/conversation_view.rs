@@ -539,8 +539,29 @@ pub struct ConversationPane {
     pub failure: Option<String>,
     pub composer: String,
     /// Non-event lines off the child — the `Warning: no stdin data received…` the CLI
-    /// opens a real run with (§5.9.3 rule 6), and anything on stderr.
-    log: VecDeque<String>,
+    /// opens a real run with (§5.9.3 rule 6), and anything on stderr — plus the console's own
+    /// remarks about this session. Each carries whether it is [`Remark::always`] seen.
+    log: VecDeque<Remark>,
+    /// **Trace mode: whether this pane narrates its own machinery.** Off.
+    ///
+    /// 🚨 **What "off" means is the whole of Tier 1.** James, 2026-08-20: *"I don't want to see
+    /// any of the things presently visible in the status panel. … My working model here is
+    /// Claude Desktop. That's the level of interactivity I want to default to in terms of
+    /// showing your process as the agent or harness. **Consider you are building this for me,
+    /// not for some unknown user.**"* Almost everything this pane used to print above the first
+    /// message was explaining the console to a stranger — which directory a tab started in, that
+    /// a command was accepted, that an empty transcript is empty. He built it. So the rule is:
+    ///
+    /// **A refusal is always seen; an acceptance is seen only here.** [`Remark::always`] carries
+    /// it per line, and the one thing that must never be gated is the one nobody would think to
+    /// check — silence on failure is the defect this tree keeps finding.
+    ///
+    /// ⚠️ **`/trace on` is a *view-lane* verb** ([`registry::VERB_TRACE`]) and therefore per
+    /// **pane**, not per console. Everything it un-hides is this conversation narrating itself,
+    /// and a console-lane verb would mean a sidecar spelling and an MCP tool for a preference no
+    /// other process has any use for. `ORGANON_TRACE=1` opens every tab tracing, which is the
+    /// same escape hatch [`Self::verbose`] has.
+    tracing: bool,
     /// Whether the view follows new elements. Re-derived from where the reader actually
     /// left the scroll each frame, so auto-scroll never fights someone reading back.
     pinned: bool,
@@ -783,6 +804,32 @@ struct PanelReceipt {
     since: Option<f64>,
 }
 
+/// One line of the console's own log, and whether a person sees it without asking.
+///
+/// 🚨 **`always` is the quiet/loud rule made per-line rather than per-caller**, and the default
+/// is deliberately the loud one: [`ConversationPane::note`] keeps its signature and its meaning,
+/// so a line written by somebody who did not think about this is **seen**. A surface whose
+/// default is silence is a surface that eventually swallows the one message that mattered.
+/// [`ConversationPane::trace`] is the opt-in for the other half.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remark {
+    pub text: String,
+    /// Seen whatever the mode. False = only under [`ConversationPane::tracing`].
+    pub always: bool,
+}
+
+impl Remark {
+    /// Whether this line is on screen, given the mode.
+    ///
+    /// ⚠️ **One function rather than the expression written twice.** Two surfaces draw the log —
+    /// the head of the scrollback and the status band's one-line slot — and a band saying
+    /// something the scrollback above it is hiding reads as a bug in whichever one you happen to
+    /// distrust.
+    pub fn seen(&self, tracing: bool) -> bool {
+        self.always || tracing
+    }
+}
+
 /// How long a **successful** receipt holds the region. A refusal never expires — see
 /// [`receipt_holds`].
 const RECEIPT_SECONDS: f64 = 8.0;
@@ -864,12 +911,19 @@ impl ConversationPane {
         // human can type and the verbs an agent is offered are one table by construction
         // rather than by two calls that happen to agree.
         let registry = Registry::new(&specs);
-        let mut log = VecDeque::new();
+        // ⚠️ **Everything written here is `always`.** Each of these three lines says something
+        // has gone wrong in a way nothing else on screen reports — a verb that cannot be typed,
+        // a wiring diagnostic, an approval channel that never came up — which is the half of the
+        // trace rule that is never gated. See [`ConversationPane::trace`].
+        let mut log: VecDeque<Remark> = VecDeque::new();
         for name in registry.collisions() {
-            log.push_back(format!(
-                "`{name}` cannot be typed as a slash command — another verb already holds that \
-                 word"
-            ));
+            log.push_back(Remark {
+                text: format!(
+                    "`{name}` cannot be typed as a slash command — another verb already holds \
+                     that word"
+                ),
+                always: true,
+            });
         }
         let (approvals, wiring, inbox) = match start_approvals(&specs, dispatch) {
             Ok((held, wiring, inbox, notes)) => {
@@ -877,14 +931,17 @@ impl ConversationPane {
                 // on a stderr nobody is reading. `push_back` rather than `note` because the
                 // pane does not exist yet; the log is capped far above the handful of lines
                 // this can produce.
-                log.extend(notes);
+                log.extend(notes.into_iter().map(|text| Remark { text, always: true }));
                 (Some(held), Some(wiring), inbox)
             }
             Err(error) => {
-                log.push_back(format!(
-                    "approvals are not wired ({error}) — a tool that needs permission will \
-                     fail instead of asking"
-                ));
+                log.push_back(Remark {
+                    text: format!(
+                        "approvals are not wired ({error}) — a tool that needs permission will \
+                         fail instead of asking"
+                    ),
+                    always: true,
+                });
                 // A dead channel rather than an `Option<Receiver>`: the drain already
                 // treats a disconnected inbox as "nothing to read", so the unwired case
                 // needs no second code path.
@@ -942,6 +999,9 @@ impl ConversationPane {
                 std::env::var("ORGANON_PALETTE_AUTORUN").ok().as_deref(),
             ),
             verbose: std::env::var("ORGANON_PALETTE_VERBOSE").is_ok_and(|v| v == "1"),
+            // ⚠️ **Off unless asked for, which is the point** — see the field. A tab opens quiet
+            // and `/trace on` is one line away.
+            tracing: std::env::var("ORGANON_TRACE").is_ok_and(|v| v == "1"),
         }
     }
 
@@ -1015,7 +1075,10 @@ impl ConversationPane {
         &self.transcript
     }
 
-    pub fn log(&self) -> impl Iterator<Item = &String> {
+    /// The console's own remarks about this session, **all of them** — including the ones a
+    /// quiet pane is not drawing. A reader that wants what is on screen filters on
+    /// [`Remark::always`] against [`Self::tracing`], which is what [`scrollback`] does.
+    pub fn log(&self) -> impl Iterator<Item = &Remark> {
         self.log.iter()
     }
 
@@ -1583,6 +1646,34 @@ impl ConversationPane {
                 }
                 registry::VERB_ORGANON => self.summon_organon(&args, typed),
                 registry::VERB_MEDIA => self.summon_media(&args, typed),
+                // ⚠️ **The word is looked up rather than trusted.** `validate_args` has already
+                // checked it against `TRACE_WORDS`, so the `else` is a belt on a brace — but it
+                // is the arm that would fire if a third word were added to that list and not
+                // here, and answering `off` to an unknown state would be the quiet failure this
+                // whole tier is about.
+                registry::VERB_TRACE => {
+                    match args.get(registry::TRACE_ARG).and_then(|v| v.as_str()) {
+                        Some("on") => {
+                            self.set_tracing(true);
+                            Receipt { ok: true, text: typed.to_string() }
+                        }
+                        Some("off") => {
+                            self.set_tracing(false);
+                            Receipt { ok: true, text: typed.to_string() }
+                        }
+                        other => {
+                            let message = format!(
+                                "`{}`: `{}` is not one of {} — that is a wiring bug, not \
+                                 something you typed wrongly",
+                                registry::VERB_TRACE,
+                                other.unwrap_or("<missing>"),
+                                registry::TRACE_WORDS.join(" | "),
+                            );
+                            self.note(message.clone());
+                            Receipt { ok: false, text: message }
+                        }
+                    }
+                }
                 registry::VERB_HELP => {
                     // Collected first: `help_lines` borrows the registry and `note` wants the
                     // pane.
@@ -1617,11 +1708,24 @@ impl ConversationPane {
                         }
                     }
                 }
-                // The call first, so the borrow of `local` has ended before `note` takes the
+                // The call first, so the borrow of `local` has ended before the note takes the
                 // whole pane.
                 let result = self.local.call(name, args);
-                self.note(registry::receipt(typed, &result));
-                registry::receipt_of(typed, &result)
+                let receipt = registry::receipt_of(typed, &result);
+                // 🚨 **The line James pointed at**: `ok /viewport center agent —
+                // {"accepted":"viewport center agent"}`, one per command, accumulating above the
+                // first message. It is a true sentence about a thing that already announced
+                // itself — the layout moved — so it is narration, and narration is what
+                // [`Self::trace`] is for. ⚠️ **The refusal is not**: nothing else on screen would
+                // say a console command was rejected, so it goes through `note` and is seen
+                // whatever the mode. `receipt.ok` is asked rather than the text parsed, which is
+                // exactly what `registry::Receipt` carries that field for.
+                if receipt.ok {
+                    self.trace(registry::receipt(typed, &result));
+                } else {
+                    self.note(registry::receipt(typed, &result));
+                }
+                receipt
             }
         }
     }
@@ -1838,11 +1942,49 @@ impl ConversationPane {
     /// the scrollback by [`scrollback`]. Public because the tab's working directory is
     /// decided by whoever opened the tab (`console_main`), not in here, and it is exactly
     /// the kind of thing this pane exists to say out loud.
+    ///
+    /// **Always seen.** This is the loud half of the pair; [`Self::trace`] is the quiet one, and
+    /// the default staying loud is what [`Remark`] is for.
     pub fn note(&mut self, line: String) {
+        self.remark(Remark { text: line, always: true });
+    }
+
+    /// Add a line that is **only** seen under [`Self::tracing`] — the machinery, not the news.
+    ///
+    /// ⚠️ **What belongs here is narrower than "anything routine".** The test is not whether a
+    /// line is interesting; it is whether the *thing it describes* is visible some other way. A
+    /// command's acceptance is: the layout moves, the panel appears, the palette repaints. A
+    /// command's refusal is not, and neither is a warning about the environment the agent
+    /// started in — those go through [`Self::note`] whatever mode the pane is in.
+    pub fn trace(&mut self, line: String) {
+        self.remark(Remark { text: line, always: false });
+    }
+
+    fn remark(&mut self, remark: Remark) {
         if self.log.len() == LOG_LINES {
             self.log.pop_front();
         }
-        self.log.push_back(line);
+        self.log.push_back(remark);
+    }
+
+    /// Turn the narration on or off. Answers what to say about it — see [`registry::VERB_TRACE`].
+    ///
+    /// ⚠️ **`on` is echoed and `off` is not**, and that falls straight out of the rule rather
+    /// than being a second decision: the acceptance goes to [`Self::trace`], which is only drawn
+    /// while tracing. Switching on says so; switching off simply goes quiet, which is the thing
+    /// asked for and needs no sentence.
+    pub fn set_tracing(&mut self, on: bool) {
+        self.tracing = on;
+        self.trace(if on {
+            "trace on — the console is narrating what it does. `/trace off` stops.".to_string()
+        } else {
+            "trace off".to_string()
+        });
+    }
+
+    /// Whether this pane is narrating. Read by [`scrollback`] and by [`command_panel`].
+    pub fn tracing(&self) -> bool {
+        self.tracing
     }
 }
 
@@ -2044,8 +2186,10 @@ fn scrollback(
         waiting,
         memory,
         log,
+        tracing,
         ..
     } = pane;
+    let tracing: bool = *tracing;
     // 🚨 **Everything about card density is decided here, before a single row is laid out**,
     // and `*pinned` is what makes it safe: an automatic collapse is applied only while the
     // view is following the live edge, where `stick_to_bottom` holds the last row still and
@@ -2082,19 +2226,27 @@ fn scrollback(
             // and that is the whole visible change.
             let mut walk = |ui: &mut egui::Ui| {
                 ui.add_space(6.0);
-                // The console's own remarks about this session, above the first message: which
-                // directory the agent started in, whether approvals are wired. ⚠️ These were
-                // written to `log` from the day the pane was built and drawn NOWHERE, so
-                // "approvals are not wired — a tool that needs permission will fail instead of
-                // asking" has never once been visible. A log with no reader is the same defect
-                // as an inherited working directory: the console knows, and says it to nobody.
-                for line in log.iter() {
-                    ui.label(RichText::new(line).color(theme.dim).italics());
+                // The console's own remarks about this session, above the first message —
+                // **whichever of them a person is meant to see without asking**. `Remark::always`
+                // decides; `tracing` widens it to everything. ⚠️ Anything written here was once
+                // drawn NOWHERE at all, so "approvals are not wired — a tool that needs
+                // permission will fail instead of asking" had never once been visible; the fix
+                // for that was to draw the log, and the risk this reintroduces is the same one.
+                // Read `ConversationPane::trace` before moving a line into the quiet half: the
+                // test is whether the thing it describes is visible some *other* way, never
+                // whether the line is routine.
+                let mut said = 0_usize;
+                for remark in log.iter().filter(|remark| remark.seen(tracing)) {
+                    ui.label(RichText::new(&remark.text).color(theme.dim).italics());
+                    said += 1;
                 }
-                if !log.is_empty() {
+                if said > 0 {
                     ui.add_space(6.0);
                 }
-                if transcript.is_empty() {
+                // ⚠️ **Only while tracing.** An empty transcript is self-evidently empty and the
+                // composer is directly below it with its own hint; this sentence was the console
+                // explaining itself to somebody who has not seen it before, which James is not.
+                if transcript.is_empty() && tracing {
                     ui.label(
                         RichText::new(
                             "no messages yet — type below and press Enter, or `/surface` for a \
@@ -4293,7 +4445,15 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
         },
         pane.mapper.facts(),
         pane.transcript.session_id(),
-        pane.log.back().map(String::as_str),
+        // ⚠️ **The most recent remark a person is meant to see, not simply the most recent
+        // one.** `back()` would put a traced line on the band while the scrollback was hiding
+        // it — the band and the log reading differently about the same event is worse than
+        // either of them being quiet.
+        pane.log
+            .iter()
+            .rev()
+            .find(|remark| remark.seen(pane.tracing))
+            .map(|remark| remark.text.as_str()),
     )
     .switching_to(pane.pending_model.as_ref().map(|p| p.label.as_str()));
     let rows = model_rows(&pane.models, pane.mapper.facts().model.as_deref());
@@ -5132,7 +5292,17 @@ fn command_panel(
         return pane.theme_editor_ui(ui, theme);
     }
     let now = ui.input(|i| i.time);
-    if let Some(held) = pane.receipt.as_mut() {
+    // 🚨 **A successful receipt is not drawn unless the pane is tracing.** ✏️ It always was, for
+    // eight seconds, and it is the *"anything like that"* half of James's complaint: `ok /theme
+    // dark — {"accepted":"theme dark"}` sitting over the composer while the console repaints in
+    // front of him. The refusal band stays unconditional — see [`receipt_holds`], whose whole
+    // subject is that a refusal outlives a success, and which this extends rather than replaces.
+    //
+    // ⚠️ **Held, not skipped.** `pane.receipt` is still set and still ages; only the *drawing* is
+    // gated. Clearing it here instead would mean `/trace on` mid-receipt changed what the pane
+    // believes happened, and the band is a view of that state rather than the state itself.
+    let show_receipt = pane.tracing || pane.receipt.as_ref().is_some_and(|r| !r.receipt.ok);
+    if let Some(held) = pane.receipt.as_mut().filter(|_| show_receipt) {
         // Stamped on the first frame it is drawn, not when it was made: a receipt must not
         // age while nothing is on screen to have read it.
         let since = *held.since.get_or_insert(now);
@@ -6896,7 +7066,7 @@ mod tests {
         // The region is named where a person can read it, not merely implied — there is one
         // stack and possibly several regions showing it.
         assert!(
-            pane.log.back().is_some_and(|line| line.contains("left")),
+            pane.log.back().is_some_and(|line| line.text.contains("left")),
             "the answer does not say which region: {:?}",
             pane.log.back()
         );
@@ -6997,7 +7167,7 @@ mod tests {
             receipt.text
         );
         assert!(
-            pane.log.iter().any(|l| l.contains("take.mp3")),
+            pane.log.iter().any(|l| l.text.contains("take.mp3")),
             "and the person can read it in the log: {:?}",
             pane.log
         );
@@ -9021,7 +9191,7 @@ mod tests {
         assert!(pane.theme_edit.is_none(), "the editor survived a repaint underneath it");
         assert!(change.is_none(), "a closing editor must not also emit a palette");
         assert!(
-            pane.log.iter().any(|l| l.contains("the palette changed")),
+            pane.log.iter().any(|l| l.text.contains("the palette changed")),
             "the console said nothing about closing the editor: {:?}",
             pane.log
         );
@@ -9207,8 +9377,14 @@ mod tests {
         // Everything, with the word Tab would take marked. ⚠️ `organon` is here because the
         // fixture's registry gained it with §1.11's ring — the row is the registry's own
         // words, so a verb added anywhere lands in this string without anyone editing it.
-        assert_eq!(row("/", 0), "[theme] | camera | camera.read | surface | help | media | organon");
-        assert_eq!(row("/", 2), "theme | camera | [camera.read] | surface | help | media | organon");
+        assert_eq!(
+            row("/", 0),
+            "[theme] | camera | camera.read | surface | help | trace | media | organon"
+        );
+        assert_eq!(
+            row("/", 2),
+            "theme | camera | [camera.read] | surface | help | trace | media | organon"
+        );
         // …and it narrows, because the generator does.
         assert_eq!(row("/c", 0), "[camera] | camera.read");
         // The value ring is the same row: an `ArgKind::Choice` IS a list of words.
@@ -9242,7 +9418,7 @@ mod tests {
         assert_eq!(compact_fit(&[], 40), (0, 0), "nothing to fit and nothing hidden");
         let registry = Registry::new(&palette_specs());
         let palette = registry.candidates("/").expect("a command line");
-        assert_eq!(compact_line(&palette, 0, 24), "[theme] | camera | +5");
+        assert_eq!(compact_line(&palette, 0, 24), "[theme] | camera | +6");
     }
 
     /// The list is capped rather than scrolled — see [`PALETTE_MAX_ROWS`] for the measured
@@ -9853,14 +10029,19 @@ mod tests {
     ///
     /// Chaining is wanted — completing a verb opens its value ring, and a ring with one
     /// option in it is an answer too. What it must never be able to do is spin, so the loop
-    /// counts rather than testing a condition it cannot prove. `/t` is the deepest chain this
-    /// fixture can build: `theme` is unique, and it stops at four options.
+    /// counts rather than testing a condition it cannot prove. `/th` is the deepest chain this
+    /// fixture can build: `theme` is unique on that prefix, and it stops at four options.
+    ///
+    /// ✏️ **It was `/t` until `/trace` joined the table** — a plain consequence of a second verb
+    /// starting with the same letter, and worth leaving visible rather than renaming the verb
+    /// around: a one-letter prefix settling is a property of the *vocabulary*, not of the
+    /// cascade, and this test is about the cascade.
     #[test]
     fn the_completion_cascade_is_bounded_and_terminates() {
         assert_eq!(PALETTE_COMPLETE_STEPS, 4, "past the deepest ring the table has");
         let ctx = egui::Context::default();
         let mut pane = palette_pane();
-        pane.composer = "/t".to_string();
+        pane.composer = "/th".to_string();
         let _ = palette_frame(&ctx, &mut pane, Vec::new());
         assert_eq!(pane.composer, "/theme ", "verb, then a ring it cannot settle");
 
@@ -9968,10 +10149,16 @@ mod tests {
     }
 
     /// A command's answer lands where the command was typed, which is the whole of the
-    /// addendum this tier carries: the log is drawn at the head of the scrollback, so in any
+    /// addendum that tier carried: the log is drawn at the head of the scrollback, so in any
     /// conversation longer than a screen a receipt there is invisible.
+    ///
+    /// ✏️ **…and a *successful* one is now drawn only while the pane is tracing.** It ended
+    /// `assert!(band > 0.0)` unconditionally; James asked for `ok /theme dark —
+    /// {"accepted":"theme dark"}` over the composer to stop appearing while the console
+    /// repaints in front of him. The receipt is still *made* and still ages — only the drawing
+    /// moved — which is what lets `/trace on` show one that is already in hand.
     #[test]
-    fn a_command_answers_in_the_band_above_the_composer() {
+    fn a_successful_receipt_is_held_and_drawn_only_while_tracing() {
         let ctx = egui::Context::default();
         let mut pane = palette_pane();
         pane.composer = "/surface".to_string();
@@ -9981,8 +10168,127 @@ mod tests {
         assert!(answer.receipt.ok);
         assert_eq!(answer.receipt.text, "/surface");
         assert_eq!(answer.answered, "", "a success answers the box it emptied");
+
+        let (quiet, _) = palette_frame(&ctx, &mut pane, Vec::new());
+        assert_eq!(quiet, 0.0, "a quiet console confirmed a command that confirmed itself");
+        assert!(pane.receipt.is_some(), "the receipt was destroyed rather than merely not drawn");
+
+        pane.tracing = true;
+        let (loud, _) = palette_frame(&ctx, &mut pane, Vec::new());
+        assert!(loud > 0.0, "tracing did not bring the held receipt back: {loud}");
+    }
+
+    /// A dispatch that accepts everything, so the **quiet** half of the receipt rule is
+    /// reachable in a fixture whose production `local` (`mcp::NoDispatch`) refuses everything.
+    struct Accepts;
+    impl crate::mcp::ToolDispatch for Accepts {
+        fn call(
+            &mut self,
+            _command: &str,
+            _args: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
+    /// 🚨 **The whole of Tier 1's rule, at the one place it is decided.**
+    ///
+    /// `ok /viewport center agent — {"accepted":"viewport center agent"}` is the line James
+    /// pointed at, and what makes it droppable is not that it is routine — it is that the thing
+    /// it describes announced itself, because the layout moved. A refusal announces itself
+    /// nowhere, so it is the half that must never be gated.
+    ///
+    /// ⚠️ **Both halves in one test on purpose**: they are the two arms of one `if`, and a test
+    /// that only pinned the quiet one would pass with the loud arm deleted.
+    #[test]
+    fn a_console_command_that_worked_is_narration_and_one_that_did_not_is_news() {
+        let args = || serde_json::json!({ "name": "dark" });
+        let mut accepted = palette_pane();
+        accepted.local = Box::new(Accepts);
+        let receipt = accepted.run_command(
+            Lane::Console,
+            "console.theme",
+            "/theme dark",
+            args(),
+            &Theme::organon(),
+            "organon",
+        );
+        assert!(receipt.ok, "{}", receipt.text);
+        let last = accepted.log.back().expect("the receipt reached the log either way");
+        assert!(last.text.contains("/theme dark"), "{}", last.text);
+        assert!(!last.always, "an acceptance is narration — it is drawn only under `/trace on`");
+        assert!(!last.seen(false), "a quiet console drew an acceptance");
+        assert!(last.seen(true), "…and tracing did not bring it back");
+
+        // The fixture's own `local` is `NoDispatch`, which refuses everything — so this is the
+        // refusal path with nothing rigged.
+        let mut refused = palette_pane();
+        let receipt = refused.run_command(
+            Lane::Console,
+            "console.theme",
+            "/theme dark",
+            args(),
+            &Theme::organon(),
+            "organon",
+        );
+        assert!(!receipt.ok, "the fixture's dispatch refuses: {}", receipt.text);
+        let last = refused.log.back().expect("a refusal reaches the log");
+        assert!(last.always, "a refusal was hidden behind a mode nobody had turned on");
+        assert!(last.seen(false));
+    }
+
+    /// `/trace on` and `/trace off`, through the same lane a typed line takes.
+    ///
+    /// ⚠️ **Switching on is echoed and switching off is not**, and that is not two rules: the
+    /// acknowledgement goes to the quiet half, which the mode it just set decides the visibility
+    /// of. Turning it on shows the line; turning it off goes quiet, which is the thing asked for.
+    #[test]
+    fn trace_is_off_until_it_is_asked_for_and_one_word_puts_it_back() {
+        let mut pane = palette_pane();
+        assert!(!pane.tracing(), "a tab opens quiet");
+        let say = |pane: &mut ConversationPane, word: &str| {
+            pane.run_command(
+                Lane::View,
+                registry::VERB_TRACE,
+                &format!("/trace {word}"),
+                serde_json::json!({ registry::TRACE_ARG: word }),
+                &Theme::organon(),
+                "organon",
+            )
+        };
+        assert!(say(&mut pane, "on").ok);
+        assert!(pane.tracing(), "`/trace on` did not turn it on");
+        let last = pane.log.back().expect("it says so");
+        assert!(last.text.contains("trace on"), "{}", last.text);
+        assert!(last.seen(pane.tracing()), "the line announcing trace is hidden by trace");
+
+        assert!(say(&mut pane, "off").ok);
+        assert!(!pane.tracing(), "`/trace off` did not turn it off");
+        assert!(
+            !pane.log.back().expect("it is still in the log").seen(pane.tracing()),
+            "turning the narration off left a line of narration on screen"
+        );
+    }
+
+    /// 🚨 **A refusal keeps the band whatever the mode.** The quiet default costs a
+    /// confirmation, never a reason — and this is the one of the two that nothing else on
+    /// screen would say.
+    ///
+    /// ⚠️ **Driven through the real command path rather than by planting a `PanelReceipt`.** The
+    /// gate reads `receipt.ok`, and a test that set that field by hand would keep passing if the
+    /// production path stopped producing a refusal at all.
+    #[test]
+    fn a_refusal_holds_the_band_even_when_the_console_is_quiet() {
+        let ctx = egui::Context::default();
+        let mut pane = palette_pane();
+        assert!(!pane.tracing, "the fixture opens quiet, like a real tab");
+        pane.composer = "/camera yaw 999".to_string();
+        let _ = palette_frame(&ctx, &mut pane, Vec::new());
+        let _ = palette_frame(&ctx, &mut pane, enter(egui::Modifiers::NONE));
+        let answer = pane.receipt.as_ref().expect("a receipt");
+        assert!(!answer.receipt.ok, "999 is outside the yaw ring: {}", answer.receipt.text);
         let (band, _) = palette_frame(&ctx, &mut pane, Vec::new());
-        assert!(band > 0.0, "and it occupies the region the candidates would have: {band}");
+        assert!(band > 0.0, "a quiet console swallowed a refusal: {band}");
     }
 
     /// The band follows the text rather than a guess: the same three-row floor, one extra

@@ -3246,9 +3246,18 @@ impl Console {
             // Said twice on purpose, to two different readers: into the pane, where it
             // appears at the head of the scrollback for whoever is looking at the console,
             // and onto stderr for whoever started it from a terminal.
+            //
+            // ⚠️ **stderr is unconditional; the pane is not.** `CwdNote::always` decides which
+            // lines a quiet console shows — the bare-project warning always, the resolution
+            // itself only under `/trace on` — and the terminal keeps both either way, which is
+            // what stops the quiet default from costing a diagnostic rather than a distraction.
             for note in harness::cwd_notes(&resolved) {
-                eprintln!("organon-console: {} — {note}", spec.name);
-                pane.note(note);
+                eprintln!("organon-console: {} — {}", spec.name, note.text);
+                if note.always {
+                    pane.note(note.text);
+                } else {
+                    pane.trace(note.text);
+                }
             }
             // The pane keeps its own failure and shows it; the log line is for whoever
             // started the console from a terminal and is watching stderr.
@@ -5773,20 +5782,31 @@ impl Console {
                                 registry: registry_for_lines,
                                 ran: &mut region_ran,
                                 form,
-                                // 🚨 **The seam that used to be handed to the conversation
-                                // view**, unchanged and at its new address: this crate is the
-                                // only one that can fill it, because the console lib cannot
-                                // see `OrganicMathParams`. Reached for every panel the table
-                                // marks `Status::Live` — today Look ▸ Surface and nothing else
-                                // — and a `Declared` panel never gets here, `panel_stack`
-                                // saying so where its controls would be.
+                                // 🚨 **The seam only this crate can fill** — the console lib
+                                // cannot see `OrganicMathParams`, and it cannot see
+                                // `theme::card` either, which is why the *card* crosses here
+                                // and not just the body (`panel_stack::OrganonDraw`). Reached
+                                // for **every** panel in the column, `Declared` ones included:
+                                // they get the same chrome, with the console's own sentence
+                                // inside it.
+                                //
+                                // ⚠️ `absent_body` is asked rather than `panel.status` matched,
+                                // so the rule about which panels have controls is stated in one
+                                // place. `true` because this build really does draw a card.
                                 //
                                 // What a control writes is a `PresetValues` mirror rather than
                                 // a parameter, because a parameter cannot be written from
                                 // outside `nih_plug` at all: `param_sink` owns that account,
                                 // and `OrganonPanels::overlay` is where the mirror reaches the
                                 // world.
-                                draw: &mut |ui, panel| organon_panels.draw(ui, panel),
+                                draw: &mut |ui, panel| {
+                                    organon_panels.card(
+                                        ui,
+                                        panel,
+                                        organon_console::panel_stack::absent_body(panel),
+                                    );
+                                    true
+                                },
                             },
                             &mut draw_active_pane,
                         );
@@ -5875,7 +5895,20 @@ impl Console {
             let mut dispatch = ConsoleDispatch { viewpoint: self.viewpoint.clone() };
             let result = dispatch.call(&name, args);
             let receipt = organon_console::registry::receipt_of(&name, &result);
-            self.region_lines.note(region, receipt.text);
+            // 🚨 **A refusal is news; an acceptance is not.** ✏️ This wrote the receipt back
+            // unconditionally, which is the third row James asked to remove from these bands
+            // (*"completely remove the status lines in the add remove inputs on the panels"*) —
+            // and an acceptance had the least to say of the three: `console.stack —
+            // {"accepted":"stack add surface region left"}` restates the line still on screen,
+            // and the panel appearing in the column above is the answer.
+            //
+            // ⚠️ **`receipt.ok` rather than a test on the text**, which is what that field is
+            // for: this is the one place a refusal from *dispatch* — as opposed to one
+            // `region_line::act` produced before dispatching — can reach the person who typed it,
+            // and a surface that dropped it would leave a command that silently did nothing.
+            if !receipt.ok {
+                self.region_lines.note(region, receipt.text);
+            }
         }
         // What the next frame's `render_viewport` sizes its texture to — points, never pixels,
         // for `pane_points`' reason: it is the *ratio* to the window that survives a scale

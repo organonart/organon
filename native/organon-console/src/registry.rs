@@ -111,6 +111,26 @@ pub const VERB_SURFACE: &str = "view.surface";
 /// first.
 pub const VERB_HELP: &str = "view.help";
 
+/// `/trace` — **whether this conversation narrates its own machinery.**
+///
+/// 🚨 **A view-lane verb, and that is a decision about scope rather than about plumbing.**
+/// Everything it un-hides is one pane talking about itself: which directory its agent started
+/// in, that a command it dispatched was accepted, that its transcript is empty. None of it is
+/// console state, none of it is worth a sidecar line, and a console-lane spelling would put an
+/// MCP tool in an agent's catalog for a preference about how loudly the console talks to the
+/// person sitting in front of it.
+///
+/// ⚠️ **So trace is per-tab.** Two conversations can disagree about it, which is the honest
+/// consequence of the scope rather than an oversight — a tab you are debugging can be loud while
+/// the one you are working in stays quiet. `ORGANON_TRACE=1` opens every tab tracing.
+pub const VERB_TRACE: &str = "view.trace";
+/// The argument `/trace` carries its state in.
+pub const TRACE_ARG: &str = "state";
+/// `/trace`'s whole value space. **Two words and no toggle**, on `console.screen`'s rule: a verb
+/// that means "the other one" cannot be read back, cannot be typed with intent, and answers
+/// differently depending on a state the person typing it may be wrong about.
+pub const TRACE_WORDS: [&str; 2] = ["on", "off"];
+
 /// `console.theme` — the palette verb, and the one console-lane name this crate has to
 /// **recognise** rather than merely forward.
 ///
@@ -574,6 +594,21 @@ fn view_entries() -> Vec<Entry> {
             // log, not `Transcript::push`. It reads a table and changes nothing; running it by
             // accident costs a few lines that scroll. That is the whole distinction the rule
             // turns on, and it is a difference in the code rather than a judgement call.
+            reversal: Reversal::Recoverable,
+            narrow: None,
+        },
+        Entry {
+            name: VERB_TRACE.into(),
+            doc: "Narrate what this console does — every command's receipt, and what it \
+                  noticed on the way in. Off"
+                .into(),
+            args: vec![ArgSpec {
+                name: TRACE_ARG.into(),
+                kind: ArgKind::Choice(TRACE_WORDS.iter().map(|s| (*s).to_string()).collect()),
+                required: true,
+            }],
+            lane: Lane::View,
+            // It changes what is *drawn* and appends no element; the inverse is the other word.
             reversal: Reversal::Recoverable,
             narrow: None,
         },
@@ -1651,7 +1686,17 @@ mod tests {
         }
         assert_eq!(
             reg.verbs(),
-            ["background", "patch", "camera", "camera.read", "surface", "help", "media", "organon"]
+            [
+                "background",
+                "patch",
+                "camera",
+                "camera.read",
+                "surface",
+                "help",
+                "trace",
+                "media",
+                "organon"
+            ]
         );
     }
 
@@ -1663,7 +1708,7 @@ mod tests {
         let console: Vec<&str> = reg.verbs_in("console").iter().map(|e| e.verb()).collect();
         assert_eq!(console, ["background", "patch", "camera", "camera.read"]);
         let view: Vec<&str> = reg.verbs_in("view").iter().map(|e| e.verb()).collect();
-        assert_eq!(view, ["surface", "help", "media", "organon"]);
+        assert_eq!(view, ["surface", "help", "trace", "media", "organon"]);
         assert!(reg.verbs_in("nothing").is_empty());
 
         // The third ring is the argument's own value space — already closed, already

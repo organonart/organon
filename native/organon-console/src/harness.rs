@@ -384,24 +384,46 @@ pub fn is_project_dir(dir: &Path) -> bool {
 /// What to say about where a conversation tab landed: one line always, and a second when
 /// it landed somewhere with no project context.
 ///
-/// ⚠️ **The first line is unconditional on purpose.** The failure being closed here is a
-/// *silent* one, and a diagnostic that only appears when something is detectably wrong
-/// cannot cover the case where the resolution is wrong in a way this code cannot see — a
-/// project root found two levels above the one the user meant, say. Stating the answer
-/// every time is what makes that inspectable at all.
-pub fn cwd_notes(resolved: &ConversationCwd) -> Vec<String> {
-    let mut notes =
-        vec![format!("working directory {} ({})", resolved.dir, resolved.source.why())];
+/// ⚠️ **The first line is still produced unconditionally, and it is no longer *drawn*
+/// unconditionally.** It is written to `stderr` for whoever started the console from a terminal
+/// and to the pane's trace log for whoever asks — which keeps the property this doc was written
+/// to defend (a resolution that is wrong in a way this code cannot see is still inspectable)
+/// while taking `working directory C:\Users\james (where the console started — nothing above it
+/// looks like a project)` off the top of every conversation. James named that line specifically.
+///
+/// 🚨 **The second line is unconditional in both senses and must stay that way.** It says the
+/// agent has no project instructions and no skills, which nothing else on screen says and which
+/// changes what the agent can do. That is the *"errors always show"* half of the rule, and it is
+/// the reason this function answers a [`CwdNote`] per line rather than a bare string: the caller
+/// cannot tell them apart from the text, and asking it to would be a parser over prose.
+pub fn cwd_notes(resolved: &ConversationCwd) -> Vec<CwdNote> {
+    let mut notes = vec![CwdNote {
+        text: format!("working directory {} ({})", resolved.dir, resolved.source.why()),
+        always: false,
+    }];
     if resolved.bare {
-        notes.push(
-            "⚠ no .claude/, CLAUDE.md or .git here — this agent starts with no project \
-             skills and no project instructions. Start the console from inside the \
-             project, set $ORGANON_SHELL_PROJECT, or give this harness a \"cwd\" in \
-             harnesses.json."
+        notes.push(CwdNote {
+            text: "⚠ no .claude/, CLAUDE.md or .git here — this agent starts with no project \
+                   skills and no project instructions. Start the console from inside the \
+                   project, set $ORGANON_SHELL_PROJECT, or give this harness a \"cwd\" in \
+                   harnesses.json."
                 .to_string(),
-        );
+            always: true,
+        });
     }
     notes
+}
+
+/// One line of [`cwd_notes`], and whether a person sees it without turning trace on.
+///
+/// Mirrors `conversation_view::Remark` deliberately rather than being it: this module knows
+/// nothing about a pane, and the alternative — returning the view's type from a harness — would
+/// point the dependency the wrong way for one bool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CwdNote {
+    pub text: String,
+    /// True = seen whatever the mode; false = only under `/trace on`.
+    pub always: bool,
 }
 
 /// Which registry ids are installed, per `lookup` (a PATH probe in production,
@@ -827,9 +849,14 @@ mod tests {
         assert!(landed.bare, "no marker anywhere means no project context");
         let notes = cwd_notes(&landed);
         assert_eq!(notes.len(), 2, "the fact, then the warning");
-        assert!(notes[0].contains("/Users/example/Documents"), "the line names the directory");
-        assert!(notes[0].contains("where the console started"), "and which rule chose it");
-        assert!(notes[1].contains("no project"), "and the consequence, in the failure's words");
+        assert!(notes[0].text.contains("/Users/example/Documents"), "the line names the directory");
+        assert!(notes[0].text.contains("where the console started"), "and which rule chose it");
+        assert!(notes[1].text.contains("no project"), "and the consequence, in the failure's words");
+        // 🚨 **Which of the two a quiet console shows.** The resolution is narration — true, and
+        // repeated at the head of every conversation for something that already went to stderr.
+        // The warning is not: nothing else says this agent has no project instructions.
+        assert!(!notes[0].always, "the resolution line is trace-only");
+        assert!(notes[1].always, "the bare-project warning must never be gated");
 
         let inside = conversation_cwd(
             &chat(),
