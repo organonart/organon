@@ -68,3 +68,19 @@ so that is the half worth adopting. ⚠️ **Revocation is the half git has no a
 signature stays valid, a commit stays fetchable, a fork keeps the history — so it must be
 designed rather than inherited, under §10's standing constraint that a layout referencing a
 module you have stopped trusting must not fail to open.
+
+🚨 **And §11.9's own recommendation was tested and turned out to be wrong**, which is recorded
+rather than quietly fixed because it is the section's thesis arriving as evidence. The draft
+said pinning the floaters *"changes no bytes in any build today."* Measured: adding
+`rev = "f36931f7…"` to both declarations and re-resolving with `cargo metadata` takes `nih_plug`
+from **one package entry to two**, and `nih_plug_derive` likewise — the lock ends up carrying
+both `nih-plug.git#f36931f7…` and `nih-plug.git?rev=f36931f7…#f36931f7…`, the same commit and,
+to cargo, two different sources.
+
+⚠️ The cause names itself: `vendor/nih_plug_egui` declares `nih_plug` **unpinned on purpose**,
+its `Cargo.toml:19` explaining that the *"workspace already resolves [it], so cargo unifies it
+to a SINGLE `nih_plug`"* and warning that otherwise *"options become different types across the
+boundary."* 📌 So the rule is sharper than *pin the commit*: **a rev pin must be applied at every
+declaration of the same git source in the graph — vendored and patched crates included — or
+cargo stops unifying and silently duplicates the dependency.** A half-applied pin is worse than
+none. The whole check needed no compiler: edit, re-resolve, diff the lock.
