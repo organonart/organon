@@ -1,6 +1,6 @@
 # Organon — CI
 #
-# Builds and tests the native engine, every edition. #626 Tier 1.
+# Builds and tests the native engine. #626 Tier 1.
 #
 # ── What this can and cannot tell you ───────────────────────────────────────────
 # It can tell you: it compiles, the unit tests pass, and every WGSL shader parses
@@ -11,27 +11,43 @@
 #
 # ── Why every job, and why none is redundant ────────────────────────────────────
 # Two axes, not one: the EDITION (a default-off cargo feature) and the PLATFORM.
-# (This heading used to say "four jobs" and was already stale by one — the
-# console-edition leg landed and the count did not. Read them off the `jobs:` block;
-# a number written in prose here only ever rots.)
+# (This heading used to say "four jobs" and was already stale by one, then said
+# "every edition" and was stale again the day Mind stopped being one. Read the
+# legs off the `jobs:` block; a number or a list written in prose here only ever
+# rots.)
 #
-# `mind-edition` is a default-OFF cargo feature, so the two builds cover disjoint
-# code and each is blind where the other sees:
+# `console-edition` is a default-OFF cargo feature, so the two Linux builds cover
+# disjoint code and each is blind where the other sees:
 #
-#   default       covers the plugin, `frame_ring`, `viewport_pane`, full Organon's
-#                 tab set — and compiles NONE of `src/mind_main.rs`.
-#   mind-edition  covers the Mind edition, `wgpu_editor`, the gated `world.rs` —
-#                 and compiles none of the `cfg(not(feature = "mind-edition"))`
-#                 arms.
+#   default          covers the plugin cdylib, the standalone, `frame_ring`,
+#                    `viewport_pane` — and compiles NONE of `src/console_main.rs`.
+#   console-edition  covers the Console front-of-house and the `Edition::Console`
+#                    arms — and compiles none of the
+#                    `cfg(not(feature = "console-edition"))` ones.
 #
-# That asymmetry is the hazard CLAUDE.md warns about in prose ("you can break the
-# Mind edition and see a green suite"). Running both here is what makes the
-# warning unnecessary. Do not collapse them into one job to save minutes — the
-# saving would be the entire point of the check.
+# That asymmetry is the hazard CLAUDE.md warns about in prose ("you can break an
+# edition and see a green suite"). Running both here is what makes the warning
+# unnecessary. Do not collapse them into one job to save minutes — the saving
+# would be the entire point of the check.
+#
+# ⚠️ **THERE IS NO `build (mind-edition)` LEG ANY MORE, AND ITS ABSENCE IS A
+# DECISION, NOT AN OMISSION.** Organon Mind is no longer a separate product or a
+# separate build — there is one Organon, plus the VST it exports — so an edition
+# leg policing a second front-of-house had nothing left to police. Removed
+# 2026-08-21; it cost ~6 minutes of Linux runner per PR (measured below) and its
+# cross-check step another ~15 s.
+#
+# What is deliberately NOT claimed here: the `mind-edition` cargo feature and the
+# `organon-mind` package still exist in `native/`. The package is a workspace
+# member, so `cargo test --release --workspace` in the default leg below still
+# builds it and still runs its tests — that coverage did not move. What is gone is
+# the leg that turned the *feature* on. If that feature is ever load-bearing again,
+# the leg comes back; until the feature is actually deleted from `Cargo.toml`, a
+# change that breaks `--features mind-edition` will land green here.
 #
 # ── The platform axis (organon#658 Tier 1) ──────────────────────────────────────
-# Windows is a first-class target: Organon and Organon Mind both ship there. The
-# two legs above run on `ubuntu-latest` and cannot see a Windows regression, so a
+# Windows is a first-class target: Organon ships there, plugin included. The two
+# legs above run on `ubuntu-latest` and cannot see a Windows regression, so a
 # `cfg(unix)` assumption creeping into a shared file would land green. Two more
 # jobs close that, and they are deliberately ASYMMETRIC because they cost wildly
 # different amounts:
@@ -77,18 +93,18 @@
 # leg costs roughly 4x one Linux leg.
 #
 #   ► THE CHOICE MADE HERE: **one** Windows job, default edition only, plus the
-#     cheap cross-check covering BOTH editions on Linux. Mind's Windows compile
-#     coverage therefore comes from the 1x job, not the 4x one.
+#     cheap cross-check covering BOTH editions on Linux. The Console's Windows
+#     compile coverage therefore comes from the 1x job, not the 4x one.
 #
 # That asymmetry is a considered trade, not an omission. `cargo test --workspace`
 # on the default edition already runs everything platform-sensitive — the
 # `organon-core` IPC suite, the seqlock tests, the layout goldens — because those
-# live in a workspace member both editions share. What `mind-edition` adds on top
-# is Mind UI logic that is pure and platform-independent. So the second Windows
-# job would cost another 4x to re-run platform-agnostic tests on a platform that
-# cannot make them behave differently.
+# live in a workspace member both editions share. What `console-edition` adds on
+# top is compositor and front-of-house logic that is pure and platform-independent.
+# So the second Windows job would cost another 4x to re-run platform-agnostic
+# tests on a platform that cannot make them behave differently.
 #
-# If a Windows-specific Mind defect ever DOES slip through, that trade is what
+# If a Windows-specific Console defect ever DOES slip through, that trade is what
 # let it, and the fix is to promote the cross-check job to a second
 # `windows-latest` build+test leg. Do that deliberately, with the cost above in
 # hand — do not let it happen by accident.
@@ -157,18 +173,11 @@
 #     leg is the one most likely to sit queued. That is a wall-clock cost on a busy
 #     day, and it is the reason to add one macOS job rather than three.
 #
-# Measured on this leg's first-ever run (PR #96, cold cache, all six jobs in
-# parallel), so the next person has a baseline rather than the estimate above:
-#
-#   build (macos)          ~17m46s total    9m30s build + ~7m test + ~30s setup
-#
-# ⚠️ Two things in that number are worth reading carefully. It did **not queue** —
-# the runner was allocated in 1 s alongside the other five, so the concurrency
-# caveat above is a risk to plan for, not something observed. And it is the SLOWEST
-# leg here despite arm64 being fast per-core, because it is the only leg that both
-# builds a bin AND runs the whole workspace suite; the Linux legs' ~14m do the same
-# work on more cores. The test half is ~7 minutes, not the ~4 the Linux legs spend,
-# which is the part to watch if this leg ever needs trimming.
+# On this leg's first-ever run (PR #96, cold cache) it did **not queue** — the runner
+# was allocated in 1 s alongside the other five — so the concurrency caveat above is a
+# risk to plan for, not something observed. Its current timing is in the one table
+# below; the thing to watch is its **test** half, which runs ~50% longer than the Linux
+# legs' on fewer cores and is what would need trimming first.
 #
 # ► **Console edition only, and build + test rather than a check.** Only-one-job is
 #   the concurrency argument above. Build-and-test rather than check is because this
@@ -177,20 +186,25 @@
 #   running to begin with. And the edition is the Console's because that is what
 #   this leg was added to establish.
 #
-# ⚠️ **Organon and Organon Mind still have NO macOS coverage, and that is a gap, not
-# a considered trade like the Windows/Mind one above.** Two things soften it and
-# neither closes it: `--bin organon-console` builds the root crate's **lib** as well,
-# so almost all shared macOS ground (nih_plug, wgpu/Metal, winit, `window_macos.rs`)
-# is compiled by this leg anyway; and `cargo test --workspace` runs every workspace
-# member's suite on macOS regardless of edition. What is genuinely uncovered is the
-# `cfg(not(feature = "console-edition"))` arms — the plugin cdylib's own export
-# macros, `standalone.rs`, `mind_main.rs`. Promoting a second macOS leg is a
-# deliberate decision with the concurrency cost above in hand; do not let it happen
-# by accident, and do not read this leg as proving the plugin builds on a Mac.
+# ⚠️ **The default edition still has NO macOS coverage, and that is a gap, not a
+# considered trade like the Windows/Console one above.** It is the sharper gap of
+# the two now that there are only two editions, because the default edition is what
+# carries the VST3/CLAP export — on the platform where the plugin is actually
+# developed and deployed. Two things soften it and neither closes it:
+# `--bin organon-console` builds the root crate's **lib** as well, so almost all
+# shared macOS ground (nih_plug, wgpu/Metal, winit, `window_macos.rs`) is compiled by
+# this leg anyway; and `cargo test --workspace` runs every workspace member's suite on
+# macOS regardless of edition. What is genuinely uncovered is the
+# `cfg(not(feature = "console-edition"))` arms — the plugin cdylib's own export macros
+# and `standalone.rs`. Promoting a second macOS leg is a deliberate decision with the
+# concurrency cost above in hand; do not let it happen by accident, and do not read
+# this leg as proving the plugin builds on a Mac.
 #
 # ── Native only ─────────────────────────────────────────────────────────────────
-# No `web/` job. The WebGPU port (#418) is parked; a green check on unpursued work
-# is exactly the waste #626 removes. `web/` is in `paths-ignore` below.
+# There is nothing here but `native/`, so there is nothing else to build. This
+# repository is Rust and its documentation — no npm, no TypeScript, no build step
+# outside cargo (`native/tools/*.py` are hand-run tools, not a build step). If a
+# second buildable tree ever lands, it gets its own workflow, not a leg here.
 #
 # ── Contributors ────────────────────────────────────────────────────────────────
 # To reproduce a leg locally, run the two `run:` lines of the job you care about
@@ -264,29 +278,41 @@ name: CI
 #      • re-runs and later pushes on the SAME PR  → dependencies restored
 #      • a different PR, or the first run of one  → dependencies rebuilt too
 #
-# Measured on this workflow's own first two runs (PR #631, both legs in parallel),
-# so you have a real baseline rather than a guess. Note the build step is what the
-# cache moves; nothing else is:
+# Measured on this workflow's own first two runs (PR #631, both legs in parallel):
+# the build step went **9m19s cold → 4m01s warm, −57%**. So the split is roughly ~4
+# minutes of crate (recompiled always, per reason 1) and ~5 minutes of dependency
+# graph (cached, restored on same-PR re-runs). The cache earns its keep — it just
+# cannot take the build to zero, and the residue is the crate, not a
+# misconfiguration.
 #
-#                          BUILD STEP          cold → warm
-#   build (default)        9m19s → 4m01s       −57%
-#   build (mind-edition)   8m49s → 3m47s       −57%
+# ── What each leg actually costs ────────────────────────────────────────────────
+# Run 32443462639 (PR #105, 2026-08-21), every leg green, warm cache. One table for
+# all of them rather than a figure buried in each section, because the only useful
+# question is which leg sets the wall clock:
 #
-# So the split is roughly: ~4 minutes of crate (recompiled always, per reason 1)
-# and ~5 minutes of dependency graph (cached, restored on same-PR re-runs). The
-# cache earns its keep — it just cannot take the build to zero, and the residue
-# is the crate, not a misconfiguration.
+#                            BUILD      TEST     JOB TOTAL
+#   build (default)          2m22s      4m46s      7m45s
+#   build (console-edition)  2m21s      4m26s      7m26s
+#   check (windows cross)      49s over 3 check steps        1m18s  ← now 2 steps
+#   build (windows)          8m53s     12m17s     22m05s   ← sets the wall clock
+#   build (macos)            3m12s      7m00s     10m44s
+#   ── removed 2026-08-21, listed once so the saving is on the record ──
+#   build (mind-edition)     1m53s      3m28s      5m58s
 #
-# Whole-job totals, cold. The named steps do NOT sum to the total; the ~50-60s
-# remainder is checkout, the apt step, toolchain setup and the cache restore/save:
+# Whole-run wall clock: **22m31s, set by `build (windows)` alone.** Read the two
+# consequences off that and not off the totals column:
 #
-#   build (default)        ~13m58s total    9m19s build + 3m49s test + ~50s setup
-#   build (mind-edition)   ~14m17s total    8m49s build + 4m27s test + ~61s setup
+#   * Dropping the Mind leg buys ~6 minutes of Linux runner and ~15 s of the
+#     cross-check per PR, and moves the wall clock **not at all** — the legs run in
+#     parallel and Windows is 3x the next slowest. It went because it checked a
+#     product that no longer exists, never because it made anyone wait.
+#   * The only leg worth optimising for time is the Windows one, and its cost is
+#     the *test* step, not the build. Nothing here is close to
+#     `timeout-minutes: 90`; that stays a runaway backstop with ~4x headroom on the
+#     slowest leg, not a budget anyone is spending.
 #
-# The build dominates; the test step is small and is NOT the risk the mirror's
+# The build dominates on every Linux leg; the test step is NOT the risk the mirror's
 # SIGTERM lesson warned about, so long as LTO stays off (see the env block).
-# `timeout-minutes: 90` is therefore a runaway backstop with ~6× headroom, not a
-# budget anyone is close to spending.
 #
 # If the spend ever does become binding, the lever is NOT a bigger cache — see
 # reason 1, the crate is uncacheable by design. It is either a build-only
@@ -301,7 +327,7 @@ name: CI
 #
 #   ► THE CHOICE MADE HERE: **these checks are NOT marked required.** They are
 #     advisory — read the run, then merge. Nothing in branch protection blocks on
-#     `build (default)` or `build (mind-edition)`.
+#     `build (default)` or any other leg.
 #
 # If you ever want them required, you must first break the deadlock, and there are
 # only two ways: drop `paths-ignore` entirely (every PR pays the matrix), or add a
@@ -313,20 +339,29 @@ on:
     # A deny-list, not an allow-list — the reverse of the export manifest, and on
     # purpose. For the export, default-deny means new code stays private, which is
     # safe. For CI, default-deny would mean new code is silently untested, which is
-    # not. So a new top-level directory gets tested until someone says
-    # otherwise. Everything listed here is either a separate app, a static site, or
-    # prose — none of it can change the outcome of `cargo build`.
+    # not. So a new top-level directory gets tested until someone says otherwise.
+    # Everything listed here is prose or agent configuration — none of it can change
+    # the outcome of `cargo build`.
     #
-    # ⚠️ These patterns are anchored at the REPO ROOT, and one of them looks like it
-    # is not. `src/**` is the legacy React app at `/src`; it does NOT match
-    # `native/src/**`, because a leading path segment is literal and `*` does not
-    # cross a `/`. If that were wrong, every pure-Rust PR would silently run
-    # nothing — which is why it is written down rather than assumed. Nothing under
-    # `native/` is ignored except its `*.md` files.
+    # ⚠️ **The list is SHORTER than it was, and shorter is the correct direction.**
+    # It used to carry eight more entries — `site/`, `site-mind/`, `web/`, `src/`
+    # (the legacy React-Three-Fiber app), `brand/`, `songs/`, `original_code/` and
+    # the npm/vite config files. Not one of those paths exists in this repository;
+    # they crossed over with the file. A pattern for a directory that is not here
+    # does nothing today and, the day someone adds that directory back, silently
+    # exempts it from CI — which is exactly the default-deny failure the paragraph
+    # above rejects. Removed 2026-08-21. Do not re-add a pattern speculatively; add
+    # it when the directory lands, with a line saying why it cannot affect cargo.
+    #
+    # ⚠️ These patterns are anchored at the REPO ROOT, except `**.md`, which is not
+    # and is not meant to be: it matches at any depth, so `native/**/*.md` is ignored
+    # too. Nothing else under `native/` is ignored by anything here — worth stating
+    # rather than assuming, because if it were wrong every pure-Rust PR would
+    # silently run nothing.
     #
     # ⚠️ **The filter is evaluated against the PR's WHOLE diff, not the newest push**
-    # (observed on #677, 2026-08-08: a commit touching only two `.md` files re-ran all
-    # five legs, because the PR also carried `native/src/lib.rs`). So "docs-only" is a
+    # (observed on #677, 2026-08-08: a commit touching only two `.md` files re-ran
+    # every leg, because the PR also carried `native/src/lib.rs`). So "docs-only" is a
     # property of the *pull request*, not of the commit you just pushed:
     #   * a PR whose entire diff is prose never starts these jobs — that is the
     #     deadlock case the block above is about;
@@ -334,16 +369,9 @@ on:
     #     CHANGELOG fix. That is not a misconfiguration, and it is the reason a
     #     docs-only fixup to an open code PR is not free. Batch them if it matters.
     paths-ignore:
-      - 'site/**'            # organon.art
-      - 'site-mind/**'       # organonmind.org
-      - 'web/**'             # the WebGPU port (#418, parked)
-      - 'src/**'             # the legacy React-Three-Fiber app — NOT native/src
-      - 'doc/**'             # PRD, papers, shop notes, status archive
-      - 'brand/**'
-      - 'songs/**'
-      - 'original_code/**'   # the C++ reference
+      - 'doc/**'             # PRD, papers, shop notes, the research evals
       - '.claude/**'         # hooks, settings, and organon-cli (the skill's one home)
-      - '**.md'              # CLAUDE.md, ARCHITECTURE.md, STATUS.md, CHANGELOG.md…
+      - '**.md'              # CLAUDE.md, ARCHITECTURE.md, CHANGELOG.md, changelog.d/…
       # Added by #626 T2 after the filter's first miss: that PR changed only
       # `.claude/**` + `**.md` + this file, and CI ran anyway — two full matrix
       # legs for one ignored line. `.gitignore` meets the criterion above, and
@@ -354,11 +382,6 @@ on:
       # equally inert here, but it is covered by neither this line nor any other,
       # which is fine: nothing has ever changed it in a Rust-free PR.
       - '.gitignore'
-      - 'index.html'         # ↓ the legacy web app's build config
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'vite.config.ts'
       # ⚠️ ONE CARVE-OUT, and it must stay LAST — negations override the patterns
       # above them, so moving this line up silently disarms it.
       #
@@ -445,9 +468,10 @@ jobs:
       # ⚠️ `--workspace` is LOAD-BEARING as of #626 Tier 3, not tidiness.
       # native/ is now a workspace whose root package is organic-math-native, and
       # a bare `cargo test` runs THE ROOT PACKAGE ONLY. When organon-core was
-      # extracted, that silently stopped running its 44 tests — including the
-      # IPC namespace-pinning test in edition.rs, which is the one guarding the
-      # invariant that lets a Mind session and an Organon session coexist.
+      # extracted, that silently stopped running its 44 tests — including
+      # `editions_have_distinct_ipc_namespaces` in edition.rs, which is the one
+      # guarding the invariant that lets an Organon session and a Console session
+      # coexist in `$TMPDIR` without stomping each other's snapshot.
       # The suite went 1146 -> 1102 and stayed green, which is exactly how a
       # coverage loss hides. Every new workspace member is covered by this flag;
       # a per-crate `-p` list would have to be maintained and would rot.
@@ -455,52 +479,14 @@ jobs:
         working-directory: native
         run: cargo test --release --workspace
 
-  # ── Leg 2: the Organon Mind edition ──────────────────────────────────────────
-  # NOT optional and NOT a subset of leg 1. `mind-edition` is default-off, so leg 1
-  # compiles none of this and a green leg 1 says nothing about it.
-  mind-edition:
-    name: build (mind-edition)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dev headers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev libjack-jackd2-dev \
-            libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev \
-            libxi-dev libxext-dev libgl1-mesa-dev libxkbcommon-dev libwayland-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native
-          key: mind-edition
-
-      # `organon-mind` carries `required-features = ["mind-edition"]`, so naming
-      # the bin is what asks for the Mind front-of-house specifically. Same profile
-      # and feature set as the test step below, per lesson 1.
-      - name: Build Organon Mind
-        working-directory: native
-        run: cargo build --release --features mind-edition --bin organon-mind
-
-      # Higher count than leg 1: `mind-edition` unlocks tests leg 1 never compiles.
-      # The two numbers are both real and they are not interchangeable —
-      # STATUS.md's "Test bar" line carries the current pair.
-      - name: Test (mind-edition, incl. offline WGSL validation)
-        working-directory: native
-        run: cargo test --release --workspace --features mind-edition
-
-  # ── Leg 2b: the Organon Console edition (Console #3 T1) ──────────────────────────
-  # Same asymmetry argument as leg 2: `console-edition` is default-off, so legs 1–2
-  # compile none of `src/console_main.rs` and none of the `Edition::Console` arms.
-  # Mind-symmetric commands: the bin lives in the root crate (the window will
-  # render `World`, which lives here until #618), the compositor lib in the
-  # `organon-console` package — so `--bin organon-console` and `-p organon-console`
-  # name two different things that now happen to share a spelling. The bin is built
-  # from the ROOT package; `-p organon-console` will not produce it.
+  # ── Leg 2: the Organon Console edition (Console #3 T1) ───────────────────────
+  # `console-edition` is default-off, so leg 1 compiles none of
+  # `src/console_main.rs` and none of the `Edition::Console` arms — the asymmetry
+  # the header opens with. Note the two spellings: the bin lives in the ROOT crate
+  # (the window will render `World`, which lives there until #618) and the
+  # compositor lib in the `organon-console` package, so `--bin organon-console` and
+  # `-p organon-console` name two different things that happen to share a spelling.
+  # `-p organon-console` will not produce the binary.
   console-edition:
     name: build (console-edition)
     runs-on: ubuntu-latest
@@ -530,7 +516,7 @@ jobs:
         working-directory: native
         run: cargo test --release --workspace --features console-edition
 
-  # ── Leg 3: the Windows cross-check — ALL editions, on a Linux runner ──────────
+  # ── Leg 3: the Windows cross-check — both editions, on a Linux runner ────────
   # organon#658 Tier 1. The cheap half of the platform axis: 1x billing, no apt
   # step, no Windows machine. See the header for why it needs no system packages
   # and, more importantly, for the list of things it cannot see.
@@ -570,14 +556,10 @@ jobs:
         working-directory: native
         run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets
 
-      # THE reason this job covers both editions while `build (windows)` covers
-      # one: this is the 1x runner. See the spend block in the header.
-      - name: Check (mind-edition, Windows target)
-        working-directory: native
-        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets --features mind-edition
-
-      # Console #3 T1 — same 1x-runner argument that put Mind here: the Console's
-      # Windows compile coverage comes from this cheap leg, not a second 4x one.
+      # Console #3 T1 — THE reason this job covers both editions while
+      # `build (windows)` covers one: this is the 1x runner, so the Console's
+      # Windows compile coverage comes from here, not from a second 4x leg. See the
+      # spend block in the header.
       - name: Check (console-edition, Windows target)
         working-directory: native
         run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets --features console-edition
@@ -585,7 +567,8 @@ jobs:
   # ── Leg 4: Windows, for real — the only leg that links and runs tests there ───
   # organon#658 Tier 1. The expensive half (~4x a Linux leg), so it is used only
   # for what ONLY it can do: produce actual binaries and execute the suite on
-  # Windows. Default edition only; Mind's Windows compile coverage is leg 3's.
+  # Windows. Default edition only; the Console's Windows compile coverage is the
+  # cross-check leg's.
   windows:
     name: build (windows)
     runs-on: windows-latest
@@ -717,7 +700,7 @@ jobs:
   # See the macOS block in the header for why there is no cheap Apple
   # cross-check leg beside this one (`coreaudio-sys` runs bindgen against the macOS
   # SDK, so a Linux `cargo check` on the root crate never reaches our code), why it
-  # is console-edition only, and what it does NOT prove about Organon or Mind.
+  # is console-edition only, and what it does NOT prove about the default edition.
   macos:
     name: build (macos)
     runs-on: macos-latest

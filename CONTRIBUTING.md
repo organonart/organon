@@ -79,7 +79,11 @@ cargo build --release --features mind-edition  --bin organon-mind
 cargo build --release --features console-edition --bin organon-console
 ```
 
-CI runs exactly this matrix (default / mind / console / Windows) on every PR.
+CI runs most of this matrix (default / console, on Linux, Windows and macOS) on every
+PR — but **not** `mind-edition`. Organon Mind stopped being a separate product in
+August 2026 and its leg went with it, while the cargo feature stayed; see the header of
+`.github/workflows/ci.yml`. So the mind-edition line above is the one in this block that
+nothing checks for you, and it is on you to run it while it still exists.
 
 **Be precise about what you verified.** `cargo test` includes offline shader validation,
 so it catches binding, type and uniformity errors without a GPU — but it cannot see
