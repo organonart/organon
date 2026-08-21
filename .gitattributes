@@ -57,6 +57,21 @@
 # covers the literal bytes, so line-ending translation invalidates it. Nothing here is
 # signed (see deploy.ps1's header on why Windows needs no signing step). If that ever
 # changes, this is the note that says to add `*.ps1 text eol=crlf` and why.
+#
+# 🚨 ENCODING IS A SEPARATE QUESTION FROM LINE ENDINGS, and only the second one is settled
+# above. The paragraph about "a parser that accepts LF and CRLF identically" is true and
+# says nothing about how that parser decides what the BYTES mean. **Windows PowerShell 5.1
+# reads a BOM-less .ps1 as ANSI/CP1252**, and 5.1 is the only PowerShell on a stock Windows
+# install — `pwsh` is a separate download. Both of these files carry non-ASCII prose, so
+# without a BOM neither could be parsed at all on the machine they exist to serve: measured
+# 2026-08-20, 8 parse errors in deploy.ps1 and 2 in bundle.ps1, zero with a BOM prepended.
+#
+# So both files are UTF-8 **with a BOM**, deliberately, and that is not a `.gitattributes`
+# rule — a BOM is content, and git stores it like any other byte. It is enforced in CI
+# instead (`.github/workflows/ci.yml`, "Validate the PowerShell deploy scripts"): a .ps1
+# must be pure ASCII or carry a BOM. ⚠️ Do NOT add `working-tree-encoding` here to express
+# this. That attribute makes git re-encode on checkout, which changes the bytes a signature
+# would cover and would re-open the question the paragraph above just closed.
 
 # The frame harness's scene files. `verify.sh` pulls directives out of them with
 # `sed -n "s/^#![[:space:]]*<key>[[:space:]]\{1,\}\(.*\)$/\1/p"`, and `.*` happily

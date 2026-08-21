@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Windows counterpart of deploy.sh — build + bundle (visual embedded) and install
