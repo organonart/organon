@@ -5,11 +5,16 @@ what each one holds, and save the arrangement under a name — and that named ar
 somebody means when they say which program they are running. No arrangement is valid without a
 live agent in it, taught by loadable skills to operate the application it is running inside.
 
-📌 **`doc/organon_prd.md` §1.1 is the canonical description**, in three lengths. This file, the
-sites and `CLAUDE.md` quote it rather than re-authoring it — the identity claim was once spelled
-a different way in every document that mentioned it, which is how it came to be stale in all of
-them at once. ⚠️ The count lives in §1.1 and deliberately not here: a number copied out of its
-source is a number that drifts from it, which is the defect this whole arrangement exists to end.
+📌 **`doc/organon_prd.md` §1.1 is the canonical description**, in three lengths, and this file
+quotes it rather than re-authoring it. Every surface that describes Organon is meant to do the
+same: the identity claim was once spelled a different way in every document that mentioned it,
+which is how it came to be stale in all of them at once.
+
+⚠️ **Two surfaces have not caught up, and are named rather than glossed** — `CLAUDE.md`'s naming
+section, which describes the *mechanism* and so moves with it under issue #111, and the sites,
+which are built outside this repository. ⚠️ **The count of how many there were lives in §1.1 and
+deliberately not here**: a number copied out of its source is a number that drifts from it, which
+is the defect this whole arrangement exists to end.
 
 ## What an arrangement holds
 
