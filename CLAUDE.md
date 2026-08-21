@@ -259,7 +259,9 @@ Branch per change off `main` → PR it → **close at least one automated review
 rubric in `.github/organon-review-guide.md`); waiting for it, reading the findings, and
 either fixing them or saying why not is part of the job.
 `.github/workflows/claude.yml` responds to `@claude` mentions. `.github/workflows/ci.yml`
-builds and tests **every edition** on each PR — read it, it is not a required check.
+builds and tests the **default** and **console** editions on each PR, across Linux,
+Windows and macOS — read it, it is not a required check, and read its header for what
+each leg does and does not cover.
 **`CONTRIBUTING.md` is the full protocol**, including how to read a CI result without
 being misled.
 
@@ -452,9 +454,19 @@ That is the ceiling. It does **not** catch pipeline/layout mismatches, runtime G
 behaviour, egui layout, or the actual look. A finished PR from such a session is
 **"green and ready to deploy"**, never "verified working" — say it that way.
 
-📌 **CI runs every native leg, so the bar is something you *check*, not something you
-*perform*.** `.github/workflows/ci.yml` builds and tests each edition, plus a Windows
-cross-check and a real Windows build, on every PR.
+📌 **CI runs most native legs, so the bar is largely something you *check*, not
+something you *perform*.** `.github/workflows/ci.yml` builds and tests the default
+edition and the console edition, plus a Windows cross-check, a real Windows build and a
+macOS build, on every PR.
+
+⚠️ **`--features mind-edition` is the one thing CI no longer covers**, as of
+2026-08-21: Organon Mind is not a separate product or a separate build any more, so its
+leg was removed (the workflow header states the decision). The feature and the
+`organon-mind` package still exist in the tree, and the package's own tests still run
+under `--workspace` — but nothing checks that the *feature* still compiles. Until it is
+deleted from `native/Cargo.toml`, a change that breaks it lands green. If you touch
+`edition.rs`, `lib.rs`'s cfg arms or `world.rs`, run
+`cargo check --workspace --all-targets --features mind-edition` yourself.
 
 - **What that changes.** The proof of "it compiles and the tests pass" lives on the PR.
   Don't re-run a full `cargo build --release` just to produce evidence you can read off
@@ -463,7 +475,8 @@ cross-check and a real Windows build, on every PR.
 - **What it does not change.** The ceiling is identical — CI runs the same commands and
   knows nothing more than you would. It also does not excuse *ignoring* an edition: if
   your change touches shared ground, every leg must be green, and "the default one
-  passed" is the failure mode that matrix exists to close.
+  passed" is the failure mode that matrix exists to close — plus the mind-edition check
+  above, which the matrix no longer runs for you.
 - **When CI can't answer.** The trigger is `pull_request` + `workflow_dispatch` only,
   and the workflow is path-filtered — so pre-PR work and docs-only PRs get no run at
   all. Build locally then, or open the PR early. The checks are **not** marked required
