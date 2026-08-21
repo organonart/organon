@@ -111,18 +111,28 @@ pub const VERB_SURFACE: &str = "view.surface";
 /// first.
 pub const VERB_HELP: &str = "view.help";
 
-/// `/trace` — **whether this conversation narrates its own machinery.**
+/// `/trace` — **whether this conversation's status log is open.**
+///
+/// 🚨 **It no longer means "narrate into my conversation", and that is the whole of the change.**
+/// It used to widen the scrollback: every quiet remark interleaved above the first message, so
+/// the one verb offered for *seeing more* worked by making the flow noisier. It now opens a
+/// bounded panel over the band — `organon_console::status_log` owns the argument — holding every
+/// line the console has written about the session. The conversation is untouched in both states.
 ///
 /// 🚨 **A view-lane verb, and that is a decision about scope rather than about plumbing.**
-/// Everything it un-hides is one pane talking about itself: which directory its agent started
-/// in, that a command it dispatched was accepted, that its transcript is empty. None of it is
+/// Everything the log holds is one pane talking about itself: which directory its agent started
+/// in, that a command it dispatched was accepted, what the child put on stderr. None of it is
 /// console state, none of it is worth a sidecar line, and a console-lane spelling would put an
 /// MCP tool in an agent's catalog for a preference about how loudly the console talks to the
 /// person sitting in front of it.
 ///
 /// ⚠️ **So trace is per-tab.** Two conversations can disagree about it, which is the honest
-/// consequence of the scope rather than an oversight — a tab you are debugging can be loud while
-/// the one you are working in stays quiet. `ORGANON_TRACE=1` opens every tab tracing.
+/// consequence of the scope rather than an oversight — a tab you are debugging can be open while
+/// the one you are working in stays shut. `ORGANON_TRACE=1` opens every tab's log.
+///
+/// ⚠️ **The band's indicator is the other way in**, and it is the one a hand finds: the log is a
+/// click away without anybody having to know this word exists. The verb stays because a panel
+/// with no *named* way out is a panel people close by restarting the console.
 pub const VERB_TRACE: &str = "view.trace";
 /// The argument `/trace` carries its state in.
 pub const TRACE_ARG: &str = "state";
@@ -599,8 +609,8 @@ fn view_entries() -> Vec<Entry> {
         },
         Entry {
             name: VERB_TRACE.into(),
-            doc: "Narrate what this console does — every command's receipt, and what it \
-                  noticed on the way in. Off"
+            doc: "Open the status log — every line this console wrote about the session, out \
+                  of the conversation. Closed"
                 .into(),
             args: vec![ArgSpec {
                 name: TRACE_ARG.into(),

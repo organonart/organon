@@ -54,6 +54,7 @@ use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
 use crate::panel_stack;
 use crate::posture::Form;
 use crate::registry;
+use crate::status_log::{log_label, LogSlot, Remark, StatusLog};
 use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::theme::Theme;
 use crate::theme_edit::{self, EditKey, ThemeChange, ThemeEditor};
@@ -104,8 +105,6 @@ const SUBAGENT_LINES: usize = 6;
 // An `Edit` diff's own bounds are [`crate::text_diff`]'s — `CONTEXT`, `MAX_RUN`,
 // `MAX_ROWS`, `MAX_CELLS` — and live there rather than here because they are inputs to the
 // alignment, not to the drawing of it. A constant here would be a second opinion.
-/// Diagnostic lines kept (non-JSON stdout, stderr). Bounded and logged, never silent.
-const LOG_LINES: usize = 200;
 /// Slash commands the composer can be walked back through with the Up key.
 ///
 /// ⚠️ **In memory, for the life of the tab.** It does not survive a restart and nothing
@@ -567,9 +566,13 @@ pub struct ConversationPane {
     pub composer: String,
     /// Non-event lines off the child — the `Warning: no stdin data received…` the CLI
     /// opens a real run with (§5.9.3 rule 6), and anything on stderr — plus the console's own
-    /// remarks about this session. Each carries whether it is [`Remark::always`] seen.
-    log: VecDeque<Remark>,
-    /// **Trace mode: whether this pane narrates its own machinery.** Off.
+    /// remarks about this session.
+    ///
+    /// 🚨 **This is a surface of its own now, and it records everything.** See
+    /// [`crate::status_log`] for the whole argument; the short version is that a line used to
+    /// face two futures — James's conversation, or nothing — and the log is the third.
+    log: StatusLog,
+    /// **Is the status log open?** No.
     ///
     /// 🚨 **What "off" means is the whole of Tier 1.** James, 2026-08-20: *"I don't want to see
     /// any of the things presently visible in the status panel. … My working model here is
@@ -583,11 +586,25 @@ pub struct ConversationPane {
     /// it per line, and the one thing that must never be gated is the one nobody would think to
     /// check — silence on failure is the defect this tree keeps finding.
     ///
+    /// 🚨 **What this flag opens has CHANGED, and the change is the point of
+    /// [`crate::status_log`].** It used to widen the *conversation* — every quiet remark
+    /// interleaved into the scrollback above the first message — which made `/trace on` a way of
+    /// making the flow **noisier** rather than of opening a different window. It now opens the
+    /// **status log**: a bounded panel above the band, holding every line the console has
+    /// written about this session. The conversation is untouched by it in either state, which is
+    /// James's governing sentence — *"it should not feel like part of the conversational flow"* —
+    /// made a property of where a line lives rather than of a mode.
+    ///
+    /// ⚠️ **It still selects the band's own quiet half** ([`StatusReading::narration`],
+    /// [`Chip::narration`]), and that is one flag doing one thing rather than two: "show me the
+    /// machinery" is a single request, and the band is chrome. What it must never do again is
+    /// reach into the transcript — [`element_seen`] no longer takes it.
+    ///
     /// ⚠️ **`/trace on` is a *view-lane* verb** ([`registry::VERB_TRACE`]) and therefore per
-    /// **pane**, not per console. Everything it un-hides is this conversation narrating itself,
-    /// and a console-lane verb would mean a sidecar spelling and an MCP tool for a preference no
-    /// other process has any use for. `ORGANON_TRACE=1` opens every tab tracing, which is the
-    /// same escape hatch [`Self::verbose`] has.
+    /// **pane**, not per console. The log it opens is this conversation's own, and a console-lane
+    /// verb would mean a sidecar spelling and an MCP tool for a preference no other process has
+    /// any use for. `ORGANON_TRACE=1` opens every tab's log, which is the same escape hatch
+    /// [`Self::verbose`] has.
     tracing: bool,
     /// Whether the view follows new elements. Re-derived from where the reader actually
     /// left the scroll each frame, so auto-scroll never fights someone reading back.
@@ -831,32 +848,6 @@ struct PanelReceipt {
     since: Option<f64>,
 }
 
-/// One line of the console's own log, and whether a person sees it without asking.
-///
-/// 🚨 **`always` is the quiet/loud rule made per-line rather than per-caller**, and the default
-/// is deliberately the loud one: [`ConversationPane::note`] keeps its signature and its meaning,
-/// so a line written by somebody who did not think about this is **seen**. A surface whose
-/// default is silence is a surface that eventually swallows the one message that mattered.
-/// [`ConversationPane::trace`] is the opt-in for the other half.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Remark {
-    pub text: String,
-    /// Seen whatever the mode. False = only under [`ConversationPane::tracing`].
-    pub always: bool,
-}
-
-impl Remark {
-    /// Whether this line is on screen, given the mode.
-    ///
-    /// ⚠️ **One function rather than the expression written twice.** Two surfaces draw the log —
-    /// the head of the scrollback and the status band's one-line slot — and a band saying
-    /// something the scrollback above it is hiding reads as a bug in whichever one you happen to
-    /// distrust.
-    pub fn seen(&self, tracing: bool) -> bool {
-        self.always || tracing
-    }
-}
-
 /// How long a **successful** receipt holds the region. A refusal never expires — see
 /// [`receipt_holds`].
 const RECEIPT_SECONDS: f64 = 8.0;
@@ -942,9 +933,9 @@ impl ConversationPane {
         // has gone wrong in a way nothing else on screen reports — a verb that cannot be typed,
         // a wiring diagnostic, an approval channel that never came up — which is the half of the
         // trace rule that is never gated. See [`ConversationPane::trace`].
-        let mut log: VecDeque<Remark> = VecDeque::new();
+        let mut log = StatusLog::default();
         for name in registry.collisions() {
-            log.push_back(Remark {
+            log.push(Remark {
                 text: format!(
                     "`{name}` cannot be typed as a slash command — another verb already holds \
                      that word"
@@ -955,14 +946,16 @@ impl ConversationPane {
         let (approvals, wiring, inbox) = match start_approvals(&specs, dispatch) {
             Ok((held, wiring, inbox, notes)) => {
                 // Whatever the wiring had to say about itself, in the pane rather than only
-                // on a stderr nobody is reading. `push_back` rather than `note` because the
+                // on a stderr nobody is reading. `push` rather than `note` because the
                 // pane does not exist yet; the log is capped far above the handful of lines
                 // this can produce.
-                log.extend(notes.into_iter().map(|text| Remark { text, always: true }));
+                for text in notes {
+                    log.push(Remark { text, always: true });
+                }
                 (Some(held), Some(wiring), inbox)
             }
             Err(error) => {
-                log.push_back(Remark {
+                log.push(Remark {
                     text: format!(
                         "approvals are not wired ({error}) — a tool that needs permission will \
                          fail instead of asking"
@@ -1094,7 +1087,12 @@ impl ConversationPane {
     /// as a click that missed.
     fn revoke_session_allow(&mut self) {
         if self.memory.revoke_session_allow() {
-            self.note("the console is asking again — everything-for-this-session revoked".into());
+            // ✏️ **The log, not the conversation.** It is a confirmation of something the reader
+            // just did, and the band already states the result: the standing-allow marker is
+            // present exactly while the allow is, so it vanishes on the same frame. A sentence
+            // in the flow saying what the chrome beside it already shows is the definition of
+            // the narration this change removes.
+            self.trace("the console is asking again — everything-for-this-session revoked".into());
         }
     }
 
@@ -1102,11 +1100,16 @@ impl ConversationPane {
         &self.transcript
     }
 
-    /// The console's own remarks about this session, **all of them** — including the ones a
-    /// quiet pane is not drawing. A reader that wants what is on screen filters on
-    /// [`Remark::always`] against [`Self::tracing`], which is what [`scrollback`] does.
+    /// The console's own remarks about this session, **all of them** — including the ones no
+    /// surface but the status log is drawing. A reader that wants what the *conversation* shows
+    /// asks [`StatusLog::exceptions`], which is what [`scrollback`] does.
     pub fn log(&self) -> impl Iterator<Item = &Remark> {
         self.log.iter()
+    }
+
+    /// The status log itself — read by the panel that draws it and by the band's indicator.
+    pub fn status_log(&self) -> &StatusLog {
+        &self.log
     }
 
     /// Drain the agent and fold whatever arrived. Returns true when the view should
@@ -1152,8 +1155,16 @@ impl ConversationPane {
                         changed |= self.absorb(mapped);
                     }
                 }
-                StreamItem::Noise(line) => self.note(format!("stdout: {line}")),
-                StreamItem::Stderr(line) => self.note(format!("stderr: {line}")),
+                // ✏️ **Reclassified to the log.** These are the child's own chatter — the
+                // `Warning: no stdin data received…` the CLI opens every real run with, and
+                // whatever else it puts on stderr — and they were `note`, so a routine startup
+                // warning stood above the first message of every conversation. They are
+                // machinery by definition: the console did not write them and cannot say what
+                // they mean. ⚠️ **A stream that is genuinely broken still says so** through the
+                // arm below, which sets `failure` as well, so nothing that matters rests on
+                // these two lines being loud.
+                StreamItem::Noise(line) => self.trace(format!("stdout: {line}")),
+                StreamItem::Stderr(line) => self.trace(format!("stderr: {line}")),
                 StreamItem::Eof => {
                     self.note("the agent process ended".to_string());
                     self.failure = Some(
@@ -1714,12 +1725,20 @@ impl ConversationPane {
                     }
                 }
                 registry::VERB_HELP => {
-                    // Collected first: `help_lines` borrows the registry and `note` wants the
+                    // Collected first: `help_lines` borrows the registry and `trace` wants the
                     // pane.
                     let lines = self.registry.help_lines();
+                    // ✏️ **`trace`, not `note` — and then the log is opened, which is what makes
+                    // that safe.** A verb table is the clearest possible case of a true, routine
+                    // line that is not an exception, and nineteen of them landing in the middle
+                    // of a conversation is the leak this change closes. But a `/help` whose
+                    // output went somewhere closed would read as a verb that does nothing, so
+                    // the log is opened in the same breath: the table appears, in the surface
+                    // built to hold exactly this.
                     for line in lines {
-                        self.note(line);
+                        self.trace(line);
                     }
+                    self.set_tracing(true);
                     Receipt { ok: true, text: typed.to_string() }
                 }
                 other => {
@@ -1987,51 +2006,73 @@ impl ConversationPane {
         self.receipt = None;
     }
 
-    /// Add a line to the console's own remarks about this session — drawn at the head of
-    /// the scrollback by [`scrollback`]. Public because the tab's working directory is
-    /// decided by whoever opened the tab (`console_main`), not in here, and it is exactly
-    /// the kind of thing this pane exists to say out loud.
+    /// Add an **exception** to the console's own remarks about this session — recorded in the
+    /// status log like everything else, and additionally drawn at the head of the scrollback and
+    /// lighting the band's indicator. Public because the tab's working directory is decided by
+    /// whoever opened the tab (`console_main`), not in here, and it is exactly the kind of thing
+    /// this pane exists to say out loud.
     ///
     /// **Always seen.** This is the loud half of the pair; [`Self::trace`] is the quiet one, and
     /// the default staying loud is what [`Remark`] is for.
+    ///
+    /// 🚨 **The bar is James's: *"unless there is some exception or problem."*** A refusal, a
+    /// send that failed, an audit that proved nothing, a tab with no project. If a line is true
+    /// and routine it belongs in [`Self::trace`] — which no longer means it is thrown away.
     pub fn note(&mut self, line: String) {
         self.remark(Remark { text: line, always: true });
     }
 
-    /// Add a line that is **only** seen under [`Self::tracing`] — the machinery, not the news.
+    /// Add a line to the status log and **nowhere else** — the machinery, not the news.
     ///
-    /// ⚠️ **What belongs here is narrower than "anything routine".** The test is not whether a
-    /// line is interesting; it is whether the *thing it describes* is visible some other way. A
-    /// command's acceptance is: the layout moves, the panel appears, the palette repaints. A
-    /// command's refusal is not, and neither is a warning about the environment the agent
-    /// started in — those go through [`Self::note`] whatever mode the pane is in.
+    /// ⚠️ **This is no longer a way of hiding something.** Before [`crate::status_log`] a traced
+    /// line was drawn only under `/trace on`, interleaved into the conversation, so choosing it
+    /// meant choosing between noise and silence. It now means "the log, and only the log": the
+    /// line is kept, it is one hover away on the band, and it is in the panel `/trace on` opens.
+    /// So the test is simply whether the thing described is an exception — and when it is
+    /// ambiguous, this is the right answer.
     pub fn trace(&mut self, line: String) {
         self.remark(Remark { text: line, always: false });
     }
 
     fn remark(&mut self, remark: Remark) {
-        if self.log.len() == LOG_LINES {
-            self.log.pop_front();
-        }
-        self.log.push_back(remark);
+        self.log.push(remark);
     }
 
-    /// Turn the narration on or off. Answers what to say about it — see [`registry::VERB_TRACE`].
+    /// Open or close the status log. Answers what to say about it — see [`registry::VERB_TRACE`].
+    ///
+    /// 🚨 **Opening it acknowledges it**, which is the only event that clears the band's
+    /// indicator — [`StatusLog::acknowledge`] carries the argument for why looking, and nothing
+    /// else, is what counts as having read it.
     ///
     /// ⚠️ **`on` is echoed and `off` is not**, and that falls straight out of the rule rather
-    /// than being a second decision: the acceptance goes to [`Self::trace`], which is only drawn
-    /// while tracing. Switching on says so; switching off simply goes quiet, which is the thing
-    /// asked for and needs no sentence.
+    /// than being a second decision: the acknowledgement goes to [`Self::trace`], i.e. into the
+    /// log itself, where opening it is exactly what puts it on screen. Switching off simply goes
+    /// quiet, which is the thing asked for and needs no sentence.
+    ///
+    /// ⚠️ **Acknowledge AFTER the line is written**, or the line announcing the log would count
+    /// as unread the moment it was recorded — a machinery line cannot light the indicator, but
+    /// the ordering is the kind that only stops being harmless once somebody changes one of the
+    /// two.
     pub fn set_tracing(&mut self, on: bool) {
         self.tracing = on;
         self.trace(if on {
-            "trace on — the console is narrating what it does. `/trace off` stops.".to_string()
+            "status log open — every line this console wrote about the session. `/trace off` \
+             closes it."
+                .to_string()
         } else {
-            "trace off".to_string()
+            "status log closed".to_string()
         });
+        if on {
+            self.log.acknowledge();
+        }
     }
 
-    /// Whether this pane is narrating. Read by [`scrollback`] and by [`command_panel`].
+    /// The band's indicator was clicked: open the log, or close it if it is already open.
+    pub fn toggle_log(&mut self) {
+        self.set_tracing(!self.tracing);
+    }
+
+    /// Whether the status log is open. Read by [`draw`] and by [`status_strip`].
     pub fn tracing(&self) -> bool {
         self.tracing
     }
@@ -2090,6 +2131,14 @@ pub fn draw(
     let area = ui.max_rect();
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         status_strip(ui, pane, theme);
+        // 🚨 **Immediately above the band, which is where it comes FROM.** In a bottom-up column
+        // the second thing added sits directly over the first, so the log opens as a drawer out
+        // of the indicator that was clicked — not as a window over the page and not, above all,
+        // as a region of the transcript. James's governing sentence is *"it should not feel like
+        // part of the conversational flow"*, and a panel wearing the band's own fill and edge,
+        // hinged to the band, is the strongest available statement that it is chrome. It draws
+        // nothing at all while the log is closed, so the ordinary console is untouched.
+        log_panel(ui, pane, theme);
         ui.add_space(4.0);
         composer(ui, pane, theme, theme_name);
         // Above the composer, and drawn AFTER it: the composer's own keys may have completed
@@ -2235,10 +2284,12 @@ fn scrollback(
         waiting,
         memory,
         log,
-        tracing,
         ..
     } = pane;
-    let tracing: bool = *tracing;
+    // ✏️ **`tracing` is deliberately not destructured any more.** The scrollback used to read it
+    // twice — to widen the remark loop and to draw an empty-transcript hint — and both were the
+    // conversation being changed by a *view mode*. It now decides nothing in here, which is the
+    // structural half of the promise `/trace on` makes.
     // 🚨 **Everything about card density is decided here, before a single row is laid out**,
     // and `*pinned` is what makes it safe: an automatic collapse is applied only while the
     // view is following the live edge, where `stick_to_bottom` holds the last row still and
@@ -2276,35 +2327,34 @@ fn scrollback(
             let mut walk = |ui: &mut egui::Ui| {
                 ui.add_space(6.0);
                 // The console's own remarks about this session, above the first message —
-                // **whichever of them a person is meant to see without asking**. `Remark::always`
-                // decides; `tracing` widens it to everything. ⚠️ Anything written here was once
-                // drawn NOWHERE at all, so "approvals are not wired — a tool that needs
-                // permission will fail instead of asking" had never once been visible; the fix
-                // for that was to draw the log, and the risk this reintroduces is the same one.
-                // Read `ConversationPane::trace` before moving a line into the quiet half: the
-                // test is whether the thing it describes is visible some *other* way, never
-                // whether the line is routine.
+                // **the exceptions, and nothing else, in either mode.**
+                //
+                // 🚨 **`tracing` is deliberately NOT read here, and that is the change.** It used
+                // to widen this loop to the whole log, which is how `/trace on` came to mean
+                // "make my conversation noisier" — the one thing James asked for the opposite
+                // of. Every quiet line still exists, in `crate::status_log`, one hover away on
+                // the band; what it no longer has is a route into the flow.
+                //
+                // ⚠️ Anything written here was once drawn NOWHERE at all, so "approvals are not
+                // wired — a tool that needs permission will fail instead of asking" had never
+                // once been visible. That is why `note` stays the loud default and why the
+                // indicator exists: the failure this surface keeps finding is silence, and the
+                // remedy for a quiet line is now a place to keep it rather than a mode.
                 let mut said = 0_usize;
-                for remark in log.iter().filter(|remark| remark.seen(tracing)) {
+                for remark in log.exceptions() {
                     ui.label(RichText::new(&remark.text).color(theme.dim).italics());
                     said += 1;
                 }
                 if said > 0 {
                     ui.add_space(6.0);
                 }
-                // ⚠️ **Only while tracing.** An empty transcript is self-evidently empty and the
-                // composer is directly below it with its own hint; this sentence was the console
-                // explaining itself to somebody who has not seen it before, which James is not.
-                if transcript.is_empty() && tracing {
-                    ui.label(
-                        RichText::new(
-                            "no messages yet — type below and press Enter, or `/surface` for a \
-                             rendered surface with its own controls",
-                        )
-                        .color(theme.dim)
-                        .italics(),
-                    );
-                }
+                // ✏️ **The empty-transcript hint is gone entirely.** It was already drawn only
+                // while tracing — the console explaining itself to somebody who has not seen it
+                // before, which James is not — and `tracing` now means "the status log is open",
+                // which has nothing to say about whether a conversation has started. A sentence
+                // that would appear in the flow because a *log* was opened is the leak this
+                // change closes. An empty transcript is self-evidently empty and the composer is
+                // directly below it with its own hint.
                 // One element, drawn as itself. A closure rather than the loop body it used
                 // to be, because there are now two callers: the ordinary walk, and the
                 // members of a group a hand has opened. The body is untouched.
@@ -2312,7 +2362,7 @@ fn scrollback(
                     // 🚨 The quiet/loud rule, applied to the transcript itself — see
                     // [`element_seen`]. Skipped **whole**, its trailing `card_gap` included,
                     // so a hidden element leaves no space behind it.
-                    if !element_seen(&element.body, tracing) {
+                    if !element_seen(&element.body) {
                         return;
                     }
                     match &element.body {
@@ -2576,10 +2626,18 @@ fn join_drives(laid_out: Vec<LaidOutSurface>, drives: Vec<PanelDrive>) -> Vec<Su
 /// every single turn for the life of the tab.
 ///
 /// This is the pane's standing rule ([`Remark`]) reaching one surface further out: an
-/// **acceptance** is seen only while tracing, a **failure** always. `Error` and `Cancelled`
-/// therefore keep their captions unconditionally — they are the two a reader cannot infer
-/// from a page that has merely stopped growing, and a turn that was cancelled looks exactly
-/// like one that finished if nothing says otherwise.
+/// **acceptance** is not drawn, a **failure** always is. `Error` and `Cancelled` therefore keep
+/// their captions unconditionally — they are the two a reader cannot infer from a page that has
+/// merely stopped growing, and a turn that was cancelled looks exactly like one that finished if
+/// nothing says otherwise.
+///
+/// 🚨 **It no longer takes the trace mode, and that is deliberate rather than tidying.** `/trace
+/// on` now opens the status log ([`crate::status_log`]) and must not reach into the transcript at
+/// all — a click on the band's indicator that also put `— turn complete` under every reply would
+/// be exactly the leak this change closes, arriving by a new route. A caption is not a
+/// [`Remark`] and has no log to move to, so the honest consequence is that the successful one is
+/// simply not drawn: the reply is on the page and the composer is live again, which is the
+/// paragraph above.
 ///
 /// ⚠️ **[`RunEnd::detail`] goes with the element it rides on.** On the failure arms — where a
 /// detail carries a reason — it is still drawn. On a success it is the same post-turn
@@ -2589,9 +2647,9 @@ fn join_drives(laid_out: Vec<LaidOutSurface>, drives: Vec<PanelDrive>) -> Vec<Su
 /// ⚠️ Every other body returns `true` **by falling through, not by being listed** — a new
 /// `Body` variant is visible until somebody decides otherwise, which is the safe default for
 /// a surface whose failure mode is swallowing something.
-fn element_seen(body: &Body, tracing: bool) -> bool {
+fn element_seen(body: &Body) -> bool {
     match body {
-        Body::RunEnd(end) => end.outcome != RunOutcome::Ok || tracing,
+        Body::RunEnd(end) => end.outcome != RunOutcome::Ok,
         _ => true,
     }
 }
@@ -4216,8 +4274,15 @@ pub struct StripContent {
     /// filtering here: the marker is set where the chip is built, and a second rule written
     /// at a draw site is the drift this band already spends its comments preventing.
     pub chips: Vec<Chip>,
-    /// The most recent diagnostic line off the child, if any. Drawn truncated.
-    pub log: Option<String>,
+    /// **The status log's indicator**, or `None` while the log is empty.
+    ///
+    /// 🚨 **This replaced the band's one-line echo of the most recent remark**, and the swap is
+    /// the point of the whole change. A line of the log on the band was the log's *only* way to
+    /// be seen without being in the conversation, so it had to be a line — and a line of
+    /// diagnostic text sitting on the band is chrome that is loud when nothing is wrong, which is
+    /// what James struck. The indicator says only whether there is something to look at; the
+    /// lines are behind a hover and a click. See [`crate::status_log`].
+    pub log: Option<LogSlot>,
 }
 
 /// One dim right-hand chip, and whether a person sees it without asking.
@@ -4481,7 +4546,10 @@ pub fn strip_content(
     live: LiveCounts,
     facts: &SessionFacts,
     session: Option<&str>,
-    log: Option<&str>,
+    // The status log's indicator, or `None` for an empty log. ⚠️ **`Option` here is not
+    // redundant with the slot's own emptiness**: a log with no lines has nothing to open, and a
+    // control that opens nothing is worse than no control. See [`LogSlot`].
+    log: Option<LogSlot>,
 ) -> StripContent {
     let model = match (&facts.model, failure.is_some()) {
         (Some(raw), _) => ModelSlot::Named(model_label(raw)),
@@ -4572,7 +4640,7 @@ pub fn strip_content(
         reading: status_reading(failure, live, facts),
         context,
         chips,
-        log: log.map(str::to_string),
+        log,
     }
 }
 
@@ -4600,6 +4668,12 @@ enum StripAct {
     ChooseModel(ModelRow),
     /// A permission mode was clicked. `&'static str` because the shortlist is this file's.
     ChooseMode(&'static str),
+    /// The status log's indicator was clicked: open the log, or close it if it is open.
+    ///
+    /// ⚠️ **No confirmation and no cost**, for [`Self::RevokeSessionAllow`]'s reason turned the
+    /// other way: it opens a read-only panel over the console's own chrome, changes nothing
+    /// about the session, and the same click closes it again.
+    ToggleLog,
     /// The standing-allow marker was clicked: start asking again.
     ///
     /// ⚠️ **No confirmation, deliberately.** It revokes an authority rather than granting
@@ -4625,15 +4699,13 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
         },
         pane.mapper.facts(),
         pane.transcript.session_id(),
-        // ⚠️ **The most recent remark a person is meant to see, not simply the most recent
-        // one.** `back()` would put a traced line on the band while the scrollback was hiding
-        // it — the band and the log reading differently about the same event is worse than
-        // either of them being quiet.
-        pane.log
-            .iter()
-            .rev()
-            .find(|remark| remark.seen(pane.tracing))
-            .map(|remark| remark.text.as_str()),
+        // ⚠️ **The whole log's reading, not one line of it.** This used to hand the band the most
+        // recent remark a quiet pane was drawing — which meant the band could only say something
+        // by saying a *sentence*, and a sentence on the band is the chrome James struck. The
+        // indicator is derived from the log's contents by [`StatusLog::slot`]; nothing here
+        // decides what deserves attention, which is what stops the band and the log from coming
+        // to disagree.
+        pane.log.slot(),
     )
     .switching_to(pane.pending_model.as_ref().map(|p| p.label.as_str()));
     let rows = model_rows(&pane.models, pane.mapper.facts().model.as_deref());
@@ -4641,8 +4713,110 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
         Some(StripAct::ChooseModel(row)) => pane.choose_model(&row),
         Some(StripAct::ChooseMode(mode)) => pane.choose_permission_mode(mode),
         Some(StripAct::RevokeSessionAllow) => pane.revoke_session_allow(),
+        Some(StripAct::ToggleLog) => pane.toggle_log(),
         None => {}
     }
+}
+
+/// How many rows of log the panel shows before it scrolls.
+///
+/// ⚠️ **A ceiling, not a size**: the panel takes the smaller of this and [`LOG_PANEL_SHARE`] of
+/// what the pane has left, so a short console does not have its conversation squeezed to nothing
+/// by a log somebody opened. Both bounds are needed — the fraction alone would make the panel
+/// enormous on a tall window, and the row count alone would eat a short one whole.
+const LOG_PANEL_ROWS: f32 = 9.0;
+
+/// The most of the remaining pane the log may take.
+const LOG_PANEL_SHARE: f32 = 0.45;
+
+/// The mark on an exception's row, and the one on everything else.
+///
+/// ⚠️ Both are drawn `.monospace()` for the band's tofu reason, and they are the same **width**
+/// on that face, which is what keeps the text of every row on one left edge. A ragged gutter in a
+/// log is what makes it unreadable at a glance, which is the only way anybody reads a log.
+const LOG_MARK_EXCEPTION: &str = "●";
+const LOG_MARK_QUIET: &str = "·";
+
+/// **The status log, opened.** Draws nothing while it is closed.
+///
+/// 🚨 **This is the surface the whole change exists to create**, and its rules are the module doc
+/// of [`crate::status_log`]. Two things about it are load-bearing rather than styling:
+///
+/// - **It is not in the transcript.** It is a bounded panel over the console's own chrome, hinged
+///   to the band it is opened from. James: *"it should not feel like part of the conversational
+///   flow"* — a log rendered inline fails that however it is styled, so the placement is the
+///   requirement and the frame is what states it.
+/// - **It shows the log whole**, exceptions and machinery alike, newest at the bottom. There is
+///   no filter and no mode: the quiet/loud decision has already been spent on which lines reach
+///   the *conversation*, and spending it twice would give this surface its own opinion about what
+///   is worth keeping — which is exactly the judgement that kept leaking chrome back into the
+///   flow.
+fn log_panel(ui: &mut egui::Ui, pane: &ConversationPane, theme: &Theme) {
+    if !pane.tracing {
+        return;
+    }
+    let log = pane.status_log();
+    let row = ui.text_style_height(&egui::TextStyle::Body);
+    // The frame's own padding and rule, plus the header row, all of which the reservation has to
+    // cover for the same reason the band's does — see `strip_box`.
+    let chrome = STRIP_PAD_Y as f32 * 2.0 + STRIP_STROKE * 2.0 + row + 8.0;
+    let height =
+        (row * LOG_PANEL_ROWS + chrome).min((ui.available_height() * LOG_PANEL_SHARE).max(chrome));
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), height),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            Frame::new()
+                .fill(theme.strip_fill)
+                .stroke(egui::Stroke::new(STRIP_STROKE, theme.strip_edge))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(STRIP_PAD_X, STRIP_PAD_Y))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("status log").color(theme.dim).monospace());
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                // ⚠️ **The way out is named.** The indicator toggles, but a hand
+                                // that opened this from the keyboard has no reason to know that,
+                                // and a panel with no stated exit is a panel people close by
+                                // restarting the console.
+                                ui.label(
+                                    RichText::new("`/trace off` closes").color(theme.dim).small(),
+                                );
+                            },
+                        );
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .auto_shrink(false)
+                        // Newest at the bottom, and the view sits there: a log is read from its
+                        // end, and the end is where anything that just happened is.
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for remark in log.iter() {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    let (mark, color) = if remark.always {
+                                        (LOG_MARK_EXCEPTION, theme.bad)
+                                    } else {
+                                        (LOG_MARK_QUIET, theme.dim)
+                                    };
+                                    ui.label(RichText::new(mark).color(color).monospace());
+                                    ui.label(
+                                        RichText::new(&remark.text).color(if remark.always {
+                                            theme.prose
+                                        } else {
+                                            theme.dim
+                                        }),
+                                    );
+                                });
+                            }
+                        });
+                });
+        },
+    );
 }
 
 /// Draw the band.
@@ -4701,7 +4875,13 @@ fn strip_box(
                         // Read here rather than at the draw site below because the reading's
                         // width budget depends on how wide they are — `strip_right_reserve`.
                         let chips = content.chips_seen(tracing);
-                        let room = reading_room(ui.available_width(), strip_right_reserve(ui, &chips));
+                        // The indicator's face, read once: the width budget below needs it and
+                        // the draw site needs the same string. See `strip_right_reserve`.
+                        let log_face = content.log.as_ref().map(log_label);
+                        let room = reading_room(
+                            ui.available_width(),
+                            strip_right_reserve(ui, &chips, log_face),
+                        );
                         if !reading_text.is_empty() && room > 0.0 {
                             // 🚨 **Bounded, not merely truncating.** `Label::truncate` measures
                             // against the `Ui` it is added to, so the bound has to be the `Ui`:
@@ -4767,11 +4947,14 @@ fn strip_box(
                                 if !chips.is_empty() {
                                     ui.label(RichText::new(chips.join(CHIP_SEP)).color(theme.dim));
                                 }
-                                if let Some(log) = &content.log {
-                                    ui.add(
-                                        egui::Label::new(RichText::new(log).color(theme.dim))
-                                            .truncate(),
-                                    );
+                                // The status log's door. Left of the chips, so it is the
+                                // innermost of the right-hand group and lands beside the
+                                // reading — the two things on the band that can say something
+                                // is wrong, next to each other.
+                                if let (Some(slot), Some(face)) = (&content.log, log_face) {
+                                    if log_indicator(ui, slot, face, tracing, theme).clicked() {
+                                        act = Some(StripAct::ToggleLog);
+                                    }
                                 }
                             },
                         );
@@ -4816,22 +4999,35 @@ fn strip_box(
 /// So the fixed items are **measured first** and the reading is given the remainder. The ring
 /// allocates a Body-height square every frame, measured or not ([`context_ring`]), and the
 /// chips are one non-wrapping Body run — both are exactly as wide as they are and neither can
-/// give way. The **log** is deliberately not counted: it is the other flexible item and already
-/// truncates into whatever slack it is left, which is the behaviour its own comment describes.
+/// give way.
+///
+/// 🚨 **The status log's indicator joins the fixed set, and that is a change of kind rather than
+/// of arithmetic.** What used to sit in that place was a *line* of the log, which was explicitly
+/// left out of this budget because it was the second flexible item and truncating into slack was
+/// its whole behaviour. An indicator cannot truncate: it is two or five characters saying whether
+/// anything is wrong, and an ellipsis where it should be is the band losing the one item it is
+/// least allowed to lose. So it is measured, and the flexible reading gives way to it.
 ///
 /// ⚠️ **Fixed items keep their space, the variable one gives way** — and at a width too narrow
 /// for even the fixed set, [`reading_room`] returns nought and the reading is simply not drawn.
-fn strip_right_reserve(ui: &egui::Ui, chips: &[&str]) -> f32 {
+fn strip_right_reserve(ui: &egui::Ui, chips: &[&str], log: Option<&str>) -> f32 {
     let spacing = ui.spacing().item_spacing.x;
+    // Through the painter rather than `Ui::fonts`: laying a galley out takes the font cache
+    // mutably, and the painter is the handle that has it.
+    let measure = |text: String, style: egui::TextStyle| {
+        let font = style.resolve(ui.style());
+        ui.painter().layout_no_wrap(text, font, egui::Color32::WHITE).size().x
+    };
     // The ring's own rule: a Body-height square, allocated whether or not it has an arc.
     let mut width = ui.text_style_height(&egui::TextStyle::Body);
     if !chips.is_empty() {
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let run = chips.join(CHIP_SEP);
-        // Through the painter rather than `Ui::fonts`: laying a galley out takes the font
-        // cache mutably, and the painter is the handle that has it.
-        let chips_width = ui.painter().layout_no_wrap(run, font, egui::Color32::WHITE).size().x;
-        width += spacing + chips_width;
+        width += spacing + measure(chips.join(CHIP_SEP), egui::TextStyle::Body);
+    }
+    if let Some(label) = log {
+        // ⚠️ **Monospace, because that is the face it is drawn in** — the `●` tofu fix. Measuring
+        // it as Body would under-reserve on every palette whose mono face is wider, which is the
+        // usual one, and the reading would creep back over it.
+        width += spacing + measure(label.to_string(), egui::TextStyle::Monospace);
     }
     // One more gap, between the reading and the first thing to its right.
     width + spacing
@@ -4845,6 +5041,54 @@ fn strip_right_reserve(ui: &egui::Ui, chips: &[&str]) -> f32 {
 /// [`tests::the_band_gives_the_fixed_items_their_width_before_the_echo`].
 fn reading_room(available: f32, reserved: f32) -> f32 {
     (available - reserved).max(0.0)
+}
+
+/// **The status log's door: one small mark on the band, hovered for a peek and clicked to open.**
+///
+/// 🚨 **It says whether, never what.** James: *"Maybe we should have one line somewhere that we
+/// mouse over to show more, but it should not feel like part of the conversational flow. … When
+/// everything is moving right, I generally don't care about this stuff unless there is some
+/// exception or problem."* So the quiet face is the word `log` in [`Theme::dim`] — present enough
+/// to be found and aimed at, saying nothing — and the loud face adds a dot in [`Theme::bad`].
+/// Which one is drawn is [`log_label`]'s answer to [`LogSlot::attention`], which is
+/// [`crate::status_log::StatusLog::unread`] read out: nothing here judges anything.
+///
+/// ⚠️ **`.monospace()` is the tofu fix, not a style choice** — the same one the reading and the
+/// approval card carry. egui's PROPORTIONAL face has no `●`, and it is the face this whole band
+/// would otherwise be drawn in.
+///
+/// ⚠️ **The hover names the count and the log names itself.** A peek that showed the lines and
+/// nothing else would leave "is that all of them?" unanswerable without opening the panel, which
+/// is the question the peek exists to settle.
+fn log_indicator(
+    ui: &mut egui::Ui,
+    slot: &LogSlot,
+    face: &str,
+    open: bool,
+    theme: &Theme,
+) -> egui::Response {
+    let color = if slot.attention { theme.bad } else { theme.dim };
+    ui.add(egui::Label::new(RichText::new(face).color(color).monospace()).sense(egui::Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_ui(|ui| {
+            for line in &slot.latest {
+                ui.label(RichText::new(line).color(theme.prose));
+            }
+            let held = if slot.lines == 1 {
+                "1 line".to_string()
+            } else {
+                format!("{} lines", slot.lines)
+            };
+            // The count first, then what a click does. The unread tally is stated only when
+            // there is one — "0 unread" is a sentence about nothing.
+            let summary = match (slot.unread, open) {
+                (0, false) => format!("status log · {held} · click to open"),
+                (0, true) => format!("status log · {held} · click to close"),
+                (n, false) => format!("status log · {held} · {n} new · click to open"),
+                (n, true) => format!("status log · {held} · {n} new · click to close"),
+            };
+            ui.label(RichText::new(summary).color(theme.dim).small());
+        })
 }
 
 fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot, theme: &Theme) {
@@ -7343,9 +7587,9 @@ mod tests {
         // The region is named where a person can read it, not merely implied — there is one
         // stack and possibly several regions showing it.
         assert!(
-            pane.log.back().is_some_and(|line| line.text.contains("left")),
+            pane.log.last().is_some_and(|line| line.text.contains("left")),
             "the answer does not say which region: {:?}",
-            pane.log.back()
+            pane.log.last()
         );
     }
 
@@ -8750,8 +8994,14 @@ mod tests {
         let quiet = line(&["Bash", "mcp__organon__console_portal"]);
         assert!(quiet.text.contains("withheld"), "{}", quiet.text);
         assert!(!quiet.always, "a guarantee that is holding is not news: {}", quiet.text);
-        assert!(quiet.seen(true), "…and `/trace on` still shows it");
-        assert!(!quiet.seen(false), "…while a quiet pane does not");
+        // ✏️ **…and the log still keeps it.** The old spelling of these two lines asked
+        // `Remark::seen`, which is gone with the mode it answered: a quiet line is no longer
+        // hidden-unless-tracing, it is *in the status log and nowhere else*. What is worth
+        // asserting is that it is recorded and that it does not light the indicator.
+        let mut log = StatusLog::default();
+        log.push(quiet.clone());
+        assert_eq!(log.len(), 1, "a passing audit was thrown away rather than logged");
+        assert!(!log.attention(), "a guarantee that is holding lit the band's indicator");
 
         // 🚨 The breach.
         let breach = line(&[handler]);
@@ -8852,16 +9102,31 @@ mod tests {
         // And the reservation itself grows with what is actually on the right, so hiding the
         // telemetry hands the width back to the reading rather than leaving a hole.
         let ctx = egui::Context::default();
-        let (bare, full) = {
-            let mut pair = (0.0_f32, 0.0_f32);
+        let (bare, full, logged, loud) = {
+            let mut out = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    pair.0 = strip_right_reserve(ui, &[]);
-                    pair.1 = strip_right_reserve(ui, &["session $1.18", "last turn 5.1s"]);
+                    out.0 = strip_right_reserve(ui, &[], None);
+                    out.1 = strip_right_reserve(ui, &["session $1.18", "last turn 5.1s"], None);
+                    out.2 = strip_right_reserve(ui, &[], Some(crate::status_log::LOG_QUIET));
+                    out.3 = strip_right_reserve(ui, &[], Some(crate::status_log::LOG_ATTENTION));
                 });
             });
-            pair
+            out
         };
+        // 🚨 **The indicator is a FIXED item and must be measured.** It replaced a line of log
+        // text, which was deliberately excluded from this budget because it truncated into
+        // whatever slack was left — the behaviour an indicator must not have. Drop it from
+        // `strip_right_reserve` and this pair collapses to equal, which is the mutation.
+        assert!(
+            logged > bare,
+            "the log's indicator takes width and the reading was not told: {logged} vs {bare}"
+        );
+        assert!(
+            loud > logged,
+            "the attention face is wider than the quiet one and must reserve more: {loud} vs \
+             {logged}"
+        );
         assert!(bare > 0.0, "the ring is allocated every frame, measured or not: {bare}");
         assert!(full > bare, "chips take width and the reading must be told: {full} vs {bare}");
     }
@@ -8870,23 +9135,26 @@ mod tests {
     /// cancelled always does.** See [`element_seen`] — this is the pane's quiet/loud rule
     /// reaching the transcript.
     ///
-    /// ⚠️ **Mutation-checked**: make the arm `_ => tracing` and the two failure rows fail;
-    /// make it `_ => true` and the success row fails.
+    /// ⚠️ **Mutation-checked**: make the arm `_ => false` and the two failure rows fail; make it
+    /// `_ => true` and the success row fails.
+    ///
+    /// ✏️ **No mode column any more.** The success caption used to come back under `/trace on`;
+    /// that verb now opens the status log and is forbidden from touching the transcript, so the
+    /// answer is one value per outcome. See [`element_seen`].
     #[test]
     fn a_finished_turn_says_nothing_and_a_broken_one_always_does() {
         let end = |outcome| Body::RunEnd(crate::conversation::RunEnd { outcome, detail: None });
-        for (outcome, quiet, loud) in [
-            (RunOutcome::Ok, false, true),
-            (RunOutcome::Error, true, true),
-            (RunOutcome::Cancelled, true, true),
+        for (outcome, seen) in [
+            (RunOutcome::Ok, false),
+            (RunOutcome::Error, true),
+            (RunOutcome::Cancelled, true),
         ] {
-            assert_eq!(element_seen(&end(outcome), false), quiet, "quiet pane, {outcome:?}");
-            assert_eq!(element_seen(&end(outcome), true), loud, "tracing pane, {outcome:?}");
+            assert_eq!(element_seen(&end(outcome)), seen, "{outcome:?}");
         }
         // Everything else is unconditional, and stays so by falling through rather than by
         // being listed — a new `Body` must be visible until somebody decides otherwise.
         let human = Body::Human(crate::conversation::HumanBlock { text: "hello".into() });
-        assert!(element_seen(&human, false) && element_seen(&human, true));
+        assert!(element_seen(&human));
     }
 
     /// 🚨 CONTRACT: **a live composer hints nothing; a dead one says why.** It read `message
@@ -9381,7 +9649,16 @@ mod tests {
             },
             &facts,
             Some("11111111-2222-3333-4444-555555555555"),
-            Some(&"a diagnostic line off the child that is far too long for the band ".repeat(8)),
+            // ✏️ **The log's contribution to the busiest band is now bounded by construction.**
+            // This used to be a diagnostic line repeated eight times — the widest thing that
+            // could arrive — because the band drew the log's *text*. It draws an indicator, so
+            // the widest possible case is the attention face, and that is what this asks for.
+            Some(LogSlot {
+                lines: 42,
+                attention: true,
+                unread: 3,
+                latest: vec!["stderr: something".to_string()],
+            }),
         )
         .switching_to(Some("Default (recommended)"));
         let empty = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
@@ -9464,7 +9741,7 @@ mod tests {
             LiveCounts { remembered: 9, has_session: true, ..live(0, 3) },
             &facts,
             Some("11111111-2222-3333-4444-555555555555"),
-            Some("a diagnostic line"),
+            Some(LogSlot { lines: 7, attention: false, unread: 0, latest: Vec::new() }),
         );
         assert_eq!(settled.chips.len(), 3, "the settled band carries all three chips");
 
@@ -10682,11 +10959,18 @@ mod tests {
             "organon",
         );
         assert!(receipt.ok, "{}", receipt.text);
-        let last = accepted.log.back().expect("the receipt reached the log either way");
+        let last = accepted.log.last().expect("the receipt reached the log either way");
         assert!(last.text.contains("/theme dark"), "{}", last.text);
-        assert!(!last.always, "an acceptance is narration — it is drawn only under `/trace on`");
-        assert!(!last.seen(false), "a quiet console drew an acceptance");
-        assert!(last.seen(true), "…and tracing did not bring it back");
+        assert!(!last.always, "an acceptance is narration — the log holds it and nothing else");
+        // 🚨 **Kept, and out of the conversation.** The two properties that used to be one
+        // `seen(mode)` question are now separate facts, which is the point: the line is in the
+        // log whatever the mode, and it is not among what the scrollback draws.
+        assert_eq!(accepted.log.iter().filter(|r| r.text.contains("/theme dark")).count(), 1);
+        assert!(
+            !accepted.log.exceptions().any(|r| r.text.contains("/theme dark")),
+            "an acceptance reached the conversation"
+        );
+        assert!(!accepted.log.attention(), "an acceptance lit the band's indicator");
 
         // The fixture's own `local` is `NoDispatch`, which refuses everything — so this is the
         // refusal path with nothing rigged.
@@ -10700,20 +10984,33 @@ mod tests {
             "organon",
         );
         assert!(!receipt.ok, "the fixture's dispatch refuses: {}", receipt.text);
-        let last = refused.log.back().expect("a refusal reaches the log");
+        let last = refused.log.last().expect("a refusal reaches the log");
         assert!(last.always, "a refusal was hidden behind a mode nobody had turned on");
-        assert!(last.seen(false));
+        // ⚠️ Matched by the remark's own text rather than by the typed line: a refusal carries
+        // the dispatch's sentence, which does not echo what was typed — that is `RECEIPT_OK`'s
+        // arm. See [`registry::receipt`].
+        let refusal = last.text.clone();
+        assert!(
+            refused.log.exceptions().any(|r| r.text == refusal),
+            "a refusal did not reach the conversation: {refusal}"
+        );
+        assert!(refused.log.attention(), "a refusal left the band's indicator dark");
     }
 
     /// `/trace on` and `/trace off`, through the same lane a typed line takes.
     ///
     /// ⚠️ **Switching on is echoed and switching off is not**, and that is not two rules: the
-    /// acknowledgement goes to the quiet half, which the mode it just set decides the visibility
-    /// of. Turning it on shows the line; turning it off goes quiet, which is the thing asked for.
+    /// acknowledgement goes into the log, which is the thing `on` has just put on screen and
+    /// `off` has just taken off it.
+    ///
+    /// 🚨 **And neither word reaches the conversation**, which is what the verb now means. The
+    /// old spelling of this test asked `Remark::seen` — a question about a mode that widened the
+    /// scrollback. There is no such mode.
     #[test]
     fn trace_is_off_until_it_is_asked_for_and_one_word_puts_it_back() {
         let mut pane = palette_pane();
         assert!(!pane.tracing(), "a tab opens quiet");
+        let flow_before = pane.log.exceptions().count();
         let say = |pane: &mut ConversationPane, word: &str| {
             pane.run_command(
                 Lane::View,
@@ -10725,17 +11022,71 @@ mod tests {
             )
         };
         assert!(say(&mut pane, "on").ok);
-        assert!(pane.tracing(), "`/trace on` did not turn it on");
-        let last = pane.log.back().expect("it says so");
-        assert!(last.text.contains("trace on"), "{}", last.text);
-        assert!(last.seen(pane.tracing()), "the line announcing trace is hidden by trace");
+        assert!(pane.tracing(), "`/trace on` did not open the log");
+        let last = pane.log.last().expect("it says so");
+        assert!(last.text.contains("status log open"), "{}", last.text);
 
         assert!(say(&mut pane, "off").ok);
-        assert!(!pane.tracing(), "`/trace off` did not turn it off");
+        assert!(!pane.tracing(), "`/trace off` did not close it");
         assert!(
-            !pane.log.back().expect("it is still in the log").seen(pane.tracing()),
-            "turning the narration off left a line of narration on screen"
+            pane.log.last().expect("it is still in the log").text.contains("closed"),
+            "the log did not record its own closing"
         );
+        assert_eq!(
+            pane.log.exceptions().count(),
+            flow_before,
+            "opening and closing the status log put something in the conversation",
+        );
+    }
+
+    /// 🚨 CONTRACT: **opening the log is what clears the band's indicator, in both directions.**
+    ///
+    /// The other half of this lives in [`crate::status_log`], where the arithmetic is; what is
+    /// pinned here is that the *verb* is wired to it. A `/trace on` that opened the panel and
+    /// left the dot lit would be a badge that never clears, which is a badge nobody reads.
+    ///
+    /// ⚠️ **Mutation-checked**: drop the `self.log.acknowledge()` from
+    /// [`ConversationPane::set_tracing`] and the middle assertion fails with *"opening the log
+    /// did not clear the indicator"*.
+    #[test]
+    fn opening_the_log_clears_the_indicator_and_a_later_exception_lights_it_again() {
+        let mut pane = palette_pane();
+        pane.note("could not send interrupt: broken pipe".to_string());
+        assert!(pane.status_log().attention(), "an exception left the indicator dark");
+        pane.toggle_log();
+        assert!(pane.tracing(), "the indicator's click did not open the log");
+        assert!(!pane.status_log().attention(), "opening the log did not clear the indicator");
+        pane.trace("ok /theme dark".to_string());
+        assert!(!pane.status_log().attention(), "machinery lit an acknowledged log");
+        pane.note("the agent process ended".to_string());
+        assert!(pane.status_log().attention(), "a new exception did not light the indicator");
+    }
+
+    /// 🚨 CONTRACT: **the band's indicator is derived from the log and nothing else.**
+    ///
+    /// `strip_content` is handed [`crate::status_log::StatusLog::slot`] rather than a flag some
+    /// caller maintained, so there is no second opinion to drift. An empty log offers no
+    /// indicator at all — there would be nothing to open.
+    #[test]
+    fn the_band_reads_the_indicator_off_the_log() {
+        let facts = SessionFacts::default();
+        let empty = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        assert!(empty.log.is_none(), "the band offered a control that opens nothing");
+
+        let mut log = crate::status_log::StatusLog::default();
+        log.push(Remark { text: "stderr: warming up".into(), always: false });
+        let quiet = strip_content(None, live(0, 0), &facts, Some("abc"), log.slot());
+        let quiet = quiet.log.expect("one line is a log");
+        assert!(!quiet.attention, "machinery lit the band");
+        assert_eq!(log_label(&quiet), crate::status_log::LOG_QUIET);
+
+        log.push(Remark { text: "could not send: broken pipe".into(), always: true });
+        let loud = strip_content(None, live(0, 0), &facts, Some("abc"), log.slot())
+            .log
+            .expect("two lines is a log");
+        assert!(loud.attention, "an exception left the band quiet");
+        assert_eq!(log_label(&loud), crate::status_log::LOG_ATTENTION);
+        assert_eq!(loud.lines, 2, "the hover has to be able to say how much is behind it");
     }
 
     /// 🚨 **A refusal keeps the band whatever the mode.** The quiet default costs a

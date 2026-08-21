@@ -61,7 +61,7 @@ use crate::conversation::{
 };
 use crate::posture::Form;
 use crate::theme::Theme;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 /// The pane the console opens at, in points — `organon-console`'s default window is
 /// 1100×720 and the conversation front-end fills it.
@@ -222,7 +222,7 @@ pub(super) fn bench_pane(transcript: Transcript) -> ConversationPane {
         panel_wanted: None,
         failure: None,
         composer: String::new(),
-        log: VecDeque::new(),
+        log: crate::status_log::StatusLog::default(),
         // A bench draws no log and no receipt, so the mode cannot change what it measures —
         // `false` because that is what a real tab opens with.
         tracing: false,
