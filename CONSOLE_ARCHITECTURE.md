@@ -4974,7 +4974,7 @@ over placements and there must never be one: "never half-apply" is a property of
 rather than discipline at the call site, and a partial apply that had evicted the last `agent`
 region is a console with nothing to type into — recoverable only by a verb typed at an agent.
 
-Six checks, in the order a reader meets the file:
+Seven checks, in the order a reader meets the file:
 
 | Refused | Because |
 |---|---|
