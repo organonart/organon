@@ -10232,7 +10232,10 @@ fn presets_ui(
                     unique_preset_name(&format!("Preset {}", state.presets.len() + 1), &existing);
                 let values = preset::PresetValues::capture(params);
                 emit_name_request(state, &values, PresetScope::Global, &provisional, name_gen);
-                state.presets.push(preset::Preset { name: provisional, values });
+                // `capture`, not a struct literal: a preset made by a person here records
+                // what it changed, so `/preset load` can build a panel of exactly those
+                // controls (organon#124).
+                state.presets.push(preset::Preset::capture(provisional, values));
                 preset::save(&state.presets);
                 state.keymap_dirty = true; // a new preset may already be referenced by a key
             }
@@ -10294,7 +10297,7 @@ fn presets_ui(
                     name_gen,
                 );
                 let list = &mut state.tab_presets[active_tab.index()];
-                list.push(preset::Preset { name: provisional, values });
+                list.push(preset::Preset::capture(provisional, values));
                 preset::save_tab(active_tab, list);
             }
             help(ui, "Recall overrides only this tab's params; the other tabs stay put.");

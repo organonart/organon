@@ -6246,6 +6246,54 @@ impl PresetValues {
         for_each_tab_field!(op);
         v
     }
+
+    /// **The factory baseline every preset diff is taken against** — the parameter set as
+    /// `params.rs` declares it, with no `.hdr` sidecar read (so it is the same value on any
+    /// machine, which a diff has to be).
+    ///
+    /// ⚠️ **Not free.** It constructs all 1,372 params. Fine at a save, a load or a command;
+    /// never in a frame.
+    pub fn factory_default() -> Self {
+        Self::capture_params_only(&OrganicMathParams::default())
+    }
+
+    /// **Which fields this preset moved off the factory default**, by serialized name, in
+    /// `for_each_tab_field!`'s declaration order (organon#124).
+    ///
+    /// 🚨 **This is the whole of "what did this preset change".** James: *"we can tell from the
+    /// preset what values we have adjusted from the default … we could construct custom panels
+    /// … tailored to the exact changes that we made on that preset."* It is computed by
+    /// serializing both sides and comparing values, so **there is no field list here** — adding
+    /// a param to `PresetValues` puts it in this diff with no edit, which is the property a
+    /// hand-maintained list could not have.
+    ///
+    /// ⚠️ **Walked in `tab_field_list` order rather than over the JSON's own keys**, and that
+    /// choice does three things at once. It gives a *stable, declaration* order rather than
+    /// serde's map order; it restricts the answer to fields a preset actually captures, so the
+    /// per-display quality settings (`taa_*`, `pathtrace_enable`, …) that are deliberately
+    /// absent from that table are absent from a diff too; and it drops `hdr_path`, which is a
+    /// file path rather than a value and has no control to draw.
+    ///
+    /// ⚠️ **A float compares exactly, and that is right here.** The question is not "are these
+    /// audibly the same" but "did somebody move this control", and a value that came back to
+    /// its default through the UI *is* its default.
+    pub fn changed_from_default(&self) -> Vec<String> {
+        Self::changed_against(&Self::factory_default(), self)
+    }
+
+    /// [`changed_from_default`](Self::changed_from_default) against an arbitrary baseline —
+    /// the same walk, separated out so a test can pin the mechanism without depending on what
+    /// the factory defaults happen to be.
+    pub fn changed_against(base: &Self, other: &Self) -> Vec<String> {
+        let (a, b) = (serde_json::to_value(base), serde_json::to_value(other));
+        let (Ok(a), Ok(b)) = (a, b) else { return Vec::new() };
+        let (Some(a), Some(b)) = (a.as_object(), b.as_object()) else { return Vec::new() };
+        Self::tab_field_list()
+            .into_iter()
+            .filter(|(name, _)| a.get(*name) != b.get(*name))
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
 }
 
 impl PresetValues {
@@ -6538,6 +6586,100 @@ impl PresetValues {
 pub struct Preset {
     pub name: String,
     pub values: PresetValues,
+    /// **What this preset is *about*** — the fields a panel built from it should show
+    /// (organon#124).
+    ///
+    /// 🚨 **Stated, rather than inferred, and that is the whole reason it exists.** The obvious
+    /// implementation is a pure diff against the factory default, and
+    /// [`PresetValues::changed_from_default`] is exactly that — but a diff has two flaws that
+    /// only a recorded set can close:
+    ///
+    /// - **A preset that deliberately sets a value *to* its default is invisible to a diff.**
+    ///   Returning something to neutral is a real compositional act and no comparison can see
+    ///   it.
+    /// - **Volume.** A preset may differ in hundreds of fields, and a "tailored" panel showing
+    ///   all of them is not tailored. The set is editable, so a person can say what the preset
+    ///   is for.
+    ///
+    /// ⚠️ **`None` means "nobody has said", and it is the answer for every preset that already
+    /// exists.** `#[serde(default)]` is what lets a `presets.json` written before this parse
+    /// unchanged, and [`Preset::exposed_fields`] falls back to the diff for it — so the feature
+    /// works on a store nobody has re-saved, and gets better when they do.
+    ///
+    /// ⚠️ **The names are serialized field names, so a renamed field silently leaves the set.**
+    /// [`Preset::unknown_exposed`] is how a surface with a human in front of it reports that by
+    /// name rather than dropping it in silence; `exposed_fields` itself answers only the names
+    /// the current build still knows.
+    #[serde(default)]
+    pub exposed: Option<Vec<String>>,
+}
+
+impl Preset {
+    /// **A preset captured now**, with its exposed set seeded from what it actually changed.
+    ///
+    /// This is where the seeding belongs: at the one moment the preset is born, when the diff
+    /// is the honest answer and there is nobody yet to have curated it.
+    pub fn capture(name: impl Into<String>, values: PresetValues) -> Self {
+        let exposed = Some(values.changed_from_default());
+        Preset { name: name.into(), values, exposed }
+    }
+
+    /// The same preset with **no** opinion about what it is about — the shape every preset had
+    /// before organon#124, for the callers that build one as a container rather than as a
+    /// capture (the factory Rails presets, a test fixture).
+    pub fn unstated(name: impl Into<String>, values: PresetValues) -> Self {
+        Preset { name: name.into(), values, exposed: None }
+    }
+
+    /// **The fields a panel built from this preset should show**, in declaration order, with
+    /// names this build no longer knows removed.
+    ///
+    /// ⚠️ Falls back to the diff when nobody has stated a set — see [`Preset::exposed`]. The two
+    /// answers are deliberately not distinguished here: a caller that needs to know which it got
+    /// asks `self.exposed.is_some()`, and a caller that just wants to draw a panel does not care.
+    pub fn exposed_fields(&self) -> Vec<String> {
+        match &self.exposed {
+            Some(list) => {
+                let stated: std::collections::HashSet<&str> =
+                    list.iter().map(|s| s.as_str()).collect();
+                // Declaration order, not the order somebody happened to write them in — so two
+                // presets exposing the same fields build the same panel.
+                PresetValues::tab_field_list()
+                    .into_iter()
+                    .filter(|(n, _)| stated.contains(n))
+                    .map(|(n, _)| n.to_string())
+                    .collect()
+            }
+            None => self.values.changed_from_default(),
+        }
+    }
+
+    /// 🚨 **Names in the stated set that this build does not have a field for** — a renamed or
+    /// removed param, or a hand-edited `presets.json`.
+    ///
+    /// House rule: a surface refuses *by name* and says what would have worked, so the names are
+    /// carried out rather than dropped where nobody can see them. [`Preset::exposed_fields`]
+    /// answers only what it can draw; this is what the caller prints beside it.
+    pub fn unknown_exposed(&self) -> Vec<String> {
+        let known = Self::known_field_names();
+        self.exposed
+            .iter()
+            .flatten()
+            .filter(|n| !known.contains(n.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Restate what this preset is about. Unknown names are kept rather than filtered, so a set
+    /// edited on a build that is missing a param is not silently pruned by the build that saved
+    /// it — [`Preset::unknown_exposed`] is what surfaces them.
+    pub fn expose(&mut self, fields: Vec<String>) {
+        self.exposed = Some(fields);
+    }
+
+    fn known_field_names() -> std::collections::HashSet<&'static str> {
+        PresetValues::tab_field_list().into_iter().map(|(n, _)| n).collect()
+    }
 }
 
 /// Directory where exported `.mid` clips are written. The per-preset `.mid`
@@ -6706,7 +6848,23 @@ fn subset_entry(p: &Preset, tabs: &[EditorTab]) -> serde_json::Value {
     if let Some(map) = vals.as_object_mut() {
         map.retain(|k, _| names.contains(k.as_str()) || (keep_hdr && k == "hdr_path"));
     }
-    serde_json::json!({ "name": p.name, "values": vals })
+    // 🚨 **The exposed set has to be written here or it is silently dropped.** This object is
+    // hand-built rather than serialized from `Preset`, so a new field on that struct does not
+    // reach the file by itself — it round-trips through `capture`, survives a load, and
+    // vanishes on the next save, which is the quietest failure available. Filtered to the same
+    // bucket as the values for the same reason they are: a subset that named a field it did not
+    // carry would build a panel row over a value the file does not hold.
+    //
+    // ⚠️ `None` stays absent from the JSON rather than becoming `null`, so a store nobody has
+    // re-saved is byte-identical to what it was before organon#124.
+    let exposed = p.exposed.as_ref().map(|list| {
+        let kept: Vec<&String> = list.iter().filter(|n| names.contains(n.as_str())).collect();
+        serde_json::to_value(kept).unwrap_or(serde_json::Value::Null)
+    });
+    match exposed {
+        Some(e) => serde_json::json!({ "name": p.name, "values": vals, "exposed": e }),
+        None => serde_json::json!({ "name": p.name, "values": vals }),
+    }
 }
 
 fn save_subset(path: &std::path::Path, presets: &[Preset], tabs: &[EditorTab]) -> bool {
@@ -6747,7 +6905,11 @@ pub fn builtin_rails_presets() -> Vec<Preset> {
         v.generator = rails_gen;
         v.sc_mode = 1; // SceneryMode::Zone — the corridor
         f(&mut v);
-        Preset { name: name.into(), values: v }
+        // ⚠️ `unstated`, not `capture`: these are built on every `load()` to compare names,
+        // and seeding an exposed set here would cost a factory-default capture plus two
+        // whole-struct serializations five times per app start for an answer
+        // `exposed_fields` derives lazily and identically.
+        Preset::unstated(name, v)
     };
     vec![
         // The flagship: a glass throat morphing every 2 bars.
@@ -7269,7 +7431,7 @@ mod preset_io_tests {
         v.ambient = 0.5; // Look — had no serde default before the fix
         v.tempo = 141.0; // Settings — had no serde default before the fix
         v.terrain_enabled = true; // Environment
-        let preset = Preset { name: "P".into(), values: v };
+        let preset = Preset::unstated("P", v);
 
         let scopes: [&[EditorTab]; 7] = [
             &EditorTab::SCENE,
@@ -7374,10 +7536,150 @@ mod preset_io_tests {
         assert_eq!(from_preset.mindview_gen, from_params.mindview_gen);
 
         // And a full save→load round trip of a modern preset is unaffected.
-        let preset = Preset { name: "P".into(), values: PresetValues::capture(&p) };
+        let preset = Preset::unstated("P", PresetValues::capture(&p));
         let json = serde_json::to_string(&vec![preset]).unwrap();
         let back = parse_presets_lenient(&json);
         assert_eq!(back.len(), 1);
         assert!(back[0].values.to_shared().mindview_pane.iter().all(|&v| v == 0.0));
+    }
+    // -----------------------------------------------------------------------
+    // What a preset is ABOUT — the diff and the exposed set (organon#124)
+    // -----------------------------------------------------------------------
+
+    /// 🚨 **The claim the whole feature rests on**: a captured preset knows which controls it
+    /// moved, by name, with no list anywhere.
+    #[test]
+    fn a_capture_records_exactly_the_fields_it_moved() {
+        let mut v = PresetValues::factory_default();
+        v.bevel += 0.25;
+        v.ambient += 0.25;
+        let p = Preset::capture("P", v);
+        // ⚠️ `for_each_tab_field!`'s order, not alphabetical and not the order they were
+        // touched: `bevel` is declared in the Generator block, `ambient` at the head of the
+        // Look one. That is the property — a panel built from this set reads in the editor's
+        // own order — so the assertion is spelled out rather than sorted.
+        assert_eq!(p.exposed_fields(), vec!["bevel", "ambient"]);
+    }
+
+    /// An untouched capture is about nothing, and says so as an empty set rather than as
+    /// `None` — "I changed nothing" and "nobody has said" are different answers.
+    #[test]
+    fn an_untouched_capture_is_about_nothing_and_says_so() {
+        let p = Preset::capture("P", PresetValues::factory_default());
+        assert_eq!(p.exposed, Some(Vec::new()));
+        assert!(p.exposed_fields().is_empty());
+    }
+
+    /// 🚨 **The first flaw a pure diff cannot close.** A preset that deliberately returns a
+    /// control *to* its default is invisible to a comparison — and returning something to
+    /// neutral is a real compositional act. A stated set carries it; the diff does not.
+    #[test]
+    fn a_value_deliberately_set_to_its_default_survives_in_a_stated_set() {
+        let base = PresetValues::factory_default();
+        let mut v = base.clone();
+        v.bevel = base.bevel; // put back where it started, on purpose
+        let mut p = Preset::capture("P", v);
+        assert!(p.exposed_fields().is_empty(), "a diff cannot see this, and that is the point");
+        p.expose(vec!["bevel".into()]);
+        assert_eq!(p.exposed_fields(), vec!["bevel"]);
+    }
+
+    /// ⚠️ **Every preset that already exists has no stated set**, and must still build a panel.
+    /// The fallback is the diff, so the feature works on a store nobody has re-saved.
+    #[test]
+    fn a_preset_from_before_this_feature_falls_back_to_the_diff() {
+        let mut v = PresetValues::factory_default();
+        v.ambient += 1.0;
+        let p = Preset::unstated("old", v);
+        assert_eq!(p.exposed, None, "nobody has said");
+        assert_eq!(p.exposed_fields(), vec!["ambient"], "so the diff answers");
+    }
+
+    /// 🚨 **The compatibility guarantee, on the wire.** `presets.json` is a real file on real
+    /// machines (James's is ~184 KB) and an entry written before organon#124 has no `exposed`
+    /// key at all. `#[serde(default)]` is what makes that parse; this is what stops the
+    /// attribute being removed as decoration.
+    #[test]
+    fn a_stored_preset_with_no_exposed_key_still_loads() {
+        let json = r#"[{"name":"Old","values":{"bevel":0.5}}]"#;
+        let back = parse_presets_lenient(json);
+        assert_eq!(back.len(), 1, "an entry without the key is not malformed");
+        assert_eq!(back[0].name, "Old");
+        assert_eq!(back[0].exposed, None);
+    }
+
+    /// 🚨 **`subset_entry` builds its JSON object by hand, so a new field on `Preset` does not
+    /// reach the file by itself.** The failure is the quiet kind: the set round-trips in memory,
+    /// survives a load, and vanishes on the next save. This is the guard.
+    #[test]
+    fn the_exposed_set_survives_a_save() {
+        let mut v = PresetValues::factory_default();
+        v.ambient += 1.0;
+        let p = Preset::capture("P", v);
+        assert_eq!(p.exposed_fields(), vec!["ambient"]);
+        let json = serde_json::to_string(&vec![subset_entry(&p, &EditorTab::SCENE)]).unwrap();
+        let back = parse_presets_lenient(&json);
+        assert_eq!(back[0].exposed, Some(vec!["ambient".to_string()]), "the set was dropped on save");
+    }
+
+    /// ⚠️ **A subset save must not name a field it did not write.** A tab subset carries one
+    /// bucket's values; an exposed name from another bucket would build a panel row over a value
+    /// the file does not hold.
+    #[test]
+    fn a_subset_save_drops_exposed_names_it_did_not_write() {
+        let mut p = Preset::unstated("P", PresetValues::factory_default());
+        // `ambient` is a Look field; `audio_gain` is an Audio one.
+        p.expose(vec!["ambient".into(), "audio_gain".into()]);
+        let entry = subset_entry(&p, &[EditorTab::Look]);
+        let exposed = entry["exposed"].as_array().unwrap();
+        assert_eq!(exposed.len(), 1, "a field outside the bucket was named: {exposed:?}");
+        assert_eq!(exposed[0], "ambient");
+    }
+
+    /// 🚨 **A name this build no longer has is reported, never dropped in silence.** House rule
+    /// everywhere in this tree: a surface says what would have worked. `exposed_fields` answers
+    /// only what it can draw and `unknown_exposed` is what the caller prints beside it.
+    #[test]
+    fn a_name_this_build_does_not_know_is_reported_by_name() {
+        let mut p = Preset::unstated("P", PresetValues::factory_default());
+        p.expose(vec!["ambient".into(), "no_such_param".into()]);
+        assert_eq!(p.exposed_fields(), vec!["ambient"]);
+        assert_eq!(p.unknown_exposed(), vec!["no_such_param"]);
+    }
+
+    /// Two presets exposing the same fields build the same panel, whatever order the names were
+    /// written in — so the answer is `tab_field_list`'s declaration order, not the file's.
+    #[test]
+    fn the_exposed_set_answers_in_declaration_order() {
+        let mut a = Preset::unstated("A", PresetValues::factory_default());
+        let mut b = Preset::unstated("B", PresetValues::factory_default());
+        a.expose(vec!["ambient".into(), "bevel".into()]);
+        b.expose(vec!["bevel".into(), "ambient".into()]);
+        assert_eq!(a.exposed_fields(), b.exposed_fields());
+    }
+
+    /// ⚠️ **The per-display quality settings are absent from a diff, and that is inherited
+    /// rather than filtered.** `taa_enabled` and friends have no `PresetValues` field at all
+    /// (`params.rs`: *"Per-display, NOT preset-captured"*), so they cannot appear in a set —
+    /// which is why Look ▸ Temporal cannot be built from a preset, and why nothing here has to
+    /// know that.
+    #[test]
+    fn no_per_display_field_can_reach_an_exposed_set() {
+        let known = Preset::known_field_names();
+        for name in ["taa_enabled", "motion_blur", "pathtrace_enable", "rt_debug", "hdr_path"] {
+            assert!(!known.contains(name), "`{name}` reached the preset field space");
+        }
+    }
+
+    /// The diff has no field list in it, so it cannot fall behind `PresetValues`. This pins the
+    /// mechanism against an arbitrary baseline rather than the factory defaults, which is the
+    /// half a change to `params.rs` could otherwise move underneath it.
+    #[test]
+    fn the_diff_is_computed_rather_than_listed() {
+        let base = PresetValues::factory_default();
+        let mut moved = base.clone();
+        moved.kal_spin += 1.0;
+        assert_eq!(PresetValues::changed_against(&base, &moved), vec!["kal_spin"]);
+        assert!(PresetValues::changed_against(&base, &base).is_empty());
     }
 }
