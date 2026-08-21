@@ -704,11 +704,10 @@ impl OrganonPanels {
     /// graph. So the Console asks: `panel_stack::OrganonDraw` hands this the panel and takes a
     /// card back. There is one card function in the tree and both surfaces call it.
     ///
-    /// ⚠️ **`absent` is the Console's sentence, carried rather than written.** Twenty-four of the
-    /// twenty-five panels have no body here, and what they say instead
-    /// (`panel_stack::NOT_TRANSPLANTED`) belongs to the crate that decides what a Console panel
-    /// is. Placing it *inside* the card is the point — a declared panel that skipped the chrome
-    /// would be the one card in a column of twenty-five that looked like something else.
+    /// ✏️ **`absent` is gone, and with it the last of the Console's explanatory prose.** This
+    /// took a sentence for a panel with no body — `panel_stack::NOT_TRANSPLANTED` — and drew it
+    /// inside the card. `panel_stack::admit` refuses such a panel at every door now, so the card
+    /// is never asked to explain itself: a panel reaching here is one this build can draw.
     ///
     /// ⚠️ The heading is `panel.title` — `panels::Panel`'s own field, which is the string
     /// Organon's editor already draws over this same card. Nothing is composed here, and
@@ -723,20 +722,10 @@ impl OrganonPanels {
         &mut self,
         ui: &mut egui::Ui,
         panel: &'static organon_core::panels::Panel,
-        absent: Option<&str>,
         theme: &organon_console::theme::Theme,
     ) {
         let style = console_card_style(theme);
-        crate::card_styled(ui, panel.title, &style, |ui| match absent {
-            None => self.draw(ui, panel),
-            // ⚠️ `.weak()` rather than `theme.dim`, deliberately: it resolves through
-            // `Visuals::weak_text_color()`, and the Console sets its visuals from the palette
-            // (`Theme::visuals`), so this sentence already follows `/theme`. Naming a field
-            // here would be a second answer to a question the palette has answered once.
-            Some(sentence) => {
-                ui.label(egui::RichText::new(sentence).italics().weak());
-            }
-        });
+        crate::card_styled(ui, panel.title, &style, |ui| self.draw(ui, panel));
     }
 
     /// Draw one panel's body into `ui`. The frame and heading belong to the caller — [`Self::card`]
@@ -765,13 +754,15 @@ impl OrganonPanels {
             self.dirty = true;
             return;
         }
-        // 🚨 Unreachable for a `panels::Status::Live` panel — [`Self::card`] is handed `absent`
-        // for every `Declared` one and never gets here — so arriving here means
-        // `panels::Status` and `panel_table::DECLARED` have drifted. It says so rather than
-        // drawing an empty box, for the reason `panel_stack::absent_body` gives about a
-        // `Declared` panel: a card that opens to nothing is indistinguishable from one that
-        // failed. `panel_table::a_declared_panel_is_exactly_a_live_one` is what stops that
-        // drift reaching a build.
+        // 🚨 Unreachable — `panel_stack::admit` keeps a `Declared` panel out of every column, so
+        // arriving here means `panels::Status` and `panel_table::DECLARED` have drifted. It says
+        // so rather than drawing an empty box: a card that opens to nothing is indistinguishable
+        // from one that failed. `panel_table::a_declared_panel_is_exactly_a_live_one` is what
+        // stops that drift reaching a build.
+        //
+        // ⚠️ **This is a FAILURE, not an explanation, and that is why the sweep that deleted the
+        // console's prose left it standing.** It names a state that should be impossible; the
+        // sentence it used to sit beside named a state that was routine.
         ui.label(
             egui::RichText::new(format!(
                 "`{}` is Live in the panel table but this console has no body for it",

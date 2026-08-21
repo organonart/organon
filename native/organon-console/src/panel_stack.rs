@@ -146,18 +146,20 @@ use crate::theme::Theme;
 /// egui) and `theme.rs` reaches `nih_plug_egui`, `theme_config` and the paint helpers. So the
 /// seam widened.
 ///
-/// The callback is therefore handed **every** panel in the column, `Declared` ones included, and
-/// draws the card around whatever it decides to put inside. [`NOT_TRANSPLANTED`] is still this
-/// crate's sentence — the caller reads the constant and places it *inside* the card, which is
-/// what stops twenty-four of the twenty-five panels from being the ones with different chrome.
+/// The callback is therefore handed the panel and draws the card around whatever it decides to
+/// put inside.
+///
+/// ✏️ **It used to be handed `Declared` panels too, with a sentence to put in them.** [`admit`]
+/// closed that door: a panel in a column is one this build has a body for, so there is no
+/// bodyless card left to give different chrome to.
 ///
 /// # ⚠️ The `bool` is not decoration
 ///
 /// `false` means **this build drew no card**: every test in this crate, and any front-of-house
 /// with no Organon editor behind it. The stack then draws [`plain_card`], which is the frame and
 /// heading it drew before this widened. Without that answer an inert callback would render a
-/// column of nothing, and a panel that is in the column but invisible is precisely the failure
-/// [`NOT_TRANSPLANTED`] exists to prevent, one level up.
+/// column of nothing — and a panel that is in the column but invisible is indistinguishable from
+/// one that failed.
 pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &'static Panel) -> bool;
 
 /// One panel in the column, and the number that gives it its egui namespace.
@@ -369,6 +371,22 @@ pub const ALL_WORD: &str = "all";
 /// `/add surface` and the line supplies this word.
 pub const REGION_ARG: &str = "region";
 
+/// The two **required** slots on the stack verb, by the names the dispatch carries them under.
+///
+/// ⚠️ **Spelled here for [`REGION_ARG`]'s reason** — one slot name for one value space. The verb
+/// itself is declared in the root crate (`console_main`'s `CMD_ACTION` / `CMD_PANEL`), which this
+/// crate cannot see; `console_main`'s
+/// `the_stack_verbs_rings_are_the_panel_stack_tables_and_it_checks_words_not_columns` compares
+/// them, because a name kept equal by comment is a name that stops being equal.
+///
+/// 🚨 **Read by [`crate::region_line`] to re-ask [`StackCmd::resolve`] before dispatching.** The
+/// registry validates the *shape* of a line and the panel word's membership; whether that panel
+/// has controls at all is this module's question ([`admit`]), and the answer has to reach the
+/// box it was typed in rather than only the process's stderr.
+pub const ACTION_ARG: &str = "action";
+/// See [`ACTION_ARG`].
+pub const PANEL_ARG: &str = "panel";
+
 /// The panel ring's whole value space: every slug, then [`ALL_WORD`].
 ///
 /// Built from `panels::slugs()` rather than restated, so a panel added to Organon's table
@@ -427,7 +445,15 @@ impl StackCmd {
             known: panels::slugs().join(", "),
         })?;
         Ok(match action {
-            "add" => StackCmd::Add(resolved),
+            // 🚨 **The gate, at the door rather than on the card.** A panel with no controls is
+            // refused *by name* here instead of being admitted and then explaining itself in the
+            // column — see [`admit`]. `remove` is deliberately not gated: a column can only be
+            // holding what this gate already let in, so gating it would refuse the one command
+            // that could clean up after a build in which the table and the bodies disagreed.
+            "add" => {
+                admit(resolved)?;
+                StackCmd::Add(resolved)
+            }
             // `remove` is the only other word `STACK_ACTIONS` holds. A catch-all rather than a
             // second literal, so a third action added to that table without a case here is a
             // wrong answer `every_action_word_resolves` catches, not a panic in the frame path.
@@ -445,6 +471,10 @@ pub enum Refusal {
     UnknownPanel { word: String, known: String },
     /// [`ALL_WORD`] given to `add`. See [`StackCmd::resolve`].
     AllIsNotAnAddition,
+    /// 🚨 **A real panel this build has no controls for** — [`panels::Status::Declared`]. This is
+    /// the sentence the card used to draw *after* letting the panel in; see [`admit`] for why it
+    /// is a refusal now and not a label.
+    NotTransplanted { slug: String },
     /// `remove` of a panel the column is not holding.
     NotHeld { slug: String, held: String },
     /// `remove all` on a column that is already empty. [`crate::region::Refusal::AlreadyEmpty`]'s
@@ -478,6 +508,20 @@ impl std::fmt::Display for Refusal {
                 "`{ALL_WORD}` is the word for the whole column, and this verb does not fill a \
                  column from one command — name a panel to add, or say `stack remove \
                  {ALL_WORD}` to empty it"
+            ),
+            // ⚠️ **Names what would have worked**, like every other arm — and the list is
+            // re-derived from the table rather than written out, so a panel going `Live` reaches
+            // this sentence in the commit that transplants it.
+            Refusal::NotTransplanted { slug } => write!(
+                f,
+                "`{slug}` is one of Organon's panels but is not transplanted into the console, \
+                 so it has no controls to put in a column — transplanted: {}",
+                panels::PANELS
+                    .iter()
+                    .filter(|p| p.status == panels::Status::Live)
+                    .map(|p| p.slug)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Refusal::NotHeld { slug, held } => write!(
                 f,
@@ -563,21 +607,6 @@ impl Home {
 pub fn heading(panel: &Panel) -> &'static str {
     panel.title
 }
-
-/// What a [`panels::Status::Declared`] panel says where its controls would be.
-///
-/// ⚠️ **It says so rather than drawing an empty box**, for `Ring::Empty`'s reason one scale up:
-/// a panel that opened to nothing at all would be indistinguishable from one that failed. Only
-/// Look ▸ Surface is `Live` today and the other twenty-four earn this line.
-///
-/// ✏️ **Three words, where it was a sixteen-word sentence.** The sentence explained the
-/// console's own construction — *"named in Organon's editor but has not been transplanted into
-/// the console yet"* — to a reader who is doing the transplanting; and with twenty-four of the
-/// twenty-five panels `Declared`, it was that explanation repeated two dozen times down a 320 pt
-/// column. What a person needs from the card is the **fact**: this panel is real, and its
-/// controls are not here. That is what survives. The empty-box hazard above is unchanged — the
-/// card still says something rather than nothing, which is the whole reason the constant exists.
-pub const NOT_TRANSPLANTED: &str = "no controls yet";
 
 /// The gap under a [`plain_card`], in points.
 ///
@@ -674,14 +703,18 @@ fn card(
     plain_card(ui, panel, theme, form);
 }
 
-/// What a panel looks like with **no Organon behind the console** — a frame, the panel's name,
-/// and the sentence [`NOT_TRANSPLANTED`] when there is nothing to put in it.
+/// What a panel looks like with **no Organon behind the console** — a frame and the panel's
+/// name, and nothing else.
 ///
 /// ⚠️ **Reachable in this crate's tests and nowhere in `console_main`, and it still has to be
 /// right.** `organon-console` is a library: it compiles, draws and is tested without the root
 /// crate, and the alternative to this function is a column that renders as blank space whenever
-/// the seam is unfilled. That is the same failure `NOT_TRANSPLANTED` answers one level up —
-/// a panel that opened to nothing would be indistinguishable from one that failed.
+/// the seam is unfilled.
+///
+/// ✏️ **It used to carry a sentence under the heading** for a panel with no controls. It cannot
+/// reach one any more: [`admit`] refuses a `Declared` panel at every door, so a panel in a column
+/// is one this build has a body for. See [`admit`] on why the words moved into a refusal rather
+/// than being deleted.
 fn plain_card(ui: &mut egui::Ui, panel: &'static Panel, theme: &Theme, form: &Form) {
     let mut framed = Frame::new()
         .fill(theme.panel_fill)
@@ -693,23 +726,39 @@ fn plain_card(ui: &mut egui::Ui, panel: &'static Panel, theme: &Theme, form: &Fo
     framed.show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(heading(panel)).monospace().strong().color(theme.panel_title));
-        if let Some(absent) = absent_body(panel) {
-            ui.label(RichText::new(absent).color(theme.dim).italics());
-        }
     });
     ui.add_space(GAP);
 }
 
-/// What a panel says where its controls would be, or `None` when it has controls to draw.
+/// **May this panel enter a column at all?** — the one gate, asked by every door that adds one.
 ///
-/// Pure, and split out of the drawing, so the rule is checkable without an `egui::Ui` — and so
-/// `console_main` can ask the same question when it fills Organon's card, instead of writing a
-/// second `match` on [`panels::Status`] that would answer differently the day a twenty-sixth
-/// panel goes `Live`.
-pub fn absent_body(panel: &Panel) -> Option<&'static str> {
+/// 🚨 **It replaces a sentence the card used to draw.** A `Declared` panel used to be admitted
+/// and then explain itself where its controls would be (*"no controls yet"*, and before that a
+/// sixteen-word paragraph about the console's own construction). James, 2026-08-21, looking at
+/// the column: *"We don't want to see anything like this in our UX ever. We never want text just
+/// pasted in explaining something into the UI."* With twenty-one of the twenty-five panels still
+/// `Declared`, a column of them was twenty-one paragraphs of explanation.
+///
+/// ⚠️ **The fact is not deleted, it is moved into a refusal**, which is the distinction that
+/// survives: text sitting on screen explaining a state is ambience, and the same words answering
+/// `add temporal` are an answer to something a person just did. So the sentence is now
+/// [`Refusal::NotTransplanted`], spoken by name at the moment of asking, and the card that used
+/// to carry it is never drawn.
+///
+/// ⚠️ **That is what keeps the empty-box hazard closed rather than reopening it.** The old
+/// doc's argument was right — a card that opened to nothing would be indistinguishable from one
+/// that failed — and it bit because the panel was already *in the column*. Nothing draws an
+/// empty card now, because nothing lets one in.
+///
+/// Pure, and outside the drawing, so the rule is checkable without an `egui::Ui` and so every
+/// door asks the same question instead of writing a second `match` on [`panels::Status`] that
+/// would answer differently the day a twenty-sixth panel goes `Live`.
+pub fn admit(panel: &Panel) -> Result<(), Refusal> {
     match panel.status {
-        panels::Status::Live => None,
-        panels::Status::Declared => Some(NOT_TRANSPLANTED),
+        panels::Status::Live => Ok(()),
+        panels::Status::Declared => {
+            Err(Refusal::NotTransplanted { slug: panel.slug.to_string() })
+        }
     }
 }
 
@@ -736,16 +785,30 @@ mod tests {
             .expect("every panel is transplanted — these fallback-card tests have no subject left")
     }
 
+    /// A **second** panel a column may actually hold — for the tests that need two distinct
+    /// entries and do not care which.
+    ///
+    /// 🚨 **They used to reach for [`declared`] for this, and cannot any more.** [`admit`]
+    /// refuses a `Declared` panel at every door, so a column holding one is a state nothing can
+    /// produce — and a test that builds it by calling `Stack::push` directly would be asserting
+    /// about pixels nobody can ever see. Re-derived from the table for [`declared`]'s reason.
+    fn other_live() -> &'static Panel {
+        panels::PANELS
+            .iter()
+            .find(|p| p.status == panels::Status::Live && p.slug != surface().slug)
+            .expect("only one panel is transplanted — these two-entry tests need a second")
+    }
+
     #[test]
     fn a_new_stack_is_empty_and_a_push_puts_a_panel_at_the_bottom() {
         let mut stack = Stack::default();
         assert!(stack.is_empty());
         stack.push(surface());
-        stack.push(declared());
+        stack.push(other_live());
         assert_eq!(stack.len(), 2);
         assert_eq!(
             stack.entries().iter().map(|e| e.panel().slug).collect::<Vec<_>>(),
-            vec![surface().slug, declared().slug],
+            vec![surface().slug, other_live().slug],
             "the column is in the order panels were added"
         );
     }
@@ -757,10 +820,10 @@ mod tests {
     fn a_serial_is_never_reused_after_a_removal() {
         let mut stack = Stack::default();
         let first = stack.push(surface());
-        let second = stack.push(declared());
+        let second = stack.push(other_live());
         assert_ne!(first, second);
-        stack.remove_last(declared().slug);
-        let third = stack.push(declared());
+        stack.remove_last(other_live().slug);
+        let third = stack.push(other_live());
         assert_ne!(third, second, "the departed panel's serial came back");
         assert_ne!(third, first);
         stack.clear();
@@ -783,7 +846,7 @@ mod tests {
     fn remove_takes_the_last_copy_and_answers_none_for_a_panel_not_held() {
         let mut stack = Stack::default();
         let first = stack.push(surface());
-        stack.push(declared());
+        stack.push(other_live());
         let last = stack.push(surface());
         let gone = stack.remove_last("surface").expect("a surface was held");
         assert_eq!(gone.serial(), last, "the LAST copy came out, not the first");
@@ -943,13 +1006,58 @@ mod tests {
         }
     }
 
-    /// A panel with controls has nothing to say where they go; one without says so.
+    /// 🚨 **The reversal.** This read *"only a declared panel carries the not-transplanted
+    /// sentence"* and asserted that a `Declared` panel was admitted with a line to draw. It is
+    /// now refused at the door instead, and the sentence is the refusal's.
     #[test]
-    fn only_a_declared_panel_carries_the_not_transplanted_sentence() {
+    fn a_panel_with_no_controls_is_refused_by_name_rather_than_admitted() {
         assert_eq!(surface().status, panels::Status::Live);
-        assert_eq!(absent_body(surface()), None);
+        assert_eq!(admit(surface()), Ok(()));
         assert_eq!(declared().status, panels::Status::Declared);
-        assert_eq!(absent_body(declared()), Some(NOT_TRANSPLANTED));
+        assert_eq!(
+            admit(declared()),
+            Err(Refusal::NotTransplanted { slug: declared().slug.to_string() })
+        );
+    }
+
+    /// 🚨 **The refusal names the panel asked for AND what would have worked** — `Refusal`'s own
+    /// rule, and the reason this can carry the fact the card used to draw.
+    ///
+    /// ⚠️ The transplanted list is re-derived from the table rather than spelled here, so this
+    /// keeps testing the property on the day a twenty-sixth panel goes `Live`.
+    #[test]
+    fn the_not_transplanted_refusal_names_the_panel_and_the_ones_that_work() {
+        let said = Refusal::NotTransplanted { slug: declared().slug.to_string() }.to_string();
+        assert!(said.contains(declared().slug), "{said}");
+        assert!(said.contains(surface().slug), "the refusal names nothing that works: {said}");
+        for panel in panels::PANELS.iter().filter(|p| p.status == panels::Status::Declared) {
+            assert!(
+                !said.contains(&format!("{}, ", panel.slug)),
+                "`{}` is not transplanted and is offered anyway: {said}",
+                panel.slug
+            );
+        }
+    }
+
+    /// 🚨 **The door, not the predicate.** `admit` could be right and unread; this is the
+    /// assertion that the *command* every front door resolves through refuses.
+    ///
+    /// ⚠️ **`remove` is deliberately not gated**, and that is asserted here so it cannot be
+    /// "tidied" into symmetry: a column can only be holding what `add` let in, and refusing
+    /// `remove` would take away the one command that could empty a column filled by a build
+    /// whose table and bodies had drifted.
+    #[test]
+    fn add_refuses_a_panel_with_no_controls_and_remove_does_not() {
+        assert_eq!(
+            StackCmd::resolve("add", declared().slug),
+            Err(Refusal::NotTransplanted { slug: declared().slug.to_string() })
+        );
+        assert_eq!(StackCmd::resolve("add", surface().slug), Ok(StackCmd::Add(surface())));
+        assert_eq!(
+            StackCmd::resolve("remove", declared().slug),
+            Ok(StackCmd::Remove(declared())),
+            "removing what is already held must stay possible"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1086,10 +1194,10 @@ mod tests {
         stacks.get_mut(Region::Left).push(surface());
         assert_eq!(stacks.get(Region::Left).len(), 1);
         assert_eq!(stacks.get(Region::Right).len(), 0, "one push filled two columns");
-        stacks.get_mut(Region::Right).push(declared());
+        stacks.get_mut(Region::Right).push(other_live());
         assert_eq!(
             stacks.get(Region::Right).entries()[0].panel().slug,
-            declared().slug,
+            other_live().slug,
             "the columns hold different panels"
         );
         assert_eq!(stacks.total(), 2);
@@ -1206,25 +1314,24 @@ mod tests {
         assert!(body_ids(&[(Region::Full, &Stack::default())]).is_empty());
     }
 
-    /// 🚨 **A `Declared` panel is offered to the caller too, and that reverses this test.**
+    /// 🚨 **Every panel in the column is offered to the caller, and the caller draws the card.**
     ///
-    /// ✏️ It read *"only the transplanted panel asked for a body"* and expected **1**. That was
-    /// right while the console drew the card and asked down only for a body — a panel with no
-    /// body had nothing to ask for. Now the caller draws the *card*, so it must be offered every
-    /// panel or twenty-four of the twenty-five would wear the console's chrome while one wore
-    /// Organon's, which is the opposite of what #117 is for. [`NOT_TRANSPLANTED`] has not moved;
-    /// [`absent_body`] is what says which panels get it, and `console_main` places it inside the
-    /// card it draws.
+    /// ✏️ **Twice reversed, and the second reversal is the one this doc is for.** It first read
+    /// *"only the transplanted panel asked for a body"* and expected **1** — right while the
+    /// console drew the card and asked down only for a body. #117 widened the seam to the whole
+    /// card, so `Declared` panels were offered one too, and it expected **2** with one of each.
+    /// A `Declared` panel can no longer be in a column at all ([`admit`]), so it is two live
+    /// ones — the property under test, *the caller is offered what the column holds*, is
+    /// unchanged.
     #[test]
-    fn every_panel_in_the_column_is_offered_to_the_caller_declared_ones_included() {
+    fn every_panel_in_the_column_is_offered_to_the_caller() {
         let mut stack = Stack::default();
-        stack.push(declared());
+        stack.push(other_live());
         stack.push(surface());
-        assert_eq!(declared().status, panels::Status::Declared);
         assert_eq!(
             body_ids(&[(Region::Left, &stack)]).len(),
             2,
-            "a declared panel was not offered a card"
+            "a panel in the column was not offered a card"
         );
     }
 
@@ -1234,12 +1341,17 @@ mod tests {
     /// pixels — so this reads the frame's own text shapes rather than a return value.
     ///
     /// ⚠️ **Mutation-checked rather than merely asserted**: make [`card`] return early on a
-    /// `false` answer instead of falling through to [`plain_card`] and this fails on both
-    /// counts, with `drawn` empty.
+    /// `false` answer instead of falling through to [`plain_card`] and this fails, with `drawn`
+    /// empty.
+    ///
+    /// ✏️ **It also asserted that the card carried the not-transplanted sentence**, on a
+    /// `Declared` subject. Both halves went with [`admit`] — the subject, because a column
+    /// cannot hold one, and the sentence, because it is a refusal now. The heading is what a
+    /// fallback card has to show, and it is the whole of what it shows.
     #[test]
     fn a_console_with_no_organon_behind_it_still_draws_the_panel() {
         let mut stack = Stack::default();
-        stack.push(declared());
+        stack.push(surface());
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1263,12 +1375,8 @@ mod tests {
         });
         let drawn = painted_text(&out);
         assert!(
-            drawn.iter().any(|t| t.contains(heading(declared()))),
+            drawn.iter().any(|t| t.contains(heading(surface()))),
             "the fallback card drew no heading: {drawn:?}"
-        );
-        assert!(
-            drawn.iter().any(|t| t.contains(NOT_TRANSPLANTED)),
-            "the fallback card lost the sentence that says why it is empty: {drawn:?}"
         );
     }
 
@@ -1292,7 +1400,7 @@ mod tests {
     fn the_column_contributes_no_space_between_two_cards() {
         let mut stack = Stack::default();
         stack.push(surface());
-        stack.push(declared());
+        stack.push(other_live());
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(

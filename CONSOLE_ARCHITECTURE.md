@@ -2195,9 +2195,9 @@ viewport too**, and the reason is the one this section already gives: the portal
 dismissable, so the state it creates ends in one word, while the region is the persistent thing a
 person arranged and is still arranged underneath — nothing is written, so closing the portal hands
 the frame straight back. §1.14 carries the argument in full, including the two rejected rules and
-why "the refusal reaches nobody" disqualifies both. ⚠️ The yielded region **paints a notice**
-naming what holds the world and the command that releases it; it does not blank and it does not
-keep showing the picture it had a moment ago.
+why "the refusal reaches nobody" disqualifies both. ⚠️ The yielded region **paints a notice** —
+✏️ its own word only, since #129; it does not blank and it does not keep showing the picture it
+had a moment ago.
 
 #### ✏️ One presentation of a viewport, not the only live rectangle — Tier 2b
 
@@ -3779,7 +3779,7 @@ exception or problem.**"*
 | `COMPOSER_HINT` — *"message the agent — Enter sends, Shift+Enter for a new line"* | nothing | An empty box under a conversation reads as *ready*. He knows Enter sends. |
 | `COMPOSER_HINT_DEAD` — *"the agent is not running"* | `not running` | The fact survives; the sentence was a label wearing a verb. |
 | `PALETTE_KEYS` — *"Tab completes - Enter runs"*, right of the command panel's head row | nothing | On screen for as long as the panel was, teaching two keystrokes to the person typing them. |
-| `NOT_TRANSPLANTED` — *"this panel is named in Organon's editor but has not been transplanted into the console yet"* | `no controls yet` | Twenty-four of twenty-five panels are `Declared`; it was one sentence about the console's own construction, repeated two dozen times down a 320 pt column. |
+| `NOT_TRANSPLANTED` — *"this panel is named in Organon's editor but has not been transplanted into the console yet"* | `no controls yet` — ✏️ **and then nothing at all**, see #129 below | Twenty-four of twenty-five panels are `Declared`; it was one sentence about the console's own construction, repeated two dozen times down a 320 pt column. |
 | `— turn complete`, after every successful turn | nothing | Precisely *"showing your process as the agent or harness"*. The reply is on the page and the composer is live; both say it. |
 | `approvals: handler withheld …, 14 of 14 console tools visible (47 offered)` | only when anomalous | See below — this one is a **security property** and could not simply go. |
 | `session $1.18 · last turn 5.1s` | `/trace on` | Harness telemetry. Claude Desktop tells you which model you are talking to, not what the turn cost. |
@@ -3879,6 +3879,78 @@ What is established is that the rules hold and the arithmetic is pinned — that
 in both anomalous arms, that a failed turn keeps its caption, that the reading never asks for
 width the fixed items need. Whether a band holding a model chip and a mode plate reads as calm
 or as broken is James's to judge.
+
+##### 🚨 …and #129 finished it properly: **no ambient prose at all**, and the fix is usually a refusal
+
+The sweep above left one class standing, and named it in its own rule: *"a state no pixel
+states"*. James, 2026-08-21, looking at the two side columns, both of them holding this:
+
+> `left`
+> `empty — /viewport <region> panel at an agent, or organon console viewport <region> agent,`
+> `… 3d or … panel from a terminal, fills it`
+
+> *"Overall, it's feeling a lot better in terms of noise. It is much quieter. However, we still
+> should clean this up. **We don't want to see anything like this in our UX ever. We never want
+> text just pasted in explaining something into the UI.**"*
+
+**The rule, which supersedes the one above rather than sitting beside it:**
+
+> **What may sit on screen is a label, a value, or an answer to something you did. Nothing
+> else.** A refusal and a failure are answers. Ambient text explaining a *state* is not,
+> however true the state is.
+
+📌 **So the fix is usually to MOVE the sentence into a refusal, not to delete it.** That is the
+distinction doing the work: the same twenty words are ambience when they sit under a heading and
+an answer when they arrive because somebody typed `add temporal`. Deleting them outright would
+have lost a fact; moving them keeps it and pays nothing for it.
+
+**What went, and where each one went to:**
+
+| Was | Now | Where the fact lives |
+|---|---|---|
+| `NOT_TRANSPLANTED` — *"no controls yet"*, on 21 of 25 panel cards | nothing; the panel never enters a column | `panel_stack::Refusal::NotTransplanted`, raised by `panel_stack::admit` at every door — see §1.11 |
+| the vacant region's *"empty — `/viewport …` fills it"* | the region's own word | `region::Refusal` when a `viewport` line cannot be honoured |
+| the empty column's *"panel — an empty column. Type `add surface` in the line below…"* | the region's own word | `panel_stack::Refusal`, and the control's own `> add \| remove` hint, which is the vocabulary rather than a description of it |
+| its second arm, *"…and this region is too short for a command line. `organon console stack add …`"* | the region's own word | same; the arm is gone with the sentence it existed to vary |
+| the yielded `3d` region's *"the portal has the world. … `organon console portal close` gives it back"* | the region's own word | ⚠️ **nowhere.** See below |
+| a second `agent` region's *"waiting for a tab of its own. … a second one needs Tier 2's per-region tab"* | the region's own word | ⚠️ **nowhere.** See below |
+| `no live tab — ⌘T opens one` | `no live tab` | the keystroke is in `/help` and in the menu; the pane states the condition |
+| the status log's `` `/trace off` closes `` (#127, hours old) | nothing | the band's own log indicator toggles the panel and its hover reads `… · click to close` |
+
+⚠️ **Two of those went nowhere, and saying so is the point of the table.** The portal holding
+the world, and a second `agent` region having no tab, are both consequences of something already
+on screen — the portal is open in front of you; the live tab is drawn in the first agent region —
+so neither is a fact the reader lacks. But neither is now *named* either, and that is the
+deliberate cost of the rule rather than an oversight to be quietly repaired with a shorter
+sentence. If either turns out to be needed, the answer is a refusal on the command that produced
+the state, not a caption on the rectangle.
+
+⚠️ **A region still draws its own word, and that is not a loophole.** §1.9's `Ring::Empty`
+argument holds at this scale — a rectangle that draws *nothing at all* is indistinguishable from
+a broken one — and the word is what closes it. The word is a **label**: it says which region you
+are looking at. The sentence under it was the explanation, and only the sentence went.
+
+⚠️ **The content kind is deliberately not drawn either**, though the rule would permit it: a
+second line reading `panel` under `left` is a label, but it appears only when a region is empty,
+and a word that shows up only in the absence of the work is one more thing on screen that is not
+the work.
+
+**Judged and kept:** every refusal and failure without exception (`cannot show this file`, the
+permission-mode markers, `you allowed everything — the console is not asking`, the window-too-
+small notice, `panel_surface`'s "Live in the table but this console has no body for it"); the
+permission card's `· from a decision you already made` and its two siblings (each is why *that
+card* was answered, i.e. an answer to the tool that asked); command-palette `doc` strings and
+every `on_hover_text` (they exist because of a keystroke or a pointer); the status log itself,
+whole (**a log is a place you go to look**, and it is where a removed explanation should go);
+and `app.rs` and `timeline.rs`'s scripted-replay caption, both for the reason the previous sweep
+gave — `ConsoleApp` is constructed by nothing outside its own tests and `timeline::show` has no
+caller but `app.rs`, so it is dead UI rather than chrome, and deleting it is a different change.
+
+🚨 **Nothing here has been seen on a screen either.** What is established is that no draw path
+can reach the deleted strings, that every door onto a panel column refuses a panel it has no
+body for, and that the refusal names both the panel asked for and the ones that would have
+worked. Whether two side columns showing nothing but `left` and `right` read as calm or as
+unfinished is James's to judge.
 
 ### 1.10 The window icon — the aperture mark, and the two defaults it replaces
 
@@ -4255,11 +4327,14 @@ two ways to run one copy of it:
 - **`panel_surface::OrganonPanels::card` is the new caller of `crate::card`**, and `lib.rs`'s
   Look tab is the other. One card function in the tree, two products. ⚠️ So a change to `card()`
   is visible in both, and the Console has no compile-time way to notice.
-- **`NOT_TRANSPLANTED` is still `organon-console`'s sentence**, and it is placed *inside* the
-  card by the caller. It has to be: most of the twenty-five panels are still `Declared`, and a
-  declared panel that skipped the chrome would be the one card in a column of twenty-five wearing
-  something else. `panel_stack::absent_body` is the single place that decides which panels get
-  it — `console_main` asks it rather than matching on `Status` a second time.
+- ✏️ **`NOT_TRANSPLANTED` is gone, and this bullet used to be the argument for it.** It read:
+  *"still `organon-console`'s sentence, placed inside the card by the caller — it has to be,
+  because a declared panel that skipped the chrome would be the one card in a column of
+  twenty-five wearing something else."* That was true of a column that could **hold** a
+  `Declared` panel. It cannot: `panel_stack::admit` refuses one at every door (#129, above), so
+  the seam is only ever handed a panel this build has a body for and `OrganonPanels::card` takes
+  no `absent` argument at all. The single-place property survives and moved with it — `admit` is
+  now what `console_main`, `region_line` and `op_from` all ask, instead of matching on `Status`.
 - 🚨 **The `bool` is the whole reason `organon-console` still compiles and draws on its own.**
   `false` = this build drew no card, and the stack falls through to `panel_stack::plain_card` —
   the frame and heading it drew before this widened. Every test in this crate takes that arm, and
@@ -4606,10 +4681,18 @@ seven controls would draw, drag and move nothing, which is precisely why `/panel
 Ray Tracing converts minus four of its sixty-one rows.
 
 📌 **Decided (James, 2026-08-21): a third `panels::Status`.** `Live` / `Declared` / **`HostOnly`**
-— Temporal stays named and offered, and says *"per-display, not preset-captured — these controls
-exist only in Organon's own editor"* rather than *"not transplanted yet"*, which would be a lie:
-it is not pending, it is impossible through the mirror. Ray Tracing's four rows take the same
-treatment per row, drawn disabled with the reason on hover. **It generalises**, which is why it
+— Temporal stays named and offered, and the distinction it draws is *"per-display, not
+preset-captured — these controls exist only in Organon's own editor"* rather than *"not
+transplanted yet"*: it is not pending, it is impossible through the mirror. Ray Tracing's four
+rows take the same treatment per row, drawn disabled with the reason on hover.
+
+⚠️ **Where that sentence goes is settled by #129 and is no longer "on the card".** Both of the
+strings above were written when a `Declared` panel was admitted into a column and explained
+itself there; `panel_stack::admit` refuses one at the door now, so `HostOnly` lands as a second
+`Refusal` arm beside `NotTransplanted` — same shape, different words, and the difference between
+*pending* and *impossible* is exactly what a refusal is for. The per-**row** half is unaffected:
+a disabled row inside a `Live` panel with its reason on hover is a control's own state and a
+hover is an answer to a pointer, neither of which the rule reaches. **It generalises**, which is why it
 beat the alternatives — the Settings tab is largely this the day it joins.
 
 The two rejected options are worth keeping: drawing them **read-only** from Organon's defaults
@@ -5253,10 +5336,15 @@ The two rejected rules, named so nobody has to re-derive them:
 
 🚨 **The loser paints a notice and never a stale texture.** §1.14's vacancy rule applies with more
 force to a picture than to an empty quarter: a rectangle that *was* rendering a world and now is
-not is precisely what a broken viewport looks like. The yielded region says the portal has the
-world, says why (Organon renders one frame per console frame) and names the command that gives it
-back. It also registers no interaction region at all, which is what keeps `scene_viewport`'s
-single interned egui id to one claimant per frame.
+not is precisely what a broken viewport looks like. It also registers no interaction region at
+all, which is what keeps `scene_viewport`'s single interned egui id to one claimant per frame.
+
+✏️ **What that notice SAYS is now the region's own word and nothing more** (#129). It used to say
+the portal had the world, why (Organon renders one frame per console frame) and which command
+gave it back — three sentences of explanation on a rectangle, which is the class James struck
+out. ⚠️ **This one moved into no refusal**, unlike the rest of that sweep: the portal being open
+is visible in front of you, so the fact is not lost, but it is no longer *named*. §1.9's #129
+subsection records it as a deliberate cost rather than an omission.
 
 #### 🚨 One mechanism, two presentations — what "keep it in sync" actually means
 
@@ -5754,16 +5842,18 @@ composer behaves exactly as it did before this module existed.
 
 ##### 📌 What an empty column and a vacant region show
 
-An empty **panel column** names the two words its own control takes (*"panel — an empty column.
-Type `add surface` in the line below; `remove all` empties it again"*), and the control's box says
-the same thing in its hint on an empty line — a control that does exactly two things should say
-which two the moment you look at it.
+✏️ **Their own word, and nothing else** (#129). This section twice described a sentence, and both
+sentences are gone: an empty column said *"panel — an empty column. Type `add surface` in the
+line below; `remove all` empties it again"* (with a second arm naming the CLI when the region was
+too short to draw the control), and a vacant region said *"empty — `/viewport <region> panel` at
+an agent, or `organon console viewport …` from a terminal, fills it"*. Both are exactly what
+James struck out — *"we never want text just pasted in explaining something into the UI"* — and
+§1.9's #129 subsection carries the rule and where each fact went.
 
-✏️ **A vacant region's notice went back to naming the other doors**, because it no longer has a
-line of its own to point at: *"empty — `/viewport <region> panel` at an agent, or `organon console
-viewport …` from a terminal, fills it"*. Tier C's version named a control that is no longer drawn
-there, which is exactly the status line that cannot be right — the two arms it used to have (one
-for "a line was drawn", one for "too short") collapse back into one.
+⚠️ **The control's own hint is unaffected and was judged separately**: `> add | remove` is the
+vocabulary you would type, not a description of the control, so it is a label under the rule.
+`paint_region_notice` therefore takes no body at all — the two `panel` arms that existed only to
+vary the sentence collapse into one, and the notice draws the region's word.
 
 ##### ⚠️ What the control deliberately does NOT do
 
@@ -5805,8 +5895,8 @@ own clip rect, which the row order makes survivable.
 ✏️ **Three columns landed, and so did Tier C — then Tier C was cut back to a two-word control**;
 the two subsections above own both. What survives of it is the half James asked for: a per-region
 stack is addressable from the column it acts on. ⚠️ **What it no longer answers is "what does an
-unassigned region show"** — a vacant region has no line again and its notice names the composer
-and the CLI instead, which is a smaller answer and an honest one. **A tab per agent region** is
+unassigned region show"** — a vacant region has no line again, and ✏️ since #129 its notice names
+nothing at all beyond the region's own word, which is smaller still and is the whole answer. **A tab per agent region** is
 Tier D, still blocked on the borrow and nothing else, and Tier C never touched it: an `agent`
 region gets no line, now because only a `panel` region does and formerly because it already had a
 composer. Saved layouts landed early (§1.15); animated transitions and drag-to-resize stay after Tier D,
@@ -6573,10 +6663,11 @@ path silently breaks the three-products-simultaneously guarantee that
   changes as one motion, and whether twenty-five candidates in the second ring reads as a menu
   or as a wall is a question about a running window; (2) that the slugs are the words a person
   reaches for — `lmat` for Liquid Material and `fx` for Surface FX exist to satisfy the
-  no-prefix rule, and a slug nobody guesses is worse than a longer one; (3) that the remaining
-  twenty-four panels' "not transplanted yet" line reads as *honest* rather than as broken —
-  sharper now that it sits beside a panel which **is** transplanted, since the contrast is
-  either reassuring or damning and nobody has seen which; (4) that §1.9's eight-row candidate cap
+  no-prefix rule, and a slug nobody guesses is worse than a longer one; (3) ✏️ **withdrawn by
+  #129** — this asked whether the remaining panels' "not transplanted yet" line read as *honest*
+  or as broken beside a panel which **is** transplanted. There is no such line: those panels are
+  refused at the door and never draw a card, so the question has no subject; (4) that §1.9's
+  eight-row candidate cap
   is survivable at twenty-five — the Look ring overflows it by seventeen and nobody has seen
   "+N more" against a list that long.
 - ✏️ **`OrganonDraw` carries a widget now.** It was retained through the tier that built it as a
@@ -6613,10 +6704,11 @@ path silently breaks the three-products-simultaneously guarantee that
   What remains open is the part no green and no screenshot answers, and it is still James's
   call: whether a column of Organon's controls **beside** a live transcript reads
   as the instrument's own editor or as a cramped imitation of it; whether the gap between cards,
-  the scroll bar and the region's own hairline settle into one object or three; whether
-  twenty-four "not transplanted yet" lines stacked in a column read as an honest inventory or
-  as a broken panel — sharper here than in §1.11's version of the same worry, because in a
-  column they are *adjacent* rather than summoned one at a time; and whether `stack` is the word
+  the scroll bar and the region's own hairline settle into one object or three; ✏️ **[withdrawn
+  by #129 — whether twenty-four "not transplanted yet" lines stacked in a column read as an
+  honest inventory or as a broken panel. They cannot stack: `panel_stack::admit` keeps such a
+  panel out of a column entirely, and the question James actually answered was that the line
+  should never have been there]**; and whether `stack` is the word
   a hand reaches for after typing `/viewport left panel`. **No amount of green answers any of
   them**, and the id-namespace test, which is the strongest thing in this tier, proves only that
   four Surface bodies get four distinct egui ids — not that a knob in one moves the picture,
@@ -6759,7 +6851,9 @@ path silently breaks the three-products-simultaneously guarantee that
   ⚠️ **Unverified in the same way everything else here is**: the marked ring and both refusal
   sentences exist as strings pinned by test. Nobody has read them on a running console, and
   whether "not mapped yet" reads as honest or as broken is the same open question the element's
-  "not transplanted yet" line already carries.
+  "not transplanted yet" line used to carry. ✏️ **That line was answered by deletion (#129)** —
+  James's answer to a card explaining itself was that it should not be on screen at all — which
+  is a fact about this one as well, and the reason to look at it rather than a resolution of it.
 - 🚨 **Nothing has been seen full screen, and "the window fills the display" is a claim no
   test on this machine can make.** §1.12 was written and verified in a session with no way to
   open a window: `cargo test -p organon-console --lib` is **655 green** (nine of them
