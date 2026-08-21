@@ -37,6 +37,12 @@ These are not style preferences. Each one has cost someone real work.
 
 **Small fix** — open a PR. That is the whole process.
 
+**`main` is a protected branch, so a PR is not a convention — it is the only route in.**
+A ruleset blocks direct pushes, force-pushes and deletion, and requires every review
+thread to be resolved before merge. `.github/rulesets/README.md` is the source it was
+built from and explains each rule, including the four that are deliberately switched
+off and what would make each one worth turning on.
+
 **Anything larger** — open an issue first and let it be discussed. Big work here is
 structured in **tiers**: 3–5 increments of ascending sophistication where **Tier 1 is
 independently shippable** and each later tier is inert by default (invariant 4). That is
