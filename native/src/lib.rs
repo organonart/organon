@@ -6844,14 +6844,40 @@ fn neural_network_card(
 /// not a copied spec, the same function. **So a change here is visible in both**, and the
 /// Console has no compile-time way to notice.
 fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    theme::framed(ui, |ui| {
+    card_styled(ui, title, &theme::CardStyle::organon(), add);
+}
+
+/// **The same card, in a palette the caller names** (#120).
+///
+/// 🚨 **The reason this is one function with an argument rather than two functions.** #117 made
+/// the Console draw *this* card so the padding, the corners and the one-word heading could not
+/// drift; the palette came with it, and a Console theme switch then moved everything in the
+/// window except the panel column. James, on the live build: *"I didn't want to adopt the blue,
+/// gray color theme for all of these. I want them to adapt to the current theme colors … Right
+/// now, the colors stay fixed no matter how I set the theme."* A second card body would have
+/// answered the palette and re-opened the drift; a parameter answers the palette and keeps the
+/// geometry in one place.
+///
+/// ⚠️ **Everything except pigment is still fixed here** — the collapsing header, the band's
+/// bleed to the card's inner edges, [`theme::CARD_INNER_MARGIN`], the corner radius and the
+/// trailing space. [`theme::CardStyle`]'s doc carries which half is which and why.
+///
+/// ⚠️ **The trailing `add_space` is the inter-card gap for BOTH surfaces**, so it is a number
+/// two products read — see `organon_console::panel_stack::GAP`, which exists to agree with it.
+fn card_styled(
+    ui: &mut egui::Ui,
+    title: &str,
+    style: &theme::CardStyle,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    theme::framed(ui, style, |ui| {
         ui.set_width(ui.available_width());
         // The header gets its own painted band — the #542 §5 three-stop silver gradient,
         // whose middle stop is lighter than both ends so it reads as convex rolled metal.
         // Painted behind the header row once its rect is known, same deferred dance as the
         // card body (`theme::framed`).
         let band = ui.painter().add(egui::Shape::Noop);
-        let head = egui::CollapsingHeader::new(theme::card_title(title))
+        let head = egui::CollapsingHeader::new(theme::card_title(title, style))
             .default_open(true)
             .show_unindented(ui, add);
         // The band spans the header row only, bleeding to the card's inner edges so it reads
@@ -6862,9 +6888,9 @@ fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
             egui::pos2(ui.max_rect().left() - m.0, hr.top() - m.1),
             egui::pos2(ui.max_rect().right() + m.0, hr.bottom() + m.1 * 0.5),
         );
-        ui.painter().set(band, theme::card_header_band(band_rect));
+        ui.painter().set(band, theme::card_header_band(band_rect, style));
     });
-    ui.add_space(6.0);
+    ui.add_space(style.gap);
 }
 
 // ---------------------------------------------------------------------------

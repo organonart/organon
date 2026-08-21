@@ -4270,10 +4270,78 @@ two ways to run one copy of it:
   asks: it was written when a panel was an element scrolling past in a **transcript**, where
   "which of Organon's tabs is this from" is real. In a panel column every card is one of
   Organon's and the column is the answer.
-- ⚠️ **The inter-card gap moved with the chrome.** `card()` ends on its own `add_space(6.0)`, so
-  `panel_stack::draw` no longer adds one — two would be 12 pt where the editor is 6, which is the
-  padding this tier is about. `panel_stack::GAP` survives as `plain_card`'s own trailing space
-  and is 6.0 by arithmetic rather than by coincidence.
+- ⚠️ **The inter-card gap moved with the chrome.** `card()` ends on its own `add_space`, so
+  `panel_stack::draw` no longer adds one — two would have been twice the editor's, which is the
+  padding this tier is about. `panel_stack::GAP` survives as `plain_card`'s own trailing space.
+  ✏️ Both numbers are 0 since #120, below.
+
+##### ✏️ …and in #120 the PALETTE stopped coming with it
+
+James, on the live build: *"I didn't want to adopt the blue, gray color theme for all of these. I
+want them to adapt to the current theme colors. I would like to create a theme that does have
+these colors, but then the whole UI should have those colors too. Right now, the colors stay
+fixed no matter how I set the theme of the panels I'm talking about. Also, we need to remove that
+spacing. See the dark spacing between them? We need to tighten it up and stack them more tightly
+together."*
+
+#117 bought the padding, the corners and the one-word heading by calling `crate::card` — and
+every colour in that function resolved through `theme.rs`'s palette accessors, which read
+Organon's own `theme_config`. So `/theme dark` moved the terminal, the composer, the status
+strip and the tab bar, and left the panel column blue-slate. **The card is now drawn through a
+`theme::CardStyle`**: pigment is a parameter, geometry is not.
+
+| what | who decides it | why |
+|---|---|---|
+| body gradient, header band's three stops, header rule | `CardStyle` — the caller | pigment. Organon passes `CardStyle::organon()` (the live `theme_config`, unchanged); the Console passes `panel_surface::console_card_style` |
+| border, title | `CardStyle` — and for the Console they are **read verbatim** off `Theme::panel_edge` / `Theme::panel_title` | the palette already has an opinion about both |
+| corner radius, inner margin, band bleed, collapsing header, grain, bevel | `theme.rs`, shared, no parameter | this is what *"it should use the same exact code"* was asking for. A second card body is the drift #117 existed to prevent |
+| the trailing gap | `CardStyle::gap` | the one geometry the two surfaces genuinely differ on — see below |
+
+- 🚨 **The two gradients are DERIVED from `Theme::panel_fill`, not read from new `Theme`
+  fields.** The rejected alternative was four new palette fields (`card_body`, `card_header`, …):
+  more explicit, and it costs more than it buys — all four shipped palettes would have to answer
+  four questions they have no opinion about, `every_colour_a_palette_can_differ_in_is_reachable`
+  would need a fifth palette disagreeing on each to see them, and **a palette James writes later
+  would have to fill them to look right**, when the complaint is that the column ignores the
+  palette he already wrote. Derivation means a new palette needs only the fields it already sets.
+  If a palette ever *wants* a card that does not follow its panel plate, that is the day the
+  fields earn their place.
+- ⚠️ **The steps are neutral — the same number on all three channels.** Organon's own table tilts
+  blue as it lightens (`card 0x212A30` → body top `0x242E35`, `+3,+4,+5`) because §2's rule is
+  `blue − red ∈ 8..=15`. Carrying those per-channel deltas onto a green or a warm plate would
+  drag it back toward blue slate, which is the exact complaint. The **magnitudes** are Organon's,
+  averaged across its three channels, so a cut card keeps the reference's compressed 5–15-level
+  tonal steps (§14) in the caller's own hue.
+- ⚠️ **`panel_fill` is premultiplied glass and the card is opaque.** The column paints that plate
+  over whatever is behind it; a card in the same translucent colour would darken the region twice
+  and sink into its own background. The premultiplied components are exactly what the column
+  contributes over black, which is what makes them the right base to step from.
+- ⚠️ **A card is not separated from the column by its fill, and never was.** `palette.panel` and
+  `palette.card` are *the same value* in blue slate: what separates a card is its gradient, its
+  border and its bevel highlight. So passing the column's own background as the plate is right
+  rather than something to correct with an arbitrary lightening.
+- 🚨 **The gap needed two numbers because the two surfaces run different `item_spacing`.**
+  Measured on a headless context rather than reasoned about: Organon's editor sets
+  `item_spacing.y = 6` (`theme::install`) and the Console never touches spacing, so it takes egui's
+  default 3. Card-to-card that was **12 pt in the editor and 9 pt in the column** — the column
+  was already the tighter of the two, and what made it *read* as a dark band was that the seam
+  showed near-black `panel_fill` beside a blue-slate card. `panel_stack::draw` now zeroes its own
+  contribution around the loop and each card restores it inside its own scope (so rows *within* a
+  panel are untouched), and `panel_surface::PANEL_COLUMN_GAP` is 0 — **so the column's seam is
+  0 pt and the editor's is unchanged at 12.**
+- ⚠️ **`panel_stack::GAP` is `pub` now**, and equals `PANEL_COLUMN_GAP` by assertion rather than
+  by comment: `panel_surface::the_fallback_leaves_the_same_gap_organons_card_does` compares them.
+  The root crate is the only place that can see both, since this crate cannot look upward.
+- 📌 **Both halves of the seam are pinned on the side that can see them.**
+  `panel_stack::the_column_contributes_no_space_between_two_cards` lays a real stack out headless
+  and measures what the *column* adds (0; delete the zeroing line and it reports 3, drop the
+  restoration and it says so in the same run);
+  `panel_surface::two_editor_cards_leave_twelve_points_between_them` measures the *other product*
+  and holds Organon's editor at 12.
+- ⚠️ **What is still Organon's palette inside a Console card**: the Surface panel's own row
+  labels, which `param_sink` draws in `theme::TITANIUM()`. Only one of the twenty-five panels is
+  `Live`, so it is one card's rows — but it is real, and it is the next thing to notice if the
+  column still looks half-themed.
 
 #### 🚨 The wall: an Organon parameter cannot be written from outside `nih_plug`
 
