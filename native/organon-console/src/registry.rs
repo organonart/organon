@@ -91,6 +91,7 @@ use organon_core::tabs::UiTab;
 use serde_json::{json, Map, Value};
 
 use crate::command::{ArgKind, ArgSpec, CommandSpec, Reversal};
+use crate::layout::{self, LayoutCmd, Library};
 
 /// Which machinery answers a verb. See the module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +126,19 @@ pub const VERB_THEME: &str = "console.theme";
 /// The argument name `console.theme` carries its value in. Same rule as [`VERB_THEME`]: read
 /// out of the dispatch payload on this side, declared by `console_main`'s spec on the other.
 pub const THEME_ARG: &str = "name";
+
+/// `console.layout` — the second console-lane name this crate has to **recognise**, because its
+/// name argument is a ring of the layouts that actually exist ([`layout_options`]).
+///
+/// ⚠️ **Spelled here and aliased by `console_main`**, exactly as [`VERB_THEME`] is
+/// (`const CMD_LAYOUT: &str = organon_console::registry::VERB_LAYOUT;`), so the two cannot be
+/// two strings that merely agree today. The hook is keyed on this name, and the failure of a
+/// second spelling would be silent in the worst way: the verb would keep working and the ring
+/// would simply stop appearing, with nothing to say it ever had.
+pub const VERB_LAYOUT: &str = "console.layout";
+/// The argument `console.layout` carries the layout's name in. Same rule as [`THEME_ARG`], and
+/// the same alias on the other side ([`layout_options`] is asked for one argument by name).
+pub const LAYOUT_NAME_ARG: &str = "layout";
 
 /// `/media` — show a file from disk in this conversation.
 ///
@@ -251,9 +265,17 @@ impl Entry {
             // literal that declares its arguments; this crate has no business having a second
             // opinion about a verb the root crate wrote.
             reversal: spec.reversal,
-            // A `CommandSpec` is the vocabulary the MCP schema is generated from and carries no
-            // hook: a console verb's value space is closed at build time. See [`NarrowFn`].
-            narrow: None,
+            // 🚨 **Keyed on the catalog name rather than carried by the spec, and that is a
+            // change of mind this comment used to state the other way.** `CommandSpec` is the
+            // vocabulary the **MCP schema** is generated from, and a schema is precisely the
+            // surface with no parent word in hand — the union is the honest answer there, as
+            // [`NarrowFn`] already says for `/organon`. A hook field on the spec would also
+            // have to be written `narrow: None` in every one of the ~35 `CommandSpec` literals
+            // in this workspace to say nothing. So the lookup lives here, beside the view
+            // lane's own hooks, and every construction path gets it — including the pane's,
+            // which builds its own registry from the specs it was handed and could not have
+            // been given a builder call.
+            narrow: console_narrow(&spec.name),
         }
     }
 
@@ -698,6 +720,76 @@ pub fn unmapped_tab(tab_word: &str) -> String {
         "the {tab_word} tab's panels are not in the table yet — joined so far: {}",
         joined.join(", ")
     )
+}
+
+/// Which console-lane verbs have a dependent ring. **One line per verb, and normally empty.**
+///
+/// See [`Entry::from_spec`] for why the lookup is here rather than a field on `CommandSpec`.
+fn console_narrow(name: &str) -> Option<NarrowFn> {
+    match name {
+        VERB_LAYOUT => Some(layout_options),
+        _ => None,
+    }
+}
+
+/// `/layout load ` and `/layout delete ` — the arrangements that are actually saved.
+///
+/// 🚨 **`save` is deliberately NOT narrowed, and that asymmetry is the whole reason the hook
+/// reads the action word.** `load` and `delete` name a layout that must already exist, so the
+/// library is their value space and a word outside it is refused. `save` takes a name a person
+/// is *inventing*; offering the existing names there would be actively wrong — the popup would
+/// read as a closed list, and [`coerce`] would then refuse every new name in the world, which
+/// is the one thing `save` is for. `None` is the answer for it, so the declared `ArgKind::Text`
+/// answers as usual and anything [`crate::layout::check_name`] accepts goes through.
+///
+/// ⚠️ **The cost was measured before this was wired, and the measurement changed the design.**
+/// [`Registry::value_candidates`] asks the ring once and then calls [`Registry::settled`] per
+/// candidate, each of which reaches [`coerce`] and asks again — `n + 1` reads for a library of
+/// `n`, on the *draw* path, which is per frame rather than per keystroke. Read straight from
+/// disk that is 11.1 ms per call at a hundred layouts against a 16.7 ms frame. So it goes
+/// through [`Library::for_completion`], which owns the cache, the numbers and what invalidates
+/// it; `crate::layout`'s `library_read_cost` is the instrument and `CONSOLE_ARCHITECTURE.md`
+/// §1.15 carries the finding.
+///
+/// ⚠️ **No data directory answers `None`, not [`Ring::Empty`]** — `console_main`'s
+/// `console.layout.list` states the rule and this is the same rule one surface over: an empty
+/// answer would tell somebody whose layouts are merely *unreachable* that they have saved
+/// nothing. With no opinion here the free-text path stays open and the dispatch's own refusal,
+/// which names the real cause, is the one that speaks.
+fn layout_options(arg: &str, positional: &[&str]) -> Option<Ring> {
+    if arg != LAYOUT_NAME_ARG {
+        return None;
+    }
+    // The action word, resolved through the layout module's own table rather than compared
+    // against string literals here — a fourth action would otherwise silently mean "no ring".
+    match LayoutCmd::resolve(positional.first().copied()?).ok()? {
+        LayoutCmd::Save => None,
+        LayoutCmd::Load | LayoutCmd::Delete => {
+            Some(layout_ring(&Library::for_completion(&Library::store_root()?)))
+        }
+    }
+}
+
+/// The ring a library makes — **pure**, so every property of it is a test rather than a claim
+/// about a store the suite must not write to (`%APPDATA%\OrganonShell\layouts.json` is the real
+/// one, and a test that touched it would destroy the layouts of whoever ran `cargo test`).
+///
+/// 🚨 **The names are carried whole and are never joined here.** A comma is a legal layout name
+/// character — [`crate::layout::check_name`] refuses whitespace because the wire cannot carry it
+/// and deliberately nothing else — so `a,b` is one layout, and each option is its own
+/// `(label, doc)` pair all the way to the popup row. The only place they meet a separator is
+/// [`coerce`]'s refusal, which joins with ` | `; whitespace being impossible in a name is
+/// exactly what keeps that unambiguous where a bare `, ` would not be.
+fn layout_ring(library: &Library) -> Ring {
+    if library.layouts.is_empty() {
+        // 🚨 **One sentence, not a second one written for the ring.** It is the same string
+        // `console.layout.list` answers an empty library with — see
+        // [`crate::layout::NOTHING_SAVED`], which is where it lives so that both surfaces read
+        // it rather than each carrying its own.
+        return Ring::Empty(layout::NOTHING_SAVED.to_string());
+    }
+    // In file order, which is the order the listing and every refusal already quote.
+    Ring::Options(library.layouts.iter().map(|l| (l.name.clone(), l.holds())).collect())
 }
 
 /// The words after the verb, as the dispatch arguments the spec declares.
@@ -2378,5 +2470,172 @@ mod tests {
         let reg = registry();
         assert_eq!(labels("/background "), ["graphite", "slate"]);
         assert!(reg.entry("background").is_some_and(|e| e.narrow.is_none()));
+    }
+
+    // -----------------------------------------------------------------------
+    // `/layout load ` — the ring of saved names
+    // -----------------------------------------------------------------------
+
+    /// `console.layout` as `console_main` declares it. The two arguments and their kinds are
+    /// what matters here — a required `Choice` of the action words, then the name as `Text` —
+    /// and `console_main`'s own `the_layout_verb_is_the_shape_the_slash_grammar_needs` holds the
+    /// real spec to the same shape.
+    fn layout_spec() -> Vec<CommandSpec> {
+        vec![CommandSpec {
+            name: VERB_LAYOUT.into(),
+            doc: "Save the console's arrangement under a name".into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: "action".into(),
+                    kind: ArgKind::Choice(
+                        crate::layout::LAYOUT_ACTIONS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec {
+                    name: LAYOUT_NAME_ARG.into(),
+                    kind: ArgKind::Text,
+                    required: true,
+                },
+            ],
+            reversal: Reversal::Permanent,
+        }]
+    }
+
+    fn library_of(names: &[&str]) -> Library {
+        let mut lib = Library::default();
+        for name in names {
+            lib.upsert(crate::layout::SavedLayout {
+                name: (*name).to_string(),
+                regions: [("left".to_string(), "agent".to_string())].into_iter().collect(),
+                extra: Default::default(),
+            });
+        }
+        lib
+    }
+
+    /// 🚨 **The asymmetry this hook exists for: `load` and `delete` narrow, `save` does not.**
+    /// A name being invented must not be measured against the names that exist — a popup
+    /// offering the library while somebody types a *new* name reads as a closed list, and
+    /// [`coerce`] would then refuse every new name in the world, which is the one thing `save`
+    /// is for.
+    ///
+    /// ⚠️ `save` answers `None` **before the store is touched at all**, which is the half worth
+    /// pinning: it is not "the ring happens to be ignored", it is that the file is never read.
+    #[test]
+    fn save_takes_a_name_a_person_is_inventing_and_is_never_narrowed() {
+        assert_eq!(layout_options(LAYOUT_NAME_ARG, &["save"]), None);
+        // The other slot has no opinion either — the action ring is the declared `Choice`.
+        assert_eq!(layout_options("action", &["save"]), None);
+        assert_eq!(layout_options(LAYOUT_NAME_ARG, &[]), None, "no action word yet, no ring");
+        assert_eq!(layout_options(LAYOUT_NAME_ARG, &["publish"]), None, "not an action at all");
+
+        // …and the two that name something that must already exist do reach the library. This
+        // is the one assertion here that reads the real store, so it says only that the branch
+        // is taken — what comes back depends on whoever is running the suite.
+        if Library::store_root().is_some() {
+            for action in ["load", "delete"] {
+                assert!(
+                    layout_options(LAYOUT_NAME_ARG, &[action]).is_some(),
+                    "`{action}` asks the library"
+                );
+            }
+        }
+    }
+
+    /// CONTRACT: the ring is the library, name for name and in file order, each carrying what
+    /// choosing it would hold.
+    ///
+    /// 🚨 **A comma is a legal name character and must not split an option.** `check_name`
+    /// refuses whitespace because the wire cannot carry it and refuses nothing else, so `a,b` is
+    /// one layout — the same trap `Library::names_or_nothing` backticks its way out of, arriving
+    /// here as a list of pairs that is never joined at all.
+    #[test]
+    fn the_ring_is_the_library_and_a_comma_is_not_a_separator() {
+        let Ring::Options(options) = layout_ring(&library_of(&["desk", "a,b", "Desk"])) else {
+            panic!("three layouts are three options");
+        };
+        let labels: Vec<&str> = options.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(labels, ["desk", "a,b", "Desk"], "file order, whole names");
+        assert_eq!(options[0].1, "left agent", "…and what choosing it holds");
+
+        // ⚠️ Exact and case-sensitive, §1.15 — `Desk` and `desk` are two layouts, and the ring
+        // shows both rather than folding them into one that then fails to load.
+        assert_eq!(labels.iter().filter(|l| l.eq_ignore_ascii_case("desk")).count(), 2);
+    }
+
+    /// 🚨 **An empty library cannot be a silent ring** — `Ring::Empty`'s whole reason, and the
+    /// sentence is the one `console.layout.list` already answers with rather than a second one
+    /// written for the popup.
+    #[test]
+    fn an_empty_library_says_so_in_the_sentence_the_listing_already_uses() {
+        assert_eq!(
+            layout_ring(&Library::default()),
+            Ring::Empty(crate::layout::NOTHING_SAVED.to_string())
+        );
+        let Ring::Empty(why) = layout_ring(&Library::default()) else { unreachable!() };
+        assert!(why.contains("layout save"), "…and it names the verb that fills it: {why}");
+    }
+
+    /// CONTRACT: the hook reaches the real entry. **Keyed on the catalog name**, so this is the
+    /// join that a rename could break silently — see [`Entry::from_spec`].
+    #[test]
+    fn the_layout_verb_carries_the_ring_and_nothing_else_does() {
+        let reg = Registry::new(&layout_spec());
+        let entry = reg.entry("layout").expect("the verb is typeable");
+        assert!(entry.narrow.is_some(), "`{VERB_LAYOUT}` is the verb the hook is keyed on");
+        assert!(console_narrow("console.layout.list").is_none(), "a read has no ring");
+        assert!(console_narrow("console.background").is_none());
+
+        // The declared kind is untouched: `Text` is what the MCP schema and `/help` say, and
+        // neither has the action word in hand. Same rule as `/organon`'s declared union.
+        let name = entry.args().iter().find(|a| a.name == LAYOUT_NAME_ARG).expect("the slot");
+        assert_eq!(name.kind, ArgKind::Text);
+    }
+
+    /// 🚨 **The ring narrows the popup AND the refusal, and `save` is exempt from both** —
+    /// driven through the real [`Registry::candidates`] and [`Registry::resolve`], over a
+    /// library this test owns rather than the store the suite must never write to.
+    #[test]
+    fn a_narrowed_name_completes_and_an_unknown_one_is_refused_while_it_can_still_be_edited() {
+        /// The shipped hook with its store swapped for a fixed library — the wiring under test
+        /// is `coerce`/`value_candidates`, and the store read is what
+        /// [`save_takes_a_name_a_person_is_inventing_and_is_never_narrowed`] covers.
+        fn hook(arg: &str, positional: &[&str]) -> Option<Ring> {
+            if arg != LAYOUT_NAME_ARG {
+                return None;
+            }
+            match LayoutCmd::resolve(positional.first().copied()?).ok()? {
+                LayoutCmd::Save => None,
+                LayoutCmd::Load | LayoutCmd::Delete => {
+                    Some(layout_ring(&library_of(&["desk", "mind"])))
+                }
+            }
+        }
+        let mut reg = Registry::new(&layout_spec());
+        reg.entries[0].narrow = Some(hook);
+
+        let names = |line: &str| -> Vec<String> {
+            reg.candidates(line)
+                .map(|p| p.candidates.iter().map(|c| c.label.clone()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(names("/layout load "), ["desk", "mind"], "the layouts that exist");
+        assert_eq!(names("/layout delete "), ["desk", "mind"], "delete names one too");
+        assert_eq!(names("/layout load d"), ["desk"], "…and the typed stem still filters");
+        assert!(names("/layout save ").is_empty(), "a new name has nothing to offer");
+
+        // A word in the ring runs; a word outside it is refused *in the composer*, naming the
+        // library and the action that chose it — the words are still there to be fixed.
+        assert!(matches!(reg.resolve("/layout load desk"), Resolved::Run { .. }));
+        let Resolved::Refused(message) = reg.resolve("/layout load nope") else {
+            panic!("`nope` is not a saved layout")
+        };
+        assert_eq!(message, "`/layout load`: `nope` is not one of desk | mind");
+
+        // 🚨 …and the same word under `save` is simply a name. This is the assertion that would
+        // fail if the ring were declared on the argument instead of chosen by the action.
+        assert!(matches!(reg.resolve("/layout save nope"), Resolved::Run { .. }));
     }
 }
