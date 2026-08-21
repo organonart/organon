@@ -4256,7 +4256,7 @@ two ways to run one copy of it:
   Look tab is the other. One card function in the tree, two products. ⚠️ So a change to `card()`
   is visible in both, and the Console has no compile-time way to notice.
 - **`NOT_TRANSPLANTED` is still `organon-console`'s sentence**, and it is placed *inside* the
-  card by the caller. It has to be: twenty-four of the twenty-five panels are `Declared`, and a
+  card by the caller. It has to be: most of the twenty-five panels are still `Declared`, and a
   declared panel that skipped the chrome would be the one card in a column of twenty-five wearing
   something else. `panel_stack::absent_body` is the single place that decides which panels get
   it — `console_main` asks it rather than matching on `Status` a second time.
@@ -4279,7 +4279,11 @@ two ways to run one copy of it:
 
 **Look ▸ Surface is `Status::Live` and every other panel is `Status::Declared`.** The ring lists
 them all; Surface opens Organon's real controls, the other twenty-four open a line saying they
-have not been transplanted yet. What follows is why that took a mirror rather than a setter, and
+have not been transplanted yet. ✏️ **Four panels are `Live` now** — Surface, Cast Shadows,
+Lighting and Bloom (organon#124, and the list itself is
+`panels::only_the_transplanted_panels_are_live`, never a sentence here). Nothing else in this
+subsection moved: the wall below is still a property of `nih_plug`, and the mirror is still how
+a panel gets a write path at all. What follows is why that took a mirror rather than a setter, and
 it is a property of `nih_plug` rather than a gap in this crate.
 
 Every panel widget is `srow(ui, w, "node bevel", &params.bevel, setter)` over a `ParamSetter`,
@@ -4411,6 +4415,11 @@ Two differences, both consequences rather than choices:
 
 #### The pattern, for the other twenty-four
 
+✏️ **Superseded by the subsection after this one** (organon#124): twenty-one of the twenty-four
+are now *declared* rather than converted, and the four steps below apply only to a panel whose
+body has to stay hand-written. The paragraph is kept because its two warnings are the ones that
+still bite, and both survive the change.
+
 A panel converts in four mechanical steps, and the compiler checks three of them: lift the
 `card()` body into its own module; turn each helper call into the matching macro (`srow!`,
 `crow!`, `combo!`); turn each `params.x.value()` into `rd!`; flip its `panels::Status` to `Live`
@@ -4419,6 +4428,167 @@ half that fails silently** — a missed one compiles perfectly and pins the Cons
 Organon's defaults, so the checkbox ticks and the rows underneath it never appear. ⚠️ And each
 panel's fields must be checked against `PresetValues` first: Surface's 167 were all present, but
 that is a measurement of Surface, not a property of the editor.
+
+#### ✏️ …and in organon#124 the pattern stopped being a pattern and became a table
+
+Everything above is what a transplant *was*. It is kept because the mechanism it describes —
+`param_sink`, the `Sink`, the `rd!`/`wr!` identity join, the wall it works around — is unchanged
+and load-bearing. What changed is the **shape of a panel body**: twenty-one of the twenty-four
+remaining panels are no longer written at all.
+
+James, on what a preset should be able to do: *"we can tell from the preset what values we have
+adjusted from the default … we could construct custom panels or even a single custom panel with
+sections and sliders and dropdowns that are **tailored to the exact changes that we made on that
+preset**."*
+
+🚨 **That and the transplant are one problem approached from opposite ends.** The transplant
+hand-writes, panel by panel, a mapping of **field → section → widget**; a preset-built panel
+needs exactly that mapping **as data**. Twenty-four imperative bodies first and a table extracted
+afterwards is the mapping written twice and then reconciled. So the table came first, and both
+renderers read it: **`native/src/panel_table.rs`**.
+
+##### What the table carries, and the three things it deliberately does not
+
+Measured across all **519** rows of the Look tab's twenty-five cards before a line of it was
+written:
+
+| | in the table? | why |
+|---|---|---|
+| panel, section, order | **yes** | it exists nowhere else — a `PresetValues` field is a name and a type |
+| the row's label | **yes** | 361 of 519 differ from `Param::name()`, *systematically* |
+| the control kind | **no** | derivable, **519/519**, zero exceptions |
+| a dropdown's options | **no** | `choice_row` already walks the param's own steps |
+| range, unit, formatting, ⟲ | **no** | read off the real `OrganicMathParams` |
+
+🚨 **The control kind is a measurement, not a convention.** `FloatParam`/`IntParam` → a slider
+(399 rows), `BoolParam` → a checkbox (83), `EnumParam` → a dropdown (37), and the editor
+disagrees with the param's Rust type in **no case anywhere on the tab**. So
+`param_sink::AutoRow` — one trait, four impls beside `Mirrored` — reproduces the editor's choice
+from the param alone, and a fifth param kind is a compile error naming the missing impl rather
+than a control quietly drawn as a slider.
+
+⚠️ **The dropdown gap organon#124 opened with does not exist.** The issue recorded *"a `u32`
+that renders as a dropdown needs its variant names, and those live at the `combo!` call sites"*.
+They do not: `choice_row` walks `param.step_count()` and labels each option through
+`param.normalized_value_to_string`. A `combo!` call site passes a label and a width and nothing
+else. **Both of that section's "genuinely missing" items therefore reduce to one** — field →
+panel → section.
+
+⚠️ **The label is not the param's name, and the reason is structural rather than sloppy.**
+`kal_spin` is `"Kaleido Spin"` to a DAW's flat automation list and `"spin"` inside a card already
+headed *Scene Kaleidoscope*; `bevel` is `"Bevel"` and `"node bevel"`. **The label is a function
+of the grouping** — which is why one table owns both, and why deriving it from the param would
+be wrong twice: redundant on screen, and it would change what the plugin draws.
+
+##### 🚨 A macro list, not an array — the identity join survives
+
+`&[Row { field: "bevel", … }]` throws away the one property `param_sink` exists to provide: a
+string in an array is checked by nothing, while `row bevel` in the list expands to `&p.bevel`
+**and** `|pv| &mut pv.bevel`, so a rename on either side is a compile error. That is also the
+idiom this tree already uses twice — `preset.rs`'s `for_each_tab_field!` and `param_table.rs`'s
+`param_block!` — rather than a new one invented here.
+
+The list expands three ways, from one source:
+
+1. **the body** — drawn by Organon's editor with `Sink::Host` and by the Console with
+   `Sink::Mirror`, exactly as `panel_surface::surface_card` already was;
+2. **`ITEMS`** — `&'static [Item]`, the data a preset's diff is grouped by;
+3. **`draw_one(name)`** — one control, chosen at runtime by field name, which is the seam a
+   preset-built panel is drawn through.
+
+⚠️ **`Item::Section` is a marker, not a container.** A section owns the rows that follow it until
+the next one — how the editor draws it. A filtered panel therefore emits a heading *lazily*,
+before the first surviving row under it, so a section whose rows were all filtered away draws
+nothing rather than an empty heading.
+
+⚠️ **egui ids come from the field, never from widget order.** This section already records that
+bug being fixed twice, and a filtered panel is where it returns: a preset panel drawing rows 3, 7
+and 40 of a card must give each the row id it would have had drawing all forty.
+`stringify!($f)` is what every generated control is keyed on.
+
+##### Two kinds of panel, and the count is the honest number
+
+- **`panel!(@generated …)`** — the body **is** the list. A `free` item in a generated panel is a
+  `compile_error!`, so it provably contains no hand-written fragment.
+- **`panel!(@labelled …)`** — the body is hand-written because the panel has control flow, a file
+  dialog or a capability gate. The table still owns its labels and grouping; only the *order*
+  lives in the body.
+
+Measured, the twenty-four un-transplanted panels are **352 rows, 40 help texts, 36 section
+headings, six conditionals and three hand-written fragments** — so twenty-one of them qualify for
+`@generated`, and the exceptions are Ray Tracing, Liquid and Post. Surface stays hand-written and
+holds nearly all of the tab's complexity by itself: fifteen disclosure reads, two file dialogs and
+a material-graph loader. `grep -c '@labelled'` is what "how much of this tab is still written by
+hand" answers to.
+
+##### 🚨 Eleven controls have no writable mirror, and it is deliberate
+
+Of the **514 distinct fields** the twenty-five panels draw, **503 are in `PresetValues`** and
+eleven are not — Temporal's seven (`taa_*`, `motion_blur`, `mb_*`, `stochastic_glass`) and four of
+Ray Tracing's (`rt_debug`, `pathtrace_enable`, `spectral_secondaries`, `pt_caustic_photons`).
+These are not gaps. The Temporal card's own help text says *"per-display, not preset-captured"*
+and `params.rs` repeats it: *"**Per-display, NOT preset-captured** (like HDR/MSAA/rt_debug)"*.
+
+⚠️ **So Look ▸ Temporal cannot be transplanted at all through the mirror** — every one of its
+seven controls would draw, drag and move nothing, which is precisely why `/panel` was retired.
+Ray Tracing converts minus four of its sixty-one rows.
+
+📌 **Decided (James, 2026-08-21): a third `panels::Status`.** `Live` / `Declared` / **`HostOnly`**
+— Temporal stays named and offered, and says *"per-display, not preset-captured — these controls
+exist only in Organon's own editor"* rather than *"not transplanted yet"*, which would be a lie:
+it is not pending, it is impossible through the mirror. Ray Tracing's four rows take the same
+treatment per row, drawn disabled with the reason on hover. **It generalises**, which is why it
+beat the alternatives — the Settings tab is largely this the day it joins.
+
+The two rejected options are worth keeping: drawing them **read-only** from Organon's defaults
+was refused on §1.11's own principle (a control that looks live and is not is worse than an
+absent one), and **adding the eleven to `PresetValues`** reverses a deliberate decision about
+what a preset means in order to make a transplant tidier.
+
+⚠️ **`HostOnly` is not built yet** — it lands with the panel that needs it, per invariant #4, and
+an unused enum arm would widen every exhaustive `match` on `Status` for no caller. Until then
+`panel_table::every_row_the_table_names_has_a_writable_mirror` is what stops one of these panels
+being declared by accident.
+
+##### What a preset-built panel can reach, stated rather than implied
+
+The Look tab, fully joined, homes **503 of `PresetValues`' 1,333 fields — 37.7%**. A preset whose
+diff is mostly Generator fields gets a mostly-empty panel until that tab joins. **A field with no
+table row is drawn anyway**, from its param alone, with `Param::name()` for a label and no
+section: the control kind and the range are derivable, and only the short label is not. A field is
+never silently absent from a panel claiming to show what a preset changed, and that
+visibly-second-class rendering is itself the argument for joining the next tab.
+
+Two related numbers worth not confusing: **49 Look-tagged fields are drawn on no Look panel**, and
+**103 fields drawn on Look panels are tagged to another tab** (95 Generator, 8 Environment —
+`palette` and `surface_mode` live in the Surface card). `preset.rs`'s `for_each_tab_field!` tag and
+this table answer different questions and neither substitutes for the other.
+
+##### Landed so far
+
+**Cast Shadows, Lighting (Direct) and Bloom** — ten controls between them, `@generated`, drawn by
+Organon's editor and Organon Console from one declaration. `panels::Status::Live` is now four
+panels rather than one, and `panel_table::a_declared_panel_is_exactly_a_live_one` asserts the pair
+in both directions: a `Live` panel with no declaration is a card that opens to nothing, and a
+declared panel still marked `Declared` is a body nobody can reach.
+
+⚠️ **A card the editor hides, the Console still offers, and that is not new.** Organon's Look
+tab wraps Cast Shadows in `if !kifs` and Surface in `if !raymarch`, so those cards vanish when a
+generator has no use for them; a Console panel column has no such gate, because the stack is a
+column somebody assembled rather than a tab the editor lays out. The same asymmetry already
+applied to Surface before this change. It is worth knowing rather than fixing: the honest gate
+would be on the *mirror's* generator, and a panel that disappeared out of a column somebody built
+by hand would be worse than one whose controls happen not to apply.
+
+⚠️ **Surface is not in the table yet, on purpose.** Joining it is a 167-site rewrite of the one
+file another workstation is actively changing, and it does not belong in the change that
+establishes the mechanism. It is the next one.
+
+⚠️ **Three witnesses in `panel_stack.rs` and one in `registry.rs` named Bloom as their example of
+a `Declared` panel**, and transplanting Bloom failed all four for a reason that had nothing to do
+with what they assert. They now ask the table for *a* panel of each status rather than naming one,
+and each `expect`s loudly on the day a status has no members left. That is the shape every
+per-status witness here needs as the `Live` set grows.
 
 ### 1.12 The screen — whether the window covers the display, on a THIRD axis
 

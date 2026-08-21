@@ -47,7 +47,16 @@ use crate::tabs::UiTab;
 /// in the candidate's own line, rather than after.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
-    /// The Console has a body for this panel and draws it. **[`LOOK_SURFACE`] alone, today.**
+    /// The Console has a body for this panel and draws it. **[`LOOK_SURFACE`],
+    /// [`LOOK_LIGHTING`], [`LOOK_SHADOWS`] and [`LOOK_BLOOM`] today** — the exact list is
+    /// [`only_the_transplanted_panels_are_live`], never this sentence.
+    ///
+    /// ⚠️ **Surface is the odd one and the other three are the pattern.** Surface's body is
+    /// hand-written (`organic-math-native`'s `panel_surface::surface_card`) because it is the
+    /// one Look panel with disclosure logic and file dialogs in it. The rest are *declared* —
+    /// `panel_table` holds their rows, labels, sections and help text as data, and generates
+    /// the body that both products draw. That is what lets a panel built from a preset's diff
+    /// group its controls the way the editor does without a second list.
     ///
     /// 🚨 **What made this hard was writing a parameter, not drawing one.** Organon's panels
     /// are `card(&mut c[0], "Surface", |ui| …)` closures over `&params.bevel` and a
@@ -110,9 +119,9 @@ pub const LOOK_SURFACE: Panel = look("surface", "Surface", Status::Live);
 pub const LOOK_COLOUR: Panel = look("colour", "Calibrated Colour (#349)", Status::Declared);
 pub const LOOK_MATERIAL: Panel = look("material", "Material", Status::Declared);
 pub const LOOK_SURFACE_FX: Panel = look("fx", "Surface FX", Status::Declared);
-pub const LOOK_LIGHTING: Panel = look("lighting", "Lighting (Direct)", Status::Declared);
+pub const LOOK_LIGHTING: Panel = look("lighting", "Lighting (Direct)", Status::Live);
 pub const LOOK_IBL: Panel = look("ibl", "Environment (IBL)", Status::Declared);
-pub const LOOK_SHADOWS: Panel = look("shadows", "Cast Shadows (#152)", Status::Declared);
+pub const LOOK_SHADOWS: Panel = look("shadows", "Cast Shadows (#152)", Status::Live);
 pub const LOOK_AO: Panel = look("ao", "Ambient Occlusion", Status::Declared);
 pub const LOOK_REFLECTIONS: Panel = look("reflections", "Reflections (SSR)", Status::Declared);
 pub const LOOK_GI: Panel = look("gi", "Global Illumination", Status::Declared);
@@ -134,7 +143,7 @@ pub const LOOK_INK: Panel = look("ink", "Fluid Ink (#182)", Status::Declared);
 pub const LOOK_LIQUID: Panel = look("liquid", "Liquid (#182 T3)", Status::Declared);
 pub const LOOK_LIQUID_MATERIAL: Panel = look("lmat", "Liquid Material", Status::Declared);
 pub const LOOK_COUPLING: Panel = look("coupling", "Fluid Coupling (#182 T4)", Status::Declared);
-pub const LOOK_BLOOM: Panel = look("bloom", "Bloom", Status::Declared);
+pub const LOOK_BLOOM: Panel = look("bloom", "Bloom", Status::Live);
 
 /// Every panel this table knows, in tab order then editor order.
 ///
@@ -296,7 +305,11 @@ mod tests {
     fn only_the_transplanted_panels_are_live() {
         let live: Vec<&str> =
             PANELS.iter().filter(|p| p.status == Status::Live).map(|p| p.slug).collect();
-        assert_eq!(live, vec!["surface"], "the live set changed without this test being told");
+        assert_eq!(
+            live,
+            vec!["surface", "lighting", "shadows", "bloom"],
+            "the live set changed without this test being told"
+        );
     }
 
     #[test]

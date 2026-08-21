@@ -2410,14 +2410,29 @@ mod tests {
     /// panel until Console #7 transplanted it; asserting only the suffixed form let the ring
     /// go untested for the case it exists to distinguish. Now the same ring carries one of
     /// each, so the day a second panel lands, this test says which one moved.
+    ///
+    /// ✏️ **Both examples are now taken from the table rather than named.** It read `surface`
+    /// and `bloom`, and organon#124 transplanted Bloom — so a test about *whether the ring
+    /// distinguishes the two states* failed because its example had changed state, which says
+    /// nothing about the ring. Picking one panel of each status keeps the assertion about the
+    /// ring as the `Live` set grows, and both `expect`s fail loudly on the day one status has
+    /// no members left.
     #[test]
     fn the_ring_says_which_panels_are_transplanted() {
         let reg = registry();
         let ring = reg.candidates("/organon look ").unwrap().candidates;
-        let surface = ring.iter().find(|c| c.label == "surface").unwrap();
-        assert_eq!(surface.doc, "Surface", "transplanted — the heading alone");
-        let bloom = ring.iter().find(|c| c.label == "bloom").unwrap();
-        assert_eq!(bloom.doc, "Bloom — not transplanted yet");
+        let pick = |status| {
+            panels::PANELS
+                .iter()
+                .find(|p| p.tab == UiTab::Look && p.status == status)
+                .expect("the Look tab has no panel in that state — this test has no example")
+        };
+        let live = pick(panels::Status::Live);
+        let cand = ring.iter().find(|c| c.label == live.slug).unwrap();
+        assert_eq!(cand.doc, live.title, "transplanted — the heading alone");
+        let declared = pick(panels::Status::Declared);
+        let cand = ring.iter().find(|c| c.label == declared.slug).unwrap();
+        assert_eq!(cand.doc, format!("{} — not transplanted yet", declared.title));
     }
 
     /// James's own example: the `l` completes to `look` on its own, and the ring under it
