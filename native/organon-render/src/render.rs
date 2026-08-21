@@ -2998,6 +2998,43 @@ impl Renderer {
         self.material.present_mask as f32
     }
 
+    /// The channel textures the procedural bake last wrote, in the bind order of
+    /// `MaterialTextures::CHANNELS` — albedo, normal, roughness, metallic, AO, height.
+    ///
+    /// **Why this exists.** `bake_material` is public and `Renderer::new` takes only a device,
+    /// a queue and a format — no surface, no window — so another wgpu application can already
+    /// construct a `Renderer` on **its own** device and drive the bake. What it could not do was
+    /// reach the result: the textures live in a private field of the private `MaterialBaker`.
+    /// A downstream renderer therefore had to reimplement the bake to use it, which is exactly
+    /// the fork this crate's licence split exists to avoid.
+    ///
+    /// 📌 **Views, not pixels, and that is the point.** A caller on the same `wgpu::Device`
+    /// binds these directly; nothing is copied and no readback is involved. That is why the
+    /// targets need no `COPY_SRC` and why this is an accessor rather than a transfer path. A
+    /// caller that genuinely wants the bytes on the CPU needs `COPY_SRC` adding to
+    /// `make_target` — deliberately not done here, because nothing in this repo needs it and an
+    /// unused usage flag costs every target its fast paths.
+    ///
+    /// ⚠️ **The contents are only meaningful after a `bake_material` call**, and they are
+    /// replaced by the next one. Before the first bake these are allocated but never written.
+    ///
+    /// ⚠️ **Bind order is `CHANNELS`', not `channel_slot`'s.** `channel_slot` maps a *shader*
+    /// channel ordinal to a slot and a present bit and is not in this order; reading one as the
+    /// other silently swaps roughness and metallic.
+    pub fn baked_material_views(&self) -> impl Iterator<Item = &wgpu::TextureView> {
+        self.material_baker.channels.iter().map(|(_, view)| view)
+    }
+
+    /// The edge of every texture [`Renderer::baked_material_views`] returns. Square, and the
+    /// same for all of them.
+    ///
+    /// 📌 Offered because a caller binding these has to size its own pipeline against them, and
+    /// the alternative is guessing at the bake resolution — which is set from
+    /// `Shared.material_layer[17]` and is therefore not a constant a caller can assume.
+    pub fn baked_material_resolution(&self) -> u32 {
+        self.material_baker.res
+    }
+
     /// Bake the physically based atmosphere (#100) into the env equirect + re-run
     /// the IBL precompute, so the cubes are lit by the derived sky at the current
     /// sun angle. The visual calls this when the atmosphere params or (quantized)
@@ -6297,5 +6334,79 @@ mod tests {
         }
         assert!((zmin + 0.5).abs() < 1e-3 && (zmax - 0.5).abs() < 1e-3, "capsule z ∉ [-0.5,0.5]");
         assert!(rmin_lo < 0.05 && rmin_hi < 0.05, "capsule ends are not capped (open pipe)");
+    }
+
+    // ── The material channel tables have to agree with each other ───────────────────────
+    //
+    // `Renderer::baked_material_views` promises "in the bind order of
+    // `MaterialTextures::CHANNELS`", and the *number* of those views comes from `MAT_SLOTS`,
+    // which is a separate constant. `MaterialBaker::channel_slot` is a third table mapping a
+    // shader channel ordinal to (slot, present bit). Nothing checked that the three agree, and
+    // a GPU is not available in CI — so these are what can be proven offline, and they are the
+    // part a downstream caller actually depends on.
+
+    #[test]
+    fn the_baker_allocates_exactly_one_target_per_declared_channel() {
+        assert_eq!(
+            MaterialTextures::CHANNELS.len(),
+            MAT_SLOTS,
+            "CHANNELS and MAT_SLOTS disagree: the baker would allocate {MAT_SLOTS} targets for \
+             {} declared channels, and `baked_material_views` would hand a caller the wrong \
+             number in an order it documents as CHANNELS'",
+            MaterialTextures::CHANNELS.len()
+        );
+    }
+
+    #[test]
+    fn every_baked_channel_lands_in_a_slot_that_exists() {
+        // Channel ordinals are the shader's, and only some of them are baked.
+        for channel in 0..8u32 {
+            if let Some((slot, bit)) = MaterialBaker::channel_slot(channel) {
+                assert!(
+                    slot < MAT_SLOTS,
+                    "channel {channel} claims slot {slot}, past the {MAT_SLOTS} allocated"
+                );
+                assert_eq!(
+                    bit,
+                    MaterialTextures::CHANNELS[slot].2,
+                    "channel {channel} sets present bit {bit} but slot {slot} ({}) declares {}",
+                    MaterialTextures::CHANNELS[slot].0,
+                    MaterialTextures::CHANNELS[slot].2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_two_baked_channels_share_a_slot() {
+        // Two channels writing one target is a silent overwrite: the later bake wins and the
+        // earlier channel is advertised as present while holding someone else's pixels.
+        let mut seen = std::collections::BTreeMap::new();
+        for channel in 0..8u32 {
+            if let Some((slot, _)) = MaterialBaker::channel_slot(channel) {
+                if let Some(other) = seen.insert(slot, channel) {
+                    panic!("channels {other} and {channel} both write slot {slot}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_present_bits_are_distinct_powers_of_two() {
+        // `present_mask` is a bitfield read by the cube shader; a repeated or non-power-of-two
+        // bit makes "which maps are loaded" unanswerable.
+        let mut union = 0u32;
+        for (name, _, bit) in MaterialTextures::CHANNELS {
+            assert!(
+                bit.is_power_of_two(),
+                "{name}'s present bit {bit} is not a single bit"
+            );
+            assert_eq!(
+                union & bit,
+                0,
+                "{name}'s present bit {bit} is already taken"
+            );
+            union |= bit;
+        }
     }
 }
