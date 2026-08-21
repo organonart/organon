@@ -973,7 +973,8 @@ clock is phase-locked to the transport, and the camera, the modulation routing, 
 simulations and the audio analysis all run off that one clock. And all of that is one
 *arrangement* of one application — the window divides into named regions, each declaring what
 it holds, always including a live agent that reaches the same verbs a human types; the
-visualizer is the region content Organon grew out of rather than the thing Organon is. It ships three ways from one workspace today — the plugin,
-the Mind arrangement for watching a language model think, and the console for working with
-agents, its terminal glowing from underneath — and the plugin is the one of those that can never
-become a layout, because a host owns its window and its lifetime.
+visualizer is the region content Organon grew out of rather than the thing Organon is. It
+ships three ways from one workspace today — the plugin, the Mind arrangement for watching a
+language model think, and the console for working with agents, its terminal glowing from
+underneath — and of those three the plugin alone can never become a layout, because a host owns
+its window and its lifetime.
