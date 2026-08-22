@@ -25,3 +25,19 @@ finding turns into a false one.
 the plausible reading was that five tests ran in neither CI nor `--workspace`. One `cargo tree` call
 settled it against that reading. Checking the cheap thing first applies hardest when you think you
 have found something.
+
+⚠️ **And the first cut of this correction carried a stale count into the fix for a false claim.**
+It left leg 8's original "82 tests" standing beside a newly measured "executes all 84", a sentence
+apart, describing the same crate — where the larger number reads as a contradiction rather than as
+the same set counted a day later. 82 was true when leg 8 landed and stopped being true when two
+tests were added to that crate hours afterwards.
+
+📌 **The counts are gone rather than updated**, because `BRIEF.md`'s own rule is that a brief must
+not carry expected test counts and that a worker should measure its own — and the paragraph putting
+three numbers into that file was in that file. Today's figures, for the record and not for the doc:
+**87 `#[test]` fns, 3 `#[ignore]`d, 84 executed.** (A naive `grep '#\[ignore'` says 5; two of those
+are prose inside doc comments.)
+
+⚠️ The shape, which is now this entry's third instance of itself: **a number written into prose is
+wrong from the moment the next commit lands, and a paragraph arguing for precision is the worst
+possible place to keep one.**
