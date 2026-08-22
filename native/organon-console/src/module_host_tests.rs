@@ -95,6 +95,14 @@ impl Workshop for Bench {
         Ok(())
     }
 
+    /// The bench writes a real file at the derived path (see [`store_with`]), so the honest
+    /// answer here is the real one — this half of the launch decision is about a binary that
+    /// genuinely is or is not on the disk, and `a_missing_binary_refuses_by_name` depends on it
+    /// being absent for real rather than on a script saying so.
+    fn file_exists(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
     fn spawn(
         &self,
         program: &Path,

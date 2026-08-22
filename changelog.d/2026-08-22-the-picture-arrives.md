@@ -106,3 +106,35 @@
   condition. Fixed twice, because the halves differ — a counter in the filename removes the
   corruption, and `--test-threads=1` in the documented command removes the interference, which a
   unique filename does nothing about.
+
+### A build that produced no binary was recorded as a success
+
+- 🚨 **Cargo silently skips a `[[bin]]` whose `required-features` are off** — no warning, no
+  diagnostic, **exit 0**. Measured in a clean Ascent tree: remove `target/release/ascent.exe`,
+  `cargo build --release`, exit 0 in 0.12 s, file still absent. So `ToolOutput::succeeded()` was
+  **true about the command and false about the outcome**, and `module_work::build` returned
+  `Ok(Built { .. })` for a binary that does not exist.
+
+  ⚠️ **What made it expensive is the distance.** `modules.json` records the success here; the
+  failure appears two layers later — a missing file at launch, or §4.6's *"launched, not yet
+  producing"* timing out after ten seconds — with nothing anywhere naming cargo's skip. Mutated
+  (`if false` in place of the check): the new test fails printing the whole
+  `Ok(Built { producer: "ascent", … })` it should never have produced.
+
+  📌 **Not a workaround for one module.** Ascent is the instance; the class is a
+  `required-features` bin, a workspace default-member quirk, or a `[[bin]]` typo — every module
+  there will ever be. Found by the Ascent session against Organon's own convention, which is the
+  cross-repo pairing working in the direction that is easy to skip.
+
+  **The refusal is fair rather than arbitrary because the obligation is now published**:
+  §4.7 requires a module's repository to produce a release binary named for its producer **from a
+  plain `cargo build --release`** — plain being load-bearing, since a `features = [...]` key in
+  `organon-module.toml` is refused on the grounds that a manifest requests and declares but does
+  not configure the host's tooling.
+
+  ⚠️ **The check goes through the `Workshop` seam**, and that was not the first attempt: asking
+  the real filesystem broke three headless build tests immediately, because they build against a
+  scripted `/store` that has never existed on any disk. The seam telling the truth about itself —
+  *"every decision here is testable without touching the machine"* has to be a property, not a
+  sentence. `Workshop::file_exists` is a `bool` rather than a `Result` because every way of
+  failing to answer means the same thing to every caller: not a binary I can launch.

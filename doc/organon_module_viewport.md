@@ -646,7 +646,26 @@ module that requires a particular cwd is relying on something the contract does 
 <store_root>/modules/<producer>/target/release/<producer>[.exe]
 ```
 
-**So a module's cargo package must produce a binary named after its producer name.**
+> 🚨 **The obligation, stated as a requirement because it is one:**
+> **a module's repository must produce a release binary named for its producer from a plain
+> `cargo build --release`, run at the root of its checkout.**
+
+⚠️ **Plain** is the load-bearing word, and it is not pedantry. The console runs exactly
+`cargo build --release` with no `--features`, no `-p` and no `--bin` — because every one of those
+would be a string the console chose on a module's behalf, and a `features = [...]` key in
+`organon-module.toml` to supply them is **refused**: the manifest requests and declares, it does not
+configure the host's tooling. So a `[[bin]]` behind `required-features` that a module's own default
+features do not enable **is not built**, and the module does not meet this requirement.
+
+🚨 **And cargo will not say so.** It skips such a target with no warning, no diagnostic and **exit
+0** — measured in a clean Ascent tree: remove `target/release/ascent.exe`, `cargo build --release`,
+exit 0 in 0.12 s, file still absent. That is why `module_work::build` verifies the binary exists
+before recording a build rather than trusting the exit code: without it, `modules.json` records a
+successful build of a commit whose binary does not exist, and the failure surfaces two layers later
+as *"launched, not yet producing"* timing out, with nothing naming the cause.
+
+📌 Publishing the requirement is what makes that refusal **fair rather than arbitrary** — a module
+is failing a stated obligation, not colliding with an undocumented assumption.
 
 🚨 **Derived rather than read from the manifest, and the reason is §3.1's rather than tidiness.**
 `organon-module.toml` is data written by somebody else. A `binary = ` key in it would be that

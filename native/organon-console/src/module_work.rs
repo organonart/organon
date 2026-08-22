@@ -226,6 +226,23 @@ pub trait Workshop: Send + Sync {
     /// with one fake and can assert on either.
     fn ensure_dir(&self, path: &Path) -> Result<(), WorkFault>;
 
+    /// Is there a file at `path`?
+    ///
+    /// 🚨 **On the trait for `ensure_dir`'s reason exactly**, and it earned its place the hard
+    /// way: [`build`] verifies the binary it was supposed to produce, and a first version asked
+    /// the real filesystem — which broke three headless tests immediately, because they build
+    /// against a scripted `/store` that has never existed on any disk. That is the seam telling
+    /// the truth about itself. A decision this file makes must be a pure function of what the
+    /// `Workshop` says, or *"every decision here is testable without touching the machine"* is a
+    /// sentence rather than a property.
+    ///
+    /// ⚠️ **Deliberately a `bool` and not a `Result`.** The question is *"is the artifact
+    /// there?"*, and every way of failing to answer it — no permission, a broken symlink, a path
+    /// that is a directory — means the same thing to every caller: **not a binary I can launch.**
+    /// An error case would make each call site invent a policy for a distinction none of them can
+    /// act on.
+    fn file_exists(&self, path: &Path) -> bool;
+
     /// **Start a module's own binary and do not wait for it** — T5's launch, and the third
     /// thing this seam exists for.
     ///
@@ -323,6 +340,10 @@ impl Workshop for ProcessWorkshop {
     fn ensure_dir(&self, path: &Path) -> Result<(), WorkFault> {
         std::fs::create_dir_all(path)
             .map_err(|e| WorkFault::NoDirectory { path: path.display().to_string(), why: e.to_string() })
+    }
+
+    fn file_exists(&self, path: &Path) -> bool {
+        path.is_file()
     }
 
     fn spawn(
@@ -449,6 +470,13 @@ pub enum WorkFault {
     /// on the disk: a `target` directory cleaned by hand, or a store restored from a backup
     /// that skipped it. `is_built()` reads the **record**, so it says yes and the file is gone.
     LaunchFailed { path: String, why: String },
+    /// 🚨 **`cargo build --release` succeeded and produced no binary for this producer.**
+    ///
+    /// Its own variant rather than [`WorkFault::BuildFailed`], because that one quotes a
+    /// compiler diagnostic and there is none: cargo skipped the target and exited 0. The two
+    /// want different next actions — one is "fix the code", this one is "the repository does not
+    /// produce the binary this contract requires", which is a manifest question.
+    NoBinary { producer: String, expected: String },
     /// The frame channel could not be created — no `$TMPDIR`, a full disk, or a mapping the OS
     /// refused. Nothing can be hosted without it, so it is a refusal rather than a rectangle.
     ChannelFailed { producer: String, why: String },
@@ -527,6 +555,9 @@ impl WorkFault {
             WorkFault::LaunchFailed { path, why } => {
                 format!("{path} would not start: {why}")
             }
+            WorkFault::NoBinary { producer, expected } => format!(
+                "`{producer}` built, and produced no binary named `{producer}` — nothing is at \n                 {expected}. A module's repository must produce a release binary named for its \n                 producer from a plain `cargo build --release`; cargo SKIPS a `[[bin]]` whose \n                 `required-features` are off, silently and with exit 0, which is the usual cause"
+            ),
             WorkFault::ChannelFailed { producer, why } => format!(
                 "`{producer}` has nowhere to draw — its frame channel could not be created: \
                  {why}"
@@ -973,6 +1004,33 @@ pub fn build(
         });
     }
 
+    // 🚨 **An exit code that is true about the command and false about the outcome.**
+    //
+    // **Cargo silently skips a `[[bin]]` whose `required-features` are not enabled** — no
+    // warning, no diagnostic, exit 0 in 0.12 s. So `succeeded()` above is `true` for a build
+    // that produced nothing, and without this check the console records a successful build of a
+    // commit whose binary does not exist. The failure then surfaces **two layers away** — as a
+    // missing file at launch, or as §4.6's *"launched, not yet producing"* timing out after ten
+    // seconds — with nothing anywhere naming the cause.
+    //
+    // ⚠️ **Not a workaround for one module.** Ascent is where it was found (`ascent#86`, measured
+    // in a clean tree: `rm target/release/ascent.exe`, `cargo build --release`, exit 0, file
+    // still absent), but the class is every module there will ever be: a `required-features`
+    // bin, a workspace default-member quirk, a `[[bin]]` typo. One sentence at the moment the
+    // fact is knowable, which is the whole posture of §4.6.
+    //
+    // 📌 It is fair to refuse rather than arbitrary **because the obligation is published**:
+    // `doc/organon_module_viewport.md` §4.7 says a module's repository must produce a release
+    // binary named for its producer from a plain `cargo build --release`. This is that
+    // requirement being checked, not a preference being enforced.
+    let binary = module_binary(store_root, &module.producer)?;
+    if !shop.file_exists(&binary) {
+        return Err(WorkFault::NoBinary {
+            producer: module.producer.clone(),
+            expected: binary.display().to_string(),
+        });
+    }
+
     Ok(Built {
         producer: module.producer.clone(),
         record: BuildRecord { commit, dirty, extra: BTreeMap::new() },
@@ -1269,6 +1327,10 @@ mod tests {
         answers: Vec<(String, ToolOutput)>,
         calls: Mutex<Vec<String>>,
         dirs: Mutex<Vec<PathBuf>>,
+        /// The paths this fake claims exist on disk — see `file_exists`. Empty by default, so a
+        /// test that wants `build` to succeed has to SAY the binary was produced, which is the
+        /// fact Ascent found cargo will silently not deliver.
+        produced: Mutex<Vec<PathBuf>>,
     }
 
     impl Fake {
@@ -1279,6 +1341,7 @@ mod tests {
                 answers: answers.into_iter().map(|(p, o)| (p.to_string(), o)).collect(),
                 calls: Mutex::new(Vec::new()),
                 dirs: Mutex::new(Vec::new()),
+                produced: Mutex::new(Vec::new()),
             }
         }
 
@@ -1294,6 +1357,12 @@ mod tests {
         /// Every directory the job asked to exist.
         fn dirs(&self) -> Vec<PathBuf> {
             self.dirs.lock().unwrap().clone()
+        }
+
+        /// Say that the build really did produce this producer's binary.
+        fn produces(self, store_root: &Path, producer: &str) -> Self {
+            self.produced.lock().unwrap().push(module_binary(store_root, producer).unwrap());
+            self
         }
     }
 
@@ -1312,6 +1381,14 @@ mod tests {
         fn ensure_dir(&self, path: &Path) -> Result<(), WorkFault> {
             self.dirs.lock().unwrap().push(path.to_path_buf());
             Ok(())
+        }
+
+        /// ⚠️ **A scripted answer, and by default `false`.** The `Fake` builds against a
+        /// `/store` that has never existed on any disk, so asking the real filesystem here would
+        /// make every build test depend on the machine. `produces` is what a test says when it
+        /// wants the build to have worked.
+        fn file_exists(&self, path: &Path) -> bool {
+            self.produced.lock().unwrap().iter().any(|p| p == path)
         }
 
         /// 🚨 **A panic, not a stub returning something inert.** Not one verb in this file
@@ -1564,6 +1641,10 @@ mod tests {
             ("git status --porcelain", ToolOutput::ok(status)),
             ("cargo build --release", cargo),
         ])
+        // ⚠️ Every caller of this helper is testing a build that WORKED, so the helper says the
+        // binary was produced. `a_build_that_produces_no_binary_is_not_a_build` is the one that
+        // does not, and it builds its `Fake` by hand for exactly that reason.
+        .produces(&store(), "ascent")
     }
 
     /// CONTRACT: **the record names the commit that was BUILT.** A clean build of the
@@ -1607,6 +1688,56 @@ mod tests {
         assert!(out.sentence().contains("NOT the approved commit"), "{}", out.sentence());
     }
 
+    /// CONTRACT: 🚨 **a build that produced no binary is not a build**, whatever cargo's exit
+    /// code says.
+    ///
+    /// **Cargo silently skips a `[[bin]]` whose `required-features` are off** — no warning, no
+    /// diagnostic, exit 0. Measured by the Ascent session in a clean tree: `rm
+    /// target/release/ascent.exe`, `cargo build --release`, `echo $?` → `0`, file still absent.
+    /// So `ToolOutput::succeeded()` is `true` about the *command* and false about the
+    /// *outcome*, and without this check the console records a successful build of a commit
+    /// whose binary does not exist.
+    ///
+    /// ⚠️ **What makes it expensive is the distance.** The record is written here; the failure
+    /// appears two layers later as a missing file at launch, or as §4.6's *"launched, not yet
+    /// producing"* timing out after ten seconds — with nothing anywhere naming cargo's skip.
+    ///
+    /// 📌 **Not an Ascent workaround.** Ascent is the instance; the class is a
+    /// `required-features` bin, a workspace default-member quirk, or a `[[bin]]` typo — every
+    /// module there will ever be. And the refusal is *fair* rather than arbitrary because the
+    /// obligation is published: `doc/organon_module_viewport.md` §4.7 requires a module's
+    /// repository to produce a release binary named for its producer from a plain `cargo build
+    /// --release`.
+    #[test]
+    fn a_build_that_produces_no_binary_is_not_a_build() {
+        // The same script as every successful build above — and deliberately WITHOUT
+        // `.produces(...)`, which is this fake's way of spelling "cargo skipped the target".
+        let shop = Fake::new(vec![
+            ("git rev-parse --git-dir", ToolOutput::ok(".git")),
+            ("git rev-parse --verify", ToolOutput::ok(APPROVED)),
+            ("git checkout --detach", ToolOutput::ok("")),
+            ("git rev-parse HEAD", ToolOutput::ok(APPROVED)),
+            ("git status --porcelain", ToolOutput::ok("")),
+            ("cargo build --release", ToolOutput::ok("")),
+        ]);
+        let err = build(&shop, &store(), &approved()).unwrap_err();
+
+        assert!(shop.ran("cargo build --release"), "cargo really did run and really did succeed");
+        let said = err.sentence();
+        assert!(said.contains("ascent"), "{said}");
+        assert!(said.contains("no binary"), "{said}");
+        // The sentence has to carry the usual cause, because the exit code gives no hint at all
+        // and the person reading it has a green build in their scrollback.
+        assert!(said.contains("required-features"), "{said}");
+        // 🚨 And it must NOT be `BuildFailed`, which quotes a compiler diagnostic — there is no
+        // diagnostic to quote, and offering one would send somebody looking for an error that
+        // was never printed.
+        assert!(
+            matches!(err, WorkFault::NoBinary { .. }),
+            "a skipped target is not a compile failure: {err:?}"
+        );
+    }
+
     /// CONTRACT: **a failed build quotes the compiler and says the approval stands.** The
     /// refusal is a next action, not a status.
     #[test]
@@ -1643,6 +1774,10 @@ mod tests {
             }
             fn ensure_dir(&self, _: &Path) -> Result<(), WorkFault> {
                 Ok(())
+            }
+            // `build` never reaches its binary check here — it fails at `cargo` first.
+            fn file_exists(&self, _: &Path) -> bool {
+                false
             }
             fn spawn(
                 &self,
