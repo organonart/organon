@@ -2701,6 +2701,22 @@ pub struct PresetValues {
     /// empty so it stays out of the partition drift-guard.
     #[serde(default, skip_serializing_if = "String::is_empty")] pub hdr_path: String,
 
+    /// The loaded `.gguf` **specimen** — the path last opened via the Mind tab's
+    /// "Model / Specimen" card. Restored on recall by re-driving the model sidecar
+    /// + bumping `model_gen` (`Shared.mind[1]`), which is what makes a GGUF view
+    /// *"really just an Organon preset"*: without it a preset restored the Neural
+    /// Network generator and its `nw_*` dials but left the specimen empty.
+    ///
+    /// Rides the **Generator** bucket, not Environment — `generator` and every
+    /// `nw_*` param is a Generator field, and a model is what those dials are
+    /// drawn *of*. See [`recall_redrives`].
+    ///
+    /// Empty = don't touch the loaded model. 🚨 That is not a shrug: a preset that
+    /// could *clear* the model would be a saved **look** that unloads a multi-GB
+    /// specimen as a side effect. Recall only ever points at a model, never away
+    /// from one.
+    #[serde(default, skip_serializing_if = "String::is_empty")] pub model_path: String,
+
     // ===================================================================
     // #354 — Settings (renderer / output / capture) captured by presets.
     // ===================================================================
@@ -4761,17 +4777,25 @@ macro_rules! for_each_tab_field {
 pub(crate) use for_each_tab_field;
 
 impl PresetValues {
-    /// Snapshot the live parameters, including the loaded `.hdr` reference (read
-    /// from the sidecar). **GUI-thread only** — the sidecar read is file I/O.
+    /// Snapshot the live parameters, including the two out-of-band references —
+    /// the loaded `.hdr` and the loaded `.gguf` specimen, read from their sidecars.
+    /// **GUI-thread only** — the sidecar reads are file I/O.
     pub fn capture(p: &OrganicMathParams) -> Self {
         let mut v = Self::capture_params_only(p);
         v.hdr_path = std::fs::read_to_string(crate::ipc::hdr_sidecar_path()).unwrap_or_default();
+        // `.trim()` because the sidecar is a plain UTF-8 path and its consumers
+        // (`mind_runtime`) read it trimmed — capturing an untrimmed copy would
+        // round-trip a path that differs from the one the runtime is using.
+        v.model_path = std::fs::read_to_string(crate::ipc::model_sidecar_path())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         v
     }
 
-    /// Snapshot the live parameters **without** the `.hdr` sidecar read, so it's
-    /// safe on the audio thread (#354). `hdr_path` is left empty — the Key Map
-    /// path repacks to `Shared`, which doesn't carry `hdr_path` anyway.
+    /// Snapshot the live parameters **without** the sidecar reads, so it's safe on
+    /// the audio thread (#354). `hdr_path` and `model_path` are left empty — the Key
+    /// Map path repacks to `Shared`, which carries neither anyway.
     pub fn capture_params_only(p: &OrganicMathParams) -> Self {
         PresetValues {
             generator: p.generator.value().to_u32(),
@@ -6115,9 +6139,11 @@ impl PresetValues {
             ocean_glitter: p.ocean_glitter.value(),
             ocean_hue: p.ocean_hue.value(),
             ocean_depth: p.ocean_depth.value(),
-            // The loaded .hdr is out-of-band (sidecar); `capture()` fills this,
-            // `capture_params_only` leaves it empty (no audio-thread file I/O).
+            // The loaded .hdr and .gguf are out-of-band (sidecars); `capture()`
+            // fills these, `capture_params_only` leaves them empty (no
+            // audio-thread file I/O).
             hdr_path: String::new(),
+            model_path: String::new(),
 
             // #354 — Settings (renderer / output / capture framing).
             hdr_output: p.hdr_output.value(),
@@ -6171,8 +6197,9 @@ impl PresetValues {
     /// Recall a **Scene** (#354): the union of the four Scene-component tabs
     /// (Generator / Motion / Environment / Look). Audio / Synth / Settings are
     /// deliberately NOT touched — they have their own presets and never ride in
-    /// a Scene. The loaded `.hdr` (`hdr_path`) is restored by the editor's
-    /// recall handler, not here (it needs the out-of-band sidecar + `hdr_gen`).
+    /// a Scene. The loaded `.hdr` (`hdr_path`) and `.gguf` (`model_path`) are
+    /// restored by the editor's recall handler, not here — they need their
+    /// out-of-band sidecars + `hdr_gen` / `model_gen`.
     pub fn apply(&self, p: &OrganicMathParams, s: &ParamSetter) {
         for tab in EditorTab::SCENE {
             self.apply_tab(tab, p, s);
@@ -6208,10 +6235,18 @@ impl PresetValues {
             };
         }
         for_each_tab_field!(op);
-        // NB: `hdr_path` (Environment, out-of-band) is intentionally NOT copied —
-        // this stays allocation-free for the audio-thread Key Map merge, and the
-        // only consumer (`to_shared`) doesn't carry it. GUI recall restores the
-        // `.hdr` via the sidecar in `apply_recall`, not through this overlay.
+        // NB: `hdr_path` (Environment) and `model_path` (Generator) — the two
+        // out-of-band fields — are intentionally NOT copied. This stays
+        // allocation-free for the audio-thread Key Map merge, and the only
+        // consumer (`to_shared`) carries neither. GUI recall restores them via
+        // their sidecars in `apply_recall`, not through this overlay.
+        //
+        // 🚨 For `model_path` that is a stronger "no" than for `hdr_path`. The Key
+        // Map follows a MIDI note: the `.hdr` follow (see `lib.rs`) swaps a sky
+        // while a key is held and swaps it back on release, which is cheap and
+        // reversible. A model swap is neither — it is a multi-GB load, and a held
+        // note is the last place to trigger one. The specimen follows a deliberate
+        // recall only.
     }
 
     /// Recall only the parameters that belong to `tab` (#145), leaving every
@@ -6281,8 +6316,9 @@ impl PresetValues {
     /// choice does three things at once. It gives a *stable, declaration* order rather than
     /// serde's map order; it restricts the answer to fields a preset actually captures, so the
     /// per-display quality settings (`taa_*`, `pathtrace_enable`, …) that are deliberately
-    /// absent from that table are absent from a diff too; and it drops `hdr_path`, which is a
-    /// file path rather than a value and has no control to draw.
+    /// absent from that table are absent from a diff too; and it drops the two out-of-band
+    /// fields, `hdr_path` and `model_path`, which are file paths rather than values and have
+    /// no control to draw.
     ///
     /// ⚠️ **A float compares exactly, and that is right here.** The question is not "are these
     /// audibly the same" but "did somebody move this control", and a value that came back to
@@ -6844,19 +6880,27 @@ fn field_names_for(tabs: &[EditorTab]) -> std::collections::HashSet<&'static str
 /// Serialize `presets` to `path`, keeping in each entry's `values` **only** the
 /// fields that belong to `tabs` (#354 subset capture). Old full-blob files still
 /// load — the dropped keys just fall back to their serde defaults, and recall
-/// only touches `tabs` anyway. `hdr_path` (skipped-when-empty, out-of-band) is
-/// preserved only for the Environment/Scene subsets that include it.
+/// only touches `tabs` anyway. The two out-of-band fields (skipped-when-empty)
+/// are preserved only for the subsets that carry their owning bucket.
 /// One preset entry as its stored subset JSON: `{name, values}` with `values`
 /// filtered to `tabs`' fields (+ `hdr_path` when the Environment bucket is
-/// present). Split out from `save_subset` so the round-trip is unit-testable.
+/// present, + `model_path` when the Generator bucket is). Split out from
+/// `save_subset` so the round-trip is unit-testable.
 fn subset_entry(p: &Preset, tabs: &[EditorTab]) -> serde_json::Value {
     let names = field_names_for(tabs);
-    // The loaded .hdr rides `hdr_path` (not in the tab partition); include it in
-    // any subset that carries the Environment bucket so the sky is restored.
+    // The two out-of-band fields are not in the tab partition, so `names` cannot
+    // carry them; keep each one in any subset that carries its owning bucket, so
+    // the sky and the specimen are restored by the same rule that decides whether
+    // recall re-drives them (`recall_redrives`).
     let keep_hdr = tabs.contains(&EditorTab::Environment);
+    let keep_model = tabs.contains(&EditorTab::Generator);
     let mut vals = serde_json::to_value(&p.values).unwrap_or(serde_json::Value::Null);
     if let Some(map) = vals.as_object_mut() {
-        map.retain(|k, _| names.contains(k.as_str()) || (keep_hdr && k == "hdr_path"));
+        map.retain(|k, _| {
+            names.contains(k.as_str())
+                || (keep_hdr && k == "hdr_path")
+                || (keep_model && k == "model_path")
+        });
     }
     // 🚨 **The exposed set has to be written here or it is silently dropped.** This object is
     // hand-built rather than serialized from `Preset`, so a new field on that struct does not
@@ -7012,6 +7056,65 @@ pub enum PresetScope {
     #[default]
     Global,
     Tab(EditorTab),
+}
+
+/// **Should a recall at `scope` re-drive an out-of-band field owned by `owner`?**
+///
+/// Two `PresetValues` fields are file paths rather than params — `hdr_path`
+/// (Environment) and `model_path` (Generator) — so they cannot ride
+/// `for_each_tab_field!` and are restored by writing a sidecar and bumping a
+/// counter (`apply_recall` in `lib.rs`). Each still *belongs* to a bucket, and
+/// this is the one place that says which recalls reach it.
+///
+/// 🚨 **Both halves of the answer are silent when wrong**, which is why this is a
+/// named function with tests rather than a `matches!` at the call site. Too narrow
+/// and saving a Scene quietly drops the reference; too wide and recalling an
+/// unrelated single-tab preset yanks it out from under whatever is using it. The
+/// scope→bucket relation is derived from `EditorTab::SCENE` rather than restated,
+/// so a change to what a Scene contains cannot leave this behind:
+///
+/// * `Global` is a **Scene** recall — `apply()` walks `EditorTab::SCENE` — so it
+///   reaches an out-of-band field exactly when that field's bucket is in a Scene.
+/// * `Tab(t)` reaches only `t`'s own bucket.
+///
+/// An **empty** value re-drives nothing and leaves the live one alone. For the
+/// `.hdr` that is convenience; for the specimen it is a safety property — a
+/// preset that could clear `model_path` would be a saved *look* that unloads a
+/// multi-GB model as a side effect. Recall points at a model; it never points away
+/// from one.
+pub fn recall_redrives(scope: PresetScope, owner: EditorTab, value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    match scope {
+        PresetScope::Global => owner.in_scene(),
+        PresetScope::Tab(t) => t == owner,
+    }
+}
+
+/// **Re-drive one out-of-band sidecar**: write `value`, then bump `gen` — in that
+/// order, and only if the write landed. Returns whether the counter moved.
+///
+/// ⚠️ **Write-then-bump is the invariant, not the style.** Every consumer of these
+/// counters edge-detects the counter and *then* reads the file (`mind_runtime`
+/// watches `Shared.mind[1]`; the visual watches `hdr_gen`), so bumping first races
+/// them onto the previous contents. Bumping after a *failed* write is the same bug
+/// with a longer fuse: the consumer reloads a file that still names the old path
+/// and nothing reports it.
+///
+/// The counter moves **once** per re-drive. A consumer edge-detects, so two bumps
+/// for one change would either be coalesced or trigger a redundant reload — of a
+/// multi-GB model, in `model_gen`'s case.
+pub fn redrive_sidecar(
+    path: &std::path::Path,
+    value: &str,
+    gen: &std::sync::atomic::AtomicU32,
+) -> bool {
+    if std::fs::write(path, value.as_bytes()).is_err() {
+        return false;
+    }
+    gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    true
 }
 
 /// Which of the two preset-rail tabs is showing (#145): the full-state Scene
@@ -7481,6 +7584,133 @@ mod preset_io_tests {
             &serde_json::to_string(&vec![subset_entry(&ve, &[EditorTab::Environment])]).unwrap(),
         );
         assert_eq!(env[0].values.hdr_path, "/tmp/x.hdr", "Environment keeps hdr_path");
+
+        // …and a Generator subset preserves the loaded `.gguf` specimen, by the
+        // same rule and for the same reason: a per-tab Generator preset that
+        // dropped it would restore the Neural Network dials over an empty stage.
+        let mut vm = preset.clone();
+        vm.values.model_path = "/tmp/m.gguf".into();
+        let gen_sub = parse_presets_lenient(
+            &serde_json::to_string(&vec![subset_entry(&vm, &[EditorTab::Generator])]).unwrap(),
+        );
+        assert_eq!(gen_sub[0].values.model_path, "/tmp/m.gguf", "Generator keeps model_path");
+
+        // The buckets do not leak into each other: an Environment subset drops the
+        // specimen, and a Generator subset drops the `.hdr`. Getting this backwards
+        // is silent — the file simply loses a path nobody notices until recall.
+        let mut both = preset.clone();
+        both.values.hdr_path = "/tmp/x.hdr".into();
+        both.values.model_path = "/tmp/m.gguf".into();
+        let env_only = parse_presets_lenient(
+            &serde_json::to_string(&vec![subset_entry(&both, &[EditorTab::Environment])]).unwrap(),
+        );
+        assert!(env_only[0].values.model_path.is_empty(), "Environment drops model_path");
+        let gen_only = parse_presets_lenient(
+            &serde_json::to_string(&vec![subset_entry(&both, &[EditorTab::Generator])]).unwrap(),
+        );
+        assert!(gen_only[0].values.hdr_path.is_empty(), "Generator drops hdr_path");
+    }
+
+    /// 🚨 **The backward-compatibility guard.** `PresetValues` is serde-deserialized
+    /// from files people already have on disk; `model_path` without `#[serde(default)]`
+    /// makes **every** existing preset fail to load — damage discovered by a person,
+    /// not by CI. This parses a store written before the field existed.
+    #[test]
+    fn a_preset_saved_before_the_field_existed_still_loads() {
+        // A pre-change Scene entry: real fields, and no `model_path` key anywhere.
+        let json = r#"[{"name":"Old","values":{"loop_count_x":7,"ambient":0.25,"hdr_path":"/tmp/sky.hdr"}}]"#;
+        assert!(!json.contains("model_path"), "the fixture must predate the field");
+        let out = parse_presets_lenient(json);
+        assert_eq!(out.len(), 1, "an old preset must still load");
+        assert_eq!(out[0].name, "Old");
+        assert_eq!(out[0].values.loop_count_x, 7, "its captured params survive");
+        assert_eq!(out[0].values.hdr_path, "/tmp/sky.hdr", "so does the older out-of-band field");
+        assert!(out[0].values.model_path.is_empty(), "the absent field defaults to empty");
+        // And empty means "leave the live specimen alone" — an old preset can never
+        // unload a model just by being recalled.
+        assert!(
+            !recall_redrives(PresetScope::Global, EditorTab::Generator, &out[0].values.model_path),
+            "an old preset must not re-drive the specimen"
+        );
+    }
+
+    /// **Which recalls reach an out-of-band field.** Too narrow drops the reference
+    /// on save; too wide yanks it out from under a running consumer. Both read as
+    /// "presets are flaky" rather than as a scope bug, so pin every cell.
+    #[test]
+    fn recall_redrives_only_the_owning_bucket() {
+        use EditorTab::*;
+        // A Scene recall reaches both, because both owners are Scene components.
+        assert!(recall_redrives(PresetScope::Global, Generator, "m.gguf"));
+        assert!(recall_redrives(PresetScope::Global, Environment, "x.hdr"));
+        // The owning tab reaches its own field…
+        assert!(recall_redrives(PresetScope::Tab(Generator), Generator, "m.gguf"));
+        assert!(recall_redrives(PresetScope::Tab(Environment), Environment, "x.hdr"));
+        // …and nobody else's. Recalling a Look or an Environment preset must not
+        // reload a multi-GB specimen.
+        for scope in [Motion, Environment, Look, Audio, Synth, Settings] {
+            assert!(
+                !recall_redrives(PresetScope::Tab(scope), Generator, "m.gguf"),
+                "{scope:?} must not re-drive the specimen"
+            );
+        }
+        assert!(!recall_redrives(PresetScope::Tab(Generator), Environment, "x.hdr"));
+        // A non-Scene tab preset recalled as a Scene is not a thing, but the
+        // Scene→bucket relation is derived from `EditorTab::SCENE`, so pin it:
+        // Audio/Synth/Settings are not in a Scene and so own nothing a Scene drives.
+        for owner in [Audio, Synth, Settings] {
+            assert!(!recall_redrives(PresetScope::Global, owner, "v"));
+        }
+    }
+
+    /// **Empty re-drives nothing, at every scope.** For the specimen this is the
+    /// safety property: a saved *look* must never unload a model as a side effect.
+    #[test]
+    fn an_empty_out_of_band_value_never_redrives() {
+        use EditorTab::*;
+        for scope in [
+            PresetScope::Global,
+            PresetScope::Tab(Generator),
+            PresetScope::Tab(Environment),
+        ] {
+            assert!(!recall_redrives(scope, Generator, ""), "empty model_path re-drives nothing");
+            assert!(!recall_redrives(scope, Environment, ""), "empty hdr_path re-drives nothing");
+        }
+    }
+
+    /// **Write, then bump — once.** Consumers edge-detect the counter and *then*
+    /// read the file, so the order and the count are both the contract.
+    #[test]
+    fn redrive_writes_then_bumps_exactly_once() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let dir = std::env::temp_dir().join("organon-redrive-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("model-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let gen = AtomicU32::new(0);
+        assert!(redrive_sidecar(&path, "/models/a.gguf", &gen));
+        assert_eq!(gen.load(Ordering::Relaxed), 1, "one re-drive bumps the counter once");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "/models/a.gguf",
+            "the sidecar holds the new path"
+        );
+
+        // A second re-drive is a second edge — not a coalesced no-op.
+        assert!(redrive_sidecar(&path, "/models/b.gguf", &gen));
+        assert_eq!(gen.load(Ordering::Relaxed), 2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "/models/b.gguf");
+
+        // A write that cannot land must NOT bump: a consumer that edge-detects here
+        // would reload a file still naming the old path, and nothing would say so.
+        // (A directory is never writable as a file on any platform we ship.)
+        let unwritable = dir.join("definitely-a-directory");
+        let _ = std::fs::create_dir_all(&unwritable);
+        assert!(!redrive_sidecar(&unwritable, "/models/c.gguf", &gen));
+        assert_eq!(gen.load(Ordering::Relaxed), 2, "a failed write leaves the counter alone");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// One malformed entry must not wipe the rest of the list.
@@ -7676,7 +7906,14 @@ mod preset_io_tests {
     #[test]
     fn no_per_display_field_can_reach_an_exposed_set() {
         let known = Preset::known_field_names();
-        for name in ["taa_enabled", "motion_blur", "pathtrace_enable", "rt_debug", "hdr_path"] {
+        for name in [
+            "taa_enabled",
+            "motion_blur",
+            "pathtrace_enable",
+            "rt_debug",
+            "hdr_path",
+            "model_path",
+        ] {
             assert!(!known.contains(name), "`{name}` reached the preset field space");
         }
     }

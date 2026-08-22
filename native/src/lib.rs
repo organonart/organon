@@ -795,6 +795,14 @@ impl Plugin for OrganicMath {
         // preset recall does the same via `apply_recall`. Polls at ~50 ms (edge
         // on `active_note`), only reloads when the target path actually differs,
         // so it can't thrash the IBL precompute while a note is simply held.
+        //
+        // 🚨 **`model_path` deliberately does NOT get the same treatment.** The
+        // other out-of-band field is a `.gguf` specimen, and this responder's whole
+        // shape — swap on key-down, swap back on release — is only affordable for
+        // something as cheap and reversible as an IBL image. A model is a multi-GB
+        // load; a held note is the last place to start one, and "revert on release"
+        // would mean two of them. The specimen follows a deliberate recall
+        // (`apply_recall`) and nothing else.
         if !self.hdr_responder.swap(true, Ordering::AcqRel) {
             let alive = self.hdr_responder.clone();
             let active_note = self.active_note.clone();
@@ -1890,6 +1898,7 @@ pub(crate) fn editor_ui(
         &params,
         setter,
         &hdr_gen,
+        &model_gen,
         &beat_pos,
         ctx.input(|i| i.time),
     );
@@ -1971,8 +1980,8 @@ pub(crate) fn editor_ui(
                 );
                 ui.add_space(6.0);
                 presets_ui(
-                    ui, &apply_gen, &params, setter, state, &hdr_gen, &beat_pos,
-                    &name_gen,
+                    ui, &apply_gen, &params, setter, state, &hdr_gen, &model_gen,
+                    &beat_pos, &name_gen,
                 );
             });
         });
@@ -7100,9 +7109,21 @@ fn apply_tab_atomic(
 }
 
 /// Perform a preset recall (#354): apply the scope's params under the seqlock,
-/// then restore the loaded `.hdr` for recalls that touch the Environment bucket
-/// (Scene or Environment) by re-driving the sidecar + bumping `hdr_gen`. Shared
-/// by the immediate and beat-quantized recall paths.
+/// then restore the two **out-of-band** references — the loaded `.hdr` and the
+/// loaded `.gguf` specimen — by re-driving their sidecars + bumping their
+/// counters. Shared by the immediate and beat-quantized recall paths.
+///
+/// Neither is a param, so neither can ride `for_each_tab_field!`; each instead
+/// belongs to a bucket, and `preset::recall_redrives` is the single place that
+/// decides which recalls reach it. `hdr_path` is Environment; `model_path` is
+/// **Generator** — `generator` and every `nw_*` dial is a Generator field, and a
+/// specimen is what those dials are drawn of.
+///
+/// 🚨 An empty value re-drives nothing, which for the specimen is a safety
+/// property rather than a convenience: see `preset::recall_redrives`.
+///
+/// ⚠️ Two counters is two parameters; a third out-of-band field should become a
+/// struct rather than a third `&Arc<AtomicU32>` threaded down this chain.
 fn apply_recall(
     apply_gen: &AtomicU32,
     scope: preset::PresetScope,
@@ -7110,18 +7131,17 @@ fn apply_recall(
     params: &OrganicMathParams,
     setter: &ParamSetter,
     hdr_gen: &Arc<AtomicU32>,
+    model_gen: &Arc<AtomicU32>,
 ) {
     match scope {
         preset::PresetScope::Global => apply_atomic(apply_gen, v, params, setter),
         preset::PresetScope::Tab(tab) => apply_tab_atomic(apply_gen, tab, v, params, setter),
     }
-    let touches_env = matches!(
-        scope,
-        preset::PresetScope::Global | preset::PresetScope::Tab(preset::EditorTab::Environment)
-    );
-    if touches_env && !v.hdr_path.is_empty() {
-        let _ = std::fs::write(crate::ipc::hdr_sidecar_path(), &v.hdr_path);
-        hdr_gen.fetch_add(1, Ordering::Relaxed);
+    if preset::recall_redrives(scope, preset::EditorTab::Environment, &v.hdr_path) {
+        preset::redrive_sidecar(&crate::ipc::hdr_sidecar_path(), &v.hdr_path, hdr_gen);
+    }
+    if preset::recall_redrives(scope, preset::EditorTab::Generator, &v.model_path) {
+        preset::redrive_sidecar(&crate::ipc::model_sidecar_path(), &v.model_path, model_gen);
     }
 }
 
@@ -7146,6 +7166,7 @@ fn enqueue_recall(
     params: &OrganicMathParams,
     setter: &ParamSetter,
     hdr_gen: &Arc<AtomicU32>,
+    model_gen: &Arc<AtomicU32>,
     beat_pos: &Arc<AtomicU32>,
 ) -> RecallOutcome {
     use preset::PresetScope;
@@ -7164,7 +7185,7 @@ fn enqueue_recall(
     let step = div.beats(params.beats_per_bar.value() as f32);
     let now = f32::from_bits(beat_pos.load(Ordering::Relaxed));
     if step <= 0.0 || now < 0.0 {
-        apply_recall(apply_gen, scope, &values, params, setter, hdr_gen);
+        apply_recall(apply_gen, scope, &values, params, setter, hdr_gen, model_gen);
         RecallOutcome::Applied
     } else {
         let target = ((now / step).floor() + 1.0) * step;
@@ -7185,6 +7206,7 @@ fn poll_pending_recall(
     params: &OrganicMathParams,
     setter: &ParamSetter,
     hdr_gen: &Arc<AtomicU32>,
+    model_gen: &Arc<AtomicU32>,
     beat_pos: &Arc<AtomicU32>,
     repaint: Option<&egui::Context>,
 ) -> Option<preset::PresetScope> {
@@ -7192,7 +7214,7 @@ fn poll_pending_recall(
         let now = f32::from_bits(beat_pos.load(Ordering::Relaxed));
         let jumped_back = now + 1.0e-3 < high;
         if now < 0.0 || now >= target || jumped_back {
-            apply_recall(apply_gen, scope, &v, params, setter, hdr_gen);
+            apply_recall(apply_gen, scope, &v, params, setter, hdr_gen, model_gen);
             state.pending_recall = None;
             return Some(scope);
         } else {
@@ -7352,6 +7374,7 @@ fn perf_controller_drain(
     params: &OrganicMathParams,
     setter: &ParamSetter,
     hdr_gen: &Arc<AtomicU32>,
+    model_gen: &Arc<AtomicU32>,
     beat_pos: &Arc<AtomicU32>,
     now_t: f64,
 ) {
@@ -7465,6 +7488,7 @@ fn perf_controller_drain(
                         params,
                         setter,
                         hdr_gen,
+                        model_gen,
                         beat_pos,
                     );
                     let verb = match outcome {
@@ -7510,6 +7534,7 @@ fn perf_controller_drain(
                         params,
                         setter,
                         hdr_gen,
+                        model_gen,
                         beat_pos,
                     );
                     state.perf_last_action =
@@ -10177,6 +10202,7 @@ fn presets_ui(
     setter: &ParamSetter,
     state: &mut preset::PresetUi,
     hdr_gen: &Arc<AtomicU32>,
+    model_gen: &Arc<AtomicU32>,
     beat_pos: &Arc<AtomicU32>,
     name_gen: &Arc<AtomicU32>,
 ) {
@@ -10337,7 +10363,7 @@ fn presets_ui(
         // #354: beat-quantized recall — Scene → the Scene-timing dropdown,
         // Scene-component tabs → the Component-timing dropdown, Audio/Synth/
         // Settings always instant. Shared with the #356 controller drain.
-        enqueue_recall(state, scope, v, apply_gen, params, setter, hdr_gen, beat_pos);
+        enqueue_recall(state, scope, v, apply_gen, params, setter, hdr_gen, model_gen, beat_pos);
     }
     // Fire a scheduled recall when its boundary arrives. This runs every editor
     // frame (the presets rail is always drawn), so it also fires recalls the
@@ -10348,6 +10374,7 @@ fn presets_ui(
         params,
         setter,
         hdr_gen,
+        model_gen,
         beat_pos,
         Some(ui.ctx()),
     );

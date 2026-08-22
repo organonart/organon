@@ -453,7 +453,10 @@ The heart of the two-process design.
   "Model / Specimen" card writes it + bumps `model_gen` in `mind[1]`, the visual
   edge-detects it and parses the GGUF **header only** via `gguf::parse_file` — no
   weights — then builds the architecture topology via `math::gguf_architecture_graph`,
-  feeding the same `neural_loaded` slot the connectome path fills). `$TMPDIR/organic-math-mind-prompt.txt`
+  feeding the same `neural_loaded` slot the connectome path fills. **Preset-captured** —
+  `PresetValues::model_path` rides the Generator bucket and is restored by re-driving
+  this sidecar + `model_gen`, exactly as `hdr_path` is restored through
+  `hdr_sidecar_path` + `hdr_gen`; see the preset section below). `$TMPDIR/organic-math-mind-prompt.txt`
   (#367 Tier 2b) carries the typed prompt the Mind card's "Generate" writes for the embedded runtime
   (read when `mind[3]` `prompt_gen` changes); `$TMPDIR/organic-math-mind-reply.txt` is the reverse —
   the runtime appends the streaming decoded reply per token, and the editor polls it for its readout.
@@ -1280,8 +1283,27 @@ One machine couples the renderer to music. All CPU-side; no shader changes.
   serde fields, no orphan/double-count). **WYSIWYG** — a param's tab = the UI tab its card
   is drawn under (the synth `sn_*` moved to a new **Synth** tab; sync/tempo → Settings;
   IBL/backdrop → Environment). Exceptions: the **Surface** params ride the Generator
-  partition though the card sits on Look; `hdr_path` is applied out-of-band (sidecar +
-  `hdr_gen`), so it's skipped from the partition/serialization when empty.
+  partition though the card sits on Look; and **two out-of-band fields**, `hdr_path`
+  (Environment) and `model_path` (Generator), are file paths rather than params, so
+  they cannot be `for_each_tab_field!` entries and are skipped from the
+  partition/serialization when empty.
+- **Out-of-band recall — the loaded `.hdr` and the loaded `.gguf`.** A
+  preset captures both sidecar paths in `capture()` (GUI thread — they are file reads;
+  `capture_params_only` leaves them empty for the audio-thread Key Map path), and
+  `apply_recall` restores each by **writing its sidecar then bumping its counter** —
+  `hdr_gen`, and `model_gen` in `Shared.mind[1]`, which `bin/mind_runtime.rs` and the
+  visual edge-detect. `model_path` is what makes a GGUF view *"really just an Organon
+  preset"*: without it a preset restored the Neural Network generator and every `nw_*`
+  dial but left the specimen empty. **One function decides which recalls reach which
+  field** — `preset::recall_redrives(scope, owner_tab, value)`: a `Global` (Scene)
+  recall reaches an owner that `EditorTab::SCENE` contains, a `Tab(t)` recall reaches
+  only `t`, and an **empty** value re-drives nothing. That last clause is a safety
+  property for the specimen, not a convenience — a preset that could *clear*
+  `model_path` would be a saved look that unloads a multi-GB model as a side effect.
+  ⚠️ The **Key Map** `.hdr` follow (a MIDI-held Scene preset swapping the sky and
+  swapping it back on release) deliberately has **no** model equivalent: a held note is
+  the last place to start a multi-GB load. `param_table.rs`'s partition drift-guard
+  drops both fields by name; adding a third is the decision, not the bookkeeping.
 - **Subset (sparse) storage (#354).** `save`/`save_tab` write each entry's `values` with
   **only** that bucket's fields (`save_subset` filters by `field_names_for(tabs)`), so a
   Motion preset's JSON is Motion-only. Old full-blob files still load (dropped keys fall
