@@ -457,8 +457,39 @@ impl RefusalReason {
             RefusalReason::Unspecified => "it is declining to draw",
             RefusalReason::SizeUnsupported => "it cannot draw at the size this viewport asks for",
             RefusalReason::FormatUnsupported => {
-                "it was built for a different pixel format than this viewport uses, which \n                 resizing and restarting will not change"
+                "it was built for a different pixel format than this viewport uses"
             }
+        }
+    }
+
+    /// 🚨 **Would trying again help?** `false` means a restart returns the producer to the state
+    /// it is already in.
+    ///
+    /// ⚠️ **This exists because the sentence was offering a verb that cannot work**, which is the
+    /// exact defect [`RefusalReason::FormatUnsupported`]'s own doc predicted when it argued for
+    /// having a tag of its own — *"a rectangle would offer resize or restart for a condition where
+    /// neither can work … and the console has invited somebody to try again for ever"*. The tag
+    /// arrived; the sentence went on offering the verb anyway, because
+    /// [`crate::Presence::sentence`] appended it unconditionally. A taxonomy that nothing reads is
+    /// a taxonomy that has not been applied.
+    ///
+    /// 📌 It answers **only** *"is a retry pointless?"*, and deliberately does not name what to do
+    /// instead — a rebuild, a different channel format, a fix in the module's own repository are
+    /// all Organon-side or module-side facts, and this crate spells no verbs. See
+    /// [`crate::Presence::sentence`], which turns `false` into a sentence with no verb in it at
+    /// all rather than into a different verb.
+    ///
+    /// ✏️ Raised by the `organonart/ascent` session, whose producer refuses this condition **in a
+    /// loop rather than exiting** — deliberately, because the format is baked in at pipeline
+    /// construction — so the rectangle describing it is the only thing a person has to go on.
+    pub const fn retry_helps(self) -> bool {
+        match self {
+            // A producer that declined without saying why may well draw next time, and one that
+            // cannot meet a size is fixed by a resize the console is free to make.
+            RefusalReason::Unspecified | RefusalReason::SizeUnsupported => true,
+            // Baked in at pipeline construction on the producer's side. Identical on every
+            // subsequent attempt.
+            RefusalReason::FormatUnsupported => false,
         }
     }
 }

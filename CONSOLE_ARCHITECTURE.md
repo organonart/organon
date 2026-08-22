@@ -7433,7 +7433,13 @@ wgpu**; the root-crate binary takes it with the `wgpu` feature, which is what ke
 `cargo tree -p organon-console | grep wgpu` empty while `FrameTexture` is still available to the
 one caller that owns a device.
 
-#### The handoff, and why it is an environment variable
+#### The handoff, and the binary — now CONTRACT, in `doc/organon_module_viewport.md` §4.7
+
+🚨 **Both strings below are documented there rather than only here**, because they are the one part
+of this design that TWO REPOSITORIES must spell identically, and a convention living in one tree's
+source plus a chat message is a convention that drifts the moment a third party arrives. This
+section says what the console does; §4.7 is what both ends agree to.
+
 
 A launched producer is told where its channel is through **`organon_module::CHANNEL_ENV`**
 (`ORGANON_MODULE_CHANNEL`), carrying a full path. The constant lives in the contract crate for
