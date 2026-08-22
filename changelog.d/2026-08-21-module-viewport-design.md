@@ -1,4 +1,4 @@
-### Design
+### A hosted module in a viewport — the contract, in writing, before either side is refactored
 
 - **A hosted module in a viewport — the contract, in writing** (`doc/organon_module_viewport.md`).
   Ascent asked to be composited into a console region, and the four questions that implies are

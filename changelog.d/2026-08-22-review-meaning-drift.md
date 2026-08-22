@@ -1,4 +1,4 @@
-### Process
+### The review rubric learns the class that cost three defects in one night
 
 - **The review rubric learns the class that produced three defects in one night**
   (`.github/organon-review-guide.md`). None of the three failed a test; two were caught only by

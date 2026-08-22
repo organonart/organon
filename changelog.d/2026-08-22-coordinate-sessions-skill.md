@@ -1,4 +1,4 @@
-### Process
+### The coordinator pattern is a skill now, and the verification bar grew a seventh leg
 
 - **The coordinator pattern is a skill now, and the verification bar grew a seventh leg.**
   `.claude/skills/coordinate-sessions/` writes down how one session drives worker sessions and

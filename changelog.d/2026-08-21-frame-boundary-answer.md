@@ -1,4 +1,4 @@
-### Design
+### The frame boundary has an answer, so the design stops asking for one
 
 - **The module-viewport design stops saying nobody has measured the frame boundary.** T0 answered
   two of §4.4's three numbers on the 5090 the same day, and a design document asserting a gap the
