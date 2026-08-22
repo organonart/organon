@@ -127,6 +127,42 @@ fourth command does not run them* is the point, and it is true at every count. A
 have to be re-measured by whoever noticed, and the person most likely to notice is a contributor
 deciding whether they have found a regression.
 
+✏️ **It is EIGHT commands now, and this block was the stale copy.** An eighth leg —
+`cargo test -p organon-module --all-features` — was added on 2026-08-22 after `organon-module`'s 85
+tests turned out to be run by nothing: leg 7's failure exactly, one crate over, in the contract crate
+a module's own repository pins. ⚠️ **That correction reached
+`.claude/skills/coordinate-sessions/BRIEF.md` and not this file**, so the two disagreed for a day —
+which is the same two-copies defect the bar itself keeps catching. `BRIEF.md` is the copy briefs are
+generated from; keep them in step or delete one.
+
+```bash
+cargo test  -p organon-module --all-features    # ← the eighth leg
+```
+
+🚨 **And the class is not closed even at eight: the bar names four packages and the workspace has
+ten.** Measured 2026-08-22 — it runs **2 171** tests and misses **366**, because `-p` selects a
+package and cargo never runs a *dependency's* own `#[test]`s:
+
+| Covered | | Missed entirely | |
+|---|---|---|---|
+| `organon-console` (leg 1) | 921 | `organon-world` | 165 |
+| `organon-core` (leg 2) | 685 | `organon-mind` | 64 |
+| `organic-math-native` (legs 3–7) | 480 | `organon-scene` | 49 |
+| `organon-module` (leg 8) | 85 | `organon-agent` | 42 |
+| | | `organon-render` | 36 |
+| | | `organon-visual` | 10 |
+
+⚠️ **`organon-mind` bites soonest** — it is a path dependency of the root crate, so legs 3–7
+*compile* it and run none of its tests. A Mind PR whose tests live in `mind_viz.rs` or
+`mind_train.rs` clears every leg without executing one of them. Found exactly that way: a worker on
+#147 T4 ran `-p organon-mind` on its own initiative and reported 63 → 70 in a crate no leg touches.
+
+📌 **This does not make the bar wrong; it makes its scope explicit.** It was always a *targeted*
+substitute, and the four packages it names hold 86% of the tests. The failure mode is believing
+"the bar is green" answers a question about a crate it never ran — the seventh-leg lesson one level
+up, and the reason CI's `--workspace` stays the real gate. **Add `-p <crate>` for wherever your
+change actually lives**, and say which leg ran your tests rather than that the bar is green.
+
 📌 **`CARGO_PROFILE_TEST_OPT_LEVEL=0` turns roughly 43 minutes into roughly 70 seconds** for
 this set. It changes codegen only, so it is a fair substitute for a debug-profile run and not for a
 `--release` one.
