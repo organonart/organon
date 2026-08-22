@@ -61,56 +61,46 @@ move list and describes the mechanism, so it moves when the mechanism does.
 
 **One or two sentences:**
 
-> **Organon is one native GPU application whose identity is data: you divide the window into
-> regions, declare what each holds, and save the arrangement under a name — and no arrangement is
-> valid without a live agent in it, taught by loadable skills to operate the application it is
-> running inside.** It is agent-first, extensible from within, and the generative-math visualizer
-> it grew out of is one of the things an arrangement can hold rather than what Organon is.
+> **Organon is a native GPU application. You divide the window into regions, declare what each
+> holds, and save the arrangement under a name.** Every arrangement includes an agent that can
+> operate the whole application through the same commands you use.
 
 **One paragraph:**
 
-> Organon is one native application built on the observation that an "app" is an arrangement, and
-> that every arrangement needs someone to talk to. It divides its single pane into named
-> regions — an agent conversation, a column of instrument panels, a live 3D viewport — and saves
-> the result under a name; that named arrangement is what someone means when they say which
-> program they are running. An agent harness is not one of the things you may put in a layout, it
-> is the thing a layout cannot legally omit: the region model refuses any command that would
-> leave no agent, and a saved layout that names none is rejected on load. The agent is a
-> first-class operator rather than a chat window bolted on — it reaches the same command
-> vocabulary a human types and a script calls, it is given a working directory chosen by stated
-> rules so its skills and project instructions actually load, and a skill can teach it a new part
-> of the application without recompiling anything. Underneath sits an engine of permissively
-> licensed crates that a project outside the repository can link and build on, which is the
-> second half of the same idea: the visualizer is a thing built on Organon that happens to be
-> built in, and the next ones can be built by the agents living inside it.
+> Organon is a native application. You divide the window into regions, declare what each holds,
+> and save the arrangement under a name. A region holds an agent conversation, a column of
+> instrument panels, or a 3D viewport. A saved arrangement is an app: the console and the model
+> inspector are two arrangements of the same program. Every arrangement includes an agent, and
+> the agent operates the application. It runs the same commands you type. It starts in a working
+> directory chosen by documented rules, so the project's skills and instructions load. Adding a
+> skill file gives it new abilities without a rebuild. Every tool it calls goes through a
+> permission prompt you answer. The engine beneath is a set of Rust crates licensed MIT or
+> Apache-2.0, and a project outside this repository can depend on them directly.
 
 **Two paragraphs:**
 
-> Organon is one native application whose identity is assembled at runtime rather than compiled
-> in. It divides its pane into up to six addressable regions, each declaring what it holds, and an
-> arrangement of regions can be given a name and written to disk — so what used to be three
-> separate programs (a music-synced visualizer of generative math, a mode that loads a `.gguf` and
-> draws the model's real topology lit up as it reasons, a workstation for operating AI agents) are
-> three layouts of one program. Every one of them contains a working agent, because that is
-> enforced rather than encouraged: a command whose result would leave no agent region is refused,
-> and a saved layout naming none does not load. The one thing that deliberately cannot be a layout
-> is the VST3/CLAP plugin — inside a DAW a host owns the window, the audio thread has hard
-> real-time constraints, and the plugin's identity appears in saved sessions that outlive any
-> decision we make. Different lifetime, different artifact.
+> Organon is a native application written in Rust on wgpu. The window divides into up to six
+> regions on a three-by-two grid, and each region has a name you type: `left`, `topright`, `full`.
+> A region holds an agent conversation, a column of instrument panels, a 3D viewport, or a piece
+> of media. You can save an arrangement under a name and load it later. Loading either applies
+> completely or fails with a message explaining why. A saved arrangement is an app: a visualizer,
+> a model inspector and an agent workstation are three arrangements of the same program. The
+> VST3/CLAP plugin is the exception and always will be. A DAW creates and destroys its window, its
+> audio thread has hard real-time deadlines, and its identity is stored in saved sessions, so it
+> ships as a separate build.
 >
-> What makes it agent-first is not that an agent is present but that it is a peer operator. There
-> is one command table with several front doors — a CLI, an agent's tool call, a slash command
-> typed into the composer, a two-word control inside the region it acts on — and tests assert that
-> a verb cannot exist for an agent and not for the person at the keyboard. The harness itself is
-> data: which agent CLI a tab runs, how to detect it on this machine, where to get it, and what
-> directory to start it in are a registry entry a user file can override, so the application is
-> Pi-first and Pi-not-required. Skills extend the agent's competence at the application without
-> touching the binary: a skill already teaches it to drive Organon through its CLI on a
-> see → act → see loop where a rendered frame is its eyes, and to change the console it is running
-> inside. Which is the direction of travel — Organon dispatching agents and agent teams to build
-> other products and to build Organon itself, from within Organon. Beneath all of it is an engine
-> of permissively licensed crates that a project outside the repository can link, so what is built
-> from inside does not have to stay inside.
+> Every arrangement includes an agent, and the agent operates the application. The same commands
+> work from the CLI, from a slash command in the composer, and from a control inside a region.
+> Tests check that a command available in one place is available in all of them. Which agent
+> program a tab runs is configuration, not code: Claude Code, Pi and a plain shell ship in the
+> list, and a user file can change it, including how to detect whether a program is installed and
+> which directory to start it in. That directory decides which skills and project instructions the
+> agent can see. Skills are text files that describe part of the application to the agent. Adding
+> one changes what the agent can do without a rebuild. One of them covers driving Organon from its
+> CLI and making changes to the console itself. Every tool the agent calls, including shell
+> commands, goes through a permission prompt you answer. The engine beneath all of this is a set
+> of Rust crates licensed MIT or Apache-2.0, and a project outside this repository can depend on
+> them directly.
 
 ### 1.2 🚨 The correction this document exists to make
 
