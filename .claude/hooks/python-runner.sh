@@ -56,6 +56,15 @@ PY_BIN=()       # the command words
 # fails in ~164 ms, so 10 s is four decimal orders of headroom over both.
 PY_PROBE_TIMEOUT="${PY_PROBE_TIMEOUT:-10}"
 
+# The stdio encoding these programs need, and the WSLENV entry that carries it across the
+# boundary. Setting the two variables on `wsl.exe` sets them on the WINDOWS side only — see
+# the WSLENV note at the top of this file — so without naming them here the WSL backend
+# would get a prefix that reads like a fix and does nothing. It happens to be harmless
+# (WSL's python3 already defaults to UTF-8), which is exactly why it needed saying: a
+# decorative environment prefix contradicting the file's own documented model is a trap
+# for whoever edits it next.
+PY_UTF8_NAMES="PYTHONIOENCODING:PYTHONUTF8"
+
 # Run one candidate and require proof of life. Anything short of exit 0 plus the
 # sentinel on stdout is a no: that covers the Store stub (exit 49, message on stderr),
 # a `python` that is really Python 2 (`print("…")` still works, so the sentinel alone
@@ -64,13 +73,22 @@ PY_PROBE_TIMEOUT="${PY_PROBE_TIMEOUT:-10}"
 py_probe() {
   local out
   if command -v timeout >/dev/null 2>&1; then
-    out=$(printf 'print("PY_RUNNER_OK")\n' | timeout "$PY_PROBE_TIMEOUT" "$@" - 2>/dev/null) || return 1
+    out=$(printf 'print("PY_RUNNER_OK \u2248")\n' | PYTHONIOENCODING=utf-8 PYTHONUTF8=1 WSLENV="${PY_UTF8_NAMES}${WSLENV:+:$WSLENV}" timeout "$PY_PROBE_TIMEOUT" "$@" - 2>/dev/null) || return 1
   else
-    out=$(printf 'print("PY_RUNNER_OK")\n' | "$@" - 2>/dev/null) || return 1
+    out=$(printf 'print("PY_RUNNER_OK \u2248")\n' | PYTHONIOENCODING=utf-8 PYTHONUTF8=1 WSLENV="${PY_UTF8_NAMES}${WSLENV:+:$WSLENV}" "$@" - 2>/dev/null) || return 1
   fi
   # Substring, not equality: a Windows interpreter under Git Bash returns CRLF, and
   # command substitution strips the \n but leaves the \r.
-  case "$out" in *PY_RUNNER_OK*) return 0 ;; *) return 1 ;; esac
+  # ≈ IS IN THE SENTINEL ON PURPOSE, and it is the whole point of this line.
+  # An interpreter that STARTS is not the same thing as one that can PRINT what these
+  # programs print. Measured on organon-one 2026-08-22: real Python 3.13, installed and
+  # working, passed the old ASCII sentinel and then died on the first non-ASCII byte of
+  # actual output with UnicodeEncodeError — stdout on Windows defaults to cp1252, and
+  # every one of these hooks prints ≈ or an emoji. The hook then reported that python
+  # "returned nothing", which named the wrong cause: python returned plenty and could
+  # not encode it. Probe under the conditions of use or the probe certifies a backend
+  # that cannot do the job.
+  case "$out" in *"PY_RUNNER_OK ≈"*) return 0 ;; *) return 1 ;; esac
 }
 
 # Resolve once per process. Native first — it is faster and has no path translation to
@@ -106,9 +124,12 @@ py_run() {
   if [ "$PY_KIND" = "wsl" ] && [ "$#" -gt 0 ]; then
     local names
     names=$(IFS=:; printf '%s' "$*")
-    WSLENV="${names}${WSLENV:+:$WSLENV}" "${PY_BIN[@]}" -
+    WSLENV="${names}:${PY_UTF8_NAMES}${WSLENV:+:$WSLENV}" PYTHONIOENCODING=utf-8 PYTHONUTF8=1 "${PY_BIN[@]}" -
   else
-    "${PY_BIN[@]}" -
+    # WSLENV is set unconditionally: a wsl backend with no caller variables to
+    # forward takes THIS branch (the condition above requires $# > 0), and it needs
+    # the encoding to cross just as much. Inert on a native backend.
+    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 WSLENV="${PY_UTF8_NAMES}${WSLENV:+:$WSLENV}" "${PY_BIN[@]}" -
   fi
 }
 
