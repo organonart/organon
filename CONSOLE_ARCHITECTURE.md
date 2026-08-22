@@ -6576,9 +6576,10 @@ reader who stops reading it.
 `doc/organon_module_viewport.md` §3 is the specification and `doc/organon_modules_plan.md` §11 is
 where its central rule comes from. `module.rs` is **T3a of that document's §9 order**: the two
 files and the types that decide them, and **nothing that starts a process.** No clone, no
-`cargo build`, no launch — those are T3b, and they want these types to exist first. Every decision
-in the file is a pure function of a string, a path or a value, which is what makes this the right
-first slice: all of it is decidable and tested headlessly.
+`cargo build`, no launch — those are **T3b, which has since landed as `module_work.rs` and §1.19
+below**, and they wanted these types to exist first. Every decision in this file is a pure
+function of a string, a path or a value, which is what makes it the right first slice: all of it
+is decidable and tested headlessly.
 
 #### 🚨 Two files, two authors, and never one file
 
@@ -6869,6 +6870,183 @@ to know about the other.
 
 **Editing the exposed set from the console.** `Preset::expose` is there and nothing calls it; the
 set is seeded from the diff at save and edited nowhere yet.
+### 1.19 The module verbs — approve, build, diff, revoke
+
+§1.17 is the data. This is the half that runs `git` and `cargo` — **T3b of
+`doc/organon_module_viewport.md` §9**, and the tier where the trust boundary stops being a
+diagram. `organon-console/src/module_work.rs` owns every decision; `console_main.rs` owns the
+threading and the sentences; the verb reaches all four front doors through the one command table
+(§1.8), added once.
+
+```
+console module approve <producer> [from <url>] [at <ref>] [grant <list|none>]
+console module build   <producer>
+console module diff    <producer> [at <ref>]
+console module revoke  <producer>
+```
+
+#### 🚨 Approving grants **build-time** trust, and this is where that is said out loud
+
+§3.4 names a hole and forbids papering over it: *"the process is the boundary"* is true of a
+hosted module at **run** time and false of it at **build** time. Pointing Organon at a repository
+means Organon runs `cargo build` on it, and `build.rs` plus every proc macro in its graph execute
+**with the privileges of whoever is at the keyboard**, before a pixel is composited.
+
+Three consequences, all in the code rather than only here:
+
+1. **`module_work::BUILD_TRUST` is in the sentence a person reads at the moment they approve** —
+   both spellings of it, the dry run and the recorded one, plus the line that precedes a build
+   and the CLI's `--help`. A grant somebody does not understand is not a grant.
+2. **Nothing scans anything.** §3.4 rejects a check that implies coverage it cannot have, so
+   there is no `build.rs` scanner, no proc-macro audit and no repository ever reported as clean.
+3. ⚠️ **`approve` never builds.** A clone and a `git show` execute none of the module's code, so
+   both the dry run *and* the recording step are inert with respect to the dangerous part.
+   `Tool::Cargo` is reached from exactly one function, and it is `build`.
+
+📌 **And a manifest cannot even name a program.** `Tool` is a **two-variant enum**, so the set of
+programs the console will start is fixed at compile time and no field of any manifest reaches
+`Command::new`. The only argument a manifest influences is the producer name — which is why
+`check_producer_name` grew two rules (below).
+
+#### 🚨 No `grant` word means nothing is recorded
+
+`CLAUDE.md` invariant 4 on the verb where it matters most. `approve` with no `grant` is a **dry
+run**: it fetches the commit, reads the manifest out of the object database and reports what the
+repository *requests* — and records nothing. `grant none` is how a person says *"approve it,
+grant it nothing"*; `grant audio,input` grants what was asked for, and a name the manifest never
+requested is refused by `Requested::grant`.
+
+So a mistyped approve cannot grant anything, and the request is on screen before the answer is
+typed — §3.1's *"the manifest requests, the record grants"* arriving as a **gesture** rather than
+only as a pair of types. The `grant` argument is `required: false` in the schema and that is the
+property, not a convenience; `a_module_verb_carries_its_grant_or_carries_no_grant_at_all` pins it.
+
+⚠️ The cost, stated rather than discovered: a module requesting a grant literally called `none`
+cannot be granted it, because a whitespace-delimited wire has no spelling for the empty list. The
+alternative is a grant list whose empty case is invisible, and an invisible empty case in a
+permission system is the worse trade.
+
+#### §3.2 lives in one function
+
+`fetch_and_resolve` turns whatever a person typed — a branch, a tag, a hash, or nothing — into
+**one forty-character hash**, and that is what any record gets. `at main` is legal and useful;
+what is stored is the hash `main` had on the day, with `main` beside it as
+`ModuleSource::reference` — provenance, never identity. A fetch that left a branch name in the
+record would be the exact failure §1.17 refuses on load, created by the code meant to prevent it.
+
+⚠️ **Two fetches, because a server may refuse to serve a bare hash.**
+`uploadpack.allowReachableSHA1InWant` is off by default on most hosts, so `git fetch <url> <sha>`
+fails against them while the object is perfectly reachable from the default branch. The direct
+fetch is tried first (it is the cheap case, and the only one that reaches a commit outside the
+default branch's history); a full fetch and a local resolve is the fallback.
+
+#### 📌 `diff` is the verb the whole approach is git-based **for**
+
+§11.4: trust is not granted once, it is renewed at every update, and the update is the moment that
+matters, because the code you audited is not the code that arrived. `git diff <approved>..<candidate>`
+is one command and no package manager offers it.
+
+🚨 **The verb is not "install".** `compare` fetches, compares and prints; it writes no file, runs
+no build, and never issues `checkout`, `reset`, `merge`, `pull` or `rebase` — a test asserts each
+of those five by name. Its sentence ends with the approve line that would trust the new commit,
+spelled out with the candidate hash in it, so renewing trust is one line a person can read rather
+than a verb they have to reassemble. A diff nobody can act on is a report, not a gate.
+
+#### 🚨 §3.5: revoking must never be the thing that is queued
+
+Three of the four go off-thread. **`revoke` runs synchronously on the frame thread**, and that is
+the rule rather than an optimisation: the one verb whose purpose is to withdraw trust must not be
+queueable behind a build, must not fail because a worker thread died, and must not need anything
+to be reachable. It touches no network and no compiler.
+
+What a revoked producer then produces is `ModuleState::NotApproved` — a sentence in a rectangle —
+so **a layout naming a module you have stopped trusting still opens.** ⚠️ And the checkout is
+deliberately **not** deleted: withdrawing trust is a statement about what Organon will run, which
+takes effect the moment the record is gone; removing somebody's working tree is a different act.
+
+⚠️ **A build finishing after a revocation does not resurrect the approval.** A job's answer is
+applied against the registry *as it is now*, and `ModuleRegistry::record_build` returns `false`
+when nothing answers to the name — the console then says the build was dropped. Writing it back
+through a fresh `upsert` would restore an approval, grants and all, as a side effect of a compiler
+finishing.
+
+#### Nothing touches the frame thread
+
+§1.13's exhibit pattern, followed rather than re-invented: **one thread per job, results on an
+`mpsc`, and a frame that only ever collects** (`Console::service_modules`, drained straight after
+`drain_console`). A clone is a network and a build is a compiler; neither is bounded.
+
+Two properties fall out of the job owning everything it touches:
+
+- **`service_modules` is the console's only writer of `modules.json`.** A job returns a value and
+  never opens the file, so a build finishing while an approval is being written cannot be two
+  writers of one record.
+- **One job per module**, keyed by producer in `module_inflight` — because all four verbs work in
+  one checkout, and two `git checkout`s or two `cargo build`s in one directory are not slow, they
+  are wrong. `revoke` is deliberately exempt.
+
+#### The checkout, and the rule `check_producer_name` grew for it
+
+`<store root>/modules/<producer>` — a sibling of `modules.json`, so *what is approved* and *what
+is fetched* are one place a person can look at, back up and delete. Approving the same repository
+twice **reuses** that directory: only an absent one is cloned. That is not a convention that could
+be broken — the producer name is already the registry's key, so one directory per producer is the
+same key.
+
+🚨 **A producer name is now a directory name, and that was not true when its rules were written.**
+T3a's four checks are all about a name surviving a whitespace-delimited wire, and `..` satisfies
+every one of them while naming the store root's parent. `check_producer_name` therefore gained two
+more — `.`/`..`, and any path separator — and they are checked at three gates: clap (`ctl.rs`),
+`op_from`, and `Console::set_module` for a line written straight onto the sidecar by hand.
+
+📌 **Artifacts are derived, never recorded**: `<checkout>/target/release`. A stored path is a
+second statement of where a build went, and the two can come apart — a store that moved, a
+checkout deleted by hand, a record written by an older console. A function of the store root and
+the producer cannot.
+
+#### Everything is decidable headlessly
+
+`Workshop` is the one injection point, on `harness.rs`'s precedent — its PATH probe sits behind an
+injectable lookup *"so every decision here is testable without touching the machine's real PATH"*.
+Same rule, higher stakes: a test that really cloned would fail on a machine with no network, and
+one that really built would take minutes. So the manifest is read with `git show <commit>:…`
+rather than off the working tree — which is both more correct (the manifest that matters belongs
+to the bytes being approved) and what removes the last filesystem read from the judged path.
+
+⚠️ **The test fake panics on an unscripted command**, naming it. A fake that answered a default
+would let a test pass while the code under it ran something nobody scripted, which is the class of
+bug an injectable seam exists to catch.
+
+#### Refusals, because every failure here is somebody's next action
+
+No network, no toolchain, a commit that does not exist, a manifest that will not parse and a build
+that failed are five different mornings. `WorkFault` has seventeen variants and
+`every_refusal_says_what_to_do` asserts that no two share a sentence. A failed program's own words
+reach the refusal **tail-first** — a compiler wall's last lines are the ones that say what broke.
+
+⚠️ **`GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS` are set on every `git` this console runs**, and
+that is a hang fix rather than tidiness: a private repository behind a credential helper would
+otherwise block a worker thread forever, with no terminal attached, waiting on a prompt nobody can
+see. Failing turns it into a sentence a person can act on.
+
+#### What T3b did **not** build
+
+- ⚠️ **No producer ring on `console module`'s own argument.** `/module build ` offers no
+  completion, exactly as `/layout load ` did not before §1.15. ✏️ **T4 has since landed the ring
+  this deferred to** — `registry::producer_ring`, over the cached `ModuleRegistry::for_completion`
+  §1.17 put in place, hooked onto `console.viewport`'s producer argument. So the deferral was
+  right (building a second one here would have been the second vocabulary the command table
+  exists to prevent) and what is left is small and known: `console.module`'s `producer` argument
+  could take that same ring, and does not. ⚠️ It would not be the *same* ring, which is why it is
+  not a one-line follow-up: T4's offers `organon` alongside the approved set, because `3d` with
+  no producer means Organon — and `organon` is the one name `check_producer_name` refuses to a
+  module, so offering it here would complete to a word every one of these four verbs rejects.
+- **Nothing launches and nothing draws a picture.** A built module is a directory of artifacts.
+  ✏️ **Precise since T4**: a `3d` region naming a hosted producer *does* draw — it draws
+  `ModuleState`'s sentence, which is §1.17's, so the two states this tier can reach are on screen.
+  What is unreachable is the other two (*launched, not yet producing* and *died*), and they are
+  unreachable rather than merely unbuilt: no process exists to be in them. T5.
+- **No sandbox.** §3.4's third response, named there and not taken.
 
 ## 2. Seams the next tiers consume
 

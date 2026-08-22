@@ -280,7 +280,7 @@ impl Granted {
 
 /// Is this a name a module may call itself?
 ///
-/// Five rules, each a fact rather than a taste:
+/// Seven rules, each a fact rather than a taste:
 ///
 /// * **Empty** — a producer with no name cannot be asked for.
 /// * **Longer than [`MAX_PRODUCER`]** — every refusal that lists the approved modules
@@ -289,6 +289,9 @@ impl Granted {
 ///   ([`crate::layout::check_name`]'s measurement, and the same wire), so a two-word producer
 ///   would arrive truncated: a command that appears to work and names something else.
 /// * **A control character** — it corrupts the line it travels on.
+/// * **`.` or `..`** — the name is also a directory name (see the comment at the check).
+/// * **A path separator** — same reason, and the one that has an attacker rather than a typo
+///   behind it.
 /// * **[`DEFAULT_PRODUCER`]** — reserved for Organon's own `World`, because `3d` with no
 ///   qualifier already means it.
 pub fn check_producer_name(name: &str) -> Result<(), ModuleFault> {
@@ -309,6 +312,25 @@ pub fn check_producer_name(name: &str) -> Result<(), ModuleFault> {
     }
     if name.chars().any(char::is_control) {
         return bad("it contains a control character, which would corrupt the line it travels on");
+    }
+    // 🚨 **A producer name is also a DIRECTORY name, and that was not true when the four rules
+    // above were written.** Every one of them is about a name surviving a whitespace-delimited
+    // wire. T3b made the same string the single path component under
+    // [`crate::module_work::checkout_dir`] — and `..` satisfies all four while naming the store
+    // root's parent. The name comes out of a manifest, which is data written by someone else,
+    // so the distance between these two lines and their absence is a clone landing in
+    // `<store>/modules/<producer>` versus a clone landing wherever a repo asked for.
+    if name == "." || name == ".." {
+        return bad(
+            "`.` and `..` name a directory rather than a module, and a module's name is also \
+             the directory its checkout lives in",
+        );
+    }
+    if name.contains('/') || name.contains('\\') || name.contains(':') {
+        return bad(
+            "it contains a path separator, and a module's name is also the one directory \
+             component its checkout lives under",
+        );
     }
     if name == DEFAULT_PRODUCER {
         return bad("`organon` is the producer a viewport means when no producer is named");
@@ -973,6 +995,31 @@ impl ModuleRegistry {
         }
     }
 
+    /// Hang a [`BuildRecord`] on the module approved under `producer`. `false` if nothing
+    /// answers to that name any more.
+    ///
+    /// 🚨 **The `false` is the whole reason this is a method rather than a field poke.** A
+    /// build takes minutes and a revocation takes microseconds, so a person can perfectly well
+    /// withdraw an approval while its build is running — and the record must then *stay*
+    /// withdrawn. Writing the build back through a fresh `upsert` would resurrect the approval,
+    /// grants and all, as a side effect of a compiler finishing. The caller says the build was
+    /// dropped instead.
+    ///
+    /// ⚠️ **The record is stored whatever commit it names.** §3.4: a build of a different
+    /// commit, or from a dirty tree, is a true fact about what was compiled, and
+    /// [`BuildRecord::names_approved_bytes`] is what decides whether it counts — refusing to
+    /// store it here would leave the module looking never-built, which is a *different* untrue
+    /// thing.
+    pub fn record_build(&mut self, producer: &str, built: BuildRecord) -> bool {
+        match self.modules.iter_mut().find(|m| m.producer == producer) {
+            Some(m) => {
+                m.built = Some(built);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Revoke: take an approval out. `false` if nothing answered to that name, so the caller
     /// refuses by name rather than reporting a revocation that did not happen.
     ///
@@ -1249,6 +1296,32 @@ mod tests {
         // And a build of other bytes is not a build of these.
         assert!(!back.is_built(), "a drifted build does not describe the approved binary");
         assert!(!back.built.as_ref().unwrap().names_approved_bytes(&back.commit));
+    }
+
+    /// CONTRACT: 🚨 **a build finishing after a revocation does not resurrect the approval.**
+    ///
+    /// A build takes minutes and a revocation takes microseconds, so a person can perfectly
+    /// well withdraw an approval while its build is running. Storing the build through
+    /// anything that could *create* a record would restore that approval — grants and all — as
+    /// a side effect of a compiler finishing, which is the one way a permission could come
+    /// back without anybody granting it.
+    #[test]
+    fn a_build_cannot_resurrect_a_revoked_approval() {
+        let mut registry = ModuleRegistry::default();
+        registry.upsert(ApprovedModule::approve(&manifest("ascent"), source(), &["audio"]).unwrap())
+            .unwrap();
+        let record = BuildRecord { commit: HASH.into(), dirty: false, extra: BTreeMap::new() };
+
+        assert!(registry.record_build("ascent", record.clone()), "the approved one takes it");
+        assert!(registry.get("ascent").unwrap().is_built());
+
+        assert!(registry.revoke("ascent"));
+        assert!(
+            !registry.record_build("ascent", record),
+            "🚨 a build must not put back an approval a person withdrew"
+        );
+        assert!(registry.get("ascent").is_none(), "and nothing was created");
+        assert_eq!(registry.modules.len(), 0);
     }
 
     /// CONTRACT: a dirty tree is recorded as such, and no hash it carries names the bytes.
