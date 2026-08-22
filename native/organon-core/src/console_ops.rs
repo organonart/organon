@@ -43,6 +43,20 @@ use crate::kind::Kind;
 // poisons the rest of the drain. Adding a verb is how this format changes.
 // ---------------------------------------------------------------------------
 
+/// What `console preset <action> <name>` may ask for.
+///
+/// 🚨 **One table, read by both ends** — `bin/ctl.rs` builds its `PossibleValuesParser` from it
+/// and `console_main`'s `CommandSpec` builds its `ArgKind::Choice` from it, so the CLI and the
+/// slash palette cannot come to differ about what a preset action is. That is §1.8's rule about
+/// the *values* of a verb, which is the half the CLI has always honoured.
+///
+/// ⚠️ **No `clear` yet, and it is an absence rather than an oversight.** Taking the preset's
+/// card back out of the column needs a verb with **no** argument, and every write on this lane
+/// carries at least one word — a zero-argument write would be the first, and it deserves its own
+/// change rather than riding in on this one. `console stack remove all` reaches the same state
+/// today by emptying the column, and loading another preset replaces the card.
+pub const PRESET_ACTIONS: &[&str] = &["load", "save"];
+
 /// One console command, as it crosses the CLI→console sidecar.
 ///
 /// The payload is an unvalidated name on purpose. `bin/ctl.rs` rejects an unknown one
@@ -194,6 +208,32 @@ pub enum ConsoleOp {
     /// this lane is fire-and-forget with no return path — so it lives where a read can be
     /// answered, in-process on the MCP lane, exactly as `console.camera.read` does.
     Layout { action: String, name: String },
+    /// **Load a preset into the console, or save the console's look as one** (organon#124) —
+    /// an action word ([`PRESET_ACTIONS`]) and a preset name.
+    ///
+    /// 🚨 **`load` is a thing you SEE, not a thing that rearranges a column.** The values land
+    /// in the console's `PresetValues` mirror, which is the same write path a knob takes, so the
+    /// look changes on the next published frame. The card it puts in the panel column is the
+    /// *second* half of what it does, and the reason the verb exists at all: a preset knows
+    /// which fields it changed, so it can build a panel of exactly those controls.
+    ///
+    /// 📌 **Both words are required**, `layout`'s arrangement exactly — there has never been a
+    /// one-word `preset` line, so a bare one is malformed rather than a command with defaults,
+    /// and guessing would overwrite a preset nobody named.
+    ///
+    /// ⚠️ **The name is the REST of the line, not the next word**, and that is the one place
+    /// this differs from `layout`. Preset names have spaces in them — *Rails — Crystal Throat*
+    /// is a factory preset — so a whitespace-delimited parser that took a single word would
+    /// arrive at the console holding `Rails` and having silently dropped the rest.
+    /// `layout::check_name` refuses whitespace instead, which is the right answer for a name a
+    /// person invents and the wrong one for a name that already exists. ⚠️ Internal runs of
+    /// whitespace are normalised to single spaces by the round trip; a preset whose name
+    /// differs from another's only by double-spacing is not addressable, and that is a
+    /// consequence worth stating rather than a case worth handling.
+    ///
+    /// 📌 **There is no `list` here, for [`ConsoleOp::Layout`]'s reason**: a listing is a read
+    /// and this lane has no return path, so it is `console.preset.list` on the MCP lane.
+    Preset { action: String, name: String },
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -452,6 +492,7 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
             None => format!("stack {action} {panel}"),
         },
         ConsoleOp::Layout { action, name } => format!("layout {action} {name}"),
+        ConsoleOp::Preset { action, name } => format!("preset {action} {name}"),
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
@@ -538,6 +579,19 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
             let action = it.next()?.to_string();
             let name = it.next()?.to_string();
             Some(ConsoleOp::Layout { action, name })
+        }
+        // ⚠️ **The name is everything after the action**, unlike every other arm on this lane.
+        // See [`ConsoleOp::Preset`]: preset names contain spaces, so `it.next()` would parse
+        // `preset load Rails — Crystal Throat` as the preset `Rails` and drop four words on the
+        // floor. An empty remainder is a malformed line, which is the same answer a missing
+        // second word gets anywhere else here.
+        "preset" => {
+            let action = it.next()?.to_string();
+            let name = it.collect::<Vec<&str>>().join(" ");
+            if name.is_empty() {
+                return None;
+            }
+            Some(ConsoleOp::Preset { action, name })
         }
         // A row count that does not parse — or does not fit — is a malformed line, and a
         // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/

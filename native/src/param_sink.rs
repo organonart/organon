@@ -560,10 +560,6 @@ pub(crate) fn auto_row<P: AutoRow>(
 /// A control at `2 × COMBO_W` — `param_combo_sized`'s hero width, for the few dropdowns whose
 /// variant names need the room (`generator`, `palette`, `surface_mode`, …). Identical to
 /// [`auto_row`] for every control that does not open a dropdown.
-// ⚠️ No caller until a declared panel has a `wide` item in it — the three panels the table
-// starts with are sliders and a checkbox. `panel_table`'s `@draw`/`@one` arms reach it the
-// moment one does, and the `allow` comes off then.
-#[allow(dead_code)]
 pub(crate) fn auto_row_wide<P: AutoRow>(
     ui: &mut egui::Ui,
     avail: f32,

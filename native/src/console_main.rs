@@ -452,6 +452,10 @@ const CMD_LAYOUT: &str = organon_console::registry::VERB_LAYOUT;
 /// why a read has no sidecar spelling, and [`CMD_NAME`] for why it is a verb of its own rather
 /// than a fourth action word on [`CMD_LAYOUT`].
 const CMD_LAYOUT_LIST: &str = "console.layout.list";
+/// **Load a preset, or save the console's look as one** (organon#124). The write verb; the
+/// listing beside it is [`CMD_PRESET_LIST`], a read, for [`CMD_LAYOUT_LIST`]'s reason.
+const CMD_PRESET: &str = "console.preset";
+const CMD_PRESET_LIST: &str = "console.preset.list";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
@@ -870,6 +874,41 @@ fn console_specs() -> Vec<CommandSpec> {
             // to a file.
             reversal: Reversal::Permanent,
         },
+        // 🚨 **A preset is the console's other named store, and this is `layout`'s shape
+        // pointed at it.** What differs is what a name *means*: a layout name is one a person
+        // invents, so `layout::check_name` refuses whitespace in it; a preset name already
+        // exists in `presets.json` and routinely has spaces (`Rails — Crystal Throat`). The
+        // slash grammar fills one word per required argument, so the name typed here is
+        // resolved against the store by **unique case-insensitive substring** —
+        // `Console::set_preset` owns that rule and refuses by name, listing the candidates,
+        // when it is ambiguous or matches nothing.
+        CommandSpec {
+            name: CMD_PRESET.into(),
+            doc: "Load a preset — its look, and a panel of exactly the controls it changed — \
+                  or save the console's current look as one"
+                .into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: CMD_ACTION.into(),
+                    kind: ArgKind::Choice(
+                        organon_core::console_ops::PRESET_ACTIONS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec { name: CMD_NAME.into(), kind: ArgKind::Text, required: true },
+            ],
+            // 🚨 **Permanent, and both actions earn it separately.** `save` writes
+            // `presets.json` and nothing rebuilds what it replaced. `load` is the one worth
+            // arguing, and it earns it the way `console.layout load` does: what it displaces is
+            // the look that was on screen, and no second command restores that unless it too
+            // was saved. The practical effect is that autorun can never fire this verb, which
+            // is the right outcome for a verb that writes to a file.
+            reversal: Reversal::Permanent,
+        },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
         // therefore lives in TWO places that are both real gates rather than one that is
@@ -1035,6 +1074,19 @@ fn mcp_specs() -> Vec<CommandSpec> {
         args: Vec::new(),
         reversal: Reversal::Recoverable,
     });
+    // The third read, and the one a caller needs *most* before its write verb: the slash
+    // grammar takes one word for a name, and `console.preset load` resolves that word against
+    // the store by substring — so knowing what is in the store is knowing what will match.
+    specs.push(CommandSpec {
+        name: CMD_PRESET_LIST.into(),
+        doc: "Every preset in the store: its name, how many controls it changed, and the file \
+              they live in. Read this before `console.preset load` — that verb matches a name \
+              by substring, so this is what says which word is unambiguous"
+            .into(),
+        target: TargetKind::Viewport,
+        args: Vec::new(),
+        reversal: Reversal::Recoverable,
+    });
     specs
 }
 
@@ -1049,6 +1101,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Viewport { .. } => CMD_VIEWPORT,
         cli::ConsoleOp::Stack { .. } => CMD_STACK,
         cli::ConsoleOp::Layout { .. } => CMD_LAYOUT,
+        cli::ConsoleOp::Preset { .. } => CMD_PRESET,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -1188,6 +1241,31 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             organon_console::layout::LayoutCmd::resolve(&a).map_err(|e| format!("{name}: {e}"))?;
             organon_console::layout::check_name(&n).map_err(|e| format!("{name}: {e}"))?;
             Ok(cli::ConsoleOp::Layout { action: a, name: n })
+        }
+        // ⚠️ **No `check_name` here, and the difference from the arm above is the whole reason
+        // the two verbs are not one.** A layout name is invented, so whitespace in it is a
+        // mistake worth refusing; a preset name already exists in `presets.json` and often
+        // *contains* whitespace. The sidecar line survives it because
+        // `ConsoleOp::Preset`'s parser takes the rest of the line rather than one word.
+        //
+        // 🚨 **What is deliberately NOT checked is whether the preset exists.** That is a fact
+        // about a file at drain time — the store may be written between now and then — and
+        // `Console::set_preset` is the one gate, refusing by name and listing what would have
+        // matched. The action word *is* checked, because it is a closed vocabulary and this is
+        // the last place a caller that skipped the schema can learn it.
+        CMD_PRESET => {
+            let a = word(CMD_ACTION)?;
+            let n = word(CMD_NAME)?;
+            if !organon_core::console_ops::PRESET_ACTIONS.contains(&a.as_str()) {
+                return Err(format!(
+                    "{name}: `{a}` is not a preset action — known: {}",
+                    organon_core::console_ops::PRESET_ACTIONS.join(", ")
+                ));
+            }
+            if n.trim().is_empty() {
+                return Err(format!("{name}: `{CMD_NAME}` is empty — a preset has a name"));
+            }
+            Ok(cli::ConsoleOp::Preset { action: a, name: n })
         }
         CMD_BLOCK => {
             let n = args
@@ -1336,6 +1414,9 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         // the same *kind* of slot and a palette heading "action" describes both, while a layout
         // name is free text and is not the `name` that means a material.
         cli::ConsoleOp::Layout { action, name } => {
+            json!({ CMD_ACTION: action, CMD_NAME: name })
+        }
+        cli::ConsoleOp::Preset { action, name } => {
             json!({ CMD_ACTION: action, CMD_NAME: name })
         }
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
@@ -1494,6 +1575,14 @@ impl organon_console::mcp::ToolDispatch for ConsoleDispatch {
             }
             return Ok(out);
         }
+        // The third read, and the one with the least to do: the store is a file. Re-read per
+        // call rather than cached, on `CMD_LAYOUT_LIST`'s rule — the file is the truth, and a
+        // cached copy would fight a preset saved by Organon's own editor and win silently. It
+        // goes through `panel_surface` because `preset` is a private module and this is a
+        // binary.
+        if command == CMD_PRESET_LIST {
+            return Ok(organic_math_native::panel_surface::preset_listing());
+        }
         // The same conversion the sidecar drain performs, from the same one place — so a
         // tool call and a `organon console …` line cannot come to mean different things.
         // This is also where `block`'s row range is caught, since `ArgKind::Int` carries no
@@ -1603,7 +1692,16 @@ fn console_step(
         // the glyphs are drawn into; the backdrop behind them is still rendered once, at the
         // whole pane's size, wearing the identical dressing. `save` and `delete` do not change
         // even that: they write a file.
-        | cli::ConsoleOp::Layout { .. } => return None,
+        | cli::ConsoleOp::Layout { .. }
+        // 🚨 **And a preset is not this kind of look, which is the one arm in this list worth
+        // arguing.** `preset load` genuinely changes what is on screen — it moves the
+        // parameters the panels drive. But what this function resolves is the console's
+        // *dressing*: `backdrop_source` and the substrate's material and rig, which is what the
+        // Tier-4 epoch ledger bands the transcript on. A preset writes the `PresetValues`
+        // mirror, reaching the world through `OrganonPanels::overlay` — the same lane a dragged
+        // slider uses, and no slider bands the transcript either. Folding it in here would make
+        // a band appear at a moment nothing *behind* the glyphs moved.
+        | cli::ConsoleOp::Preset { .. } => return None,
     }
     Some((source, look))
 }
@@ -3703,6 +3801,16 @@ impl Console {
             self.set_layout(action, name);
             return;
         }
+        // Above the ledger with the two directly above it, and for a reason of its own that is
+        // worth stating because it is the arguable one: `preset load` *does* change what is on
+        // screen — it changes the look the panels drive. What it does not change is
+        // `backdrop_source`, which is what the epoch ledger records. A preset's look reaches
+        // the world through `OrganonPanels::overlay`, the same lane a dragged slider uses, and
+        // no slider bands the transcript either.
+        if let cli::ConsoleOp::Preset { action, name } = op {
+            self.set_preset(action, name);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -4064,6 +4172,79 @@ impl Console {
     /// conversation. `panel_stack::resolve_target` is the one place the two cases meet — a named
     /// region is checked against the layout, an unnamed one falls to the destination rule — so
     /// the answer cannot be spelled twice and drift.
+    /// **Load a preset, or save the console's look as one** (organon#124).
+    ///
+    /// 🚨 **`load` does two things and the order matters.** First the preset's values reach the
+    /// mirror, so the look changes on the next published frame — that is the half a person
+    /// *sees*, and it happens whether or not any region is holding a panel column. Second, if
+    /// one is, the preset's own card replaces whatever card the last preset left there.
+    ///
+    /// ⚠️ **A console with no panel region still loads the look.** The card is refused by name
+    /// and the look is not, because the two are separate promises and failing the second is no
+    /// reason to withhold the first. That is the opposite of [`Console::set_stack`]'s rule,
+    /// deliberately: `stack add` has nothing to do *but* fill a column, so with nowhere to put
+    /// a panel it has done nothing at all.
+    ///
+    /// ⚠️ **Resolution and the store live in `panel_surface::OrganonPanels`, not here**, because
+    /// `preset` is a private module of the library and this is a *binary*. That is the same
+    /// seam every other Organon fact crosses on its way into the console.
+    fn set_preset(&mut self, action: &str, name: &str) {
+        match action {
+            "save" => match self.organon_panels.save_preset_named(name) {
+                Ok(about) => {
+                    eprintln!("organon-console: saved `{name}` — {about} control(s)")
+                }
+                Err(e) => eprintln!("organon-console: {e}"),
+            },
+            "load" => {
+                let loaded = match self.organon_panels.load_preset_named(name) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("organon-console: {e}");
+                        return;
+                    }
+                };
+                // 🚨 **The coverage is reported rather than hidden.** A control drawn under a
+                // *tab* heading instead of a panel one is one this build has no transplanted
+                // panel for, and it reads with the param's own long name. Saying how many is
+                // what makes that gap visible — and the gap is the argument for joining the
+                // next panel, so burying it would remove the pressure that closes it.
+                eprintln!(
+                    "organon-console: loaded `{}` — {} control(s), {} in a transplanted panel",
+                    loaded.name, loaded.controls, loaded.homed
+                );
+                if !loaded.unknown.is_empty() {
+                    eprintln!(
+                        "organon-console: `{}` names {} field(s) this build does not have: {}",
+                        loaded.name,
+                        loaded.unknown.len(),
+                        loaded.unknown.join(", ")
+                    );
+                }
+                // The card, if anything is showing a column. Refused by name if not — the look
+                // has already landed either way.
+                match organon_console::panel_stack::resolve_target(&self.layout, None) {
+                    Ok(region) => {
+                        let column = self.panel_stacks.get_mut(region);
+                        column.remove_presets();
+                        column.push_preset(loaded.name);
+                    }
+                    Err(refusal) => eprintln!(
+                        "organon-console: the look loaded, but its panel has nowhere to go — \
+                         {refusal}"
+                    ),
+                }
+            }
+            // Unreachable through any of the four doors — `op_from` checks the word, and the
+            // sidecar parser is the only other way in. A catch-all rather than a panic, on
+            // `StackCmd::resolve`'s rule: a hand-written line must not take the frame path down.
+            other => eprintln!(
+                "organon-console: `{other}` is not a preset action — known: {}",
+                organon_core::console_ops::PRESET_ACTIONS.join(", ")
+            ),
+        }
+    }
+
     fn set_stack(&mut self, action_word: &str, panel_word: &str, region_word: Option<&str>) {
         use organon_console::panel_stack::{resolve_target, Refusal, StackCmd};
         let cmd = match StackCmd::resolve(action_word, panel_word) {
@@ -4296,10 +4477,18 @@ impl Console {
         if column.is_empty() {
             return "nothing".to_string();
         }
+        // ⚠️ **A preset's card is listed too, by its name.** This sentence answers "what is in
+        // this column" for a refusal, so leaving one out would make the refusal wrong about the
+        // thing it is describing — and the reader would be looking at a card the console had
+        // just told them was not there. It is marked rather than given a slug because there is
+        // no word that removes it: `/preset clear` does, and `stack remove` never will.
         column
             .entries()
             .iter()
-            .map(|e| e.panel().slug)
+            .map(|e| match e.panel() {
+                Some(panel) => panel.slug.to_string(),
+                None => format!("{} (a preset's card)", e.held().heading()),
+            })
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -6036,8 +6225,8 @@ impl Console {
                                 // `/theme` switch moves every other surface in the window and
                                 // leaves the column blue-slate — which is what James was looking
                                 // at. `panel_surface::console_card_style` is the translation.
-                                draw: &mut |ui, panel| {
-                                    organon_panels.card(ui, panel, theme);
+                                draw: &mut |ui, held| {
+                                    organon_panels.card(ui, held, theme);
                                     true
                                 },
                             },
@@ -7037,13 +7226,17 @@ mod cli_tests {
         let extra: Vec<&String> = served.iter().filter(|n| !sidecar.contains(n)).collect();
         assert_eq!(
             extra,
-            [&CMD_CAMERA_READ.to_string(), &CMD_LAYOUT_LIST.to_string()],
+            [
+                &CMD_CAMERA_READ.to_string(),
+                &CMD_LAYOUT_LIST.to_string(),
+                &CMD_PRESET_LIST.to_string()
+            ],
             "the extra verbs are the reads, in the order `mcp_specs` pushes them"
         );
 
         // …and neither read has a sidecar spelling, rather than merely being omitted from the
         // list: `op_from` is what a call would fall through to, and it must refuse.
-        for read in [CMD_CAMERA_READ, CMD_LAYOUT_LIST] {
+        for read in [CMD_CAMERA_READ, CMD_LAYOUT_LIST, CMD_PRESET_LIST] {
             assert!(
                 op_from(read, &json!({})).is_err(),
                 "a read must never convert into a line written onto a fire-and-forget channel"
@@ -7062,7 +7255,7 @@ mod cli_tests {
         // A read takes no arguments at all — the point of a separate verb rather than a
         // zero-argument spelling of `console.camera`, whose axes are all optional and whose
         // empty call therefore already means something else.
-        for name in [CMD_CAMERA_READ, CMD_LAYOUT_LIST] {
+        for name in [CMD_CAMERA_READ, CMD_LAYOUT_LIST, CMD_PRESET_LIST] {
             let read = mcp_specs()
                 .into_iter()
                 .find(|s| s.name == name)
@@ -7163,6 +7356,15 @@ mod cli_tests {
                 // picking the action that also destroys something would be one edit away from
                 // a test that deletes from whatever library the machine running it has.
                 CMD_LAYOUT => json!({ CMD_ACTION: "load", CMD_NAME: "desk" }),
+                // 🚨 **A fifth verb with an untabled name ring, and one thing none of the four
+                // above has: a name with a SPACE in it.** That is the property this verb's
+                // sidecar arm exists for — `ConsoleOp::Preset` takes the rest of the line
+                // rather than the next word, because preset names really are like this — and it
+                // is exactly what a round-trip gate is for. A single-word name here would pass
+                // whether or not that arm was ever written. `load` over `save` for
+                // `CMD_LAYOUT`'s reason: this gate is about the line being written, and the
+                // action that writes a file would write one on whatever machine runs the test.
+                CMD_PRESET => json!({ CMD_ACTION: "load", CMD_NAME: "Rails — Crystal Throat" }),
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -7393,8 +7595,14 @@ mod cli_tests {
 
         let registry = Registry::new(&mcp_specs());
         let all = registry.candidates("/").expect("a bare slash opens the whole table");
+        // ✏️ **240, not 200 — the first time this width has had to move** (organon#124). The
+        // whole row is 201 characters now, so asking for it at 200 answered `… | media | +1`:
+        // a *truncated* row, which is a different assertion from the one this test makes. The
+        // width is not a claim about any real pane — the narrow assertion at the bottom is
+        // where truncation is tested — it is simply "wide enough to show everything", and it
+        // has to stay ahead of the table.
         assert_eq!(
-            compact_line(&all, 0, 200),
+            compact_line(&all, 0, 240),
             // ✏️ `stack` sits between `viewport` and `block` because `console_specs` declares
             // it there — beside the verb it splits a sentence with, not beside the two verbs
             // it shares a `Reversal` with. The order here is the table's, read out.
@@ -7408,9 +7616,13 @@ mod cli_tests {
             // first and extends with `view_entries()`, so the row is `mcp_specs()` in its own
             // order followed by the view lane in its own order, and `trace`'s position in the
             // row is exactly its position in that function.
-            "[background] | rig | theme | posture | screen | viewport | stack | layout | block | \
-             patch | portal | camera | camera.read | layout.list | surface | help | trace | \
-             media | organon"
+            // ✏️ `preset` sits after `layout` and before `block` because `console_specs`
+            // declares it there — beside the other verb that writes to a named store — and
+            // `preset.list` sits after `layout.list` because `mcp_specs` pushes the reads at
+            // the end, in the order it pushes them. The order here is the table's, read out.
+            "[background] | rig | theme | posture | screen | viewport | stack | layout | \
+             preset | block | patch | portal | camera | camera.read | layout.list | \
+             preset.list | surface | help | trace | media | organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
@@ -7433,7 +7645,14 @@ mod cli_tests {
         // 124 characters (`background` in brackets counts 12) and the eighteen separators 54. The
         // new word is 5 and it brings one separator, so 170 + 3 + 5 = 178 — the arithmetic and
         // the number agree by construction rather than by my having added eight.
-        assert_eq!(compact_line(&all, 0, 200).chars().count(), 178);
+        // ✏️ **201 with `preset` and `preset.list`** (organon#124) — the twentieth and
+        // twenty-first verbs, and the eighth change to this line. **Re-derived, not nudged**,
+        // on the paragraph below's rule: the twenty-one words are 141 characters
+        // (`background` in brackets counts 12) and the twenty separators 60. The two new words
+        // are 6 and 11 and they bring two separators with them, so 178 + 6 + 11 + 6 = 201 —
+        // the arithmetic and the number agree by construction rather than by my having added
+        // twenty-three.
+        assert_eq!(compact_line(&all, 0, 240).chars().count(), 201);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -7464,7 +7683,13 @@ mod cli_tests {
         // `organon` — and two are shown at this width, so seventeen are hidden. The width
         // arithmetic is why two is still the answer and not three: three words plus the note is
         // 12 + 3 + 5 + two separators + `" | +16"` = 33 characters against 30.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +17");
+        // ✏️ **Twenty-one verbs now, so `+19`** — re-derived rather than incremented, which the
+        // paragraph above is the reason for: `mcp_specs()` yields sixteen (thirteen on the
+        // sidecar plus three reads) and `view_entries()` five, and two are shown at this width,
+        // so nineteen are hidden. The width arithmetic is why two is still the answer and not
+        // three: `[background] | rig | +19` is 24 characters against 30, and a third word makes
+        // it 32.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +19");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -7529,6 +7754,15 @@ mod cli_tests {
                 // not to what you had. "Only if you had already saved it" is not yes, so it
                 // waits for an Enter.
                 ("layout", false),
+                // ✏️ **`preset` sits with `layout`, and `load` is what puts it there** —
+                // `save` is obvious (it writes `presets.json` and nothing rebuilds what it
+                // replaced). `load` earns it the same way `layout load` does: it puts nothing
+                // in the transcript, which is `viewport`'s whole case for the other column, but
+                // what it *displaces* is the look that was on screen, and no second command
+                // restores that unless it too was saved. Re-derived from `console_specs()`
+                // rather than appended: `preset` is declared after `layout` and before `block`
+                // there, so it is between them here.
+                ("preset", false),
                 // Rows in the transcript, and a rectangle claimed in somebody else's output.
                 ("block", false),
                 ("patch", false),
@@ -7539,6 +7773,9 @@ mod cli_tests {
                 // end, so this is where the table puts it rather than beside the verb it lists
                 // for. A read changes nothing, which is the cleanest case the rule has.
                 ("layout.list", true),
+                // ✏️ **The third read, beside the other two**, in the order `mcp_specs` pushes
+                // them rather than beside the verb it lists for. A read changes nothing.
+                ("preset.list", true),
                 // The view lane. `surface`, `media` and `organon` put an element in the
                 // transcript; `help` writes a few log lines and reads a table.
                 //

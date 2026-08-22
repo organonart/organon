@@ -4750,6 +4750,16 @@ macro_rules! for_each_tab_field {
     };
 }
 
+// 🚨 **Readable from other modules, and that is what makes a preset-built panel possible at
+// all** (organon#124). `crate::panel_table` expands this list a fourth way — into a dispatch
+// from a *runtime* field name to that field's control — so a panel assembled from a preset's
+// exposed set can draw a field no hand-written panel body has ever mentioned.
+//
+// ⚠️ `pub(crate) use`, not `#[macro_export]`, for `param_sink`'s reason: a name this generic at
+// the crate root, and in the public API, would read as something else entirely. Import it where
+// it is needed — `use crate::preset::for_each_tab_field;`.
+pub(crate) use for_each_tab_field;
+
 impl PresetValues {
     /// Snapshot the live parameters, including the loaded `.hdr` reference (read
     /// from the sidecar). **GUI-thread only** — the sidecar read is file I/O.
