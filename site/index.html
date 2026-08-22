@@ -32,33 +32,56 @@
    Deliberately single-theme: it does not follow the reader's operating system,
    and every colour is painted explicitly. */
 :root{
-  /* ── The ground, and where it comes from ────────────────────────────────
-     pi.dev's ground is #161d27 — HSV(215°, 44%, 15%). Organon's mark is
-     #d9c7a0, hue 41°. Rotating THE HUE ALONE and keeping Pi's saturation and
-     value gives #272216, which is this palette's origin.
+  /* ── The palette IS the application's ───────────────────────────────────
+     🚨 Every value below is copied from `native/src/theme_config.rs`'s shipped
+     blue-slate `Palette::default()` — the surface names are that file's own:
+     shell, workspace, panel, card, raised, well, hairline, edge_strong, bone,
+     titanium, muted, selected, teal, amber. This page is a picture of Organon,
+     so it is painted in Organon's colours rather than in colours chosen to
+     resemble them.
 
-     📌 It is worth knowing that this landed on a colour the product had already
-     specified rather than near one: PRD §5.4 asks for a shell that is
-     "near-black with a hint of brown, never blue-black". The derivation and the
-     identity doc agree, which is why the ground is warm rather than merely
-     not-blue.
+     ⚠️ It is therefore a COPY, and the usual consequence applies: if the theme
+     moves, this is wrong. That is the trade taken deliberately — a site whose
+     palette merely rhymed with the product would drift silently, whereas this
+     one drifts detectably, because the values are named and quotable.
 
-     ⚠️ Every value below is the SAME HUE, 41°, varying only in saturation and
-     value. Do not introduce a second hue here. The one chromatic exception is
-     --link, and it is the same 41° too — Pi's pale blue accent rotated by the
-     same amount, which is how the favicon's taupe became the link colour. */
-  --paper:#272216; --panel:#312b1d; --raise:#1f1b12;
-  --ink:#ece7dd; --muted:#aa9f8c; --faint:#7f7563;
-  --rule:#413928; --rule-strong:#564b34; --link:#d9c7a0; --dot:#332c1d;
-  --accent:#d9c7a0;
+     ⚠️ Do NOT re-warm these. PRD §5.4 still describes a warm graphite shell
+     "never blue-black"; the shipped theme moved to blue-slate and says so in
+     `theme.rs`'s own comments ("Under the warm shell this painted every card
+     title at once… The blue-slate system is stricter still"). The code is what
+     ships, so the code is what this follows — and §5.4 is the thing that needs
+     correcting, not this file. */
+  --paper:#192228;      /* shell — the application body behind everything */
+  --panel:#212a30;      /* panel / card */
+  --panel-hi:#273139;   /* raised — button faces; used by .mastnav hover */
+  --raise:#141c22;      /* well — input interiors, recessed */
+  --ink:#d1d6d9;        /* bone. NEVER pure white: the top of the range is
+                           held in reserve so live data can mean something */
+  --muted:#8e999f;      /* titanium */
+  --faint:#606b72;      /* muted */
+  --rule:#3a464f;       /* hairline */
+  --rule-strong:#52616b;/* edge_strong */
+  --dot:#1f2830;        /* one step off the shell, nothing more */
 
-  /* ⚠️ The plates are DARKER than the page, not lighter, and that inversion is
-     deliberate now that the page is dark: a terminal is an inset well you look
-     into, not a card sitting on top. On the earlier light ground they were the
-     only dark thing on the page; here they have to earn the distinction a
-     different way. */
-  --pane:#151109; --pane-panel:#1e190f; --pane-rule:#3a3222;
-  --pane-ink:#ece7dd; --pane-muted:#968d80; --pane-accent:#d9c7a0; --pane-warn:#d99a63;
+  /* 🚨 Chroma is rationed, and the rule is the theme's own: "strong chroma
+     belongs to data, selection, and status, and every saturated pixel spent on
+     chrome devalues the data." So the small mono labels are grey, not teal.
+     TEAL appears in exactly one place on this page — the provenance plate,
+     which is what teal is for in the application. AMBER is status only. */
+  --link:#7c9ab2;       /* `selected` (#5d788c) lightened for text on the shell:
+                           a link is a selection, and at the shipped value it
+                           only reaches 3.7:1 against the ground */
+
+  /* ⚠️ Teal and amber are NOT declared as page-level tokens, deliberately —
+     they reach the page only through --pane-accent and --pane-warn below, so
+     the rationing rule is structural rather than remembered. A token declared
+     here would be an invitation to spend chroma on chrome. */
+
+  /* The plates are the application's deepest surfaces — `well_deep` and `well`,
+     with `card_header` as the frame. They read as inset wells you look into
+     rather than cards on top, which is what a terminal is. */
+  --pane:#121a20; --pane-panel:#1b242b; --pane-rule:#303b43;
+  --pane-ink:#d1d6d9; --pane-muted:#8e999f; --pane-accent:#389394; --pane-warn:#ffb547;
 
   /* Two families and no sans at all — a serif for headings AND body, a mono for
      every label, chip and plate. That pairing is most of what makes the page
@@ -114,7 +137,8 @@ p code,li code,td code,dd code{background:var(--raise);border:1px solid var(--ru
 .wordmark{font-family:var(--mono);font-size:.8rem;letter-spacing:.3em;text-transform:uppercase;margin:0;font-weight:500}
 .mastnav{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;display:flex;gap:1.6rem}
 .mastnav a{color:var(--muted);text-decoration:none;padding-bottom:.15rem;border-bottom:1px solid transparent}
-.mastnav a:hover,.mastnav a:focus-visible{color:var(--ink);border-bottom-color:var(--ink)}
+.mastnav a:hover,.mastnav a:focus-visible{color:var(--ink);border-bottom-color:var(--rule-strong);background:var(--panel-hi)}
+.mastnav a{border-radius:2px;padding:.15rem .4rem}
 
 /* ── Hero ─────────────────────────────────────────────────────────────── */
 /* Centred, the way Pi's is — the mark, the claim, the one line that gets you

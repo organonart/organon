@@ -59,32 +59,45 @@ own header warns about.
 
 ## The look
 
-**Dark, warm, and derived rather than picked.** pi.dev's ground is `#161d27` —
-HSV(215°, 44%, 15%). Organon's mark is `#d9c7a0`, hue 41°. Rotating **the hue
-alone**, keeping Pi's saturation and value, gives **`#272216`**, and that is the
-origin of this palette.
+**The palette is the application's, copied rather than resembled.** Every value
+comes from `native/src/theme_config.rs`'s shipped blue-slate `Palette::default()`,
+and the CSS custom properties carry that file's own surface names:
 
-📌 It landed on a colour the product had already specified rather than near one:
-PRD §5.4 asks for a shell that is *"near-black with a hint of brown, never
-blue-black"*. The derivation and the identity doc agree, which is why the ground
-is warm rather than merely not-blue.
+| Token | From | |
+|---|---|---|
+| `--paper` | `shell` | `#192228` — the application body behind everything |
+| `--panel` | `panel` / `card` | `#212a30` |
+| `--panel-hi` | `raised` | `#273139` |
+| `--raise` | `well` | `#141c22` — recessed: code, inputs |
+| `--ink` | `bone` | `#d1d6d9` — **never pure white** |
+| `--muted` / `--faint` | `titanium` / `muted` | `#8e999f` / `#606b72` |
+| `--rule` / `--rule-strong` | `hairline` / `edge_strong` | `#3a464f` / `#52616b` |
+| `--pane*` | `well_deep`, `well`, `card_header` | the plates |
 
-⚠️ **Every token is the same hue, 41°, varying only in saturation and value —
-including the link colour**, which is Pi's pale blue accent rotated by the same
-amount and comes out as the favicon's taupe. Do not introduce a second hue.
+⚠️ **This is a copy, so if the theme moves it is wrong.** The trade is deliberate:
+it drifts *detectably*, because every value is named after the token it came from
+and a diff against `Palette::default()` is mechanical. A palette that merely
+rhymed with the product would drift silently.
+
+🚨 **Do not re-warm it.** PRD §5.4 still specifies a warm graphite shell *"never
+blue-black"*; the shipped theme moved to blue-slate and `theme.rs` says so in its
+own comments. The code is what ships, so this follows the code — **§5.4 is the
+thing that needs correcting.**
+
+📌 **Chroma is rationed, by the theme's own rule**: *"strong chroma belongs to
+data, selection, and status, and every saturated pixel spent on chrome devalues
+the data."* Small mono labels are grey, not teal. ⚠️ **Teal and amber are not
+declared as page-level tokens at all** — they reach the page only through
+`--pane-accent` and `--pane-warn`, which keeps the rule structural rather than
+remembered. Teal appears in exactly one place: the provenance plate, which is what
+teal is for in the application.
 
 ⚠️ **This page is dark and `organonmind.org` is stark white, and that divergence
-is a decision rather than drift.** What carries the family resemblance is the
+is a decision rather than drift.** The family resemblance is carried by the
 *structure* — the tracked-monospace wordmark, the labelled meta block, the
-measure, the colophon, the refusal to advertise. The surface is allowed to
-differ: one of these sites is a publication, the other is a front door to an
-application whose own shell is dark. Do not "restore" a light ground for
-consistency; the consistency lives one level up.
-
-⚠️ **The plates are darker than the page, not lighter.** On a dark ground a
-terminal is an inset well you look into, not a card sitting on top — the
-inversion is deliberate, and it is what stops the plates dissolving into the
-page now that both are dark.
+measure, the colophon, the refusal to advertise. One site is a publication; the
+other is the front door to an application whose own shell is dark. Do not
+"restore" a light ground for consistency; the consistency lives one level up.
 
 🚨 **Both font stacks lead with faces this repository does not ship**, and there
 are no `@font-face` blocks at all, so nothing 404s and every reader falls through
