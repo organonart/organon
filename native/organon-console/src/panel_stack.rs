@@ -160,13 +160,55 @@ use crate::theme::Theme;
 /// heading it drew before this widened. Without that answer an inert callback would render a
 /// column of nothing — and a panel that is in the column but invisible is indistinguishable from
 /// one that failed.
-pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &'static Panel) -> bool;
+pub type OrganonDraw<'a> = &'a mut dyn FnMut(&mut egui::Ui, &Held) -> bool;
 
-/// One panel in the column, and the number that gives it its egui namespace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// **What one entry in the column actually is.**
+///
+/// 🚨 **A second arm, because a preset's card is not one of Organon's panels** (organon#124).
+/// James, on what loading a preset should do: *"we could construct custom panels or even a
+/// single custom panel with sections and sliders and dropdowns that are **tailored to the exact
+/// changes that we made on that preset**."* That card has no `panels::Panel` to be — its
+/// sections come from several of them at once, and from tabs that have no panel in the table at
+/// all.
+///
+/// ⚠️ **The alternative was a synthetic `Panel` outside `panels::PANELS`, and it was refused.**
+/// It would have been the first thing in this column that no `/organon` ring could name and no
+/// `stack remove` word could address — a card you can create and cannot talk about. An arm here
+/// costs one `match` at three sites and keeps `panels::PANELS` the one vocabulary.
+///
+/// ⚠️ **This is why [`Entry`] is no longer `Copy`.** A preset card carries the preset's name,
+/// which is a `String` — there is no `&'static str` for something a person typed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// One of Organon's own editor panels, admitted by [`admit`].
+    Panel(&'static Panel),
+    /// A card built from what a preset changed. `name` is the preset's, and it is the heading.
+    Preset { name: String },
+}
+
+impl Held {
+    /// What the card's header band says.
+    pub fn heading(&self) -> &str {
+        match self {
+            Held::Panel(p) => p.title,
+            Held::Preset { name } => name,
+        }
+    }
+
+    /// The panel this entry holds, if it holds one of Organon's.
+    pub fn panel(&self) -> Option<&'static Panel> {
+        match self {
+            Held::Panel(p) => Some(p),
+            Held::Preset { .. } => None,
+        }
+    }
+}
+
+/// One entry in the column, and the number that gives it its egui namespace.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     serial: u64,
-    panel: &'static Panel,
+    held: Held,
 }
 
 impl Entry {
@@ -176,8 +218,13 @@ impl Entry {
         self.serial
     }
 
-    pub fn panel(&self) -> &'static Panel {
-        self.panel
+    pub fn held(&self) -> &Held {
+        &self.held
+    }
+
+    /// The panel this entry holds, if it holds one of Organon's rather than a preset's card.
+    pub fn panel(&self) -> Option<&'static Panel> {
+        self.held.panel()
     }
 }
 
@@ -294,9 +341,22 @@ impl Stack {
     /// genuinely wants — and refusing it would be a rule about the *panel* where every other
     /// rule here is about the *column*.
     pub fn push(&mut self, panel: &'static Panel) -> u64 {
+        self.push_held(Held::Panel(panel))
+    }
+
+    /// Put a **preset's own card** at the bottom of the column. See [`Held::Preset`].
+    ///
+    /// ⚠️ Duplicates are allowed here too, and for [`Stack::push`]'s reason rather than by
+    /// oversight — two cards for one preset are two views of one instrument, and the mirror
+    /// underneath them is console-wide either way.
+    pub fn push_preset(&mut self, name: impl Into<String>) -> u64 {
+        self.push_held(Held::Preset { name: name.into() })
+    }
+
+    fn push_held(&mut self, held: Held) -> u64 {
         let serial = self.next_serial;
         self.next_serial += 1;
-        self.entries.push(Entry { serial, panel });
+        self.entries.push(Entry { serial, held });
         serial
     }
 
@@ -305,9 +365,25 @@ impl Stack {
     /// Last rather than first, because the gesture a person means by `stack remove surface` is
     /// *undo the one I just added* — and with duplicates allowed, the one they just added is
     /// the one at the bottom.
+    /// ⚠️ **A preset's card is never matched**, because `slug` comes from
+    /// `panels::find_by_slug` and a preset card is not one of Organon's panels. It is taken out
+    /// by `stack remove all`, or replaced by loading another preset. Filtering on the arm rather
+    /// than relying on a slug that cannot collide is deliberate: the day a preset is named
+    /// `surface`, "cannot collide" stops being true and this still holds.
     pub fn remove_last(&mut self, slug: &str) -> Option<Entry> {
-        let at = self.entries.iter().rposition(|e| e.panel.slug.eq_ignore_ascii_case(slug))?;
+        let at = self.entries.iter().rposition(|e| {
+            e.held.panel().is_some_and(|p| p.slug.eq_ignore_ascii_case(slug))
+        })?;
         Some(self.entries.remove(at))
+    }
+
+    /// Take out every card built from a preset, and answer how many went. `/preset clear`'s
+    /// whole implementation — it leaves Organon's own panels where they are, because a person
+    /// put those there by name and a preset never did.
+    pub fn remove_presets(&mut self) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|e| e.held.panel().is_some());
+        before - self.entries.len()
     }
 
     /// Empty the column. The serial counter is **not** rewound — see [`Stack::next_serial`].
@@ -672,7 +748,7 @@ pub fn draw(
             for entry in stack.entries() {
                 ui.push_id(entry.serial(), |ui| {
                     ui.spacing_mut().item_spacing = inherited;
-                    card(ui, entry.panel(), theme, form, organon)
+                    card(ui, entry.held(), theme, form, organon)
                 });
             }
         });
@@ -690,17 +766,11 @@ pub fn draw(
 /// it — and a status test on this side would be a second copy of that decision, differing from
 /// the first the day a twenty-sixth panel goes `Live`. [`plain_card`] keeps the test, because
 /// there the console really is the one drawing.
-fn card(
-    ui: &mut egui::Ui,
-    panel: &'static Panel,
-    theme: &Theme,
-    form: &Form,
-    organon: OrganonDraw,
-) {
-    if organon(ui, panel) {
+fn card(ui: &mut egui::Ui, held: &Held, theme: &Theme, form: &Form, organon: OrganonDraw) {
+    if organon(ui, held) {
         return;
     }
-    plain_card(ui, panel, theme, form);
+    plain_card(ui, held, theme, form);
 }
 
 /// What a panel looks like with **no Organon behind the console** — a frame and the panel's
@@ -715,7 +785,7 @@ fn card(
 /// reach one any more: [`admit`] refuses a `Declared` panel at every door, so a panel in a column
 /// is one this build has a body for. See [`admit`] on why the words moved into a refusal rather
 /// than being deleted.
-fn plain_card(ui: &mut egui::Ui, panel: &'static Panel, theme: &Theme, form: &Form) {
+fn plain_card(ui: &mut egui::Ui, held: &Held, theme: &Theme, form: &Form) {
     let mut framed = Frame::new()
         .fill(theme.panel_fill)
         .corner_radius(form.card_corner())
@@ -725,7 +795,7 @@ fn plain_card(ui: &mut egui::Ui, panel: &'static Panel, theme: &Theme, form: &Fo
     }
     framed.show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(heading(panel)).monospace().strong().color(theme.panel_title));
+        ui.label(RichText::new(held.heading()).monospace().strong().color(theme.panel_title));
     });
     ui.add_space(GAP);
 }
@@ -807,7 +877,7 @@ mod tests {
         stack.push(other_live());
         assert_eq!(stack.len(), 2);
         assert_eq!(
-            stack.entries().iter().map(|e| e.panel().slug).collect::<Vec<_>>(),
+            stack.entries().iter().filter_map(|e| e.panel()).map(|p| p.slug).collect::<Vec<_>>(),
             vec![surface().slug, other_live().slug],
             "the column is in the order panels were added"
         );
@@ -1196,7 +1266,7 @@ mod tests {
         assert_eq!(stacks.get(Region::Right).len(), 0, "one push filled two columns");
         stacks.get_mut(Region::Right).push(other_live());
         assert_eq!(
-            stacks.get(Region::Right).entries()[0].panel().slug,
+            stacks.get(Region::Right).entries()[0].panel().unwrap().slug,
             other_live().slug,
             "the columns hold different panels"
         );
@@ -1418,7 +1488,7 @@ mod tests {
                 // A caller with a spacing of its own, so "restored" means something other than
                 // "happened to equal egui's default".
                 ui.spacing_mut().item_spacing.y = 7.0;
-                let mut seam = |ui: &mut egui::Ui, _panel: &'static Panel| {
+                let mut seam = |ui: &mut egui::Ui, _held: &Held| {
                     let inside = ui.spacing().item_spacing.y;
                     let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), BODY_H));
                     sink.lock().expect("no panic in the closure").push((rect, inside));
