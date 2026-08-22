@@ -27,23 +27,39 @@
    instrument. Deliberately single-theme: it does not follow the reader's
    operating system, and every colour is painted explicitly. */
 :root{
-  --paper:#ffffff; --raise:#f7f8f9; --ink:#0f1114; --muted:#5d636c; --faint:#8b919b;
-  --rule:#e2e5e9; --rule-strong:#c9ced6; --link:#1440c4;
+  /* Warm bone, never #ffffff, and every rule a cool blue-grey. Two temperatures
+     on purpose: the PAPER and its chrome are cool, the INSTRUMENT is warm —
+     PRD §5.4 says the shell is "near-black with a hint of brown, never
+     blue-black", so the plates keep their own temperature rather than being
+     tinted to match the page they sit on. */
+  --paper:#faf9f7; --raise:#f2f1ed; --ink:#1a1a1f; --muted:#55606e; --faint:#8996a6;
+  --rule:#dde3ea; --rule-strong:#c3cdd8; --link:#2f5ea8; --dot:#d7dee7;
 
   --pane:#141210; --pane-panel:#1d1a16; --pane-rule:#332e26;
   --pane-ink:#ece7dd; --pane-muted:#968d80; --pane-accent:#d9c7a0; --pane-warn:#d99a63;
 
-  --sans:system-ui,-apple-system,"Segoe UI Variable Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-  --mono:ui-monospace,"Cascadia Mono","SF Mono","Roboto Mono",Menlo,Consolas,monospace;
+  /* ⚠️ Both stacks LEAD with faces this repository does not ship. Plantin MT Pro
+     needs a Monotype WEB licence (a desktop licence does not permit @font-face)
+     and Commit Mono needs its business licence; when the .woff2 files land in
+     site/fonts/ they get @font-face blocks here and take over with no other
+     change. Until then every reader falls through to the stack behind them, so
+     the page is never waiting on a file that is not there. */
+  --serif:"Plantin MT Pro",Plantin,"Iowan Old Style",Charter,"Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --mono:"Commit Mono",ui-monospace,"Cascadia Mono","SF Mono","Roboto Mono",Menlo,Consolas,monospace;
   --measure:34rem;
 }
 
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{
-  background:var(--paper); color:var(--ink); font-family:var(--sans);
-  font-size:17px; line-height:1.65; margin:0; padding:0 0 7rem;
-  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  background-color:var(--paper); color:var(--ink); font-family:var(--serif);
+  font-size:18px; line-height:1.6; margin:0; padding:0 0 7rem;
+  text-rendering:optimizeLegibility;
+  /* The faint dotted field. One gradient, no asset, and it sits far enough back
+     that it reads as paper tooth rather than as a grid you are meant to see. */
+  background-image:radial-gradient(circle at 1px 1px,var(--dot) 1px,transparent 0);
+  background-size:26px 26px;
+  background-attachment:fixed;
 }
 .wrap{max-width:66rem;margin:0 auto;padding:0 1.6rem}
 
@@ -62,31 +78,51 @@ p code,li code,td code,dd code{background:var(--raise);border:1px solid var(--ru
    The wordmark gets the same treatment as a publication masthead — monospace,
    uppercase, widely tracked — so the identity is one element used
    consistently rather than a logo. */
+/* A bordered bar, in the same blue-grey as every other panel — Pi's chrome
+   language rather than a bare row of links floating on the paper. */
 .mast{
-  display:flex;align-items:baseline;justify-content:space-between;gap:1.5rem;
-  flex-wrap:wrap;padding:2.2rem 0 0;
+  display:flex;align-items:center;justify-content:space-between;gap:1.5rem;
+  flex-wrap:wrap;margin:1.6rem 0 0;padding:.7rem 1.1rem;
+  border:1px solid var(--rule);border-radius:3px;background:var(--paper);
 }
-.wordmark{font-family:var(--mono);font-size:.82rem;letter-spacing:.32em;text-transform:uppercase;margin:0;font-weight:500}
-.mastnav{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;display:flex;gap:1.5rem}
-.mastnav a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--rule-strong);padding-bottom:.15rem}
+.wordmark{font-family:var(--mono);font-size:.8rem;letter-spacing:.3em;text-transform:uppercase;margin:0;font-weight:500}
+.mastnav{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;display:flex;gap:1.6rem}
+.mastnav a{color:var(--muted);text-decoration:none;padding-bottom:.15rem;border-bottom:1px solid transparent}
 .mastnav a:hover,.mastnav a:focus-visible{color:var(--ink);border-bottom-color:var(--ink)}
 
 /* ── Hero ─────────────────────────────────────────────────────────────── */
-.hero{padding:4.5rem 0 0}
+/* Centred, the way Pi's is — the mark, the claim, the one line that gets you
+   started. The old left-aligned hero left half the container empty beside a
+   headline squeezed into six lines, which is what looking at it on a screen
+   showed and no measurement would have. */
+.hero{padding:5rem 0 0;text-align:center}
+.heromark{width:2.6rem;height:auto;margin:0 auto 2.4rem;display:block;color:var(--ink)}
 h1{
-  font-weight:600;letter-spacing:-.022em;font-size:clamp(1.9rem,4.2vw,2.7rem);
-  line-height:1.16;margin:0;max-width:30rem;text-wrap:balance;
+  font-weight:400;font-style:italic;letter-spacing:-.006em;
+  font-size:clamp(1.75rem,3.4vw,2.5rem);
+  line-height:1.24;margin:0 auto;max-width:42rem;text-wrap:balance;
 }
-.standfirst{font-size:1.12rem;color:var(--muted);margin:1rem 0 0;max-width:var(--measure);text-wrap:balance}
-.quoted{font-family:var(--mono);font-size:.68rem;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);margin:0 0 1.1rem}
+.standfirst{font-size:1.06rem;color:var(--muted);margin:1.2rem auto 0;max-width:36rem;text-wrap:balance}
+
+/* One command, centred under the claim. The three-variant version lives in
+   §Getting it; this is the summary, and it is deliberately the shortest true
+   thing rather than a second copy of that plate. */
+.getstart{
+  margin:2.6rem auto 0;max-width:34rem;border:1px solid var(--rule-strong);border-radius:3px;
+  background:var(--raise);font-family:var(--mono);font-size:.79rem;text-align:left;
+  padding:.75rem .95rem;color:var(--ink);overflow-x:auto;
+}
+.getstart .p{color:var(--faint)}
 
 .meta{
-  font-family:var(--mono);font-size:.735rem;line-height:1.85;
-  border-top:1px solid var(--rule-strong);border-bottom:1px solid var(--rule);
-  margin:3rem 0 0;padding:.9rem 0;display:grid;grid-template-columns:max-content 1fr;gap:0 1.6rem;
+  font-family:var(--mono);font-size:.72rem;line-height:1.9;text-align:left;
+  border:1px solid var(--rule);border-radius:3px;background:var(--paper);
+  margin:3.4rem auto 0;padding:.85rem 1rem;display:grid;
+  grid-template-columns:max-content minmax(0,1fr);gap:0 1.6rem;max-width:44rem;
 }
 .meta dt{color:var(--faint);text-transform:uppercase;letter-spacing:.1em}
-.meta dd{margin:0}
+.meta dd{margin:0;color:var(--muted)}
+.meta dd a{color:var(--link)}
 
 /* ── Sections ─────────────────────────────────────────────────────────────
    Prose left at the measure, the plate right and sticky, so a section's
@@ -101,10 +137,10 @@ section{margin:5.5rem 0 0}
   :root{--measure:100%}
   p,ul,.standfirst{max-width:38rem}
 }
-.part{font-family:var(--mono);font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin:0 0 .45rem}
-h2{font-weight:600;font-size:1.34rem;letter-spacing:-.012em;line-height:1.28;margin:0 0 1rem;text-wrap:balance}
-h3{font-weight:600;font-size:1rem;letter-spacing:-.004em;margin:1.9rem 0 .5rem}
-.lede{font-size:1.05rem}
+.part{font-family:var(--mono);font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin:0 0 .5rem}
+h2{font-weight:400;font-style:italic;font-size:1.75rem;letter-spacing:-.004em;line-height:1.22;margin:0 0 1.1rem;text-wrap:balance}
+h3{font-weight:400;font-style:italic;font-size:1.2rem;margin:2rem 0 .5rem}
+.lede{font-size:1.06rem}
 .aside{font-size:.94rem;color:var(--muted);border-left:2px solid var(--rule-strong);padding-left:.95rem;margin:1.5rem 0 0;max-width:var(--measure)}
 .aside p{margin:0 0 .55rem}
 .aside p:last-child{margin:0}
@@ -205,8 +241,18 @@ td:first-child{white-space:nowrap}
 </header>
 
 <div class="hero">
+  <svg class="heromark" viewBox="0 0 120 88" role="img" aria-label="The Organon mark: a rectangle divided into three regions — one full-height column on the left, and two stacked on the right.">
+    <g fill="none" stroke="currentColor" stroke-width="6">
+      <rect x="3" y="3" width="114" height="82"/>
+      <line x1="45" y1="3" x2="45" y2="85"/>
+      <line x1="45" y1="44" x2="117" y2="44"/>
+    </g>
+  </svg>
+
   <h1>Organon is a native GPU application. You divide the window into regions, declare what each holds, and save the arrangement under a name.</h1>
   <p class="standfirst">Every arrangement includes an agent that can operate the whole application through the same commands you use.</p>
+
+  <div class="getstart"><span class="p">$</span> git clone https://github.com/organonart/organon<br><span class="p">$</span> cd organon/native &amp;&amp; cargo build --release</div>
 
   <dl class="meta">
     <dt>Source</dt><dd><a href="https://github.com/organonart/organon">github.com/organonart/organon</a></dd>

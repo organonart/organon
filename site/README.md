@@ -35,20 +35,46 @@ own header warns about.
 
 ## House rules, inherited from organonmind.org
 
-- **No external requests.** No fonts, no scripts, no trackers, no analytics, no
-  cookie banner. System type only. The page is one file and it works offline.
+- **No external requests.** No scripts, no trackers, no analytics, no cookie
+  banner. ⚠️ **This is a promise about *other hosts*, not about file count** —
+  self-hosted `.woff2` files under `site/fonts/` would keep it intact, because
+  they are served from the same origin. A Google Fonts link would break it. Type
+  is system-only *today* only because the licensed faces have not been bought
+  yet; see **The look**.
 - **Single theme.** It does not follow the reader's operating system. Every
   colour is painted explicitly, the way a publication has a canonical appearance.
 - **Hand-authored HTML is the document.** There is no markdown source and no
   generator. A renderer would only stand between the writing and the design, and
   the plates need design control a renderer cannot give.
 
+## The look
+
+**Same outfit as organonmind.org, not the same paper.** The publications are
+stark white with system sans; this page is warm bone (`#faf9f7`, never
+`#ffffff`), warm near-black ink, a serif for headings *and* body, and cool
+blue-grey for every hairline, panel border and small mono label. A faint dotted
+field sits behind it all — one CSS gradient, no asset. What carries the family
+resemblance is the *structure*: the tracked-monospace wordmark, the labelled
+meta block, the measure, the colophon.
+
+⚠️ **The two temperatures are deliberate and must not be "fixed".** The paper and
+its chrome are cool blue-grey; the plates are warm graphite. Tinting the plates
+to match the page would break the PRD's §5.4, which says the shell is
+*"near-black with a hint of brown, never blue-black"* — the plates depict the
+application, so they carry the application's colour, not the website's.
+
+🚨 **Both font stacks lead with faces this repository does not ship**, and this
+is a licensing state rather than an oversight. `Plantin MT Pro` needs a Monotype
+**web** licence — a desktop licence does not permit `@font-face` — and
+`Commit Mono` needs its business licence. Until the `.woff2` files are in
+`site/fonts/` there are no `@font-face` blocks at all, so nothing 404s and every
+reader falls through the stack behind them. Adding the files plus two
+`@font-face` blocks is the whole change; nothing else moves.
+
 ## The plates
 
 The dark panes down the right-hand side are **pictures of Organon, not live
-things**. The paper half of the page is shared with the publications; the plates
-are the product's own visual identity — warm graphite, taupe hairlines,
-bone-white type, per the PRD's §5.4.
+things** — warm graphite, taupe hairlines, bone-white type, per the PRD's §5.4.
 
 ⚠️ **Every command and every message in a plate is a real word from the real
 vocabulary** — the twelve region words, the four content words (`agent`,
