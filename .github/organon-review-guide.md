@@ -74,6 +74,42 @@ issues" when that's the truth.
   your review, and stop again — the hook's loop guard lets the second stop
   through.
 
+🚨 **The code did not change; what it MEANS did.** This class produced three separate
+defects in one night, none of which failed a test and two of which were caught only by review. It
+is worth looking for deliberately, because nothing else will find it:
+
+- **A widened value silently invalidates its validator.** A producer name was checked by four
+  rules, each a true statement about a name surviving a whitespace-delimited wire. The same string
+  then became a **directory** name — and `..` satisfies all four. Nothing failed; only the question
+  the rules were answering had changed. **When a PR gives an existing value a second use, re-read
+  every check on it.**
+- **A comment that names its neighbour by POSITION is invalidated by any insertion between them,
+  and it does not conflict.** *"the arm directly above"* meant one match arm; an unrelated PR
+  inserted a different arm there, and the comment became false during a clean merge. Grep a rebase
+  diff for **above / below / directly / the arm before**.
+- **A "complain once" latch inherits the scope of whatever condition it guards.** A
+  say-it-once diagnostic was correct while it guarded one refusal; generalising the refusal to
+  cover a second kind meant the first occurrence of either silenced the other **permanently** —
+  and the widened kind was routine by design, so the latch burnt within seconds and a real fault an
+  hour later was refused in total silence. The latch's code did not change. Per-**kind**, not
+  per-value, and not shared.
+
+📌 **The general shape: an edit that changes what a value *is*, where a comment *sits*, or
+what a guard *covers*, does not have to touch the line that then becomes wrong.** Reviewing the
+diff alone cannot catch these — you have to ask what the unchanged code was relying on.
+
+⚠️ **Doc comments attach to the item BELOW them.** A helper inserted next to its caller
+can land between an existing doc block and the function it documents, silently re-homing an entire
+argument onto a two-line lookup. Check any newly-inserted item that sits directly under a long
+existing doc comment.
+
+🚨 **"The bar is green" and "my tests ran" are different claims.** The targeted bar in
+`CONTRIBUTING.md` is seven commands, and the seventh (`cargo test -p organic-math-native --lib
+--features console-edition`) is the only one that runs the root crate's lib tests — the others
+`check` that target or test *binaries*. If a PR adds tests under `native/src/` and every reported
+count sits at baseline, its own tests very likely did not run. Ask which leg ran them and what the
+number was.
+
 ## What NOT to flag
 
 - The intentional native/web algorithm divergence (loop_step removed, rot_mod as
