@@ -7410,6 +7410,191 @@ and a 437-wide one: a sweep of nice widths exercises the padding path zero times
 complete. ✏️ This came up as a real disagreement with Ascent's first producer, which had
 stripped the padding; it would have passed both sides' tests.
 
+### 1.21 The module host — the console's consumer half, and the picture finally arrives
+
+`doc/organon_module_viewport.md` §4 and §5. §1.20 built the contract and wired it into nothing;
+this is the party on the console's end of it. **A region holding `3d <hosted>` now launches a
+process, hands it a channel, asks it for a size, feeds it the pointer, and paints what it
+publishes** — and says, in that rectangle, whichever of §4.6's four sentences is true.
+
+`organon-console/src/module_host.rs` is the wgpu-free half (the path, the launch plan, the
+lifecycle, the input, the four sentences); `console_main.rs::service_module_frames` is the
+per-frame pass that owns the texture, because the window does.
+
+📌 **This is the first edge to `organon-module` in the workspace.** The arrow points *into* it, so
+`cargo tree -p organon-module` — the acceptance test in **both** trees — is unchanged: that test
+is about what the contract depends on, and a dependent is not a dependency. `organon-console` takes
+**default features**, i.e. no wgpu; the two GPU halves stay with the window, exactly as
+winit/wgpu/egui-winit already do.
+
+#### 🚨 How the producer learns where the channel is — the path, in one variable
+
+```
+ORGANON_MODULE_CHANNEL = <the absolute path of the channel file>
+ORGANON_IPC_NS         = <this console's namespace>   ← NOT how the channel is found
+```
+
+The channel is `ipc::ns_file(channel_file_name(producer, instance))`. The obvious alternative was
+to hand over `$ORGANON_IPC_NS` and let the producer rebuild that path, and it is wrong for a
+structural reason rather than a preference: **`channel_file_name` is in `organon-module` and a
+module has it; `ns_file` is `organon-core`'s, and `organon-module`'s manifest forbids depending on
+that crate** — *"resolving a path is the console's job, done once at the call site, and taking a
+dependency on the engine's spine to get one `PathBuf` would put `glam`, `half`, `bytemuck`, `serde`
+and `serde_json` into a game's build for a string."* Handing over the namespace would therefore
+oblige a module **in another repository** to re-implement a rule owned by a crate it may not link,
+and the symptom of drift would be a channel that opens nothing, with no error anywhere, because the
+module was looking in the right directory for a file with almost the right name. `channel.rs`
+already settled half of this — *"this crate names the file and the console places it"* — and handing
+over the placed result is that sentence carried one step further. It also survives a channel that
+is one day not under `$TMPDIR`.
+
+📌 **The namespace is still injected**, for `term.rs:195`'s reason and not as an address: an
+`organon` CLI run *by the module* must reach this console's session rather than the default
+namespace. Naming both and saying which one is the address is deliberate.
+
+⚠️ **An environment variable rather than an argv argument, and that is the deciding argument rather
+than a taste.** §9's T1 requires a module's own `main.rs` to keep its window, its pump and a working
+launch script, so a module keeps its own command line — written by somebody else. An argument
+appended by the console can collide with a parser in another repository; an environment variable
+cannot collide with anything. It is also not visible in a process listing, which argv is.
+
+#### 🚨 The layout is the trigger, and there is no `start` verb
+
+A region holding `3d <hosted>` **is** a module that should be running, so assigning that content
+launches it and taking it away closes it. §5.1 is what makes that safe rather than eager: a module
+arrives **`Attached`** — *"the producer exists and is drawing, but time is not advancing"* — so the
+inert state is already the running one, and a second word a person had to type before a picture
+appeared would be a word whose only effect is to make the rectangle stop apologising.
+
+⚠️ **`console module restart` is the fifth action word**, and it exists because every sentence in
+§4.6's fourth row promises it. It drops the slot; the next frame's service pass builds it again
+through the same path a fresh `viewport` command takes, so there is one launch route rather than
+one for the first time and another for every time after. It is also the **only** way to clear a
+refusal — see below. `revoke` now stops a running module before it removes the record, because
+withdrawing trust while the picture keeps arriving would leave a live frame under a rectangle that
+says *"not approved"*.
+
+📌 **`RESTART_VERB` landed where `presence.rs` reserved it and the objection beside it did not
+survive.** That note predicted the constant would live in `module.rs`, and it does. It also said
+`restart` *"is not one of `MODULE_ACTIONS`"* — but `MODULE_ACTIONS` is not the approval set; its own
+doc calls it *"the action words `console module` takes"* and says *"a fifth verb is one line here
+and not four"*. A verb named in a rectangle that a person cannot then type is a sentence that lies.
+So it is in the table, and `the_verb_constants_and_the_action_words_are_one_table` now states the
+distinction — four verbs change trust or the disk, and this one changes neither — rather than
+merely growing by one.
+
+#### 🚨 A refusal is remembered, because the frame loop is the launcher
+
+`HostSlot` is `Live(Hosted)` **or** `Refused { producer, why }`, and the second arm is the whole
+reason it is an enum rather than an `Option`. A launch is attempted from the frame loop, so a launch
+that failed and was forgotten is attempted again next frame — sixty process spawns a second against
+a binary that is not there. Remembering the refusal makes *"say why there is no picture"* and
+*"stop trying"* one state. ⚠️ **It is cleared by a person, never by a timer**: a retry on a schedule
+would be the console guessing that something on disk changed, which is the guess `set_layout`
+declines to make everywhere else.
+
+#### The four states, and the one that outranks the mapping
+
+| §4.6 | Where the answer comes from |
+|---|---|
+| not approved | `ModuleRegistry::vacancy` — unchanged since T3a |
+| approved, not built | the same |
+| **launched, not yet producing** | `Presence::Starting`, and it **times out** into the row below after `Timings::start_within` (10 s) |
+| **died / hung / stopped producing** | `Presence::{Stalled, NotProducing, Lost, Gone}` — **or `Vacancy::Exited`** |
+
+🚨 **`Exited` is the launcher's own contribution and it outranks every counter.** `presence.rs`
+states the limit it answers: *"hung and exited-without-a-farewell are not distinguishable from inside
+a shared mapping, and the thing that genuinely knows is the process handle, which is T3b's
+launcher's."* This is that launcher and it holds it — so `Hosted::exited()` (a non-blocking
+`try_wait`, asked **before** the poll) names a crash the instant the operating system knows about
+it, with its exit code, rather than as a silence that becomes `Lost` five seconds later.
+
+⚠️ **`try_wait` failing is not death.** It is the OS declining to answer, and reporting *exited*
+for it would be inventing a fact; the liveness counter still works and reaches the same conclusion
+if the process really is gone.
+
+#### 🚨 Never the last good frame, and where the guarantee actually lives
+
+`ModulePaint` carries a **sentence always** and an **image sometimes**, and the image is `Some`
+exactly when `FrameTexture::view()` was. That is not a rule the paint site follows — it is the
+contract's own guarantee spent, in gpu.rs's words: *"a call site that draws the sentence whenever
+this is `None` has implemented the whole vacancy rule."* `Vacancy::picture_may_be_shown` is a
+**second** lock and says so: the two answers live in two crates, one behind a feature flag, so
+agreement cannot be a compile error — `module_host`'s own test pins them against each other, and a
+`debug_assert` in the service pass catches a disagreement in a debug build rather than showing it to
+a person.
+
+#### ⚠️ The sRGB view, which would have been a picture that is merely too dark
+
+`FrameTexture` is asked for a **linear** view of its sRGB bytes — `linear_view_format`, added to
+`organon-module` for this. The wire carries sRGB-encoded bytes and `PixelFormat` has no other kind,
+so a view in the texture's own format decodes on every sample; egui's shader linearizes its own
+samples, so that decode happens **twice**. This console already knew: `BACKDROP_SAMPLE_FORMAT`'s
+comment is *"a decoded-on-sample view would linearize twice and come out dark."* 🚨 It is a function
+in the contract crate rather than a line at this call site because nothing errors, nothing tears and
+every counter reads clean — the only report is a person saying the viewport looks murky, and the
+next consumer would have had to rediscover it.
+
+#### The size, and the allocation that must not happen
+
+The console asks for the rectangle the region was drawn in **last** frame, through
+`pane_pixels_in`'s ratio — *"never points times a remembered scale"*, which is `render_backdrop`'s
+measurement applied unchanged. `ask_size` returns early when nothing moved, so a console measuring
+its region sixty times a second does not write a control block sixty times a second; the request is
+**level-triggered**, so an oscillating console moves a number rather than enqueuing reallocations.
+
+🚨 **T0's condition is asserted rather than intended.** `staging_allocations()` and
+`FrameTexture::allocations()` exist because a fresh staging buffer and destination per frame measure
+**2.72 ms at 1440p against 1.37 ms reused**, with 3.3× of the gap being `memcpy` of *identical
+bytes* — first-touch page faulting, not bandwidth — which reads as a verdict on mechanism B and buys
+`unsafe` interop to fix an allocator problem. `the_staging_buffer_is_allocated_once_and_a_resize_does_not_move_it`
+drives 600 polls and ~600 size changes through a real channel and asserts the counter is still 1.
+
+📌 **And the texture counter is not a statistic here — it is the re-registration trigger.** egui
+holds a `TextureId` bound to one `TextureView`; when the producer's frame size changes,
+`FrameTexture` makes a new texture and the old registration points at a freed view. `allocations()`
+*is* the question *"has the texture been remade"*, so watching it is both the cheapest correct
+trigger and the thing T0's condition is asserted on. ⚠️ `Forget` drops the **picture**, not the
+allocation, so a module that died and was restarted does not pay for a new texture on the recovery
+path — where the cost would be hardest to notice.
+
+#### ⚠️ What is fed, and what deliberately is not
+
+§5.3: *"before the click it is a picture: no key claim, no pointer capture, wheel scrolls the page."*
+So `pointer_events` forwards **motion and mouse buttons over the rectangle, and nothing else** — no
+keys, no wheel, no absolute position (the protocol cannot express one, which is `input.rs`'s refusal
+rather than an omission here). `paint_module_picture` is `paint_viewport` **minus the camera**, and
+registers no egui interaction: Organon's viewport does because the console owns its camera, and a
+hosted module has its own.
+
+🚨 **The two `ReleaseAll` rules are the whole of the correctness**, and both are about a button that
+goes down inside the rectangle and comes up where the console never sees it: leaving the rectangle,
+and losing focus. Without them a module holds a button for ever and reads as wedged — §4.6's fourth
+row, reached from the one direction that is the console's fault rather than the module's.
+
+⚠️ **The click latch is NOT built, and that is §5.3 rather than an omission.** It says *the way out
+must be decided before the way in is built* — a key the module is told it will never receive
+(`input::RESERVED` exists for it) — and that is James's decision, not a session's. `Lifecycle`
+therefore never leaves `Attached` in this build. A module draws; time does not advance.
+
+#### 🚨 `engine_plan` is not consulted, and must not be
+
+A hosted module renders no `World`, touches no `frame_index` and shares no TAA jitter phase, so it
+is not a claimant on the one frame the arbiter hands out. `region_showing_world` asks for
+`Content::ThreeD(Producer::Organon)` precisely — T4's correction, unchanged here — and
+`a_hosted_producer_does_not_make_the_console_render_a_world_frame` still proves it. Widening
+`the_engine_is_asked_for_at_most_one_frame` would assert that a hosted module *is* a claimant, which
+is the opposite of what is true; it stays unedited.
+
+#### ⚠️ What this has not done
+
+**No picture has been seen.** No module process has been launched by this console, on this machine or
+any other — the producer half is `organonart/ascent`'s and lands separately. Everything here is
+green, tested headlessly, and **ready to try**. In particular §4.4's number 2 — *frames* of latency
+between the module drawing and the console painting — is now **takeable** rather than measured:
+every frame carries the producer's `SystemTime` at publish and `FrameView::age` is the subtraction,
+and the two processes this needed now exist on one side.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -7426,7 +7611,7 @@ stripped the padding; it would have passed both sides' tests.
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
 | Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. ✏️ **Tier C landed and was then cut back**: it shipped as a command line inside each region dispatching the whole registry, James rejected that scope on a running console, and what remains is a two-word `add`/`remove` control in `panel` regions only — which is still what makes a *per-region* stack addressable, and is all it was wanted for (§1.14). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D — it records whatever arrangement exists and derives every word from `Region::ALL`, which is why **Tier B landing under it changed nothing in it**. What it leaves behind is small and named: ✏️ **the name ring has since become a `NarrowFn` over the library** — measured first, which is what the deferral asked for, and the measurement is why it is cached rather than read straight (§1.15: the candidate walk runs on the *draw* path and asks n + 1 times per call, so a hundred layouts is 10.1 ms against a 16.7 ms frame) — and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ **Tier B's word-level break is the first real test of a layout's forward compatibility, and it is the expected behaviour rather than a bug**: a `layouts.json` written before it still loads (`left` and `right` resolve, and now mean the outer column), and one naming `topcenter` is refused **by name** in an older build rather than half-loaded — which is exactly the story §1.15's refusal table is arranged to give. ⚠️ Animated transitions and drag-to-resize are still after Tier C — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
-| A hosted module in a viewport | **T3a, T4, T3b and T2 landed** (§1.17, §1.14, §1.19, §1.20): `module.rs` — `organon-module.toml` and `modules.json`, the two grant types that make "a manifest cannot grant itself" structural, the commit as the unit of trust, the two build commits, and the two reachable states of §4.6. ✏️ **T2 is the contract crate** (§1.20): `organon-module`, which both trees depend on — mechanism B's preallocated three-slot frame ring, the tear detector, the liveness verdict that makes *never the last good frame* unreachable rather than forbidden, the four input verbs and the refusals beside them, and the wire versioning that turns a mismatch into a sentence. It wires into no region: T4 owns the call site and deliberately does not call it yet. What is left is the rest of `doc/organon_module_viewport.md` §9's order, and none of it is small. ✏️ **T3b has landed too** (§1.19, `module_work.rs`), which this row described in the future tense until now: the two verbs have bodies — clone, `git diff <approved>..<candidate>` (§3.3's *"show me what changed and ask again"*, which is the affordance the whole approach exists for), `cargo build`, and a filled `BuildRecord` — and it is where §3.4's build-time hole became real rather than diagrammatic: `build.rs` and any proc macro run **as you**, before a line of the module's code runs inside anything, so the approval gesture gates *building* and the process boundary gates only *running*. ✏️ **T4 has landed** and §1.14's `3d <producer>` subsection is where it lives: the qualifier over `ModuleRegistry::for_completion`, `only_one_because` moved to the producer (so **two hosted viewports are legal**), and `engine_plan`'s boolean corrected to *"a region holds `3d` whose producer is Organon"*. 🚨 **It draws no picture and it was never meant to** — a hosted region paints `ModuleState`'s sentence, which is §4.6's first two rows and the only two states reachable with nothing running. ⚠️ Two things it decided that a reader of §4.2 alone would get wrong: the spelling is **keyword-tagged** (`producer ascent`, not a bare third word — §1.8's grammar, and `stack`'s precedent), and a **stored** producer is deliberately not checked against the approved set, because §3.5 requires a revoked module to leave a layout that still opens. ⚠️ **T0 partly answered.** §4.4 asked for three frame-boundary numbers and PR #139 measured **two of them** on the 5090 (`doc/measurements/module-frame-boundary-2026-08-21.md`): the shared-memory copy costs the producer **0.06 ms** of added stall at 640×360 and **0.35 ms** at 2560×1440, and the full round trip is **0.44 ms at 1280×720** — 2.6 % of a 16.7 ms frame — rising to **1.4–1.55 ms at 1440p** (8–9 %). 🚨 **§4.4's second number is still genuinely unmeasured**: *frames* of latency between "the module drew it" and "the console painted it", across two processes, counted rather than reasoned about. ✏️ **The ordering that deferred it has now paid, and what T2 changed is the cost of asking rather than the answer** — T0 settling numbers 1 and 3 is what let the wire format be designed for the mechanism that turned out to be right, and every frame now carries the producer's `SystemTime` at publish so `FrameView::age` is a subtraction rather than a research project. 🚨 **And the number is now the closest thing left to a blocker on this row.** Nothing in T3a, T4, T3b or T2 starts a *module* process — T3b builds one and stops there — so the launcher that finally runs the binary is T5's, and it is the first thing here that will have two processes to measure between | `doc/organon_module_viewport.md` · `doc/organon_modules_plan.md` §11 · `doc/measurements/module-frame-boundary-2026-08-21.md` |
+| A hosted module in a viewport | **T3a, T4, T3b and T2 landed** (§1.17, §1.14, §1.19, §1.20): `module.rs` — `organon-module.toml` and `modules.json`, the two grant types that make "a manifest cannot grant itself" structural, the commit as the unit of trust, the two build commits, and the two reachable states of §4.6. ✏️ **T2 is the contract crate** (§1.20): `organon-module`, which both trees depend on — mechanism B's preallocated three-slot frame ring, the tear detector, the liveness verdict that makes *never the last good frame* unreachable rather than forbidden, the four input verbs and the refusals beside them, and the wire versioning that turns a mismatch into a sentence. It wires into no region: T4 owns the call site and deliberately does not call it yet. What is left is the rest of `doc/organon_module_viewport.md` §9's order, and none of it is small. ✏️ **T3b has landed too** (§1.19, `module_work.rs`), which this row described in the future tense until now: the two verbs have bodies — clone, `git diff <approved>..<candidate>` (§3.3's *"show me what changed and ask again"*, which is the affordance the whole approach exists for), `cargo build`, and a filled `BuildRecord` — and it is where §3.4's build-time hole became real rather than diagrammatic: `build.rs` and any proc macro run **as you**, before a line of the module's code runs inside anything, so the approval gesture gates *building* and the process boundary gates only *running*. ✏️ **T4 has landed** and §1.14's `3d <producer>` subsection is where it lives: the qualifier over `ModuleRegistry::for_completion`, `only_one_because` moved to the producer (so **two hosted viewports are legal**), and `engine_plan`'s boolean corrected to *"a region holds `3d` whose producer is Organon"*. 🚨 **It draws no picture and it was never meant to** — a hosted region paints `ModuleState`'s sentence, which is §4.6's first two rows and the only two states reachable with nothing running. ⚠️ Two things it decided that a reader of §4.2 alone would get wrong: the spelling is **keyword-tagged** (`producer ascent`, not a bare third word — §1.8's grammar, and `stack`'s precedent), and a **stored** producer is deliberately not checked against the approved set, because §3.5 requires a revoked module to leave a layout that still opens. ⚠️ **T0 partly answered.** §4.4 asked for three frame-boundary numbers and PR #139 measured **two of them** on the 5090 (`doc/measurements/module-frame-boundary-2026-08-21.md`): the shared-memory copy costs the producer **0.06 ms** of added stall at 640×360 and **0.35 ms** at 2560×1440, and the full round trip is **0.44 ms at 1280×720** — 2.6 % of a 16.7 ms frame — rising to **1.4–1.55 ms at 1440p** (8–9 %). 🚨 **§4.4's second number is still genuinely unmeasured**: *frames* of latency between "the module drew it" and "the console painted it", across two processes, counted rather than reasoned about. ✏️ **The ordering that deferred it has now paid, and what T2 changed is the cost of asking rather than the answer** — T0 settling numbers 1 and 3 is what let the wire format be designed for the mechanism that turned out to be right, and every frame now carries the producer's `SystemTime` at publish so `FrameView::age` is a subtraction rather than a research project. ✏️ **T5's console half has now landed too and that sentence is out of date in one direction only** (§1.21): the launcher exists, a region holding `3d <hosted>` starts a process and paints what it publishes, all four §4.6 sentences are reachable, and `console module restart` is the fifth action word. **The number still has not been taken**, because taking it needs the *producer*, which is `organonart/ascent`'s half and lands separately — so what changed is that it went from *unmeasurable* to *waiting on the other repository*. 🚨 **What is left on this row is now short and named**: §5.3's **click latch**, which is unbuilt because the way *out* has to be decided first and which key a module is told it will never receive is James's call; §4.4's second number; and §6's ladder. ⚠️ **And no picture has been seen by anyone** — every claim in §1.21 is green and headlessly tested, never observed | `doc/organon_module_viewport.md` · `doc/organon_modules_plan.md` §11 · `doc/measurements/module-frame-boundary-2026-08-21.md` |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes

@@ -507,7 +507,16 @@ interop.
 
 🚨 **The third number is still missing and nothing above is a proxy for it.** Frames of
 latency between *"the module drew it"* and *"the console painted it"* was not attempted, because
-it needs a second process and a protocol that does not exist. The numbers above are **throughput
+it needs a second process and a protocol that does not exist.
+
+> ✏️ **The protocol exists (T2) and one end of the second process does (T5), so this is now a
+> subtraction waiting on a producer rather than a research project.** Every frame carries the
+> producer's `SystemTime` at publish and `FrameView::age` is the difference; the console's service
+> pass polls once per frame with everything else. What is left is a module that actually publishes.
+> 📌 The console's own arrangement adds a **known, deliberate** frame of its own on top of whatever
+> that measures: the size a module is asked for is the rectangle it was drawn in last frame, exactly
+> as `render_surfaces`, `service_exhibits` and `render_viewport` all work, because a rectangle's
+> size cannot be both an input to and an output of one frame. The numbers above are **throughput
 and stall**, which is a different question from **how stale the painted frame is** — and staleness
 is what §6 says stops being affordable at full screen. Mechanism A was not measured at all: nothing
 here says a shared GPU texture is faster, slower, or works.
@@ -566,6 +575,21 @@ like. Four states, each with its own line rather than a shared "something went w
 | launched, not yet producing | that it is starting — and this one must **time out** into the next row rather than sitting forever |
 | died / hung / stopped producing | that it stopped, and the verb that restarts it. **Never the last good frame.** |
 
+✅ **All four rows are reachable now** (`CONSOLE_ARCHITECTURE.md` §1.21). Rows 1–2 are
+`ModuleRegistry::vacancy`, unchanged since T3a; rows 3–4 are `Presence`, timed out after ten
+seconds, plus one state the mapping could not produce. 🚨 **The launcher holds the process handle,
+which is what §2 of `presence.rs` said was needed**: `Hosted::exited()` is a non-blocking `try_wait`
+asked *before* the poll, so a module that died without saying goodbye is named as dead, with its
+exit code, immediately — rather than as a silence that becomes `Lost` five seconds later. The verb
+in every one of those sentences is `module.rs`'s `RESTART_VERB`, which is now a real
+`console module restart`.
+
+⚠️ **Never the last good frame is not a rule the console follows — it is `FrameTexture::view()`
+returning `None`.** `ModulePaint` carries a sentence always and an image only when that view was
+`Some`, so the paint site has no policy of its own to get wrong. `Vacancy::picture_may_be_shown` is
+a second lock and is documented as one: the two answers live in two crates, one behind a feature
+flag, so they cannot agree by compilation and are pinned against each other by test instead.
+
 ⚠️ A stale texture is the single worst thing this design can paint, and the easiest to paint by
 accident, because the texture is still there and still valid. The console made this call once
 already for the portal-versus-region loser, and made it the same way.
@@ -586,6 +610,13 @@ So the contract carries a lifecycle — `Attached` (the producer exists and is d
 not advancing) → `Running` (ticking) — and **`Attached` is what a module gets on arrival, always,
 with no way for the manifest to ask otherwise.** A module that could declare itself auto-running
 has a manifest that grants itself something, which §3.1 forbids.
+
+✅ **Built, and it is what makes the launcher safe to hang off the layout.** A region holding
+`3d <hosted>` launches the module — there is deliberately no `start` verb — and the reason that is
+not eager is this section: the state a module arrives in is already the inert one, so a second word
+a person had to type before a picture appeared would be a word whose only effect is to stop the
+rectangle apologising. `Lifecycle` never leaves `Attached` in this build, because the thing that
+moves it is §5.3's latch and §5.3 is not built.
 
 📌 **Organon's own `World` answers this trivially and that is not a counter-example.** It has no
 pause state and needs none: it is ambient, it is silent, and it is already the thing the console
@@ -641,6 +672,24 @@ wants the keyboard, wants the pointer captured, and wants Escape. So:
   Escape and a console that needs Escape are the same key, and this is the first place they meet.
   ⚠️ Whatever is chosen must be a key the module is **told it will never receive**, rather than a
   key we hope it ignores.
+
+✏️ **The half that needs no decision has landed; the half that does has not.** The console now
+forwards **motion and mouse buttons while the pointer is over the rectangle, and nothing else** —
+`module_host::pointer_events`, which builds no key event at all, claims no wheel, and registers no
+egui interaction on the picture (`paint_module_picture` is `paint_viewport` minus the camera). That
+is exactly *"before the click it is a picture"*, and the click that would latch is forwarded already,
+so the gesture is legible from the module's side before it means anything on this one.
+
+🚨 **The latch itself is deliberately unbuilt and is James's call**, for the reason this section
+gives rather than for want of time: the way out has to be decided before the way in exists, and the
+choice is which key a module is *told* it will never receive. `input::RESERVED` is the mechanism and
+is already refused at the encode site, so the console cannot leak the key by forgetting — what is
+missing is which key it is.
+
+⚠️ **The two `ReleaseAll` rules are the whole of the correctness in what did land**, and both are
+about a button pressed inside the rectangle and released where the console never sees it: leaving
+the rectangle, and losing window focus. Without them a module holds a button for ever and presents
+as wedged — §4.6's fourth row, arrived at from the one direction that is the console's fault.
 
 ---
 
@@ -744,7 +793,7 @@ A spine rather than a schedule; each rung is independently useful and none needs
 | **T2** | **The contract crate** — permissive, console-side, both trees depend on it, `cargo tree` gates both. **B**, per T0, with a preallocated ring rather than a per-frame allocation — that condition is the measurement's, not a preference. | T1's real signatures |
 | ✅ **T3** | **`modules.json`, `organon-module.toml`, and the approve verb** — **done.** T3a landed the data (`module.rs`); T3b landed the verbs (`module_work.rs`), on the harness precedent with `layout.rs`'s refusal discipline: approve, build, record the built commit, diff, revoke. `CONSOLE_ARCHITECTURE.md` §1.17 and §1.19. ⚠️ Nothing launches and nothing draws — §4.6's *launched, not yet producing* and *died* states are unreachable because no process exists to be in them. | — |
 | ✅ **T4** | **The producer qualifier** — `3d <producer>`, the dynamic ring cached per §1.15's measurement, `only_one_because` moved, `engine_plan`'s boolean corrected and tested. **All four landed** (`CONSOLE_ARCHITECTURE.md` §1.14). ⚠️ Two departures from §4.2 as written: the spelling is keyword-tagged (`producer ascent`), and a *stored* producer is not checked against the approved set — §3.5. 📌 It draws no picture; a hosted region carries `ModuleState`'s sentence, which is what T5 replaces. | T3, for a producer to name |
-| **T5** | **Lifecycle and input** — `Attached`/`Running`, the click latch, the way out, the four failure sentences. | T3, T4 |
+| ✅ **T5** | **Lifecycle and input** — **mostly landed** (`CONSOLE_ARCHITECTURE.md` §1.21). The console creates the channel, launches the process, hands it the path in `ORGANON_MODULE_CHANNEL`, asks for a size, feeds it the pointer, and paints what it publishes — with all four §4.6 sentences reachable and a fifth state the mapping could not give (`Vacancy::Exited`, from the process handle). `console module restart` is the fifth action word. ⚠️ **What is NOT built is the click latch**, and §5.3 says why: the way out must be decided first, and which key a module is told it will never receive is James's call rather than a session's — so `Lifecycle` never leaves `Attached`. ⚠️ **And no picture has been seen**: the producer half is `organonart/ascent`'s and lands separately, so this is green and ready to try rather than working. | T3, T4 |
 | **T6** | **The ladder** — rung 2 is already legal; rung 3 is the handoff, or the portal's full-screen tier, and that is a decision T0 informs. | §6 |
 
 ⚠️ **T0 before T2 is not caution, it is the ordering that stops a wire format being designed for a

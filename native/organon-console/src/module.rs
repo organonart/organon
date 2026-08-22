@@ -181,6 +181,26 @@ pub const DIFF_VERB: &str = "console module diff";
 /// The verb that withdraws an approval. Same rule as [`DIFF_VERB`].
 pub const REVOKE_VERB: &str = "console module revoke";
 
+/// The verb that starts a hosted module again after it died, hung or stopped drawing.
+///
+/// 🚨 **The fifth spelling, and `presence.rs` predicted both its home and the argument for it.**
+/// Its doc reserved this constant here rather than in the contract crate: *"a protocol crate that
+/// hardcoded `console module restart` would be a crate a game in another repository links in
+/// order to carry Organon's command spellings around."* So the contract takes a `restart_verb`
+/// parameter and this is what Organon passes.
+///
+/// ✏️ **It also predicted the objection, and the objection does not survive contact with what
+/// [`crate::module_work::MODULE_ACTIONS`] actually is.** That note said `restart` *"is a thing the
+/// console does to a producer, not a thing a person approves, so it is not one of
+/// `MODULE_ACTIONS`"* — but `MODULE_ACTIONS` is not the approval set. Its own doc calls it *"the
+/// action words `console module` takes"*, and says in as many words that *"a fifth verb is one
+/// line here and not four"*. A verb named in a rectangle that a person cannot then type would be
+/// a sentence that lies, which is the exact failure these constants exist to prevent — so
+/// `restart` **is** a `console module` action, and it is the one that changes no trust.
+/// `the_verb_constants_and_the_action_words_are_one_table` states that distinction rather than
+/// merely growing.
+pub const RESTART_VERB: &str = "console module restart";
+
 /// How much of a commit hash a sentence in a rectangle shows.
 ///
 /// The record keeps the whole hash — that is the point of §3.2 — but forty characters in a

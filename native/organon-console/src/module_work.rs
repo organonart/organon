@@ -99,7 +99,12 @@ pub const NONE_GRANT: &str = "none";
 ///
 /// The one table, read by clap's `PossibleValuesParser`, by the slash grammar's `Choice` ring
 /// and by [`ModuleCmd::resolve`] — so a fifth verb is one line here and not four.
-pub const MODULE_ACTIONS: &[&str] = &["approve", "build", "diff", "revoke"];
+///
+/// ✏️ **The fifth verb arrived and it was one line.** `restart` is the one word here that changes
+/// no trust — it starts a process that was already approved and already built — which is why it
+/// is last rather than beside `revoke`, and why
+/// [`crate::module::RESTART_VERB`] carries the argument for it being in this table at all.
+pub const MODULE_ACTIONS: &[&str] = &["approve", "build", "diff", "revoke", "restart"];
 
 /// 🚨 **What approving actually costs, in the words a person reads while they do it.**
 ///
@@ -407,13 +412,18 @@ impl std::fmt::Display for WorkFault {
 // The action word
 // ---------------------------------------------------------------------------------------
 
-/// Which of the four a `console module` line is asking for.
+/// Which of the five a `console module` line is asking for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleCmd {
     Approve,
     Build,
     Diff,
     Revoke,
+    /// 🚨 **The one that touches no network, no compiler and no record.** It stops a hosted
+    /// module and starts it again, which is a thing done to a *process* rather than to an
+    /// approval — so like [`ModuleCmd::Revoke`] it runs on the frame thread rather than in a job,
+    /// and unlike every other verb here it is a no-op when nothing is running.
+    Restart,
 }
 
 impl ModuleCmd {
@@ -426,6 +436,7 @@ impl ModuleCmd {
             "build" => Ok(ModuleCmd::Build),
             "diff" => Ok(ModuleCmd::Diff),
             "revoke" => Ok(ModuleCmd::Revoke),
+            "restart" => Ok(ModuleCmd::Restart),
             other => Err(format!(
                 "`{other}` is not something `console module` does — {}",
                 MODULE_ACTIONS.join(", ")
@@ -439,6 +450,7 @@ impl ModuleCmd {
             ModuleCmd::Build => "build",
             ModuleCmd::Diff => "diff",
             ModuleCmd::Revoke => "revoke",
+            ModuleCmd::Restart => "restart",
         }
     }
 }
@@ -1698,13 +1710,28 @@ mod tests {
     /// refusal that cannot be acted on.
     #[test]
     fn the_verb_constants_and_the_action_words_are_one_table() {
-        use crate::module::{APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB};
-        let verbs = [APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB];
+        use crate::module::{APPROVE_VERB, BUILD_VERB, DIFF_VERB, RESTART_VERB, REVOKE_VERB};
+        let verbs = [APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB, RESTART_VERB];
         assert_eq!(verbs.len(), MODULE_ACTIONS.len());
         for (verb, action) in verbs.iter().zip(MODULE_ACTIONS) {
             assert_eq!(*verb, format!("console module {action}"));
             assert!(ModuleCmd::resolve(action).is_ok());
         }
+
+        // 🚨 **The distinction `presence.rs` was reaching for, kept rather than dropped.** Four of
+        // these change what Organon trusts or what it has on disk; `restart` changes neither — it
+        // is a thing done to a running process. That is worth an assertion because the tempting
+        // next edit is a loop over `MODULE_ACTIONS` that treats every word as an approval action,
+        // and this is the line that would fail first.
+        assert_eq!(ModuleCmd::resolve("restart").unwrap(), ModuleCmd::Restart);
+        let changes_trust_or_disk = [
+            ModuleCmd::Approve,
+            ModuleCmd::Build,
+            ModuleCmd::Diff,
+            ModuleCmd::Revoke,
+        ];
+        assert!(!changes_trust_or_disk.contains(&ModuleCmd::Restart));
+        assert_eq!(changes_trust_or_disk.len() + 1, MODULE_ACTIONS.len());
     }
 
     /// CONTRACT: **artifacts are found by deriving the path, never by reading a recorded

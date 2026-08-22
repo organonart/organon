@@ -46,6 +46,31 @@ pub fn from_wgpu_format(f: wgpu::TextureFormat) -> Option<PixelFormat> {
     }
 }
 
+/// The same bytes, as a format that **decodes nothing on sample**.
+///
+/// 🚨 **This exists because the obvious thing is wrong in a way only an eye can see.** The wire
+/// carries sRGB-encoded bytes and nothing else does — [`PixelFormat`] has two variants and both
+/// are sRGB, because that is what a producer's swapchain-shaped texture holds. A view in the
+/// texture's own format therefore converts sRGB to linear at every sample, which is correct for
+/// a consumer that wants linear and **wrong for one that linearizes for itself**.
+///
+/// egui is the second kind: its shader converts its own samples. Organon's console already
+/// carries this exact pairing and its own words for it — `console_main.rs`'s
+/// `BACKDROP_SAMPLE_FORMAT`: *"render the world through the sRGB format, hand egui a non-sRGB
+/// view of the same bytes — egui's shader linearizes its samples itself, and a decoded-on-sample
+/// view would linearize twice and come out dark."*
+///
+/// ⚠️ **The failure is a picture that is merely too dark**, which is why it is a function rather
+/// than a comment: nothing errors, nothing tears, the counters all read clean, and the only
+/// report is a person saying the viewport looks murky. A pure function is a thing a test can
+/// pin; a rule at a call site is a thing the next call site does not know about.
+pub fn linear_view_format(f: PixelFormat) -> wgpu::TextureFormat {
+    match f {
+        PixelFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8Unorm,
+        PixelFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8Unorm,
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // The console's half
 // ---------------------------------------------------------------------------------------
@@ -63,6 +88,9 @@ pub fn from_wgpu_format(f: wgpu::TextureFormat) -> Option<PixelFormat> {
 /// when something has already gone wrong.
 pub struct FrameTexture {
     format: PixelFormat,
+    /// What [`FrameTexture::view`] hands out, which is **not** necessarily the texture's own
+    /// format — see [`FrameTexture::sampled_as`].
+    view_format: wgpu::TextureFormat,
     texture: Option<wgpu::Texture>,
     view: Option<wgpu::TextureView>,
     size: (u32, u32),
@@ -71,15 +99,42 @@ pub struct FrameTexture {
 }
 
 impl FrameTexture {
+    /// A texture sampled in its **own** format — sRGB in, linear out at the sampler.
+    ///
+    /// ⚠️ Right for a consumer that wants linear values; wrong for one that linearizes for
+    /// itself. See [`FrameTexture::sampled_as`] and [`linear_view_format`].
     pub fn new(format: PixelFormat) -> FrameTexture {
         FrameTexture {
             format,
+            view_format: wgpu_format(format),
             texture: None,
             view: None,
             size: (0, 0),
             has_picture: false,
             allocations: 0,
         }
+    }
+
+    /// Hand out a view in `view_format` instead of the texture's own.
+    ///
+    /// 🚨 **The one caller this exists for is a consumer whose shader linearizes its own
+    /// samples**, and the only sane argument is [`linear_view_format`]'s answer — that function
+    /// carries the whole reasoning and the measurement Organon's console already made.
+    ///
+    /// The bytes on the wire do not change and neither does the texture: this is a
+    /// reinterpretation at the sampler, which is why it can be a builder rather than a second
+    /// upload path. It is applied to the texture's `view_formats` as well, so the view is legal
+    /// rather than merely requested.
+    ///
+    /// ⚠️ **Call it before the first [`FrameTexture::apply`].** Changing it afterwards would
+    /// have to rebuild the texture — `view_formats` is fixed at creation — which is the
+    /// per-frame allocation this whole file exists to make impossible, so it is not offered.
+    /// Nothing enforces the ordering because nothing can: a later call is honoured for the next
+    /// allocation and cannot retroactively legalise a view of a texture that did not declare it.
+    /// Set it once, at construction, beside `new`.
+    pub fn sampled_as(mut self, view_format: wgpu::TextureFormat) -> FrameTexture {
+        self.view_format = view_format;
+        self
     }
 
     /// The view to sample, or `None` when there is nothing the console may show.
@@ -159,17 +214,26 @@ impl FrameTexture {
         if self.texture.is_some() && self.size == (w, h) {
             return;
         }
+        let stored = wgpu_format(self.format);
+        // The reinterpretation has to be declared at creation or the view below is illegal —
+        // wgpu validates `create_view` against exactly this list. Declaring the same format
+        // twice is not an error and is cheaper than branching on whether it differs.
+        let view_formats = [stored, self.view_format];
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("organon-module frame"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu_format(self.format),
+            format: stored,
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
+            view_formats: &view_formats,
         });
-        self.view = Some(tex.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.view = Some(tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("organon-module frame sample"),
+            format: Some(self.view_format),
+            ..Default::default()
+        }));
         self.texture = Some(tex);
         self.size = (w, h);
         self.allocations += 1;
@@ -313,6 +377,55 @@ mod tests {
     #[test]
     fn the_row_alignment_is_wgpus() {
         assert_eq!(crate::wire::ROW_ALIGNMENT, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    }
+
+    /// CONTRACT: **the linear view is the same channel order and the same width, with the
+    /// decode taken off.**
+    ///
+    /// ⚠️ **Mutation-tested, and the mutation is the one somebody would actually write**: making
+    /// this the identity — the shape it would have if the pairing were forgotten — fails at
+    /// *"the linear view must not decode"*. Swapping the two answers (Rgba to `Bgra8Unorm`)
+    /// fails at *"the channel order is not the sRGB decode and must not change with it"*, which
+    /// is worth its own assertion because a swapped answer is a picture with red and blue
+    /// exchanged, and that reads as a producer bug rather than as a view format.
+    #[test]
+    fn the_linear_view_takes_the_decode_off_and_changes_nothing_else() {
+        assert_eq!(
+            linear_view_format(PixelFormat::Rgba8UnormSrgb),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        assert_eq!(
+            linear_view_format(PixelFormat::Bgra8UnormSrgb),
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
+        for f in [PixelFormat::Rgba8UnormSrgb, PixelFormat::Bgra8UnormSrgb] {
+            assert_ne!(linear_view_format(f), wgpu_format(f), "the linear view must not decode");
+            // The channel order is a property of the wire and the decode is not, so taking one
+            // off must not move the other. `from_wgpu_format` cannot answer for a non-sRGB
+            // format by design, so the comparison is on the wgpu names.
+            let (a, b) = (linear_view_format(f), wgpu_format(f));
+            let swapped = matches!(
+                (a, b),
+                (wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8UnormSrgb)
+                    | (wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureFormat::Bgra8UnormSrgb)
+            );
+            assert!(!swapped, "the channel order is not the sRGB decode and must not change with it");
+        }
+    }
+
+    /// `sampled_as` is a builder and the default is the texture's own format — so a caller that
+    /// does not know about the double-linearization trap gets today's behaviour unchanged, and
+    /// only a caller that asks pays for the reinterpretation.
+    #[test]
+    fn a_frame_texture_samples_in_its_own_format_until_asked_otherwise() {
+        let plain = FrameTexture::new(PixelFormat::Rgba8UnormSrgb);
+        assert_eq!(plain.view_format, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let linear = FrameTexture::new(PixelFormat::Rgba8UnormSrgb)
+            .sampled_as(linear_view_format(PixelFormat::Rgba8UnormSrgb));
+        assert_eq!(linear.view_format, wgpu::TextureFormat::Rgba8Unorm);
+        // Neither has allocated anything by being configured.
+        assert_eq!(plain.allocations(), 0);
+        assert_eq!(linear.allocations(), 0);
     }
 
     #[test]

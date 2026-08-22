@@ -35,11 +35,13 @@ repository = "https://github.com/organonart/organon"
 # `Edition` as a value.
 console-edition = ["organon-core/console-edition"]
 
-# SIX dependencies, each because a `use` in src/ needs it (the organon-mind rule:
+# SEVEN dependencies, each because a `use` in src/ needs it (the organon-mind rule:
 # an unused dep is silent by default, so every edge here must earn its line). The
 # window stack (winit/wgpu/egui-winit/the vendored egui-wgpu) still belongs to the
 # root-crate binary that owns the window.
 #   organon-core — the Edition value every UI decision is a function of.
+#   organon-module — the hosted-module contract (`module_host.rs`). Default features:
+#                  the wgpu halves stay with the window. See the entry below.
 #   egui         — the compositor UI itself.
 #   serde/serde_json — the #4 session/event schema IS serde types + a JSONL log;
 #                  the schema is the product's shared vocabulary, not a sidecar.
@@ -57,6 +59,19 @@ console-edition = ["organon-core/console-edition"]
 # All four earlier additions are workspace-wide deps already — nothing new downloads.
 [dependencies]
 organon-core = { path = "../organon-core" }
+# organon-module — the hosted-module contract, and the first edge to it in this workspace.
+#
+# 🚨 The arrow points THIS way and only this way. `organon-module`'s own posture is about what it
+# depends ON — `MIT OR Apache-2.0`, one dependency, and never an edge to the GPL crates, because
+# `organonart/ascent` links it too. A dependent does not appear in `cargo tree -p organon-module`,
+# so the acceptance test in both trees is unchanged by this line. `organon-console` is
+# `MIT OR Apache-2.0` itself, so nothing about the licence moves either.
+#
+# ⚠️ **Default features, which means NO wgpu here.** The two GPU halves are behind that feature and
+# `FrameTexture` belongs with the window — the root crate's `console_main.rs` — exactly as
+# winit/wgpu/egui-winit already do. This crate takes the wgpu-free half: the channel, the
+# lifecycle, the input ring, and every decision `module_host.rs` makes.
+organon-module = { path = "../organon-module" }
 egui = "0.33.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
