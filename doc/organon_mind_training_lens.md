@@ -294,9 +294,15 @@ forgotten and rediscovered as a surprise.
   **Metal is still unrun**. 🚨 That is a much narrower and still-true gap, and stating the wide
   version was itself the failure principle 5 warns about, pointed the other way: *understating*
   what is measured is as much a provenance error as overstating it. ⚠️ **Consequence beyond this
-  document:** #110 was explicitly gated on that tap reporting MEASURED, and it did — so that gate
-  is lifted, and anyone still treating #110 as blocked on it is working from the same stale
-  reading.
+  document:** [organon#110](https://github.com/organonart/organon/issues/110) — *"A viewport type
+  for the local model"* — was explicitly gated on that tap reporting MEASURED (*"if it prints
+  PROXY, this feature's headline claim is false as designed"*), and it did. That gate is lifted,
+  and anyone still treating it as blocked is working from the same stale reading. 📌 **Cited by
+  URL rather than as a bare `#110` on purpose.** This tree carries pre-open-source tracker numbers
+  alongside GitHub ones — `CLAUDE.md` says so — and a bare low number collides: `ARCHITECTURE.md`
+  uses `#110` for *"Atomic recall"*. ⚠️ Note the distinction that makes the two tellable apart,
+  because it has already misled one reader: **#110 is an issue, not a PR**, so `gh pr view 110`
+  404s while `gh issue view 110` resolves it.
 - **Nothing here closes what is left of it.** A measured *training* signal is still not evidence
   about `head_summ`, and none of these tiers touches it. The tiers do not depend on it either: a
   fine-tune's delta and a trainer's loss curve are measured whatever the attention summary turns
