@@ -184,10 +184,7 @@ mod tests {
     use crate::params::OrganicMathParams;
 
     fn sample_preset(name: &str) -> Preset {
-        Preset {
-            name: name.to_string(),
-            values: PresetValues::capture(&OrganicMathParams::default()),
-        }
+        Preset::unstated(name, PresetValues::capture(&OrganicMathParams::default()))
     }
 
     #[test]
