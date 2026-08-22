@@ -126,6 +126,7 @@ pub mod mcp_http;
 pub mod mock_agent;
 pub mod module;
 pub mod module_work;
+pub mod module_host;
 pub mod panel_stack;
 pub mod platform;
 pub mod portal;

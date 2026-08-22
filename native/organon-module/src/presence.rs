@@ -201,10 +201,22 @@ impl Presence {
     /// Both properties then hold at once: this crate spells no verb, and Organon has exactly
     /// one place where all five live. Nothing here changes when it is added.
     ///
-    /// ⚠️ Whoever adds it should expect `module.rs`'s
-    /// `the_verb_constants_and_the_action_words_are_one_table` to **fail**, and should want a
-    /// deliberate answer rather than a mechanical fix: `restart` is a thing the console does to
-    /// a producer, not a thing a person approves, so it is not one of `MODULE_ACTIONS`.
+    /// ✏️ **Added in T5, and the prediction this doc made about it was half wrong — recorded
+    /// rather than quietly rewritten, because the reasoning is the useful part.** It said to
+    /// expect `the_verb_constants_and_the_action_words_are_one_table` to fail (it did, `4 != 5`)
+    /// and that the deliberate answer would be to keep `restart` **out** of `MODULE_ACTIONS`,
+    /// since it is *"a thing the console does to a producer, not a thing a person approves"*.
+    ///
+    /// That premise is right and the conclusion does not follow. `MODULE_ACTIONS` is not a list
+    /// of approvals — `diff` and `revoke` are not approvals either — it is the **grammar** of
+    /// `console module`, and the grammar is exactly what this parameter is spent on: the
+    /// sentences below end *"…to restart it"*, so a person reads the verb and types it. A verb
+    /// printed in a rectangle and missing from the table their typing resolves against is a
+    /// refusal that cannot be acted on, which is the one failure those constants exist to
+    /// prevent. So the console gave it a fifth row on both sides.
+    ///
+    /// ⚠️ **Nothing here changed, and that is the property worth noticing**: this crate still
+    /// spells no verb, and the decision it could not make was made where it belonged.
     pub fn sentence(&self, producer: &str, restart_verb: &str) -> String {
         match self {
             Presence::Starting { elapsed } => {

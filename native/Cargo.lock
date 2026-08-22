@@ -2954,6 +2954,7 @@ dependencies = [
  "dirs",
  "egui",
  "organon-core",
+ "organon-module",
  "portable-pty",
  "serde",
  "serde_json",

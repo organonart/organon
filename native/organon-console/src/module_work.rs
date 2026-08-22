@@ -1313,6 +1313,20 @@ mod tests {
             self.dirs.lock().unwrap().push(path.to_path_buf());
             Ok(())
         }
+
+        /// 🚨 **A panic, not a stub returning something inert.** Not one verb in this file
+        /// launches anything — `approve`, `build`, `diff` and `revoke` run `git` and `cargo`
+        /// and wait for them — so a `spawn` reached from a job is a job that has grown a
+        /// capability it must not have. A `Ok(never-exits)` here would let that land silently
+        /// and be discovered as a stray process; this fails the test that did it, by name.
+        fn spawn(
+            &self,
+            program: &Path,
+            _cwd: &Path,
+            _env: &[(&str, String)],
+        ) -> Result<Box<dyn ModuleProcess>, WorkFault> {
+            panic!("a `module_work` verb tried to launch {} — none of them may", program.display());
+        }
     }
 
     /// The happy path's script: an existing checkout, a fetch that resolves, a manifest.
@@ -1630,6 +1644,14 @@ mod tests {
             fn ensure_dir(&self, _: &Path) -> Result<(), WorkFault> {
                 Ok(())
             }
+            fn spawn(
+                &self,
+                _: &Path,
+                _: &Path,
+                _: &[(&str, String)],
+            ) -> Result<Box<dyn ModuleProcess>, WorkFault> {
+                panic!("`build` does not launch anything")
+            }
         }
         let err = build(&NoCargo, &store(), &approved()).unwrap_err();
         assert_eq!(err, WorkFault::ToolMissing { tool: Tool::Cargo });
@@ -1865,14 +1887,30 @@ mod tests {
         }
     }
 
-    /// CONTRACT: **the four verb spellings and the four action words are one table.** A
-    /// sentence in a rectangle names a verb by constant (§4.6) and a person types it into a
-    /// command whose action word comes from `MODULE_ACTIONS`; the two coming apart is a
-    /// refusal that cannot be acted on.
+    /// CONTRACT: **the verb spellings and the action words are one table.** A sentence in a
+    /// rectangle names a verb by constant (§4.6) and a person types it into a command whose
+    /// action word comes from `MODULE_ACTIONS`; the two coming apart is a refusal that cannot be
+    /// acted on.
+    ///
+    /// ✏️ **Five since T5, and the fifth was argued rather than added.** `organon-module`'s
+    /// `Presence::sentence` predicted this test would fail when `RESTART_VERB` arrived, and
+    /// reasoned that `restart` should therefore stay out of `MODULE_ACTIONS` — *"a thing the
+    /// console does to a producer, not a thing a person approves."*
+    ///
+    /// The premise is right and the conclusion does not follow. This table is not a list of
+    /// approvals — `diff` and `revoke` are not approvals either — it is the **grammar** of
+    /// `console module`, read by clap's value parser, by the slash ring and by
+    /// [`ModuleCmd::resolve`]. And the grammar is precisely what the constant is spent on: a dead
+    /// rectangle ends *"`console module restart` to restart it"*, so a person reads that verb and
+    /// types it. Leaving it out of the table would print a verb the grammar refuses — which is
+    /// the exact drift this test exists to catch, walking in through the door built to stop it.
+    ///
+    /// So it got a fifth row on both sides and goes on meaning what it meant. See
+    /// [`crate::module::RESTART_VERB`].
     #[test]
     fn the_verb_constants_and_the_action_words_are_one_table() {
-        use crate::module::{APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB};
-        let verbs = [APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB];
+        use crate::module::{APPROVE_VERB, BUILD_VERB, DIFF_VERB, RESTART_VERB, REVOKE_VERB};
+        let verbs = [APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB, RESTART_VERB];
         assert_eq!(verbs.len(), MODULE_ACTIONS.len());
         for (verb, action) in verbs.iter().zip(MODULE_ACTIONS) {
             assert_eq!(*verb, format!("console module {action}"));
