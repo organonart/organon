@@ -140,11 +140,17 @@
 //! **T5 performed it**, using the one thing that was missing — a second process.
 //! `src/bin/module_sim.rs` (behind the `sim` feature) is a producer in its own program, and
 //! `tests/staleness.rs` is the rig. `doc/measurements/module-staleness-2026-08-22.md` is the
-//! answer: **8–11 ms median at a 60 Hz consumer — half a frame — and flat across nine times
-//! the pixels.**
+//! answer: **the picture on screen is `≈0.50 × the producer's period` old** — 8–11 ms, half a
+//! frame, when both ends run at 60 Hz, and **50 ms from a producer drawing at 10 Hz**. Flat across
+//! nine times the pixels.
+//!
+//! ⚠️ **Two quantities, and only one of them is that.** How old a frame is *when the console takes
+//! it* is `≈0.55 × min(P, Q)` — a different number, equal to the first whenever the producer keeps
+//! up with the poll and **15× smaller at P = 250 ms**. The measurement doc records publishing the
+//! second as though it were the first, and why the error was unfalsifiable on the data then held.
 //!
 //! 🚨 **The control is the part worth carrying here**, because it is a fact about this
-//! protocol: staleness is `≈0.55 × min(producer period, poll interval)`, so it is set by the
+//! protocol: staleness is `≈0.50 × the producer's period` (the poll interval does **not** enter), so it is set by the
 //! two loops' **cadences** and the frame size is not in the expression. A reader who finds a
 //! viewport feeling behind should look at how often the two ends run, not at the copy.
 
