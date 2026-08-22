@@ -38,6 +38,22 @@ pub fn wgpu_format(f: PixelFormat) -> wgpu::TextureFormat {
 }
 
 /// wgpu's format, as this protocol spells it — `None` for everything the wire cannot carry.
+///
+/// 🚨 **`pub` on purpose, and it is contract surface rather than a helper that happens to be
+/// reachable.** A producer bakes its pixel format in at pipeline construction and the channel
+/// declares one in its header; this is how the two are compared **once, at open**, so a mismatch
+/// is a legible refusal ([`crate::RefusalReason::FormatUnsupported`]) instead of something
+/// discovered per frame or, worse, not discovered at all.
+///
+/// ⚠️ **Do not tidy it away as unused.** Nothing in *this* repository calls it — the console goes
+/// the other way, through [`wgpu_format`] — so it looks dead from here and is load-bearing from
+/// `organonart/ascent`. Deleting it would force a module to hand-write a second
+/// `PixelFormat` ↔ `wgpu::TextureFormat` table **in a repository that cannot see this one
+/// change**, which is the two-copies-of-one-rule defect this crate already refused once over the
+/// channel path: `channel_file_name` names the file here and the console places it precisely so a
+/// producer never re-implements a rule it cannot watch.
+///
+/// ✏️ Asked for by the Ascent session (`organonart/ascent#86`), which uses it exactly this way.
 pub fn from_wgpu_format(f: wgpu::TextureFormat) -> Option<PixelFormat> {
     match f {
         wgpu::TextureFormat::Rgba8UnormSrgb => Some(PixelFormat::Rgba8UnormSrgb),
