@@ -135,8 +135,8 @@ fn block_write(map: &Mapping, off: u64, body_end: usize, body: impl FnOnce(&mut 
     let cur = seq.load(Ordering::Relaxed);
     let odd = if cur & 1 == 1 { cur.wrapping_add(2) } else { cur.wrapping_add(1) };
     seq.store(odd, Ordering::Release);
-    // Staged read-modify-write, and it starts at BODY_START for the same reason the write
-    // below ends there: the counter's four bytes are never touched as ordinary memory.
+    // Staged read-modify-write. Both the read here and the write-back start at BODY_START for
+    // the same reason: the counter's four bytes are never touched as ordinary memory.
     let mut staged = [0u8; BLOCK_MAX];
     staged[BODY_START..body_end]
         .copy_from_slice(map.bytes(off + BODY_START as u64, body_end - BODY_START));

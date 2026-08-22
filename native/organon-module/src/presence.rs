@@ -39,6 +39,14 @@
 //! and then legitimately nothing, for ever — so a frame-silence rule that ignored the
 //! lifecycle would accuse every correctly-paused module within seconds of arriving.
 //!
+//! 📌 **A consequence worth naming, because it is the pair working as designed.** An older
+//! console reading a newer producer's `Refusing` gets `None` from `ProducerState::from_wire`
+//! and keeps its previous snapshot — so (1) fails silently across a version skew, which is
+//! exactly the shape of failure a forward-compatible wire is *supposed* to have. (2) is
+//! unaffected: the clock does not care what word the producer used, so the console still
+//! reaches this verdict, just without the specific clause. A mechanism that had only (1) would
+//! degrade from "stopped producing" to "healthy" at a version boundary.
+//!
 //! ⚠️ **The last row is the honest limit and it is not a gap this crate should close.** The
 //! thing that genuinely knows a process died is the process handle, and the console holds
 //! one the moment it spawns the module — that is T3b's launcher, and the answer belongs

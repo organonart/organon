@@ -1,4 +1,4 @@
-### Added
+### A producer yields a texture the console can sample, at a size the console asks for
 
 - **`organon-module` — the hosted-module contract, and Organon's consumer half of the frame
   ring.** `doc/organon_module_viewport.md` §9's **T2**, and the tenth workspace member. One
