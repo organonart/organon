@@ -95,7 +95,7 @@ Microsoft Store's *"Python was not found"* and exits 49; prefix `wsl.exe -e` the
 - *Stop* — `architecture-doc-check.sh` reminds you if a load-bearing file changed
   without a matching architecture-doc update; `doc-coherence.sh` checks the durable docs
   for duplicate table keys and unbalanced code fences; `bar-agreement-check.sh` pins the
-  **two published copies of the seven-leg verification bar** byte-identical — the copy in
+  **two published copies of the eight-leg verification bar** byte-identical — the copy in
   `CONTRIBUTING.md` that a contributor reads, and the copy in
   `.claude/skills/coordinate-sessions/BRIEF.md` that a *worker session* is handed, since a
   worker cannot load the coordinator's skill; `web-architecture-doc-check.sh`
