@@ -665,6 +665,11 @@ before recording a build rather than trusting the exit code: without it, `module
 successful build of a commit whose binary does not exist, and the failure surfaces two layers later
 as *"launched, not yet producing"* timing out, with nothing naming the cause.
 
+⚠️ **Existing is only half of what has to be true, and the other half is a worse failure.** A binary
+left in `target/` by an *earlier* commit satisfies that check while belonging to different bytes —
+so the record names a commit the artifact is not, and the console launches it. **§4.7.1 is the check
+for that**, and why it is not the mtime comparison it looks like it should be.
+
 📌 Publishing the requirement is what makes that refusal **fair rather than arbitrary** — a module
 is failing a stated obligation, not colliding with an undocumented assumption.
 
@@ -680,6 +685,75 @@ component.
 📌 It is also `artifact_dir`'s argument one step further on: a recorded path is a second statement
 of where the build went, and a store restored from a backup or a `target` cleaned by hand makes the
 two disagree. A function of the store root and the producer name cannot.
+
+#### 4.7.1 🚨 …and that it is THIS build's binary, which existing does not establish
+
+The check above answers *is a binary there?* This one answers *did this build make it?* — and they
+come apart in the case that matters: **a binary from a previous commit still in `target/`.** Cargo
+skips the target, exits 0, the file is present, the existence check passes, and `modules.json`
+records a built commit whose artifact is **different bytes**. That defeats §3.4's whole reason for
+recording a commit, and every indicator stays green while it happens.
+
+⚠️ **It is not an mtime comparison, and the reason is the useful part.** Three candidates were built
+as a scratch crate with a `required-features` bin and run in all four states rather than argued
+about (2026-08-22):
+
+| | binary on disk | `compiler-artifact` | `file_exists` | mtime | what shipped |
+|---|---|---|---|---|---|
+| skipped, nothing there before | no | none | refuses ✓ | refuses ✓ | refuses ✓ |
+| a real build | yes | yes | passes ✓ | passes ✓ | passes ✓ |
+| **an up-to-date rebuild** | yes | yes, `fresh` | passes ✓ | **REFUSES ✗** | passes ✓ |
+| **a stale leftover, now skipped** | yes | none | **PASSES ✗** | refuses ✓ | refuses ✓ |
+
+**Cargo does not relink when nothing changed**, so an mtime stamped at the build's start is newer
+than the artifact of a build that legitimately succeeded. Rows one and four are misconfigurations;
+**row three is Tuesday.** 📌 A check that refuses an ordinary rebuild is withdrawn within a day —
+**and takes the row-four hole with it.** It does not merely fail; it fails in the way that
+discredits the check it was meant to be. That is the shape worth carrying away, more than the
+mechanism.
+
+What ships is `cargo build --release --message-format=json-render-diagnostics`, and a look for a
+`compiler-artifact` record naming the binary. A skipped target emits **no such record at all**, so
+its absence is cargo saying in its own voice that this build did not produce it.
+
+⚠️ **`json-render-diagnostics` rather than plain `json`, and the difference is what a person sees
+when a build fails.** Both put machine-readable records on stdout; plain `json` *also* moves the
+compiler's diagnostics there, leaving stderr holding `Compiling…` and `could not compile … due to 1
+previous error`. `ToolOutput::tail` prefers stderr, so `WorkFault::BuildFailed` would carry that
+summary **and not the error**. Measured on a deliberately broken crate: plain `json` leaves zero
+rendered diagnostics on stderr, this leaves the whole thing.
+
+📌 **`fresh` is deliberately not consulted**, and it is the trap here because it *looks* like
+precisely what a staleness check should gate on. A fresh artifact is cargo asserting the on-disk
+binary **is** current for these inputs — the question being asked, not a reason for suspicion.
+Gating on it re-introduces row three.
+
+⚠️ **Matched on file NAME rather than the full path.** Cargo prints an absolute path, and a store
+root reached through a symlink, a junction or a Windows short path is a different spelling of the
+same file; an exact compare would refuse a good build, which is row three's failure by another road.
+On the machine this runs on, junctions into repositories are standing configuration — so that is the
+**less** exotic branch, not the more. The name is unambiguous within one package, and cargo runs in
+the module's own checkout.
+
+##### The two refusals are different diagnoses and must stay two sentences
+
+| | what a person must do next |
+|---|---|
+| **no binary at all** (`NoBinary`) | the **repository** does not meet §4.7's obligation — a manifest question |
+| **a binary this build did not produce** (`StaleBinary`) | the **checkout** is not what you think it is |
+
+⚠️ The second sentence has to **concede the exit code**, or nobody believes it: the first reaction is
+*"but it built fine"* — and it did, honestly, because cargo was asked to build a target it then had
+no reason to build.
+
+##### ⚠️ A dirty tree is a separate question and stays separate
+
+§3.4 already decided that one, by **recording** rather than refusing. A dirty build still emits a
+`compiler-artifact`, so this check passes and §3.4's behaviour is untouched — the correct outcome
+rather than a happy accident. 🚨 Written down because the two look adjacent and someone will
+eventually unify them: a dirty tree is a fact about **provenance** a person must be told; a missing
+artifact is a fact about **whether there is anything to launch**. Conflating them would make one of
+the two refusals unavailable.
 
 #### The startup order, which the console guarantees
 
