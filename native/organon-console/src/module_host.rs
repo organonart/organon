@@ -208,7 +208,7 @@ impl ModuleHost {
         let binary = module_binary(store_root, &producer)?;
         // ⚠️ Checked before the channel is made rather than after, so a missing binary does not
         // leave a 44 MiB file behind for a process that will never open it.
-        if !binary.is_file() {
+        if !shop.file_exists(&binary) {
             return Err(WorkFault::LaunchFailed {
                 path: binary.display().to_string(),
                 why: format!(

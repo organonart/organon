@@ -479,6 +479,28 @@ jobs:
         working-directory: native
         run: cargo test --release --workspace
 
+      # 🚨 `--workspace` above does NOT reach `organon-module`'s `sim` feature, and
+      # what hides behind it is not a corner: the simulator producer BINARY
+      # (`required-features = ["sim"]`) and the whole cross-process staleness rig
+      # (`tests/staleness.rs`, which is `#![cfg(feature = "sim")]` and therefore
+      # compiles to an EMPTY FILE without it). Nothing in the workspace enables the
+      # feature, so both would merge green and unbuilt.
+      #
+      # ⚠️ This is the seven-leg hole of #626 T3 in a second costume, and it was found
+      # the same way — by asking which configurations nobody compiles rather than by
+      # anything failing. `organonart/ascent` hit the identical shape on the other side
+      # of this same boundary on the same day: its whole producer loop sat behind a
+      # `hosted` feature and its licence job ran only `cargo tree`, which never invokes
+      # rustc.
+      #
+      # 📌 `check --all-targets`, not `test`: the rig's two tests are `#[ignore]`d
+      # because they launch a process and measure wall-clock, so running them here
+      # would buy nothing. Compiling them is the whole point — a measurement rig that
+      # stops building is a measurement nobody can repeat.
+      - name: Check the module simulator and its staleness rig (feature `sim`)
+        working-directory: native
+        run: cargo check --release -p organon-module --all-features --all-targets
+
   # ── Leg 2: the Organon Console edition (Console #3 T1) ───────────────────────
   # `console-edition` is default-off, so leg 1 compiles none of
   # `src/console_main.rs` and none of the `Edition::Console` arms — the asymmetry

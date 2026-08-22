@@ -1,8 +1,10 @@
 # A hosted module in a viewport — what "approve a repo" means, and the contract it buys
 
-> **Status: PART BUILT.** T0 (the frame-boundary measurement) and T3 (`modules.json`,
-> `organon-module.toml`, and the four verbs) have landed; §9 is the order and carries what each
-> rung's state is. Everything else here is still design. It answers four questions in writing so
+> **Status: PART BUILT.** T0 (all three frame-boundary numbers), T3 (`modules.json`,
+> `organon-module.toml`, and the verbs), T2 (the contract crate) and T5 (the launcher, the
+> texture, the four failure sentences) have landed; §9 is the order and carries what each rung's
+> state is. ⚠️ §4.7 is CONTRACT rather than design — two strings two repositories must spell
+> identically. Everything else here is still design. It answers four questions in writing so
 > Organon's side and Ascent's side can be refactored against the same contract instead of against
 > each other.
 >
@@ -513,7 +515,7 @@ the pixels.**
 
 🚨 **The control is what actually decides §6.** Size barely moved it, so the hypothesis had to be
 tested rather than asserted: hold the size fixed and move the producer's cadence. Staleness is
-`≈0.6 × min(producer period, poll interval)` — set by the two loops' **phase**, with the frame size
+`≈0.55 × min(producer period, poll interval)` — set by the two loops' **phase**, with the frame size
 absent from the expression. So the reading that would have forced mechanism A — *staleness is the
 copy, therefore buy `unsafe` per-backend interop* — is **not** what the measurement says, and
 mechanism A stays not-yet-justified on this evidence as well as on T0's. ⚠️ It was still not
@@ -584,6 +586,121 @@ accident, because the texture is still there and still valid. The console made t
 already for the portal-versus-region loser, and made it the same way.
 
 ---
+
+### 4.7 🚨 Starting a module: the two strings both trees must agree on — **BUILT (T5)**
+
+Everything above describes what crosses the boundary once a module is running. This is how it comes
+to be running, and it is **two strings and nothing else**. They are here rather than only in the
+code because they are the one part of this design that **two repositories must spell identically**,
+and a convention that lives in one tree's source plus a conversation is a convention that drifts
+the moment a third party arrives. Both were agreed independently by the Organon and Ascent sessions
+before either had read the other's code, which is evidence they are the obvious answers — and no
+protection at all against the fourth session that guesses differently.
+
+#### 1. The channel address: `ORGANON_MODULE_CHANNEL`
+
+The console passes the **absolute path** of the channel file in the environment:
+
+```
+ORGANON_MODULE_CHANNEL=<absolute path to the .frames file>
+```
+
+The console composes it (`organon-core::ipc::ns_file` + `organon_module::channel_file_name(producer,
+instance)`) and hands over the finished result. **The producer resolves nothing and joins nothing.**
+
+🚨 **The argument is structural rather than a preference, and it is the reason the namespace is
+*not* what gets passed.** The full path is `ns_file(channel_file_name(producer, instance))`. A
+producer has `channel_file_name` — it is in `organon-module`, the crate it links. It does **not**
+have `ns_file`: that lives in `organon-core`, and `organon-module`'s manifest forbids depending on
+it, because *"taking a dependency on the engine's spine to get one `PathBuf` would put `glam`,
+`half`, `bytemuck`, `serde` and `serde_json` into a game's build for a string."* So handing over a
+namespace would require a producer to **re-implement a rule owned by a crate it may not link**, and
+the drift shows up as a channel that opens nothing with no error saying why. `channel.rs` already
+settles the near half of this — *"this crate names the file and the console places it"* — and this
+is the far half.
+
+⚠️ **`instance` is deliberately not passed separately.** The path already contains it, and a second
+statement of one fact is what this whole choice exists to avoid.
+
+📌 **An environment variable rather than an argument, and the deciding constraint belongs to the
+other repository.** A module keeps its own `main.rs`, its own pump and its own CLI — Ascent's takes
+`--hog`, `--level`, `--segment`, and `fly.ps1` keeps working — so an argument the console appended
+could collide with a `clap` definition Organon cannot see. An environment variable cannot, and it
+does not appear in `ps`. **Presence is therefore the discriminator**: a binary that finds this set
+is being hosted, one that does not was run by a person. That should be the branch in a module's
+`main`, not a new flag.
+
+⚠️ **`ORGANON_IPC_NS` is set on the child as well, and it is NOT the channel address.** It is there
+for the reason `term.rs` already sets it on every tab the console spawns: anything *Organon-shaped*
+the module itself runs must address this console's session rather than the default namespace. A
+module should ignore it for channel purposes. Both are named here, with which one is the address
+said out loud, because that is exactly the confusion this paragraph exists to prevent.
+
+⚠️ **The working directory is set to the module's own checkout, and nothing may depend on it.** A
+module that reads a file beside its binary is doing the ordinary thing and should keep working; a
+module that requires a particular cwd is relying on something the contract does not promise.
+
+#### 2. The binary: derived, never declared
+
+```
+<store_root>/modules/<producer>/target/release/<producer>[.exe]
+```
+
+> 🚨 **The obligation, stated as a requirement because it is one:**
+> **a module's repository must produce a release binary named for its producer from a plain
+> `cargo build --release`, run at the root of its checkout.**
+
+⚠️ **Plain** is the load-bearing word, and it is not pedantry. The console runs exactly
+`cargo build --release` with no `--features`, no `-p` and no `--bin` — because every one of those
+would be a string the console chose on a module's behalf, and a `features = [...]` key in
+`organon-module.toml` to supply them is **refused**: the manifest requests and declares, it does not
+configure the host's tooling. So a `[[bin]]` behind `required-features` that a module's own default
+features do not enable **is not built**, and the module does not meet this requirement.
+
+🚨 **And cargo will not say so.** It skips such a target with no warning, no diagnostic and **exit
+0** — measured in a clean Ascent tree: remove `target/release/ascent.exe`, `cargo build --release`,
+exit 0 in 0.12 s, file still absent. That is why `module_work::build` verifies the binary exists
+before recording a build rather than trusting the exit code: without it, `modules.json` records a
+successful build of a commit whose binary does not exist, and the failure surfaces two layers later
+as *"launched, not yet producing"* timing out, with nothing naming the cause.
+
+📌 Publishing the requirement is what makes that refusal **fair rather than arbitrary** — a module
+is failing a stated obligation, not colliding with an undocumented assumption.
+
+🚨 **Derived rather than read from the manifest, and the reason is §3.1's rather than tidiness.**
+`organon-module.toml` is data written by somebody else. A `binary = ` key in it would be that
+somebody's string arriving at `std::process::Command::new` — which is precisely what
+`module_work.rs`'s two-variant `Tool` enum exists to make impossible for `git` and `cargo`, and the
+rule does not weaken because the program is the module's own. The producer name is the only
+influence a manifest has over this path; it is a name the **person** typed, the repository agreed to
+it (`IdentityMismatch` refuses otherwise), and `check_producer_name` gates it before it is a path
+component.
+
+📌 It is also `artifact_dir`'s argument one step further on: a recorded path is a second statement
+of where the build went, and a store restored from a backup or a `target` cleaned by hand makes the
+two disagree. A function of the store root and the producer name cannot.
+
+#### The startup order, which the console guarantees
+
+**The channel is created before the process is started.** `ModuleChannel::create` writes the header,
+seeds the two producer-owned words and lays down the slots; only then is the binary spawned. So
+`ProducerChannel::open` should succeed **first try**, and a producer meeting a `WireFault` at open
+is looking at a launcher bug rather than a version mismatch.
+
+⚠️ **A producer that cannot open its channel should exit non-zero rather than retry-loop.** The
+console times `Starting` out into `Lost` after `Timings::start_within` (10 s), so a silent retry
+turns a legible failure into a hang — and §4.6's third row exists specifically because *"a rectangle
+that says 'starting…' indefinitely is the failure state that looks most like working software."*
+
+#### What is deliberately NOT here, and must not be added quietly
+
+🚨 **Nothing tells a hosted module its own configuration.** Under `fly.ps1` a person types
+`--hog <path>`; under module hosting nobody types anything, and this contract has no path for it.
+That is a real hole and it is named rather than papered over. **Do not invent a config channel** —
+not a manifest field, not a second environment variable, not a settings file. `doc/organon_modules_plan.md`
+§10 is explicit that **every verb added to the protocol is a grant**, and a configuration channel is
+the widest possible one: it is "the host may tell the module anything", which is a permission nobody
+argued for. When a module needs configuration, it gets designed across both ends at once.
 
 ## 5. Paused, no sound, click to interact
 
@@ -703,7 +820,7 @@ before anything has been measured.
 
 ✏️ **Something has now been measured, and it moves this paragraph without settling it**
 (`doc/measurements/module-staleness-2026-08-22.md`). The frame the console takes is **half a frame
-old at 60 Hz** and — the part that matters — staleness is `≈0.6 × min(producer period, poll
+old at 60 Hz** and — the part that matters — staleness is `≈0.55 × min(producer period, poll
 interval)`, flat across nine times the pixels. So the sentence above that reads *"a copied frame at
 one or two frames of latency"* is right about the magnitude and wrong about the **cause**: it is
 not the copy, it is two free-running loops sampling each other, and 1440p is not worse than

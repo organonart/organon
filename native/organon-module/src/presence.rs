@@ -223,6 +223,19 @@ impl Presence {
                 format!("{producer} is starting — {:.0} s so far", elapsed.as_secs_f32())
             }
             Presence::Live => format!("{producer} is running"),
+            // 🚨 **A reason that a retry cannot fix gets NO verb**, and that is the whole of
+            // `RefusalReason::retry_helps`. Offering `restart` for a pixel-format mismatch invites
+            // a person to try something that returns the producer to the state it is already in —
+            // and a console that does that twice has taught them it does not know either. The
+            // sentence names the mismatch and stops, because what *would* fix it (a rebuild, a
+            // different channel format) is an Organon-side or module-side fact and this crate
+            // spells no verbs.
+            Presence::NotProducing { silent, reason: Some(r) } if !r.retry_helps() => format!(
+                "{producer} has stopped drawing — {}. Nothing for {:.0} s, and it will be the \
+                 same on every attempt: this needs the module rebuilt, not restarted",
+                r.because(),
+                silent.as_secs_f32()
+            ),
             Presence::NotProducing { silent, reason } => match reason {
                 Some(r) => format!(
                     "{producer} has stopped drawing — {}. Nothing for {:.0} s. {restart_verb} to \
@@ -622,5 +635,50 @@ mod tests {
             Presence::NotProducing { silent: s(0), reason: Some(RefusalReason::SizeUnsupported) }
                 .sentence("ascent", "restart");
         assert!(line.contains(RefusalReason::SizeUnsupported.because()), "{line}");
+    }
+
+    /// CONTRACT: 🚨 **a refusal a retry cannot fix does not offer the retry.**
+    ///
+    /// `RefusalReason::FormatUnsupported`'s own doc argued for having a tag of its own precisely
+    /// so a rectangle would stop offering *resize* or *restart* *"for a condition where neither
+    /// can work … and the console has invited somebody to try again for ever"*. The tag arrived
+    /// and the sentence went on appending the verb unconditionally, so the taxonomy existed and
+    /// nothing read it.
+    ///
+    /// ⚠️ Asserted **both ways** on purpose: dropping the verb everywhere would be the opposite
+    /// defect, and a rectangle with no way back is the thing the sibling test above exists for.
+    ///
+    /// ✏️ Raised by the `organonart/ascent` session, whose producer refuses this condition in a
+    /// loop rather than exiting — the format is baked in at pipeline construction — so the
+    /// rectangle is the only thing a person has to go on.
+    #[test]
+    fn a_refusal_that_a_restart_cannot_fix_offers_no_restart() {
+        let verb = "console module restart";
+        let said = |r: RefusalReason| {
+            Presence::NotProducing { silent: s(3_000), reason: Some(r) }.sentence("ascent", verb)
+        };
+
+        let hopeless = said(RefusalReason::FormatUnsupported);
+        assert!(
+            !hopeless.contains(verb),
+            "the rectangle offered a verb that returns the producer to the state it is in: \
+             {hopeless}"
+        );
+        assert!(!RefusalReason::FormatUnsupported.retry_helps());
+        // It must still say what is wrong and what would actually help — a sentence that only
+        // withholds a verb is worse than one that offers the wrong one.
+        assert!(hopeless.contains(RefusalReason::FormatUnsupported.because()), "{hopeless}");
+        assert!(hopeless.contains("rebuilt"), "{hopeless}");
+        assert!(hopeless.contains("ascent"), "{hopeless}");
+
+        // And the reasons a retry *can* fix are untouched.
+        for r in [RefusalReason::Unspecified, RefusalReason::SizeUnsupported] {
+            assert!(r.retry_helps());
+            assert!(said(r).contains(verb), "{:?} left the person with no way back", r);
+        }
+        // The clock-caught case has no reason at all and must keep the verb.
+        assert!(Presence::NotProducing { silent: s(3_000), reason: None }
+            .sentence("ascent", verb)
+            .contains(verb));
     }
 }

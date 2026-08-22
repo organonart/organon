@@ -88,7 +88,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 /// One size: launch a producer, poll at 60 Hz, and report the age of every frame taken.
-fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<(f64, f64, f64, usize, u64)> {
+fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<Measured> {
     // ⚠️ **A counter, not just the pid and the size** — and it was a real defect, not a
     // precaution. The two tests here run on different threads of one process and both measure
     // 1280×720, so a name built from `(pid, w, h)` gave them **one channel file**: two consoles
@@ -117,6 +117,9 @@ fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<(f64, f64, f64, us
     let mut ages: Vec<f64> = Vec::with_capacity(SAMPLES);
     let mut taken = 0usize;
     let mut polls = 0usize;
+    // 🚨 **The producer's ACHIEVED period, from its own frame indices** — see `Measured::period`.
+    let mut first: Option<(u64, Instant)> = None;
+    let mut last: Option<(u64, Instant)> = None;
     // A ceiling so a producer that never draws fails the test rather than hanging it.
     let deadline = Instant::now() + Duration::from_secs(30);
     while taken < SAMPLES + WARMUP && Instant::now() < deadline {
@@ -130,6 +133,12 @@ fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<(f64, f64, f64, us
                 taken += 1;
                 if taken > WARMUP {
                     ages.push(age.as_secs_f64() * 1000.0);
+                    let now = Instant::now();
+                    // The frame index counts every frame the producer BEGAN, including ones
+                    // this consumer never saw — which is exactly what makes it a measure of the
+                    // producer's cadence rather than of the consumer's.
+                    first.get_or_insert((view.frame_index, now));
+                    last = Some((view.frame_index, now));
                 }
             }
         }
@@ -138,6 +147,12 @@ fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<(f64, f64, f64, us
             std::thread::sleep(next - now);
         }
     }
+    let period = match (first, last) {
+        (Some((i0, t0)), Some((i1, t1))) if i1 > i0 => {
+            (t1 - t0).as_secs_f64() * 1000.0 / (i1 - i0) as f64
+        }
+        _ => f64::NAN,
+    };
     console.request_close();
     let _ = std::fs::remove_file(&path);
     if ages.len() < SAMPLES / 2 {
@@ -145,13 +160,41 @@ fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<(f64, f64, f64, us
         return None;
     }
     ages.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    Some((
-        percentile(&ages, 0.5),
-        percentile(&ages, 0.9),
-        *ages.last().unwrap(),
+    Some(Measured {
+        median: percentile(&ages, 0.5),
+        p90: percentile(&ages, 0.9),
+        worst: *ages.last().unwrap(),
+        period,
         polls,
-        console.torn_reads(),
-    ))
+        torn: console.torn_reads(),
+    })
+}
+
+/// One condition's result.
+struct Measured {
+    median: f64,
+    p90: f64,
+    worst: f64,
+    /// 🚨 **The period the producer ACHIEVED, not the one it was asked for** — and the
+    /// difference between those two is a trap this rig fell into and now cannot fall into again.
+    ///
+    /// ⚠️ **The failure it prevents, because it produced a confident wrong verdict.** Run under
+    /// `CARGO_PROFILE_TEST_OPT_LEVEL=0` — which is *this repository's standard bar setting*, so
+    /// somebody will — the simulator's per-pixel draw loop is unoptimised and 1280×720 takes
+    /// ~15 ms whatever `--draw-every-ms` says. Every requested cadence then collapses to the same
+    /// real one, every median comes out flat at ~8.3 ms, and the control test concluded *"the
+    /// median did not move with the producer's period — staleness is the TRANSPORT"*. That is the
+    /// verdict that reopens §4.4's mechanism-A question, reached because the lever was not
+    /// connected to anything.
+    ///
+    /// 📌 Reading it off the **frame indices** rather than off the flag makes the model hold in
+    /// both builds: the debug run stops being a contradiction and becomes another point on the
+    /// same line, at a period nobody asked for. That is strictly better than refusing to run
+    /// unoptimised, because a rig that only works in one configuration is a rig whose one
+    /// configuration eventually stops being used.
+    period: f64,
+    polls: usize,
+    torn: u64,
 }
 
 /// 🚨 **The measurement §4.4 has been missing since it was written.**
@@ -167,12 +210,14 @@ fn how_stale_is_the_frame_the_console_takes() {
     println!("  {:>11}  {:>9}  {:>9}  {:>9}  {:>6}", "size", "median", "p90", "worst", "torn");
     let mut any = false;
     for (w, h) in [(640u32, 360u32), (1280, 720), (1920, 1080), (2560, 1440)] {
-        let Some((med, p90, worst, polls, torn)) = measure(w, h, None) else { continue };
+        let Some(m) = measure(w, h, None) else { continue };
+        let (med, p90, worst, polls, torn) = (m.median, m.p90, m.worst, m.polls, m.torn);
         any = true;
         println!(
             "  {:>11}  {med:>6.2} ms  {p90:>6.2} ms  {worst:>6.2} ms  {torn:>6}   ({polls} polls, \
-             median = {:.2} frames at 60 Hz)",
+             producer drew every {:.1} ms, median = {:.2} frames at 60 Hz)",
             format!("{w}x{h}"),
+            m.period,
             med / 16.667,
         );
         // 🚨 The claim, not just the print. A frame the console takes must be **younger than one
@@ -228,45 +273,53 @@ fn staleness_tracks_the_producers_period_rather_than_the_frame_size() {
     println!("\nstaleness against the PRODUCER's period, fixed at 1280x720, consumer at 60 Hz\n");
     let poll_ms = POLL.as_secs_f64() * 1000.0;
     println!(
-        "  {:>8}  {:>9}  {:>9}  {:>9}  {:>13}",
-        "draws", "median", "p90", "min(P,16.7)", "median / that"
+        "  {:>8}  {:>9}  {:>9}  {:>9}  {:>11}  {:>13}",
+        "asked", "achieved", "median", "p90", "min(P,16.7)", "median / that"
     );
     let mut rows = Vec::new();
     for p in [4u64, 8, 16, 33] {
-        let Some((med, p90, _, _, _)) = measure(1280, 720, Some(p)) else { continue };
-        let sampling = (p as f64).min(poll_ms);
-        let ratio = med / sampling;
-        rows.push((p, med, sampling, ratio));
-        println!("  {p:>5} ms  {med:>6.2} ms  {p90:>6.2} ms  {sampling:>8.1} ms  {ratio:>12.2}");
+        let Some(m) = measure(1280, 720, Some(p)) else { continue };
+        // 🚨 **The ACHIEVED period, never the asked-for one.** See `Measured::period`: under an
+        // unoptimised build the simulator cannot honour a 4 ms request, every condition collapses
+        // to the same real cadence, and a rig reading the flag would conclude the transport is at
+        // fault. Reading the frame indices makes that run a *confirming* point instead.
+        let sampling = m.period.min(poll_ms);
+        let ratio = m.median / sampling;
+        rows.push((p, m.period, m.median, sampling, ratio));
+        println!(
+            "  {p:>5} ms  {:>6.1} ms  {:>6.2} ms  {:>6.2} ms  {sampling:>8.1} ms  {ratio:>12.2}",
+            m.period, m.median, m.p90
+        );
     }
     assert!(rows.len() >= 3, "not enough cadences produced a measurement");
 
-    // 🚨 The claim: the median moves with the **cadence**, not with the copy. If staleness were
-    // the transport, the median would be flat across every period and this would fail at the
-    // fastest — which is the reading that would reopen §4.4's mechanism-A question.
-    let fastest = rows.first().unwrap();
-    let slowest = rows.last().unwrap();
-    assert!(
-        slowest.1 > fastest.1 * 1.8,
-        "the median did not move with the producer's period ({:.2} ms at {} ms against {:.2} ms \
-         at {} ms) — staleness would then be the TRANSPORT rather than sampling phase, and §4.4's \
-         mechanism-A question is reopened",
-        fastest.1,
-        fastest.0,
-        slowest.1,
-        slowest.0,
-    );
-    // ⚠️ A wide band on purpose — this is a claim about a *mechanism*, and pinning it to a
-    // tight constant would make it a flaky test about this machine's scheduler. 0.2–1.0 of the
-    // faster loop's period fails a flat line (which is what "it is the transport" looks like)
-    // and fails a median larger than the whole sampling window (which would mean frames are being
-    // missed rather than sampled), and those are the two readings that would actually change what
-    // gets built next.
-    for (p, med, sampling, ratio) in &rows {
+    // 🚨 **The claim: the median is a fraction of the sampling window, whatever that window is.**
+    // If staleness were the transport it would be a *constant* instead — flat in milliseconds
+    // while the window moved — and this band is what fails then. That is the reading that would
+    // reopen §4.4's mechanism-A question, so it gets an assertion rather than a paragraph.
+    //
+    // ⚠️ A wide band on purpose. This is a claim about a *mechanism*; pinning it to a tight
+    // constant would make it a flaky test about this machine's scheduler. 0.2–1.0 fails a flat
+    // line and fails a median larger than the whole window (which would mean frames are being
+    // missed rather than sampled), and those are the two readings that change what gets built.
+    for (asked, achieved, med, sampling, ratio) in &rows {
         assert!(
             (0.2..=1.0).contains(ratio),
-            "at a {p} ms period the median age was {med:.2} ms — {ratio:.2} of the {sampling:.1} \
-             ms sampling window, where the phase model predicts about half"
+            "asked for {asked} ms, the producer achieved {achieved:.1} ms, and the median age was \
+             {med:.2} ms — {ratio:.2} of the {sampling:.1} ms sampling window, where the phase \
+             model predicts about half. A ratio far below the band means staleness is NOT tracking \
+             the window, i.e. it is the TRANSPORT, and §4.4's mechanism-A question is reopened"
         );
     }
+    // And the sweep has to have actually swept — otherwise every row above is one condition
+    // measured four times, which would satisfy the band while proving nothing.
+    let widest = rows.iter().map(|r| r.3).fold(f64::MIN, f64::max);
+    let narrowest = rows.iter().map(|r| r.3).fold(f64::MAX, f64::min);
+    assert!(
+        widest > narrowest * 1.8,
+        "every condition ended up sampling over about the same window ({narrowest:.1}–\
+         {widest:.1} ms), so this run says nothing about whether staleness tracks it. The usual \
+         cause is an unoptimised producer that cannot honour the fast cadences — build with \
+         --release."
+    );
 }
