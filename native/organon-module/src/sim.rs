@@ -157,6 +157,13 @@ impl SimProducer {
 
 /// Is every pixel of `view` from the same frame, at the size the header claims?
 ///
+/// ⚠️ **All of this function's power comes from [`pixel`] depending on `frame_index`**, and
+/// nothing in the comparison can see that: `draw` writes `pixel(…)` and this checks against
+/// `pixel(…)`, so both sides move together. If the frame index ever stopped reaching the
+/// output, `verify` would go on passing — **on torn frames included**, which is the one thing
+/// it exists to catch. `tests::the_picture_is_frame_keyed_or_verify_proves_nothing` pins the
+/// property from outside the pair.
+///
 /// Returns the offending pixel's coordinates on the first disagreement, which is what turns a
 /// failing assertion into a diagnosis.
 pub fn verify(view: &FrameView<'_>) -> Result<(), String> {
@@ -178,4 +185,35 @@ pub fn verify(view: &FrameView<'_>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 🚨 **The premise [`verify`] rests on, stated from outside the pair it compares.**
+    ///
+    /// `draw` writes `pixel(x, y, index)` and `verify` checks against `pixel(x, y, index)`.
+    /// That agreement is by construction and survives any change to `pixel` — including one
+    /// that stopped the frame index reaching the output, after which `verify` would pass on a
+    /// **torn** frame, which is the single thing the whole tear-detection suite is evidence
+    /// for. ✏️ Third face of tonight's class, reported by the Ascent session: *a test that
+    /// derives both sides of a comparison from the same function cannot see that function
+    /// change.*
+    #[test]
+    fn the_picture_is_frame_keyed_or_verify_proves_nothing() {
+        // Two frames must differ at every pixel, or a row-wise blend of them is undetectable.
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (37, 61), (255, 255), (256, 256)] {
+            assert_ne!(
+                pixel(x, y, 1),
+                pixel(x, y, 2),
+                "({x}, {y}) looks the same in frames 1 and 2, so a tear between them is invisible"
+            );
+        }
+        // And it must vary across the picture, or a frame of one flat colour would verify.
+        assert_ne!(pixel(0, 0, 1), pixel(1, 0, 1));
+        assert_ne!(pixel(0, 0, 1), pixel(0, 1, 1));
+        // The channel the frame index rides in is the one `verify`'s diagnostic names.
+        assert_eq!(pixel(9, 9, 7)[2], 7, "the blue channel is what a torn frame disagrees in");
+    }
 }

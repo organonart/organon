@@ -7281,6 +7281,22 @@ Four, because Ascent's own `view::InputEvent` is four: `Down`, `Up`, `Pointer { 
 **every verb added here is a grant**, so the contract carries exactly what the first real
 producer's API accepts and not one verb more.
 
+**A key is a USB HID usage id, page 0x07** — `W` is `0x1A`, `Escape` is `0x29` — and the
+borrowing is the point: the numbers are fixed by a specification neither repository controls,
+so no refactor on either side can renumber them and a person debugging a hex dump can look one
+up. `winit`'s `KeyCode as u32` is the alternative and cannot cross a process, being ordered by
+whatever its enum's source order happens to be. Ascent maps its own `Source` onto these numbers
+and keeps its `ALL` / `name()` / `DEFAULT_LAYOUT` as its binding surface; only the wire ids are
+the contract's.
+
+⚠️ **Both sides pin the ids with literals, and that is not belt-and-braces.** `Key`, its `ALL`
+and its `from_wire` are generated from one table, which is what makes them consistent — and
+exactly why consistency proves nothing about the *values*: renumber one and both sides of every
+comparison move together, every test passes, and **every keystroke changes meaning in the other
+process**. A wrong number here fails nowhere; it silently rebinds. The literals state the
+external standard independently, including the two places HID is genuinely surprising —
+`Digit0` is `0x27`, *after* `Digit9`, and the arrows run Right, Left, Down, Up.
+
 Absent, each as a refusal rather than an omission: **text / IME** (keylogger-shaped, and a 6DOF
 instrument does not need it), **absolute pointer position or warp** (the console owns the
 cursor; a producer that could place it could place it over someone else's confirm button),
