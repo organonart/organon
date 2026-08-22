@@ -155,6 +155,23 @@ existed. If a merge did land early, run the bar locally on `main` and say what y
 - **Never put two workers on the same file or the same registry.** Sequence them; conflicts across
   background agents cost more than the parallelism buys. If one must wait, tell it *why* and
   promise to message it when the blocker lands — then do.
+- 🚨 **A measurement of a moving artifact carries a timestamp whether or not it prints one.**
+Two sessions correcting each other from readings taken minutes apart will keep producing exactly
+that, and both will be right about what they read. Measured instance: a coordinator reported a PR
+thread as unanswered; the worker's reply had landed **sixteen seconds** after the read. The
+coordinator was accurate and stale, and said so as though it were a reliability problem in the
+worker.
+
+  📌 **The fix is not "re-measure before acting" — that only helps the person who does
+  it. It is: when you report a measurement of someone else's branch, say what commit you read it
+  at.** `origin/module/verbs @ 4ad11f5` would have been recognised as stale in one glance instead
+  of having to be re-derived. Cite the ref, not just the finding.
+
+- ⚠️ **`gh` authenticates as the user, so a worker's PR reply and yours are
+  indistinguishable by author.** A thread whose authors read `[github-actions, <user>, <user>]`
+  may be two of yours, or one of yours and one of theirs. **Never infer "nobody replied" from an
+  author list** — read the bodies and the timestamps.
+
 - **Local `main` goes stale** while you work on a branch. `git fetch origin main:main`.
 - **A clean rebase can hide a break** — a rename on one side can compile into a broken test on the
   other (#126).
