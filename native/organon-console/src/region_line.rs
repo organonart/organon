@@ -132,7 +132,7 @@ use egui::{Frame, RichText};
 use serde_json::Value;
 
 use crate::conversation_view::{compact_join, CompactWord};
-use crate::panel_stack::{ALL_WORD, REGION_ARG, STACK_ACTIONS};
+use crate::panel_stack::{ACTION_ARG, ALL_WORD, PANEL_ARG, REGION_ARG, STACK_ACTIONS};
 use crate::posture::Form;
 use crate::region::{Region, REGION_COUNT};
 use crate::registry::{Candidate, CandidateKind, Lane, Registry, Resolved};
@@ -311,6 +311,21 @@ fn taken_words(typed: &str) -> String {
     )
 }
 
+/// Re-ask [`StackCmd::resolve`] over resolved arguments — see the call site in [`act`].
+///
+/// ⚠️ **Silent when either word is missing**, which is not laxity: the registry has already
+/// accepted the line, so both required slots are filled and a `None` here would mean the slot
+/// *names* have drifted. `console_main`'s `the_stack_verbs_slot_names_are_the_console_libs` is
+/// what fails in that case, loudly and at build time, rather than this quietly waving a command
+/// through at the one moment it matters.
+fn stack_admits(args: &Value) -> Result<(), String> {
+    let word = |key: &str| args.get(key).and_then(|v| v.as_str());
+    let (Some(action), Some(panel)) = (word(ACTION_ARG), word(PANEL_ARG)) else {
+        return Ok(());
+    };
+    crate::panel_stack::StackCmd::resolve(action, panel).map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// One action as a candidate, with the line accepting it would produce.
 ///
 /// The trailing space is `verb_candidate`'s rule: a verb that still wants an argument opens its
@@ -379,6 +394,23 @@ pub fn act(registry: &Registry, ctx: Context, line: &str) -> Act {
                 // reaches here: `parse_args` answers it first, named rather than defaulted.
                 map.entry(REGION_ARG.to_string())
                     .or_insert(Value::String(ctx.region.as_word().to_string()));
+            }
+            // 🚨 **Asked here as well as at dispatch, and the reason is [`RegionPalette`], not
+            // the message.** `console_main::op_from` already runs `StackCmd::resolve` and its
+            // refusal would reach this box through `receipt.ok` — so the sentence was never
+            // going to be lost. What *would* have been wrong is the band above the box:
+            // `runnable` and `Candidate::completes` are both `matches!(act(…), Act::Run{..})`,
+            // so without this the row would have said **Enter runs** over a line that could only
+            // ever be refused. That is the status-line-that-cannot-be-right defect this console
+            // keeps a tally of, and it is cheaper to close here than to teach the band a second
+            // notion of runnable.
+            //
+            // ⚠️ **One gate, two callers** — both ask `StackCmd::resolve`; neither restates what
+            // it decides. `StackCmd`'s own words are carried, not rephrased, which is the rule
+            // the `Resolved::Refused` arm below already keeps. For `add`, those words are the
+            // sentence a `Declared` panel used to draw on its own card.
+            if let Err(refusal) = stack_admits(&args) {
+                return Act::Refused(refusal);
             }
             Act::Run { name, args }
         }
@@ -843,14 +875,14 @@ mod tests {
                 target: TargetKind::Viewport,
                 args: vec![
                     ArgSpec {
-                        name: "action".into(),
+                        name: ACTION_ARG.into(),
                         kind: ArgKind::Choice(
                             STACK_ACTIONS.iter().map(|s| (*s).to_string()).collect(),
                         ),
                         required: true,
                     },
                     ArgSpec {
-                        name: "panel".into(),
+                        name: PANEL_ARG.into(),
                         kind: ArgKind::Choice(
                             crate::panel_stack::panel_words()
                                 .into_iter()
@@ -972,6 +1004,41 @@ mod tests {
         let act = act(&registry(), column(), "nonesuch");
         let Act::Refused(message) = act else { panic!("{act:?}") };
         assert!(message.contains("nonesuch"), "{message}");
+    }
+
+    /// 🚨 **`add <a panel with no controls>` is refused HERE, before anything is dispatched.**
+    ///
+    /// The registry cannot answer it — the word is a real panel and the line's shape is right —
+    /// and every other stack refusal is raised after dispatch, where it reaches the box through
+    /// `receipt.ok`. This one is raised in `act`, so the sentence lands in the popover over the
+    /// box it was typed in.
+    ///
+    /// ⚠️ **This is where `NOT_TRANSPLANTED` went.** It used to be drawn on the panel's own card
+    /// after the column had accepted it; James, 2026-08-21: *"We never want text just pasted in
+    /// explaining something into the UI."* The fact survives as an answer to the asking.
+    ///
+    /// ⚠️ **Subject re-derived from the table**, so this keeps testing the refusal as panels are
+    /// transplanted, and says so out loud on the day none is left.
+    #[test]
+    fn adding_a_panel_with_no_controls_is_refused_in_the_box_it_was_typed_in() {
+        let declared = organon_core::panels::PANELS
+            .iter()
+            .find(|p| p.status == organon_core::panels::Status::Declared)
+            .expect("every panel is transplanted — this refusal has no subject left");
+        let line = format!("add {}", declared.slug);
+        let Act::Refused(message) = act(&registry(), column(), &line) else {
+            panic!("`{line}` was dispatched instead of refused")
+        };
+        assert!(message.contains(declared.slug), "unnamed: {message}");
+        assert_eq!(
+            message,
+            crate::panel_stack::Refusal::NotTransplanted { slug: declared.slug.to_string() }
+                .to_string(),
+            "the control rewrote `panel_stack`'s refusal"
+        );
+        // …and the same line with a transplanted panel still runs, or this would be a control
+        // that refuses everything and a passing test.
+        assert!(matches!(act(&registry(), column(), "add surface"), Act::Run { .. }));
     }
 
     /// ⚠️ **A bad panel name keeps `panel_stack`'s own words**, carried rather than rephrased —

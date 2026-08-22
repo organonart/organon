@@ -1595,6 +1595,17 @@ impl ConversationPane {
             self.note(message.clone());
             return Receipt { ok: false, text: message };
         };
+        // 🚨 **The second door onto a column, gated by the same function as the first.** A panel
+        // this build has no controls for used to be admitted and then explain itself where its
+        // controls would be; it is refused by name instead — `panel_stack::admit` carries why.
+        // Asked *before* the destination, because "this panel has no controls" is true whatever
+        // the layout is, and answering the layout's question first would send a person off to
+        // declare a region for a panel that was never going to draw anything.
+        if let Err(refusal) = panel_stack::admit(panel) {
+            let message = refusal.to_string();
+            self.note(message.clone());
+            return Receipt { ok: false, text: message };
+        }
         let panel_stack::Home::Shown(region) = self.panel_home else {
             // The refusal a person meets the first time, and the whole of how they learn a
             // region has to be declared. One sentence, written once, in `panel_stack`.
@@ -4775,18 +4786,18 @@ fn log_panel(ui: &mut egui::Ui, pane: &ConversationPane, theme: &Theme) {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("status log").color(theme.dim).monospace());
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                // ⚠️ **The way out is named.** The indicator toggles, but a hand
-                                // that opened this from the keyboard has no reason to know that,
-                                // and a panel with no stated exit is a panel people close by
-                                // restarting the console.
-                                ui.label(
-                                    RichText::new("`/trace off` closes").color(theme.dim).small(),
-                                );
-                            },
-                        );
+                        // ✏️ **`` `/trace off` closes `` was drawn here and is gone.** #127 put
+                        // it in to name the way out, and the argument — a panel with no stated
+                        // exit is one people close by restarting the console — is a real one.
+                        // It is the same argument `PALETTE_KEYS` made before #125 deleted it,
+                        // and James's rule reaches both: *"We never want text just pasted in
+                        // explaining something into the UI."* A keystroke taught on screen for
+                        // as long as the panel is open is ambience, however true it is.
+                        //
+                        // ⚠️ **The way out is still named, one action later** — the band's own
+                        // status-log indicator toggles this panel and its hover reads
+                        // `status log · … · click to close`. That is an answer to something you
+                        // did, which is the form the rule leaves standing.
                     });
                     ui.separator();
                     egui::ScrollArea::vertical()
@@ -7609,6 +7620,39 @@ mod tests {
         assert!(!receipt.ok, "a panel with nowhere to go is not a success");
         assert_eq!(receipt.text, panel_stack::Refusal::NoRegion.to_string());
         assert!(receipt.text.contains("viewport"), "it names the fix: {}", receipt.text);
+        assert_eq!(pane.panel_wanted, None, "nothing was asked of the console");
+        assert_eq!(pane.transcript.len(), before, "and nothing fell back into the flow");
+    }
+
+    /// 🚨 **A panel this build has no controls for is refused by NAME, and the sentence it used
+    /// to draw on its own card is that refusal.**
+    ///
+    /// James, 2026-08-21: *"We never want text just pasted in explaining something into the
+    /// UI."* `panel_stack::NOT_TRANSPLANTED` was exactly that, drawn where the controls would
+    /// have been, on twenty-one of twenty-five panels at once. `panel_stack::admit` is the gate
+    /// and this is the door it closes on the `/organon` side; `panel_stack`'s own
+    /// `add_refuses_a_panel_with_no_controls_and_remove_does_not` is the other.
+    ///
+    /// ⚠️ **The subject is re-derived from the table, never named**, so this keeps testing the
+    /// refusal as panels are transplanted — and says so out loud on the day none is left.
+    ///
+    /// ⚠️ **Asserted BEFORE the destination**: the pane is given a region here, so a pass proves
+    /// the refusal is about the panel rather than about there being nowhere to put it.
+    #[test]
+    fn organon_refuses_a_panel_that_has_no_controls_rather_than_stacking_an_empty_card() {
+        let declared = organon_core::panels::PANELS
+            .iter()
+            .find(|p| p.status == organon_core::panels::Status::Declared)
+            .expect("every panel is transplanted — this refusal has no subject left");
+        let mut pane = ConversationPane::new(None, Vec::new(), Vec::new(), Capabilities::none());
+        pane.panel_home = panel_stack::Home::Shown(crate::region::Region::Left);
+        let before = pane.transcript.len();
+        let receipt = pane.summon_organon(
+            &serde_json::json!({ "tab": declared.tab.word(), "panel": declared.slug }),
+            "/organon look temporal",
+        );
+        assert!(!receipt.ok, "a panel with no controls was accepted: {}", receipt.text);
+        assert!(receipt.text.contains(declared.slug), "unnamed: {}", receipt.text);
         assert_eq!(pane.panel_wanted, None, "nothing was asked of the console");
         assert_eq!(pane.transcript.len(), before, "and nothing fell back into the flow");
     }

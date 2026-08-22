@@ -2506,7 +2506,11 @@ fn draw_regions(
             // that goes. `plan` already refuses a layout whose regions fall under `MIN_SIDE`, so
             // this is the band between "drawable" and "drawable with a command line in it" — and
             // a rectangle that showed only its own command line would have hidden the thing
-            // somebody assigned it for. The vacancy notice below still names the verb.
+            // somebody assigned it for.
+            //
+            // ✏️ **The empty-column notice used to have a second arm for this case**, naming the
+            // CLI because the control was not drawn. It has no sentence to vary now
+            // ([`paint_region_notice`]), so a region too short for a line simply draws its name.
             (slot.rect, None)
         };
         // A child `Ui` per region, salted by the region's own word so two regions cannot share
@@ -2524,14 +2528,9 @@ fn draw_regions(
                 live_tab_taken = true;
                 draw_active_pane(&mut child);
             }
-            Some(Content::Agent) => paint_region_notice(
-                &mut child,
-                content_rect,
-                slot.region.as_word(),
-                "agent — waiting for a tab of its own. The live tab is drawn in the first agent \
-                 region; a second one needs Tier 2's per-region tab",
-                theme,
-            ),
+            Some(Content::Agent) => {
+                paint_region_notice(&mut child, content_rect, slot.region, theme)
+            }
             // 🚨 **The scrolling column of Organon's own editor panels.** `panel_stack::draw`
             // is the whole presentation — it takes the `Ui` it is handed and never reaches for
             // the window's layer, which is what keeps a stack mappable onto a lit surface if
@@ -2548,33 +2547,13 @@ fn draw_regions(
                     panels.draw,
                 );
             }
-            // 🚨 **An empty column is a sentence, and it names the verb that fills it.** Same
-            // rule as the vacant region below and with one thing more to say: a region that has
-            // been *assigned* and holds nothing looks exactly like one that is broken.
-            //
-            // ✏️ **It no longer has to be the only place the vocabulary is discoverable from.**
-            // The control under this rectangle lists `add` and `remove` on an empty box, so the
-            // sentence names the shortest spelling rather than the CLI's.
-            // 🚨 **The sentence depends on whether a line was actually drawn**, which is the
-            // rule this file keeps re-learning: a notice that names a control the region is
-            // too short to show is a status line that cannot be right.
-            Some(Content::Panel) if line_rect.is_some() => paint_region_notice(
-                &mut child,
-                content_rect,
-                slot.region.as_word(),
-                "panel — an empty column. Type `add surface` in the line below; \
-                 `remove all` empties it again",
-                theme,
-            ),
-            Some(Content::Panel) => paint_region_notice(
-                &mut child,
-                content_rect,
-                slot.region.as_word(),
-                "panel — an empty column, and this region is too short for a command line. \
-                 `organon console stack add <panel> --region <this one>` fills it from a \
-                 terminal, or make the region taller",
-                theme,
-            ),
+            // ✏️ **An empty column is its own name and nothing else now**, and the two arms
+            // this used to have — one naming the control below, one naming the CLI when the
+            // region was too short to draw it — collapse into this one. See
+            // [`paint_region_notice`] for the rule that took the sentences.
+            Some(Content::Panel) => {
+                paint_region_notice(&mut child, content_rect, slot.region, theme)
+            }
             // 🚨 **The live 3D viewport — the same mechanism the portal is, in a different
             // rectangle.** `paint_viewport` is one implementation and this is its second call
             // site; nothing about the render, the texture, the gesture or the camera is
@@ -2599,33 +2578,14 @@ fn draw_regions(
             // held a moment ago.** §1.14's vacancy rule applies with more force to a picture
             // than to an empty cell: a rectangle that was rendering a world and now is not
             // is exactly what a broken viewport looks like.
-            Some(Content::ThreeD) => paint_region_notice(
-                &mut child,
-                content_rect,
-                slot.region.as_word(),
-                "3d — the portal has the world. Organon renders at most one frame per console \
-                 frame, so the floating portal takes it while it is open; `organon console \
-                 portal close` gives it back to this region",
-                theme,
-            ),
-            // 🚨 **Vacant is a sentence, never a blank.** §1.9's `Ring::Empty` argument at the
-            // scale of a sixth of a window: a region that draws nothing is indistinguishable
-            // from one that is broken, and the console's running tally of "it knew and said
-            // nothing" defects is long enough.
-            //
-            // ✏️ **One arm again, not two.** Tier C gave a vacant region its own command line and
-            // this notice named it (*"type `/panel` in the line below"*); the narrowing took that
-            // line away, so the sentence names the two doors that actually exist — the console
-            // line at an agent, and the CLI. A notice naming a control the region no longer
-            // draws is exactly the status line that cannot be right.
-            None => paint_region_notice(
-                &mut child,
-                content_rect,
-                slot.region.as_word(),
-                "empty — `/viewport <region> panel` at an agent, or `organon console viewport \
-                 <region> agent`, `… 3d` or `… panel` from a terminal, fills it",
-                theme,
-            ),
+            Some(Content::ThreeD) => {
+                paint_region_notice(&mut child, content_rect, slot.region, theme)
+            }
+            // 🚨 **Vacant is a name, never a blank.** §1.9's `Ring::Empty` argument at the scale
+            // of a sixth of a window: a region that draws nothing at all is indistinguishable
+            // from one that is broken. The *name* is what carries that, and it is all that
+            // carries it — see [`paint_region_notice`].
+            None => paint_region_notice(&mut child, content_rect, slot.region, theme),
         }
         // 📌 **The panel column's own control, last, so it sits under whatever the column
         // holds.** Drawn into a child `Ui` of its own at the rectangle reserved above, never
@@ -2702,7 +2662,43 @@ struct RegionViewport<'a> {
     yielded_to_portal: bool,
 }
 
-/// What a region says when it is not the live tab: its own word, then what belongs there.
+/// What a region with nothing to draw says: **its own word, and nothing else.**
+///
+/// # 🚨 Every one of these carried a paragraph, and all four are gone
+///
+/// James, 2026-08-21, on the empty side columns: *"We don't want to see anything like this in
+/// our UX ever. We never want text just pasted in explaining something into the UI."* What he was
+/// looking at was this function's `body` argument — four sentences, one per arm, each naming the
+/// commands that would fill the rectangle:
+///
+/// | arm | what it said |
+/// |---|---|
+/// | vacant | *"empty — `/viewport <region> panel` at an agent, or `organon console viewport …` from a terminal, fills it"* |
+/// | `panel`, empty column | *"panel — an empty column. Type `add surface` in the line below; `remove all` empties it again"* |
+/// | `panel`, region too short for a line | *"…and this region is too short for a command line. `organon console stack add …`"* |
+/// | `3d`, portal holds the frame | *"3d — the portal has the world. … `organon console portal close` gives it back"* |
+/// | `agent`, not the live tab | *"agent — waiting for a tab of its own. … a second one needs Tier 2's per-region tab"* |
+///
+/// ⚠️ **This is stricter than #125's sweep**, which took *instructional* chrome and left text
+/// that explained a **state**. Both go. The line that survives is: **a label, a value, or an
+/// answer to something you just did.** A region's own word is the first of those — it says which
+/// rectangle you are looking at — and the argument that made a notice necessary at all is
+/// unaffected by losing the sentence: a region that draws *nothing* is indistinguishable from a
+/// broken one, and a region that draws its name is not.
+///
+/// ⚠️ **The information is not lost, and the losses are not equal — which is worth stating
+/// rather than glossing.** Three of the five sentences name a command, and every one of those
+/// commands refuses by name when it cannot be run (`region::Refusal`, `panel_stack::Refusal`), so
+/// the words arrive in answer to an action instead of sitting on screen ahead of one. The other
+/// two — the portal holding the world, and a second `agent` region having no tab of its own —
+/// are consequences of something already visible elsewhere in the window (the portal is open;
+/// the live tab is drawn in the first agent region). Neither now names itself. That is the
+/// deliberate cost of the rule.
+///
+/// ⚠️ **The content kind is deliberately NOT drawn either.** A second line reading `panel` under
+/// `left` would be a label, so the rule would permit it — but the region's assignment is stated
+/// by what the *other* regions are drawing and by `organon console viewport`, and a word that
+/// only ever appears when a region is empty is one more thing on screen that is not the work.
 ///
 /// Filled rather than left transparent, on [`paint_viewport`]'s rule and for its reason — an
 /// outline over whatever the backdrop is painting reads as a rendering failure, which is the
@@ -2710,23 +2706,22 @@ struct RegionViewport<'a> {
 fn paint_region_notice(
     ui: &mut egui::Ui,
     rect: egui::Rect,
-    heading: &str,
-    body: &str,
+    region: organon_console::region::Region,
     theme: &Theme,
 ) {
+    let word = region.as_word();
     ui.painter().rect_filled(rect, 0.0, theme.panel_fill);
     // The inset is the notice's own, not the region's: the rectangle a region owns is exact
     // (`region_rect` reserves no gutter), so the breathing room is drawn inside it.
     let inner = rect.shrink(REGION_NOTICE_PAD);
     let mut text = ui.new_child(
         egui::UiBuilder::new()
-            .id_salt(("organon-viewport-notice", heading))
+            .id_salt(("organon-viewport-notice", word))
             .max_rect(inner)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     text.set_clip_rect(inner.intersect(ui.clip_rect()));
-    text.label(egui::RichText::new(heading).monospace().strong().color(theme.panel_title));
-    text.label(egui::RichText::new(body).monospace().color(theme.panel_text));
+    text.label(egui::RichText::new(word).monospace().strong().color(theme.panel_title));
 }
 
 /// The hairlines **between** regions — and only between them.
@@ -5753,8 +5748,12 @@ impl Console {
                                 panel_wanted = out.panel;
                             }
                             _ => {
+                                // ✏️ **The keystroke is gone from this line** (`— ⌘T opens one`).
+                                // It was the last piece of console chrome teaching a control to
+                                // the person holding it. What is left states the condition and
+                                // nothing else, which is the whole of what an empty pane owes.
                                 ui.centered_and_justified(|ui| {
-                                    ui.monospace("no live tab — ⌘T opens one");
+                                    ui.monospace("no live tab");
                                 });
                             }
                         }
@@ -5791,13 +5790,15 @@ impl Console {
                                 // cannot see `OrganicMathParams`, and it cannot see
                                 // `theme::card` either, which is why the *card* crosses here
                                 // and not just the body (`panel_stack::OrganonDraw`). Reached
-                                // for **every** panel in the column, `Declared` ones included:
-                                // they get the same chrome, with the console's own sentence
-                                // inside it.
+                                // for every panel in the column — which, since
+                                // `panel_stack::admit` gates every door onto one, is always a
+                                // panel this build has a body for. `true` because this build
+                                // really does draw a card.
                                 //
-                                // ⚠️ `absent_body` is asked rather than `panel.status` matched,
-                                // so the rule about which panels have controls is stated in one
-                                // place. `true` because this build really does draw a card.
+                                // ✏️ **It used to carry the console's sentence for a `Declared`
+                                // panel.** That sentence is a refusal now, spoken when the panel
+                                // is asked for, so there is nothing to pass down and no bodyless
+                                // card for it to sit in.
                                 //
                                 // What a control writes is a `PresetValues` mirror rather than
                                 // a parameter, because a parameter cannot be written from
@@ -5811,12 +5812,7 @@ impl Console {
                                 // leaves the column blue-slate — which is what James was looking
                                 // at. `panel_surface::console_card_style` is the translation.
                                 draw: &mut |ui, panel| {
-                                    organon_panels.card(
-                                        ui,
-                                        panel,
-                                        organon_console::panel_stack::absent_body(panel),
-                                        theme,
-                                    );
+                                    organon_panels.card(ui, panel, theme);
                                     true
                                 },
                             },
@@ -7586,17 +7582,38 @@ mod cli_tests {
         // `region_line` puts into the resolved arguments; this is what the schema declares.
         // A second spelling is a comparison that silently stops matching.
         assert_eq!(CMD_REGION, organon_console::panel_stack::REGION_ARG);
+        // 🚨 **And the two required slots, for a sharper reason than tidiness.** `region_line`
+        // re-asks `StackCmd::resolve` over the *resolved arguments* before dispatching, so that
+        // "this panel has no controls" reaches the box it was typed in instead of only stderr.
+        // It reads these two keys; a drift in either would make that lookup answer `None`, the
+        // check would wave every line through, and the only symptom would be a refusal nobody
+        // ever sees again.
+        assert_eq!(CMD_ACTION, organon_console::panel_stack::ACTION_ARG);
+        assert_eq!(CMD_PANEL, organon_console::panel_stack::PANEL_ARG);
 
         // Every pair the schema offers converts, and every one of those lines is one the drain
-        // reads back — `viewport`'s cross product, for its reason. ⚠️ `add all` is the one pair
-        // that must NOT convert: `all` names the whole column and this verb does not fill one
-        // from a single word.
+        // reads back — `viewport`'s cross product, for its reason.
+        //
+        // ⚠️ **Two kinds of pair must NOT convert, and both are refused by name.** `add all`,
+        // because `all` names the whole column and this verb does not fill one from a single
+        // word; and `add <a panel with no controls>`, because a `Declared` panel used to be
+        // admitted and then explain itself where its controls would be, and that sentence is a
+        // refusal now (`panel_stack::admit`). Both are asserted here rather than skipped, since
+        // this loop is what says the ring and the conversion agree.
         for a in STACK_ACTIONS {
             for p in panel_words() {
+                let declared = p != ALL_WORD
+                    && organon_core::panels::find_by_slug(p)
+                        .is_some_and(|panel| panel.status == organon_core::panels::Status::Declared);
                 let asked = op_from(CMD_STACK, &json!({ CMD_ACTION: a, CMD_PANEL: p }));
                 if *a == "add" && p == ALL_WORD {
                     let e = asked.expect_err("`add all` must be refused by name");
                     assert!(e.contains(ALL_WORD), "the refusal quotes the word: {e}");
+                    continue;
+                }
+                if *a == "add" && declared {
+                    let e = asked.expect_err("`add {p}` must be refused: it has no controls");
+                    assert!(e.contains(p), "the refusal quotes the panel: {e}");
                     continue;
                 }
                 let op = asked.unwrap_or_else(|e| panic!("`{a} {p}`: {e}"));
