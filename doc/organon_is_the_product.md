@@ -95,14 +95,26 @@ Consequences worth stating before anyone builds it:
 
 ## 5. What actually has to move, if this is ratified
 
-Listed so the size is visible. **None of it is urgent**, and none of it should happen before
-#98's tiers land.
+Listed so the size is visible. **None of it is urgent.**
+
+🚨 **The rows split into two kinds, and only one of them waits.** A row that changes **words a
+person reads** may go as soon as the decision is ratified — that is what this section's closing
+paragraph means by *"ratify the words first"*. A row that changes a **mechanism something else
+reads** — the edition enum, the binaries, the architecture docs that describe them — must not
+happen before #98's tiers land, because the editions are what currently make the three
+arrangements work.
+
+✏️ **This distinction was implicit until 2026-08-21 and the ✅ rows below made it load-bearing.**
+Until then every row was pending, so a flat *"none of it should happen before #98's tiers land"*
+read consistently; with word-rows marked done under that sentence, the section contradicted
+itself about what it had permitted. The words/mechanism split is what the closing paragraph
+always meant, now said where a reader meets the table rather than six lines later.
 
 | | |
 |---|---|
 | ✅ `doc/organon_prd.md` | **done, 2026-08-21** — the one product definition, absorbing `doc/organon_mind_prd.md`. The words, which §5 says go first |
 | `CLAUDE.md` | the naming-convention section, which currently defines *Organon* as the visualizer product and *Organon Console* as a separate thing |
-| ⚠️ `README.md`, `doc/how_organon_works.md` (§1 **and** §16), `doc/equations_into_light.md` | **missing from this list until 2026-08-21, and from #111's too** — each carries its own wording of the identity claim, so fixing one leaves four. `doc/organon_prd.md` §1.1 is now the single source they quote |
+| ✅ `README.md`, `doc/how_organon_works.md` (§1 **and** §16), `doc/equations_into_light.md`, `doc/guide/README.md` | **done, 2026-08-21.** Missing from this list until that day, and from #111's too — each carried its own wording of the identity claim, so fixing one would have left four. All now point at `doc/organon_prd.md` §1.1; the two that are genuinely *about the visualizer* were scoped in their titles rather than rewritten |
 | `ARCHITECTURE.md` §4.1 | owns the edition mechanism |
 | `organon-core/src/edition.rs` | the `Edition` enum and its six behaviours |
 | `MIND_ARCHITECTURE.md`, `CONSOLE_ARCHITECTURE.md` | their opening claims about being separate products |

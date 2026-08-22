@@ -1,9 +1,15 @@
-# The Organon Engine
+# Equations into light — the Organon visualizer
 
 **A physically based light-transport engine that lives inside your DAW, pointed at
 fifty years of beautiful mathematics.**
 
-Organon is a real-time visualizer built in Rust on wgpu, shipped as a
+> 📌 **This essay is about one thing Organon hosts, not about what Organon is.** Organon is one
+> native application whose identity is data — you divide the window into regions, declare what
+> each holds, and save the arrangement under a name — and the generative-math visualizer
+> described here is the arrangement it grew out of, built in and conceptually a module like any
+> other. `doc/organon_prd.md` §1.1 is the canonical description of the whole.
+
+The visualizer is built in Rust on wgpu and ships inside a
 VST3/CLAP plugin whose renderer runs as a separate fullscreen process. The plugin
 is deliberately thin — a control surface exposing ~1,370 host-automatable
 parameters — and the visual is a full HDR rendering engine that reads a
@@ -252,11 +258,12 @@ wins, always. A CLI opens the same nervous system to the terminal — read the
 live state, set anything, snap a frame, roll a take — which means an external
 agent gets hands and eyes with no daemon in between; an in-process AI performer
 plays the same lane, its every action mirrored back through the host's parameter
-setter so the sliders never lie. And it is all one instrument, shipping three ways
-from one workspace: the plugin; **Organon Mind** — load a language model and watch
-it think, every readout labeled measured, derived, or projection — and the
-**Organon Console**, a GPU terminal for working with agents, the engine glowing
-under the glyphs.
+setter so the sliders never lie. And all of it is one *arrangement* of one
+application, shipping three ways from one workspace today: this one, inside the plugin;
+**Mind** — load a language model and watch it think, every readout labeled measured, derived,
+or projection — and the **Console**, a GPU terminal for working with agents, the engine glowing
+under the glyphs. Three faces of one program, and the window is learning to hold any of them at
+once.
 
 Organon is what happens when you take the demoscene's ambition, a PBR
 engine's discipline, and a physics textbook's index, and make them all dance to
