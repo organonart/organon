@@ -114,6 +114,9 @@ flowchart TB
         P13["13 Recoverable Execution"]
         P14["14 Continuity as Memory"]
     end
+    subgraph DELEG["VII · Delegation — when the actor is another agent"]
+        P15["15 Coordinated Sessions"]
+    end
 
     ORIENT --> INTENT
     INTENT --> EXEC
@@ -122,7 +125,14 @@ flowchart TB
     EXEC --> TRUTH
     TRUTH -->|"next task, wiser"| ORIENT
     TURN -.->|"governs every arc"| EXEC
+    EXEC -->|"work exceeds one context"| DELEG
+    DELEG -->|"artifact verified, not report believed"| TRUTH
 ```
+
+Delegation is drawn as its own arc rather than folded into Execution because the
+question it answers is different in kind: not *how is work made visible* but *what does
+visibility mean when the worker is another agent*. It re-enters the loop at Truth, which
+is the claim it exists to defend.
 
 Turn management is drawn to the side deliberately: it is not a stage but a
 property of every stage. A system can have an excellent approval gate and still
@@ -745,7 +755,9 @@ was done. "What did you change?" asked *after* an agent turn is the diagnostic.
 diff-then-commit. `apt`'s package plan.
 
 **Related Patterns** — **Approval Gate** (10), **Tool-Call Transparency** (8),
-**Recoverable Execution** (13).
+**Recoverable Execution** (13). **Coordinated Sessions** (15) extends the receipt to the
+case where the actor was another agent, and the receipt therefore proves nothing on its
+own.
 
 ---
 
@@ -911,7 +923,8 @@ Terminal bell on completion. Govee lamps driven from a voice agent's turn
 lifecycle, as described above.
 
 **Related Patterns** — **Tool-Call Transparency** (8), **Honest Gauge**
-(12), **Mode Legibility** (2).
+(12), **Mode Legibility** (2), **Coordinated Sessions** (15) — a delegating agent needs
+this channel for the same reason a principal does, and for the same question.
 
 ---
 
@@ -1192,7 +1205,8 @@ converge-to-desired-state model. Flaky-test quarantine, which exists precisely
 because a test suite that is always red is not a test suite.
 
 **Related Patterns** — **Capability Disclosure** (1), **Ambient Activity
-Channel** (9).
+Channel** (9), **Coordinated Sessions** (15) — where the gauge is a report written by an
+agent about its own work, which is the hardest kind to keep honest.
 
 ---
 
@@ -1370,6 +1384,178 @@ rather than agents.
 
 ---
 
+# VII · Delegation
+
+## 15 · Coordinated Sessions
+
+**Intent** — Let one agent hold a goal larger than one context by delegating scoped
+work to other agents, in a way that keeps the delegating agent *responsible* — so that
+what comes back is verified against the artifact rather than believed from the report.
+
+**Also Known As** — Coordinator/Worker; Orchestrator; Agent Fan-Out; Multi-Agent
+Choreography. (This catalogue listed it as an uncovered gap until 2026-08-22, under the
+last of those names.)
+
+**Motivation** — A task spans two repositories that must agree on a wire format, or
+needs four PRs that touch disjoint files, or is simply longer than a context window. One
+agent doing it serially loses the early half of the work by the time it reaches the
+later half.
+
+The obvious move is to delegate, and the obvious delegation fails in a specific way. A
+worker finishes and reports *"the bar is green, everything passes."* The coordinator
+merges. The claim was true and useless: the worker ran six of seven verification
+commands, and the seventh was the only one that would have executed its new tests. Every
+signal said healthy. Nothing lied.
+
+That is the shape of the problem. **A receipt written by an agent is a claim, not
+evidence** — and pattern 7's receipt assumed a tool with a return code, not an actor
+that can be sincerely wrong about its own work. The fix is not more trust or more
+supervision; it is that the coordinator **reads the artifact** — the diff, the branch,
+the count — and treats the report as a pointer to where to look.
+
+There is a second failure, subtler, and it is about *reachability*. Rules that live with
+the coordinator reach a worker only by being retyped into each brief. Retyped rules
+drift, silently, and the drift is invisible because nobody diffs prose. The verification
+bar in the scenario above circulated in briefs for months in its broken six-command form
+while the canonical copy was correct the whole time.
+
+**Applicability** — Use when the work exceeds one context, spans repositories that must
+agree on a contract, or decomposes into genuinely parallel pieces with disjoint files.
+Do **not** use it to make one ordinary task look industrious: a worker costs a brief, a
+verification pass and a merge, and below some size that exceeds the work. And do not use
+it when the pieces touch the same file — sequence those instead, because conflicts
+across parallel agents cost more than the parallelism buys.
+
+**Structure**
+
+```mermaid
+flowchart TB
+    PR["Principal"] -->|"goal, taste, sign-off"| C
+    C["Coordinator<br/>holds the design and the merge button"]
+    C -->|"brief: scope, NOT-scope,<br/>a COMMAND that prints the contract"| W1["Worker A"]
+    C -->|"brief"| W2["Worker B"]
+    PUB[("Published contract<br/>in the shared repo")]
+    C -.->|"cites, never quotes"| PUB
+    W1 -->|"reads for itself"| PUB
+    W2 -->|"reads for itself"| PUB
+    W1 -->|"branch + PR + report"| A1[("Artifact")]
+    W2 -->|"branch + PR + report"| A2[("Artifact")]
+    A1 --> V["Coordinator VERIFIES<br/>the artifact, not the report"]
+    A2 --> V
+    V -->|"merge"| M["main"]
+    V -.->|"departure from the<br/>principal's own words"| PR
+    style V fill:#7850EB,stroke:#7850EB,color:#fff
+```
+
+**Participants** — The *Coordinator* holds the goal, the design, and the merge button;
+it is the only party that talks to the principal. A *Worker* holds context the
+coordinator does not want and produces one artifact. The *Published contract* is the
+shared, worker-readable statement of the bar and the process rules. The *Artifact* — a
+branch, a diff, a test count — is the only thing that carries evidence. The *Principal*
+retains everything neither party may decide.
+
+**Collaborations** — Extends **Plan · Approve · Execute · Receipt** (7) by answering
+what a receipt means when the actor was itself an agent: it means *nothing until read
+against the artifact*. Depends on **Honest Gauge** (12) at two levels — the worker's
+report is a gauge, and so is the verification bar it quotes. Uses **Ambient Activity
+Channel** (9) for progress: reading a worker's transcript is the peripheral channel that
+makes "are you done?" unnecessary. Constrained by **Approval Gate** (10): a coordinator
+cannot grant a worker authority it does not itself hold, and a worker's request is not
+consent.
+
+**Consequences**
+
+- *Gain*: work larger than one context completes without the coordinator losing the
+  design, because the coordinator never holds the implementation detail.
+- *Gain*: genuine parallelism on disjoint files, bounded by review rather than by typing.
+- *Gain*: a worker's surprises come back as findings. The trap it hit that the brief did
+  not anticipate is the highest-value thing the arrangement produces, and it only arrives
+  if the report-back contract asks for it by name.
+- *Cost*: every rule must be published where the far side can read it, or it decays into
+  folklore. This is real work and it is not optional.
+- *Cost*: verification is now the coordinator's whole job, and it is more expensive than
+  reading a report — which is exactly why it gets skipped.
+- *Trap*: **two agents agreeing is not the principal agreeing.** Convergence between a
+  coordinator and its own worker is not corroboration; they share a brief, a framing, and
+  frequently a mistake.
+- *Trap*: a measurement of another agent's branch is stale the moment it is taken. Two
+  sessions correcting each other from readings minutes apart will both be right about what
+  they read and both wrong about the present.
+
+**Implementation**
+
+**Publish the contract; cite it, never quote it.** Anything a worker must obey goes in a
+file the worker can read from a checkout it already has, and the brief names the command
+that prints it. Quoting is what drifts. Where a second copy is unavoidable — one audience
+needs it in a different document — pin the two with a check, so the duplication is a copy
+rather than a fork.
+
+**Scope a brief by what it is NOT.** The "not yours" list prevents more damage than the
+"yours" list creates: name the files another worker owns, and name yourself as the one
+to ask.
+
+**Never put a measurement in a brief.** Counts, timings and sizes age faster than
+anything else; a worker handed a stale one has to decide whether it found a regression or
+an out-of-date brief, and the cheap wrong answer is to assume the brief. Tell it to
+measure its own baseline before changing anything.
+
+**Demand the pair, not the number.** A single count proves nothing — it is the *delta*
+that shows work was added and nothing lost. And demand to know *which* check produced it:
+"the bar is green" and "my tests ran" are different claims, and only the second is about
+the worker's own work.
+
+**Give yourself a findable address before dispatching.** The return leg is not automatic;
+nothing makes a worker report back except the brief saying so, and it can only comply if
+your name is stable and matchable in whatever registry it can reach.
+
+**Never poll.** "Are you done?" costs the worker a turn and buys nothing an activity
+channel would not have given free.
+
+**Cite the ref you read at.** When you report a measurement of someone else's branch, name
+the commit. `origin/module/verbs @ 4ad11f5` is recognised as stale in one glance; a bare
+finding has to be re-derived by whoever disagrees.
+
+**Sample Interaction**
+
+```
+COORDINATOR → WORKER
+  Spec:        git show origin/main:doc/organon_module_viewport.md
+  Contract:    git show origin/main:.claude/skills/coordinate-sessions/BRIEF.md
+  Yours:       native/organon-module/src/input.rs
+  NOT yours:   wire.rs (worker B holds it) — ask me, do not edit
+  Baseline:    measure it yourself before you touch anything. I am not giving you a number.
+  Report:      the before/after pair, which leg produced it, and what you hit that I missed.
+
+WORKER → COORDINATOR
+  origin/module/verbs @ 4ad11f5
+  leg 7 (organic-math-native --lib): 324 → 331
+  Traps not in the brief: RESERVED was a `pub const`, so a hosted module cannot
+  see it — the promise was rememberable, not checkable. Published it in the header.
+
+COORDINATOR
+  $ git show origin/module/verbs:native/organon-module/src/input.rs | grep -c RESERVED
+  $ git diff --stat origin/main...origin/module/verbs
+  → 3 files, +214/-11. Scope holds. Count moved with the claim. Merging.
+```
+
+**Failure Signature** — A merged PR whose new tests have never executed. A brief being
+retyped from memory rather than cited. A coordinator asking "how is it going?". Two
+agents in confident agreement on something the principal never said. A correction issued
+about another agent's branch that was already wrong when it was written.
+
+**Known Uses** — This repository's `.claude/skills/coordinate-sessions/`, which is this
+pattern codified as an executable skill: `SKILL.md` is the coordinator's half and
+`BRIEF.md` the published contract a worker is pointed at, with
+`.claude/hooks/bar-agreement-check.sh` pinning the duplicated verification bar. Claude
+Code's subagent and cross-session messaging registries. `git` itself, read as
+coordination between agents that never share memory: the branch is the artifact and the
+diff is the verification.
+
+**Related Patterns** — **Plan · Approve · Execute · Receipt** (7), **Honest Gauge**
+(12), **Ambient Activity Channel** (9), **Approval Gate** (10).
+
+---
+
 # Applying the language
 
 ## An acceptance checklist
@@ -1393,6 +1579,7 @@ question the interface must be able to answer.
 | 12 | Is every green light honest — and does red mean exactly one thing? | 12 |
 | 13 | Does every action have a before-state and a path back? | 13 |
 | 14 | Does what matters survive the session, in a form the principal can correct? | 14 |
+| 15 | When the actor was another agent, was the artifact read — or the report believed? | 15 |
 
 ## Forces that recur
 
@@ -1413,8 +1600,12 @@ most concrete design arguments are instances of them.
 Named honestly, because a pattern language that pretends to completeness is its
 own dishonest gauge.
 
-- **Multi-agent choreography.** Delegation between agents, and what a receipt
-  means when the actor was itself an agent.
+- ~~**Multi-agent choreography.**~~ **Closed 2026-08-22 by pattern 15**, and worth
+  recording as closed rather than deleted: the gap was named here for months before it
+  was filled, and it was filled by a working practice being written down rather than by
+  a design. What pattern 15 does *not* cover is choreography deeper than one level —
+  a worker that is itself a coordinator — where the artifact a coordinator verifies was
+  assembled from reports it never saw.
 - **Long-horizon autonomy.** Work spanning days, where the principal is absent
   for most of it and the transcript is not read at all.
 - **Collaborative surfaces.** More than one principal, with different authority,
