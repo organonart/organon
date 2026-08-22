@@ -72,6 +72,7 @@ already.
 | **`SECURITY.md`** | how to report privately, and what the real attack surface is — including which parts are by design | update when you change a trust boundary |
 | **`LICENSING.md`** | why the licence is split across crates, and what that constrains | read before touching a `license` field |
 | **`CHANGELOG.md`** | per-release history. ⚠️ **Do not write into it** — new entries are one file each in `changelog.d/`, concatenated in at release time | an entry per meaningful change |
+| **`site/`** | **`organon.art`** — the public front door. Hand-authored HTML, no build step, no external requests. Quotes `doc/organon_prd.md` §1.1 (the identity claim) and §12 (the state of play); its plates quote the real region/content vocabulary | update when §1.1, §12 or the command vocabulary changes |
 | **`changelog.d/`** | **where a change gets recorded.** One Markdown fragment per change, named `YYYY-MM-DD-<branch-slug>.md`, in the same house style as `CHANGELOG.md`. `changelog.d/README.md` is the how; `.gitattributes` is the why | a fragment in the **same commit** as any meaningful change |
 
 **Hooks enforce the doc discipline** (`.claude/settings.json` — the file is the
@@ -351,10 +352,15 @@ doc/          Organon Mind's public doc set (PRD, build plan, the honesty essay)
 changelog.d/  one Markdown fragment per change, concatenated into CHANGELOG.md at
               release by `native/tools/changelog.py`. Write your entry HERE, not in
               CHANGELOG.md.                         → changelog.d/README.md
+site/         organon.art — ONE hand-authored HTML file, no build step and no
+              external requests. It QUOTES doc/organon_prd.md §1.1 and §12 rather
+              than re-authoring them, and its dark plates quote the real command
+              vocabulary — so a vocabulary change makes the page wrong.
+                                                    → site/README.md
 ```
 
-That is all of it. This repository is Rust and its documentation — no npm, no
-TypeScript, no build step outside cargo. (`native/tools/*.py` are repo tools run by
+That is all of it. This repository is Rust, its documentation, and one static page —
+no npm, no TypeScript, no build step outside cargo. (`native/tools/*.py` are repo tools run by
 hand, not a build step: stdlib only, nothing imports them, nothing compiles them.)
 
 For anything more specific — which file owns a subsystem, the `Shared` layout, the

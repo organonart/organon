@@ -30,8 +30,26 @@ doc/arch/render.md|native/organon-render/src/*.rs native/organon-render/src/*.wg
 MIND_ARCHITECTURE.md|native/organon-core/src/edition.rs native/organon-mind/src/*.rs native/organon-core/src/gguf*.rs native/src/mind_main.rs native/src/bin/mind_runtime.rs native/src/bin/mind_writer.rs
 CONSOLE_ARCHITECTURE.md|native/organon-console/src/*.rs native/organon-console/Cargo.toml native/organon-module/src/*.rs native/organon-module/Cargo.toml
 .claude/skills/organon-cli/SKILL.md|native/src/bin/ctl.rs native/src/cli.rs
+site/index.html|doc/organon_prd.md
 web/ARCHITECTURE.md|web/src/contracts/sharedState.ts web/src/contracts/generatorOutput.ts web/src/contracts/renderer.ts web/src/contracts/stateSource.ts web/src/render/pbrRenderer.ts web/src/render/webgpuRenderer.ts web/src/state/store.ts native/organon-wasm/src/lib.rs native/organon-manifest/src/lib.rs
 "
+
+# 📌 The site/index.html row is STALENESS-ONLY, and deliberately so. organon.art quotes
+# doc/organon_prd.md §1.1 (the identity claim) and §12 (the state of play) rather than
+# carrying its own wording — that is the whole reason the page lives in this repository,
+# since the claim was once spelled six ways and went stale in all six at once. A public
+# page is the surface most likely to become the seventh.
+#
+# ⚠️ Its ONE trigger is the PRD, not the console sources, even though the page's plates
+# also quote the real region and content words. `native/organon-console/src/*.rs` churns
+# constantly and would fire this rule most weeks, which is how a reminder gets ignored —
+# the calibration note below is explicit that a reminder people learn to dismiss is worse
+# than no reminder. The vocabulary obligation is carried in site/README.md and CLAUDE.md's
+# doc table instead, where a person changing a region word will meet it.
+#
+# There is no case for it in architecture-doc-check.sh, so it contributes no same-change
+# nudge — same arrangement as web/ARCHITECTURE.md, and for the same reason: the PRD moves
+# rarely, and drift across sessions is the failure worth catching.
 
 # 📌 The web/ARCHITECTURE.md row STAYS despite #418 being parked (#626 Tier 2), and
 # so do its `organon-wasm` / `organon-manifest` triggers. This is deliberate, not an
