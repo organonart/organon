@@ -7063,9 +7063,52 @@ bug an injectable seam exists to catch.
 #### Refusals, because every failure here is somebody's next action
 
 No network, no toolchain, a commit that does not exist, a manifest that will not parse and a build
-that failed are five different mornings. `WorkFault` has seventeen variants and
+that failed are five different mornings. `WorkFault` has **nineteen** variants and
 `every_refusal_says_what_to_do` asserts that no two share a sentence. A failed program's own words
 reach the refusal **tail-first** — a compiler wall's last lines are the ones that say what broke.
+
+✏️ **The count was already wrong before this change** — T5 added three variants and left the
+paragraph saying seventeen when it was eighteen. Recounted rather than incremented, which is what
+caught it. ⚠️ And counting it *by a pattern* nearly produced a second wrong number: the obvious
+regex matches `Name {` and `Name,` and silently skips the one tuple variant, `Module(ModuleFault)`.
+A count in prose is a promise to re-measure it, and the measurement needs checking too.
+
+🚨 **That test was covering fifteen of them, and its name is what hid it.** The list of faults it
+walks is written by hand; Rust checks the *enum* and nothing checked the *list*, so three variants
+added by T5 — `NoBinary`, `ChannelFailed`, `LaunchFailed` — were never added to it. It passed the
+whole time, asserting something true about a subset while promising *every*. A **one-way table**:
+the direction the compiler helps with is the direction that stays correct, and the other rots
+silently. `all_variants_listed` is now the compiler's half — an uncalled `match` with no wildcard
+arm, which stops compiling when a variant is added, on `module.rs`'s coherence-tripwire precedent.
+⚠️ A `_ =>` arm would restore the defect exactly.
+
+#### 🚨 `build` verifies the artifact, in two halves, because exit 0 means neither
+
+`cargo build --release` **exits 0 while producing nothing** — it silently skips a `[[bin]]` whose
+`required-features` are unmet. So the exit code is true about the command and false about the
+outcome, and `build` checks the artifact rather than trusting it.
+
+| | the refusal | what a person must do next |
+|---|---|---|
+| no binary at all | `NoBinary` | the **repository** does not meet the obligation published in `doc/organon_module_viewport.md` §4.7 — a manifest question |
+| a binary **this build did not produce** | `StaleBinary` | the **checkout** is not what you think it is |
+
+⚠️ **The second is the one an existence check cannot see, and it is the more dangerous.** A binary
+left in `target/` by an earlier commit satisfies `file_exists`, so `modules.json` records a built
+commit whose artifact is different bytes and the console launches them — defeating §3.4's whole
+reason for recording a commit, with every indicator green.
+
+📌 **Not an mtime comparison**, and §4.7.1 carries the measured table. In short: cargo does not
+relink when nothing changed, so an mtime stamped at the build's start refuses an *ordinary repeat
+build*. A check that refuses the common case is withdrawn within a day **and takes the real hole
+with it** — it fails in the way that discredits the check it was meant to be. What ships is
+`--message-format=json-render-diagnostics` and a look for a `compiler-artifact` naming the binary;
+a skipped target emits no such record at all.
+
+⚠️ **`json-render-diagnostics` rather than plain `json`** because plain `json` moves the compiler's
+diagnostics to stdout, and [`ToolOutput::tail`] reads stderr — so `BuildFailed` would have carried
+*"could not compile … due to 1 previous error"* **without the error**. One refusal improved while
+another was gutted, in the same file, in the same change.
 
 ⚠️ **`GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS` are set on every `git` this console runs**, and
 that is a hang fix rather than tidiness: a private repository behind a credential helper would

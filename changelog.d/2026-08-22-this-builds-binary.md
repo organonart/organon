@@ -66,3 +66,26 @@
   binary there?* — and `cargo_built` answers the new check — *did this build make it?* A real build
   says yes to both, and the whole of the stale case is a `Fake` that says yes to the first and no to
   the second. One combined switch would have made the case this change exists for unrepresentable.
+
+  🚨 **And the new variant exposed that `every_refusal_says_what_to_do` had stopped being true.**
+  Its list of faults is written by hand; Rust checks the *enum* and nothing checked the *list*, so
+  three variants added by T5 — `NoBinary`, `ChannelFailed`, `LaunchFailed` — were never added to it.
+  A test promising **every** refusal was asserting about fifteen of eighteen, and it passed the
+  whole time, which is what made it invisible. A **one-way table**: the direction the compiler helps
+  with stays correct and the other rots silently. `all_variants_listed` is the compiler's half now —
+  an uncalled `match` with **no wildcard arm**, so adding a variant stops the file compiling until
+  it is listed, on `module.rs`'s coherence-tripwire precedent. ⚠️ A `_ =>` arm would restore the
+  defect exactly, which is why the comment says so.
+
+  ✏️ **The doc's count was already wrong before this change**, and recounting rather than
+  incrementing is what caught it: the paragraph said seventeen when `main` had eighteen. ⚠️ Counting
+  it *by a pattern* then nearly produced a second wrong number — the obvious regex matches `Name {`
+  and `Name,` and silently skips the one tuple variant, `Module(ModuleFault)`. 📌 A count in prose is
+  a promise to re-measure it, **and the measurement needs checking too.**
+
+  ⚠️ **One near-miss worth recording because a compiler warning caught it, not a test.** Inserting
+  the new test immediately above `fn every_refusal_says_what_to_do` put it between that function and
+  its own `#[test]` attribute — so the new test had two, and **the old one silently stopped being a
+  test at all**. `warning: duplicated attribute` was the only sign; the suite stayed green and the
+  count did not move, because one test was gained exactly as another was lost. Anchor above the
+  attribute, not below it.

@@ -2165,6 +2165,48 @@ mod tests {
 
     /// CONTRACT: **every refusal is a sentence naming a next action**, never a shared
     /// "something went wrong". Each of these is a different morning.
+    /// 🚨 **The compiler's half of [`every_refusal_says_what_to_do`], and the reason that test
+    /// stopped being true without anyone noticing.**
+    ///
+    /// The list up there is written by hand. Rust checks the *enum*; nothing checked the *list* —
+    /// so three variants added by T5 (`NoBinary`, `ChannelFailed`, `LaunchFailed`) were never
+    /// added to it, and a test whose name promises **every** refusal was quietly asserting about
+    /// fifteen of eighteen. It passed the whole time, which is what made it invisible.
+    ///
+    /// ⚠️ **This match is not called and asserts nothing.** Its entire job is to stop compiling
+    /// when a variant is added, so the next person adding one is told to go and put it in the
+    /// list. `module.rs`'s `From<ModuleManifest>` coherence tripwire is the same device — a
+    /// compile error standing in for a check no assertion can make.
+    ///
+    /// 📌 **Do not "simplify" it with a `_ =>` arm.** The wildcard is exactly the thing being
+    /// prevented; with one, this file compiles happily while the list rots again.
+    #[test]
+    fn all_variants_listed() {
+        fn _tripwire(f: &WorkFault) {
+            match f {
+                WorkFault::ToolMissing { .. }
+                | WorkFault::ToolFailed { .. }
+                | WorkFault::NoDirectory { .. }
+                | WorkFault::NoStore
+                | WorkFault::Module(_)
+                | WorkFault::NoSource { .. }
+                | WorkFault::CloneFailed { .. }
+                | WorkFault::FetchFailed { .. }
+                | WorkFault::NoSuchCommit { .. }
+                | WorkFault::NotAHash { .. }
+                | WorkFault::NoManifest { .. }
+                | WorkFault::IdentityMismatch { .. }
+                | WorkFault::NotApproved { .. }
+                | WorkFault::BuildFailed { .. }
+                | WorkFault::DiffFailed { .. }
+                | WorkFault::NoBinary { .. }
+                | WorkFault::StaleBinary { .. }
+                | WorkFault::ChannelFailed { .. }
+                | WorkFault::LaunchFailed { .. } => {}
+            }
+        }
+    }
+
     #[test]
     fn every_refusal_says_what_to_do() {
         let faults = vec![
@@ -2189,6 +2231,14 @@ mod tests {
             WorkFault::NotApproved { producer: "ascent".into(), known: vec!["other".into()] },
             WorkFault::BuildFailed { producer: "ascent".into(), tail: "error".into() },
             WorkFault::DiffFailed { producer: "ascent".into(), tail: "error".into() },
+            // ✏️ **Four that this list did not have.** Three landed with T5 and were never added
+            // — so a test called `every_refusal_says_what_to_do` was covering fifteen of eighteen
+            // variants while its name said otherwise, which is the one-way-table shape: the
+            // compiler enforces the enum, and nothing enforced the list. See `all_variants_listed`.
+            WorkFault::NoBinary { producer: "ascent".into(), expected: "/store/x".into() },
+            WorkFault::StaleBinary { producer: "ascent".into(), expected: "/store/x".into() },
+            WorkFault::ChannelFailed { producer: "ascent".into(), why: "no space".into() },
+            WorkFault::LaunchFailed { path: "/store/x".into(), why: "permission denied".into() },
         ];
         let mut seen: Vec<String> = Vec::new();
         for f in &faults {
