@@ -2829,8 +2829,12 @@ fn paint_module_notice(
     theme: &Theme,
 ) {
     let Some(state) = state else {
-        // Approved and built, and nothing yet knows how to draw it. T5 replaces this arm with a
-        // picture; until then the honest answer is the same one a vacant region gives.
+        // Approved, and a `BuildRecord` naming those exact bytes. ⚠️ **Reachable, and only from
+        // a hand-written `modules.json`** — nothing in this build fills `built` (T3b does) — so
+        // it is not the unreachable arm `region.rs` refuses to write: a file can put the
+        // registry in this state today, and a rectangle has to draw something when it does.
+        // T5 replaces it with a picture; until then the honest answer is the one a region with
+        // nothing to show already gives.
         paint_region_notice(ui, rect, region, theme);
         return;
     };
@@ -4004,10 +4008,16 @@ impl Console {
         // ⚠️ **An unapproved producer is refused and NEVER approximated to Organon** (§4.2). The
         // refusal names the approved ones, because the person who typed a wrong producer is
         // exactly the person who has not been told the right ones.
-        let approved = organon_console::module::ModuleRegistry::store_root()
-            .map(|root| organon_console::module::ModuleRegistry::for_completion(&root))
-            .unwrap_or_default();
-        let names = approved.producers();
+        //
+        // ⚠️ **Read only when a producer was actually named.** With no qualifier the answer is
+        // Organon without consulting anything, and `store_root` is `dirs::data_dir()` — a shell
+        // API call on Windows. `viewport left agent` should not touch the module store to
+        // discover that it does not need it.
+        let approved = producer_word.and_then(|_| {
+            organon_console::module::ModuleRegistry::store_root()
+                .map(|root| organon_console::module::ModuleRegistry::for_completion(&root))
+        });
+        let names = approved.as_ref().map(|r| r.producers()).unwrap_or_default();
         let cmd = match ContentCmd::resolve_with(content_word, producer_word, &names) {
             Ok(c) => c,
             Err(e) => {
@@ -5672,10 +5682,25 @@ impl Console {
         // approved or revoked in another window is in the rectangle before anybody could notice
         // it was not.
         //
-        // ⚠️ Taken unconditionally rather than inside the hosted arm: it is one clone of an
-        // `Arc` on a hit, and computing it inside the region walk would be a second borrow of
-        // `self` while the closure holds disjoint field borrows.
-        let modules = organon_console::module::ModuleRegistry::store_root()
+        // ⚠️ Taken once for the whole walk rather than inside the hosted arm, because computing
+        // it in there would be a second borrow of `self` while the closure holds disjoint field
+        // borrows — but **only when the layout actually holds a hosted producer**. `store_root`
+        // is `dirs::data_dir()`, a shell API call on Windows, and a console nobody has approved
+        // a module in must pay nothing at all for a capability it is not using (`CLAUDE.md`
+        // invariant 4, as a cost rather than as a behaviour).
+        let modules = layout
+            .occupied()
+            .iter()
+            .any(|(_, c)| {
+                matches!(
+                    c,
+                    organon_console::region::Content::ThreeD(
+                        organon_console::region::Producer::Hosted(_)
+                    )
+                )
+            })
+            .then(organon_console::module::ModuleRegistry::store_root)
+            .flatten()
             .map(|root| organon_console::module::ModuleRegistry::for_completion(&root))
             .unwrap_or_default();
         let modules = modules.as_ref();

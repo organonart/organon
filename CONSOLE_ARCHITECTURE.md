@@ -5403,6 +5403,12 @@ same 200 ms TTL, same store-root key, same invalidation on write. §1.15 measure
 walk at **10.1 ms for a hundred entries against a 16.7 ms frame** when read straight from disk.
 **No second cache was built.**
 
+📌 **And it is read only when something needs it.** `store_root` is `dirs::data_dir()` — a shell
+API call on Windows — so the region walk asks for the registry only when the layout actually holds
+a hosted producer, and `set_viewport` only when a producer word was typed. A console with no
+approved module pays nothing at all for the capability, which is invariant 4 arriving as a cost as
+well as a behaviour.
+
 ⚠️ **The ring reads the CONTENT word**, so `/viewport left agent producer ` answers `Ring::Empty`
 with the reason rather than staying silent — `None` there would leave the declared `ArgKind::Text`
 to accept a word nothing acted on. ⚠️ It is **never** `Ring::Empty` for `3d`: an empty
