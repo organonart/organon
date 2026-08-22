@@ -302,9 +302,23 @@ a different question, and the refusal machinery should not answer it by accident
 
 ### 4.3 What Ascent gives up, and it is exactly three things
 
-Its host is ~600 lines: an `ApplicationHandler`, an adapter/device/surface bring-up, a depth
-buffer, a vertex format, one WGSL shader, and a resize path. **It is not thrown away.** §6 is why
-it must survive.
+✏️ **Corrected by the Ascent session, which measured it rather than reading the header.** An
+earlier draft said *"its host is ~600 lines"*. That is true only of the `ApplicationHandler`,
+`main` and the window bring-up — about 260 lines plus setup. `crates/ascent/src/main.rs` is
+**4 498 lines**, and the part that actually has to move is `struct Gpu` and its `impl` at lines
+**2611–3664 — ~1 050 lines** on its own. The shape below is right; the tier is not a 600-line
+shuffle and must not be scoped as one.
+
+**The host is not thrown away.** §6 is why it must survive.
+
+📌 **And the seam is cleaner than "give up the surface" suggests, which is a better argument
+for hosted than this document originally made.** `struct Gpu` holds exactly **two** surface-specific
+fields — `surface: wgpu::Surface<'static>` and `config: wgpu::SurfaceConfiguration`. Everything
+else it holds is device state a texture-target host drives identically: device, queue, pipeline,
+depth, vertex and index buffers, draw ranges, the camera uniform, the bind group, the `frame_layer`
+indirection, the baked material arrays and the tuning floats. So the boundary this design asks for
+is **two fields**, not a diffuse entanglement to be teased apart — which is the concrete reason to
+believe the refactor is a re-homing rather than a rewrite.
 
 | Gives up | Keeps |
 |---|---|
@@ -449,6 +463,11 @@ opening WASAPI itself, and Ascent **already does** — `host` pulls in `ascent-e
 - 📌 The mitigation that *is* enforceable is OS-level (a job object, an audio session policy) and
   is not now. What is now is that Ascent is ours, honouring the grant is one branch in its audio
   init, and the contract says which branch.
+- ⚠️ **And that branch has to be added rather than preserved**, which is the difference
+  between a cheap tier and a forgotten one. Reported by the Ascent session: its host does not
+  merely *have* audio, it starts level music **unconditionally at load** and prints a line saying
+  so. The default today is the opposite of the default the contract requires, and the standalone
+  binary's behaviour must be left exactly as it is while the hosted path gains the gate.
 
 ### 5.3 "Clicking into it" is an interaction latch, and the console has already argued it
 
@@ -596,10 +615,14 @@ built if it is wrong.
    `build.rs` and any proc macro in the module's graph run as you, before anything is composited.
    For your own private repo that is obviously fine. It is written down because the sentence "the
    process is the boundary" would otherwise be believed further than it is true.
-3. **`3d ascent`, not a content word called `ascent`** (§4.2). You said "viewport type `ascent`";
-   this reads it as *a viewport whose producer is Ascent* rather than as a fourth kind of region,
-   because the word `3d` was chosen specifically so it would not name a renderer. If you meant the
-   literal fourth word, that is a real disagreement and it should be settled before T4.
+3. 🚨 **`3d ascent`, not a content word called `ascent`** (§4.2) — **and this is a
+   departure from your own words, flagged rather than left to land quietly.** You said "viewport
+   type `ascent`"; this reads it as *a viewport whose producer is Ascent* rather than as a fourth
+   kind of region, because `region.rs` chose `3d` over `world` specifically so the content
+   vocabulary would never name a renderer, and `ascent` makes the same mistake with a different
+   name. The Ascent session independently agreed and raised the same objection to itself:
+   **two agents agreeing with each other is not the same as you agreeing**, and a vocabulary word
+   is cheap now and permanent later. If you meant the literal fourth word, say so before T4.
 4. **Full screen may be a handoff rather than a grow** (§6). Ascent's own window, over the console,
    using the host it already has — which buys the flight feel outright and costs the animated
    transition. The alternative is the portal's unbuilt full-screen rectangle plus whatever §4.4

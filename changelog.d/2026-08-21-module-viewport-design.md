@@ -18,4 +18,4 @@
   Two holes are named rather than papered over: **building a module from source is linked-level
   trust** even though running it is not, and **"no sound" is an expectation, not an enforcement**,
   because a separate process can open the audio device without asking Organon. `doc/organon_modules_plan.md`
-  gains a §12 pointer carrying both back to the plan whose §10 table they qualify.
+  gains a §13 pointer carrying both back to the plan whose §10 table they qualify.
