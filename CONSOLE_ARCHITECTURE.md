@@ -7481,6 +7481,19 @@ knows the exit code.
 about whether it is drawing — that is exactly what `Presence::NotProducing` exists for — so a
 host that trusted the handle alone would call a wedged producer healthy.
 
+🚨 **And the borrow checker recommends the wrong order, which is worth knowing before touching
+it.** `ModuleChannel::poll` holds `&mut self.channel` for the whole life of the `Poll` it returns,
+because the pixels live in the channel's staging buffer. So the shortest path to *"also read the
+exit status"* is to ask the handle **after** the poll — where nothing is borrowed and it compiles
+first try. That reads as the natural arrangement and silently reverses the rule above: a dead
+producer's mapping looks healthy for a second, so a channel-first `observe` reports `Live` about a
+process this console watched exit.
+
+📌 So the order is not a style choice and not an accident of how it was written — it is the
+content of the function, and the language pushes against it. ✏️ Recorded because it was found by a
+reviewer rather than by the author: writing the ordering deliberately, and documenting why it is
+right, is not the same as noticing that the code around it recommends the opposite.
+
 #### §4.6's four rows, all four reachable, from three authors
 
 The other two rows were **unreachable rather than unbuilt**; a launcher is what makes them
