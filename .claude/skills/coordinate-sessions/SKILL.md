@@ -92,14 +92,22 @@ never "verified working" — the house phrase is **"green and ready to try"**.
 
 ```bash
 cd native
-cargo test  -p organon-console --lib                                    # 853
-cargo test  -p organon-core                                             # 594
+cargo test  -p organon-console --lib
+cargo test  -p organon-core
 cargo check --features console-edition --bin organon-console
 cargo check --tests -p organic-math-native --features console-edition
-cargo test  -p organic-math-native --bin organon-console --features console-edition   # 66
-cargo test  -p organic-math-native --bin organon --features console-edition           # 19
-cargo test  -p organic-math-native --lib  --features console-edition                  # 324
+cargo test  -p organic-math-native --bin organon-console --features console-edition
+cargo test  -p organic-math-native --bin organon --features console-edition
+cargo test  -p organic-math-native --lib  --features console-edition
 ```
+
+🚨 **Do not put expected counts in a brief — tell the worker to measure its own
+baseline.** Counts age faster than anything else here: leg 7 was **324** when this file was
+written and **332** about three hours later, across three merges. A worker handed a stale number
+sees a mismatch and has to decide whether it found a regression or an out-of-date brief, and the
+cheap wrong answer is to assume the brief. **Measure `origin/main` before changing anything, then
+compare against what you measured** — by stashing, not by remembering. A baseline you took beats
+one you were given.
 
 ⚠️ **The seventh is the one that goes missing, and its absence is invisible.** Leg 4 only `check`s
 the root crate's lib target and legs 5–6 test *binaries*, so without it **no leg runs the root
@@ -115,6 +123,12 @@ every brief.
 
 📌 **Require workers to say which leg ran their tests and what the number was.** "The bar is green"
 and "my tests ran" are different claims.
+
+📌 **And require the pair — before and after.** A single number proves nothing: it is the
+*delta* that says tests were added and none were lost. Two workers have now reported "the bar is
+green" with counts identical to the baseline, and in one case that was correct (its tests were in
+another target) while in the other it was the hole in the bar. The pair distinguishes them; one
+number does not.
 
 ## Merging under branch protection
 
