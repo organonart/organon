@@ -32,3 +32,13 @@ reports its own failure is only better than silence if the reason it gives is tr
 returned nothing"* sent a reader to look for a missing interpreter, which was present and healthy
 the whole time — the third instance this month of an error message that costs more than no message
 because it names the wrong cause.
+
+⚠️ **And the first cut of this fix set those variables on `wsl.exe` itself, which sets them on the
+Windows side and nowhere else** — caught in review, against this file's own ⚠️ note that *"env vars
+do not cross into WSL by themselves; `WSLENV` is the only forwarding mechanism, and it takes
+NAMES"*. It was harmless, because WSL's `python3` already defaults to UTF-8 — and that is precisely
+what made it worth fixing rather than deleting: a prefix that reads like it fixes the WSL path,
+does nothing, and contradicts the paragraph six lines above it is a trap for whoever edits next.
+The names are now forwarded and it is proven rather than argued — the Linux interpreter reports
+`ioenc= utf-8 utf8= 1 stdout= utf-8` through `py_run`, against `ioenc= None` without the
+forwarding.
