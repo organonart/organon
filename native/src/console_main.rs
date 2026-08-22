@@ -1847,6 +1847,13 @@ enum ModuleJob {
         url: String,
         reference: Option<String>,
         grant: organon_console::module_work::Grant,
+        /// 🚨 **Whether anything was approved under this producer when the job was dispatched**
+        /// — read once, at the completion, by
+        /// [`organon_console::module::ModuleRegistry::record_approval`], and carried here
+        /// because that is the only place it can be known. Its doc owns the reasoning: *nothing
+        /// under this name* means two opposite things at completion time — a first approval,
+        /// which must be stored, and one revoked while this job ran, which must not.
+        was_approved: bool,
     },
     Build(Box<organon_console::module::ApprovedModule>),
     Diff(Box<organon_console::module::ApprovedModule>, Option<String>),
@@ -1857,7 +1864,7 @@ impl ModuleJob {
     /// a console that went quiet is indistinguishable from one that ignored the command.
     fn started(&self, producer: &str) -> String {
         match self {
-            ModuleJob::Approve { url, reference, grant } => format!(
+            ModuleJob::Approve { url, reference, grant, .. } => format!(
                 "fetching {url}{} for `{producer}` — {}",
                 reference.as_ref().map(|r| format!(" at {r}")).unwrap_or_default(),
                 match grant {
@@ -1889,9 +1896,9 @@ impl ModuleJob {
     ) -> Result<ModuleOutcome, organon_console::module_work::WorkFault> {
         use organon_console::module_work as work;
         match self {
-            ModuleJob::Approve { url, reference, grant } => {
+            ModuleJob::Approve { url, reference, grant, was_approved } => {
                 work::approve(shop, root, producer, &url, reference.as_deref(), &grant)
-                    .map(|a| ModuleOutcome::Approved(Box::new(a)))
+                    .map(|a| ModuleOutcome::Approved { approval: Box::new(a), was_approved })
             }
             ModuleJob::Build(m) => {
                 work::build(shop, root, &m).map(|b| ModuleOutcome::Built(Box::new(b)))
@@ -1904,7 +1911,12 @@ impl ModuleJob {
 
 /// What a module job found.
 enum ModuleOutcome {
-    Approved(Box<organon_console::module_work::Approval>),
+    Approved {
+        approval: Box<organon_console::module_work::Approval>,
+        /// See [`ModuleJob::Approve`]. Threaded through to the completion because that is the
+        /// only place it is read, and it is read exactly once.
+        was_approved: bool,
+    },
     Built(Box<organon_console::module_work::Built>),
     Compared(Box<organon_console::module_work::Comparison>),
 }
@@ -4831,7 +4843,14 @@ impl Console {
                 // nothing approved there is no URL to mean, and the refusal says so.
                 match url.map(str::to_string).or_else(|| approved.as_ref().map(|m| m.url.clone()))
                 {
-                    Some(url) => Ok(ModuleJob::Approve { url, reference, grant }),
+                    Some(url) => Ok(ModuleJob::Approve {
+                        url,
+                        reference,
+                        grant,
+                        // Captured HERE, on the frame thread, with the registry in hand — the
+                        // one moment this fact exists.
+                        was_approved: approved.is_some(),
+                    }),
                     None => Err(WorkFault::NoSource { producer: job_producer.clone() }),
                 }
             }
@@ -4915,7 +4934,7 @@ impl Console {
     /// right behaviour then is to keep it revoked and say the build was dropped — writing the
     /// record back would resurrect an approval a person deliberately withdrew.
     fn service_modules(&mut self) {
-        use organon_console::module::ModuleRegistry;
+        use organon_console::module::{Approved, ModuleRegistry};
         use organon_console::module_work::Approval;
 
         while let Ok(report) = self.module_rx.try_recv() {
@@ -4936,29 +4955,52 @@ impl Console {
             };
             let mut registry = ModuleRegistry::load(&root).registry;
             let written = match outcome {
-                ModuleOutcome::Approved(approval) => {
-                    eprintln!("organon-console: {}", approval.sentence());
+                ModuleOutcome::Approved { approval, was_approved } => {
+                    // 🚨 **The sentence is held back until the record is decided**, unlike the
+                    // two arms below. `Approval::sentence` says the module *is approved*; a
+                    // module revoked while its fetch was in flight is not, and saying so and
+                    // then dropping the record would be the console contradicting itself in
+                    // two consecutive lines about a permission.
+                    // Taken from the borrow before the value is consumed, so it can be *said*
+                    // after the record is decided rather than before.
+                    let said = approval.sentence();
                     match *approval {
                         // The dry run. Nothing to write — which is the whole of it.
-                        Approval::Requested { .. } => None,
-                        Approval::Recorded(module) => match registry.upsert(*module) {
-                            Ok(replaced) => {
-                                if replaced {
-                                    // Said out loud: replacing an approval is a change to what
-                                    // somebody trusts, under one word they typed.
+                        Approval::Requested { .. } => {
+                            eprintln!("organon-console: {said}");
+                            None
+                        }
+                        Approval::Recorded(module) => {
+                            match registry.record_approval(*module, was_approved) {
+                                Ok(Approved::DroppedRevoked) => {
                                     eprintln!(
-                                        "organon-console: `{}` replaced the approval that was \
-                                         stored under it",
+                                        "organon-console: `{}` was revoked while it was being \
+                                         approved — the approval was dropped, grants and all, \
+                                         because a revocation is not undone by a job that \
+                                         started before it",
                                         report.producer
                                     );
+                                    None
                                 }
-                                Some(())
+                                Ok(outcome) => {
+                                    eprintln!("organon-console: {said}");
+                                    if outcome == Approved::Replaced {
+                                        // Said out loud: replacing an approval is a change to
+                                        // what somebody trusts, under one word they typed.
+                                        eprintln!(
+                                            "organon-console: `{}` replaced the approval that \
+                                             was stored under it",
+                                            report.producer
+                                        );
+                                    }
+                                    Some(())
+                                }
+                                Err(fault) => {
+                                    eprintln!("organon-console: {}", fault.sentence());
+                                    None
+                                }
                             }
-                            Err(fault) => {
-                                eprintln!("organon-console: {}", fault.sentence());
-                                None
-                            }
-                        },
+                        }
                     }
                 }
                 ModuleOutcome::Built(built) => {

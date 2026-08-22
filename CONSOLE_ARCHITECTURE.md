@@ -6989,11 +6989,29 @@ so **a layout naming a module you have stopped trusting still opens.** ⚠️ An
 deliberately **not** deleted: withdrawing trust is a statement about what Organon will run, which
 takes effect the moment the record is gone; removing somebody's working tree is a different act.
 
-⚠️ **A build finishing after a revocation does not resurrect the approval.** A job's answer is
-applied against the registry *as it is now*, and `ModuleRegistry::record_build` returns `false`
-when nothing answers to the name — the console then says the build was dropped. Writing it back
-through a fresh `upsert` would restore an approval, grants and all, as a side effect of a compiler
-finishing.
+⚠️ **No slow job may undo a revocation** — a job's answer is applied against the registry *as it
+is now*, and both writing verbs refuse when nothing answers to the name any more.
+`ModuleRegistry::record_build` and `record_approval` sit side by side and give the same answer to
+the same condition: **drop it, and say so.** Never re-revoke, never reconcile — two slow jobs
+behaving differently on one condition is how the next reader concludes neither was deliberate.
+
+🚨 **Approve is the half that matters more, and it was the half left open for a while.** A
+resurrected *build* re-attaches an artifact to an approval that still exists; a resurrected
+*approve* re-creates **an approval and its grants** after a person deliberately withdrew trust —
+and the grants that land are the ones chosen *before* the revocation, so the revived record can
+carry a grant the person had already decided against. It is fixed, and the shape of the fix is
+worth keeping: **an asymmetric guard is worse than an absent one**, because the tested half is the
+evidence a reader uses to conclude the whole thing is covered.
+
+📌 **`record_approval` takes a `was_approved` flag and cannot derive it**, which is the only
+subtlety here. *Nothing under this name* means two opposite things at completion time — a **first**
+approval, which must be stored, and one **revoked** while the job ran, which must not. Only the
+dispatch site saw the registry before the job started, so the flag is a fact about the past,
+captured on the frame thread and read exactly once.
+
+📌 **And the third off-thread verb inherits the question rather than the guard: `diff` writes
+nothing at all**, so there is nothing for a revocation to undo. Recorded here so the next
+off-thread verb asks *"what if the module was revoked while I ran?"* instead of rediscovering it.
 
 #### Nothing touches the frame thread
 

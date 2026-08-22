@@ -805,6 +805,23 @@ impl ModuleState {
 // The registry
 // ---------------------------------------------------------------------------------------
 
+/// What [`ModuleRegistry::record_approval`] did with a slow job's answer.
+///
+/// Three outcomes rather than a `bool`, because all three are a different sentence to a person:
+/// a module they had never approved, a module whose approval they have just changed, and a
+/// module they revoked while it was working.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Approved {
+    /// Nothing answered to this name and nothing was meant to. Stored.
+    Added,
+    /// An approval was replaced. ⚠️ Said out loud by the caller: replacing an approval changes
+    /// what somebody trusts, under one word they typed.
+    Replaced,
+    /// 🚨 **The module was revoked while the job ran, so its answer was thrown away.** See
+    /// [`ModuleRegistry::record_approval`].
+    DroppedRevoked,
+}
+
 /// Everything that has been approved, in file order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1057,6 +1074,50 @@ impl ModuleRegistry {
                 Ok(false)
             }
         }
+    }
+
+    /// Store the approval a **slow job** produced — and refuse to if the module was revoked
+    /// while that job was running.
+    ///
+    /// 🚨 **[`ModuleRegistry::record_build`]'s guard, in the direction that matters more, and
+    /// it is here rather than at the call site so the two sit side by side.** The invariant is
+    /// *a slow job cannot undo a revocation*, and it used to hold for builds only. An
+    /// asymmetric guard is worse than an absent one: the tested half is the evidence a reader
+    /// uses to conclude the whole thing is covered.
+    ///
+    /// ⚠️ **And approve is the worse half to leave open.** A resurrected *build* re-attaches an
+    /// artifact to an approval that still exists. A resurrected *approve* re-creates **an
+    /// approval and its grants** after a person deliberately withdrew trust — the one action
+    /// §3.5 exists to protect, and the one a person would most reasonably assume took effect
+    /// the moment they typed it. Worse, the grants that land are the ones chosen *before* the
+    /// revocation, so the revived record can carry a grant the person had already decided
+    /// against.
+    ///
+    /// 🚨 **`was_approved` is what makes this expressible at all, and it is not a flag that
+    /// could be derived here.** *Nothing under this name* means two opposite things: a **first**
+    /// approval, which must be stored, and a **revoked** one, which must not. Only the caller
+    /// knows which, because only the caller saw the registry when the job was dispatched. So
+    /// the argument is a fact about the past, and this function is the only place it is read.
+    ///
+    /// ⚠️ **Dropped, never re-revoked and never reconciled.** That is [`record_build`]'s answer
+    /// to the same condition, and two slow jobs behaving differently on one condition is how
+    /// the next reader concludes neither was deliberate.
+    ///
+    /// Refuses exactly what [`ModuleRegistry::upsert`] refuses, which is exactly what
+    /// [`ModuleRegistry::load`] refuses — and **after** the revocation check, because a record
+    /// that is being dropped has no reason to be described as malformed as well.
+    ///
+    /// [`record_build`]: ModuleRegistry::record_build
+    pub fn record_approval(
+        &mut self,
+        module: ApprovedModule,
+        was_approved: bool,
+    ) -> Result<Approved, ModuleFault> {
+        let answers = self.modules.iter().any(|m| m.producer == module.producer);
+        if was_approved && !answers {
+            return Ok(Approved::DroppedRevoked);
+        }
+        Ok(if self.upsert(module)? { Approved::Replaced } else { Approved::Added })
     }
 
     /// Hang a [`BuildRecord`] on the module approved under `producer`. `false` if nothing
@@ -1386,6 +1447,45 @@ mod tests {
         );
         assert!(registry.get("ascent").is_none(), "and nothing was created");
         assert_eq!(registry.modules.len(), 0);
+    }
+
+    /// CONTRACT: 🚨 **an approval finishing after a revocation does not resurrect it either.**
+    ///
+    /// The sibling of [`tests::a_build_cannot_resurrect_a_revoked_approval`], and the reason
+    /// this one exists is that for a while only that one did. *A slow job cannot undo a
+    /// revocation* is the invariant; it held for builds and not for approvals, and **an
+    /// asymmetric guard is worse than an absent one** — the tested half is the evidence a
+    /// reader uses to conclude the whole thing is covered.
+    ///
+    /// ⚠️ The two halves of `was_approved` are both asserted here, because they are what makes
+    /// the guard expressible: *nothing under this name* means "store it, this is the first
+    /// approval" in one case and "drop it, somebody revoked" in the other, and only the
+    /// dispatch site can tell them apart.
+    #[test]
+    fn an_approval_cannot_resurrect_a_revoked_module() {
+        let approve = || {
+            ApprovedModule::approve(&manifest("ascent"), source(), &["audio"]).unwrap()
+        };
+        let mut registry = ModuleRegistry::default();
+
+        // Nothing under this name and none was expected: a first approval is stored.
+        assert_eq!(registry.record_approval(approve(), false), Ok(Approved::Added));
+        assert!(registry.get("ascent").is_some());
+
+        // Something under this name: a re-approval replaces it, and says so.
+        assert_eq!(registry.record_approval(approve(), true), Ok(Approved::Replaced));
+        assert_eq!(registry.modules.len(), 1);
+
+        // 🚨 Revoked while the job ran: the answer is thrown away, grants and all.
+        assert!(registry.revoke("ascent"));
+        assert_eq!(registry.record_approval(approve(), true), Ok(Approved::DroppedRevoked));
+        assert!(registry.get("ascent").is_none(), "the revocation stands");
+        assert_eq!(registry.modules.len(), 0, "and nothing was created");
+
+        // …and the same registry still accepts a genuine first approval afterwards, so the
+        // guard withdraws trust rather than wedging the name.
+        assert_eq!(registry.record_approval(approve(), false), Ok(Approved::Added));
+        assert!(registry.get("ascent").is_some());
     }
 
     /// CONTRACT: a dirty tree is recorded as such, and no hash it carries names the bytes.
