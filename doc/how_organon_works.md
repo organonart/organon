@@ -21,22 +21,20 @@
 
 ## 1. What Organon is
 
-Organon is **one native application, written in Rust on wgpu, whose identity is assembled at
-runtime rather than compiled in.** You divide its window into regions, declare what each region
-holds, and save the arrangement under a name; that named arrangement is what somebody means when
-they say which program they are running. It has four defining properties:
+Organon is a native application written in Rust on wgpu. You divide the window into regions,
+declare what each region holds, and save the arrangement under a name. A saved arrangement is an
+app. It has four defining properties:
 
-1. **A layout is the unit of identity.** A 3×2 grid of cells, addressed by **twelve** region
-   words — `full`, the two rows, the three columns, the six cells — of which **up to six** can
-   be held at once, since two regions may coexist only if their cell sets are disjoint. Each
-   declares its content: an agent conversation, a column of instrument panels, a live 3D
-   viewport, a piece of media. An arrangement can be named and written to disk, and a load
-   applies whole or refuses with one sentence.
-2. **An agent is not optional.** Every valid arrangement contains a working agent harness, and
-   this is enforced rather than encouraged: any command whose *result* would leave no agent
-   region is refused, and a saved layout naming none does not load. The agent reaches the same
-   command vocabulary a human types and a script calls, and is bounded by a permission card
-   rather than by good behaviour (§13).
+1. **A saved arrangement is an app.** The window is a 3×2 grid of cells. **Twelve** region
+   words address it — `full`, the two rows, the three columns, the six cells — and **up to six**
+   regions can be held at once, because two regions may coexist only if their cell sets are
+   disjoint. Each region declares what it holds: an agent conversation, a column of instrument
+   panels, a 3D viewport, a piece of media. An arrangement can be named and written to disk.
+   Loading one applies it whole or refuses with one sentence.
+2. **Every arrangement includes an agent.** The application enforces this: any command whose
+   *result* would leave no agent region is refused, and a saved arrangement naming none does not
+   load. The agent runs the same commands a person types and a script calls. Every tool it calls
+   goes through a permission prompt (§13).
 3. **Its renderer draws everything, and runs as a separate OS process.** The chrome, the text
    and the world are one renderer's output rather than a 3D view inside a widget toolkit. A
    second binary owns a fullscreen window, the animation clocks, the camera and the whole
@@ -972,11 +970,9 @@ contract, from the original cube field and Frenet–Serret frames to Maxwell and
 fields, aperiodic tilings, minimal surfaces, arbitrary field equations with a PDE solver,
 and the live internals of a language model. Every parameter is host-automatable, the beat
 clock is phase-locked to the transport, and the camera, the modulation routing, the media
-simulations and the audio analysis all run off that one clock. And all of that is one
-*arrangement* of one application — the window divides into named regions, each declaring what
-it holds, always including a live agent that reaches the same verbs a human types; the
-visualizer is the region content Organon grew out of rather than the thing Organon is. It
-ships three ways from one workspace today — the plugin, the Mind arrangement for watching a
-language model think, and the console for working with agents, its terminal glowing from
-underneath — and of those three the plugin alone can never become a layout, because a host owns
-its window and its lifetime.
+simulations and the audio analysis all run off that one clock. All of that is the content of
+one region in one arrangement. The window divides into named regions, each declaring what it
+holds, and every arrangement includes an agent that runs the same commands a person types.
+Three arrangements ship from one workspace today: the plugin, the Mind arrangement for watching
+a language model think, and the console for working with agents. Of the three, only the plugin
+can never become an arrangement, because a DAW owns its window and its lifetime.

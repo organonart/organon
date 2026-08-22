@@ -1,9 +1,8 @@
 # Organon
 
-**One native application whose identity is data.** You divide the window into regions, declare
-what each one holds, and save the arrangement under a name — and that named arrangement is what
-somebody means when they say which program they are running. No arrangement is valid without a
-live agent in it, taught by loadable skills to operate the application it is running inside.
+**Organon is a native GPU application. You divide the window into regions, declare what each
+holds, and save the arrangement under a name.** A saved arrangement is an app. Every arrangement
+includes an agent that can operate the whole application through the same commands you use.
 
 📌 **`doc/organon_prd.md` §1.1 is the canonical description**, in three lengths, and this file
 quotes it rather than re-authoring it. Every surface that describes Organon is meant to do the
@@ -23,7 +22,7 @@ viewport, or a piece of media. Three arrangements exist today:
 
 | Arrangement | What it is | |
 |---|---|---|
-| **The visualizer** | A parametric generative visualizer: 27 generators, a PBR/HDR/ray-traced render stack, 50+ WGSL shaders, driven by MIDI, tempo and audio. What Organon grew out of — and **one of the things it hosts**, not what it is | [organon.art](https://organon.art) |
+| **The visualizer** | A parametric generative visualizer: 27 generators, a PBR/HDR/ray-traced render stack, 50+ WGSL shaders, driven by MIDI, tempo and audio | [organon.art](https://organon.art) |
 | **Mind** | Load a `.gguf` and it draws the model's true wiring, read from the file, then lights it up while it runs | [organonmind.org](https://organonmind.org) |
 | **The Console** | An agent-operating workstation: a GPU-composited terminal for working with AI agents | |
 
