@@ -179,6 +179,15 @@ before any of this was proposed.
 > - ⚠️ **A producer name turned out to be a directory name**, which none of the rules written for
 >   it in T3a covered: `..` satisfied all four and named the store root's parent.
 >   `check_producer_name` gained two path rules, checked at three gates.
+>
+> 🚨 **The general shape of that last one is worth carrying out of this document, because it will
+> happen again.** A validator's rules are only valid for the **uses that existed when they were
+> written**. T3a's four checks are all correct — every one is a true statement about a name
+> surviving a whitespace-delimited wire — and T3b silently invalidated the set by widening what
+> the value *is*, from a wire token to a path component. Nothing failed, nothing warned, and the
+> rules went on passing; only the question they were answering had changed. So **widening what a
+> value means is a change to every rule about it**, and the moment to re-read them is the moment
+> a value gains a second use, not the moment something goes wrong.
 
 ### 3.1 Two files, two authors, and never one file
 
@@ -223,6 +232,20 @@ distribution mechanism where the console can answer:
 
 `git diff <approved>..<candidate>` is one command. That is the console verb worth building — not
 "install", but **"show me what changed and ask again."**
+
+> ✅ **BUILT, T3b — and "one command" turned out to be two, which is worth recording because the
+> missing one fails in the least diagnosable direction.** Getting the candidate first needs a
+> fetch, and **`git fetch <url> <sha>` is refused by most hosts**:
+> `uploadpack.allowReachableSHA1InWant` is off by default, so a server declines to serve a bare
+> object name while that object is perfectly reachable from the default branch. So a commit that
+> *exists* reads as a commit that does not. The direct fetch is still tried first — it is the
+> cheap case, and the only one that reaches a commit outside the default branch's history — with
+> a full fetch and a local resolve as the fallback.
+>
+> 📌 And the affordance is finished by the *sentence*, not by the diff: it ends with the approve
+> line that would trust the candidate, hash included, so renewing trust is one line a person can
+> read rather than a verb they have to reassemble. **A diff nobody can act on is a report, not a
+> gate.**
 
 ### 3.4 🚨 The hole in §10's clean table: **building from source is linked-level trust**
 
