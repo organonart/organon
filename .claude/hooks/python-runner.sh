@@ -64,13 +64,22 @@ PY_PROBE_TIMEOUT="${PY_PROBE_TIMEOUT:-10}"
 py_probe() {
   local out
   if command -v timeout >/dev/null 2>&1; then
-    out=$(printf 'print("PY_RUNNER_OK")\n' | timeout "$PY_PROBE_TIMEOUT" "$@" - 2>/dev/null) || return 1
+    out=$(printf 'print("PY_RUNNER_OK \u2248")\n' | PYTHONIOENCODING=utf-8 PYTHONUTF8=1 timeout "$PY_PROBE_TIMEOUT" "$@" - 2>/dev/null) || return 1
   else
-    out=$(printf 'print("PY_RUNNER_OK")\n' | "$@" - 2>/dev/null) || return 1
+    out=$(printf 'print("PY_RUNNER_OK \u2248")\n' | PYTHONIOENCODING=utf-8 PYTHONUTF8=1 "$@" - 2>/dev/null) || return 1
   fi
   # Substring, not equality: a Windows interpreter under Git Bash returns CRLF, and
   # command substitution strips the \n but leaves the \r.
-  case "$out" in *PY_RUNNER_OK*) return 0 ;; *) return 1 ;; esac
+  # ≈ IS IN THE SENTINEL ON PURPOSE, and it is the whole point of this line.
+  # An interpreter that STARTS is not the same thing as one that can PRINT what these
+  # programs print. Measured on organon-one 2026-08-22: real Python 3.13, installed and
+  # working, passed the old ASCII sentinel and then died on the first non-ASCII byte of
+  # actual output with UnicodeEncodeError — stdout on Windows defaults to cp1252, and
+  # every one of these hooks prints ≈ or an emoji. The hook then reported that python
+  # "returned nothing", which named the wrong cause: python returned plenty and could
+  # not encode it. Probe under the conditions of use or the probe certifies a backend
+  # that cannot do the job.
+  case "$out" in *"PY_RUNNER_OK ≈"*) return 0 ;; *) return 1 ;; esac
 }
 
 # Resolve once per process. Native first — it is faster and has no path translation to
@@ -106,9 +115,9 @@ py_run() {
   if [ "$PY_KIND" = "wsl" ] && [ "$#" -gt 0 ]; then
     local names
     names=$(IFS=:; printf '%s' "$*")
-    WSLENV="${names}${WSLENV:+:$WSLENV}" "${PY_BIN[@]}" -
+    WSLENV="${names}${WSLENV:+:$WSLENV}" PYTHONIOENCODING=utf-8 PYTHONUTF8=1 "${PY_BIN[@]}" -
   else
-    "${PY_BIN[@]}" -
+    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 "${PY_BIN[@]}" -
   fi
 }
 
