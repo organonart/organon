@@ -33,3 +33,16 @@ merge button asking for an approval when the required count is zero.
 📌 **This pull request is also the first live test of the gate.** It is the first change
 to reach `main` through the ruleset rather than past it, so whether it merges cleanly is
 the evidence for the paragraph above.
+
+### Pull requests open ready for review, not as drafts
+
+`CLAUDE.md`'s workflow section now says so outright. Nothing in this repository ever
+asked for draft PRs — the behaviour came from an agent harness's own default, which is
+why grepping the tree for it found nothing to delete. A line in `CLAUDE.md` is the
+lever that actually works, since project instructions override default agent behaviour.
+
+📌 **The one `--draft` in the tree stays, and it is not the same thing.**
+`.github/workflows/research.yml` opens its report PRs as drafts deliberately: that job
+commits raw model output, and the draft state is the signal that a human has to read it
+before it lands. Removing it would turn a safety interlock into a merge-ready PR full of
+unvetted text.

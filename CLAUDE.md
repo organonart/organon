@@ -265,6 +265,14 @@ each leg does and does not cover.
 **`CONTRIBUTING.md` is the full protocol**, including how to read a CI result without
 being misled.
 
+⚠️ **Open pull requests ready for review, not as drafts.** Some agent harnesses default
+to opening every PR as a draft; that default does not apply here and this line overrides
+it. A draft suppresses reviewer notifications and reads as "not finished yet", which is
+the wrong signal for work that has already closed its review cycle. The one deliberate
+exception is machine-generated content a human must vet before it lands —
+`.github/workflows/research.yml` opens its report PRs with `--draft` on purpose, and that
+stays.
+
 End commit messages with a co-author trailer naming the model that actually wrote them:
 
 ```
