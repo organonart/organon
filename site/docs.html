@@ -28,7 +28,17 @@
 <meta property="og:title" content="Organon — Documentation">
 <meta property="og:description" content="Build it, run it, and operate it: regions and layouts, the agent, the visualizer, the model inspector, and the organon command surface.">
 <meta property="og:url" content="https://organon.art/docs">
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
+<!-- ⚠️ og:image must be an ABSOLUTE url and a raster: no scraper renders SVG,
+     and a relative path is silently ignored by most of them. 2400×1260 because
+     og.html is rendered at 1200×630 with a 2× device scale factor — state the
+     PIXELS OF THE FILE here, not the CSS size it was laid out at. Source and
+     re-render command: site/og.html. -->
+<meta property="og:image" content="https://organon.art/og.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="2400">
+<meta property="og:image:height" content="1260">
+<meta property="og:image:alt" content="Organon — an extensible ecosystem that starts as a blinking cursor.">
 <style>
 /* ── Tokens ───────────────────────────────────────────────────────────────
    Copied from index.html, which owns them. Warm bone paper, warm near-black

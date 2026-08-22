@@ -9,9 +9,43 @@ sites share a structure and deliberately not a surface; see **The look**.
 ```
 index.html    the landing page — what Organon is
 docs.html     /docs — how to build it, run it and operate it
+og.html       SOURCE of the link-preview card — not a page anyone visits
+og.png        the card itself, 2400x1260, referenced by og:image
 favicon.svg   the mark
 vercel.json   cleanUrls, which is what serves docs.html at /docs
 ```
+
+## The link-preview card
+
+`og.png` is what appears when the URL is pasted into Slack, X, Discord or
+iMessage. Without it a paste renders as bare text, which is what prompted it.
+
+It is **rendered from `og.html`, never drawn by hand**, so a change to the
+headline or the palette is a diff rather than an image someone has to reproduce:
+
+```
+chrome --headless=new --hide-scrollbars --force-device-scale-factor=2        --window-size=1200,630 --screenshot=site/og.png site/og.html
+```
+
+There is no image toolchain in this repository and none is wanted — headless
+Chrome is already on any machine that can look at the site, and it renders with
+real fonts, which an SVG converter would not.
+
+⚠️ **`og.html` duplicates the palette rather than sharing it, and it is the only
+real duplication on the site.** An `og:image` is a flat file: it cannot read a
+custom property at paste time. **If the palette moves, re-render — the card will
+not follow on its own and nothing will tell you.**
+
+⚠️ **Three things about the tags that fail silently if you get them wrong.** The
+URL must be **absolute** (a relative path is ignored by most scrapers); the image
+must be a **raster** (no scraper renders SVG, which is what the favicon is); and
+`og:image:width`/`height` must state the **pixels of the file** — 2400×1260 — not
+the 1200×630 the card is laid out at. `twitter:card` is `summary_large_image`,
+which is what makes it render wide rather than as a thumbnail.
+
+📌 A paste of `organon.art` is served after a redirect to `www.organon.art`. Every
+major scraper follows it, so the tags name the apex — which is also what stays
+correct if the primary domain is ever flipped.
 
 ## What it is for
 

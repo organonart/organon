@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Organon — link preview card (source)</title>
+
+<!-- ⚠️ THIS PAGE IS THE SOURCE OF site/og.png, NOT A PAGE ANYONE IS MEANT TO
+     VISIT. It exists so the preview card can be re-rendered rather than
+     re-drawn, and so a change to the headline or the palette is a diff here
+     instead of an image somebody has to reproduce by hand.
+
+     Re-render it with headless Chrome — there is no image toolchain in this
+     repository and none is wanted:
+
+       chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 \
+              --window-size=1200,630 --screenshot=site/og.png site/og.html
+
+     The 2× scale factor is why the PNG is 2400×1260; og:image:width and
+     og:image:height in index.html must state THAT, not 1200×630.
+
+     🚨 Every colour below is duplicated from index.html's token block rather
+     than shared, because an og:image is a flat file: it cannot read a custom
+     property at paste time. So this is a real second copy, and the only one on
+     the site. If the palette moves, re-render — the card will not follow on its
+     own, and nothing will tell you. -->
+
+<style>
+  :root{
+    --paper:#192228; --panel:#212a30; --raise:#141c22;
+    --ink:#d1d6d9; --muted:#8e999f; --faint:#606b72;
+    --rule:#3a464f; --rule-strong:#52616b; --dot:#1f2830; --teal:#389394;
+    --serif:"Source Serif 4","Source Serif Pro","Iowan Old Style",Charter,"Sitka Text",Constantia,"Palatino Linotype",Palatino,Georgia,serif;
+    --mono:"Commit Mono",ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:1200px;height:630px;overflow:hidden}
+  body{
+    background-color:var(--paper); color:var(--ink); font-family:var(--serif);
+    background-image:radial-gradient(circle at 1px 1px,var(--dot) 1px,transparent 0);
+    background-size:26px 26px;
+    display:flex; flex-direction:column; justify-content:space-between;
+    padding:64px 72px 56px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .top{display:flex;align-items:center;gap:18px}
+  .mark{width:38px;height:auto;color:var(--ink);display:block}
+  .wordmark{font-family:var(--mono);font-size:19px;letter-spacing:.34em;text-transform:uppercase;font-weight:500}
+
+  /* The headline is the whole card. Italic serif, one measure, and a cursor
+     block closing the line — the claim is "starts as a blinking cursor", so the
+     card ends on one rather than illustrating it somewhere else. */
+  .claim{font-style:italic;font-size:68px;line-height:1.14;letter-spacing:-.012em;max-width:1056px}
+  /* ⚠️ The cursor must not wrap onto a line of its own — it is punctuation on
+     the last word, not a mark beneath the sentence. Keeping the closing word
+     and the block in one nowrap span is what pins that. */
+  .tail{white-space:nowrap}
+  .cursor{
+    display:inline-block;width:26px;height:56px;background:var(--teal);
+    vertical-align:-8px;margin-left:12px;
+  }
+
+  .foot{display:flex;align-items:flex-end;justify-content:space-between;gap:32px}
+  .foot .l{font-family:var(--mono);font-size:17px;color:var(--muted);letter-spacing:.02em}
+  .foot .r{font-family:var(--mono);font-size:15px;color:var(--faint);letter-spacing:.11em;text-transform:uppercase;text-align:right;line-height:1.7}
+  .foot .r b{color:var(--muted);font-weight:500}
+</style>
+</head>
+<body>
+
+  <div class="top">
+    <svg class="mark" viewBox="0 0 120 88" aria-hidden="true">
+      <g fill="none" stroke="currentColor" stroke-width="7">
+        <rect x="3.5" y="3.5" width="113" height="81"/>
+        <line x1="45" y1="3.5" x2="45" y2="84.5"/>
+        <line x1="45" y1="44" x2="116.5" y2="44"/>
+      </g>
+    </svg>
+    <span class="wordmark">Organon</span>
+  </div>
+
+  <p class="claim">An extensible ecosystem<br>that starts as a blinking <span class="tail">cursor.<span class="cursor"></span></span></p>
+
+  <div class="foot">
+    <span class="l">organon.art</span>
+    <span class="r">Rust, on wgpu · macOS Windows Linux<br><b>Engine MIT OR Apache-2.0</b></span>
+  </div>
+
+</body>
+</html>
