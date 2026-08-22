@@ -35,7 +35,7 @@ cargo test  -p organic-math-native --lib  --features console-edition   # ← the
 cargo test  -p organon-module --all-features                           # ← the second hole
 ```
 
-⚠️ **And the eighth is the same hole one crate over — in the crate BOTH repositories depend on.** Legs 1–2 cover `organon-console` and `organon-core`, legs 3–7 the root crate. **Nothing ran `organon-module` at all**: 82 tests, never executed by the bar, in the contract crate a module's own repository pins. A change landing there could report *"the bar is green"* in good faith with none of its own tests run — which is leg 7's failure exactly, one crate over, found after that class had already been found and closed once.
+⚠️ **And the eighth is the same hole one crate over — in the crate BOTH repositories depend on.** Legs 1–2 cover `organon-console` and `organon-core`, legs 3–7 the root crate. **No leg of the bar ran `organon-module`**: 82 tests, in the contract crate a module's own repository pins. 🚨 **They were not unrun — CI ran them all along**, in release, on three platforms: features unify across a workspace build, and the root crate depends on `organon-module` with `features = ["wgpu"]`, so `cargo test --workspace` compiles it with `wgpu` on and executes all 84. **The bar had a hole; the gate did not.** A change landing there could report *"the bar is green"* in good faith with none of its own tests run — which is leg 7's failure exactly, one crate over, found after that class had already been found and closed once.
 
 📌 `--all-features` rather than `--features wgpu`: it is the wider net, and it is safe under `CARGO_PROFILE_TEST_OPT_LEVEL=0` because the two timing-shaped staleness tests in that crate are `#[ignore]`d and never run.
 
