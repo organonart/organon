@@ -2163,12 +2163,10 @@ mod tests {
         assert!(err.contains("approve, build, diff, revoke"), "{err}");
     }
 
-    /// CONTRACT: **every refusal is a sentence naming a next action**, never a shared
-    /// "something went wrong". Each of these is a different morning.
     /// 🚨 **The compiler's half of [`every_refusal_says_what_to_do`], and the reason that test
     /// stopped being true without anyone noticing.**
     ///
-    /// The list up there is written by hand. Rust checks the *enum*; nothing checked the *list* —
+    /// The list in [`every_refusal_says_what_to_do`] is written by hand. Rust checks the *enum*; nothing checked the *list* —
     /// so three variants added by T5 (`NoBinary`, `ChannelFailed`, `LaunchFailed`) were never
     /// added to it, and a test whose name promises **every** refusal was quietly asserting about
     /// fifteen of eighteen. It passed the whole time, which is what made it invisible.
@@ -2207,6 +2205,13 @@ mod tests {
         }
     }
 
+    /// CONTRACT: **every refusal is a sentence naming a next action**, never a shared
+    /// "something went wrong". Each of these is a different morning.
+    ///
+    /// ⚠️ **The list below is hand-written, so it is only half of this contract** —
+    /// [`all_variants_listed`] is the half the compiler keeps. Adding a variant here without
+    /// adding it there is what let this test assert about fifteen of eighteen while its name
+    /// promised every one.
     #[test]
     fn every_refusal_says_what_to_do() {
         let faults = vec![

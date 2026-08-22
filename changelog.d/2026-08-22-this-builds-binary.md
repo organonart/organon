@@ -89,3 +89,11 @@
   test at all**. `warning: duplicated attribute` was the only sign; the suite stayed green and the
   count did not move, because one test was gained exactly as another was lost. Anchor above the
   attribute, not below it.
+
+  ⚠️ **An insertion can invalidate a comment it does not touch, and the diff shows nothing moved.**
+  Putting the new test above `every_refusal_says_what_to_do` reassigned that function's doc comment
+  to it — two added functions, no modified comment, and a contract claim silently relocated onto
+  code that does not check it. 📌 Same family as `§4.7`'s *"verifies the binary exists"* becoming
+  half-true when the check gained a second half, reached from the opposite direction: there, adding
+  **elsewhere** falsified a sentence; here, adding **between** reassigned one. Caught in review,
+  after the compiler had already caught the attribute-stealing half of the same insertion.
