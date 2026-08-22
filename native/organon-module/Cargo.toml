@@ -1,0 +1,70 @@
+# organon-module — the hosted-module protocol. The one crate BOTH trees depend on.
+#
+# 🚨 **`MIT OR Apache-2.0`, and its dependency graph must never reach
+# `organic-math-native` or `organon-visual`** (both `GPL-3.0-or-later`). This is not a
+# preference: `organonart/ascent` depends on this crate, and its own invariant 3 forbids a
+# GPL edge, so a single transitive arrow from here into the plugin crate would break a
+# second repository's licence posture rather than ours. `cargo tree -p organon-module` is the
+# acceptance test **in both trees** — the same shape `organon-core` is held to, for a harder
+# reason.
+#
+#     cargo tree -p organon-module                      # default: memmap2 and nothing else
+#     cargo tree -p organon-module --all-features       # + wgpu, and still no GPL edge
+#
+# ⚠️ **NO `nih_plug`, `egui`, `winit`, `serde` or `organon-core`.** The first three are
+# `organon-console`'s bar inherited whole. The last two are this crate's own, and they are
+# the interesting ones:
+#
+#   * **No `serde`.** Every byte here crosses between two SEPARATELY BUILT binaries. A
+#     derived encoding is a format whose stability is a property of a dependency's version,
+#     which is exactly the thing two independently-compiled processes cannot agree on by
+#     construction. The layout is written by hand at fixed offsets and `wire.rs` owns it.
+#   * **No `organon-core`.** `ipc::ns_file` is the right way to NAME this channel and the
+#     console still uses it — but resolving a path is the console's job, done once at the
+#     call site, and taking a dependency on the engine's spine to get one `PathBuf` would
+#     put `glam`, `half`, `bytemuck`, `serde` and `serde_json` into a game's build for a
+#     string. `channel_file_name()` here is a pure function; the console prefixes it.
+#
+# ONE dependency, and it earns its line: `memmap2` is the mechanism. Pinned to `0.9` to
+# match `native/Cargo.toml` and `organon-core` exactly — two versions of memmap2 in one
+# graph is a silent duplicate-crate bug, and here it would be a duplicate holding two views
+# of the same file.
+[package]
+name = "organon-module"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "The Organon hosted-module contract: a producer yields a texture the console can sample, at a size the console asks for."
+repository = "https://github.com/organonart/organon"
+
+[features]
+default = []
+
+# The two preallocated GPU halves — `FrameTexture` (console side) and `FrameReadback`
+# (producer side). OFF by default, which is what keeps the CONTRACT wgpu-free while both
+# ENDS still get the helper that makes T0's preallocation condition structural rather than
+# advisory.
+#
+# ⚠️ The feature buys `wgpu` for a caller that already has it. It does not make this crate a
+# renderer, and nothing in `wire.rs`, `ring.rs`, `input.rs` or `channel.rs` may reach for it:
+# a `wgpu::TextureFormat` in the wire format would tie two independently-built binaries to
+# one wgpu version at the ABI level, and that enum has no stable numeric representation to
+# put on a wire in the first place. `PixelFormat` exists for that reason.
+wgpu = ["dep:wgpu"]
+
+# The hostile/obedient test producer. OFF by default because it deliberately exposes a way
+# to write a slot while ignoring the reader's hold — the thing a consumer must detect — and
+# that is a capability no shipped build should carry. In-crate tests reach it through
+# `cfg(test)` without the feature.
+sim = []
+
+[dependencies]
+memmap2 = "0.9"
+wgpu = { version = "30", optional = true }
+
+[dev-dependencies]
+# `gpu.rs`'s ignored round-trip test only — it needs a `block_on` for `request_adapter`,
+# which is the same one `organon-render/tests/frame_boundary.rs` uses. A dev-dependency does
+# not travel to a consumer: `cargo tree -p organon-module -e normal` is unchanged by it, and
+# Ascent's no-GPL-edge job reads that graph.
+pollster = "0.4"

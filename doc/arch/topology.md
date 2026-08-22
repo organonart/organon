@@ -100,8 +100,17 @@ organon-visual       (the one arrow that points BACK UP — organon#49 T4c-ii)
   ├── organon-core
   └── organic-math-native ◄── for `agent::core_catalog()`, which reads `param_table`
 
+organon-module       (the hosted-module contract; depends on NO member, BY RULE)
+                       └── memmap2          — see the table below
+
 xtask                          (build tooling; depends on no member)
 ```
+
+⚠️ **`organon-module` depending on no member is a rule rather than an accident**, and it is the
+only place in this graph where "keep the edges few" is enforced from outside this repository.
+Every other leaf may grow an edge to `organon-core` the day it needs one; this one may not,
+because a second repository's licence CI reads the same graph. See the table's row and
+`CONSOLE_ARCHITECTURE.md` §1.20.
 
 | Crate | Its own direct deps | The rule it is held to |
 |---|---|---|
@@ -111,6 +120,7 @@ xtask                          (build tooling; depends on no member)
 | `organon-mind` | `organon-core`, `bytemuck`, `dirs`, `egui`, `memmap2` | no `nih_plug` |
 | `organon-world` | `organon-core`, `organon-mind`, `bytemuck`, `egui`; **+ `organon-render`, `organon-scene`, `organon-agent`, `wgpu`, `winit`, … behind the `world` feature** | no `nih_plug` — the window layer *and*, since organon#49 T4c-ii, the world. ⚠️ Check the bar **with the feature on** (`cargo tree -p organon-world --features world`), or it says nothing about the 13.5k lines that matter |
 | `organon-visual` | `organon-world` (`world`), `organon-core`, **`organic-math-native`**, `wgpu`, `winit`, `pollster` | 🚨 **the one member that depends UPWARD on the plugin crate**, and the only one exempt from the no-`nih_plug` bar. It holds `[[bin]] organic-math-visual`, which needs `agent::core_catalog()` (reads `param_table`, cannot descend). It exists so that need does not force the `world` feature onto the package that also builds the VST3 |
+| `organon-module` | **`memmap2`, and nothing else** (`wgpu` behind an optional feature; `pollster` as a dev-dependency for one ignored GPU test) | 🚨 **the only crate here whose licence bar is another repository's.** `organonart/ascent` depends on it in order to *be* a hosted module, and Ascent's invariant 3 forbids an edge to `organon-visual` or `organic-math-native` — so `cargo tree -p organon-module` is the acceptance test **in both trees**, and a transitive arrow from here would break a second repo's posture rather than ours. Also no `serde` (the wire crosses two separately built binaries, so a derived encoding makes stability a property of a dependency version they cannot agree on) and no `organon-core` (`ipc::ns_file` is still the right way to *name* the channel, but resolving a `PathBuf` is one line at the console's call site and would otherwise drag `glam`, `half`, `bytemuck`, `serde` and `serde_json` into a game's build) |
 | `organon-console` | `organon-core`, `alacritty_terminal`, `dirs`, `egui`, `portable-pty`, `serde`, `serde_json` | **no `nih_plug`, ever** — standalone-only permanently, so any `nih_plug` in this graph is a loaded gun pointed at Organon's VST3 class ID. 📌 **Unchanged by the exhibit (`CONSOLE_ARCHITECTURE.md` §1.13), which is the point**: showing a picture needs a decoder and showing Markdown needs a parser, and this crate gained *neither*. `image` is in the **root crate**, where `console_main` decodes off-thread and hands back a `TextureId` — the `SurfaceRequest`/`OrganonDraw` pattern, where the lib declares intent and the binary that owns the wgpu device does the work. The Markdown renderer is ~40 lines of line-matching rather than a crate, because a parser, an AST and an HTML model to make four kinds of line look different is not a trade this manifest makes |
 
 ⚠️ **The leaf crates are siblings, not a stack — with exactly one edge between them.**
