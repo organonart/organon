@@ -91,6 +91,43 @@ August 2026 and its leg went with it, while the cargo feature stayed; see the he
 `.github/workflows/ci.yml`. So the mind-edition line above is the one in this block that
 nothing checks for you, and it is on you to run it while it still exists.
 
+🚨 **The targeted bar, for when `--workspace` is not practical — and it is SEVEN commands.**
+On a workstation `cargo test --release --workspace` is often not affordable (a cold per-worktree
+`target/`, and the box's RAM is shared with WSL), so sessions run a targeted substitute instead.
+Written down here because it circulates in briefs and handoffs, and the version that circulated
+until 2026-08-22 had **six** commands and a hole in it:
+
+```bash
+cd native
+cargo test  -p organon-console --lib
+cargo test  -p organon-core
+cargo check --features console-edition --bin organon-console
+cargo check --tests -p organic-math-native --features console-edition
+cargo test  -p organic-math-native --bin organon-console --features console-edition
+cargo test  -p organic-math-native --bin organon --features console-edition
+cargo test  -p organic-math-native --lib  --features console-edition   # ← the one that goes missing
+```
+
+⚠️ **Without the last line, the root crate's 324 lib tests never run.** The fourth command
+only `check`s that target and the fifth and sixth test *binaries*, so every unit test under
+`native/src/` — `panel_table.rs`, `panel_surface.rs`, `preset.rs` and the rest — is compiled and
+never executed. A change whose tests live there can report *"the bar is green"* in good faith while
+none of its own tests has run. Measured 2026-08-22, and found only because a contributor's new
+tests were entirely in that target and their count never moved.
+
+📌 **`CARGO_PROFILE_TEST_OPT_LEVEL=0` turns roughly 43 minutes into roughly 70 seconds** for
+this set. It changes codegen only, so it is a fair substitute for a debug-profile run and not for a
+`--release` one.
+
+🚨 **Never `--workspace` on `cargo test` without `--release`-scale time to spend, and never
+a bare `cargo test`** — `native/`'s root *package* is `organic-math-native`, so a bare invocation
+runs that package alone and skips `organon-core` **silently**. Extracting that crate once cost the
+suite 44 tests while it stayed green.
+
+📌 **Say which command ran your tests, and what the number was.** *"The bar is green"* and
+*"my tests ran"* are different claims, and the gap between them is exactly what the seventh command
+closes.
+
 **Be precise about what you verified.** `cargo test` includes offline shader validation,
 so it catches binding, type and uniformity errors without a GPU — but it cannot see
 pipeline/layout mismatches, runtime GPU behaviour, UI layout, or *the actual look*. A
