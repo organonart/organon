@@ -1061,13 +1061,13 @@ fn run_console(action: ConsoleAction) -> ! {
             cli::ConsoleOp::Preset { action, name }
         }
         // 🚨 **The producer name is refused HERE as well as at the console, for `Layout`'s
-        // reason plus one more.** It is a name on a whitespace-delimited line — and it is
-        // **not** `Preset`'s case directly above, which takes the rest of the line precisely
-        // because preset names contain spaces; a producer name may not, because the console
-        // clones into it. So this is the one directory component the console clones
-        // into, so a name carrying `..` or a path separator would be a `git clone` into a
-        // directory a repository chose. `check_producer_name` is the single rule; this is where
-        // a human reads it, before a byte is written and while they can still see the output.
+        // reason plus one more.** It is a name on a whitespace-delimited line, so whitespace in
+        // it would arrive truncated — and it is **not** `Preset`'s case, which deliberately
+        // takes the rest of the line because preset names contain spaces. A producer name may
+        // not, because it is also the one directory component the console clones into: a name
+        // carrying `..` or a path separator would be a `git clone` into a directory a
+        // repository chose. `check_producer_name` is the single rule; this is where a human
+        // reads it, before a byte is written and while they can still see the output.
         ConsoleAction::Module { action, producer, from, at, grant } => {
             match organon_console::module::check_producer_name(&producer) {
                 Ok(()) => cli::ConsoleOp::Module {

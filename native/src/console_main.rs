@@ -465,10 +465,6 @@ const CMD_PRESET_LIST: &str = "console.preset.list";
 /// [`organon_console::module_work::MODULE_ACTIONS`]; the work behind them is that module, off
 /// the frame thread; the record it writes is `modules.json`.
 const CMD_MODULE: &str = "console.module";
-/// [`CMD_MODULE`]'s first slot after the action: which module. Its own word rather than
-/// [`CMD_NAME`], because [`CMD_NAME`] is aliased to the layout ring's argument and a producer
-/// is a different vocabulary.
-const CMD_PRODUCER: &str = "producer";
 /// [`CMD_MODULE`]'s repository. Optional: absent on `build`, `diff` and `revoke`, and on a
 /// re-approval of something already in `modules.json`, where the recorded URL is what it means.
 const CMD_FROM: &str = "from";
@@ -540,6 +536,21 @@ const CMD_CONTENT: &str = "content";
 /// Not [`CMD_ARG`] and not [`CMD_CONTENT`], on [`CMD_ROWS`]' rule: a producer is neither a
 /// `name` that means a material nor a content kind, and a palette offering `ascent` under the
 /// heading "content" would be describing a table that does not contain it.
+///
+/// 📌 **Also [`CMD_MODULE`]'s first slot after the action, and sharing one constant is
+/// deliberate.** T4 and T3b each declared a `"producer"` argument on separate branches, and the
+/// merge caught it as `E0428` — the good kind of collision. They are one word meaning one thing:
+/// the name a module answers to. `console.viewport` asks *which producer draws this rectangle*
+/// and `console.module` asks *which module am I acting on*, and a person who has learned the
+/// word in one has learned it in the other. Not [`CMD_NAME`] for either, because that is aliased
+/// to the layout ring's argument and a producer is a different vocabulary.
+///
+/// ⚠️ **What sharing the string does NOT mean is sharing the ring.** `registry::options_for`
+/// is keyed by **verb**, so `console.viewport`'s producer ring reaches only that verb — which
+/// matters here rather than being a technicality: that ring offers `organon` alongside the
+/// approved set, and `organon` is the one name [`organon_console::module::check_producer_name`]
+/// refuses to a module. A ring keyed by argument *name* would complete `console module build `
+/// to a word all four of its actions reject.
 const CMD_PRODUCER: &str = organon_console::registry::VIEWPORT_PRODUCER_ARG;
 /// [`CMD_STACK`]'s two slots. Neither reuses [`CMD_ARG`] or [`CMD_REGION`], on [`CMD_ROWS`]'
 /// rule: `add` is not a `name`, and a panel is not a region. Both are `Choice`s over
@@ -4042,8 +4053,15 @@ impl Console {
             self.set_preset(action, name);
             return;
         }
-        // Above the ledger for a reason stronger than any of the three above it: this changes
-        // no pixel at all, in any rectangle, ever. It fetches a repository and writes a file.
+        // Above the ledger for a reason stronger than `Viewport`, `Stack`, `Layout` or
+        // `Preset` have: this changes no pixel at all, in any rectangle, ever. It fetches a
+        // repository and writes a file.
+        //
+        // ⚠️ Named rather than counted, deliberately. This comment said "any of the three above
+        // it" and was silently wrong the moment `Preset` was inserted between them — a
+        // positional reference is invalidated by any insertion and does not conflict, so it
+        // arrives as prose nobody re-reads. That failure is cheap to avoid and expensive to
+        // find.
         if let cli::ConsoleOp::Module { action, producer, url, reference, grant } = op {
             self.set_module(
                 action,
