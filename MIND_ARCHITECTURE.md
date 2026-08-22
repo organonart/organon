@@ -772,6 +772,23 @@ producing the right node *count*, and nothing else would notice.
 | `q_proj` / `k_proj` / `v_proj` / `o_proj` (+ `query_key_value`, `c_attn`, `wq`…`wo`, …) | **every** `Head` of the layer, identically | ⚠️ see the limit below |
 | everything the layer adapts, recognised or not | the layer's **`Backbone`** | so an unlisted name can never make a trained layer look untouched |
 
+🚨 **A generic leaf must never outvote its parent, and that rule was learned the
+expensive way.** The exact-tail tables run *before* the container fallback, so a leaf
+name reused by the other kind of site does not merely mis-label — it **overrides the
+parent that would have got it right**, landing a real measurement on the wrong node as
+a confident picture. Strictly worse than not recognising the name at all. Two entries
+were admitted under the weaker rule "this name is used for attention" and are gone:
+**`dense`** (HuggingFace BERT names the attention output *and* both FFN projections
+with a bare `dense` leaf, and `intermediate.dense` / `output.dense` are not under an
+`attention.` parent) and **`wo`** (T5's FFN output is `…DenseReluDense.wo`, while its
+*attention* output is `…SelfAttention.o`). ⚠️ Neither removal loses anything, which is
+the tell that both were redundant to begin with: Falcon's `self_attention.dense` and
+Meta-llama's `attention.wo` are still caught by the container fallback. An entry that
+is redundant on its true positives and wrong on its false ones is all cost. The
+admission rule now sits above `ATTN_LEAVES` in the source, and both tables were audited
+against it — the conclusion for every remaining entry is written there so nobody
+re-audits the table from scratch.
+
 ⚠️ **Uniform across heads is a limit, not a shortcut, and the picture says so.**
 `q_proj` is *one* tensor covering every head; resolving per-head needs per-output-row
 norms of `ΔW`, which is the full `out × in` product T2 stopped short of on purpose. So
@@ -839,6 +856,7 @@ reports the real extremes so a readout can print what was actually measured.
 | shape does not masquerade as movement | **measured** (offline) | mutation-tested: dropping the `sqrt(out·in)` fails with *"same per-weight movement ⇒ same site value (4.096 vs 7.6629…)"* |
 | the silhouette distinguishes it from the live lens | **measured** (offline) | mutation-tested: removing the radial displacement fails with *"an untouched site pinches to the rest radius"* |
 | an unrecognised module name is reported, never guessed | **measured** (offline) | mutation-tested: falling back to `Mlp` fails with *"nor onto the MLP node"* |
+| a generic leaf never outvotes its parent | **measured** (offline) | mutation-tested both ways: re-admitting `dense` fails with *"BERT's FFN up-proj must not be drawn on the attention ring — left: Attn, right: Unclassified"*, re-admitting `wo` with the T5 equivalent, and deleting the container fallback fails the Falcon and Meta-llama guards, so those two are not passing by accident |
 | **anything on a screen** | 🚨 **never run** | no adapter has been read on any machine, nothing has ever written the adapter sidecar, and no GPU has drawn this. Every claim above is arithmetic and geometry, checked offline |
 
 📌 **No `Shared` change and no `LAYOUT_VERSION` movement.** The view rides the `mind[2]`

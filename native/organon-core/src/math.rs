@@ -8970,32 +8970,77 @@ enum SiteKind {
     Unclassified,
 }
 
+/// Leaf names that mean **attention**, matched exactly against the final path segment.
+///
+/// 🚨 **The admission rule, and it is not "this name is used for attention".** A leaf
+/// belongs here only if it *also* cannot name a feed-forward site in any architecture
+/// in circulation — because this table is consulted **before** the container fallback,
+/// so an entry that is merely *usually* attention overrides a parent that says
+/// otherwise. Two names were admitted under the weaker rule and had to be removed; see
+/// [`classify_site`].
+const ATTN_LEAVES: &[&str] = &[
+    "q_proj", "k_proj", "v_proj", "o_proj", "qkv_proj", "query_key_value", "c_attn", "wq",
+    "wk", "wv", "query", "key", "value", "out_proj",
+];
+
+/// Leaf names that mean **feed-forward**, matched exactly against the final path
+/// segment. Same admission rule as [`ATTN_LEAVES`].
+const MLP_LEAVES: &[&str] = &[
+    "gate_proj", "up_proj", "down_proj", "gate_up_proj", "c_fc", "fc_in", "fc_out", "w1",
+    "w2", "w3", "dense_h_to_4h", "dense_4h_to_h", "linear_1", "linear_2",
+];
+
 /// Classify an adapted module by its name tail.
 ///
 /// ⚠️ **A name table is a silent-failure surface**, so this is layered rather than a
-/// list of seven strings: an exact match on the final path segment first (covering
-/// the conventions actually in circulation — llama/mistral/gemma `q_proj`…`down_proj`,
+/// list of seven strings: an exact match on the final path segment first (covering the
+/// conventions actually in circulation — llama/mistral/gemma `q_proj`…`down_proj`,
 /// GPT-2's `c_attn`/`c_fc`, GPT-NeoX's fused `query_key_value`, and the `wq`/`w1`
 /// family), then a *container* fallback on any segment (`…self_attn.…`, `…mlp.…`).
 /// Anything still unmatched is [`SiteKind::Unclassified`] and is **reported**, never
 /// dropped: an unrecognised architecture must look like an unrecognised architecture,
 /// not like a layer that was never trained.
+///
+/// # 🚨 A generic leaf must never outvote its parent
+///
+/// The exact-tail tables run **first**, so a leaf name that is generic enough to be
+/// reused by the other kind of site does not merely mis-label — it **overrides the
+/// parent that would have got it right**, and lands a real measurement on the wrong
+/// node as a confident picture. That is strictly worse than not recognising the name
+/// at all, and it is the one failure this whole lens exists to prevent. Two entries
+/// were admitted under the weaker "this name is used for attention" rule and are gone:
+///
+/// | Removed | Because |
+/// |---|---|
+/// | `dense` | HuggingFace BERT-style encoders name **both** the attention output *and* the two FFN projections with a bare `dense` leaf — `attention.output.dense`, `intermediate.dense`, `output.dense`. The last two are feed-forward and are **not** under an `attention.` parent, so the entry silently put them on the attention ring |
+/// | `wo` | T5 names its FFN output projection `…layer.1.DenseReluDense.wo`, while its attention output is `…layer.0.SelfAttention.o`. So `wo` in this table moved T5's *feed-forward* update onto the attention ring |
+///
+/// ⚠️ **Neither removal loses anything**, which is the tell that both were redundant to
+/// begin with: every architecture whose attention really does use those leaves spells
+/// the parent `attention` or `self_attention` (Falcon's `self_attention.dense`,
+/// Meta-llama's `attention.wo`), so the container fallback catches them. An entry that
+/// is redundant on its true positives and wrong on its false ones is all cost.
+///
+/// 📌 **The rest of both tables were audited against the same rule and kept.** The
+/// `*_proj` family, `qkv_proj`, `query_key_value`, `c_attn`, `c_fc`, `fc_in`/`fc_out`,
+/// `dense_h_to_4h`/`dense_4h_to_h` and `gate/up/down` are architecture-specific coinages
+/// that name one kind of site and nothing else. `query`/`key`/`value` (BERT),
+/// `wq`/`wk`/`wv` (Meta-llama), `out_proj` (BART/OPT/Whisper) and `w1`/`w2`/`w3`
+/// (Mixtral experts, Meta-llama `feed_forward`) are generic-looking but no architecture
+/// in circulation uses any of them for the *other* site — and all of them sit under a
+/// parent that would classify them anyway, so they are redundant-but-safe rather than
+/// redundant-but-dangerous. `linear_1`/`linear_2` (LLaVA's projector) are the weakest
+/// entries here: they name a feed-forward projector outside any transformer layer, so
+/// in practice they arrive with no layer index and are reported as `layerless` before
+/// this function's answer is used at all.
 fn classify_site(module: &str) -> SiteKind {
     let lower = module.to_ascii_lowercase();
     let segs: Vec<&str> = lower.split('.').filter(|s| !s.is_empty()).collect();
     if let Some(tail) = segs.last() {
-        const ATTN: &[&str] = &[
-            "q_proj", "k_proj", "v_proj", "o_proj", "qkv_proj", "query_key_value", "c_attn",
-            "wq", "wk", "wv", "wo", "query", "key", "value", "out_proj", "dense",
-        ];
-        const MLP: &[&str] = &[
-            "gate_proj", "up_proj", "down_proj", "gate_up_proj", "c_fc", "fc_in", "fc_out",
-            "w1", "w2", "w3", "dense_h_to_4h", "dense_4h_to_h", "linear_1", "linear_2",
-        ];
-        if ATTN.contains(tail) {
+        if ATTN_LEAVES.contains(tail) {
             return SiteKind::Attn;
         }
-        if MLP.contains(tail) {
+        if MLP_LEAVES.contains(tail) {
             return SiteKind::Mlp;
         }
     }
@@ -22448,6 +22493,96 @@ mod tests {
         }
         assert_eq!(classify_site("lm_head"), SiteKind::Unclassified);
         assert_eq!(classify_site("SELF_ATTN.Q_PROJ"), SiteKind::Attn, "case-insensitive");
+    }
+
+    #[test]
+    fn a_generic_leaf_never_outvotes_its_parent() {
+        // 🚨 The exact-tail tables run BEFORE the container fallback, so a leaf generic
+        // enough to be reused by the other kind of site does not merely mis-label — it
+        // overrides the parent that would have got it right, and lands a real
+        // measurement on the wrong node as a confident picture. Two entries were
+        // admitted under the weaker "this name is used for attention" rule; both are
+        // gone, and both directions are pinned here.
+
+        // BERT-style encoders: `dense` names the attention output AND both FFN
+        // projections, and the FFN pair is not under an `attention.` parent.
+        assert_eq!(
+            classify_site("encoder.layer.0.intermediate.dense"),
+            SiteKind::Unclassified,
+            "BERT's FFN up-proj must not be drawn on the attention ring"
+        );
+        assert_eq!(
+            classify_site("encoder.layer.0.output.dense"),
+            SiteKind::Unclassified,
+            "BERT's FFN down-proj must not be drawn on the attention ring"
+        );
+        // …while the one that really is attention still resolves, through the parent.
+        assert_eq!(classify_site("encoder.layer.0.attention.output.dense"), SiteKind::Attn);
+        // Falcon regression guard: `self_attention.dense` is the output projection and
+        // the container fallback is what keeps it, now that the leaf entry is gone.
+        assert_eq!(
+            classify_site("transformer.h.0.self_attention.dense"),
+            SiteKind::Attn,
+            "Falcon's attention output must survive removing the leaf entry"
+        );
+
+        // T5: the same shape, found auditing the rest of the table. Its FFN output
+        // projection is `wo`; its ATTENTION output projection is `o`.
+        assert_eq!(
+            classify_site("block.0.layer.1.DenseReluDense.wo"),
+            SiteKind::Unclassified,
+            "T5's FFN down-proj must not be drawn on the attention ring"
+        );
+        assert_eq!(classify_site("block.0.layer.1.DenseReluDense.wi"), SiteKind::Unclassified);
+        // T5's attention still resolves, through `SelfAttention`.
+        assert_eq!(classify_site("block.0.layer.0.SelfAttention.o"), SiteKind::Attn);
+        assert_eq!(classify_site("block.0.layer.0.SelfAttention.q"), SiteKind::Attn);
+        // Meta-llama's `attention.wo` — no longer an exact-tail hit, still attention.
+        assert_eq!(
+            classify_site("layers.0.attention.wo"),
+            SiteKind::Attn,
+            "Meta-llama's attention output must survive removing the leaf entry"
+        );
+    }
+
+    #[test]
+    fn a_misclassified_ffn_would_land_on_the_wrong_node_not_in_unclassified() {
+        // The classification is only half the promise; this is the other half. A BERT
+        // FFN module must reach the layer's backbone AND be NAMED, so the picture's
+        // incompleteness is reportable — rather than quietly brightening the attention
+        // ring, which is what the removed `dense` entry did.
+        let sites = delta_sites(&delta_summary(vec![delta_module(
+            "bert.encoder.layer.7.intermediate.dense",
+            64,
+            64,
+            1.0e-2,
+        )]));
+        let s = sites.layers[&7];
+        assert!(s.backbone_rms > 0.0, "the layer's whole update is still counted");
+        assert_eq!(s.attn_rms, 0.0, "and NOT onto the attention ring");
+        assert_eq!(s.mlp_rms, 0.0);
+        assert_eq!(sites.unclassified, vec!["bert.encoder.layer.7.intermediate.dense"]);
+    }
+
+    #[test]
+    fn the_two_leaf_tables_are_disjoint() {
+        // An entry in both would be decided by evaluation order rather than by meaning —
+        // the same class of defect as a leaf outvoting its parent, one layer in, and
+        // equally invisible. Hoisted to module consts so this is checkable at all.
+        for a in ATTN_LEAVES {
+            assert!(!MLP_LEAVES.contains(a), "{a} is in both leaf tables");
+        }
+        // And no entry may be a *prefix-free* duplicate of itself across the tables.
+        assert_eq!(
+            ATTN_LEAVES.len(),
+            ATTN_LEAVES.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            "ATTN_LEAVES has a duplicate"
+        );
+        assert_eq!(
+            MLP_LEAVES.len(),
+            MLP_LEAVES.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            "MLP_LEAVES has a duplicate"
+        );
     }
 
     #[test]
