@@ -89,8 +89,8 @@ impl Mapping {
     pub(crate) fn open(path: &Path) -> io::Result<Mapping> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         // SAFETY: whatever length the file has, that is the length of the mapping; every
-        // access below is bounds-checked against `len` and the header is validated against it
-        // before any offset from it is used.
+        // accessor on this type is bounds-checked against `len`, and the header is validated
+        // against it before any offset from it is used.
         let mut map = unsafe { memmap2::MmapMut::map_mut(&file)? };
         let ptr = map.as_mut_ptr();
         let len = map.len();

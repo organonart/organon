@@ -18,7 +18,8 @@
 //! is worse than a sentence, which is `region.rs`'s standing rule and §4.6's.
 //!
 //! ⚠️ **So a version bump is not a compatibility break, it is a compatibility STATEMENT.**
-//! Bump it whenever any offset, any field meaning, or any enum tag below changes. Two builds
+//! Bump it whenever any offset, any field meaning, or any enum tag in this module changes. Two
+//! builds
 //! that disagree then refuse each other by name ([`WireFault::VersionMismatch`]), naming both
 //! numbers, which is a thing a person can act on.
 //!
@@ -38,7 +39,7 @@ use std::fmt;
 pub const MAGIC: [u8; 8] = *b"ORGONMOD";
 
 /// Byte 8..12, for ever. See the module docs: bump on **any** change to an offset, a field
-/// meaning, or an enum tag below.
+/// meaning, or an enum tag in this module.
 pub const WIRE_VERSION: u32 = 1;
 
 /// The fixed-size header, and the offset every other block is measured from.

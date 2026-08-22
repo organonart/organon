@@ -14,7 +14,8 @@
 //! against 1.37 ms reused**, and 3.3× of the gap is `memcpy out` copying *identical bytes* —
 //! first-touch page faulting on a destination that has never been written. A per-frame
 //! allocation therefore measures 2.7 ms, reads as a verdict on mechanism B, and buys `unsafe`
-//! per-backend interop to fix an allocator problem. Both types below expose an `allocations()`
+//! per-backend interop to fix an allocator problem. `FrameTexture` and `FrameReadback` each
+//! expose an `allocations()`
 //! counter so a test can assert the absence rather than a comment claim it.
 //!
 //! 📌 **One copy the T0 harness paid and this does not.** That harness de-padded the mapped

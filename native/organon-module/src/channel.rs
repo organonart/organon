@@ -241,7 +241,8 @@ impl ModuleChannel {
         let map = Mapping::create(path, header.total_bytes())?;
         {
             // SAFETY: nothing else has this file open — the producer process does not exist
-            // yet, which is the whole reason `create` may write producer-owned words below.
+            // yet, which is the whole reason `create` may seed `latest_slot` and `ProducerState`
+            // at all.
             let head = unsafe { map.bytes_mut(0, crate::wire::HEADER_BYTES) };
             header.write(head);
         }

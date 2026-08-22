@@ -421,12 +421,12 @@ fn asking_a_producer_to_run_gives_it_the_full_grace_period() {
     }
     // 🚨 `set_lifecycle` reads the wall clock, so the poll after it must too — mixing `t0`
     // arithmetic with a real `Instant` here would be comparing two different clocks and the
-    // test would pass or fail on how long the loop above took.
+    // test would pass or fail on how long the attached-silence loop happened to take.
     let asked_at = Instant::now();
     console.set_lifecycle(Lifecycle::Running);
     producer.tick();
     // Immediately after the ask, the producer is not yet late — even though the frame counter
-    // has stood still for the whole loop above.
+    // has stood still throughout the attached-silence loop.
     assert!(matches!(console.poll(asked_at + ms(5)), Poll::Holding));
     // And it does become late, from the ask rather than from the last frame.
     producer.tick();

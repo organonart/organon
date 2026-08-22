@@ -15,14 +15,14 @@
 //! | quit on purpose vs. vanished | **yes** | [`crate::ProducerState::Gone`] is a farewell the producer writes |
 //! | paused vs. hung | **yes** | the liveness counter is bumped once per producer *loop*, not once per *frame*, so a paused producer still moves it |
 //! | starting vs. never going to start | **yes, by clock** | `Starting` is a state with a deadline, and the deadline is what turns row 3 into row 4 |
-//! | **alive but not producing** vs. paused | **yes** | 🚨 see below — this one nearly got away |
+//! | **alive but not producing** vs. paused | **yes** | 🚨 its own section in these docs — this one nearly got away |
 //! | **hung vs. exited without a farewell** | 🚨 **no** | both are a counter that stopped moving, and nothing inside a shared mapping distinguishes them |
 //!
 //! # 🚨 The row that nearly got away: a producer that refuses every frame
 //!
 //! A producer that declines to draw — because the target is a size it cannot use, because a
 //! resource never loaded — is **alive and silent**. It ticks, so the liveness counter moves,
-//! so every rule above says it is fine. And the state it most resembles is
+//! so every rule in that table says it is fine. And the state it most resembles is
 //! [`ProducerState::Paused`], which is the **arrival state**: the least alarming conclusion
 //! the console could possibly reach, about the case §4.6 most needs it to name.
 //!
@@ -193,6 +193,18 @@ impl Presence {
     /// would be a crate a *game in another repository* links in order to carry Organon's
     /// command spellings around. `module.rs` keeps `APPROVE_VERB` and `BUILD_VERB` for the
     /// same reason in the other direction: one spelling, on the side that owns it.
+    ///
+    /// 📌 **So `RESTART_VERB` belongs in `module.rs` beside its siblings and is *passed* from
+    /// there** — decided rather than left open, because a fifth verb that existed only as an
+    /// argument at one call site would sit outside the very guarantee those constants provide,
+    /// which is that a sentence in a rectangle and a line a person types cannot drift apart.
+    /// Both properties then hold at once: this crate spells no verb, and Organon has exactly
+    /// one place where all five live. Nothing here changes when it is added.
+    ///
+    /// ⚠️ Whoever adds it should expect `module.rs`'s
+    /// `the_verb_constants_and_the_action_words_are_one_table` to **fail**, and should want a
+    /// deliberate answer rather than a mechanical fix: `restart` is a thing the console does to
+    /// a producer, not a thing a person approves, so it is not one of `MODULE_ACTIONS`.
     pub fn sentence(&self, producer: &str, restart_verb: &str) -> String {
         match self {
             Presence::Starting { elapsed } => {
@@ -359,7 +371,7 @@ mod tests {
         Duration::from_millis(ms)
     }
 
-    /// A healthy producer: drawing, told to run, nothing silent. Every case below is this with
+    /// A healthy producer: drawing, told to run, nothing silent. Every case in this module is it with
     /// one thing changed — which is what makes them readable, and what a positional `judge`
     /// would have cost.
     fn well() -> Observed {
