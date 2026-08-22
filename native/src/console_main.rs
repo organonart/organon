@@ -3344,7 +3344,17 @@ struct HostedTexture {
 impl HostedTexture {
     fn new(format: organon_module::PixelFormat) -> HostedTexture {
         HostedTexture {
-            tex: organon_module::gpu::FrameTexture::new(format),
+            // 🚨 **A view that does NOT decode, because egui's shader linearizes its own
+            // samples.** The wire carries sRGB bytes and `PixelFormat` has no other kind, so a
+            // view in the texture's own format converts at every sample and egui converts again
+            // — `BACKDROP_SAMPLE_FORMAT`'s comment, twenty lines from the top of this file:
+            // *"a decoded-on-sample view would linearize twice and come out dark."* Every other
+            // picture path here already obeys it; this one is the newcomer beside the rule.
+            //
+            // ⚠️ The failure is invisible to everything that reports: no error, no torn frame,
+            // `torn_reads`/`corrupt_reads`/`allocations` all clean, and the only symptom is a
+            // module's picture looking murky next to an Organon viewport that is correct.
+            tex: organon_module::gpu::FrameTexture::new(format).sampled_linear(),
             id: None,
             registered: None,
         }
@@ -6522,8 +6532,13 @@ impl Console {
                     if let Some(old) = held.id.take() {
                         renderer.free_texture(&old);
                     }
-                    // Linear, like every other picture the console samples into a rectangle
-                    // whose exact pixel size it does not control.
+                    // `Linear` **filtering**, like every other picture the console samples
+                    // into a rectangle whose exact pixel size it does not control.
+                    //
+                    // ⚠️ **Not to be read as settling the colour space** — that is a different
+                    // question with the same word in it, answered at `HostedTexture::new` by
+                    // `sampled_linear()`. This comment previously stood alone here and made the
+                    // colour question look asked when it had not been.
                     held.id = Some(renderer.register_native_texture(
                         &device,
                         view,

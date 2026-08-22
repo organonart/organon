@@ -7551,6 +7551,57 @@ reused and *reads as a verdict on the mechanism*. The egui registration is renew
 `FrameTexture::allocations()` for the same reason in a different currency: registering every
 frame leaks a `TextureId` sixty times a second, which is invisible in a screenshot.
 
+#### ⚠️ The view does not decode, or the picture comes out dark
+
+`HostedTexture` asks for `FrameTexture::new(format).sampled_linear()`, and the second half is
+load-bearing.
+
+The wire carries **sRGB-encoded bytes and nothing else** — `PixelFormat` has two variants and both
+are sRGB, because that is what a producer's swapchain-shaped texture holds. A view in the texture's
+own format therefore converts sRGB to linear **at every sample**, and egui's shader converts again.
+Two decodes. This console had already written the rule down, at `BACKDROP_SAMPLE_FORMAT`:
+
+> *"render the world through the sRGB format, hand egui a non-sRGB view of the same bytes — egui's
+> shader linearizes its samples itself, and a decoded-on-sample view would linearize twice and come
+> out dark."*
+
+Every other picture path here obeys it — `render_backdrop`, `snapshot_live_backdrop`,
+`upload_exhibit`, `make_surface_texture` all store `Rgba8UnormSrgb` and sample `Rgba8Unorm`. **The
+module path arrived beside that invariant without inheriting it**, which is this repository's
+recurring shape read from a new angle: not *the code changed and its meaning did not*, but *a new
+path arrived beside an old rule and nothing connects the two*.
+
+🚨 **It cannot be fixed at the call site, and that is why the contract crate moved.** Choosing a
+different `FRAME_FORMAT` cannot help — both are sRGB, so the bytes were always right and only the
+*reinterpretation* was missing — and `FrameTexture` creates its view internally against a
+`view_formats` list that wgpu validates, so an empty list makes a non-decoding view illegal however
+the caller asks. `organon-module` gains `linear_view_format` and `FrameTexture::sampled_linear`;
+`new` is unchanged, because a consumer that composites normally *wants* linear values out of the
+sampler and is right to take the default. This is a second legitimate consumer being served, not a
+bug being fixed for everybody.
+
+📌 **`sampled_linear` takes no argument on purpose.** `view_formats` accepts only a format differing
+from the texture's in its sRGB-ness, so a general `sampled_as(fmt)` would be an API whose wrong
+answers are a wgpu validation error at texture creation — a footgun for no gain, since there is
+exactly one other legal format.
+
+⚠️ **The failure is invisible to everything that reports.** No error, no torn frame; `torn_reads`,
+`corrupt_reads` and `allocations` all read clean. The only symptom is a person saying a module's
+picture looks murky — and it is only noticeable at all because an Organon viewport beside it is
+correct.
+
+🚨 **A comment made it easy to read past, and that is worth recording rather than quietly
+rewording.** The line above the egui registration read *"Linear, like every other picture the
+console samples"* — which is `FilterMode::Linear`, the **sampling filter**, a different question
+with the same word in it. Standing alone at that site it made the colour question look asked. It
+now says which of the two it is answering, and points at the one that answers the other.
+
+⚠️ **Derived, not observed — and the falsifier is cheap.** Nobody has seen a module's picture. This
+rests on the rule quoted above, on every sibling path obeying it, and on `create_view` with a
+default descriptor yielding the texture's own format. To settle it: a solid **mid-grey** frame from
+`organon-module-sim` beside an Organon viewport — two decodes take 128 to roughly 55, which is not
+subtle.
+
 #### 🚨 What did NOT change, and both absences are the evidence
 
 **`engine_plan` is untouched and `the_engine_is_asked_for_at_most_one_frame` did not widen.** A
