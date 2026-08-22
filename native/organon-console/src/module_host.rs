@@ -287,6 +287,22 @@ impl ModuleHost {
     /// live in the channel's staging buffer, which is reused, so a caller that kept one across
     /// frames would be looking at the next frame's bytes. The borrow is what makes that
     /// impossible rather than a rule.
+    /// ⚠️ **The borrow checker will push the next person to invert the order below, and the
+    /// inverted version is wrong.**
+    ///
+    /// `ModuleChannel::poll` holds `&mut self.channel` for the whole life of the `Poll` it
+    /// returns, because the pixels live in the channel's staging buffer. So the shortest path to
+    /// "also read the exit status" is to ask the handle *after* the poll, where nothing is
+    /// borrowed and it compiles first try. That reads as the natural arrangement and it silently
+    /// reverses the one rule this function exists to enforce: a producer that died leaves a
+    /// mapping that looks healthy for a second, so a channel-first `observe` reports `Live` about
+    /// a process this console watched exit.
+    ///
+    /// 📌 The order is therefore not a style preference and not an accident of how it was
+    /// written — it is the whole content of the function, and the language is pushing against it.
+    /// ✏️ Noticed by a reviewer rather than by me: I wrote the ordering deliberately and
+    /// documented *why* it is right, and never saw that the code around it recommends the
+    /// opposite.
     pub fn observe(&mut self, now: Instant) -> Observation<'_> {
         self.channel.heartbeat();
         // 🚨 The handle first — see this module's header on why the order is not a preference.

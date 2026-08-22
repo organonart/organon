@@ -693,6 +693,46 @@ console times `Starting` out into `Lost` after `Timings::start_within` (10 s), s
 turns a legible failure into a hang — and §4.6's third row exists specifically because *"a rectangle
 that says 'starting…' indefinitely is the failure state that looks most like working software."*
 
+#### 🚨 Two copies of this crate exist, they are supposed to differ, and only the wire must agree
+
+**Organon's console compiles `organon-module` as a path dependency out of this repository. A module
+pins it by revision.** So at any moment there are two independently compiled copies, at different
+versions, and **that is the design rather than a problem to tidy up.**
+
+⚠️ **A future session will find the drift and want to "fix" it on sight. It should not.** What the
+two copies must agree on is the **wire**, not the version — which is exactly why `wire.rs` puts
+`MAGIC` at byte 0 and `WIRE_VERSION` at byte 8 and why the crate refuses `serde`: a derived
+encoding makes compatibility a property of a dependency version, and *two separately built binaries
+cannot agree on a dependency version by construction.*
+
+So "should the module bump its pin?" has three answers, and the usual one is no:
+
+| the change is in | must the module bump? |
+|---|---|
+| **the console's half** — `FrameTexture`, the compositor, anything under `console_main.rs` | **No.** It is not in the module's dependency graph at all. |
+| **the producer's half** — `ProducerChannel`, `FrameReadback`, `Timings`, `input::Key` | **To use it, yes.** The old pin goes on working until then. |
+| **the wire** — `MAGIC`, `WIRE_VERSION`, field offsets, `PixelFormat` | **Yes** — and skipping it is caught at `open` as `WireFault::VersionMismatch`, naming both numbers. |
+
+📌 **The type table in `gpu.rs` is what decides row one from row two**, and it is worth reading
+before answering the question: `FrameTexture` is the console's, `FrameReadback` is the producer's.
+A change to the first cannot reach a module however it is pinned, because a module never constructs
+one.
+
+⚠️ **A worked example, because the wrong answer here was believed for an hour.** The sRGB view fix
+lives in `FrameTexture`. It was reported — by this document's author — as *"the fix does not reach
+the module until it bumps, so it renders dark in between"*, which turned into a scheduling
+constraint before anybody re-derived it. It is wrong: the console builds that texture from **its
+own** copy of the crate, so the fix travels once and arrives immediately. The premise *"a shared
+crate"* was right; the inference *"therefore a shared blast radius"* did not follow, and the thing
+that would have caught it was one line of `native/Cargo.toml` plus `grep FrameTexture`.
+
+🚨 **The general rule that came out of it, and it is not about pins:** *do not state a consequence
+for a repository you cannot see — say what you observe in yours, and ask.* An inference phrased in
+the register of an observation is not merely wrong, it is **wrong in a way that survives review**,
+because the reader has nothing to check it against. ✏️ Both sessions did it in the same hour, in
+both directions; the producer's own docs and a commit message repeated it before either half was
+checked. Ascent's `producer::FORMAT` reasoning and this paragraph both exist because it was caught.
+
 #### What is deliberately NOT here, and must not be added quietly
 
 🚨 **Nothing tells a hosted module its own configuration.** Under `fly.ps1` a person types
