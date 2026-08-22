@@ -57,8 +57,17 @@
   --raise:#141c22;      /* well — input interiors, recessed */
   --ink:#d1d6d9;        /* bone. NEVER pure white: the top of the range is
                            held in reserve so live data can mean something */
-  --muted:#8e999f;      /* titanium */
-  --faint:#606b72;      /* muted */
+  --muted:#8e999f;      /* titanium — SECONDARY TEXT, which the theme defines as
+                           "control labels". Every small uppercase label on this
+                           page is one, so .part, .meta dt and th use it. */
+  --faint:#606b72;      /* muted — the theme's TERTIARY: "hints, units,
+                           provenance tags, disabled copy".
+                           ⚠️ It reaches only 2.95:1 on the shell, so it is used
+                           for DECORATION ONLY — list markers, the `$` prompt
+                           glyph — and never for text a reader must read. The
+                           fix for a label that looks too quiet is --muted, not
+                           a lighter --faint: the token is right, the earlier
+                           usage was wrong. */
   --rule:#3a464f;       /* hairline */
   --rule-strong:#52616b;/* edge_strong */
   --dot:#1f2830;        /* one step off the shell, nothing more */
@@ -170,7 +179,7 @@ h1{
   margin:3.4rem auto 0;padding:.85rem 1rem;display:grid;
   grid-template-columns:max-content minmax(0,1fr);gap:0 1.6rem;max-width:44rem;
 }
-.meta dt{color:var(--faint);text-transform:uppercase;letter-spacing:.1em}
+.meta dt{color:var(--muted);text-transform:uppercase;letter-spacing:.1em}
 .meta dd{margin:0;color:var(--muted)}
 .meta dd a{color:var(--link)}
 
@@ -187,7 +196,7 @@ section{margin:5.5rem 0 0}
   :root{--measure:100%}
   p,ul,.standfirst{max-width:38rem}
 }
-.part{font-family:var(--mono);font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin:0 0 .5rem}
+.part{font-family:var(--mono);font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin:0 0 .5rem}
 h2{font-weight:400;font-style:italic;font-size:1.75rem;letter-spacing:-.004em;line-height:1.22;margin:0 0 1.1rem;text-wrap:balance}
 h3{font-weight:400;font-style:italic;font-size:1.2rem;margin:2rem 0 .5rem}
 .lede{font-size:1.06rem}
@@ -250,7 +259,7 @@ figure svg{display:block;width:100%;height:auto}
 .tablewrap{overflow-x:auto;margin:1.4rem 0 0;max-width:var(--measure)}
 table{border-collapse:collapse;width:100%;font-size:.9rem}
 th,td{text-align:left;padding:.55rem .9rem .55rem 0;border-bottom:1px solid var(--rule);vertical-align:top}
-th{font-family:var(--mono);font-size:.66rem;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);font-weight:500;border-bottom:1px solid var(--rule-strong)}
+th{font-family:var(--mono);font-size:.66rem;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);font-weight:500;border-bottom:1px solid var(--rule-strong)}
 td:first-child{white-space:nowrap}
 
 /* ── The reading list ────────────────────────────────────────────────── */
