@@ -91,7 +91,7 @@ August 2026 and its leg went with it, while the cargo feature stayed; see the he
 `.github/workflows/ci.yml`. So the mind-edition line above is the one in this block that
 nothing checks for you, and it is on you to run it while it still exists.
 
-🚨 **The targeted bar, for when `--workspace` is not practical — and it is SEVEN commands.**
+🚨 **The targeted bar, for when `--workspace` is not practical — and it is EIGHT commands.**
 On a workstation `cargo test --release --workspace` is often not affordable (a cold per-worktree
 `target/`, and the box's RAM is shared with WSL), so sessions run a targeted substitute instead.
 Written down here because it circulates in briefs and handoffs, and the version that circulated
@@ -155,7 +155,7 @@ closes.
 
 📌 **This block has a second home, and the two are pinned equal.** A session coordinating
 other sessions cannot hand a worker a skill — a worker in its own worktree has the files and
-not the skill — so the same seven commands are published at
+not the skill — so the same eight commands are published at
 `.claude/skills/coordinate-sessions/BRIEF.md`, where a worker can `git show` them out of a
 checkout it already has. `.claude/hooks/bar-agreement-check.sh` diffs the two command blocks on
 every Stop and refuses if they have forked. ⚠️ **Edit the bar here and the hook will tell you

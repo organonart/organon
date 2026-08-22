@@ -23,3 +23,5 @@ than trusted.** Changing one copy alone produces `‼️ The verification bar ha
 naming which file a worker is handed. That check is the only reason a bar duplicated on purpose is
 a copy rather than a fork — and this bar has already forked once, circulating in a six-command form
 for months while `CONTRIBUTING.md` was right.
+
+⚠️ **And the first cut of this change left two of its own counts stale**, caught in review: `CONTRIBUTING.md` said *"it is SEVEN commands"* and *"the same seven commands are published at"* — inline sentences rather than headings, so a grep for `seven legs` walked straight past them. That is the exact class the change exists to close, committed inside the change closing it. 📌 The lesson is about the search, not the care: **a count in prose does not agree with itself about what to call the thing being counted**, so grep the number, never the phrase.
