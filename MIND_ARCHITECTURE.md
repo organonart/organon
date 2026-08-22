@@ -795,10 +795,17 @@ separate them, and each is decisive alone:
    moved, pinched toward the axis where it did not. A cylinder is never a delta view;
    a waisted specimen is never a live one. The trunk never bends — backbone nodes sit
    on the axis, so the scaling is a no-op on them by construction.
-2. **It holds still.** `world.rs`'s `topo == 5` seam is gated to view **0**, so an
-   arriving activation frame can never overwrite a Delta view. That gate pre-dates this
-   tier (it is what keeps the galaxy static) and it is what makes the separation
-   structural rather than a convention someone has to remember.
+2. **It holds still**, and there are two ways it could have failed to. `world.rs`'s
+   `topo == 5` seam is gated to view **0**, so an arriving activation frame can never
+   overwrite a Delta view — that gate pre-dates this tier (it is what keeps the galaxy
+   static) and makes the separation structural rather than a convention someone has to
+   remember. ⚠️ **The #226 cascade sim was the other way**, and it is not gated by
+   anything view-shaped: with a firing mode set it computes an `activity` the glow uses
+   *instead of* `node_scalar`, replacing the measurement with a free-running procedural
+   pulse. `sim_on` now excludes the Delta lens on exactly the reasoning that already
+   excludes a live stream. 📌 **The embedding galaxy has the identical hole and it is
+   left open** — its node scalars are full N-D embedding norms, equally real and equally
+   paintable-over — because that is #507's call to make, not this tier's.
 3. **The ring is round** — the uniform-across-heads limit above.
 
 #### 🚨 The normalisation, and what it refuses to be

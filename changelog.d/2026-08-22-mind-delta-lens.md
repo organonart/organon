@@ -31,6 +31,16 @@ view 0, so an arriving frame can never repaint a Delta view. **The head ring is 
 for the reason below. The trunk never bends: backbone nodes sit on the axis, so the
 scaling is a no-op on them by construction.
 
+⚠️ **"Holds still" had a second hole, and the ring gate does not cover it.** The #226
+cascade sim is not gated by anything view-shaped: with a firing mode set it computes an
+`activity` the glow uses *instead of* `node_scalar`, so a measured quantity would have
+been replaced by a free-running procedural pulse — a proxy animation wearing a
+measurement's shape, which is the exact failure this tier exists to prevent. `sim_on` now
+excludes the Delta lens on the same reasoning that already excludes a live stream. 📌 The
+embedding galaxy has the identical hole and it is deliberately left open: its node scalars
+are full N-D embedding norms, equally real and equally paintable-over, but that is #507's
+call rather than this tier's.
+
 ⚠️ **Uniform across heads is a limit, and the picture is what says so.** `q_proj` is one
 tensor covering every head; resolving per-head needs per-output-row norms of `ΔW`, which
 is the full `out × in` product Tier 2 stopped short of on purpose. So the head ring

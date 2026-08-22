@@ -4724,7 +4724,16 @@ impl World {
                     let live_stream = topo == 5
                         && math::mind_view_mode(s.mind[2]) == 0
                         && self.mind_ring.latest().is_some();
-                    let sim_on = (fire_mode != 0 || stim_on) && !live_stream;
+                    // 🚨 #147 T3 — the same suppression, for the same reason, on the
+                    // Delta lens. Its `node_scalar` is a **measured** quantity (how far
+                    // each site moved during a fine-tune); the cascade sim would replace
+                    // it with a free-running procedural pulse and the picture would then
+                    // be neither — a proxy animation wearing a measurement's shape, which
+                    // is precisely what this tier exists to make impossible. Unlike
+                    // `live_stream` this needs no "are frames arriving" clause: the
+                    // measurement is in the graph the moment the view is built.
+                    let delta_lens = topo == 5 && math::mind_view_mode(s.mind[2]) == 2;
+                    let sim_on = (fire_mode != 0 || stim_on) && !live_stream && !delta_lens;
                     let motes = if !sim_on {
                         0.0
                     } else {
