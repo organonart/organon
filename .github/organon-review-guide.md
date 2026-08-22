@@ -74,6 +74,42 @@ issues" when that's the truth.
   your review, and stop again — the hook's loop guard lets the second stop
   through.
 
+🚨 **The invisible direction is the one where something else is already helping you.**
+Three more faces of the class above, all found in one night, none of which fails a test — and each
+*feels* covered because a compiler, a generator or a neighbouring green test is doing half the job:
+
+| face | what moved | what stayed still |
+|---|---|---|
+| **one-way table** | a variant gained an encode arm and not a decode arm | the test iterated a list that did not know about it |
+| **widened condition under an old latch** | the scope the guard covers | the guard's own code |
+| **self-referential assertion** | the function under test | the comparison, which followed it |
+
+- ⚠️ **A one-way enum tag is invisible to the compiler in exactly one direction**, and it is
+  never the direction you are editing. An exhaustive `match` demands the encode arm; nothing demands
+  the decode arm, so a new variant encodes fine and decodes to `None` **for ever**. Guarding it takes
+  **two** halves: an exhaustive match (catches a new variant) *and* a scan of the wire-code space
+  (catches a decode arm no variant claims, and a variant `from_wire` cannot produce). Neither alone
+  is sufficient.
+
+🚨 **A doc-hook challenge is not answered by "this change does not move the doc."** That
+is the wrong question. The right one is **"does the doc already say the thing this change is
+about?"** — a living-state doc can be silent about something a diff merely *touches*, and
+dismissing on the first question never reaches the second. Measured instance: a tests-only change
+pinned a wire vocabulary with literals; the architecture doc documented *which* keys were refused
+and had **never named what a key is on the wire** (`grep -c HID` returned 0). No behaviour moved and
+the doc was still wrong. ⚠️ When a PR's author says a doc-triggering hook was a false
+positive, check the doc rather than the diff.
+
+- 🚨 **A test that compares the function under test against itself passes by construction
+  and survives reverting the change it exists to protect.** Measured instance: a frame verifier
+  checked against the same helper the writer used, so the **entire** tear-detection suite passed
+  against a verifier that could no longer detect a tear — the fix's mutation run reads
+  `80 passed; 1 failed`. Look for an assertion whose both sides derive from the thing being proved.
+- ⚠️ **A value shared across a process or repository boundary cannot be pinned by either
+  side's generator.** Two macro-generated tables agreeing with each other says nothing about the
+  *numbers*: renumber a key and both sides move together, every test passes, and every keystroke
+  changes meaning in the other process. Pin borrowed identifiers as **literals**.
+
 🚨 **The code did not change; what it MEANS did.** This class produced three separate
 defects in one night, none of which failed a test and two of which were caught only by review. It
 is worth looking for deliberately, because nothing else will find it:

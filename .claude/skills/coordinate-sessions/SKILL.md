@@ -194,6 +194,43 @@ worker.
   configuration silently replaces another's binary. Verify the artifact, never the command that
   produced it.
 
+## 📌 What cross-repo pairing is actually for
+
+Measured three times in one night, and it is the strongest argument for running work this way:
+**each session found its own instance of a defect class only after seeing it in the other's tree.**
+Neither went looking unprompted. One found a promise that was only checkable from *inside* the
+crate and invisible from outside; the other found the reciprocal of a one-way table it had already
+"fixed" as a single instance; the third turned up two more of the same shape the moment anyone
+searched.
+
+- 🚨 **When a peer reports a defect class, search your own tree for its reciprocal before
+  replying.** Not the same bug — the same *shape*, from the other end. The person who fixes an
+  instance almost never searches for the class, because fixing it feels like closing it.
+- 📌 **Relay findings as shapes, not as incidents.** *"A one-way enum tag is invisible in
+  exactly one direction"* travels; *"add a `from_wire` arm"* does not.
+- ⚠️ **A finding may be visible only from outside a crate and fixable only from inside
+  it.** A `pub const` tells the modules that link it; a module that deliberately does not link it
+  cannot see the promise at all. No review of that crate by anyone reading only that crate would
+  have found it.
+
+## 🚨 After a merge you did not perform, check nothing was stranded
+
+A commit pushed while a PR is being merged lands on the branch **after** the merge commit. It is on
+the branch, it is not on `main`, every check still reads green because they ran on the head that was
+merged, and **nothing anywhere reports the gap**. Push-then-merge and merge-then-push look identical
+from every surface except one:
+
+```bash
+git merge-base --is-ancestor <last-pushed-commit> origin/main
+```
+
+📌 And the companion practice, which is not optional in a repo whose CI runs only on
+`pull_request`: **merge, then gate on `main`.** Per-PR CI cannot see a conflict neither branch ever
+held both halves of; this repo has had `main` go red from six individually-green PRs. Whoever merges
+owns running the bar on `main` afterwards. ⚠️ Report a green gate as *"it was run"* — a
+gate earns its keep on the run that catches something, and saying otherwise turns a control into a
+formality.
+
 ## What to escalate
 
 **Escalate**: anything departing from the user's own words; anything only they can judge — visual,
