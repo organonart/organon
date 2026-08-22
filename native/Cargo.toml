@@ -181,6 +181,15 @@ organon-world = { path = "organon-world" }
 # Console #3 T1 — the Console compositor UI. Unconditional like its siblings
 # (the lib is tiny and Edition-parametric); only the BIN is feature-gated.
 organon-console = { path = "organon-console" }
+# #137 T5 — the hosted-module contract, with `wgpu` ON. 🚨 **The feature belongs HERE and
+# nowhere else in this tree**: `organon-console` takes the same crate at default features
+# because it holds the launch, the channel and the verdict, and the destination texture
+# belongs to the binary that owns the device — which is this crate. That split is what keeps
+# `cargo tree -p organon-console | grep wgpu` empty while `FrameTexture` is still available
+# to the one caller that needs it. ⚠️ The arrow points this way only: `organon-module` must
+# never depend on anything here, because `organonart/ascent` links it and its own invariant
+# forbids an edge to a GPL crate.
+organon-module = { path = "organon-module", features = ["wgpu"] }
 # #367 Tier 2b / #522 Tier 1 — llama.cpp bindings for the embedded inference runtime.
 # OPTIONAL + feature-gated: nothing links it unless `--features embedded-llm`. Bundles
 # + statically links llama.cpp, with the GPU backend chosen per target (see below).

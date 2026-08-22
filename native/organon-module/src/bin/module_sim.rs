@@ -70,6 +70,15 @@ struct Args {
     /// paused module still has a picture. `--no-attached-frames` is the lever for checking what
     /// the console says when it has none.
     attached_frames: bool,
+    /// How long to sleep between frames, in milliseconds.
+    ///
+    /// 🚨 **The lever that turns the staleness measurement from a number into an explanation.**
+    /// Two free-running loops sample each other, so the age of a frame at poll time is spread
+    /// over the *producer's* period — which means the median is about half that period and has
+    /// almost nothing to do with the size of the copy. Changing this and watching the median
+    /// track it is what distinguishes "the transport is slow" from "you looked at the wrong
+    /// moment", and those two have completely different fixes.
+    draw_every_ms: u64,
 }
 
 fn main() {
@@ -149,7 +158,7 @@ fn main() {
 
         // 🚨 A slow loop while paused, never a stopped one. See this file's header.
         let cadence = if control.lifecycle == Lifecycle::Running || args.attached_frames {
-            DRAW_TICK
+            Duration::from_millis(args.draw_every_ms)
         } else {
             PAUSED_TICK
         };
@@ -200,6 +209,7 @@ fn parse() -> Result<Args, String> {
         exit_after: None,
         never_draw: false,
         attached_frames: true,
+        draw_every_ms: DRAW_TICK.as_millis() as u64,
     };
     let mut rest = std::env::args().skip(1);
     while let Some(word) = rest.next() {
@@ -216,6 +226,7 @@ fn parse() -> Result<Args, String> {
             "--exit-after" => args.exit_after = Some(count("--exit-after")?),
             "--never-draw" => args.never_draw = true,
             "--no-attached-frames" => args.attached_frames = false,
+            "--draw-every-ms" => args.draw_every_ms = count("--draw-every-ms")?,
             other => return Err(format!("`{other}` is not a flag this producer takes")),
         }
     }

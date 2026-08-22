@@ -7369,13 +7369,15 @@ producer, region, viewport or content word (T4 — and `region.rs` objects to in
 a shared GPU texture is *not yet justified*, which is the standard §4.4 set for buying `unsafe`
 per-backend interop. When it is, it goes behind this same API.
 
-🚨 **§4.4's number 2 — frames of latency between "the module drew it" and "the console painted
-it" — is still not measured, and nothing in the crate estimates it.** Both halves of its suite
-live in one process, which proves correctness and says nothing about staleness. ✏️ What changed
-is that it is now a **subtraction rather than a research project**: every frame carries the
-producer's `SystemTime` at publish and `FrameView::age` is the difference, so the number can be
-*taken* the moment two processes exist. ⚠️ `SystemTime` is not monotonic, so `age` answers
-`None` on a negative or absurd result rather than reporting a duration nobody can stand behind.
+✏️ **§4.4's number 2 was taken in T5** — `doc/measurements/module-staleness-2026-08-22.md`. This
+crate put the instrument on the wire and could not perform the measurement: every frame carries the
+producer's `SystemTime` at publish and `FrameView::age` is the subtraction, but both halves of the
+suite live in one process, which proves correctness and says nothing about staleness.
+`organon-module-sim` — a producer in its own process, behind the `sim` feature — is what made it
+two. **8–11 ms median at a 60 Hz consumer, half a frame, and flat across nine times the pixels**,
+because staleness is `≈0.6 × min(producer period, poll interval)` and the frame size is not in that
+expression. ⚠️ `SystemTime` is not monotonic, so `age` answers `None` on a negative or absurd result
+rather than reporting a duration nobody can stand behind.
 
 #### The one dependency, and the one duplicated constant
 
@@ -7410,6 +7412,182 @@ and a 437-wide one: a sweep of nice widths exercises the padding path zero times
 complete. ✏️ This came up as a real disagreement with Ascent's first producer, which had
 stripped the padding; it would have passed both sides' tests.
 
+### 1.21 The picture arrives — launching a module, and painting what it draws
+
+`doc/organon_module_viewport.md` §9's **T5**, and the tier where the sentence in §1.17's
+rectangle becomes a picture. §1.17 answered *may it run?*, §1.19 answered *are there bytes to
+run?*, §1.20 answered *how do the two talk?* — this answers **is it running, and what is on the
+screen?**
+
+Three files, and the split between them is the same one every GPU thing here already has:
+
+| | Holds | Sees a device? |
+|---|---|---|
+| `module_work.rs` | the launch **seam** — `Workshop::spawn`, `ModuleProcess`, `module_binary` | no |
+| `module_host.rs` | one launched producer: the channel, the process handle, the verdict, the sentence | no |
+| `console_main.rs` | the destination texture, the egui registration, the rectangle | yes |
+
+📌 So the whole of the decision is headless and unit-tested, and the only thing that needs a
+window is the upload. `organon-console` takes `organon-module` at **default features — no
+wgpu**; the root-crate binary takes it with the `wgpu` feature, which is what keeps
+`cargo tree -p organon-console | grep wgpu` empty while `FrameTexture` is still available to the
+one caller that owns a device.
+
+#### The handoff, and why it is an environment variable
+
+A launched producer is told where its channel is through **`organon_module::CHANNEL_ENV`**
+(`ORGANON_MODULE_CHANNEL`), carrying a full path. The constant lives in the contract crate for
+`channel_file_name`'s reason exactly: it is an agreement between two separately built binaries in
+two repositories, and a convention held on one side only drifts silently — the symptom being a
+module that starts, finds nothing and exits, which the console then reports as *"launched, not
+yet producing"* for ten seconds before calling it lost.
+
+⚠️ **An environment variable rather than an argument, because a producer is somebody else's
+program.** A module's binary already owns its command line — Ascent's has `--headless`, `--dump`
+and a flight mode — and an argument this protocol inserted would have to be understood by a
+parser the protocol does not own. An environment variable is invisible to a `clap` that was never
+told about it, so **presence is the discriminator**: a binary that finds it set is being hosted,
+one that does not is being run by a person. `ORGANON_IPC_NS` goes with it, which is `term.rs`'s
+existing injection into every child the console spawns rather than a second convention.
+
+🚨 **The binary is derived, never recorded and never named by the module**:
+`<checkout>/target/release/<producer>[.exe]`, beside `artifact_dir` and behind the same
+`check_producer_name` gate. §1.19's argument — a stored path is a second statement of where the
+build went and the two can come apart — plus a stronger one: a `binary = ` key in
+`organon-module.toml` would be a string written by somebody else arriving at
+`std::process::Command::new`, which is what `Tool`'s closed set exists to prevent. **So a
+module's cargo package must produce a binary named after its producer**, which is a real
+constraint and the cheap end of that trade.
+
+#### 🚨 Two verdicts, and the order between them is the design
+
+`ModuleHost::observe` asks the **process handle first** and the channel second.
+
+§1.20's `presence.rs` writes down its own honest limit: hung and exited-without-a-farewell are
+not distinguishable from inside a shared mapping, and the thing that genuinely knows is the
+process handle — *which is the launcher's*. This tier is that launcher. A producer that dies
+quietly leaves counters that simply stop, so the channel says `Live`, then `Stalled` after a
+second, then `Lost` after five — right, but late and vague. The handle knows this frame, and
+knows the exit code.
+
+⚠️ **The reverse holds too, which is why both are kept.** A process being *alive* says nothing
+about whether it is drawing — that is exactly what `Presence::NotProducing` exists for — so a
+host that trusted the handle alone would call a wedged producer healthy.
+
+#### §4.6's four rows, all four reachable, from three authors
+
+The other two rows were **unreachable rather than unbuilt**; a launcher is what makes them
+reachable. `module_host::Notice` carries them, and **no sentence in it is written twice**:
+
+| Row | Said by | When |
+|---|---|---|
+| not approved | `ModuleState` (§1.17) | nothing in `modules.json` answers to the name |
+| approved, not built | `ModuleState` (§1.17) | no `BuildRecord` names the approved bytes |
+| launched, not yet producing | `Presence` (§1.20) | `Starting`, and it **times out** into `Lost` at ten seconds |
+| died / hung / stopped drawing | `Presence` (§1.20) | `Stalled`, `NotProducing`, `Lost`, `Gone` |
+| **the process ended** | this tier | the handle saw it, with the exit code |
+| **the launch was refused** | this tier | approved, built, and the binary is not on the disk |
+
+The last two are not new rows so much as the two answers only a launcher can give: `Exited` is
+row 4 said with certainty instead of after a timeout, and `Launch` is the case §4.6 could not
+have named because nothing could launch when it was written — `is_built()` reads the *record*,
+and a `target` directory cleaned by hand is a different fact.
+
+🚨 **Never the last good frame, and it is not a rule at the paint site.** `ModuleChannel::poll`
+makes `Poll::Frame` unreachable once a producer is judged stalled, lost or gone; `FrameTexture`
+takes a whole `Poll` and drops the picture on any verdict that forbids painting;
+`FrameTexture::view()` is then `None`; and the paint site draws the sentence whenever it is.
+There is no branch anywhere in this tier that could decide otherwise.
+`no_verdict_that_forbids_a_picture_can_also_deliver_one` publishes a second whole frame and then
+goes silent — so the ring genuinely *holds* a valid unread frame, which is precisely what a
+console trusting its ring would paint — and asserts `Forget` at +2 s, +6 s and +30 s.
+
+⚠️ **`Forget` drops the picture, not the allocation**, and the egui registration is kept with it.
+A producer that died and is restarted must not pay for a new texture; that is the
+per-frame-allocation trap arriving on the recovery path, where it costs something only after
+something has already gone wrong.
+
+#### The frame, and the two things it is careful about
+
+`Console::service_module_hosts` runs beside `render_viewport` and before the UI pass, for its
+reason: the frame closure holds `self` split into disjoint field borrows, and this needs the
+device, the queue and the egui renderer at once. Release → ensure → ask for a size → observe →
+apply. `ModuleHosts::retain` is the **single release site**, on `render_viewport`'s argument: a
+region cleared, a region retargeted, a layout replaced and a tab closed are four routes to one
+fact, and releasing at each verb is how one of them comes to be missed.
+
+📌 **The size is one frame behind**, `viewport_points`' arrangement exactly, and in points rather
+than pixels because it is the ratio to the window that survives a scale nobody has measured yet.
+⚠️ **Two regions may hold one producer** — §1.14 moved `only_one_because` onto the producer so a
+hosted module could answer *"as many as you like"* — and this tier hosts **one process per
+producer**, painting its texture into both rectangles and asking for the **larger** of the two
+sizes. Last-one-wins would make the size depend on `Region::ALL` order: a picture soft in one
+rectangle and sharp in the other, for a reason nothing on screen explains.
+
+🚨 **Preallocation is structural.** `ModuleChannel`'s staging buffer is allocated once at
+`create` and `FrameTexture` reallocates only on a genuine size change — asserted, not commented,
+because §4.4's condition is that a naive per-frame path measures 2.7 ms at 1440p against 1.37 ms
+reused and *reads as a verdict on the mechanism*. The egui registration is renewed off
+`FrameTexture::allocations()` for the same reason in a different currency: registering every
+frame leaks a `TextureId` sixty times a second, which is invisible in a screenshot.
+
+#### 🚨 What did NOT change, and both absences are the evidence
+
+**`engine_plan` is untouched and `the_engine_is_asked_for_at_most_one_frame` did not widen.** A
+hosted producer renders no `World`, touches no `frame_index` and shares no TAA jitter phase, so
+it is not a claimant — widening that test would *assert* it was one. What T5 adds is
+`hosted_producers(&Layout)`, `region_showing_world`'s exact complement: together they are total
+over `Content::ThreeD` and neither overlaps the other, so a `3d` region asks either Organon for a
+`World` frame or a module for a texture, never both and never neither.
+
+**The console still does not know what a module is.** No `ascent` arm, no game-shaped verb, no
+content. A producer name, a rectangle, a size, a texture and a channel — and every type this
+tier adds is one of those five things.
+
+#### The lifecycle, and the fifth verb
+
+A module arrives `Attached` — drawing, time not advancing — and **there is no method on
+`ModuleHost` that changes it**. `CLAUDE.md` invariant 4 as structure rather than as a rule:
+`ModuleChannel::set_lifecycle` exists one crate down and no line in this tier reaches it. §5.3's
+click latch, `Running`, and the way out are the next tier's.
+
+`module::RESTART_VERB` (`console module restart`) joins the four, and **`restart` joins
+`MODULE_ACTIONS`** — the deliberate answer §1.20's `Presence::sentence` asked for, which went the
+other way from its own prediction. That doc expected the one-table test to fail and reasoned that
+`restart` should stay out, being *"a thing the console does to a producer, not a thing a person
+approves"*. The premise is right and the conclusion does not follow: that table is not a list of
+approvals — `diff` and `revoke` are not approvals either — it is the **grammar** of
+`console module`, and the grammar is exactly what the constant is spent on, because a dead
+rectangle ends *"`console module restart` to restart it"* and a person then types it. So the test
+got a fifth row on both sides rather than a nudge.
+
+⚠️ **`restart` runs synchronously on the frame thread**, on `revoke`'s rule and for its reason
+rather than by resemblance: it drops a host — asking the producer to close, killing the process,
+removing the channel file — and forgets any remembered launch refusal. Microseconds, no network,
+no compiler. The verb a person reaches for *because* a rectangle told them something is wrong
+must not be queueable behind the build that broke it. 🚨 **It stops and does not start**: the next
+frame's `service_module_hosts` launches it, because that function already asks for every producer
+a region names, and a launch here would be a second launch site — which is how a producer comes
+to be started twice against one channel, the one hazard `ProducerChannel::open` says its own side
+of the rule cannot prevent.
+
+📌 A refused launch is **remembered** rather than retried: without that, a missing binary is a
+`CreateProcess` per frame while the rectangle says exactly the right thing — a defect invisible
+in a screenshot and obvious in a profile. `restart` is what clears it.
+
+#### A producer in its own process, for the thing that needs two
+
+`organon-module-sim` (behind the crate's `sim` feature, so no shipped build carries it) is a real
+producer: `ProducerChannel`, the real ring, the real status block, honouring `TICK_FLOOR` while
+paused and the console's requested size. It exists because two of this tier's claims cannot be
+made from one process — §4.4's staleness number, and *whether the four failure sentences read
+right on a screen*. Its flags (`--refuse-after`, `--stop-after`, `--depart-after`,
+`--exit-after`, `--never-draw`) drive each row of the table above from outside.
+
+⚠️ **It is not a stand-in for a module.** It draws a frame-keyed gradient — every pixel a function
+of `(x, y, frame_index)` — chosen so a tear and a stride mistake are *visible*, not chosen to
+look like anything. The real module is `organonart/ascent`.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -7426,7 +7604,7 @@ stripped the padding; it would have passed both sides' tests.
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
 | Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. ✏️ **Tier C landed and was then cut back**: it shipped as a command line inside each region dispatching the whole registry, James rejected that scope on a running console, and what remains is a two-word `add`/`remove` control in `panel` regions only — which is still what makes a *per-region* stack addressable, and is all it was wanted for (§1.14). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D — it records whatever arrangement exists and derives every word from `Region::ALL`, which is why **Tier B landing under it changed nothing in it**. What it leaves behind is small and named: ✏️ **the name ring has since become a `NarrowFn` over the library** — measured first, which is what the deferral asked for, and the measurement is why it is cached rather than read straight (§1.15: the candidate walk runs on the *draw* path and asks n + 1 times per call, so a hundred layouts is 10.1 ms against a 16.7 ms frame) — and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ **Tier B's word-level break is the first real test of a layout's forward compatibility, and it is the expected behaviour rather than a bug**: a `layouts.json` written before it still loads (`left` and `right` resolve, and now mean the outer column), and one naming `topcenter` is refused **by name** in an older build rather than half-loaded — which is exactly the story §1.15's refusal table is arranged to give. ⚠️ Animated transitions and drag-to-resize are still after Tier C — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
-| A hosted module in a viewport | **T3a, T4, T3b and T2 landed** (§1.17, §1.14, §1.19, §1.20): `module.rs` — `organon-module.toml` and `modules.json`, the two grant types that make "a manifest cannot grant itself" structural, the commit as the unit of trust, the two build commits, and the two reachable states of §4.6. ✏️ **T2 is the contract crate** (§1.20): `organon-module`, which both trees depend on — mechanism B's preallocated three-slot frame ring, the tear detector, the liveness verdict that makes *never the last good frame* unreachable rather than forbidden, the four input verbs and the refusals beside them, and the wire versioning that turns a mismatch into a sentence. It wires into no region: T4 owns the call site and deliberately does not call it yet. What is left is the rest of `doc/organon_module_viewport.md` §9's order, and none of it is small. ✏️ **T3b has landed too** (§1.19, `module_work.rs`), which this row described in the future tense until now: the two verbs have bodies — clone, `git diff <approved>..<candidate>` (§3.3's *"show me what changed and ask again"*, which is the affordance the whole approach exists for), `cargo build`, and a filled `BuildRecord` — and it is where §3.4's build-time hole became real rather than diagrammatic: `build.rs` and any proc macro run **as you**, before a line of the module's code runs inside anything, so the approval gesture gates *building* and the process boundary gates only *running*. ✏️ **T4 has landed** and §1.14's `3d <producer>` subsection is where it lives: the qualifier over `ModuleRegistry::for_completion`, `only_one_because` moved to the producer (so **two hosted viewports are legal**), and `engine_plan`'s boolean corrected to *"a region holds `3d` whose producer is Organon"*. 🚨 **It draws no picture and it was never meant to** — a hosted region paints `ModuleState`'s sentence, which is §4.6's first two rows and the only two states reachable with nothing running. ⚠️ Two things it decided that a reader of §4.2 alone would get wrong: the spelling is **keyword-tagged** (`producer ascent`, not a bare third word — §1.8's grammar, and `stack`'s precedent), and a **stored** producer is deliberately not checked against the approved set, because §3.5 requires a revoked module to leave a layout that still opens. ⚠️ **T0 partly answered.** §4.4 asked for three frame-boundary numbers and PR #139 measured **two of them** on the 5090 (`doc/measurements/module-frame-boundary-2026-08-21.md`): the shared-memory copy costs the producer **0.06 ms** of added stall at 640×360 and **0.35 ms** at 2560×1440, and the full round trip is **0.44 ms at 1280×720** — 2.6 % of a 16.7 ms frame — rising to **1.4–1.55 ms at 1440p** (8–9 %). 🚨 **§4.4's second number is still genuinely unmeasured**: *frames* of latency between "the module drew it" and "the console painted it", across two processes, counted rather than reasoned about. ✏️ **The ordering that deferred it has now paid, and what T2 changed is the cost of asking rather than the answer** — T0 settling numbers 1 and 3 is what let the wire format be designed for the mechanism that turned out to be right, and every frame now carries the producer's `SystemTime` at publish so `FrameView::age` is a subtraction rather than a research project. 🚨 **And the number is now the closest thing left to a blocker on this row.** Nothing in T3a, T4, T3b or T2 starts a *module* process — T3b builds one and stops there — so the launcher that finally runs the binary is T5's, and it is the first thing here that will have two processes to measure between | `doc/organon_module_viewport.md` · `doc/organon_modules_plan.md` §11 · `doc/measurements/module-frame-boundary-2026-08-21.md` |
+| A hosted module in a viewport | **T3a, T4, T3b and T2 landed** (§1.17, §1.14, §1.19, §1.20): `module.rs` — `organon-module.toml` and `modules.json`, the two grant types that make "a manifest cannot grant itself" structural, the commit as the unit of trust, the two build commits, and the two reachable states of §4.6. ✏️ **T2 is the contract crate** (§1.20): `organon-module`, which both trees depend on — mechanism B's preallocated three-slot frame ring, the tear detector, the liveness verdict that makes *never the last good frame* unreachable rather than forbidden, the four input verbs and the refusals beside them, and the wire versioning that turns a mismatch into a sentence. ✏️ **T5 wires it into a region** (§1.21). What is left of `doc/organon_module_viewport.md` §9's order is §5.3's interaction latch and §6's ladder. ✏️ **T3b has landed too** (§1.19, `module_work.rs`), which this row described in the future tense until now: the two verbs have bodies — clone, `git diff <approved>..<candidate>` (§3.3's *"show me what changed and ask again"*, which is the affordance the whole approach exists for), `cargo build`, and a filled `BuildRecord` — and it is where §3.4's build-time hole became real rather than diagrammatic: `build.rs` and any proc macro run **as you**, before a line of the module's code runs inside anything, so the approval gesture gates *building* and the process boundary gates only *running*. ✏️ **T4 has landed** and §1.14's `3d <producer>` subsection is where it lives: the qualifier over `ModuleRegistry::for_completion`, `only_one_because` moved to the producer (so **two hosted viewports are legal**), and `engine_plan`'s boolean corrected to *"a region holds `3d` whose producer is Organon"*. 🚨 **T4 drew no picture and was never meant to** — a hosted region painted `ModuleState`'s sentence, which was §4.6's first two rows and the only two states reachable with nothing running. ⚠️ Two things it decided that a reader of §4.2 alone would get wrong: the spelling is **keyword-tagged** (`producer ascent`, not a bare third word — §1.8's grammar, and `stack`'s precedent), and a **stored** producer is deliberately not checked against the approved set, because §3.5 requires a revoked module to leave a layout that still opens. ⚠️ **T0 partly answered.** §4.4 asked for three frame-boundary numbers and PR #139 measured **two of them** on the 5090 (`doc/measurements/module-frame-boundary-2026-08-21.md`): the shared-memory copy costs the producer **0.06 ms** of added stall at 640×360 and **0.35 ms** at 2560×1440, and the full round trip is **0.44 ms at 1280×720** — 2.6 % of a 16.7 ms frame — rising to **1.4–1.55 ms at 1440p** (8–9 %). ✏️ **§4.4's second number is now measured** (`doc/measurements/module-staleness-2026-08-22.md`, T5): the frame the console takes is **8–11 ms old at a 60 Hz consumer — half a frame — and flat across nine times the pixels**. 🚨 The control is the part that matters: staleness is `≈0.6 × min(producer period, poll interval)`, so it is set by the two loops' **cadences** and not by the transport, which is the reading that leaves §6 open and leaves mechanism A not-yet-justified. ✏️ **The ordering that deferred it has now paid, and what T2 changed is the cost of asking rather than the answer** — T0 settling numbers 1 and 3 is what let the wire format be designed for the mechanism that turned out to be right, and every frame now carries the producer's `SystemTime` at publish so `FrameView::age` is a subtraction rather than a research project. ✏️ **T5 has landed** (§1.21): the launcher, the destination texture, the paint site, and all four of §4.6's rows — the last two of which were **unreachable rather than unbuilt**, since a launcher is what makes them reachable. `console module restart` is the fifth verb. 🚨 **`engine_plan` is untouched and `the_engine_is_asked_for_at_most_one_frame` did not widen**, exactly as §4.5 predicted: a hosted producer is not a claimant, so the claim went into `hosted_producers(&Layout)` — `region_showing_world`'s complement — rather than into the arbiter. ⚠️ **What T5 does NOT do is interaction**: a module arrives `Attached` and there is no method on `ModuleHost` that changes it, which is `CLAUDE.md` invariant 4 as structure. §5.3's click latch and §6's ladder are what remain | `doc/organon_module_viewport.md` · `doc/organon_modules_plan.md` §11 · `doc/measurements/module-frame-boundary-2026-08-21.md` · `doc/measurements/module-staleness-2026-08-22.md` |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes

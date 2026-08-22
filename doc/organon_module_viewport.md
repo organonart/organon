@@ -505,12 +505,25 @@ interop.
 2. **60 Hz.** At 120 Hz the full pane at 1440p is 17–19 % of a frame and would want another
    look. A region still would not.
 
-🚨 **The third number is still missing and nothing above is a proxy for it.** Frames of
-latency between *"the module drew it"* and *"the console painted it"* was not attempted, because
-it needs a second process and a protocol that does not exist. The numbers above are **throughput
-and stall**, which is a different question from **how stale the painted frame is** — and staleness
-is what §6 says stops being affordable at full screen. Mechanism A was not measured at all: nothing
-here says a shared GPU texture is faster, slower, or works.
+✏️ **The third number was taken in T5** — `doc/measurements/module-staleness-2026-08-22.md`. It
+needed a second process and a protocol; T2 built the protocol, T5 built the launcher, and
+`organon-module-sim` is a producer in its own program. **The frame the console takes is 8–11 ms
+old at a 60 Hz consumer — half a frame — p90 15–16 ms, worst 17–18 ms, and flat across nine times
+the pixels.**
+
+🚨 **The control is what actually decides §6.** Size barely moved it, so the hypothesis had to be
+tested rather than asserted: hold the size fixed and move the producer's cadence. Staleness is
+`≈0.6 × min(producer period, poll interval)` — set by the two loops' **phase**, with the frame size
+absent from the expression. So the reading that would have forced mechanism A — *staleness is the
+copy, therefore buy `unsafe` per-backend interop* — is **not** what the measurement says, and
+mechanism A stays not-yet-justified on this evidence as well as on T0's. ⚠️ It was still not
+measured at all: nothing here says a shared GPU texture is faster, slower, or works.
+
+⚠️ **What that number does and does not license.** It measures publish → the consumer holds the
+pixels, which is the part the *protocol* owns. It excludes the console's own frame — egui,
+`write_texture`, the render pass, the present — and the producer's render. So it says the transport
+is not the thing in the way; it does **not** say that flying at full screen feels right, which is a
+question about input-to-photon and is answered by no measurement yet taken.
 
 ⚠️ Nor was the shared-memory ring itself — its synchronisation, double-buffering and tearing are
 untouched, and `memcpy out` here lands in process-local memory rather than a memory-mapped file.
@@ -688,6 +701,22 @@ does not exist or is faked. And the two rungs run different code paths, so a bug
 and not the other. Both are real, and both are cheaper than a zero-copy shared texture bought
 before anything has been measured.
 
+✏️ **Something has now been measured, and it moves this paragraph without settling it**
+(`doc/measurements/module-staleness-2026-08-22.md`). The frame the console takes is **half a frame
+old at 60 Hz** and — the part that matters — staleness is `≈0.6 × min(producer period, poll
+interval)`, flat across nine times the pixels. So the sentence above that reads *"a copied frame at
+one or two frames of latency"* is right about the magnitude and wrong about the **cause**: it is
+not the copy, it is two free-running loops sampling each other, and 1440p is not worse than
+640×360.
+
+🚨 **Which changes what the handoff is FOR.** It was framed as the escape from a transport cost
+that would be intolerable at full screen; that cost is not there. What is still there — and is now
+the only argument for it — is that **nothing has measured input-to-photon**, the quantity flying
+actually turns on, and that a handoff avoids the question entirely rather than answering it. That
+is still a good reason to keep Ascent's winit host, which is why §4.3 stands. ⚠️ But it is a
+weaker and more honest reason than the one written above, and anyone reaching for mechanism A on
+the strength of this section should notice that the measurement points away from it.
+
 ---
 
 ## 7. Is a hosted module a kind of `media`, or its own thing?
@@ -739,13 +768,14 @@ A spine rather than a schedule; each rung is independently useful and none needs
 
 | | | Wants |
 |---|---|---|
-| ✅ **T0** | **Measure the frame boundary** — **done for numbers 1 and 3** (§4.4, and `doc/measurements/module-frame-boundary-2026-08-21.md`). Number 2, cross-process staleness, still needs T1 and T2 to exist before it can be taken at all. | a GPU |
+| ✅ **T0** | **Measure the frame boundary** — **done, all three.** Numbers 1 and 3 in `doc/measurements/module-frame-boundary-2026-08-21.md`; ✏️ **number 2, cross-process staleness, in `doc/measurements/module-staleness-2026-08-22.md`** once T2 and T5 had made two processes exist. | a GPU |
 | **T1** | **Ascent's refactor** — the library owns the device, the pipelines, `render_into(texture, size)`, `step(dt)` and `feed(input)`; `main.rs` keeps the window and the pump, and `fly.ps1` keeps working. | the parallel Ascent session |
 | **T2** | **The contract crate** — permissive, console-side, both trees depend on it, `cargo tree` gates both. **B**, per T0, with a preallocated ring rather than a per-frame allocation — that condition is the measurement's, not a preference. | T1's real signatures |
 | ✅ **T3** | **`modules.json`, `organon-module.toml`, and the approve verb** — **done.** T3a landed the data (`module.rs`); T3b landed the verbs (`module_work.rs`), on the harness precedent with `layout.rs`'s refusal discipline: approve, build, record the built commit, diff, revoke. `CONSOLE_ARCHITECTURE.md` §1.17 and §1.19. ⚠️ Nothing launches and nothing draws — §4.6's *launched, not yet producing* and *died* states are unreachable because no process exists to be in them. | — |
-| ✅ **T4** | **The producer qualifier** — `3d <producer>`, the dynamic ring cached per §1.15's measurement, `only_one_because` moved, `engine_plan`'s boolean corrected and tested. **All four landed** (`CONSOLE_ARCHITECTURE.md` §1.14). ⚠️ Two departures from §4.2 as written: the spelling is keyword-tagged (`producer ascent`), and a *stored* producer is not checked against the approved set — §3.5. 📌 It draws no picture; a hosted region carries `ModuleState`'s sentence, which is what T5 replaces. | T3, for a producer to name |
-| **T5** | **Lifecycle and input** — `Attached`/`Running`, the click latch, the way out, the four failure sentences. | T3, T4 |
-| **T6** | **The ladder** — rung 2 is already legal; rung 3 is the handoff, or the portal's full-screen tier, and that is a decision T0 informs. | §6 |
+| ✅ **T4** | **The producer qualifier** — `3d <producer>`, the dynamic ring cached per §1.15's measurement, `only_one_because` moved, `engine_plan`'s boolean corrected and tested. **All four landed** (`CONSOLE_ARCHITECTURE.md` §1.14). ⚠️ Two departures from §4.2 as written: the spelling is keyword-tagged (`producer ascent`), and a *stored* producer is not checked against the approved set — §3.5. 📌 It drew no picture; a hosted region carried `ModuleState`'s sentence, and T5 replaced it with the module's own. | T3, for a producer to name |
+| ✅ **T5** | **The picture arrives** — launch, consume, paint, and **all four failure sentences**, the last two of which were unreachable rather than unbuilt (`CONSOLE_ARCHITECTURE.md` §1.21). `console module restart` is the fifth verb; `engine_plan` is untouched. ⚠️ **The tier was scoped down from "lifecycle and input" to lifecycle alone**: a module arrives `Attached` and there is no method that changes it, which is invariant 4 as structure. 📌 §5.3's click latch, `Running`, and the way out are now **T5b** — deliberately split, because getting a paused picture on screen is what makes every one of those testable against something real. | T3, T4 |
+| **T5b** | **Interaction** — the click latch, `Running`, the way out, and §5.2's audio grant honoured in a producer that has something to say. | T5 |
+| **T6** | **The ladder** — rung 2 is already legal; rung 3 is the handoff, or the portal's full-screen tier. ✏️ **T0's number 2 now informs it and does not settle it**: staleness is the two loops' phase rather than the copy, so the transport is not what stands between a region and full screen — but nothing has measured input-to-photon, which is the quantity flying actually turns on. | §6 |
 
 ⚠️ **T0 before T2 is not caution, it is the ordering that stops a wire format being designed for a
 mechanism that turns out to be the wrong one.**
