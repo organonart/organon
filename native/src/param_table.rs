@@ -3702,20 +3702,32 @@ mod tests {
         }
 
         // Total: the partition names == the captured serde fields, exactly, save
-        // for the single deliberately out-of-band field `hdr_path`. That field is
-        // a loaded `.hdr` reference restored via the hdr sidecar in `apply_recall`
-        // (and kept in the Environment bucket by `filter_to_tabs`), not applied
-        // through the tab partition like a normal param — it isn't a nih-plug
-        // param, so it can't be a `for_each_tab_field!` entry. `capture()` reads
-        // the live sidecar, so on a machine with an `.hdr` loaded `hdr_path` is
-        // non-empty and serializes (it's `skip_serializing_if` empty on clean CI);
-        // drop it here so this drift guard stays hermetic instead of failing only
-        // when a `.hdr` happens to be loaded. Its recall is covered separately by
-        // the `Environment keeps hdr_path` filter test.
+        // for the **deliberately out-of-band** fields listed below. Each is a file
+        // path — a loaded `.hdr` and a loaded `.gguf` specimen — restored by
+        // re-driving a sidecar in `apply_recall` (and kept in its owning bucket by
+        // `subset_entry`), not applied through the tab partition like a normal
+        // param: neither is a nih-plug param, so neither can be a
+        // `for_each_tab_field!` entry.
+        //
+        // ⚠️ **This list is the exception, so adding to it is the decision, not the
+        // bookkeeping.** A field dropped here is a field this guard stops watching;
+        // it earns that only by having its own restore path and its own test. Both
+        // current entries do (`preset::recall_redrives`, and the
+        // `Environment keeps hdr_path` / `Generator keeps model_path` filter
+        // tests).
+        //
+        // `capture()` reads the live sidecars, so on a machine with an `.hdr` or a
+        // `.gguf` loaded the corresponding field is non-empty and serializes (both
+        // are `skip_serializing_if` empty, so they vanish on clean CI); dropping
+        // them here keeps this drift guard hermetic instead of failing only when a
+        // developer happens to have one loaded.
+        const OUT_OF_BAND: [&str; 2] = ["hdr_path", "model_path"];
         let json =
             serde_json::to_value(PresetValues::capture(&OrganicMathParams::default())).unwrap();
         let mut captured: HashSet<String> = json.as_object().unwrap().keys().cloned().collect();
-        captured.remove("hdr_path");
+        for name in OUT_OF_BAND {
+            captured.remove(name);
+        }
         let partition: HashSet<String> = partition.iter().map(|s| s.to_string()).collect();
 
         let orphans: Vec<_> = captured.difference(&partition).collect();
