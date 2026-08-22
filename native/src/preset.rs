@@ -7501,6 +7501,17 @@ pub struct PresetUi {
     /// auto-gain, tokens/sec). Fed one `MindFrame` per repaint while streaming.
     pub mind_viz: crate::mind_viz::MindViz,
 
+    // --- Mind tab: #147 Tier 4 the training strip + run shelf ---
+    /// The link to Unsloth Studio's training telemetry, on its own thread.
+    ///
+    /// 📌 **`None` until the training card is first drawn**, and with no `UNSLOTH_API_KEY`
+    /// the link opened is inert: no thread and no socket. A machine with no Studio — which
+    /// is the ordinary case — pays nothing for this being here.
+    pub train_link: Option<organon_core::train::TrainingLink>,
+    /// What the strip draws: the link state, the live numbers, three curves and the shelf.
+    /// Folded from whatever the link delivered since the last repaint; never blocks.
+    pub train_strip: organon_core::train::TrainingStrip,
+
     // --- Mind tab: #423 Tier 1 the atlas (Design Space card) ---
     /// Selected built-in hardware-profile index (into `math::builtin_hardware_profiles`).
     pub atlas_profile_idx: usize,

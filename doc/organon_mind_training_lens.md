@@ -179,10 +179,21 @@ developable and unit-testable in a cloud session, which is exactly the ceiling
 one `||dW||` field per checkpoint on a slider, and the changed-weight glow *grows* along the run.
 That is "watching a model learn", literally, and it is the demo.
 
-### B. ✏️ The training strip — now off a first-party API
+### B. ✏️ The training strip — now off a first-party API — ✅ **built (T4)**
 
 `/api/train/progress` into the Live Telemetry dock, `/api/train/metrics` for backfill on reconnect,
 `/api/train/runs` as a browsable shelf rather than a live-only readout.
+
+✅ **Landed as `organon-core/src/train.rs` + `organon-mind/src/mind_train.rs`; `MIND_ARCHITECTURE.md`
+§2.10 is its living state.** Three things this section did not anticipate and the build had to
+answer. 🚨 **A streaming HTTP body is `Transfer-Encoding: chunked`**, so the socket carries hex size
+lines interleaved with the SSE text — an SSE parser fed raw bytes drops them as unknown fields
+*without complaint* and eats the events they land inside, which is the worst kind of wrong because
+the stream appears to work. ✏️ **A malformed `ORGANON_UNSLOTH_ENDPOINT` is a sixth refusal** that
+T1's five do not cover, because it surfaces as an `EndpointError` rather than a `StudioError`.
+📌 **And the way to honour "a green probe must never render as connected" turned out to be not to
+probe at all**: the link opens with an authenticated call, so its first success is real evidence
+and no state in the readout can be reached by the unauthenticated route.
 
 ⚠️ **Two defects the first draft listed as holes are void on this path.** They were the *callback's*
 problems, not the Studio's: unsloth-buddy's `on_log` re-serializes the entire log history to every

@@ -111,6 +111,13 @@ pub mod math;
 pub mod panels;
 pub mod params;
 pub mod tabs;
+/// #147 Tier 4 — the training strip and the run shelf: the Studio's SSE progress stream, its
+/// metrics backfill and its run history, as pure framing plus one worker thread. 🚨 It never
+/// calls [`unsloth::StudioClient::probe`] — the health route is unauthenticated, so a green
+/// probe could never mean "connected"; this module opens with an *authenticated* call so its
+/// first success is real evidence. Editor-side readout: **no `Shared` field, no
+/// `LAYOUT_VERSION` movement**, and no new dependency.
+pub mod train;
 /// #147 Tier 1 — the connection to Unsloth Studio: an endpoint, a bearer token held as a
 /// secret, a `/api/health` probe, and the three refusals (*not configured* / *unreachable*
 /// / *unauthorized*) that a person fixes three different ways. Beside [`lora`] because they
