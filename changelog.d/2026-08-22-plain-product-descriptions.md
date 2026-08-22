@@ -33,7 +33,15 @@ arrangement is an app"*), and sentences carrying three clauses where three sente
 The roadmap sentence about dispatching agent teams moved out of the description entirely; §1.4
 owns the trajectory.
 
-⚠️ **`README.md` and `doc/how_organon_works.md` §1 and §16 still carry the old style** and are
-not yet converted. They quote §1.1, so they move when it settles — in one commit, because
-converting them piecemeal is how the six wordings this PRD exists to end came about in the first
-place.
+**`README.md` and `doc/how_organon_works.md` §1 and §16 move with it**, in the same change,
+because they quote §1.1 and converting them piecemeal is how the six wordings this PRD exists to
+end came about in the first place. `how_organon_works.md` §1's property headings lose the same
+two habits: *"A layout is the unit of identity"* becomes *"A saved arrangement is an app"*, and
+*"An agent is not optional"* becomes *"Every arrangement includes an agent"* — a negation stating
+what is rejected, replaced by a sentence stating what is there.
+
+📌 **The region arithmetic stays in `how_organon_works.md` and stays out of the PRD**, and that
+split is the point rather than an inconsistency. Twelve region words of which up to six can be
+held at once is exactly what an engineer reading a technical overview needs, and exactly what
+costs a reader of a product description more than it pays. The same fact belongs in one document
+and not the other.
