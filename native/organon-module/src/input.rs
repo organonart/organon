@@ -45,19 +45,22 @@
 //! share a compilation. `Header::plan` publishes this exact list, and `wire::tests` pins the
 //! two equal so they cannot become two lists.
 //!
-//! ⚠️ **`F11` is NOT on it, and that is still an open decision rather than a settled one.**
-//! §1.12's `console screen` binds F11 today, so a module receiving it would fight a shipped
-//! gesture — which argues for reserving it, and the Ascent session has since argued exactly
-//! that and said it binds `F1`/`F2` and wants nothing here. Against: it is a key some other
-//! game may want, and the console's gesture only applies while the console has focus, which a
-//! latched viewport arguably does not — but that is the same objection already overruled for
-//! `Escape`, and if the latch changes who owns a key then it wants deciding once for the whole
-//! set rather than key by key.
+//! ✏️ **`F11` is on it too, decided rather than defaulted, and the argument is worth keeping
+//! because it is what makes the set a safety property rather than a convenience.** §1.12's
+//! `console screen` is a **shipped way out of a console filling the display**, so a module
+//! that swallowed F11 could strand a person with no keyboard route back — where `Escape` at
+//! least has a pointer equivalent in the chrome. That is a falsifier, not a preference: a key
+//! whose loss can trap somebody is not a taste question.
 //!
-//! 📌 **Two agents agreeing is not the same as the decision being made**, which is the design
-//! document's own warning about a vocabulary choice, so this waits. It is one line when it
-//! comes: the `const` is the single source and the header publication follows from it, so
-//! reserving a key is an entry here and nothing else.
+//! The objection against was that the console's gesture only applies while the console has
+//! focus, which a latched viewport arguably does not have. It does not survive: that is the
+//! same objection already overruled for `Escape`, and if the latch changes who owns a key then
+//! it wants **one decision for the whole set** rather than a key-by-key drift.
+//!
+//! ⚠️ **The standing objection that decided the SIZE of the set still stands** — reserving a
+//! key costs every module that key for ever — which is why it closes at two rather than
+//! growing to "keys the console uses". The membership rule is narrow: *a way out of a state a
+//! module could otherwise trap somebody in*, and nothing else qualifies today.
 
 use std::sync::atomic::Ordering;
 
@@ -115,7 +118,18 @@ keys! {
 }
 
 /// 🚨 Keys the console promises never to deliver. See the module docs.
-pub const RESERVED: &[Key] = &[Key::Escape];
+///
+/// **Two, and each is a way *out* of a state a module could otherwise trap somebody in.** That
+/// is the whole membership rule, and it is narrower than "keys the console uses": `Escape`
+/// leaves the interaction latch, `F11` is §1.12's `console screen` — a shipped way out of a
+/// console filling the display. A module that swallowed either could leave a person with no
+/// keyboard route back.
+///
+/// ⚠️ **The set is closed at two on purpose, because reserving a key costs every module that
+/// key for ever.** `reserving_a_key_is_a_deliberate_act` pins the membership so widening it
+/// cannot happen quietly — a diff that adds a third has to change a test that says why the
+/// other two are there, which is the argument arriving at the moment it is owed.
+pub const RESERVED: &[Key] = &[Key::Escape, Key::F11];
 
 /// The pointer buttons. Five, matching what every desktop mouse actually reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -402,11 +416,39 @@ mod tests {
 
     /// 🚨 §5.3's promise, at the one place it can be kept.
     #[test]
-    fn the_reserved_key_cannot_be_put_on_the_wire() {
-        assert!(RESERVED.contains(&Key::Escape));
-        assert!(!InputEvent::Down(Button::Key(Key::Escape)).is_deliverable());
-        assert!(!InputEvent::Up(Button::Key(Key::Escape)).is_deliverable());
+    fn no_reserved_key_can_be_put_on_the_wire() {
+        for &k in RESERVED {
+            assert!(!InputEvent::Down(Button::Key(k)).is_deliverable(), "{k:?} down");
+            assert!(!InputEvent::Up(Button::Key(k)).is_deliverable(), "{k:?} up");
+        }
         assert!(InputEvent::Down(Button::Key(Key::W)).is_deliverable());
+        // A near neighbour, so the refusal is the set rather than the whole function-key row.
+        assert!(InputEvent::Down(Button::Key(Key::F10)).is_deliverable());
+        assert!(InputEvent::Down(Button::Key(Key::F12)).is_deliverable());
+    }
+
+    /// 🚨 **A change detector, and here that is the point rather than a smell.**
+    ///
+    /// This is a **permission set**: every entry costs every module that key for ever, and the
+    /// standing rule is that it grows by argument and never by tidiness. A test that merely
+    /// checked "the reserved keys are refused" would pass just as happily on a set that had
+    /// quietly doubled. Pinning the membership means a diff adding a third has to come here and
+    /// change the sentence explaining why the other two are members — which is the argument
+    /// arriving at the moment it is owed rather than a year later.
+    ///
+    /// The membership rule, in one line: **a way out of a state a module could otherwise trap
+    /// somebody in.** `Escape` leaves the interaction latch; `F11` is `console screen`, the
+    /// shipped way out of a console filling the display. "The console also uses it" is not
+    /// sufficient — `Ctrl`, `Tab` and every letter would qualify under that.
+    #[test]
+    fn reserving_a_key_is_a_deliberate_act() {
+        assert_eq!(
+            RESERVED,
+            &[Key::Escape, Key::F11],
+            "the reserved set changed; a key here costs every module that key for ever, so the \
+             doc comment above this test has to say why the new one is a way OUT rather than \
+             merely a key the console uses"
+        );
     }
 
     #[test]

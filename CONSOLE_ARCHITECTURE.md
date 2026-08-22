@@ -7309,14 +7309,25 @@ does not need a wire-version bump.** Publishing the set is what makes a bump unn
 producer reads it per channel at open, so a set that grows is *observed* rather than remembered,
 and the surprise a bump would have guarded against cannot occur.
 
-⚠️ **`F11` is still not on it, and that remains open rather than decided.** §1.12's `console
-screen` binds it today, which argues for reserving; against it, some other game may want the
-key, and the console's gesture only applies while the console has focus — though that is the
-same objection already overruled for `Escape`. The Ascent session has since argued *for*
-reserving (it binds `F1`/`F2` and wants nothing here). 📌 **Two agents agreeing is not the same
-as the decision being made** — the design document's own warning about a vocabulary choice — so
-it waits. It is one line when it comes: the `const` is the single source and the publication
-follows from it.
+✏️ **`F11` is on it too, and the membership rule is narrower than "keys the console uses".**
+The set is **two**, and each is *a way out of a state a module could otherwise trap somebody
+in*: `Escape` leaves the interaction latch, `F11` is §1.12's `console screen` — a **shipped**
+way out of a console filling the display. A module that swallowed it could leave a person with
+no keyboard route back, where `Escape` at least has a pointer equivalent in the chrome. 🚨 That
+falsifier is what makes this a **safety property of the permission set** rather than a taste
+call: a key whose loss can strand someone is not a preference. The objection against — the
+console's gesture only applies while the console has focus, which a latched viewport arguably
+does not have — does not survive, because it is the same objection already overruled for
+`Escape`, and if the latch changes who owns a key then it wants **one decision for the whole
+set** rather than a key-by-key drift.
+
+⚠️ **The standing objection still decides the SIZE of the set**: reserving a key costs every
+module that key for ever, so it closes at two rather than growing to every key the console
+binds — under which `Ctrl`, `Tab` and every letter would qualify.
+`input::tests::reserving_a_key_is_a_deliberate_act` pins the membership, which is a change
+detector on purpose: a test that merely checked "reserved keys are refused" would pass just as
+happily on a set that had quietly doubled, and this way a diff adding a third has to change the
+sentence saying why the other two are there — the argument arriving when it is owed.
 
 Overflow has one non-obvious rule worth knowing. A full ring means the producer stopped
 draining, so what is buffered is a **prefix with a hole after it** — and a prefix easily holds a

@@ -87,8 +87,19 @@
   **reserving a key therefore needs no wire-version bump** — every producer reads the set per
   channel at open, so growth is *observed* rather than remembered, and the surprise a bump
   would have guarded against cannot occur. ✏️ Found by the Ascent session, from the one vantage
-  point that could see it. `F11` is still off the list and still undecided, with the argument
-  on both sides recorded.
+  point that could see it.
+
+  **The set is `Escape` and `F11`, and the membership rule is narrower than "keys the console
+  uses": *a way out of a state a module could otherwise trap somebody in*.** `Escape` leaves the
+  interaction latch; `F11` is `console screen`, a **shipped** way out of a console filling the
+  display, so a module that swallowed it could leave a person with no keyboard route back —
+  where `Escape` at least has a pointer equivalent in the chrome. 🚨 That falsifier is what
+  makes this a safety property rather than a taste call. The objection against — that the
+  console's gesture only applies while the console has focus, which a latched viewport arguably
+  does not have — does not survive, being the same objection already overruled for `Escape`.
+  ⚠️ The standing objection still decides the **size**: reserving a key costs every module that
+  key for ever, so the set closes at two rather than growing to every key the console binds,
+  and the membership is pinned by a test that a diff adding a third has to come and edit.
 
   ⚠️ **`RefusalReason` gained `FormatUnsupported`, and it earns its tag on the console's VERB
   rather than on the taxonomy.** Folded under `Unspecified`, a rectangle would offer *resize*
