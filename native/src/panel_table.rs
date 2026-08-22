@@ -85,8 +85,10 @@ pub(crate) enum Item {
     Row { field: &'static str, label: &'static str, wide: bool },
     /// A `— shadows (Tier 1) —` sub-heading inside the card.
     ///
-    /// ⚠️ Not constructed by any declaration yet — none of the four transplanted panels has an
-    /// internal sub-heading, and the eleven that do are still `Declared`. `group_exposed`
+    /// ⚠️ Not constructed by any declaration yet — none of the three panels in [`DECLARED`] has
+    /// an internal sub-heading, and the eleven that do are still `Declared`. (Surface has none
+    /// either, but it is undeclared rather than sub-heading-free by luck: `surface_card`
+    /// separates with `ui.separator()`, and nothing in this table sees it.) `group_exposed`
     /// nevertheless has to know what one means, because a preset-built card's headings are the
     /// same idiom one level out.
     #[allow(dead_code)]
@@ -281,6 +283,15 @@ panel!(@generated bloom, LOOK_BLOOM;
 
 /// Every panel this table declares, in the editor's order — what a preset-built panel walks.
 ///
+/// 🚨 **Three, and a column can draw four. Both numbers are true and they are different
+/// questions.** *What a column can hold* is `panels::Status::Live`, and there are **four** Live
+/// panels — Surface, Lighting, Shadows, Bloom — because `panel_surface::OrganonPanels::draw`
+/// answers Surface from its own hand-written `surface_card` before it ever consults
+/// [`body_for`]. *What this table can home* is `DECLARED`, and there are **three**: Surface has
+/// no declaration, so [`draw_field`] and [`group_exposed`] cannot reach it. Any sentence
+/// carrying one of these counts has to say which — a bare "four" in this file is how the two
+/// come to be confused.
+///
 /// ⚠️ **A `panel!` declaration missing from here is invisible to the preset panel**, exactly as
 /// a `panels::Panel` missing from `panels::PANELS` is invisible to the `/organon` rings, and for
 /// the same reason: Rust cannot enumerate a module's items.
@@ -411,6 +422,28 @@ pub(crate) struct Section {
 /// whole panel is exactly the ambient explanatory prose #130 took out of this console; and the
 /// paragraph would be describing controls that are not on screen. A preset panel is a control
 /// surface, not a document.
+///
+/// 🚨 **Surface is drawable and is NOT table-homed, so its fields answer `homed: false` — and
+/// that is the honest answer rather than a bug.** A column can hold Surface's card
+/// (`panels::Status::Live`, drawn by `panel_surface::surface_card`), but this function walks
+/// [`DECLARED`], and Surface has no declaration in it. So a preset touching `surface_mode`,
+/// `palette` or `bevel` groups them under their editor *tab* and [`draw_any_field`] renders
+/// them with the param's own long name — `"Surface Mode"` where the card says `"mode"`.
+///
+/// ⚠️ **`homed: true` would be a claim this build cannot honour.** Homing a field means drawing
+/// it through the panel's own `draw_one`, which is generated from a `panel!` declaration;
+/// `surface_card` is one imperative function — disclosure gates, a file dialog, a material-graph
+/// loader — with no per-field entry point and its labels as string literals inside `if` arms.
+/// There is no cheaper Surface rendering being withheld here.
+///
+/// ⚠️ **And the gap is 167 fields wide, not three.** The three the eye lands on are simply the
+/// ones above `surface_card`'s first mode gate; the card touches **167 preset-capturable
+/// fields** in total (95 `Generator`, 72 `Look`). Declaring a handful of them would be worse
+/// than declaring none: the card would report Surface as joined while 164 of its controls still
+/// fell through to a tab heading, and [`DECLARED`]'s own contract — *every* item, in the
+/// editor's order — would stop being true. Joining Surface whole is **organon#124 stage 3**,
+/// a stage of its own precisely because of that number, and it is the change that flips this
+/// paragraph.
 pub(crate) fn group_exposed(exposed: &[String]) -> Vec<Section> {
     let want: std::collections::HashSet<&str> = exposed.iter().map(|s| s.as_str()).collect();
     let mut out: Vec<Section> = Vec::new();
@@ -427,7 +460,10 @@ pub(crate) fn group_exposed(exposed: &[String]) -> Vec<Section> {
 
     // Everything the joined panels did not claim, by tab, in declaration order. `tab_field_list`
     // is the whole of what this build knows about where an un-joined field belongs — a tab, and
-    // no finer — which is precisely the coverage gap the four joined panels are closing.
+    // no finer — which is precisely the coverage gap each panel joining `DECLARED` closes a
+    // piece of. ⚠️ **Three panels have joined, not four**: Surface is drawable but undeclared,
+    // so its 167 preset-capturable fields arrive here rather than above. See `group_exposed`'s
+    // doc, and organon#124 stage 3.
     for (name, tab) in crate::preset::PresetValues::tab_field_list() {
         if !want.contains(name) || taken.contains(name) {
             continue;
@@ -520,6 +556,17 @@ mod tests {
     /// and both are silent**, which is why this asserts the pair rather than one of them: a
     /// `Live` panel with no declaration is a card the Console opens to nothing, and a declared
     /// panel still marked `Declared` is a body nobody can reach.
+    ///
+    /// 🚨 **Surface is subtracted from the `Live` side, and the exemption is the whole reason
+    /// this build homes three panels while drawing four.** It is `Live` — a column may hold its
+    /// card — but its body is `panel_surface::surface_card`, one hand-written function that
+    /// `OrganonPanels::draw` special-cases *before* consulting [`body_for`]. So it is a `Live`
+    /// panel with no declaration that is nevertheless not "a card the Console opens to nothing",
+    /// which is the single case this assertion cannot express and therefore excludes by slug.
+    ///
+    /// ⚠️ **The exemption ends at organon#124 stage 3**, which declares Surface's 167 rows and
+    /// makes it reachable through the table like the other three. Deleting the filter before
+    /// then fails this test; deleting it *after* is how the stage proves it landed.
     #[test]
     fn a_declared_panel_is_exactly_a_live_one() {
         use organon_core::panels::{Status, PANELS};
@@ -660,9 +707,63 @@ mod tests {
         );
     }
 
+    /// 🚨 **Surface is `Live` and drawable and NOT table-homed** — the one place the two counts
+    /// come apart, asserted rather than described. `panels::Status::Live` says a column may hold
+    /// Surface's card; [`DECLARED`] says [`group_exposed`] cannot reach it, so its fields arrive
+    /// under their editor *tab* with `homed: false` and draw through [`draw_any_field`] with the
+    /// param's own long name.
+    ///
+    /// ⚠️ **This exists because three documents now state that in prose**, and the reviewer of
+    /// organon#138 found the file's comments claiming the opposite count. A sentence asserting a
+    /// property is not evidence; this is. It **fails the day organon#124 stage 3 declares
+    /// Surface**, which is the point — that is exactly when those three paragraphs stop being
+    /// true and have to be rewritten in the same change.
+    #[test]
+    fn surface_is_drawable_and_not_table_homed() {
+        use organon_core::panels::{Status, LOOK_SURFACE, PANELS};
+
+        // A column can hold it: it is `Live`, and `OrganonPanels::draw` special-cases its
+        // hand-written body ahead of `body_for` — which does NOT answer for it.
+        let surface = PANELS.iter().find(|p| p.slug == LOOK_SURFACE.slug).expect("Surface exists");
+        assert_eq!(surface.status, Status::Live, "a column may hold Surface's card");
+        assert!(
+            body_for(LOOK_SURFACE.slug).is_none(),
+            "Surface's body is `panel_surface::surface_card`, not a generated one — if this \
+             starts answering, stage 3 has landed and the three prose paragraphs about the \
+             three-versus-four counts are now wrong"
+        );
+
+        // The table cannot home it: no declaration, so no `draw_one`, so `homed: false`.
+        assert!(
+            !DECLARED.iter().any(|(p, _)| p.slug == LOOK_SURFACE.slug),
+            "Surface has no `panel!` declaration"
+        );
+        for field in ["surface_mode", "palette", "bevel"] {
+            let sections = group_exposed(&[field.to_string()]);
+            assert_eq!(sections.len(), 1, "`{field}` groups into exactly one section");
+            assert!(
+                !sections[0].homed,
+                "`{field}` is a Surface control and reports `homed: false` — honestly, because \
+                 `surface_card` has no per-field entry point to draw it through"
+            );
+            assert_ne!(
+                sections[0].heading, LOOK_SURFACE.title,
+                "the heading is the editor tab, never Surface's title — naming the panel would \
+                 promise a rendering this build cannot produce"
+            );
+        }
+    }
+
     /// The coverage number this build reports, pinned so it moves visibly as panels join.
     /// ⚠️ **It is a measurement, not a target** — the useful thing about it is that it goes up
     /// in the same commit as a transplant, and is read off the tables rather than written here.
+    ///
+    /// ⚠️ **Ten comes from the THREE panels in [`DECLARED`], not from the four a column can
+    /// draw.** Surface is `Live` and drawable and has no declaration, so [`group_exposed`] never
+    /// reaches it and none of its 167 preset-capturable fields is counted here. Naming the
+    /// wrong number in this message is what the reviewer of organon#138 caught, and it is worth
+    /// a sentence rather than a word: a test message asserting a count the code does not walk
+    /// reads as evidence and is not.
     #[test]
     fn the_joined_panels_home_ten_of_the_preset_field_space() {
         let every: Vec<String> = crate::preset::PresetValues::tab_field_list()
@@ -671,6 +772,10 @@ mod tests {
             .collect();
         let sections = group_exposed(&every);
         let homed: usize = sections.iter().filter(|s| s.homed).map(|s| s.fields.len()).sum();
-        assert_eq!(homed, 10, "the four transplanted panels draw ten controls between them");
+        assert_eq!(
+            homed, 10,
+            "the three panels in `DECLARED` home ten controls between them — Surface is drawable \
+             but undeclared, so none of its 167 fields is homed (organon#124 stage 3)"
+        );
     }
 }

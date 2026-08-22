@@ -844,7 +844,6 @@ fn console_specs() -> Vec<CommandSpec> {
             reversal: Reversal::Permanent,
         },
         // 🚨 **A preset is the console's other named store, and this is `layout`'s shape
-
         // pointed at it.** What differs is what a name *means*: a layout name is one a person
         // invents, so `layout::check_name` refuses whitespace in it; a preset name already
         // exists in `presets.json` and routinely has spaces (`Rails — Crystal Throat`). The
@@ -854,7 +853,8 @@ fn console_specs() -> Vec<CommandSpec> {
         // when it is ambiguous or matches nothing.
         CommandSpec {
             name: CMD_PRESET.into(),
-            doc: "Load a preset — its look, and a panel of exactly the controls it changed —                   or save the console's current look as one"
+            doc: "Load a preset — its look, and a panel of exactly the controls it changed — \
+                  or save the console's current look as one"
                 .into(),
             target: TargetKind::Viewport,
             args: vec![
@@ -1048,7 +1048,9 @@ fn mcp_specs() -> Vec<CommandSpec> {
     // the store by substring — so knowing what is in the store is knowing what will match.
     specs.push(CommandSpec {
         name: CMD_PRESET_LIST.into(),
-        doc: "Every preset in the store: its name, how many controls it changed, and the file               they live in. Read this before `console.preset load` — that verb matches a name               by substring, so this is what says which word is unambiguous"
+        doc: "Every preset in the store: its name, how many controls it changed, and the file \
+              they live in. Read this before `console.preset load` — that verb matches a name \
+              by substring, so this is what says which word is unambiguous"
             .into(),
         target: TargetKind::Viewport,
         args: Vec::new(),
@@ -1495,18 +1497,6 @@ impl organon_console::mcp::ToolDispatch for ConsoleDispatch {
         // reason — that channel has no return path — and it is re-read per call rather than
         // cached, on [`Console::set_layout`]'s rule: the file is the truth, and a cached copy
         // would fight a hand-edited one and win silently.
-        // The third read, and the one with the least to do: the store is a file, and
-        // `preset::load` is what reads it. Re-read per call rather than cached, on
-        // `CMD_LAYOUT_LIST`'s rule — the file is the truth, and a cached copy would fight a
-        // preset saved by Organon's own editor and win silently.
-        // The third read, and the one with the least to do: the store is a file.
-        // Re-read per call rather than cached, on `CMD_LAYOUT_LIST`'s rule — the file is the
-        // truth, and a cached copy would fight a preset saved by Organon's own editor and win
-        // silently. It goes through `panel_surface` because `preset` is a private module and
-        // this is a binary.
-        if command == CMD_PRESET_LIST {
-            return Ok(organic_math_native::panel_surface::preset_listing());
-        }
         if command == CMD_LAYOUT_LIST {
             use organon_console::layout::{Library, LAYOUTS_FILE, NOTHING_SAVED};
             // 🚨 A missing data directory is a *failure*, not an empty library — an empty
@@ -1540,6 +1530,14 @@ impl organon_console::mcp::ToolDispatch for ConsoleDispatch {
                 out["note"] = json!(NOTHING_SAVED);
             }
             return Ok(out);
+        }
+        // The third read, and the one with the least to do: the store is a file. Re-read per
+        // call rather than cached, on `CMD_LAYOUT_LIST`'s rule — the file is the truth, and a
+        // cached copy would fight a preset saved by Organon's own editor and win silently. It
+        // goes through `panel_surface` because `preset` is a private module and this is a
+        // binary.
+        if command == CMD_PRESET_LIST {
+            return Ok(organic_math_native::panel_surface::preset_listing());
         }
         // The same conversion the sidecar drain performs, from the same one place — so a
         // tool call and a `organon console …` line cannot come to mean different things.

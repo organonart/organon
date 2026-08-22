@@ -59,6 +59,19 @@ look is not, because the two are separate promises and failing the second is no 
 withhold the first — the opposite of `stack add`'s rule, which has nothing to do *but* fill a
 column.
 
+🚨 **Surface is drawable and not table-homed, so a preset touching it reports `homed: false` —
+and this build draws four panels while homing three.** The two counts are different questions and
+both are true: a column can hold **four** `Live` panels, because `OrganonPanels::draw` answers
+Surface from its own hand-written `surface_card` before it consults the table; the table itself
+declares **three**, so `panel_table::group_exposed` cannot reach Surface at all. A preset carrying
+`surface_mode` groups it under its editor *tab* and draws it as `"Surface Mode"` where the card
+says `"mode"`. ⚠️ **That is the honest answer rather than a defect**: homing a field means drawing
+it through a `panel!`-generated `draw_one`, and `surface_card` is one imperative function —
+disclosure gates, a file dialog, a material-graph loader — with no per-field entry point. ⚠️ **And
+the gap is 167 fields wide, not the three at the top of the card**: declaring a handful would
+report Surface as joined while 164 of its controls still fell through to a tab heading. Joining it
+whole is **stage 3** of organon#124, a stage of its own for exactly that reason.
+
 ⚠️ **`/preset clear` is not built**, and the absence is stated rather than an oversight: taking
 the card back out without loading another preset needs a verb with **no** argument, and every
 write on this lane carries at least one word. `console stack remove all` reaches the same state

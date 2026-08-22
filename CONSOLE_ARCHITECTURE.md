@@ -6630,6 +6630,30 @@ today**, which is `panel_table::the_joined_panels_home_ten_of_the_preset_field_s
 the tables rather than written down. That number going up in the same commit as a transplant is
 the point of printing it.
 
+🚨 **A column draws FOUR panels; the table homes THREE. Both numbers are true and they answer
+different questions.** *What a column can hold* is `panels::Status::Live` — Surface, Lighting,
+Shadows, Bloom — because `panel_surface::OrganonPanels::draw` answers Surface from its own
+hand-written `surface_card` before it ever consults `panel_table::body_for`. *What the table can
+home* is `panel_table::DECLARED`, and Surface has no declaration in it, so `group_exposed` and
+`draw_field` cannot reach it. **A bare "four" anywhere near this feature is how the two come to be
+confused**; say which count you mean.
+
+⚠️ **So a preset touching `surface_mode`, `palette` or `bevel` answers `homed: false`, and that is
+the honest answer rather than a defect.** Homing a field means drawing it through the panel's own
+`panel!`-generated `draw_one`; `surface_card` is one imperative function — disclosure gates, a
+file dialog, a material-graph loader — with no per-field entry point, and its labels are string
+literals inside `if` arms. There is no cheaper Surface rendering being withheld. The field still
+draws, through `draw_any_field`, with the param's own long name: `"Surface Mode"` where the card
+would say `"mode"`.
+
+⚠️ **The gap is 167 fields wide, not the three at the top of the card.** Those three are simply
+the ones above `surface_card`'s first mode gate; the card touches **167 preset-capturable fields**
+(95 `Generator`, 72 `Look`). Declaring a handful would be worse than declaring none — the card
+would report Surface as joined while 164 of its controls still fell through to a tab heading, and
+`DECLARED`'s own contract (*every* item, in the editor's order) would stop being true. Joining
+Surface whole is **stage 3 of organon#124**, a stage of its own for exactly that reason, and it
+is the change that ends `a_declared_panel_is_exactly_a_live_one`'s Surface exemption.
+
 #### `panel_stack::Held` — the second thing a column can hold
 
 `Entry` carried a `&'static Panel`; it carries a `Held` now, which is that or
