@@ -6437,6 +6437,132 @@ turns that into the wall clock a reader compares against. The alternatives were 
 in UTC and asking the reader to do arithmetic — and a reader doing arithmetic on a status line is a
 reader who stops reading it.
 
+### 1.17 Modules — what "approve a repo" means, as data
+
+`doc/organon_module_viewport.md` §3 is the specification and `doc/organon_modules_plan.md` §11 is
+where its central rule comes from. `module.rs` is **T3a of that document's §9 order**: the two
+files and the types that decide them, and **nothing that starts a process.** No clone, no
+`cargo build`, no launch — those are T3b, and they want these types to exist first. Every decision
+in the file is a pure function of a string, a path or a value, which is what makes this the right
+first slice: all of it is decidable and tested headlessly.
+
+#### 🚨 Two files, two authors, and never one file
+
+| | `ModuleManifest` | `ApprovedModule` |
+|---|---|---|
+| Lives | `organon-module.toml`, in the module's own repo | `<store root>/modules.json`, beside `harnesses.json` |
+| Written by | the module's author | Organon, at a person's instruction |
+| Says | *"I am a viewport producer called `ascent`; I need these things"* | *"this URL at this commit is approved, and holds these grants"* |
+| Trust | **data, never instruction** | the console's own record |
+
+§3.1's rule is that **a manifest must never be able to grant itself anything**, and here that is
+structural rather than a convention somebody has to remember. The two sets of grant names are two
+*types* — `Requested` and `Granted` — with no conversion between them except `Requested::grant`,
+which takes the names a person chose and **refuses a name that was never requested**.
+`ApprovedModule::approve` is the only constructor of an approval record and it takes `Granted` as a
+separate argument from the manifest.
+
+⚠️ **There is no `From<ModuleManifest> for ApprovedModule`, and the crate carries a tripwire that
+stops compiling if one is added** — a `#[cfg(test)]` `From` impl that never runs, so a second one
+anywhere in the crate is `E0119: conflicting implementations`. The behavioural half is
+`a_manifest_cannot_grant_itself`, which parses a manifest spelling *every* key the approval record
+uses (`granted`, `grants`, `url`, `commit`, `built`) and asserts that the approval carries none of
+them. The manifest type deliberately has **no `extra` bag**: Organon only ever reads that file, so
+tolerate-and-drop is the correct posture — and it also means there is nowhere for a grant to hide.
+
+#### 🚨 The unit is a commit, and 64 hex characters is not an error
+
+§3.2: a repo says *where the bytes live*, a commit says *which bytes*. Tags move, branches move,
+force-push rewrites history. So a record carries a URL **and** a commit hash, and one naming only a
+branch is **refused by name on load** rather than quietly accepted. `reference` survives as
+provenance — *which branch the hash was read from on the day* — and is never identity.
+
+⚠️ `is_commit_hash` accepts **40 or 64** hex characters. Git is migrating to SHA-256, and a check
+that assumed 40 would refuse a perfectly good reference as though it were malformed, which is the
+least diagnosable way to be wrong about it.
+
+#### 🚨 The commit that was BUILT is a second field from the commit that was APPROVED
+
+§3.4's cheap corollary, taken. `ApprovedModule::commit` is what a person approved; `BuildRecord`
+carries what a build actually consumed **plus a `dirty` flag** for the case where the tree was not a
+commit at all. They are normally equal and **the record is a lie exactly when they silently are
+not**, so `BuildRecord::names_approved_bytes` is the one place that compares them — and a dirty tree
+fails it whatever its hash says, because a hash names a commit and a dirty tree is not that commit.
+
+Nothing builds yet, so `built` is an `Option` that `approve` always leaves empty. The *vocabulary*
+has to exist now because §4.6 needs to say "approved, not built" in a rectangle.
+
+#### The states, and why two of the four are absent
+
+`ModuleState` carries **`NotApproved`** and **`ApprovedNotBuilt`** — §4.6's first two rows, the two
+reachable with no process running. *Launched, not yet producing* and *died / stopped producing* need
+something running, and this tier starts nothing. 🚨 That is `region.rs`'s standing rule applied
+rather than an omission: *"an unreachable arm is an untested branch pretending to be a design."* The
+design document records the other two as coming; the code does not carry dead arms for them.
+
+`ModuleRegistry::vacancy` answers `Option<ModuleState>`, and **`None` is the working case** — §1.14's
+vacancy rule read the right way round: a region draws a *sentence* instead of a picture only when it
+cannot draw the picture, so the healthy state has no sentence, it has a producer. That is also what
+keeps the enum total over two arms instead of needing a third meaning "fine", which nothing would
+ever draw. ⚠️ `ApprovedNotBuilt` deliberately covers a **drifted** build as well as a missing one —
+a `BuildRecord` naming other bytes describes a binary that is not the approved one, and the thing to
+do about it is the same.
+
+Each state produces its sentence from one place, naming the module, the fact and the verb.
+⚠️ `APPROVE_VERB` and `BUILD_VERB` are constants here **and neither is registered yet** — T3b builds
+them, and the constants exist so that when it does, the sentence in the rectangle and the verb a
+person types come from one string. A refusal naming a verb spelled differently in the command table
+is a refusal nobody can act on.
+
+#### 🚨 The registry ships EMPTY, and here that is stronger than scope
+
+§1.15's layout library ships empty because naming presets nobody asked for is not scope. This file
+ships empty for a harder reason: **an approval seeded in code is a grant Organon wrote on your
+behalf**, which is exactly what §3.1 forbids. So there is no `builtin()` here and no `save_over`
+taking one — every line in `modules.json` got there because somebody approved it.
+
+#### Total, but not silent
+
+`layout.rs`'s posture — *a corrupt library costs you your modules, never your console* — with one
+deliberate difference. `Library::load` can be silent because a layout that will not load is refused
+*later*, by name, when somebody asks for it. A module record that will not load is **never asked for
+again**: the viewport just says "not approved", which is a true sentence about a false situation. So
+`ModuleRegistry::load` returns a `Load { registry, refused }` — never an error, never a panic, and
+never a record dropped without a `ModuleFault::sentence()` to say why. A **missing** file is neither:
+empty registry, nothing refused, which for a fresh install is also the correct answer.
+
+Writing is `prefs.rs::save`'s mechanism verbatim — temp file in the *same* directory then rename,
+plain UTF-8, never a BOM — and `ApprovedModule::extra` / `ModuleRegistry::extra` keep a newer
+console's fields through a rewrite, because unlike `harnesses.json` this file **is** written back, by
+every approval and every revocation.
+
+#### What T4 consumes, and the measurement it must not re-learn
+
+§4.2 makes producer names a second, **dynamic** vocabulary — `3d ascent` beside `3d`, with an
+omitted producer meaning `organon`. Two things are owed to it here and nothing more:
+
+- `ModuleRegistry::producers()` is a borrow of what is already in memory, so a candidate walk costs
+  no file read per candidate; and `for_completion` is §1.15's cache moved here rather than left for
+  T4 to rediscover — same 200 ms TTL, same store-root key, same invalidation on write. §1.15 measured
+  that walk at **10.1 ms for a hundred entries against a 16.7 ms frame**, on the draw path, asking
+  n + 1 times per call. A ring built over an uncached read would learn that again, as a dropped frame
+  while somebody was typing.
+- `DEFAULT_PRODUCER` (`organon`) is **reserved and refused to a module** by `check_producer_name`,
+  because `3d` with no qualifier already means it — a module able to call itself `organon` is a
+  module able to impersonate the one producer the console wrote.
+
+⚠️ **The ring itself is not built here**, and neither is anything else in T4's vocabulary: no
+`NarrowFn`, no registry entry, no content word, no `Producer` enum. `region.rs` objects to inventing
+one before there are two producers, and this tier produces zero.
+
+#### The one dependency this crate gained
+
+`toml = "0.7"` — `ModuleManifest::parse`, and nothing else. A module's repo describes itself in
+`organon-module.toml`, which is data written by somebody else, so the console needs a parser for it
+rather than a format it gets to choose. It is already resolved in this workspace's lock (`xtask`
+pulls the same 0.7), so nothing new downloads, and it brings no `nih_plug` edge — the crate's
+acceptance test is unaffected.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -6453,6 +6579,7 @@ reader who stops reading it.
 | Posture's tween, and pane splitting | Both change the transcript's available width, and **the cost of that is now measured rather than assumed** — §1.7, in full at `doc/console_rewrap_measurement.md`, with five priced options and no decision taken. The two things the design has to answer before either is scoped: whether the tween moves the *wrap width* at all (option B holds it fixed for free), and whether the scrollback is virtualised first (option E, the only one that also fixes the steady-state cost §1.7 found underneath). ⚠️ Do not scope a smooth 0 → 90 pt tween against a ten-card transcript — the number that decides it is the 2 000- and 10 000-element row | #38 · `console_view_paradigm.md` §2, §9 |
 | The other twenty-four Organon panels | **Look ▸ Surface landed**, and with it the whole mechanism: `param_sink::Sink` (the two-armed write destination), the `srow!`/`crow!`/`combo!`/`rd!`/`wr!` identity join, and `OrganonPanels::overlay`'s difference-not-snapshot route into `Shared`. §1.11's "The pattern, for the other twenty-four" is the four-step recipe, three steps of which the compiler checks. ⚠️ **The two that do not check themselves**: a missed `.value()` → `rd!` conversion compiles and silently pins the Console's copy to Organon's defaults, and each panel's fields need their own `PresetValues` census — Surface's 167 were all present, which is a fact about Surface. ⚠️ Do **not** convert a second panel to prove the pattern generalises before a hand has confirmed the first one moves the picture; a reviewable single panel is worth more than a broad half-transplant | §1.11 |
 | Regions, Tier 2 — the content | §1.14 landed the axis in T1, **`3d` in T2b** and **`panel` in #98 Tier A**: T2b brought the content word, the producer seam, the widened `engine_plan` (the portal wins, the loser paints a notice), the uniqueness rule attributed to Organon rather than to viewports, region-aware wheel ownership, and the portal's machinery *shared* rather than copied; Tier A gave `panel` a body — **a scrolling stack**, one console-wide, with `console stack add|remove <panel>` (and `remove all` to empty it), and the wheel claim T1 predicted for "the moment a region holds something scrollable". ✏️ **The blocker this row used to name is gone rather than solved**: it read *"what is missing is a third word naming which panel, since two rings cannot say it"*, and the stack removes the need for one — the region and the panel are named by **different commands**. ✏️ **And a panel now lives only in a stack**: the transcript route (`Body::Organon`) is retired, because a transcript is a log and a control is not a log entry. What is left is **a tab per agent region**, which is what makes a second `agent` region draw something: today it cannot, and the reason is the borrow (§1.14) rather than a policy. Then **`media`**, which waits on §1.13's placement question. ✏️ **Tier B has landed**: four quadrant bits are now **six cells**, three columns by two rows, so `topcenter` is expressible and James's editor layout can be typed. The side columns are a **fixed `SIDE_COLUMN` = 320 pt** with the centre taking the remainder (Organon's own docks are absolute, not thirds), and below 688 pt of pane the column words refuse while the rows keep working. ⚠️ **`left` and `right` therefore mean the outer COLUMN now, not the half** — the one word-level break in this axis's vocabulary, deliberate and recorded in §1.14 and the changelog. ✏️ **Tier C landed and was then cut back**: it shipped as a command line inside each region dispatching the whole registry, James rejected that scope on a running console, and what remains is a two-word `add`/`remove` control in `panel` regions only — which is still what makes a *per-region* stack addressable, and is all it was wanted for (§1.14). ✏️ **Saved layouts have since landed out of that deferral order, and the promotion is argued rather than assumed** — §1.15: `doc/organon_is_the_product.md` §4 reframes a layout as the unit of *product identity* rather than a convenience, which is a different weight from the one this row deferred, and the work needed none of B/C/D — it records whatever arrangement exists and derives every word from `Region::ALL`, which is why **Tier B landing under it changed nothing in it**. What it leaves behind is small and named: ✏️ **the name ring has since become a `NarrowFn` over the library** — measured first, which is what the deferral asked for, and the measurement is why it is cached rather than read straight (§1.15: the candidate walk runs on the *draw* path and asks n + 1 times per call, so a hundred layouts is 10.1 ms against a 16.7 ms frame) — and **the CLI has no `list`**, because a read has no return path on this lane and the dotted verb `console.layout.list` has no CLI spelling. ⚠️ **Tier B's word-level break is the first real test of a layout's forward compatibility, and it is the expected behaviour rather than a bug**: a `layouts.json` written before it still loads (`left` and `right` resolve, and now mean the outer column), and one naming `topcenter` is refused **by name** in an older build rather than half-loaded — which is exactly the story §1.15's refusal table is arranged to give. ⚠️ Animated transitions and drag-to-resize are still after Tier C — a divider a hand can move is a change to `region_rect`'s contract (it reserves no gutter and computes from the pane alone), and it wants §1.7's re-wrap measurement first, exactly as the posture tween does; what Tier B changed about that is only *which* number would become state — the side width, rather than a ratio. 📌 **The one thing neither `3d` nor the stack settles is whether either is any good**: whether a 3D viewport in half a window earns its half, whether two scrolling control columns beside a live transcript read as Organon's editor or as a cramped imitation of it, and whether orbiting beside a live transcript feels right, are James's calls and no amount of green or of captured frames answers them (§3) | §1.14 · #98 |
+| A hosted module in a viewport | **T3a landed** (§1.17): `module.rs` — `organon-module.toml` and `modules.json`, the two grant types that make "a manifest cannot grant itself" structural, the commit as the unit of trust, the two build commits, and the two reachable states of §4.6. What is left is the rest of `doc/organon_module_viewport.md` §9's order, and none of it is small. **T3b** gives the two verbs their bodies — clone, `git diff <approved>..<candidate>` (§3.3's *"show me what changed and ask again"*, which is the affordance the whole approach exists for), `cargo build`, and filling `BuildRecord` — and it is where §3.4's build-time hole becomes real: `build.rs` and any proc macro run **as you**, before a line of the module's code runs inside anything, so the approval gesture gates *building* and the process boundary gates only *running*. It must register `APPROVE_VERB` and `BUILD_VERB` from `module.rs`'s constants rather than re-spelling them. **T4** is the producer qualifier — `3d <producer>` over `ModuleRegistry::for_completion`, `Content::only_one_because` moved to the producer, and `engine_plan`'s `region_holds_world` boolean corrected so a region holding a hosted producer does not make the console render a `World` frame nobody paints. ⚠️ **T0 before all of it**: §4.4's three frame-boundary numbers do not exist, and a wire format designed before them is a wire format designed for a mechanism that may be the wrong one. 🚨 Nothing in T3a starts a process, and nothing in it should be read as a decision about how frames travel | `doc/organon_module_viewport.md` · `doc/organon_modules_plan.md` §11 |
 | Pi bridge / workers / PTY | T1 landed the workspace side (`mock_agent.rs` + `timeline.rs`: every `EventKind` rendered, pull-tick replay). Next: a real adapter *behind the same tick shape*, approval decisions routed back as events — never a second event vocabulary | Console #7 T2+ |
 
 **IPC rule inherited whole:** any new Console channel — mmap, sidecar, socket — goes

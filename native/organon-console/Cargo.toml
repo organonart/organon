@@ -64,3 +64,10 @@ dirs = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 portable-pty = "0.9.0"
 alacritty_terminal = "0.26.0"
+#   toml — `module::ModuleManifest::parse`, and nothing else. A module's own repo describes
+#          itself in `organon-module.toml`, which is data written by SOMEBODY ELSE — so the
+#          console needs a parser for it rather than a format it could choose. ⚠️ It is
+#          already resolved in this workspace's lock (`nih_plug_xtask` pulls the same 0.7),
+#          so nothing new downloads, and `toml` is a plain crates.io crate: it brings no
+#          nih_plug edge and the acceptance test above is unaffected.
+toml = "0.7"
