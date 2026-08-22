@@ -100,6 +100,13 @@ pub mod gguf;
 pub mod ipc;
 pub mod gguf_data;
 pub mod kind;
+/// #147 Tier 2 — the LoRA adapter reader. `‖ΔW‖_F` and the effective rank of the update
+/// per adapted module, read from `adapter_config.json` + `adapter_model.safetensors`.
+/// Pure arithmetic over a directory: no network, no `Shared`, no renderer, and `ΔW` is
+/// never materialized. Here rather than in the root crate for the same reason [`gguf`]
+/// is — it is file parsing with no host, no GPU and no UI, and the lens that will draw
+/// it (T3) lives lower down than the crate that owns the editor.
+pub mod lora;
 pub mod math;
 pub mod panels;
 pub mod params;

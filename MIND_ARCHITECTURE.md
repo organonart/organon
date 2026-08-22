@@ -719,6 +719,36 @@ No `Shared`/IPC/`LAYOUT_VERSION` change — **six** tiers now. `SceneInput` live
 beside `immersive`: transient editor state, so recalling a Scene moves neither the camera nor the
 mode.
 
+### 2.7 The LoRA adapter reader (#147 Tier 2) — *landed, and nothing draws it yet*
+
+`organon-core/src/lora.rs`. Point it at a PEFT adapter directory — `adapter_config.json`
+plus `adapter_model.safetensors` — and it answers, per adapted module, **how far the
+weights moved** (`‖ΔW‖_F`) and **how concentrated the movement was** (the effective rank
+of the update). Both are exact functions of the file, which is what makes them *measured*
+rather than proxies: this is the first thing in Mind whose provenance is unarguable
+because there is nothing to instrument.
+
+`ΔW = s·B·A` with `s = alpha/r` (or `alpha/sqrt(r)` under rsLoRA), and **`ΔW` is never
+materialized** — that is a correctness rule here, not a performance note. `ΔW` is
+`out × in`; every number is computed through the r×r middle instead. `‖BA‖²_F =
+trace((BᵀB)(AAᵀ))`, and the singular values come from `R_B R_Aᵀ` after a Householder QR
+of each factor with `Q` never formed. ⚠️ **The per-neuron version has no such shortcut**
+— a per-output-row norm needs the full product, because the answer has `out` numbers in
+it. #147 names that cliff and this tier stops short of it deliberately.
+
+| | State | Evidence |
+|---|---|---|
+| the safetensors header, `F32`/`F16`/`BF16` payloads, both spellings of a factor name | **measured** (offline) | 40 unit tests; the byte layout is built by the tests themselves |
+| `‖ΔW‖_F` and the spectrum | **measured** (offline) | checked twice over — against hand-stated diagonal fixtures, and against an explicitly materialized `B·A` on dense random factors |
+| rsLoRA, `alpha_pattern`, a rank the config disagrees with | **measured** (offline) | each is a silently-wrong-number path, so each has its own test |
+| DoRA | **refused**, by name | its update is not `(alpha/r)·B·A`; reading it as LoRA would produce plausible numbers rather than an error |
+| **anything against a real adapter** | 🚨 **never run** | no adapter has been parsed on any machine. Every fixture here is synthetic. #147's own closing line — *"nothing here has been run"* — is still true of the file format; what this tier makes false is only *"no arithmetic exists"* |
+
+📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no renderer, no network.** T3 is
+what turns these numbers into a lens (a `NeuralGraph` builder behind a new
+`Shared.mind[2]` `topo_mode` value); T1 is what discovers adapters over the Studio's API.
+Neither is here, and this module knows about neither.
+
 ## 3. The honesty ledger
 
 What the product currently claims, and how true it is. Keep this honest — it is the
@@ -729,6 +759,9 @@ brand.
 | Layer / head / expert counts, dims, vocab, quant mix | **measured** (from the file) | `gguf.rs`, header only |
 | The specimen's wiring | **measured** | `gguf_architecture_graph` |
 | Parameter counts, weight bytes, bits/weight, KV cost | **derived** | exact functions of the tensor directory |
+| `‖ΔW‖_F` per adapted module, and the update's singular values | **measured** — an exact function of the adapter file | `lora.rs`. ⚠️ Two caveats it owes wherever it is rendered. **The base may be quantized**: an adapter trained on a 4-bit base is a delta against weights that are not the released ones, and the file states only `base_model_name_or_path` — #147 T1's `is_quantized` is what answers it from data. And **nothing has been read from a real adapter yet**; the arithmetic is tested against synthetic fixtures only |
+| Effective rank, stable rank, "which layers this fine-tune changed most" | **derived** | exact functions of the singular values. The effective rank is Roy & Vetterli (2007) — `exp` of the entropy of the normalised spectrum — stated in `lora.rs` rather than left implicit, because at least three quantities go by that name |
+| "This layer learned \<concept\>" | 🚨 **contested claim** | norm is not importance and effective rank is not meaning. Not currently rendered anywhere; recorded now so the first lens that wants to say it finds the row already written |
 | The per-layer glow during generation | **proxy** — *labeled*, **pending verification** | entropy + confidence, **not** real activations. This is the #1 honesty gap. ⚠️ **The upgrade has landed but is unconfirmed:** #522 T1 (PR #528) ships the real activation tap in `bin/mind_runtime.rs`, which sets `FLAG_RESID_MEASURED` / `FLAG_MLP_MEASURED` and prints one line on the first token saying which path it took — `activation tap MEASURED` or `PROXY — capture returned nothing`. **Nobody has run it on Metal yet**, so we do not know which. Until someone does (`./deploy.sh --with-llm`, then a terminal-run `organic-math-mind-runtime`), this row stays **proxy**: the ledger records what is *confirmed*, not what is *implemented*. If it prints MEASURED, this row becomes **measured** and the depth profile should rise monotonically with depth instead of showing the proxy's travelling sine |
 
 ---
@@ -764,3 +797,5 @@ capability to the seam it plugs into.
 | **The portrait inside a pane** (#532 T4) | separating the world from the window — `world.rs::World::render` since the #572 hoist; `mind_shell::PointerRouter` is wired to `ui_layer` (#554 T4) and ready for the moment the viewport becomes a child rect |
 | **The one-process viewport** (#593) | `editor_probe.rs` — the custom `Editor` that owns a wgpu surface on the host's parent view (§2.4). Tier 1 extracts `lib.rs`'s editor body so both hosts call it (*done*, #602); Tier 3 replaced `FrameTarget::ui_window` with the `egui_platform::EguiPlatform` seam + its winit arm (*done*; the baseview arm is Tier 2's, since the window is what produces the events); Tier 2 grows the probe's `on_frame` into `World::render_into` + egui; Tier 4 **gates** `frame_ring`/`Mirror` out of the Mind edition — it cannot *delete* them, because full Organon's editor still draws from them (§2.5) |
 | **Packaging** | #483 Tier 4: an `.app` around `organon-mind`, embedding the visual, its own name/icon/namespace |
+| **The Delta lens** (#147 T3) | `lora.rs`'s `AdapterSummary` → a `math.rs` graph builder, i.e. the *lens* row above with its numbers already measured. `per_layer_fro()` is the per-site scalar it wants |
+| **Anything that talks to Unsloth Studio** (#147 T1/T4/T5) | a hand-rolled HTTP client over `TcpStream`, the shape `organon-agent`'s `HttpChatClient` and `mcp_http.rs` already have. 🚨 **Not `Shared`** — step-rate telemetry from someone else's process must not buy a permanent offset-sensitive layout commitment |
