@@ -556,7 +556,10 @@ impl WorkFault {
                 format!("{path} would not start: {why}")
             }
             WorkFault::NoBinary { producer, expected } => format!(
-                "`{producer}` built, and produced no binary named `{producer}` — nothing is at \n                 {expected}. A module's repository must produce a release binary named for its \n                 producer from a plain `cargo build --release`; cargo SKIPS a `[[bin]]` whose \n                 `required-features` are off, silently and with exit 0, which is the usual cause"
+                "`{producer}` built, and produced no binary named `{producer}` — nothing is at \
+                 {expected}. A module's repository must produce a release binary named for its \
+                 producer from a plain `cargo build --release`; cargo SKIPS a `[[bin]]` whose \
+                 `required-features` are off, silently and with exit 0, which is the usual cause"
             ),
             WorkFault::ChannelFailed { producer, why } => format!(
                 "`{producer}` has nowhere to draw — its frame channel could not be created: \
@@ -1686,6 +1689,73 @@ mod tests {
         assert_eq!(out.record.commit, CANDIDATE);
         assert!(!out.record.names_approved_bytes(APPROVED));
         assert!(out.sentence().contains("NOT the approved commit"), "{}", out.sentence());
+    }
+
+    /// CONTRACT: 🚨 **no refusal carries the source file's indentation into what a person reads.**
+    ///
+    /// ⚠️ **This test exists because the automated review caught a defect none of the others
+    /// could see**, and the shape is worth more than the instance. A long message in this file is
+    /// written across several source lines and joined with a trailing `\` — the line-continuation
+    /// escape, which eats the newline *and* the leading whitespace of the next line. Write `\n`
+    /// instead of `\` and it compiles, reads almost identically in the source, and produces a
+    /// message with a **hard line break followed by seventeen spaces** wherever it is displayed.
+    ///
+    /// 🚨 **Every existing test asserted with `contains`**, which passes on both spellings — so
+    /// the suite was structurally blind to it. `NoBinary` shipped that way in the same change
+    /// that *fixed* the identical defect in `wire.rs`'s `FormatUnsupported` string, which is as
+    /// clear a demonstration as one could ask for that noticing it once does not prevent it.
+    ///
+    /// 📌 **The rule is about the WIDTH, not about newlines**, because two of these messages
+    /// break lines on purpose: `CloneFailed` and `BuildFailed` add a continuation line indented
+    /// by two spaces, which is a deliberate second sentence rather than leaked layout. Four is
+    /// comfortably above that and far below the seventeen that source indentation produces.
+    #[test]
+    fn no_refusal_leaks_its_source_indentation() {
+        let tool = Tool::Cargo;
+        let every = [
+            WorkFault::ToolMissing { tool },
+            WorkFault::ToolFailed { tool, why: "why".into() },
+            WorkFault::NoDirectory { path: "/p".into(), why: "why".into() },
+            WorkFault::NoStore,
+            WorkFault::Module(ModuleFault::NoProducer { at: 0 }),
+            WorkFault::NoSource { producer: "ascent".into() },
+            WorkFault::CloneFailed { url: "u".into(), why: "why".into() },
+            WorkFault::FetchFailed {
+                url: "u".into(),
+                reference: "r".into(),
+                why: "why".into(),
+            },
+            WorkFault::NoSuchCommit { url: "u".into(), reference: "r".into() },
+            WorkFault::NotAHash { reference: "r".into(), answer: "a".into() },
+            WorkFault::NoManifest { producer: "ascent".into(), commit: "c".into() },
+            WorkFault::IdentityMismatch { asked: "a".into(), found: "f".into() },
+            WorkFault::NotApproved { producer: "ascent".into(), known: vec![] },
+            WorkFault::NotApproved { producer: "ascent".into(), known: vec!["other".into()] },
+            WorkFault::BuildFailed { producer: "ascent".into(), tail: "boom".into() },
+            WorkFault::DiffFailed { producer: "ascent".into(), tail: "boom".into() },
+            WorkFault::LaunchFailed { path: "/p".into(), why: "why".into() },
+            WorkFault::ChannelFailed { producer: "ascent".into(), why: "why".into() },
+            WorkFault::NoBinary { producer: "ascent".into(), expected: "/p".into() },
+        ];
+        const MAX_INDENT: usize = 4;
+        for fault in &every {
+            let said = fault.sentence();
+            assert!(!said.is_empty(), "{fault:?} says nothing");
+            for line in said.lines() {
+                let indent = line.len() - line.trim_start().len();
+                assert!(
+                    indent <= MAX_INDENT,
+                    "{fault:?} carries {indent} spaces of source indentation into a line a \
+                     person reads — a `\\n` escape where a `\\` line-continuation was meant:\n\
+                     {said}"
+                );
+                // The same mistake with no newline: a run of spaces mid-sentence.
+                assert!(
+                    !line.trim().contains("   "),
+                    "{fault:?} has a run of spaces inside a line: {said}"
+                );
+            }
+        }
     }
 
     /// CONTRACT: 🚨 **a build that produced no binary is not a build**, whatever cargo's exit
