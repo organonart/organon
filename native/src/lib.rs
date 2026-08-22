@@ -1800,6 +1800,9 @@ pub(crate) fn editor_ui(
     setter: &ParamSetter,
     state: &mut preset::PresetUi,
 ) {
+    // One tick per frame, before any tab draws: a preset recall can load a model from a tab
+    // that is not Mind, so this cannot live in the Mind card's body.
+    mind_autostart(cx, state);
     let params = cx.params.clone();
     let release = cx.release.clone();
     let hdr_gen = cx.hdr_gen.clone();
@@ -3011,21 +3014,7 @@ pub(crate) fn editor_ui(
                             });
                         }
                         if do_start {
-                            match mind_runtime_path() {
-                                Some(exe) => crate::mind_console::MindConsole::start(
-                                    &mind_console,
-                                    &exe,
-                                ),
-                                None => {
-                                    if let Ok(mut c) = mind_console.lock() {
-                                        c.note(
-                                            "mind-console: organic-math-mind-runtime not \
-                                             found — rebuild/deploy with --with-llm to \
-                                             embed it in the bundle.",
-                                        );
-                                    }
-                                }
-                            }
+                            start_mind_runtime(&mind_console);
                         }
                     });
 
@@ -6506,6 +6495,58 @@ fn spawn_visual() {
 /// to the current exe, then `$PATH`. Returns the first path that exists so the
 /// Mind card can report "not bundled" cleanly when the plugin was built without
 /// `--with-llm`.
+/// Launch the embedded runtime, or say why it could not be found.
+///
+/// 📌 **One body, two callers** — the Mind card's button and [`mind_autostart`]. It was
+/// inline in the button; a second caller copying it would have been a second sentence to keep
+/// true when the bundling story changes.
+fn start_mind_runtime(mind_console: &std::sync::Arc<std::sync::Mutex<mind_console::MindConsole>>) {
+    match mind_runtime_path() {
+        Some(exe) => crate::mind_console::MindConsole::start(mind_console, &exe),
+        None => {
+            if let Ok(mut c) = mind_console.lock() {
+                c.note(
+                    "mind-console: organic-math-mind-runtime not found — rebuild/deploy with \
+                     --with-llm to embed it in the bundle.",
+                );
+            }
+        }
+    }
+}
+
+/// Bring the runtime up on its own when a model is loaded.
+///
+/// 🚨 **The trigger is `model_gen`, not the picker.** A `.gguf` arrives either from the Mind
+/// card's button or from a preset recall — `PresetValues::apply`'s own note says the loaded
+/// `.gguf` is *"restored by the editor's recall handler"* through the same sidecar and the same
+/// bump. Edge-detecting the bump serves both; hooking the picker would have auto-started for a
+/// hand and not for a preset, which is the case this exists for.
+///
+/// ⚠️ **Loading a model is the intent, not opening the editor.** Starting at editor open
+/// would spawn a 170 MB llama.cpp child for anyone who glanced at the Mind tab, and starting at
+/// plugin load would do it for every instance in a set. The runtime does nothing without a
+/// model, so the moment a model exists is the earliest honest moment.
+///
+/// 📌 `ORGANON_MIND_AUTOSTART=0` turns it off with no rebuild, leaving the button.
+fn mind_autostart(cx: &EditorCtx, state: &mut preset::PresetUi) {
+    let gen = cx.model_gen.load(Ordering::Relaxed);
+    if gen == state.mind_autostart_seen {
+        return;
+    }
+    // Claimed before the attempt, not after: a runtime that cannot be found must not be
+    // retried every frame for the rest of the session, writing a line each time.
+    state.mind_autostart_seen = gen;
+    if gen == 0 || !mind_autostart_enabled() {
+        return;
+    }
+    start_mind_runtime(&cx.mind_console);
+}
+
+/// The opt-out. Anything other than `0` leaves it on, so a typo does not silently disable it.
+fn mind_autostart_enabled() -> bool {
+    !matches!(std::env::var("ORGANON_MIND_AUTOSTART").as_deref(), Ok("0"))
+}
+
 fn mind_runtime_path() -> Option<std::path::PathBuf> {
     // #658 Tier 1 — this one was a real bug, not a tidiness point. Unlike `spawn_visual`
     // above, the candidates here are filtered by `Path::exists()`, which asks the

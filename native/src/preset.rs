@@ -7497,6 +7497,16 @@ pub struct PresetUi {
     /// are non-destructive, so this sits alongside the visual's reader for free —
     /// no new IPC, no `Shared` change. Opened lazily once the writer exists.
     pub mind_reader: Option<crate::mind_ring::MindRingReader>,
+    /// #367 — the `model_gen` this editor has already auto-started a runtime for.
+    ///
+    /// 📌 **Edge-detected here rather than at the two call sites that load a model.** A
+    /// `.gguf` arrives either from the Mind card's picker or from a preset recall, and both
+    /// end at the same bump. Hooking the bump catches both with one test; hooking the picker
+    /// would auto-start for a hand and not for a preset, which is the case that matters.
+    ///
+    /// ⚠️ Starts at 0 and `model_gen` starts at 0, so a session that never loads a model
+    /// never spawns anything — `CLAUDE.md` invariant 4, new capability defaults to inert.
+    pub mind_autostart_seen: u32,
     /// The Mind dashboard display state (peak-hold caps, scrolling effort scope,
     /// auto-gain, tokens/sec). Fed one `MindFrame` per repaint while streaming.
     pub mind_viz: crate::mind_viz::MindViz,

@@ -30,8 +30,9 @@
     search path (in Ableton: Settings → Plug-Ins → VST3 Plug-In Custom Folder).
 
 .PARAMETER WithLlm
-    Also build + embed the llama.cpp inference runtime (#367 Tier 2c), and install a
-    standalone copy next to the bundle. OFF by default.
+    Also build the llama.cpp inference runtime (#367 Tier 2c) and embed it INSIDE the
+    bundle, which is where the plugin looks for it. No loose copy is installed beside
+    the bundle: that folder is a VST3 search path, not an install prefix. OFF by default.
 
     Needs MORE than cmake, and every missing piece fails in a build script rather
     than in Rust -- so the error names a C++ tool, not this switch. Measured on
@@ -79,7 +80,16 @@ param(
     [string]$Dest = 'F:\vst3',
     [switch]$WithLlm,
     [switch]$Force,
-    [switch]$AddToPath
+    [switch]$AddToPath,
+    # Where the `organon` CLI and its completions go. Deliberately NOT $Dest: that is a
+    # folder the DAW scans for plugins, and loose executables in a VST3 search path are
+    # noise at best.
+    #
+    # ⚠️ NOT %LOCALAPPDATA%\Organon\bin. That exact directory has a recorded anomaly on
+    # organon-one — files written there read as present from one shell and absent from
+    # another, never diagnosed. ~/.local/bin is the prefix that demonstrably works here
+    # (it already carries claude.exe and uv) and is already on the user PATH.
+    [string]$CliDest = (Join-Path $env:USERPROFILE '.local\bin')
 )
 
 Set-StrictMode -Version Latest
@@ -328,7 +338,8 @@ so save your work first.
     # Built explicitly — bundle.ps1 only builds the plugin + visual.
     Invoke-Checked cargo @('build', '--release', '--bin', 'organon')
     $cliSrc = Join-Path $PSScriptRoot 'target\release\organon.exe'
-    $cliDst = Join-Path $Dest 'organon.exe'
+    if (-not (Test-Path $CliDest)) { New-Item -ItemType Directory -Force -Path $CliDest | Out-Null }
+    $cliDst = Join-Path $CliDest 'organon.exe'
     if (Test-FileLocked -Path $cliDst) {
         Write-Host "note: $cliDst is in use — close it and re-run to update the CLI." -ForegroundColor Yellow
     } else {
@@ -337,7 +348,7 @@ so save your work first.
     }
 
     if ($AddToPath) {
-        Add-UserPathEntry -Directory $Dest | Out-Null
+        Add-UserPathEntry -Directory $CliDest | Out-Null
     } else {
         Write-Host "note: run it as `"$cliDst`" — or re-run with -AddToPath to put $Dest on your USER PATH." -ForegroundColor DarkGray
     }
@@ -348,7 +359,7 @@ so save your work first.
     # Generated from the freshly BUILT binary, not the installed one: if the installed
     # copy was locked and skipped just above, $cliDst is stale or absent, and completions
     # should still describe the CLI this deploy actually produced.
-    $completion = Join-Path $Dest 'organon-completion.ps1'
+    $completion = Join-Path $CliDest 'organon-completion.ps1'
     try {
         & $cliSrc completions powershell | Set-Content -LiteralPath $completion -Encoding UTF8
         if ($LASTEXITCODE -eq 0) {
@@ -369,26 +380,19 @@ so save your work first.
     Copy-Gallery -From (Join-Path $PSScriptRoot 'assets\fields')           -To (Join-Path $store 'fields')    -Filter '*.bin'  -Label 'field clips'
     Copy-Gallery -From (Join-Path $PSScriptRoot 'assets\nca')              -To (Join-Path $store 'nca')       -Filter '*.json' -Label 'NCA gallery'
 
-    # ── The standalone runtime copy (#367 Tier 2c) ──────────────────────────
+    # —— The runtime lives in the bundle, and only in the bundle (#367 Tier 2c) ——
     if ($WithLlm) {
-        $rtSrc = Join-Path $PSScriptRoot 'target\release\organic-math-mind-runtime.exe'
-        $rtDst = Join-Path $Dest 'organic-math-mind-runtime.exe'
-        # Lock-checked like the CLI above, and this one is not hypothetical: the whole
-        # reason a standalone copy is installed next to the bundle is "direct/terminal
-        # use", i.e. leaving it RUNNING in a terminal — which is exactly what holds the
-        # file. Without the check this is the last step of a -WithLlm deploy, so it
-        # would blow up with a raw .NET exception *after* the plugin, CLI and galleries
-        # had all installed fine, in the one script whose thesis is that a locked file
-        # deserves a sentence rather than a stack trace.
-        if (Test-FileLocked -Path $rtDst) {
-            Write-Host "note: $rtDst is in use — close it and re-run to update the runtime." -ForegroundColor Yellow
-            Write-Host '  (The copy embedded inside Organon.vst3 was still refreshed by bundle.ps1.)' -ForegroundColor Yellow
-        } else {
-            Copy-Item -LiteralPath $rtSrc -Destination $rtDst -Force
-            Write-Host "installed runtime: $rtDst" -ForegroundColor Green
-        }
-        Write-Host '  → It is ALSO embedded in the installed Organon.vst3, so the plugin can launch it'
-        Write-Host '    itself. Mind tab: load a .gguf → Live (streaming) → prompt → Generate (the track'
+        # 📌 **No loose copy beside the bundle any more.** It was never on the plugin's
+        # search path: `mind_runtime_path()` probes an env override, then the directory of
+        # the plugin DYLIB (i.e. inside Organon.vst3\Contents), then the directory of the
+        # current exe. $Dest is the grandparent of the first and matches none of them, so
+        # the copy installed here served only direct terminal use — at 169 MB, sitting in
+        # a folder the DAW scans.
+        #
+        # ⚠️ For terminal use, point ORGANIC_MATH_MIND_RUNTIME at the copy inside the
+        # bundle, or run it out of targetelease. The plugin needs neither.
+        Write-Host 'runtime: embedded in Organon.vst3 (no separate copy installed)' -ForegroundColor Green
+        Write-Host '  → The Mind tab launches it itself. Load a .gguf → prompt → Generate (the track'
         Write-Host '    must be processing audio).'
     }
 
