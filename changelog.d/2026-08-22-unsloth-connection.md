@@ -63,3 +63,32 @@ live path and deliberately not made here.
 landed — nothing listening on `127.0.0.1:8888` or on the LAN bind `192.168.0.7:8888`, and no
 matching process — so the `Unauthorized` path in particular has never been produced by the actual
 app, only by a canned `401`. Green and ready to try, not verified working.
+
+⚠️ **Review found the no-hang promise did not hold, and it was a doc-overclaims-code defect in a
+module whose thesis is that a refusal names the true cause.** `set_read_timeout` and
+`set_write_timeout` apply only *after* a connection exists; `TcpStream::connect` has no timeout of
+its own, so a host that neither accepts nor refuses — a firewall dropping the SYN — blocks for the
+OS retry ceiling, tens of seconds to minutes. Loopback hid it (a closed local port answers
+`ECONNREFUSED` at once, which is why the tests passed), but `ORGANON_UNSLOTH_ENDPOINT` takes a LAN
+address and this module's own example is `192.168.0.7:8888` — so the guarantee failed on exactly
+the path advertised. `resolve_addrs` + `connect_within` now spend `TIMEOUT_SECS` as a **total**
+budget across every resolved address, rather than per attempt: a per-address timeout would multiply
+by however many addresses a name happened to resolve to, so a caller promised five seconds could
+wait fifteen.
+
+📌 **A literal IP does no DNS at all** — parsed straight to a `SocketAddr`, no syscall — which is
+every default and every documented endpoint here. ⚠️ **A name still can block outside the budget**:
+`std::net::ToSocketAddrs` has no bounded form, and bounding it needs a thread or a dependency.
+Stated at `TIMEOUT_SECS` and in the ledger rather than papered over. Resolver order is kept
+(IPv6-first included) rather than second-guessed — the one case measured here, `localhost` costing
+~200 ms against an IPv4-only listener, is handled *upstream* by `StudioEndpoint::parse` rewriting
+the name, so the default path never reaches that branch.
+
+⚠️ **The timing itself is reasoned, not reproduced, and that is worth saying plainly.** Reverting
+to a bare `connect` does fail a test — `an_unresolvable_name_is_an_actionable_refusal`, because the
+refusal text changes from `resolve:` to `connect: No such host is known. (os error 11001)` — but
+that proves the path, **not the bound**. Producing the real case needs a host that silently drops
+packets, which organon-one has none of. What *is* pinned deterministically: an exhausted budget
+refuses **before** connecting, proven by pointing it at a live listener and asserting the listener
+never accepts. `Unreachable`'s remedy now reads "Nothing answered at …" rather than "Nothing is
+listening at …", because a dropped packet is not an empty port.

@@ -910,10 +910,11 @@ moment T4/T5 call an authenticated route through `StudioClient::get`.
 
 | | State | Evidence |
 |---|---|---|
-| the three refusals, and their sentences | **measured** (offline) | 27 unit tests; mutating any one refusal into another fails 2–3 tests by name |
+| the three refusals, and their sentences | **measured** (offline) | 30 unit tests; mutating any one refusal into another fails 2–3 tests by name |
 | redaction of the token | **measured** (offline) | `Debug`, `Display`, `StudioConfig`, and every rendering of every error |
 | request composition, status classification, chunked/`Content-Length` framing | **measured** (offline) | pure functions, canned responses |
-| the real `TcpTransport` | **measured** (offline) | two real-socket tests with no Studio: a closed ephemeral port → `Unreachable`, and a listener this test stands up itself, which asserts the *server* saw `Authorization: Bearer …` |
+| the real `TcpTransport` | **measured** (offline) | four real-socket tests with no Studio: a closed ephemeral port → `Unreachable`; a listener the test stands up itself, which asserts the *server* saw `Authorization: Bearer …`; an unresolvable name → `Unreachable` naming the resolve step; and an exhausted connect budget, proven by a live listener that never accepts |
+| **a connect that neither succeeds nor is refused** | ⚠️ **reasoned, not reproduced** | `TcpStream::connect` has no timeout, so a dropped SYN blocks for the OS retry ceiling; `connect_within` spends `TIMEOUT_SECS` as a *total* budget across every resolved address instead. Reverting to a bare `connect` does fail a test — the refusal text changes from `resolve:` to `connect:` — but that proves the path, **not the timing**. Producing the real case needs a host that silently drops packets, which organon-one has none of, so no test asserts the bound. ⚠️ And one stage stays outside it: `ToSocketAddrs` on a *name* can block for as long as the resolver takes, and `std` has no bounded form. A literal IP — every default and every documented endpoint here — does no DNS at all |
 | **anything against a real Studio** | 🚨 **never run** | the Studio was not running on organon-one when this landed (nothing listening on `127.0.0.1:8888` or `192.168.0.7:8888`). The `Unauthorized` path in particular has never been produced by the actual app |
 
 📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no new dependency, no UI.** Hand-rolled

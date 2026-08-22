@@ -97,7 +97,9 @@
 //! not re-open this module's insides.
 
 use std::fmt;
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -131,14 +133,34 @@ pub const TOKEN_ENV: &str = "UNSLOTH_API_KEY";
 /// Unset means [`StudioEndpoint::default`].
 pub const ENDPOINT_ENV: &str = "ORGANON_UNSLOTH_ENDPOINT";
 
-/// How long a request waits for bytes before giving up.
+/// The budget for each stage of a request: connecting, writing, reading.
 ///
-/// ⚠️ **A server that accepts and then hangs must not wedge the caller forever**, which is
-/// what no timeout means. This is short on purpose: `/api/health` is a constant-time answer
-/// from a local process, so anything past a few seconds is a fault, not slowness. It is
-/// *not* `organon-agent`'s 300 s — that number exists for a reasoning model that thinks
-/// before it speaks, and copying it here would turn a dead socket into a five-minute stall.
+/// ⚠️ **A peer that never answers must not wedge the caller**, which is what no timeout
+/// means. Short on purpose: `/api/health` is a constant-time answer from a local process, so
+/// anything past a few seconds is a fault, not slowness. It is *not* `organon-agent`'s 300 s
+/// — that number exists for a reasoning model that thinks before it speaks, and copying it
+/// here would turn a dead socket into a five-minute stall.
+///
+/// 🚨 **This covers the CONNECT too, and that is not free.** `TcpStream::connect` has no
+/// timeout of its own: a host that neither accepts nor refuses — a firewall dropping the SYN
+/// — blocks for the OS retry ceiling, tens of seconds to minutes. Loopback hides it (a closed
+/// local port answers `ECONNREFUSED` at once) but [`ENDPOINT_ENV`] is configurable to a LAN
+/// address and this module's own example is one, so [`connect_within`] spends this as a
+/// **total** budget across every resolved address rather than letting `connect` decide.
+///
+/// ⚠️ **One stage is outside the budget and cannot be brought inside without a dependency:
+/// DNS.** [`resolve_addrs`] parses a literal IP with no syscall at all — which is every
+/// default and every documented endpoint here — but a *name* goes through
+/// `std::net::ToSocketAddrs`, which `std` offers no bounded form of. Named, not hidden.
 pub const TIMEOUT_SECS: u64 = 5;
+
+/// The smallest remaining budget worth spending on a connect attempt.
+///
+/// ⚠️ Not arbitrary: `TcpStream::connect_timeout` **rejects a zero duration** ("cannot set a
+/// 0 duration timeout"), so an exhausted budget has to be recognised before the call rather
+/// than discovered inside it — where it would surface as a confusing OS message instead of
+/// the honest "we ran out of time".
+const MIN_CONNECT_ATTEMPT: Duration = Duration::from_millis(1);
 
 // ===========================================================================
 // The credential
@@ -437,7 +459,7 @@ impl StudioError {
                  — a process does not see an environment variable set after it started."
             ),
             StudioError::Unreachable { authority, .. } => format!(
-                "Nothing is listening at {authority}. Start Unsloth Studio, or set \
+                "Nothing answered at {authority}. Start Unsloth Studio, or set \
                  {ENDPOINT_ENV} to where it is actually serving."
             ),
             StudioError::Unauthorized { .. } => format!(
@@ -522,18 +544,84 @@ pub trait StudioTransport {
     fn send(&self, host: &str, port: u16, request: &str) -> Result<String, String>;
 }
 
+/// Resolve an endpoint's host to the addresses worth trying, in the order to try them.
+///
+/// 📌 **A literal IP short-circuits with no syscall at all** — no DNS, no blocking, nothing
+/// to time out. That is every default here and every endpoint this module's docs use, so the
+/// [`TIMEOUT_SECS`] budget is the *whole* cost of a connect on the ordinary path.
+///
+/// ⚠️ **A name goes through `ToSocketAddrs`, which can block for as long as the resolver
+/// takes**, and `std` has no bounded form of it. Bounding it needs a thread or a dependency
+/// and T1 spends neither; the limit is stated at [`TIMEOUT_SECS`] rather than papered over.
+///
+/// ⚠️ **A name may yield several addresses and the resolver's order is kept**, IPv6-first
+/// included. That is deliberate: reordering would second-guess a resolver that may be right,
+/// and the one case measured on organon-one — `localhost` costing ~200 ms because `::1` is
+/// tried against an IPv4-only listener — is already handled *upstream* by
+/// [`StudioEndpoint::parse`] rewriting the name to `127.0.0.1`, so it never reaches here.
+/// **That rewrite is what keeps the default path off this branch entirely.**
+///
+/// A name that resolves to nothing is an `Err`, never an empty success — a caller handed an
+/// empty list would loop zero times and report a refusal with no cause in it.
+pub fn resolve_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let addrs: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve: {host}: {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("resolve: {host} resolved to no addresses"));
+    }
+    Ok(addrs)
+}
+
+/// Connect to the first address that answers, spending `budget` **in total** across all of
+/// them rather than per attempt.
+///
+/// 🚨 The total is the point. `TcpStream::connect` blocks on the OS SYN-retry ceiling with no
+/// timeout of its own, and a per-address timeout would multiply by however many addresses a
+/// name happened to resolve to — so a caller promised five seconds could wait fifteen.
+///
+/// Errors are `Err(detail)` for [`StudioError::Unreachable`], and each names a cause a person
+/// can act on: a refusal quotes the OS, an exhausted budget says what silence means.
+pub fn connect_within(addrs: &[SocketAddr], budget: Duration) -> Result<TcpStream, String> {
+    let Some(first) = addrs.first() else {
+        return Err("connect: no address to try".to_string());
+    };
+    let deadline = Instant::now() + budget;
+    let mut last: Option<String> = None;
+    for addr in addrs {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining < MIN_CONNECT_ATTEMPT {
+            return Err(format!(
+                "connect: gave up after {}s — {addr} answered neither an acceptance nor a \
+                 refusal, which is what a dropped packet looks like (a firewall, or a host \
+                 that is not there)",
+                budget.as_secs_f32()
+            ));
+        }
+        match TcpStream::connect_timeout(addr, remaining) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last = Some(format!("connect: {addr}: {e}")),
+        }
+    }
+    Err(last.unwrap_or_else(|| format!("connect: {first}: no attempt was made")))
+}
+
 /// The real client: HTTP/1.1 over [`std::net::TcpStream`], no dependency, no TLS.
 pub struct TcpTransport;
 
 impl StudioTransport for TcpTransport {
     fn send(&self, host: &str, port: u16, request: &str) -> Result<String, String> {
         use std::io::{Read, Write};
-        use std::net::TcpStream;
-        use std::time::Duration;
 
         let timeout = Duration::from_secs(TIMEOUT_SECS);
-        let mut stream =
-            TcpStream::connect((host, port)).map_err(|e| format!("connect: {e}"))?;
+        // 🚨 Never a bare `TcpStream::connect` — see [`TIMEOUT_SECS`]. It has no timeout, so
+        // a dropped SYN would blow the budget this function is meant to hold to.
+        let addrs = resolve_addrs(host, port)?;
+        let mut stream = connect_within(&addrs, timeout)?;
         // ⚠️ Both directions. A server that accepts and then never speaks is the case a
         // read timeout exists for; a write timeout covers the mirror image, a peer whose
         // receive window never opens.
@@ -1019,7 +1107,7 @@ mod tests {
         assert_ne!(sentences[0], sentences[2]);
         for (e, want) in [
             (&not_configured, "Mint an API key"),
-            (&unreachable, "Nothing is listening"),
+            (&unreachable, "Nothing answered"),
             (&unauthorized, "rejected the key"),
         ] {
             assert!(e.remedy().contains(want), "{}", e.remedy());
@@ -1306,6 +1394,79 @@ mod tests {
             other => panic!("expected Unreachable from a closed port, got {other:?}"),
         }
         assert!(!format!("{err:?}").contains(SECRET));
+    }
+
+    // -- the connect budget ------------------------------------------------
+
+    #[test]
+    fn a_literal_ip_resolves_without_dns() {
+        let v4 = resolve_addrs("127.0.0.1", 8888).unwrap();
+        assert_eq!(v4, vec![SocketAddr::from(([127, 0, 0, 1], 8888))]);
+        let lan = resolve_addrs("192.168.0.7", 8888).unwrap();
+        assert_eq!(lan, vec![SocketAddr::from(([192, 168, 0, 7], 8888))]);
+        // An IPv6 literal too — it is not a name and must not reach the resolver either.
+        let v6 = resolve_addrs("::1", 8888).unwrap();
+        assert_eq!(v6.len(), 1);
+        assert!(v6[0].is_ipv6());
+    }
+
+    /// A name nothing can resolve must still produce an `Unreachable` naming the cause —
+    /// not a panic, and not a silent fall through to some default address.
+    #[test]
+    fn an_unresolvable_name_is_an_actionable_refusal() {
+        // `.invalid` is reserved by RFC 2606 and guaranteed never to resolve.
+        let err = resolve_addrs("studio.invalid", 8888).unwrap_err();
+        assert!(err.starts_with("resolve: "), "{err}");
+        assert!(err.contains("studio.invalid"), "{err}");
+
+        let client = StudioClient::new(
+            StudioConfig {
+                endpoint: StudioEndpoint::new("studio.invalid", 8888),
+                token: Some(tok()),
+            },
+            TcpTransport,
+        );
+        match client.probe().unwrap_err() {
+            StudioError::Unreachable { authority, detail } => {
+                assert_eq!(authority, "studio.invalid:8888");
+                assert!(detail.starts_with("resolve: "), "{detail}");
+            }
+            other => panic!("expected Unreachable from an unresolvable name, got {other:?}"),
+        }
+    }
+
+    /// 🚨 The budget is spent as a **total**, and an exhausted one is recognised *before*
+    /// `connect_timeout` is called rather than inside it.
+    ///
+    /// Deterministic without a firewalled host: point it at a listener that is genuinely
+    /// accepting, hand it a zero budget, and assert both that it refused **and that the
+    /// listener never saw a connection**. A version that spent the budget per-attempt, or
+    /// that dropped the guard and let the OS reject a zero duration, fails on the wording;
+    /// a version that connected anyway fails on the accept.
+    #[test]
+    fn an_exhausted_budget_refuses_before_it_connects() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let addr = listener.local_addr().unwrap();
+
+        let err = connect_within(&[addr], Duration::ZERO).unwrap_err();
+        assert!(err.starts_with("connect: gave up after 0s"), "{err}");
+        assert!(err.contains("dropped packet"), "the cause has to be nameable: {err}");
+        assert!(err.contains(&addr.to_string()), "{err}");
+        assert!(
+            listener.accept().is_err(),
+            "a spent budget must not open a connection"
+        );
+
+        // …and the same listener, with a real budget, is reached at once — so the refusal
+        // above is the budget talking and not a broken address.
+        connect_within(&[addr], Duration::from_secs(TIMEOUT_SECS)).expect("a live listener");
+    }
+
+    #[test]
+    fn an_empty_address_list_is_a_refusal_not_a_panic() {
+        let err = connect_within(&[], Duration::from_secs(1)).unwrap_err();
+        assert_eq!(err, "connect: no address to try");
     }
 
     /// The other real-socket test, and the one that keeps [`TcpTransport`] from being
