@@ -195,6 +195,20 @@ pub enum ReadbackFault {
 ///
 /// The buffer is sized for the channel's whole capacity rather than for the current frame,
 /// which is what makes a resize free on this side too: a smaller frame simply uses a prefix.
+///
+/// # 🚨 This IS the producer's readback. A producer that also does its own pays twice.
+///
+/// [`FrameReadback::capture`] takes the producer's texture and copies it **into the ring slot**
+/// — the GPU→CPU half of the boundary happens here, on the producer's queue, and it is the
+/// half T0 measured as the producer's added stall. So a hosted producer does **not** call
+/// whatever `read_frame`-shaped method its own engine offers; that path is for its standalone
+/// host.
+///
+/// ⚠️ **Calling both runs two GPU→CPU copies of the same texture into two staging buffers, and
+/// the second is pure waste with no error anywhere.** Nothing here can detect it — the two
+/// copies are independently valid — so it is written down instead. ✏️ Reported by the Ascent
+/// session, which found its own `read_frame` eagerly holding **16.6 MiB at 1080p and 29 MiB at
+/// 1440p** that a hosted module would never touch.
 pub struct FrameReadback {
     staging: wgpu::Buffer,
     capacity: FrameCapacity,

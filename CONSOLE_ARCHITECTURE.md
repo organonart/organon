@@ -7290,12 +7290,33 @@ message or opaque payload**, which is the one addition that would make every fut
 which is to say ungranted for ever.
 
 §5.3's way out is `input::RESERVED`, and it is kept at the **encode** site so a console cannot
-leak the key by forgetting. `Escape` is on it. ⚠️ **`F11` deliberately is not**, and that is
-left open rather than decided: §1.12's `console screen` binds it today, which argues for
-reserving it, against which it is a key a game may legitimately want and the console's gesture
-only applies while the console has focus — which a latched viewport arguably does not. That
-balance wants T5's interaction latch in front of it. Adding a key costs a module that key for
-ever; the set should grow by argument, never by tidiness.
+leak the key by forgetting. `Escape` is on it.
+
+🚨 **And the set is PUBLISHED IN THE MAPPED HEADER, not merely enforced — which is what makes
+§5.3's promise true rather than remembered.** §5.3 asks for a key the module is *told* it will
+never receive. A `pub const` tells the modules that **link** this crate and nobody else — and a
+hosted module deliberately does not link it, since needing no compile-time dependency on its
+host is one of the reasons hosted was chosen at all. So from the far side the reserved set was
+*rememberable, not checkable*: exactly the kind of promise that drifts. The header now carries
+the count and the codes, readable by any producer that can read a `u16`, including one not
+written in Rust. The `const` stays the single source and `Header::plan` publishes it; a test
+pins the two equal so they cannot become two lists. ✏️ **Found by the Ascent session**, from the
+one vantage point that could see it — the gap is invisible from inside a crate that links
+itself.
+
+📌 A consequence worth stating because the obvious answer is the wrong one: **reserving a key
+does not need a wire-version bump.** Publishing the set is what makes a bump unnecessary — every
+producer reads it per channel at open, so a set that grows is *observed* rather than remembered,
+and the surprise a bump would have guarded against cannot occur.
+
+⚠️ **`F11` is still not on it, and that remains open rather than decided.** §1.12's `console
+screen` binds it today, which argues for reserving; against it, some other game may want the
+key, and the console's gesture only applies while the console has focus — though that is the
+same objection already overruled for `Escape`. The Ascent session has since argued *for*
+reserving (it binds `F1`/`F2` and wants nothing here). 📌 **Two agents agreeing is not the same
+as the decision being made** — the design document's own warning about a vocabulary choice — so
+it waits. It is one line when it comes: the `const` is the single source and the publication
+follows from it.
 
 Overflow has one non-obvious rule worth knowing. A full ring means the producer stopped
 draining, so what is buffered is a **prefix with a hole after it** — and a prefix easily holds a

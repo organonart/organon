@@ -18,10 +18,9 @@
 //! is worse than a sentence, which is `region.rs`'s standing rule and §4.6's.
 //!
 //! ⚠️ **So a version bump is not a compatibility break, it is a compatibility STATEMENT.**
-//! Bump it whenever any offset, any field meaning, or any enum tag in this module changes. Two
-//! builds
-//! that disagree then refuse each other by name ([`WireFault::VersionMismatch`]), naming both
-//! numbers, which is a thing a person can act on.
+//! Bump it whenever any offset, any field meaning, or any enum tag in this module changes.
+//! Two builds that disagree then refuse each other by name
+//! ([`WireFault::VersionMismatch`]), naming both numbers, which is a thing a person can act on.
 //!
 //! # Why the geometry is in the header rather than agreed out of band
 //!
@@ -40,7 +39,14 @@ pub const MAGIC: [u8; 8] = *b"ORGONMOD";
 
 /// Byte 8..12, for ever. See the module docs: bump on **any** change to an offset, a field
 /// meaning, or an enum tag in this module.
-pub const WIRE_VERSION: u32 = 1;
+///
+/// ✏️ **2 — and the bump was taken even though nothing is deployed, deliberately.** The header
+/// gained the reserved-key list, `RefusalReason` gained a tag. Nothing can observe the
+/// difference today: no built producer speaks version 1. The rule above is still applied,
+/// because the alternative is deciding case by case whether a change "really counts", and the
+/// first time somebody decides it does not is the time it ships. A number that is bumped by a
+/// rule is cheap; a number bumped by judgement is a number nobody can trust.
+pub const WIRE_VERSION: u32 = 2;
 
 /// The fixed-size header, and the offset every other block is measured from.
 pub const HEADER_BYTES: usize = 128;
@@ -109,6 +115,36 @@ pub(crate) const OFF_STATUS_OFF: usize = 0x30;
 pub(crate) const OFF_INPUT_OFF: usize = 0x38;
 pub(crate) const OFF_SLOTS_OFF: usize = 0x40;
 pub(crate) const OFF_INPUT_CAPACITY: usize = 0x48;
+pub(crate) const OFF_RESERVED_KEY_COUNT: usize = 0x4C;
+
+/// 🚨 **The reserved keys, IN THE MAPPED HEADER — because a `pub const` only tells the modules
+/// that link this crate, and a hosted module deliberately does not.**
+///
+/// §5.3 asks for a key the module is **told** it will never receive. [`crate::input::RESERVED`]
+/// is a Rust constant: it tells anyone who links `organon-module`, and nobody else. Ascent's
+/// producer does not link it — a hosted module needs no compile-time dependency on its host,
+/// which is one of the reasons hosted was chosen at all — so from the far side the reserved
+/// set was **rememberable, not checkable**, which is a weaker promise than §5.3 asks for and
+/// exactly the kind that drifts.
+///
+/// Written into the mapping, it is checkable by any producer that can read a `u16`, including
+/// one that is not written in Rust. ✏️ **Found by the Ascent session, from the one vantage
+/// point that could see it**: the gap is invisible from inside a crate that links itself.
+pub(crate) const OFF_RESERVED_KEYS: usize = 0x50;
+
+/// How many reserved key codes the header has room for: bytes `0x50..0x80`, two per code.
+///
+/// ⚠️ The ceiling makes growth *bounded* rather than open-ended, which is half the answer to
+/// the standing objection that reserving a key costs a module that key for ever.
+///
+/// ✏️ **The other half is better than the one proposed, and it is worth being exact about
+/// because the obvious answer is wrong.** Reserving a key does **not** need a
+/// [`WIRE_VERSION`] bump — publishing the set is precisely what makes a bump unnecessary. The
+/// count and the codes are read per channel at open, so a set that grows is *observed* by
+/// every producer rather than remembered by some of them, and the failure a version bump would
+/// have been protecting against — a module built against an older set being surprised — cannot
+/// occur. A bump would be protecting a compile-time copy that no longer exists.
+pub const MAX_RESERVED_KEYS: usize = (HEADER_BYTES - OFF_RESERVED_KEYS) / 2;
 
 /// The control block — **the console writes, the producer reads, and never the reverse.**
 ///
@@ -380,7 +416,25 @@ pub enum RefusalReason {
     #[default]
     Unspecified = 0,
     /// The size the console is asking for is one this producer cannot draw at.
+    ///
+    /// **Fixable by re-agreeing a size**, which is what separates it from the next one.
     SizeUnsupported = 1,
+    /// The producer cannot draw in the pixel format this channel declares.
+    ///
+    /// 🚨 **It has its own tag because of the console's VERB, not because of the taxonomy.**
+    /// Folded under [`RefusalReason::Unspecified`], a rectangle would offer *resize* or
+    /// *restart* for a condition where neither can work — the producer refuses the next frame
+    /// identically, and the console has invited somebody to try again for ever. §4.6 exists to
+    /// give a person a sentence they can act on, and "try the thing that cannot help" is not
+    /// one.
+    ///
+    /// 📌 Across this contract it should be **unreachable**: the ring declares its format in
+    /// the header and a producer builds its pipeline against that. So it names a *deployment*
+    /// mismatch — a producer built for one format opened against a channel declaring another —
+    /// which is the kind that otherwise presents as a black rectangle. ✏️ Asked for by the
+    /// Ascent session, whose `TargetMismatch` has exactly these two variants; its format is
+    /// baked in at `Renderer::new`, so unlike a size it cannot be adopted at run time.
+    FormatUnsupported = 2,
 }
 
 impl RefusalReason {
@@ -388,6 +442,7 @@ impl RefusalReason {
         match v {
             0 => Some(RefusalReason::Unspecified),
             1 => Some(RefusalReason::SizeUnsupported),
+            2 => Some(RefusalReason::FormatUnsupported),
             _ => None,
         }
     }
@@ -401,6 +456,9 @@ impl RefusalReason {
         match self {
             RefusalReason::Unspecified => "it is declining to draw",
             RefusalReason::SizeUnsupported => "it cannot draw at the size this viewport asks for",
+            RefusalReason::FormatUnsupported => {
+                "it was built for a different pixel format than this viewport uses, which \n                 resizing and restarting will not change"
+            }
         }
     }
 }
@@ -467,6 +525,10 @@ pub struct Header {
     pub input_off: u64,
     pub slots_off: u64,
     pub input_capacity: u32,
+    /// The keys the console promises never to deliver, as [`crate::input::Key`] wire codes.
+    /// See [`OFF_RESERVED_KEYS`] for why this is in the mapping and not only in a `const`.
+    reserved_keys: [u16; MAX_RESERVED_KEYS],
+    reserved_key_count: u32,
 }
 
 impl Header {
@@ -478,6 +540,18 @@ impl Header {
         let input_bytes = input_ring::HEADER_BYTES as u64
             + input_ring::CAPACITY as u64 * input_ring::RECORD_BYTES as u64;
         let slots_off = align_up(input_off + input_bytes, ROW_ALIGNMENT as u64);
+        let mut reserved_keys = [0u16; MAX_RESERVED_KEYS];
+        let reserved = crate::input::RESERVED;
+        // The `const` is the single source; the header is a *publication* of it, not a second
+        // list. A ceiling this small could only be hit by a set nobody should be writing, and
+        // the assert says so rather than silently publishing a truncated promise.
+        assert!(
+            reserved.len() <= MAX_RESERVED_KEYS,
+            "the reserved set outgrew the header; growing it needs a WIRE_VERSION bump anyway"
+        );
+        for (slot, key) in reserved_keys.iter_mut().zip(reserved) {
+            *slot = key.to_wire();
+        }
         Header {
             wire_version: WIRE_VERSION,
             slots: SLOTS,
@@ -488,7 +562,18 @@ impl Header {
             input_off,
             slots_off,
             input_capacity: input_ring::CAPACITY,
+            reserved_keys,
+            reserved_key_count: reserved.len() as u32,
         }
+    }
+
+    /// The keys this channel's console promises never to deliver, as `Key` wire codes.
+    ///
+    /// 🚨 **This is the answer to §5.3 that a non-linking producer can actually use.** A
+    /// producer written in another language, or one that deliberately takes no compile-time
+    /// dependency on its host, reads the promise out of the mapping instead of remembering it.
+    pub fn reserved_keys(&self) -> &[u16] {
+        &self.reserved_keys[..self.reserved_key_count as usize]
     }
 
     /// Total bytes the file must hold.
@@ -515,6 +600,11 @@ impl Header {
         put_u64(dst, OFF_INPUT_OFF, self.input_off);
         put_u64(dst, OFF_SLOTS_OFF, self.slots_off);
         put_u32(dst, OFF_INPUT_CAPACITY, self.input_capacity);
+        put_u32(dst, OFF_RESERVED_KEY_COUNT, self.reserved_key_count);
+        for (i, code) in self.reserved_keys().iter().enumerate() {
+            dst[OFF_RESERVED_KEYS + i * 2..OFF_RESERVED_KEYS + i * 2 + 2]
+                .copy_from_slice(&code.to_le_bytes());
+        }
     }
 
     /// Read and **validate** a header out of a mapped file of `len` bytes.
@@ -538,7 +628,7 @@ impl Header {
         let format_tag = get_u32(src, OFF_FORMAT);
         let format =
             PixelFormat::from_wire(format_tag).ok_or(WireFault::UnknownFormat { tag: format_tag })?;
-        let h = Header {
+        let mut h = Header {
             wire_version,
             slots: get_u32(src, OFF_SLOTS),
             capacity: FrameCapacity {
@@ -552,7 +642,22 @@ impl Header {
             input_off: get_u64(src, OFF_INPUT_OFF),
             slots_off: get_u64(src, OFF_SLOTS_OFF),
             input_capacity: get_u32(src, OFF_INPUT_CAPACITY),
+            reserved_keys: [0; MAX_RESERVED_KEYS],
+            reserved_key_count: 0,
         };
+        // ⚠️ Bounded before it is indexed. A count is a length a *writer* chose, and the header
+        // is the one structure a hostile or mis-built peer can put anything in.
+        let count = get_u32(src, OFF_RESERVED_KEY_COUNT) as usize;
+        if count > MAX_RESERVED_KEYS {
+            return Err(WireFault::Incoherent {
+                why: "it claims more reserved keys than the header can hold",
+            });
+        }
+        for i in 0..count {
+            h.reserved_keys[i] =
+                u16::from_le_bytes(src[OFF_RESERVED_KEYS + i * 2..][..2].try_into().unwrap());
+        }
+        h.reserved_key_count = count as u32;
         // The file must be big enough for what it says it is. A header describing a channel
         // larger than the mapping is the shape every out-of-bounds read in this crate would
         // have to come through, so it is refused once, here, rather than bounds-checked at
@@ -799,11 +904,26 @@ mod tests {
             assert_eq!(ProducerState::from_wire(s.to_wire()), Some(s));
         }
         assert_eq!(ProducerState::from_wire(5), None);
-        for r in [RefusalReason::Unspecified, RefusalReason::SizeUnsupported] {
-            assert_eq!(RefusalReason::from_wire(r.to_wire()), Some(r));
+        // 🚨 Every variant, listed exhaustively rather than sampled. The first cut of
+        // `FormatUnsupported` had a `because()` arm — which the compiler demands — and **no
+        // `from_wire` arm**, which nothing demands: it would have encoded fine and decoded to
+        // `None` for ever, so a format refusal would have reached the console as "the producer
+        // said something I do not understand", silently, in the one state that exists to be
+        // legible. A round trip over the whole set is what catches a one-way tag.
+        let all = [
+            RefusalReason::Unspecified,
+            RefusalReason::SizeUnsupported,
+            RefusalReason::FormatUnsupported,
+        ];
+        for r in all {
+            assert_eq!(RefusalReason::from_wire(r.to_wire()), Some(r), "{r:?} is one-way");
             assert!(!r.because().is_empty(), "a reason with no words is not a reason");
         }
-        assert_eq!(RefusalReason::from_wire(2), None);
+        let mut codes: Vec<u32> = all.iter().map(|r| r.to_wire()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), all.len(), "two reasons share a wire tag");
+        assert_eq!(RefusalReason::from_wire(all.len() as u32), None);
     }
 
     /// One seqlock implementation serves both blocks (`channel::BLOCK_SEQ`), which is only
@@ -815,6 +935,56 @@ mod tests {
         assert_eq!(control::SEQ, 0);
         assert_eq!(status::SEQ, 0);
         assert_eq!(control::BYTES, status::BYTES, "and one read buffer serves both");
+    }
+
+    /// 🚨 **The promise §5.3 asks for, published where a non-linking producer can read it.**
+    /// The `const` is the source and the header is its publication — so this test is what stops
+    /// them being two lists. A producer that never links this crate reads the mapping; if the
+    /// two ever disagreed, the checkable promise and the enforced one would be different
+    /// promises, which is worse than having only the `const`.
+    #[test]
+    fn the_reserved_keys_reach_the_header_and_match_the_constant() {
+        let h = Header::plan(FrameCapacity::new(64, 64, PixelFormat::Rgba8UnormSrgb));
+        let from_const: Vec<u16> = crate::input::RESERVED.iter().map(|k| k.to_wire()).collect();
+        assert_eq!(h.reserved_keys(), &from_const[..]);
+        assert!(!from_const.is_empty(), "a promise of nothing is not the promise §5.3 wants");
+
+        // And it survives the round trip through the bytes, which is the only path the far
+        // side ever sees.
+        let mut buf = vec![0u8; h.total_bytes() as usize];
+        h.write(&mut buf);
+        let read = Header::read(&buf, buf.len() as u64).unwrap();
+        assert_eq!(read.reserved_keys(), &from_const[..]);
+        assert_eq!(read, h);
+    }
+
+    /// A count is a length a *writer* chose, and the header is the one structure a hostile or
+    /// mis-built peer can put anything in — so it is bounded before it is indexed.
+    #[test]
+    fn a_reserved_key_count_larger_than_the_header_is_refused() {
+        let h = Header::plan(FrameCapacity::new(64, 64, PixelFormat::Rgba8UnormSrgb));
+        let mut buf = vec![0u8; h.total_bytes() as usize];
+        h.write(&mut buf);
+        put_u32(&mut buf, OFF_RESERVED_KEY_COUNT, MAX_RESERVED_KEYS as u32 + 1);
+        assert!(matches!(
+            Header::read(&buf, buf.len() as u64),
+            Err(WireFault::Incoherent { .. })
+        ));
+        put_u32(&mut buf, OFF_RESERVED_KEY_COUNT, u32::MAX);
+        assert!(matches!(
+            Header::read(&buf, buf.len() as u64),
+            Err(WireFault::Incoherent { .. })
+        ));
+    }
+
+    /// The list has to fit in the bytes the header set aside for it, and the whole header has
+    /// to fit in `HEADER_BYTES` — a fact that is arithmetic rather than opinion, so it is a
+    /// const assertion.
+    #[test]
+    fn the_reserved_list_fits_the_space_reserved_for_it() {
+        const { assert!(OFF_RESERVED_KEYS + MAX_RESERVED_KEYS * 2 <= HEADER_BYTES) };
+        const { assert!(OFF_RESERVED_KEY_COUNT + 4 <= OFF_RESERVED_KEYS) };
+        assert!(crate::input::RESERVED.len() <= MAX_RESERVED_KEYS);
     }
 
     /// 🚨 **Every atomic lives OUTSIDE its block's seqlock body**, and this is the test that

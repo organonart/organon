@@ -158,6 +158,7 @@ pub mod sim;
 
 pub use channel::{
     channel_file_name, Control, ModuleChannel, OpenFault, ProducerChannel, ProducerStatus,
+    TICK_FLOOR,
 };
 pub use input::{Button, DrainReport, InputEvent, Key, MouseButton, PushFault, RESERVED};
 pub use presence::{Poll, Presence, Present, Timings};

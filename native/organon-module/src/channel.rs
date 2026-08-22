@@ -102,6 +102,13 @@ impl std::error::Error for OpenFault {}
 // Seqlock over a small block. Both directions, one implementation.
 // ---------------------------------------------------------------------------------------
 
+/// The longest a producer's loop may go between [`ProducerChannel::tick`]s, in any state.
+///
+/// See `tick`'s docs: a paused producer that idles cheaply must **slow** its loop, never stop
+/// it, and this is the floor. Comfortably under [`Timings::stall_after`]'s default of one
+/// second, so a producer honouring it is never accused.
+pub const TICK_FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// The largest block body a seqlock read copies.
 const BLOCK_MAX: usize = 64;
 
@@ -658,6 +665,19 @@ impl ProducerChannel {
     ///
     /// It also re-reads the control block, so a producer that ticks cannot fail to notice a
     /// resize, a lifecycle change or a close request.
+    ///
+    /// # ⚠️ The cadence, while `Attached` — which is a real tradeoff and it is the console's
+    ///
+    /// **Tick at least every [`TICK_FLOOR`] (250 ms), always, including while paused.** A
+    /// producer that stopped looping to save power while `Attached` would read as **hung**,
+    /// and it would do so in the state every module arrives in.
+    ///
+    /// 📌 So a paused producer that wants to idle cheaply should **slow its loop, not stop
+    /// it** — the contract asks for a heartbeat, never for a frame rate, and 4 Hz costs
+    /// essentially nothing. The floor is stated here rather than published in the mapping
+    /// because the console's `stall_after` is a *policy* it may tune; a producer that had to
+    /// read the policy would be coupled to a number the console is entitled to change, so the
+    /// contract fixes a floor comfortably under every sane value of it instead.
     pub fn tick(&mut self) {
         self.map
             .u64_at(self.header.status_off + status::ALIVE as u64)
@@ -760,8 +780,29 @@ impl ProducerChannel {
 
     /// Say goodbye. §4.6's difference between *exited* and *hung*, and the cheapest thing in
     /// the protocol.
+    ///
+    /// # 🚨 `Gone` means "I have exited", not "I have given up"
+    ///
+    /// A producer whose render has begun failing and will never recover is
+    /// [`ProducerChannel::refuse`], **not** this — even when it is certain. The two produce
+    /// different verbs in the rectangle: `Gone` invites *start it again*, which is exactly
+    /// right for a process that is no longer there and exactly wrong for one that is sitting
+    /// in the same broken state it would return to. A refusal says what is wrong instead.
+    ///
+    /// 📌 The rule that resolves every case: **`depart` describes the process, `refuse`
+    /// describes the drawing.** If the process is about to exit, call this on the way out —
+    /// including after a fatal error, since by then the first clause is true.
     pub fn depart(&mut self) {
         self.set_state(ProducerState::Gone);
+    }
+
+    /// The keys this console promises never to deliver, as [`crate::Key`] wire codes.
+    ///
+    /// 🚨 **Read out of the mapping rather than out of a `const`**, so §5.3's promise is
+    /// checkable by a producer that never links this crate — see [`crate::wire`]'s
+    /// `OFF_RESERVED_KEYS`.
+    pub fn reserved_keys(&self) -> &[u16] {
+        self.header.reserved_keys()
     }
 
     fn read_control(&mut self) {

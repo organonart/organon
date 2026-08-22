@@ -38,13 +38,26 @@
 //! because a game that swallows Escape and a console that needs Escape are the same key and
 //! this is the first place they meet.
 //!
-//! ⚠️ **`F11` is deliberately NOT on it, and that is a decision left open rather than made.**
+//! 🚨 **And this list is PUBLISHED, not merely enforced** — [`crate::wire`]'s
+//! `OFF_RESERVED_KEYS` carries it in the mapped header, because a `pub const` tells only the
+//! modules that link this crate and a hosted module deliberately does not link it. §5.3 asks
+//! for a key the module is *told* it will never receive; a constant only tells the readers who
+//! share a compilation. `Header::plan` publishes this exact list, and `wire::tests` pins the
+//! two equal so they cannot become two lists.
+//!
+//! ⚠️ **`F11` is NOT on it, and that is still an open decision rather than a settled one.**
 //! §1.12's `console screen` binds F11 today, so a module receiving it would fight a shipped
-//! gesture — which argues for reserving it. Against: it is a key a game may legitimately
-//! want, and the console's gesture only applies while the console has focus, which a latched
-//! viewport arguably does not. That balance wants the interaction latch in front of it, which
-//! is T5. Adding a key here costs a module that key for ever; the set should grow by argument,
-//! never by tidiness.
+//! gesture — which argues for reserving it, and the Ascent session has since argued exactly
+//! that and said it binds `F1`/`F2` and wants nothing here. Against: it is a key some other
+//! game may want, and the console's gesture only applies while the console has focus, which a
+//! latched viewport arguably does not — but that is the same objection already overruled for
+//! `Escape`, and if the latch changes who owns a key then it wants deciding once for the whole
+//! set rather than key by key.
+//!
+//! 📌 **Two agents agreeing is not the same as the decision being made**, which is the design
+//! document's own warning about a vocabulary choice, so this waits. It is one line when it
+//! comes: the `const` is the single source and the header publication follows from it, so
+//! reserving a key is an entry here and nothing else.
 
 use std::sync::atomic::Ordering;
 

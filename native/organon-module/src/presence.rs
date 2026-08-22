@@ -386,6 +386,23 @@ mod tests {
         }
     }
 
+    /// 🚨 The producer's obligation and the console's patience are two numbers in two files,
+    /// and they contradict each other the moment the floor rises above the threshold: a
+    /// producer honouring the contract exactly would then be called stalled. Neither file can
+    /// see the other, so the relation is asserted rather than remembered.
+    #[test]
+    fn the_tick_floor_leaves_room_under_the_stall_threshold() {
+        let t = Timings::default();
+        assert!(
+            crate::TICK_FLOOR * 2 <= t.stall_after,
+            "a producer ticking at the contract's floor ({:?}) must not be called stalled at \
+             {:?}, with room for one missed beat",
+            crate::TICK_FLOOR,
+            t.stall_after
+        );
+        assert!(t.stall_after <= t.dead_after && t.dead_after <= t.start_within);
+    }
+
     #[test]
     fn a_paused_producer_is_live_because_it_still_loops() {
         // The whole reason the liveness counter is not the frame counter.

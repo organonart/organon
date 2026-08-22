@@ -73,9 +73,34 @@
   raw OS handles (that is mechanism A arriving through the input channel), no audio — and **no
   generic message or opaque payload**, which is the one addition that would make every future
   verb free, which is to say ungranted for ever. §5.3's way out is `input::RESERVED`, refused
-  at the **encode** site so a console cannot leak it by forgetting; `F11` is deliberately left
-  off it with the argument on both sides recorded, because that balance wants T5's interaction
-  latch in front of it.
+  at the **encode** site so a console cannot leak it by forgetting.
+
+  🚨 **And the reserved set is published in the mapped header, not merely enforced — which is
+  what makes §5.3's promise true rather than remembered.** §5.3 asks for a key the module is
+  *told* it will never receive; a `pub const` tells the modules that **link** this crate and
+  nobody else, and a hosted module deliberately does not link it, since needing no compile-time
+  dependency on its host is one of the reasons hosted was chosen at all. From the far side the
+  set was *rememberable, not checkable*. The header now carries the count and the codes,
+  readable by any producer that can read a `u16` — including one not written in Rust. The
+  `const` stays the single source and a test pins the two equal so they cannot become two
+  lists. 📌 A consequence worth stating because the obvious answer is the wrong one:
+  **reserving a key therefore needs no wire-version bump** — every producer reads the set per
+  channel at open, so growth is *observed* rather than remembered, and the surprise a bump
+  would have guarded against cannot occur. ✏️ Found by the Ascent session, from the one vantage
+  point that could see it. `F11` is still off the list and still undecided, with the argument
+  on both sides recorded.
+
+  ⚠️ **`RefusalReason` gained `FormatUnsupported`, and it earns its tag on the console's VERB
+  rather than on the taxonomy.** Folded under `Unspecified`, a rectangle would offer *resize*
+  or *restart* for a condition where neither can work — the producer refuses the next frame
+  identically and the console has invited somebody to try again for ever. Ascent's own
+  `TargetMismatch` has exactly two variants and its format is baked in at `Renderer::new`, so
+  unlike a size it cannot be adopted at run time. 🚨 The first cut of it had a `because()` arm
+  — which the compiler demands — and **no `from_wire` arm**, which nothing demands: it would
+  have encoded fine and decoded to `None` for ever, so a format refusal would have arrived as
+  *"the producer said something I do not understand"* in the one state that exists to be
+  legible. The round trip is now asserted over the whole set, which is what catches a one-way
+  tag.
 
   **Versioning**: the magic at byte 0 and the wire version at byte 8 are the only permanent
   positional commitments, so a mismatch is diagnosed **before** any field whose position that

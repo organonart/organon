@@ -604,6 +604,26 @@ fn input_crosses_in_order_and_only_once() {
     assert_eq!(report.events, 0);
 }
 
+/// 🚨 §5.3 asks for a key the module is **told** it will never receive, and a `pub const` only
+/// tells the modules that link this crate. Ascent deliberately does not link it, so the promise
+/// has to be readable out of the mapping — this is the far side's view of it.
+#[test]
+fn a_producer_can_read_the_promise_rather_than_having_to_remember_it() {
+    let (_p, _console, mut producer) = pair("reserved-wire", cap(16, 16));
+    let promised = producer.channel().reserved_keys().to_vec();
+    assert!(promised.contains(&Key::Escape.to_wire()));
+    assert!(!promised.contains(&Key::W.to_wire()));
+    // The two halves of the promise are the same promise: what the console refuses to encode,
+    // and what it publishes that it will refuse.
+    for &code in &promised {
+        let key = Key::from_wire(code).expect("a published code the producer cannot decode");
+        assert!(
+            !InputEvent::Down(Button::Key(key)).is_deliverable(),
+            "{key:?} is published as reserved but would be delivered"
+        );
+    }
+}
+
 #[test]
 fn the_reserved_key_never_reaches_the_producer() {
     // §5.3, at the one place it can be kept: the console cannot leak the way out by
