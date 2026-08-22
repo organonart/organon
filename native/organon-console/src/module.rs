@@ -841,8 +841,17 @@ impl ModuleRegistry {
         Self::store_root().map(|r| Self::load(&r)).unwrap_or_default()
     }
 
-    /// [`ModuleRegistry::load`] for a **completion ring** — the same approved set, at a
-    /// hundredth of the cost, because this one is asked while somebody is typing.
+    /// [`ModuleRegistry::load`] for the **draw path** — the same approved set, at a hundredth of
+    /// the cost, because this one is asked while somebody is typing *and* while the console is
+    /// painting.
+    ///
+    /// ✏️ **Named "for a completion ring" until T4, and it has a second caller now.**
+    /// `console_main.rs`'s region walk asks [`ModuleRegistry::vacancy`] once per frame for every
+    /// region holding a hosted producer, to decide whether the rectangle draws a picture or a
+    /// sentence. That is the same requirement the ring has — a bounded-staleness read on a path
+    /// that runs at frame rate — so it is the same cache rather than a second one. The name is
+    /// left alone because the constant it keys, [`RING_TTL`], is §1.15's and renaming a
+    /// measurement's vocabulary is how the measurement stops being findable.
     ///
     /// 🚨 **The measurement is §1.15's and it is inherited rather than re-taken.** A candidate
     /// walk over a stored library runs on the **draw** path and asks n + 1 times per call; at

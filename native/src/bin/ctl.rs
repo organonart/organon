@@ -506,6 +506,14 @@ enum ConsoleAction {
                             is Organon and Organon draws at most one frame per console frame; a \
                             second is refused by name. ⚠️ An open portal TAKES that frame — the \
                             region then says so and `console portal close` gives it back.\n\n\
+                            `--producer <NAME>` says WHICH producer draws a `3d` region. \
+                            Omitted, it is Organon — so every `viewport … 3d` line means exactly \
+                            what it always meant. A name must be an APPROVED module \
+                            (`modules.json`); an unknown one is refused by name rather than \
+                            falling back to Organon, because the wrong picture is worse than \
+                            none. ⚠️ The one-at-a-time rule is Organon's, so two regions may \
+                            hold the same hosted producer. ⚠️ Nothing draws a hosted module's \
+                            picture yet — the region says why not.\n\n\
                             `panel` is a SCROLLING STACK of Organon's own editor panels — \
                             `console stack add <panel>` fills it, and the region's size has \
                             nothing to do with how many panels are in it. There is ONE stack \
@@ -521,6 +529,20 @@ enum ConsoleAction {
         /// What it holds: agent, 3d, panel, or off to empty it
         #[arg(value_parser = content_words())]
         content: String,
+        /// Which producer draws a `3d` region. Omitted, it is Organon's own world
+        ///
+        /// 🚨 **No `value_parser`, and there cannot be one** — the value space is the approved
+        /// modules in `modules.json`, which this process would have to read and which can change
+        /// between reading it and the console draining the line. `layout <ACTION> <NAME>`'s
+        /// second word is the same case for the same reason: what *is* checkable here is the
+        /// shape (`region::Producer::stored`), and it is checked in [`run_console`] where the
+        /// error can name the rule that was broken.
+        ///
+        /// ⚠️ **A long flag, not a bare third word** — `stack --region`'s arrangement, and
+        /// `registry::VIEWPORT_PRODUCER_ARG` owns the argument for why every door spells an
+        /// optional argument by name.
+        #[arg(long)]
+        producer: Option<String>,
     },
     /// Put one of Organon's editor panels in a region's scrolling stack, or take one out
     #[command(after_help = "A region assigned `panel` holds a SCROLLING COLUMN of Organon's own \
@@ -931,8 +953,26 @@ fn run_console(action: ConsoleAction) -> ! {
         // sidecar by hand. Nothing is checked *between* them here on purpose: whether this
         // region may hold this content depends on what the console is holding right now, which
         // is state only the console has.
-        ConsoleAction::Viewport { region, content } => {
-            cli::ConsoleOp::Viewport { region, content }
+        // ⚠️ **The producer travels as typed and is validated by SHAPE above this**, in
+        // `run_console` — the `Layout` arm's arrangement, because a producer name is not a
+        // member of any list this process can see. What it is *not* checked against here is
+        // approval, which is `Console::set_viewport`'s to answer with `modules.json` in hand at
+        // the moment the line lands.
+        ConsoleAction::Viewport { region, content, producer } => {
+            // The `Posture` and `Layout` arms' arrangement: resolve the word, throw the answer
+            // away, and refuse **here** where a human can see which rule was broken rather than
+            // seeing `queued: viewport left 3d producer …` and silence from a window they may
+            // not be looking at. ⚠️ It checks the SHAPE only — whether any module could be
+            // called this — because whether one *is* approved is a fact about `modules.json` at
+            // the moment the line lands, and this process would be answering with a file that
+            // may have moved by then.
+            match producer.as_deref().map(|p| region::Producer::stored(Some(p))).transpose() {
+                Ok(_) => cli::ConsoleOp::Viewport { region, content, producer },
+                Err(e) => {
+                    eprintln!("organon: {e}");
+                    std::process::exit(2);
+                }
+            }
         }
         // The `Viewport` arm's arrangement exactly, and its reason in full: clap has restricted
         // each word to its own closed table, the console resolves them again on arrival — which
@@ -1586,10 +1626,13 @@ mod tests {
             for w in region::CONTENT_WORDS {
                 let c = parse(&["console", "viewport", r, w]).unwrap();
                 match c.cmd {
-                    Cmd::Console { action: ConsoleAction::Viewport { region, content } } => {
+                    Cmd::Console {
+                        action: ConsoleAction::Viewport { region, content, producer },
+                    } => {
                         assert_eq!(&region, r);
                         assert_eq!(&content, w);
-                        let op = cli::ConsoleOp::Viewport { region, content };
+                        assert_eq!(producer, None, "the third word has no default at this door");
+                        let op = cli::ConsoleOp::Viewport { region, content, producer };
                         assert_eq!(
                             cli::parse_console_op(&cli::console_op_to_line(&op)),
                             Some(op),
@@ -1617,6 +1660,64 @@ mod tests {
         assert!(parse(&["console", "viewport", "left", "off"]).is_ok());
     }
 
+    /// 🚨 **`--producer` is the CLI's spelling of T4's third word, it has no default, and it is
+    /// a FLAG rather than a bare third word.**
+    ///
+    /// The last part is the one worth pinning: `stack`'s optional region set the precedent and
+    /// the reason is the four doors — `registry::parse_args` tags optional arguments by keyword,
+    /// so a bare third word here would make the typed line and this one disagree. A test that
+    /// only checked the flag would let a positional spelling be added beside it and never say
+    /// so, which is exactly how a second grammar starts.
+    ///
+    /// ⚠️ **Mutation-tested.** Changing the argument to a positional (`producer: Option<String>`
+    /// with no `#[arg(long)]`) fails this at *"a bare third word is not the spelling"*. Dropping
+    /// the `Producer::stored` check in `run_console` cannot be caught here — it exits the
+    /// process — so the shape rule is pinned against the function directly instead.
+    #[test]
+    fn console_viewport_takes_the_producer_as_a_flag_and_defaults_it_to_nothing() {
+        let c = parse(&["console", "viewport", "left", "3d", "--producer", "ascent"])
+            .expect("`--producer ascent` is a viewport line");
+        match c.cmd {
+            Cmd::Console { action: ConsoleAction::Viewport { region, content, producer } } => {
+                assert_eq!((region.as_str(), content.as_str()), ("left", "3d"));
+                assert_eq!(producer.as_deref(), Some("ascent"));
+                let op = cli::ConsoleOp::Viewport { region, content, producer };
+                assert_eq!(
+                    cli::console_op_to_line(&op),
+                    "viewport left 3d producer ascent",
+                    "the CLI's flag and the sidecar's keyword are one spelling"
+                );
+                assert_eq!(cli::parse_console_op(&cli::console_op_to_line(&op)), Some(op));
+            }
+            _ => panic!("parsed as something else"),
+        }
+
+        // 🚨 **A bare third word is NOT the spelling** — the composer fills optional arguments
+        // by keyword, and a positional here would be the second grammar the four doors exist to
+        // prevent.
+        assert!(
+            parse(&["console", "viewport", "left", "3d", "ascent"]).is_err(),
+            "a bare third word is not the spelling"
+        );
+        // ⚠️ **No `value_parser`, so an unapproved name PARSES here** — the approved set is the
+        // console's to check with `modules.json` in hand at the instant the line lands. What is
+        // checked at this door is the shape, and it is checked by the same function the console
+        // uses.
+        assert!(parse(&["console", "viewport", "left", "3d", "--producer", "never-approved"])
+            .is_ok());
+        assert_eq!(region::Producer::stored(Some("never-approved")).is_ok(), true);
+        for bad in ["", "organon-\u{7}"] {
+            assert!(
+                region::Producer::stored(Some(bad)).is_err(),
+                "`{bad}` cannot be any module's name, and `run_console` refuses it before the \
+                 line is queued"
+            );
+        }
+        // …and `organon` said out loud is legal, because it is the producer an omitted
+        // qualifier already means.
+        assert_eq!(region::Producer::stored(Some("organon")), Ok(region::Producer::Organon));
+    }
+
     /// 🚨 **`console viewport tl panel` is `console viewport topleft panel`, and `--help` still
     /// lists twelve words.**
     ///
@@ -1636,14 +1737,14 @@ mod tests {
             let c = parse(&["console", "viewport", short, "panel"])
                 .unwrap_or_else(|e| panic!("`viewport {short} panel` was refused: {e}"));
             match c.cmd {
-                Cmd::Console { action: ConsoleAction::Viewport { region, content } } => {
+                Cmd::Console { action: ConsoleAction::Viewport { region, content, producer } } => {
                     // ⚠️ **As typed, not expanded.** `PossibleValuesParser` returns the string it
                     // matched rather than the canonical name, and that is what makes this door
                     // agree with the composer — both put `tl` on the sidecar line and
                     // `region::Region::resolve` turns it into `{word}` at the console.
                     assert_eq!(&region, short, "`{short}` must travel as typed, not as `{word}`");
                     assert_eq!(&content, "panel");
-                    let op = cli::ConsoleOp::Viewport { region, content };
+                    let op = cli::ConsoleOp::Viewport { region, content, producer };
                     assert_eq!(
                         cli::parse_console_op(&cli::console_op_to_line(&op)),
                         Some(op),

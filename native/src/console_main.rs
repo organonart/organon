@@ -414,7 +414,11 @@ const CMD_SCREEN: &str = "console.screen";
 /// holds** — a fourth axis, orthogonal to the posture and the screen both. `organon_console::
 /// region`'s header owns the argument; the short of it is that a split changes none of `Form`'s
 /// tokens and does not move the window, so it is neither of the two verbs beside it.
-const CMD_VIEWPORT: &str = "console.viewport";
+///
+/// ⚠️ **An alias of `registry::VERB_VIEWPORT`, not a second spelling**, on [`CMD_LAYOUT`]'s rule
+/// and for its reason: the producer ring is keyed on that constant, and a rename that moved only
+/// one of two literals would leave the verb working with its ring silently gone.
+const CMD_VIEWPORT: &str = organon_console::registry::VERB_VIEWPORT;
 /// See [`CMD_BACKGROUND`]. **What is IN a region that holds `panel`** — the scrolling column of
 /// Organon's editor panels. `organon_console::panel_stack`'s header owns the argument.
 ///
@@ -498,6 +502,17 @@ const CMD_STATE: &str = "state";
 const CMD_REGION: &str = "region";
 /// See [`CMD_REGION`].
 const CMD_CONTENT: &str = "content";
+/// [`CMD_VIEWPORT`]'s **optional** third slot: which producer draws the `3d` region.
+///
+/// ⚠️ **An alias of `registry::VIEWPORT_PRODUCER_ARG`**, on [`CMD_LAYOUT`]'s rule — the ring
+/// hook over there is asked for one argument *by name*, so a second spelling would leave the
+/// slot working with no completion behind it. That constant's doc owns why it is keyword-tagged
+/// rather than a bare third word.
+///
+/// Not [`CMD_ARG`] and not [`CMD_CONTENT`], on [`CMD_ROWS`]' rule: a producer is neither a
+/// `name` that means a material nor a content kind, and a palette offering `ascent` under the
+/// heading "content" would be describing a table that does not contain it.
+const CMD_PRODUCER: &str = organon_console::registry::VIEWPORT_PRODUCER_ARG;
 /// [`CMD_STACK`]'s two slots. Neither reuses [`CMD_ARG`] or [`CMD_REGION`], on [`CMD_ROWS`]'
 /// rule: `add` is not a `name`, and a panel is not a region. Both are `Choice`s over
 /// `panel_stack`'s own tables, so the MCP schema, the slash palette's two rings and the CLI's
@@ -710,6 +725,22 @@ fn console_specs() -> Vec<CommandSpec> {
                         organon_console::region::CONTENT_WORDS.iter().map(|s| (*s).to_string()).collect(),
                     ),
                     required: true,
+                },
+                // 🚨 **`Text`, not a `Choice`, and the ring is a `NarrowFn` over what is
+                // approved right now** — `registry::viewport_options`. The value space is
+                // `modules.json`'s, so it is neither closed nor knowable when this table is
+                // built; a `Choice` here would be a list frozen at start-up, which is the one
+                // thing a dynamic vocabulary must not be. `console.layout`'s name slot is the
+                // precedent, and its measurement is why the ring reads a cache rather than the
+                // file (§1.15).
+                //
+                // ⚠️ **Optional, and absent means Organon** — `doc/organon_module_viewport.md`
+                // §4.2. That is what keeps `viewport left 3d` the command it has always been,
+                // in this schema as much as on the wire.
+                ArgSpec {
+                    name: CMD_PRODUCER.into(),
+                    kind: ArgKind::Text,
+                    required: false,
                 },
             ],
             // ⚠️ **Recoverable, and the argument is `screen`'s exactly**: `viewport full agent`
@@ -1155,7 +1186,18 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             let c = word(CMD_CONTENT)?;
             organon_console::region::Region::resolve(&r).map_err(|e| format!("{name}: {e}"))?;
             organon_console::region::ContentCmd::resolve(&c).map_err(|e| format!("{name}: {e}"))?;
-            Ok(cli::ConsoleOp::Viewport { region: r, content: c })
+            // The optional third word. **Checked for SHAPE and not for approval**, which is the
+            // same split every other arm here makes and lands in a sharper place: whether a
+            // producer is approved is a fact about `modules.json` at the moment the op is
+            // *drained*, and this runs at dispatch. `Producer::stored` refuses a word no
+            // manifest could have declared; `Console::set_viewport` is the one gate that names
+            // the approved ones.
+            let p = args.get(CMD_PRODUCER).and_then(|v| v.as_str()).map(str::to_string);
+            if let Some(word) = &p {
+                organon_console::region::Producer::stored(Some(word))
+                    .map_err(|e| format!("{name}: {e}"))?;
+            }
+            Ok(cli::ConsoleOp::Viewport { region: r, content: c, producer: p })
         }
         // Both words resolved and the answer thrown away, on `CMD_VIEWPORT`'s rule: membership
         // was settled by `validate_args` against the two `Choice`s, so this is the belt that
@@ -1354,8 +1396,10 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         cli::ConsoleOp::Screen(word) => json!({ CMD_STATE: word }),
         // Two slots of its own rather than either name above — `console_specs` declares them,
         // so the two must agree or `validate_args` refuses every dispatch this produces.
-        cli::ConsoleOp::Viewport { region, content } => {
-            json!({ CMD_REGION: region, CMD_CONTENT: content })
+        // ⚠️ **The producer is spelled as `null` when absent** rather than omitted, on the
+        // `Stack` arm's rule directly below and for its reason.
+        cli::ConsoleOp::Viewport { region, content, producer } => {
+            json!({ CMD_REGION: region, CMD_CONTENT: content, CMD_PRODUCER: producer })
         }
         // Two more slots of its own, for the reason directly above — plus the optional region.
         // ⚠️ **Spelled as `null` when absent** rather than omitted, on the camera's rule and for
@@ -2559,9 +2603,13 @@ fn draw_regions(
     theme: &Theme,
     viewport: &mut RegionViewport<'_>,
     panels: &mut RegionPanels<'_>,
+    // What is approved right now — read once per frame through
+    // `ModuleRegistry::for_completion`'s bounded-staleness cache (§1.15's measurement, T3a's
+    // implementation), never per region and never straight off the disk.
+    modules: &organon_console::module::ModuleRegistry,
     draw_active_pane: &mut dyn FnMut(&mut egui::Ui),
 ) -> Option<egui::Rect> {
-    use organon_console::region::{plan, Content};
+    use organon_console::region::{plan, Content, Producer};
     let Some(placed) = pane.and_then(|p| plan(p, layout)) else {
         ui.centered_and_justified(|ui| {
             ui.monospace(
@@ -2621,7 +2669,7 @@ fn draw_regions(
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         child.set_clip_rect(content_rect.intersect(ui.clip_rect()));
-        match slot.content {
+        match &slot.content {
             Some(Content::Agent) if !live_tab_taken => {
                 live_tab_taken = true;
                 draw_active_pane(&mut child);
@@ -2656,7 +2704,7 @@ fn draw_regions(
             // rectangle.** `paint_viewport` is one implementation and this is its second call
             // site; nothing about the render, the texture, the gesture or the camera is
             // duplicated here.
-            Some(Content::ThreeD) if !viewport.yielded_to_portal => {
+            Some(Content::ThreeD(Producer::Organon)) if !viewport.yielded_to_portal => {
                 viewport_rect = Some(content_rect);
                 paint_viewport(
                     &mut child,
@@ -2676,9 +2724,27 @@ fn draw_regions(
             // held a moment ago.** §1.14's vacancy rule applies with more force to a picture
             // than to an empty cell: a rectangle that was rendering a world and now is not
             // is exactly what a broken viewport looks like.
-            Some(Content::ThreeD) => {
+            Some(Content::ThreeD(Producer::Organon)) => {
                 paint_region_notice(&mut child, content_rect, slot.region, theme)
             }
+            // 🚨 **A hosted producer — T4, and NOTHING here draws its picture.** There is no
+            // protocol and no process yet (`doc/organon_module_viewport.md` T3b/T5 own those),
+            // so what this rectangle can honestly do is say why it is not a picture. §4.6's
+            // first two rows are exactly the two states `ModuleState` can reach with nothing
+            // running, which is why only those two exist.
+            //
+            // ⚠️ **Never a blank and never a stale texture.** §1.14's vacancy rule applies with
+            // more force to a picture than to an empty quarter: a rectangle that was rendering
+            // and now is not is precisely what a broken viewport looks like, and the texture is
+            // still there and still valid, which is what makes showing it the easiest wrong
+            // thing to do.
+            Some(Content::ThreeD(Producer::Hosted(name))) => paint_module_notice(
+                &mut child,
+                content_rect,
+                slot.region,
+                modules.vacancy(name),
+                theme,
+            ),
             // 🚨 **Vacant is a name, never a blank.** §1.9's `Ring::Empty` argument at the scale
             // of a sixth of a window: a region that draws nothing at all is indistinguishable
             // from one that is broken. The *name* is what carries that, and it is all that
@@ -2822,6 +2888,71 @@ fn paint_region_notice(
     text.label(egui::RichText::new(word).monospace().strong().color(theme.panel_title));
 }
 
+/// What a region holding a **hosted producer** says instead of a picture — T4.
+///
+/// # 🚨 This is the one notice that carries a sentence, and the exception is argued rather than
+/// assumed
+///
+/// [`paint_region_notice`]'s doc records James's rule of 2026-08-21 — *"We never want text just
+/// pasted in explaining something into the UI"* — and the line that survived it: **a label, a
+/// value, or an answer to something you just did.** Four sentences went, and this one arrives
+/// eight sections later in the same file, so the difference has to be stated rather than left
+/// for somebody to notice.
+///
+/// **Every sentence that was removed described a WORKING console.** An empty column, a region
+/// waiting for a tab, the portal holding the world: each was a consequence of something already
+/// visible elsewhere in the window, which is exactly why losing it cost nothing. This one is
+/// not. A rectangle that would be showing a module and is not is the state
+/// `doc/organon_module_viewport.md` §4.6 is written about, and it names the one thing nothing
+/// else in the window can say: *which* module, and *what* is wrong with it. Its own words:
+/// *"the console owns every one of the module's failure modes as a sentence in the rectangle."*
+///
+/// ⚠️ **It is still James's call and it is one line to cut** — replace `state.sentence()` with
+/// `producer` and the rectangle reads as a label like every other. That is why the sentence
+/// comes from [`organon_console::module::ModuleState::sentence`] rather than being written here:
+/// one place decides what it says, and this only decides where it is painted.
+///
+/// 📌 **The verb in it comes from `module.rs`'s constants**, not from a string typed here — so
+/// when T3b registers `console module approve`, the sentence and the command a person types are
+/// one string rather than two that happen to match.
+///
+/// `None` from `vacancy` is the working case (§1.17), and there is nothing to draw for it yet:
+/// no protocol, no process, no picture. It falls back to the region's own name, which is what
+/// every other rectangle with nothing to show already draws.
+fn paint_module_notice(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    region: organon_console::region::Region,
+    state: Option<organon_console::module::ModuleState>,
+    theme: &Theme,
+) {
+    let Some(state) = state else {
+        // Approved, and a `BuildRecord` naming those exact bytes. ⚠️ **Reachable, and only from
+        // a hand-written `modules.json`** — nothing in this build fills `built` (T3b does) — so
+        // it is not the unreachable arm `region.rs` refuses to write: a file can put the
+        // registry in this state today, and a rectangle has to draw something when it does.
+        // T5 replaces it with a picture; until then the honest answer is the one a region with
+        // nothing to show already gives.
+        paint_region_notice(ui, rect, region, theme);
+        return;
+    };
+    let word = region.as_word();
+    ui.painter().rect_filled(rect, 0.0, theme.panel_fill);
+    let inner = rect.shrink(REGION_NOTICE_PAD);
+    let mut text = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(("organon-module-notice", word))
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    // Clipped, so a long sentence in a 320-point column costs the tail of an explanation and
+    // never spills over the region beside it — `region_line`'s measured overflow, avoided by
+    // construction rather than by hoping the text is short.
+    text.set_clip_rect(inner.intersect(ui.clip_rect()));
+    text.label(egui::RichText::new(word).monospace().strong().color(theme.panel_title));
+    text.label(egui::RichText::new(state.sentence()).monospace().color(theme.panel_text));
+}
+
 /// The hairlines **between** regions — and only between them.
 ///
 /// ⚠️ **Every edge that lies on the pane's own boundary is skipped**, which is what stops a
@@ -2878,6 +3009,38 @@ enum ViewportTarget {
     Portal,
     /// The region holding `3d` — [`organon_console::region::Content::ThreeD`].
     Region,
+}
+
+/// Which region, if any, is asking **Organon** to render into it — [`engine_plan`]'s second
+/// input, as a pure function of the layout.
+///
+/// 🚨 **Split out of [`Console::region_showing_world`] in T4 so the answer can be tested without
+/// a window**, and because that is the boolean whose new failure mode is silent. It was
+/// `region_holding(Content::ThreeD)` while there was one producer; a region holding `3d ascent`
+/// is a rectangle a **hosted module** draws into, and counting it here would make [`engine_plan`]
+/// return `Some(ViewportTarget::Region)` for a rectangle that paints a sentence — one `World`
+/// render per frame, thrown away, with the backdrop starved for it and **nothing to say so,
+/// because a wasted frame is not an error**.
+///
+/// `doc/organon_module_viewport.md` §4.5: *"A hosted module is not a claimant on that. It does
+/// not render `World`, does not touch `frame_index`, and does not share the TAA jitter phase."*
+/// ⚠️ That is also why [`tests::the_engine_is_asked_for_at_most_one_frame`] is **not** widened
+/// for a hosted producer: widening it would assert that a hosted module is a claimant, which is
+/// the opposite of what is true. The claim is made here instead, where it is about the input
+/// rather than about the arbiter.
+///
+/// ⚠️ **It sits ABOVE [`engine_plan`]'s doc block on purpose.** An earlier version of this tier
+/// put it between that block and its function, which left the at-most-one-frame argument — the
+/// portal precedence, the two rejected rules, the TAA jitter phase — attached by rustdoc to this
+/// two-line lookup, and left `engine_plan` documented by a sentence about which region is asking.
+/// A comment above the wrong item is not a smaller version of a wrong comment; it is the same
+/// defect, and the person it misleads is whoever next changes the precedence rule.
+fn region_showing_world(
+    layout: &organon_console::region::Layout,
+) -> Option<organon_console::region::Region> {
+    layout.region_holding(organon_console::region::Content::ThreeD(
+        organon_console::region::Producer::Organon,
+    ))
 }
 
 /// What the engine is asked to draw this frame: the backdrop's source, and **which viewport
@@ -3628,8 +3791,8 @@ impl Console {
         // backdrop is still rendered once at the whole pane's size and every region is drawn
         // over the same picture, so nothing *behind* the glyphs moved. See `console_step`'s
         // `Viewport` arm, which is where that argument is written out.
-        if let cli::ConsoleOp::Viewport { region, content } = op {
-            self.set_viewport(region, content);
+        if let cli::ConsoleOp::Viewport { region, content, producer } = op {
+            self.set_viewport(region, content, producer.as_deref());
             return;
         }
         // Above the ledger for the reason directly above, one level in: this changes which
@@ -3930,7 +4093,15 @@ impl Console {
     /// rather than swallowed. The alternative — refusing every overlap — makes the first word
     /// of every split a refusal, since the console opens holding `full` and `full off` is
     /// refused by the last-agent rule; `region`'s header has the measurement.
-    fn set_viewport(&mut self, region_word: &str, content_word: &str) {
+    ///
+    /// # 🚨 Which producer — T4
+    ///
+    /// `producer` is the **optional** third word, `None` for every command written before it
+    /// existed and for every command naming Organon's own viewport. This is where it meets the
+    /// approved set, because that is the one question the schema, clap and [`op_from`] all
+    /// cannot answer: a module can be revoked while the console is running, so the answer has to
+    /// be the one that is true at the instant the command lands.
+    fn set_viewport(&mut self, region_word: &str, content_word: &str, producer_word: Option<&str>) {
         use organon_console::region::{ContentCmd, Region};
         // Refused rather than approximated — `Posture::resolve`'s rule, and here the cost of an
         // approximation is a window rearranged into a shape nobody named.
@@ -3941,7 +4112,28 @@ impl Console {
                 return;
             }
         };
-        let cmd = match ContentCmd::resolve(content_word) {
+        // 🚨 **The approved set is read HERE, and this is the only door that checks it.**
+        // `bin/ctl.rs` and `op_from` both check the producer's *shape*; neither can check
+        // approval, because `modules.json` is a file a person edits and revokes from while the
+        // console runs — the answer has to be the one that is true at the instant the command
+        // lands. `for_completion` rather than `load` for `layout`'s reason: this is the same
+        // 200 ms-bounded read the ring already takes, and a command arriving is not a reason to
+        // hit the disk again.
+        //
+        // ⚠️ **An unapproved producer is refused and NEVER approximated to Organon** (§4.2). The
+        // refusal names the approved ones, because the person who typed a wrong producer is
+        // exactly the person who has not been told the right ones.
+        //
+        // ⚠️ **Read only when a producer was actually named.** With no qualifier the answer is
+        // Organon without consulting anything, and `store_root` is `dirs::data_dir()` — a shell
+        // API call on Windows. `viewport left agent` should not touch the module store to
+        // discover that it does not need it.
+        let approved = producer_word.and_then(|_| {
+            organon_console::module::ModuleRegistry::store_root()
+                .map(|root| organon_console::module::ModuleRegistry::for_completion(&root))
+        });
+        let names = approved.as_ref().map(|r| r.producers()).unwrap_or_default();
+        let cmd = match ContentCmd::resolve_with(content_word, producer_word, &names) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("organon-console: {e} — ignored");
@@ -4826,14 +5018,21 @@ impl Console {
         )
     }
 
-    /// The region holding `3d`, if any — **at most one**, which is `region.rs`'s uniqueness rule
-    /// rather than a fact about this lookup ([`Content::only_one_because`] is where that limit
-    /// is decided and attributed).
+    /// The region holding `3d` **whose producer is Organon**, if any — at most one, which is
+    /// `region.rs`'s uniqueness rule rather than a fact about this lookup
+    /// ([`organon_console::region::Producer::only_one_because`] is where that limit is decided
+    /// and attributed).
+    ///
+    /// 🚨 **The producer is part of the question since T4, and getting that wrong is silent.**
+    /// A region holding `3d ascent` is a rectangle a *hosted* module draws into; counting it
+    /// here would make [`engine_plan`] render a `World` frame nobody paints — which starves the
+    /// backdrop for a frame that is thrown away, and a wasted frame is not an error. §4.5:
+    /// *"a hosted module is not a claimant on that."*
     ///
     /// ⚠️ It answers about the **layout**, not about the frame: a region can hold `3d` while the
     /// portal has the World, and that is exactly the state whose notice has to name the portal.
     fn region_showing_world(&self) -> Option<organon_console::region::Region> {
-        self.layout.region_holding(organon_console::region::Content::ThreeD)
+        region_showing_world(&self.layout)
     }
 
     fn render_backdrop(&mut self) -> Option<egui::TextureId> {
@@ -5661,13 +5860,46 @@ impl Console {
         // the layout is moved by `set_viewport`, which has already run in `drain_console` at the
         // top of this function, so the division a frame draws is the one every command issued
         // before it asked for.
-        let layout = self.layout;
-        // Which region holds `3d`, read off the copy above rather than through
-        // [`Console::region_showing_world`] — `self` is split into disjoint field borrows for
-        // the duration of `egui_ctx.run`, so a method taking `&self` cannot be called here. It
-        // is the same lookup on the same value: `Layout` is `Copy` and this is that copy.
-        let three_d_region =
-            layout.region_holding(organon_console::region::Content::ThreeD);
+        // ✏️ **A clone since T4** — `Content` gave up `Copy` to carry a producer name. The
+        // statement means what it meant: a value of this frame's layout that the closure owns.
+        let layout = self.layout.clone();
+        // Which region holds `3d` **with Organon behind it**, read off the copy above rather
+        // than through [`Console::region_showing_world`] — `self` is split into disjoint field
+        // borrows for the duration of `egui_ctx.run`, so a method taking `&self` cannot be
+        // called here. ✏️ **It is the same FUNCTION since T4, not merely the same lookup**: the
+        // method and this are two calls to the free `region_showing_world`, so the answer this
+        // frame draws with and the answer `engine_plan` was given cannot come apart.
+        let three_d_region = region_showing_world(&layout);
+        // 🚨 **What is approved, taken ONCE for the whole frame** — a region holding a hosted
+        // producer asks it what to say instead of a picture. `for_completion` rather than
+        // `load`: this runs on the draw path, and §1.15's measurement of the same shape one
+        // library over is 10.1 ms against a 16.7 ms frame when the file is read straight. The
+        // cache is T3a's, store-root-keyed, 200 ms, invalidated by every write — so a module
+        // approved or revoked in another window is in the rectangle before anybody could notice
+        // it was not.
+        //
+        // ⚠️ Taken once for the whole walk rather than inside the hosted arm, because computing
+        // it in there would be a second borrow of `self` while the closure holds disjoint field
+        // borrows — but **only when the layout actually holds a hosted producer**. `store_root`
+        // is `dirs::data_dir()`, a shell API call on Windows, and a console nobody has approved
+        // a module in must pay nothing at all for a capability it is not using (`CLAUDE.md`
+        // invariant 4, as a cost rather than as a behaviour).
+        let modules = layout
+            .occupied()
+            .iter()
+            .any(|(_, c)| {
+                matches!(
+                    c,
+                    organon_console::region::Content::ThreeD(
+                        organon_console::region::Producer::Hosted(_)
+                    )
+                )
+            })
+            .then(organon_console::module::ModuleRegistry::store_root)
+            .flatten()
+            .map(|root| organon_console::module::ModuleRegistry::for_completion(&root))
+            .unwrap_or_default();
+        let modules = modules.as_ref();
         // The console's one panel column, split out of `self` for the closure. Shared rather
         // than mutable: a `/organon` line asks for a push by leaving a value on
         // `ConversationOutput`, which is applied after the closure with `&mut self` in hand —
@@ -6005,6 +6237,7 @@ impl Console {
                                     true
                                 },
                             },
+                            modules,
                             &mut draw_active_pane,
                         );
                     }
@@ -7618,6 +7851,13 @@ mod cli_tests {
     /// assignment is legal. `full off` passes every gate here and is refused by
     /// [`Console::set_viewport`], because "is there another agent region" is a fact about the
     /// layout the console is holding when the op lands, and this function runs before that.
+    ///
+    /// ✏️ **Three slots since T4, and the third is the one with no closed value space.** The
+    /// producer is `ArgKind::Text` with a `NarrowFn` over `modules.json`
+    /// (`registry::viewport_options`), because the approved set is neither closed nor knowable
+    /// when this table is built. 🚨 **It is asserted to be OPTIONAL here**, which is the schema's
+    /// half of *"an omitted producer means Organon"*: a required third slot would break every
+    /// `viewport` call that has ever been made.
     #[test]
     fn the_viewport_verbs_rings_are_the_region_tables_and_it_checks_words_not_layouts() {
         use organon_console::region::{CONTENT_WORDS, REGION_ALIASES, REGION_WORDS};
@@ -7626,7 +7866,18 @@ mod cli_tests {
             .find(|s| s.name == CMD_VIEWPORT)
             .expect("console.viewport is registered");
         assert_eq!(spec.target, TargetKind::Viewport, "dividing the pane is the viewport");
-        assert_eq!(spec.args.len(), 2, "a region and a content, never one fused word");
+        assert_eq!(spec.args.len(), 3, "a region, a content, and a producer — never one fused word");
+        let producer = spec.args.iter().find(|a| a.name == CMD_PRODUCER).expect("the third slot");
+        assert!(!producer.required, "an omitted producer means Organon");
+        assert_eq!(
+            producer.kind,
+            ArgKind::Text,
+            "the approved set is not a table this catalog can hold — the ring is a `NarrowFn`"
+        );
+        assert!(
+            spec.args.iter().take(2).all(|a| a.required),
+            "the region and the content still have no defaults"
+        );
         let slot = |name: &str| -> ArgKind {
             spec.args.iter().find(|a| a.name == name).expect("the slot").kind.clone()
         };
@@ -7682,7 +7933,12 @@ mod cli_tests {
         }
         let described = region_schema["description"].as_str().expect("a description");
         assert!(described.contains("short form"), "the schema keeps them secret: {described}");
-        for a in &spec.args {
+        // ✏️ **"Every argument is required" was true until T4 and is now false of exactly one.**
+        // The two *words* still have no defaults — half a command is not a command — while the
+        // producer has one, and it is the one that has always been meant: Organon. Asserted as
+        // the pair rather than as "all of them", so a fourth required slot cannot slip in under
+        // a loosened rule.
+        for a in spec.args.iter().filter(|a| a.name != CMD_PRODUCER) {
             assert!(a.required, "`{}` is not optional — half a command is not a command", a.name);
         }
 
@@ -7695,12 +7951,79 @@ mod cli_tests {
                     .unwrap_or_else(|e| panic!("`{r} {c}`: {e}"));
                 assert_eq!(
                     op,
-                    cli::ConsoleOp::Viewport { region: (*r).into(), content: (*c).into() }
+                    cli::ConsoleOp::Viewport {
+                        region: (*r).into(),
+                        content: (*c).into(),
+                        producer: None
+                    }
                 );
                 let line = cli::console_op_to_line(&op);
                 assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
             }
         }
+        // 🚨 **T4's optional third slot, over the same cross product** — an absent producer is
+        // the line every one of these has always been, and a present one survives the trip
+        // whole. A producer that made it one way only would be a viewport drawn by the wrong
+        // renderer, which §4.2 calls strictly worse than a refusal.
+        for r in REGION_WORDS {
+            for c in CONTENT_WORDS {
+                let absent =
+                    op_from(CMD_VIEWPORT, &json!({ CMD_REGION: r, CMD_CONTENT: c, CMD_PRODUCER: Value::Null }))
+                        .unwrap_or_else(|e| panic!("`{r} {c}` with a null producer: {e}"));
+                assert_eq!(
+                    absent,
+                    cli::ConsoleOp::Viewport {
+                        region: (*r).into(),
+                        content: (*c).into(),
+                        producer: None
+                    },
+                    "a null producer must be indistinguishable from an absent one"
+                );
+                assert_eq!(
+                    cli::console_op_to_line(&absent),
+                    format!("viewport {r} {c}"),
+                    "an Organon viewport writes the line it wrote before T4, byte for byte"
+                );
+                let named =
+                    op_from(CMD_VIEWPORT, &json!({ CMD_REGION: r, CMD_CONTENT: c, CMD_PRODUCER: "ascent" }))
+                        .unwrap_or_else(|e| panic!("`{r} {c} producer ascent`: {e}"));
+                assert_eq!(
+                    named,
+                    cli::ConsoleOp::Viewport {
+                        region: (*r).into(),
+                        content: (*c).into(),
+                        producer: Some("ascent".into())
+                    }
+                );
+                let line = cli::console_op_to_line(&named);
+                assert_eq!(cli::parse_console_op(&line), Some(named), "line was {line:?}");
+            }
+        }
+        // ⚠️ **`op_from` checks the producer's SHAPE and never its approval** — a name no
+        // manifest could declare is refused here, where the words are still in the composer;
+        // a name that merely is not approved is `Console::set_viewport`'s to refuse, with
+        // `modules.json` in hand at the instant the line lands.
+        assert!(
+            op_from(CMD_VIEWPORT, &json!({ CMD_REGION: "left", CMD_CONTENT: "3d", CMD_PRODUCER: "" }))
+                .is_err(),
+            "an empty producer name cannot be asked for"
+        );
+        assert!(
+            op_from(
+                CMD_VIEWPORT,
+                &json!({ CMD_REGION: "left", CMD_CONTENT: "3d", CMD_PRODUCER: "not approved yet" })
+            )
+            .is_err(),
+            "whitespace in a producer would arrive truncated on the sidecar line"
+        );
+        assert!(
+            op_from(
+                CMD_VIEWPORT,
+                &json!({ CMD_REGION: "left", CMD_CONTENT: "3d", CMD_PRODUCER: "never-approved" })
+            )
+            .is_ok(),
+            "approval is not this door's question — a usable name passes it"
+        );
         // 🚨 **Every short form is accepted at THIS door too, and it travels as typed.** The
         // MCP tool is the door the schema under-describes on purpose (the `enum` is twelve
         // words), so it is the one where "advertised" and "accepted" could quietly come apart —
@@ -7712,7 +8035,11 @@ mod cli_tests {
                     .unwrap_or_else(|e| panic!("`{short} {c}`: {e}"));
                 assert_eq!(
                     op,
-                    cli::ConsoleOp::Viewport { region: (*short).into(), content: (*c).into() },
+                    cli::ConsoleOp::Viewport {
+                        region: (*short).into(),
+                        content: (*c).into(),
+                        producer: None
+                    },
                     "`{short}` must reach the console as typed — `region::Region::resolve` is \
                      the one place it becomes `{word}`, so both doors agree on the line"
                 );
@@ -8300,6 +8627,91 @@ mod cli_tests {
         }
     }
 
+    /// 🚨 **A region holding `3d ascent` must NOT ask Organon for a frame — T4, and the failure
+    /// it guards is silent.**
+    ///
+    /// [`engine_plan`]'s second input is *"a region holds `3d` **whose producer is Organon**"*,
+    /// not *"a region holds `3d`"*. Get it wrong and the console renders a `World` frame for a
+    /// rectangle that paints a sentence: the backdrop is starved (`engine_plan` returns
+    /// `BackdropSource::Off` the moment a region claims the frame), the picture is thrown away,
+    /// and **nothing reports it, because a wasted frame is not an error.**
+    ///
+    /// ⚠️ **[`the_engine_is_asked_for_at_most_one_frame`] is deliberately NOT widened for this**
+    /// — §4.5: *"a hosted module is not a claimant on that."* Its invariant is about the arbiter
+    /// and is untouched; this is about the **input**, which is why it is a test of its own.
+    ///
+    /// ⚠️ **Mutation-tested.** Restoring the pre-T4 body — dropping the producer from
+    /// [`region_showing_world`]'s `region_holding` argument, i.e. asking for
+    /// `Content::ThreeD(Producer::Hosted(String::new()))`… there is no such spelling, which is
+    /// itself the point: the only way to write the old behaviour now is to *search* for a
+    /// hosted producer as well, and doing so fails this at *"a hosted producer is not a
+    /// claimant"* with `engine_plan` answering `Some(Region)` and `BackdropSource::Off`.
+    #[test]
+    fn a_hosted_producer_does_not_make_the_console_render_a_world_frame() {
+        use organon_console::region::{Content, ContentCmd, Layout, Producer, Region};
+
+        let with = |content: Content| {
+            Layout::default()
+                .assign(Region::Left, ContentCmd::Hold(Content::Agent))
+                .expect("left agent")
+                .layout
+                .assign(Region::Right, ContentCmd::Hold(content))
+                .expect("right")
+                .layout
+        };
+
+        // Organon's viewport is a claimant, exactly as it was before T4.
+        let organon = with(Content::ThreeD(Producer::Organon));
+        assert_eq!(region_showing_world(&organon), Some(Region::Right));
+        assert_eq!(
+            engine_plan(false, region_showing_world(&organon).is_some(), BackdropSource::World, false),
+            (BackdropSource::Off, Some(ViewportTarget::Region)),
+            "Organon's viewport still takes the frame from the backdrop"
+        );
+
+        // 🚨 …and a hosted one is not.
+        let hosted = with(Content::ThreeD(Producer::Hosted("ascent".into())));
+        assert_eq!(
+            region_showing_world(&hosted),
+            None,
+            "a hosted producer is not a claimant on Organon's one frame"
+        );
+        assert_eq!(
+            engine_plan(false, region_showing_world(&hosted).is_some(), BackdropSource::World, false),
+            (BackdropSource::World, None),
+            "the backdrop keeps the frame — nothing is rendered for a rectangle that paints a \
+             sentence"
+        );
+        // The same with the backdrop off and a patch wanting an image: the substrate promotion
+        // survives, where a spurious claimant would have displaced it.
+        assert_eq!(
+            engine_plan(false, region_showing_world(&hosted).is_some(), BackdropSource::Off, true),
+            (BackdropSource::Substrate, None)
+        );
+
+        // Both at once — the mixed layout the uniqueness rule now permits. Organon's region is
+        // the one that answers, and it is the one whose rectangle is measured.
+        let mixed = Layout::default()
+            .assign(Region::Left, ContentCmd::Hold(Content::Agent))
+            .expect("left agent")
+            .layout
+            .assign(Region::TopRight, ContentCmd::Hold(Content::ThreeD(Producer::Hosted("ascent".into()))))
+            .expect("topright ascent")
+            .layout
+            .assign(Region::BottomRight, ContentCmd::Hold(Content::ThreeD(Producer::Organon)))
+            .expect("bottomright 3d")
+            .layout;
+        assert_eq!(region_showing_world(&mixed), Some(Region::BottomRight));
+
+        // And a layout with no `3d` at all is unchanged in every direction.
+        let none = with(Content::Panel);
+        assert_eq!(region_showing_world(&none), None);
+        assert_eq!(
+            engine_plan(false, false, BackdropSource::World, false),
+            (BackdropSource::World, None)
+        );
+    }
+
     /// 🚨 **The precedence between the two viewport presentations, stated as a test rather than
     /// left to whichever branch happens to come first.**
     ///
@@ -8658,9 +9070,34 @@ mod cli_tests {
             // wrong the others do not: swapping the slots. Both orders of meaning are covered —
             // a region word in the region slot and a content word in the content slot — and the
             // clearing word rides along, since `off` is the only way back from a split.
-            cli::ConsoleOp::Viewport { region: "full".into(), content: "agent".into() },
-            cli::ConsoleOp::Viewport { region: "topleft".into(), content: "panel".into() },
-            cli::ConsoleOp::Viewport { region: "right".into(), content: "off".into() },
+            cli::ConsoleOp::Viewport {
+                region: "full".into(),
+                content: "agent".into(),
+                producer: None,
+            },
+            cli::ConsoleOp::Viewport {
+                region: "topleft".into(),
+                content: "panel".into(),
+                producer: None,
+            },
+            cli::ConsoleOp::Viewport {
+                region: "right".into(),
+                content: "off".into(),
+                producer: None,
+            },
+            // T4's optional third word, which has a way to be wrong the first two do not: it is
+            // written **only when set**, so both states have to survive the trip or an Organon
+            // viewport and an Ascent one become the same line.
+            cli::ConsoleOp::Viewport {
+                region: "left".into(),
+                content: "3d".into(),
+                producer: None,
+            },
+            cli::ConsoleOp::Viewport {
+                region: "left".into(),
+                content: "3d".into(),
+                producer: Some("ascent".into()),
+            },
             // The second two-word op, with the same way to be wrong plus one of its own: the
             // emptying word rides the *panel* slot, so `remove all` has to survive the trip or
             // a column becomes unclearable.
