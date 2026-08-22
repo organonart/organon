@@ -748,10 +748,112 @@ it. #147 names that cliff and this tier stops short of it deliberately.
 | DoRA | **refused**, by name | its update is not `(alpha/r)·B·A`; reading it as LoRA would produce plausible numbers rather than an error |
 | **anything against a real adapter** | 🚨 **never run** | no adapter has been parsed on any machine. Every fixture here is synthetic. #147's own closing line — *"nothing here has been run"* — is still true of the file format; what this tier makes false is only *"no arithmetic exists"* |
 
-📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no renderer, no network.** T3 is
-what turns these numbers into a lens (a `NeuralGraph` builder behind a new
-`Shared.mind[2]` `topo_mode` value); T1 is what discovers adapters over the Studio's API.
-Neither is here, and this module knows about neither.
+📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no renderer, no network.** T3
+(below) is what turns these numbers into a lens; T1 is what discovers adapters over the
+Studio's API. This module knows about neither.
+
+### 2.8 The Delta lens (#147 Tier 3) — *landed; nothing has ever selected it on a machine*
+
+`math.rs`'s `delta_sites` / `delta_into_scalars` / `delta_lens_graph`, behind
+**`Shared.mind[2] == 2`**. The specimen, shaped and lit by how far each site actually
+moved during a fine-tune — the BinDiff parallel `doc/organon_prd.md` §6.2 has been
+asking for.
+
+Structurally it is `stream_frame_into_scalars`' twin, and deliberately so: build the
+architecture topology, then overwrite `node_scalar` — from a **static adapter summary**
+where the live path takes a **streamed frame**. Both writers walk the same
+`for_each_arch_node`, which is the single source of truth for node order. A private
+re-implementation of that order would misattribute every value on screen while still
+producing the right node *count*, and nothing else would notice.
+
+| The mapping | Node | Why |
+|---|---|---|
+| `gate_proj` / `up_proj` / `down_proj` (+ `c_fc`, `w1`…`w3`, `dense_h_to_4h`, …) | the layer's **`Mlp`** | |
+| `q_proj` / `k_proj` / `v_proj` / `o_proj` (+ `query_key_value`, `c_attn`, `wq`…`wo`, …) | **every** `Head` of the layer, identically | ⚠️ see the limit below |
+| everything the layer adapts, recognised or not | the layer's **`Backbone`** | so an unlisted name can never make a trained layer look untouched |
+
+⚠️ **Uniform across heads is a limit, not a shortcut, and the picture says so.**
+`q_proj` is *one* tensor covering every head; resolving per-head needs per-output-row
+norms of `ΔW`, which is the full `out × in` product T2 stopped short of on purpose. So
+the head ring carries a **per-layer attention** quantity drawn on per-head nodes — and
+it therefore renders as a *perfect circle*, where the live lens's ring is ragged
+because its heads really do differ. The absence of resolution is visible rather than
+implied.
+
+#### 🚨 Two lenses, one visual channel — how a viewer tells them apart
+
+The #226 node glow renders `node_scalar` whether it came from an activation ring (a
+*labeled proxy* for "this site is busy right now", §3's #1 recorded gap) or from an
+adapter file (**measured** — "this site moved this far during training"). The mode
+selector is off-screen from the viewport, so it cannot be the answer. Three things
+separate them, and each is decisive alone:
+
+1. **The silhouette.** The live lens rides the skeleton unchanged — a straight-sided
+   cylinder, every head ring the same radius at every depth, forever. The Delta lens
+   **displaces each off-axis site radially by its own movement** (`DELTA_R_REST` = 0.30
+   at nothing, 1.0 at full), so an adapter's footprint is a *profile*: bulging where it
+   moved, pinched toward the axis where it did not. A cylinder is never a delta view;
+   a waisted specimen is never a live one. The trunk never bends — backbone nodes sit
+   on the axis, so the scaling is a no-op on them by construction.
+2. **It holds still**, and there are two ways it could have failed to. `world.rs`'s
+   `topo == 5` seam is gated to view **0**, so an arriving activation frame can never
+   overwrite a Delta view — that gate pre-dates this tier (it is what keeps the galaxy
+   static) and makes the separation structural rather than a convention someone has to
+   remember. ⚠️ **The #226 cascade sim was the other way**, and it is not gated by
+   anything view-shaped: with a firing mode set it computes an `activity` the glow uses
+   *instead of* `node_scalar`, replacing the measurement with a free-running procedural
+   pulse. `sim_on` now excludes the Delta lens on exactly the reasoning that already
+   excludes a live stream. 📌 **The embedding galaxy has the identical hole and it is
+   left open** — its node scalars are full N-D embedding norms, equally real and equally
+   paintable-over — because that is #507's call to make, not this tier's.
+3. **The ring is round** — the uniform-across-heads limit above.
+
+#### 🚨 The normalisation, and what it refuses to be
+
+The displayed quantity is **root-mean-square displacement per weight**,
+`‖ΔW‖_F / sqrt(out·in)`, mapped onto `0..1` through a **fixed** five-decade log window
+(`DELTA_RMS_LO` 1e-6 … `DELTA_RMS_HI` 1e-1) — the same window for every adapter ever
+loaded. Two refusals are doing the work:
+
+- **Not raw `‖ΔW‖_F`.** Frobenius norms grow with entry count, so a `14336×4096` MLP
+  projection outweighs a `4096×4096` attention projection by ~1.87× **before any
+  training happens**. Lighting the specimen with raw norms would paint every model's
+  MLP brighter than its attention and invite *"fine-tuning moves the MLP most"* — an
+  artifact of matrix shape wearing the clothes of a measurement. Dividing by
+  `sqrt(out·in)` also composes exactly: over a group of modules the RMS is
+  `sqrt(Σ‖ΔW‖²_F / Σ(out·in))`, i.e. the RMS over the concatenation of their entries,
+  which is how a site pools its modules and how the backbone pools a whole layer.
+- **Not a per-adapter maximum.** That puts `1.0` at the top of *every* adapter, so a
+  barely-trained LoRA and a heavily-trained one render identically — destroying
+  precisely the comparison this lens exists for. Pinned by test: two adapters differing
+  only in how far the weights moved must not produce the same picture.
+
+⚠️ The window's ends are the **one** display choice here that is not an exact function
+of the file. Values outside it clamp rather than wrap, and `DeltaSites::rms_range()`
+reports the real extremes so a readout can print what was actually measured.
+
+| | State | Evidence |
+|---|---|---|
+| node order matches the live writer's, per site kind | **measured** (offline) | mutation-tested: swapping the head and MLP arms fails with *"head node 1 got the attention value: 0.2"* |
+| two different adapters do not render identically | **measured** (offline) | mutation-tested: a per-adapter max-normalise fails with *"a louder adapter must not look identical"* |
+| shape does not masquerade as movement | **measured** (offline) | mutation-tested: dropping the `sqrt(out·in)` fails with *"same per-weight movement ⇒ same site value (4.096 vs 7.6629…)"* |
+| the silhouette distinguishes it from the live lens | **measured** (offline) | mutation-tested: removing the radial displacement fails with *"an untouched site pinches to the rest radius"* |
+| an unrecognised module name is reported, never guessed | **measured** (offline) | mutation-tested: falling back to `Mlp` fails with *"nor onto the MLP node"* |
+| **anything on a screen** | 🚨 **never run** | no adapter has been read on any machine, nothing has ever written the adapter sidecar, and no GPU has drawn this. Every claim above is arithmetic and geometry, checked offline |
+
+📌 **No `Shared` change and no `LAYOUT_VERSION` movement.** The view rides the `mind[2]`
+slot that already exists (`0` specimen, `1` galaxy, `2` Delta), and the adapter
+*directory* rides a new sidecar, `ipc::adapter_sidecar_path()` →
+`$TMPDIR/<ns>-adapter.txt`, because a path is not a control-rate value. ⚠️ **Nothing
+writes that sidecar yet** — the picker is a later tier — so selecting the view today
+clears the graph and prints *"no adapter selected"*. That is the honest failure, on the
+same rule the galaxy follows: substituting the specimen would show the user a different
+thing than the one they asked for.
+
+⚠️ **The write clamp and the read decoder must move together.** `lib.rs` clamps
+`mind_topo` to the highest view that exists and `math::mind_view_mode` decodes it; a
+view added to one and not the other is either a selector that silently does nothing or
+a value nothing decodes. Both now say `2`.
 
 ## 3. The honesty ledger
 
@@ -765,6 +867,7 @@ brand.
 | Parameter counts, weight bytes, bits/weight, KV cost | **derived** | exact functions of the tensor directory |
 | `‖ΔW‖_F` per adapted module, and the update's singular values | **measured** — an exact function of the adapter file | `lora.rs`. ⚠️ Two caveats it owes wherever it is rendered. **The base may be quantized**: an adapter trained on a 4-bit base is a delta against weights that are not the released ones, and the file states only `base_model_name_or_path` — #147 T1's `is_quantized` is what answers it from data. And **nothing has been read from a real adapter yet**; the arithmetic is tested against synthetic fixtures only |
 | Effective rank, stable rank, "which layers this fine-tune changed most" | **derived** | exact functions of the singular values. The effective rank is Roy & Vetterli (2007) — `exp` of the entropy of the normalised spectrum — stated in `lora.rs` rather than left implicit, because at least three quantities go by that name |
+| **The Delta lens's glow and silhouette** (#147 T3) | **measured** — the RMS weight displacement at each site, an exact function of the adapter file | §2.8. 🚨 **It drives the SAME visual channel as the per-layer generation glow below, which is a proxy**, so the two are made distinguishable *in the picture*: the Delta lens deforms the specimen's silhouette (a live specimen is a straight-sided cylinder; a delta specimen has a waist), it cannot move (the ring's overwrite is gated to view 0), and its head ring is perfectly round because it has no per-head resolution. The mode selector is off-screen and is deliberately not the answer. ⚠️ Two things the *quantity* still owes wherever it is written in words: the mapping to brightness is a **fixed** five-decade log window — a display choice, the only non-exact step — and per-head is a **limit**, so a bright ring means "this layer's attention moved", never "these heads moved" |
 | "This layer learned \<concept\>" | 🚨 **contested claim** | norm is not importance and effective rank is not meaning. Not currently rendered anywhere; recorded now so the first lens that wants to say it finds the row already written |
 | The per-layer glow during generation | **measured** — `layer_norm` + `mlp_act`; `head_summ` is still a labeled proxy | ✅ **Confirmed by running it, 2026-08-21** — organon-one (RTX 5090, CUDA 13.3), `gemma-4-12B-it-QAT-Q4_0.gguf`, 48L×16H, all layers GPU-offloaded. The runtime printed `mind-runtime: activation tap MEASURED — real per-layer tensors (#522 T1) (48 layers requested)`, and frames carry `flags=0x6`/`0x7` (`FLAG_RESID_MEASURED` + `FLAG_MLP_MEASURED`), so the #482 dashboard's provenance glyphs for these two read `=`. **It was the Windows/CUDA path that got there first, not Metal** — the tap is the safe `llama-cpp-4` `cb_eval` API, so this is evidence about the API, not about one backend; Metal remains unrun. ⚠️ **The prediction this row used to make was wrong, and the correction matters more than the flag** — see §3.1 |
 
@@ -831,7 +934,7 @@ capability to the seam it plugs into.
 
 | Building… | Plugs into |
 |---|---|
-| A new **lens** | a `math.rs` graph builder feeding `neural_loaded` (the #226 glow path), selected by `Shared.mind[2]` (`topo_mode`) |
+| A new **lens** | a `math.rs` graph builder feeding `neural_loaded` (the #226 glow path), selected by `Shared.mind[2]` (`topo_mode`) — add the value to **both** `math::mind_view_mode` (which decodes it) and `lib.rs`'s `mind_topo` clamp (which decides what can be written), then give `world.rs::build_mind_graph` a branch. 🚨 **And say how a viewer tells your lens from the others**: they all drive one glow channel, so a new quantity on it inherits the duty to be distinguishable in the picture, not only in the selector (§2.8 is the worked example) |
 | **Real activations** | the `cb_eval` tap in `bin/mind_runtime.rs` → appended `MindFrame` fields (single-threaded spine step) |
 | A new **analytics readout** | `mind_viz.rs` (editor-side, reads the ring directly — no `Shared` change) |
 | **Mind-only UI** (sub-tabs, panels) | `mind_ui.rs` — Tier 2 factors the Mind card body out of `lib.rs` and adds the sub-tab router |
@@ -839,5 +942,6 @@ capability to the seam it plugs into.
 | **The portrait inside a pane** (#532 T4) | separating the world from the window — `world.rs::World::render` since the #572 hoist; `mind_shell::PointerRouter` is wired to `ui_layer` (#554 T4) and ready for the moment the viewport becomes a child rect |
 | **The one-process viewport** (#593) | `editor_probe.rs` — the custom `Editor` that owns a wgpu surface on the host's parent view (§2.4). Tier 1 extracts `lib.rs`'s editor body so both hosts call it (*done*, #602); Tier 3 replaced `FrameTarget::ui_window` with the `egui_platform::EguiPlatform` seam + its winit arm (*done*; the baseview arm is Tier 2's, since the window is what produces the events); Tier 2 grows the probe's `on_frame` into `World::render_into` + egui; Tier 4 **gates** `frame_ring`/`Mirror` out of the Mind edition — it cannot *delete* them, because full Organon's editor still draws from them (§2.5) |
 | **Packaging** | #483 Tier 4: an `.app` around `organon-mind`, embedding the visual, its own name/icon/namespace |
-| **The Delta lens** (#147 T3) | `lora.rs`'s `AdapterSummary` → a `math.rs` graph builder, i.e. the *lens* row above with its numbers already measured. `per_layer_fro()` is the per-site scalar it wants |
+| ~~**The Delta lens** (#147 T3)~~ | **landed** — §2.8. ⚠️ Note what changed on the way: the per-site scalar is *not* `per_layer_fro()`, because a raw Frobenius norm grows with matrix size and would light the MLP brightest on every model before any training happened. It is RMS-per-weight (`‖ΔW‖_F / sqrt(out·in)`), which pools exactly and is shape-free |
+| **The checkpoint scrub** (#147 T3's extension) | the same builder, one `DeltaSites` per checkpoint on a slider — `CheckpointInfo{path, loss}` from `/api/models/checkpoints` is already the index. Needs T1 (the API client) and the adapter picker that writes `ipc::adapter_sidecar_path()`, which nothing does yet |
 | **Anything that talks to Unsloth Studio** (#147 T1/T4/T5) | a hand-rolled HTTP client over `TcpStream`, the shape `organon-agent`'s `HttpChatClient` and `mcp_http.rs` already have. 🚨 **Not `Shared`** — step-rate telemetry from someone else's process must not buy a permanent offset-sensitive layout commitment |

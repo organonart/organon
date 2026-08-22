@@ -300,13 +300,20 @@ pub struct OrganicMath {
     /// Human-readable parsed-header readout (layers/heads/dims/vocab/tensors) the
     /// picker thread fills after parsing the chosen `.gguf`, shown in the Mind card.
     model_readout: Arc<std::sync::Mutex<String>>,
-    /// Mind card **topology** selector (`topo_mode`). GUI-thread atomic; `process()`
-    /// stamps it into the reserved `Shared.mind[2]` slot: **0** = the Tier-1 architecture
-    /// specimen (default), **1** = Live streaming (#367 Tier 2 — the visual reads the
-    /// activation ring `organic-math-mind.bin` and streams per-token activations into the
-    /// connectome node-glow), **2** = the #507 Tier 1 **embedding galaxy** (the vocabulary
-    /// embedding matrix projected to 3-D). No `Shared` size/LAYOUT_VERSION change — all
-    /// three ride the slot `mind[2]` already occupied.
+    /// Mind card **view** selector (`topo_mode`). GUI-thread atomic; `process()`
+    /// stamps it into the reserved `Shared.mind[2]` slot: **0** = the #367 Tier 1
+    /// architecture specimen (default), **1** = the #507 Tier 1 **embedding galaxy**
+    /// (the vocabulary embedding matrix projected to 3-D), **2** = the #147 Tier 3
+    /// **Delta lens** (the specimen shaped and lit by what a fine-tune moved, read
+    /// from the adapter directory named by `ipc::adapter_sidecar_path`). No `Shared`
+    /// size/LAYOUT_VERSION change — all of them ride the slot `mind[2]` already
+    /// occupies.
+    ///
+    /// ⚠️ **There is no "Live" value** — this comment used to say `1` was one, which
+    /// #520 retired: frames arriving *are* live, and `world.rs`'s `topo == 5` seam
+    /// only lets them overwrite `node_scalar` on view **0**. That is also what keeps
+    /// the Delta lens honest: a measured training-time quantity can never be
+    /// repainted by the proxy generation-time one, because they cannot share a view.
     mind_topo: Arc<AtomicU32>,
     /// #367 Tier 2b (embedded runtime) editor→runtime dials, stamped into the reserved
     /// `Shared.mind[3..8]` slots by `process()` (a runtime block, not params — the
@@ -1541,11 +1548,15 @@ impl Plugin for OrganicMath {
             snapshot.mind[1] = model_gen as f32;
             // Mind VIEW selector → the reserved mind[2] slot (no Shared
             // size/LAYOUT_VERSION change): 0 = the #367 Tier 1 architecture specimen,
-            // 1 = the #507 Tier 1 embedding galaxy. "Live" is NOT a view — the glow
-            // rides the activation ring whenever frames arrive, on whichever geometry
-            // is selected. Clamped, so a future value can only ever fall back to the
-            // specimen rather than selecting something unknown.
-            snapshot.mind[2] = self.mind_topo.load(Ordering::Relaxed).min(1) as f32;
+            // 1 = the #507 Tier 1 embedding galaxy, 2 = the #147 Tier 3 Delta lens.
+            // "Live" is NOT a view — the glow rides the activation ring whenever frames
+            // arrive, and only on view 0. Clamped, so an unknown value can only ever
+            // fall back rather than selecting something that does not exist.
+            // ⚠️ The ceiling must move with `math::mind_view_mode` — the clamp decides
+            // what can be *written* and that function decides what can be *read*, so a
+            // new view added to one and not the other is a selector that silently does
+            // nothing (the writer pins it back to 1) or a value nothing decodes.
+            snapshot.mind[2] = self.mind_topo.load(Ordering::Relaxed).min(2) as f32;
             // #367 Tier 2b — embedded-runtime dials → the reserved mind[3..8] slots (no
             // Shared size/LAYOUT_VERSION change). The optional `organic-math-mind-runtime` bin
             // reads them: prompt_gen (edge-detected → run one completion), temperature,
