@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Do the two published copies of the seven-leg verification bar still agree?
+# Do the two published copies of the eight-leg verification bar still agree?
 #
 # The bar exists in two places ON PURPOSE, and this hook is the price of that:
 #
@@ -60,7 +60,7 @@ done
 #
 # ⚠️ Note that CONTRIBUTING.md has a SECOND `cd native` block (the `--workspace` bar,
 # ~line 74), so `cd native` cannot itself be the anchor. The anchor has to be a line
-# unique to the seven-leg block.
+# unique to the eight-leg block.
 extract() {
   awk '
     /^```/ {

@@ -1,6 +1,6 @@
 ---
 name: coordinate-sessions
-description: Run work as a coordinator session driving worker sessions and subagents that stay in contact. Use whenever a task is bigger than one session should hold, spans two repos that must agree on a contract, needs several PRs in parallel, or when asked to hand something to another session, spawn a worker, check what another session is doing, or coordinate/fan out work. Covers which messaging registry to use, the brief template, Organon's seven-leg verification bar, the merge discipline, and the failure modes already paid for.
+description: Run work as a coordinator session driving worker sessions and subagents that stay in contact. Use whenever a task is bigger than one session should hold, spans two repos that must agree on a contract, needs several PRs in parallel, or when asked to hand something to another session, spawn a worker, check what another session is doing, or coordinate/fan out work. Covers which messaging registry to use, the brief template, Organon's eight-leg verification bar, the merge discipline, and the failure modes already paid for.
 ---
 
 # Coordinating sessions
@@ -121,7 +121,7 @@ Also standard: mutation-test every claimed invariant (break it, watch it fail, q
 `git commit -F` with a heredoc, because backticks in `-m` are command-substituted by bash; and
 never "verified working" — the house phrase is **"green and ready to try"**.
 
-## 🚨 The verification bar is SEVEN legs — and it lives in `BRIEF.md`
+## 🚨 The verification bar is EIGHT legs — and it lives in `BRIEF.md`
 
 The commands are **not repeated here**, on purpose. They exist in exactly two places —
 `CONTRIBUTING.md` for a contributor and `BRIEF.md` for a worker — and

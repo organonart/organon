@@ -106,9 +106,14 @@ cargo check --tests -p organic-math-native --features console-edition
 cargo test  -p organic-math-native --bin organon-console --features console-edition
 cargo test  -p organic-math-native --bin organon --features console-edition
 cargo test  -p organic-math-native --lib  --features console-edition   # ← the one that goes missing
+cargo test  -p organon-module --all-features                           # ← the second hole
 ```
 
-⚠️ **Without the last line, the root crate's several hundred lib tests never run.** The fourth command
+⚠️ **And the eighth is the same hole one crate over — in the crate BOTH repositories depend on.** Legs 1–2 cover `organon-console` and `organon-core`, legs 3–7 the root crate. **Nothing ran `organon-module` at all**: 82 tests, never executed by the bar, in the contract crate a module's own repository pins. A change landing there could report *"the bar is green"* in good faith with none of its own tests run — which is leg 7's failure exactly, one crate over, found after that class had already been found and closed once.
+
+📌 `--all-features` rather than `--features wgpu`: it is the wider net, and it is safe under `CARGO_PROFILE_TEST_OPT_LEVEL=0` because the two timing-shaped staleness tests in that crate are `#[ignore]`d and never run.
+
+⚠️ **Without the seventh line, the root crate's several hundred lib tests never run.** The fourth command
 only `check`s that target and the fifth and sixth test *binaries*, so every unit test under
 `native/src/` — `panel_table.rs`, `panel_surface.rs`, `preset.rs` and the rest — is compiled and
 never executed. A change whose tests live there can report *"the bar is green"* in good faith while
