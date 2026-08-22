@@ -108,12 +108,19 @@ cargo test  -p organic-math-native --bin organon --features console-edition
 cargo test  -p organic-math-native --lib  --features console-edition   # ← the one that goes missing
 ```
 
-⚠️ **Without the last line, the root crate's 324 lib tests never run.** The fourth command
+⚠️ **Without the last line, the root crate's several hundred lib tests never run.** The fourth command
 only `check`s that target and the fifth and sixth test *binaries*, so every unit test under
 `native/src/` — `panel_table.rs`, `panel_surface.rs`, `preset.rs` and the rest — is compiled and
 never executed. A change whose tests live there can report *"the bar is green"* in good faith while
 none of its own tests has run. Measured 2026-08-22, and found only because a contributor's new
 tests were entirely in that target and their count never moved.
+
+✏️ **That sentence used to name a number — "the root crate's 324 lib tests" — and the number was
+wrong within a day.** It was 324 when this paragraph was written, 332 that evening and 336 the next
+morning, because several sessions merge in parallel here. The count is not the point; *that the
+fourth command does not run them* is the point, and it is true at every count. A literal here would
+have to be re-measured by whoever noticed, and the person most likely to notice is a contributor
+deciding whether they have found a regression.
 
 📌 **`CARGO_PROFILE_TEST_OPT_LEVEL=0` turns roughly 43 minutes into roughly 70 seconds** for
 this set. It changes codegen only, so it is a fair substitute for a debug-profile run and not for a
