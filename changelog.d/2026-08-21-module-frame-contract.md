@@ -45,6 +45,20 @@
   producer is judged stalled, lost or gone, and `Present` turns the verdict into the one
   instruction a caller's texture obeys, so a call site that forgets drops its picture anyway.
 
+  🚨 **And one row of §4.6 nearly got away — a producer that refuses every frame is alive and
+  silent.** Raised by the Ascent session against the first cut of the contract. It ticks, so
+  the liveness counter moves, so every liveness rule calls it healthy; the state it most
+  resembles is `Paused`, which is the **arrival state**, i.e. the least alarming conclusion
+  available about the case §4.6 most needs named. Closed by two things, and it takes both: the
+  producer may declare `Refusing` with a `RefusalReason`, and — the load-bearing half — the
+  console **times frame silence on its own clock regardless**, because the party least able to
+  notice it has stopped producing is the producer. ⚠️ The reason is a **name, never free
+  text**: a string a module wrote, rendered in the console's chrome, is the module speaking in
+  the console's voice. ⚠️ And the clock rule applies only while the console has asked for
+  `Running`, restarting when it asks — without that condition it would accuse **every module
+  on arrival**, since `Attached` is where they all start and an attached producer draws once
+  and then legitimately nothing for ever. All three guards are mutation-tested.
+
   **Which side owns the size**, in three sentences: the console owns the **capacity**, once; the
   console **asks**, with no deadline; the producer **answers per frame**, and the frame is the
   truth. 📌 The consequence is what makes a resize cheap — frames already in flight carry the
@@ -66,6 +80,18 @@
   **Versioning**: the magic at byte 0 and the wire version at byte 8 are the only permanent
   positional commitments, so a mismatch is diagnosed **before** any field whose position that
   version decides — a legible refusal naming both numbers, never a garbled picture.
+
+  ⚠️ **The rows are padded, not tightly packed, and the argument is worth more than the rule
+  because the two conventions agree by accident at every width anyone would test.** A tight
+  `width * bpp` row costs strictly more work on both sides — the producer repacks to strip
+  padding it already has off the GPU, and the console re-pads to upload — while matching
+  `COPY_BYTES_PER_ROW_ALIGNMENT` makes the producer's staging layout *be* the ring's layout.
+  At 640, 1280 and 1920, `width * 4` is already 256-aligned, so a tight producer and a padded
+  consumer produce identical bytes and every natural test passes. It breaks at **900 wide —
+  3600 tight against 3840 padded — and the symptom is a sheared picture, not an error**,
+  because every byte is a valid pixel and only the row boundaries moved. The suite now carries
+  a 900-wide round trip and a 437-wide one. ✏️ This was a real disagreement with Ascent's first
+  producer, which had stripped the padding.
 
   ⚠️ **`MIT OR Apache-2.0`, one dependency (`memmap2`), and `cargo tree` is the acceptance test
   in both trees.** Ascent's invariant 3 forbids an edge to `organon-visual` or

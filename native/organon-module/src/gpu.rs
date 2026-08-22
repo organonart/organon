@@ -143,7 +143,10 @@ impl FrameTexture {
                 self.has_picture = true;
             }
             Poll::Starting { .. } | Poll::Holding => {}
-            Poll::Stalled { .. } | Poll::Lost { .. } | Poll::Gone => self.has_picture = false,
+            Poll::Stalled { .. }
+            | Poll::NotProducing { .. }
+            | Poll::Lost { .. }
+            | Poll::Gone => self.has_picture = false,
         }
         debug_assert!(
             !(self.has_picture && poll.present() == Present::Forget),

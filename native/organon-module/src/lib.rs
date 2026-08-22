@@ -163,7 +163,8 @@ pub use input::{Button, DrainReport, InputEvent, Key, MouseButton, PushFault, RE
 pub use presence::{Poll, Presence, Present, Timings};
 pub use ring::{FrameView, FrameWrite};
 pub use wire::{
-    FrameCapacity, Header, Lifecycle, PixelFormat, ProducerState, WireFault, MAGIC, SLOTS,
+    FrameCapacity, Header, Lifecycle, PixelFormat, ProducerState, RefusalReason, WireFault, MAGIC,
+    SLOTS,
     WIRE_VERSION,
 };
 

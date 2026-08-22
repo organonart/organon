@@ -20,14 +20,26 @@ use crate::map::tests::TempPath;
 use crate::input::{Button, Key, MouseButton};
 use crate::presence::Present;
 use crate::sim::{self, SimProducer};
-use crate::wire::{PixelFormat, WIRE_VERSION};
+use crate::wire::{PixelFormat, RefusalReason, WIRE_VERSION};
 
 /// Fast enough that a whole lifecycle fits in a test, and every threshold is still ordered
 /// the way the real ones are.
 const QUICK: Timings = Timings {
-    start_within: Duration::from_millis(200),
+    // ⚠️ Generous on purpose, and it was 200 ms until that turned out to be flaky. `opened_at`
+    // is the wall clock at `create`, and every other time in these tests is an offset from an
+    // `Instant::now()` taken *after* the producer has attached — so a scheduler hiccup between
+    // the two, on a machine running seventy tests at once, could reach a 200 ms deadline and
+    // fail a test about something else entirely. The two tests that care about this threshold
+    // pass an explicit offset well past it.
+    start_within: Duration::from_millis(2000),
     stall_after: Duration::from_millis(50),
     dead_after: Duration::from_millis(100),
+    // ⚠️ Deliberately shorter than `stall_after`, so a test can reach `NotProducing` while the
+    // producer is demonstrably still ticking. With the real defaults the ordering is the other
+    // way round (1 s stall, 2 s produce), and that is right for a console: a producer whose
+    // whole loop has stopped should be reported as stalled first, because that *explains* the
+    // missing frames. Here the point is to exercise the arm the other ordering hides.
+    produce_within: Duration::from_millis(20),
 };
 
 fn cap(w: u32, h: u32) -> FrameCapacity {
@@ -267,8 +279,11 @@ fn a_producer_that_never_starts_stops_saying_starting() {
     let t0 = Instant::now();
     producer.tick();
     assert!(matches!(console.poll(t0 + ms(10)), Poll::Starting { .. }));
+    // Ticking right before the poll is what makes this test about the START deadline rather
+    // than about the death timeout: the producer is demonstrably alive and simply never began
+    // producing, which is exactly §4.6's third row turning into its fourth.
     producer.tick();
-    let out = console.poll(t0 + ms(500));
+    let out = console.poll(t0 + ms(3000));
     assert!(matches!(out, Poll::Lost { .. }), "expected the deadline to fire, got {out:?}");
 }
 
@@ -293,8 +308,194 @@ fn a_paused_producer_is_live_for_ever_because_it_still_ticks() {
 }
 
 // ---------------------------------------------------------------------------------------
+// Alive and silent — the row that would otherwise read as healthy
+// ---------------------------------------------------------------------------------------
+
+/// 🚨 The producer never says a word: it just stops drawing while still ticking. The console
+/// has to reach the verdict on its own, from a clock, because the party least able to notice
+/// that it has stopped producing is the producer.
+#[test]
+fn a_producer_that_is_alive_and_draws_nothing_is_not_called_healthy() {
+    let (_p, mut console, mut producer) = pair("silent", cap(32, 32));
+    let t0 = Instant::now();
+    console.set_lifecycle(Lifecycle::Running);
+    producer.tick();
+    producer.draw().unwrap();
+    assert!(matches!(console.poll(t0), Poll::Frame(_)));
+
+    // Alive, looping, drawing nothing, and saying nothing at all. The tick before each poll is
+    // the point: the liveness counter keeps moving throughout, so nothing here is `Stalled`
+    // and the verdict has to come from the frame counter alone.
+    producer.refuse(None);
+    producer.tick();
+    assert!(matches!(console.poll(t0 + ms(10)), Poll::Holding), "not yet — give it a moment");
+    producer.tick();
+    let verdict = console.poll(t0 + ms(30));
+    match verdict {
+        Poll::NotProducing { reason, .. } => assert_eq!(reason, None, "nothing was claimed"),
+        other => panic!("a producer that stopped drawing must be sayable: {other:?}"),
+    }
+    // §4.6's fourth row, so the same instruction as died and hung.
+    assert_eq!(verdict.present(), Present::Forget);
+    assert!(!verdict.presence().picture_may_be_shown());
+    let line = verdict.presence().sentence("ascent", "console module restart ascent");
+    assert!(line.contains("drawn nothing"), "{line}");
+
+    // And it recovers on a frame, not on a promise.
+    producer.resume();
+    producer.tick();
+    producer.draw().unwrap();
+    assert!(matches!(console.poll(t0 + ms(40)), Poll::Frame(_)));
+}
+
+/// The same failure, from a producer well-behaved enough to name it — which buys a **specific
+/// sentence**, and nothing else. The verdict is identical either way, which is the point.
+#[test]
+fn a_producer_that_says_why_it_cannot_draw_is_believed_immediately() {
+    let (_p, mut console, mut producer) = pair("refusing", cap(32, 32));
+    let t0 = Instant::now();
+    console.set_lifecycle(Lifecycle::Running);
+    producer.tick();
+    producer.draw().unwrap();
+    assert!(matches!(console.poll(t0), Poll::Frame(_)));
+
+    producer.refuse(Some(RefusalReason::SizeUnsupported));
+    producer.tick();
+
+    // No waiting: the claim is fresh and the producer is demonstrably alive.
+    let verdict = console.poll(t0 + ms(1));
+    match verdict {
+        Poll::NotProducing { reason, .. } => {
+            assert_eq!(reason, Some(RefusalReason::SizeUnsupported))
+        }
+        other => panic!("expected the claim to be acted on at once: {other:?}"),
+    }
+    assert_eq!(verdict.present(), Present::Forget);
+    let line = verdict.presence().sentence("ascent", "console module restart ascent");
+    assert!(line.contains("cannot draw at the size"), "{line}");
+    assert_eq!(console.status().state, ProducerState::Refusing);
+
+    // A frame is the only retraction that counts.
+    producer.resume();
+    producer.tick();
+    producer.draw().unwrap();
+    assert!(matches!(console.poll(t0 + ms(2)), Poll::Frame(_)));
+    assert_eq!(console.status().state, ProducerState::Producing);
+}
+
+/// ⚠️ The condition that keeps the whole rule from firing on every module that ever arrives.
+/// `Attached` is the arrival state and an attached producer draws once and then legitimately
+/// nothing, for ever.
+#[test]
+fn an_attached_producer_that_draws_once_and_stops_is_exactly_right() {
+    let (_p, mut console, mut producer) = pair("attached-quiet", cap(32, 32));
+    let t0 = Instant::now();
+    assert_eq!(console.lifecycle(), Lifecycle::Attached);
+    producer.tick();
+    producer.draw().unwrap();
+    assert!(matches!(console.poll(t0), Poll::Frame(_)));
+
+    for step in 1..40 {
+        producer.tick();
+        let out = console.poll(t0 + ms(step * 20));
+        assert!(matches!(out, Poll::Holding), "at {step}: {out:?}");
+        assert_eq!(out.present(), Present::Keep);
+    }
+}
+
+/// ⚠️ And the other half of that condition: asking for `Running` restarts the clock, so a
+/// producer is never accused of not answering a question it has only just been asked.
+#[test]
+fn asking_a_producer_to_run_gives_it_the_full_grace_period() {
+    let (_p, mut console, mut producer) = pair("grace", cap(32, 32));
+    let t0 = Instant::now();
+    producer.tick();
+    producer.draw().unwrap();
+    assert!(matches!(console.poll(t0), Poll::Frame(_)));
+
+    // Six hundred milliseconds of legitimate attached silence — thirty times the produce
+    // deadline — and then the switch.
+    for step in 1..30 {
+        producer.tick();
+        assert!(matches!(console.poll(t0 + ms(step * 20)), Poll::Holding));
+    }
+    // 🚨 `set_lifecycle` reads the wall clock, so the poll after it must too — mixing `t0`
+    // arithmetic with a real `Instant` here would be comparing two different clocks and the
+    // test would pass or fail on how long the loop above took.
+    let asked_at = Instant::now();
+    console.set_lifecycle(Lifecycle::Running);
+    producer.tick();
+    // Immediately after the ask, the producer is not yet late — even though the frame counter
+    // has stood still for the whole loop above.
+    assert!(matches!(console.poll(asked_at + ms(5)), Poll::Holding));
+    // And it does become late, from the ask rather than from the last frame.
+    producer.tick();
+    assert!(matches!(console.poll(asked_at + ms(30)), Poll::NotProducing { .. }));
+}
+
+/// A stalled loop **explains** missing frames, so it outranks them. Reporting "not producing"
+/// about a producer whose whole loop has stopped would name the symptom and hide the cause.
+#[test]
+fn a_stalled_loop_outranks_missing_frames() {
+    let (_p, mut console, mut producer) = pair("stall-wins", cap(32, 32));
+    let t0 = Instant::now();
+    console.set_lifecycle(Lifecycle::Running);
+    producer.tick();
+    producer.draw().unwrap();
+    assert!(matches!(console.poll(t0), Poll::Frame(_)));
+
+    // It claims to be refusing AND then stops ticking entirely. Both are true of the wire;
+    // only one is the useful sentence.
+    producer.refuse(Some(RefusalReason::SizeUnsupported));
+    producer.stop();
+    let out = console.poll(t0 + ms(60));
+    assert!(matches!(out, Poll::Stalled { .. }), "expected the loop's silence to win: {out:?}");
+    // And a stale claim is not resurrected once it is genuinely gone.
+    assert!(matches!(console.poll(t0 + ms(150)), Poll::Lost { .. }));
+}
+
+// ---------------------------------------------------------------------------------------
 // Size — the console asks, the producer answers per frame
 // ---------------------------------------------------------------------------------------
+
+/// 🚨 **The width where a tight producer and a padded consumer stop agreeing by accident.**
+///
+/// At 640, 1280 and 1920 wide, `width * 4` is already 256-aligned, so both conventions produce
+/// the same bytes and every test either side would naturally write passes. 900 is 3600 tight
+/// against 3840 padded — and the symptom of getting it wrong is a **sheared picture**, not an
+/// error, because every byte is a valid pixel and only the row boundaries moved.
+#[test]
+fn a_width_that_is_not_row_aligned_survives_the_round_trip() {
+    let (_p, mut console, mut producer) = pair("padded", cap(900, 506));
+    assert_eq!(console.capacity().max_row_stride(), 3840);
+    assert_ne!(900 * 4, 3840, "the whole point of this test is that these differ");
+
+    let now = Instant::now();
+    producer.tick();
+    producer.draw_at(900, 506).unwrap();
+    match console.poll(now) {
+        Poll::Frame(v) => {
+            assert_eq!((v.width, v.height), (900, 506));
+            assert_eq!(v.row_stride, 3840, "the ring's rows are padded, not tight");
+            assert_eq!(v.pixels.len(), 3840 * 506);
+            // `verify` walks every pixel through `row()`, which is where a stride disagreement
+            // shows up as a shear rather than as a fault.
+            sim::verify(&v).unwrap();
+        }
+        other => panic!("expected a frame, got {other:?}"),
+    }
+
+    // And an odd width inside a padded channel, which is the other half of the same trap.
+    producer.draw_at(437, 61).unwrap();
+    match console.poll(now) {
+        Poll::Frame(v) => {
+            assert_eq!((v.width, v.height), (437, 61));
+            assert_eq!(v.row_stride, 1792, "437 * 4 = 1748, padded to 1792");
+            sim::verify(&v).unwrap();
+        }
+        other => panic!("expected the second frame, got {other:?}"),
+    }
+}
 
 #[test]
 fn a_size_change_lands_without_invalidating_the_frames_already_in_flight() {

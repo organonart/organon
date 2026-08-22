@@ -47,11 +47,11 @@ use std::time::Instant;
 
 use crate::input::{DrainReport, InputEvent, PushFault};
 use crate::map::Mapping;
-use crate::presence::{Poll, Presence, Timings};
+use crate::presence::{Observed, Poll, Presence, Timings};
 use crate::ring::{self, FrameView, Taken};
 use crate::wire::{
     control, get_u32, get_u64, put_u32, put_u64, status, FrameCapacity, Header, Lifecycle,
-    ProducerState, WireFault, NO_SLOT,
+    ProducerState, RefusalReason, WireFault, NO_SLOT,
 };
 
 /// The file name a channel for `producer` uses, without a directory.
@@ -102,8 +102,18 @@ impl std::error::Error for OpenFault {}
 // Seqlock over a small block. Both directions, one implementation.
 // ---------------------------------------------------------------------------------------
 
-/// The largest block a seqlock read copies. Both `control` and `status` are 64.
+/// The largest block body a seqlock read copies.
 const BLOCK_MAX: usize = 64;
+
+/// 🚨 **The body starts at byte 4, not byte 0, and this is not a micro-optimisation.**
+///
+/// A seqlock brackets ordinary loads and stores. The counter at byte 0 is an `AtomicU32` the
+/// other party stores to atomically, so copying it as part of the body would be a plain read
+/// racing an atomic write — the same data race the lock exists to remove, moved rather than
+/// fixed. `organon-core::ipc`'s `Reader` starts its body copy at byte 4 for exactly this and
+/// says so; the same rule sends every other atomic in these blocks (`ALIVE`, `LATEST_SLOT`,
+/// `CONSOLE_ALIVE`, `READER_HOLD`) out past each block's `BODY_END`.
+const BODY_START: usize = 4;
 
 /// How many times a block read retries before giving up and telling the caller to keep what
 /// it had. A 64-byte block written a few times a second cannot lose eight races unless the
@@ -117,20 +127,30 @@ const BLOCK_RETRIES: usize = 8;
 /// is the only way this function could otherwise start bracketing the wrong four bytes.
 const BLOCK_SEQ: u64 = control::SEQ as u64;
 
-fn block_write(map: &Mapping, off: u64, bytes: usize, body: impl FnOnce(&mut [u8])) {
+/// `body_end` is the block's own `BODY_END`; the body written is `BODY_START..body_end`.
+/// The field offsets handed to `body` stay absolute, so a caller writes `put_u32(raw,
+/// status::STATE, …)` and does not have to know the body was sliced.
+fn block_write(map: &Mapping, off: u64, body_end: usize, body: impl FnOnce(&mut [u8])) {
     let seq = map.u32_at(off + BLOCK_SEQ);
     let cur = seq.load(Ordering::Relaxed);
     let odd = if cur & 1 == 1 { cur.wrapping_add(2) } else { cur.wrapping_add(1) };
     seq.store(odd, Ordering::Release);
+    // Staged read-modify-write, and it starts at BODY_START for the same reason the write
+    // below ends there: the counter's four bytes are never touched as ordinary memory.
+    let mut staged = [0u8; BLOCK_MAX];
+    staged[BODY_START..body_end]
+        .copy_from_slice(map.bytes(off + BODY_START as u64, body_end - BODY_START));
+    body(&mut staged);
     // SAFETY: the caller owns this block (see the module docs), and the seqlock is open, so a
-    // reader that catches the write discards what it read.
-    let raw = unsafe { map.bytes_mut(off, bytes) };
-    body(raw);
+    // reader that catches the write discards what it read. The counter's own four bytes are
+    // outside this range — see BODY_START.
+    let raw = unsafe { map.bytes_mut(off + BODY_START as u64, body_end - BODY_START) };
+    raw.copy_from_slice(&staged[BODY_START..body_end]);
     seq.store(odd.wrapping_add(1), Ordering::Release);
 }
 
 /// `None` when every attempt caught a write in flight.
-fn block_read(map: &Mapping, off: u64, bytes: usize) -> Option<[u8; BLOCK_MAX]> {
+fn block_read(map: &Mapping, off: u64, body_end: usize) -> Option<[u8; BLOCK_MAX]> {
     let seq = map.u32_at(off + BLOCK_SEQ);
     for _ in 0..BLOCK_RETRIES {
         let before = seq.load(Ordering::Acquire);
@@ -139,7 +159,8 @@ fn block_read(map: &Mapping, off: u64, bytes: usize) -> Option<[u8; BLOCK_MAX]> 
             continue;
         }
         let mut buf = [0u8; BLOCK_MAX];
-        buf[..bytes].copy_from_slice(map.bytes(off, bytes));
+        buf[BODY_START..body_end]
+            .copy_from_slice(map.bytes(off + BODY_START as u64, body_end - BODY_START));
         if seq.load(Ordering::Acquire) == before {
             return Some(buf);
         }
@@ -163,6 +184,8 @@ pub struct ProducerStatus {
     /// The `size_epoch` the producer has adopted. Equal to
     /// [`ModuleChannel::size_epoch`] once a resize has landed.
     pub applied_size_epoch: u64,
+    /// Meaningful only while [`ProducerStatus::state`] is [`ProducerState::Refusing`].
+    pub refusal: RefusalReason,
 }
 
 impl Default for ProducerStatus {
@@ -172,6 +195,7 @@ impl Default for ProducerStatus {
             drawn: (0, 0),
             frames: 0,
             applied_size_epoch: 0,
+            refusal: RefusalReason::Unspecified,
         }
     }
 }
@@ -196,6 +220,12 @@ pub struct ModuleChannel {
     status: ProducerStatus,
     last_alive: u64,
     last_alive_at: Instant,
+    /// 🚨 **The frame counter's own clock, separate from the liveness counter's**, and the
+    /// whole of the answer to *"a producer that refuses every frame is alive and silent"*. It
+    /// is restarted when the console asks for [`Lifecycle::Running`], so a producer is never
+    /// accused of not answering a question it has only just been asked.
+    last_frames: u64,
+    last_frames_at: Instant,
     last_frame_index: u64,
     torn_reads: u64,
     corrupt_reads: u64,
@@ -238,6 +268,8 @@ impl ModuleChannel {
             status: ProducerStatus::default(),
             last_alive: 0,
             last_alive_at: now,
+            last_frames: 0,
+            last_frames_at: now,
             last_frame_index: 0,
             torn_reads: 0,
             corrupt_reads: 0,
@@ -321,9 +353,18 @@ impl ModuleChannel {
     }
 
     /// §5.1's two states. The console is the only party that can move this.
+    ///
+    /// ⚠️ **Asking for `Running` restarts the frame-silence clock**, and skipping that would
+    /// make the console accuse a producer of having stopped drawing before it had been told to
+    /// start — every module arrives `Attached`, so that is the *first* thing that would happen
+    /// to every module. `Instant::now()` is read here rather than taken as an argument because
+    /// this is a state change the console performs, not an observation it makes at poll time.
     pub fn set_lifecycle(&mut self, lifecycle: Lifecycle) {
         if self.lifecycle != lifecycle {
             self.lifecycle = lifecycle;
+            if lifecycle == Lifecycle::Running {
+                self.last_frames_at = Instant::now();
+            }
             self.write_control();
         }
     }
@@ -373,18 +414,24 @@ impl ModuleChannel {
     pub fn poll_interfered(&mut self, now: Instant, mid_copy: &mut dyn FnMut()) -> Poll<'_> {
         self.refresh_status(now);
 
-        let silent = now.saturating_duration_since(self.last_alive_at);
-        let since_open = now.saturating_duration_since(self.opened_at);
         let presence = Presence::judge(
-            self.status.state,
-            self.status.frames > 0,
-            silent,
-            since_open,
+            Observed {
+                state: self.status.state,
+                refusal: self.status.refusal,
+                published_any: self.status.frames > 0,
+                asked_for: self.lifecycle,
+                silent: now.saturating_duration_since(self.last_alive_at),
+                frames_silent: now.saturating_duration_since(self.last_frames_at),
+                since_open: now.saturating_duration_since(self.opened_at),
+            },
             &self.timings,
         );
         match presence {
             Presence::Starting { elapsed } => return Poll::Starting { elapsed },
             Presence::Stalled { silent } => return Poll::Stalled { silent },
+            Presence::NotProducing { silent, reason } => {
+                return Poll::NotProducing { silent, reason }
+            }
             Presence::Lost { silent } => return Poll::Lost { silent },
             Presence::Gone => return Poll::Gone,
             Presence::Live => {}
@@ -467,17 +514,27 @@ impl ModuleChannel {
             self.last_alive = alive;
             self.last_alive_at = now;
         }
-        if let Some(raw) = block_read(&self.map, self.header.status_off, status::BYTES) {
+        if let Some(raw) = block_read(&self.map, self.header.status_off, status::BODY_END) {
             if let Some(state) = ProducerState::from_wire(get_u32(&raw, status::STATE)) {
                 self.status = ProducerStatus {
                     state,
                     drawn: (get_u32(&raw, status::DRAWN_WIDTH), get_u32(&raw, status::DRAWN_HEIGHT)),
                     frames: get_u64(&raw, status::FRAMES),
                     applied_size_epoch: get_u64(&raw, status::APPLIED_SIZE_EPOCH),
+                    // ⚠️ An unknown reason from a newer producer degrades to `Unspecified`
+                    // rather than dropping the snapshot: "it is refusing and I do not know the
+                    // word it used" is still the right verdict, and the sentence is only
+                    // slightly less specific.
+                    refusal: RefusalReason::from_wire(get_u32(&raw, status::REFUSAL))
+                        .unwrap_or_default(),
                 };
             }
             // An unknown state word keeps the previous snapshot: a newer producer's state is
             // not a reason to forget everything else it said.
+        }
+        if self.status.frames != self.last_frames {
+            self.last_frames = self.status.frames;
+            self.last_frames_at = now;
         }
     }
 
@@ -494,7 +551,7 @@ impl ModuleChannel {
     }
 
     fn write_control_with(&mut self, body: impl FnOnce(&mut [u8])) {
-        block_write(&self.map, self.header.control_off, control::BYTES, body);
+        block_write(&self.map, self.header.control_off, control::BODY_END, body);
     }
 }
 
@@ -523,6 +580,7 @@ pub struct ProducerChannel {
     frames: u64,
     state: ProducerState,
     control: Control,
+    refusal: RefusalReason,
     applied_size_epoch: u64,
     drawn: (u32, u32),
     /// Reused across drains — the input path allocates once too.
@@ -549,6 +607,7 @@ impl ProducerChannel {
             header,
             frames: 0,
             state: ProducerState::Starting,
+            refusal: RefusalReason::Unspecified,
             control: Control {
                 lifecycle: Lifecycle::Attached,
                 requested: (header.capacity.max_width, header.capacity.max_height),
@@ -665,10 +724,37 @@ impl ProducerChannel {
     /// second lock acquisition inside the frame publish for a number nothing reads per frame.
     pub fn published(&mut self, w: u32, h: u32) {
         self.drawn = (w, h);
-        if self.state == ProducerState::Starting {
+        // A frame is the only retraction of a refusal that means anything — which is why
+        // `Refusing` is cleared here rather than by a `resume()` a producer could call while
+        // still not drawing.
+        if matches!(self.state, ProducerState::Starting | ProducerState::Refusing) {
             self.state = ProducerState::Producing;
+            self.refusal = RefusalReason::Unspecified;
         }
         self.write_status();
+    }
+
+    /// 🚨 **Say that this producer is alive and cannot draw.**
+    ///
+    /// The state a producer would otherwise be *invisible* in: it keeps ticking, so the
+    /// liveness counter keeps moving, and the console's best remaining guess is `Paused` —
+    /// which is the arrival state, and so the least alarming conclusion available about the
+    /// case §4.6 most needs named.
+    ///
+    /// ⚠️ **Saying this is a courtesy, not the mechanism.** The console times frame silence
+    /// against its own clock and will reach [`crate::Presence::NotProducing`] whether or not a
+    /// producer ever calls this — deliberately, because the party least able to notice that it
+    /// has stopped producing is the producer. What this buys is a **specific sentence** in
+    /// place of a merely alarmed one.
+    ///
+    /// [`ProducerChannel::published`] clears it: a frame is the only retraction that means
+    /// anything.
+    pub fn refuse(&mut self, reason: RefusalReason) {
+        if self.state != ProducerState::Refusing || self.refusal != reason {
+            self.state = ProducerState::Refusing;
+            self.refusal = reason;
+            self.write_status();
+        }
     }
 
     /// Say goodbye. §4.6's difference between *exited* and *hung*, and the cheapest thing in
@@ -678,7 +764,7 @@ impl ProducerChannel {
     }
 
     fn read_control(&mut self) {
-        let Some(raw) = block_read(&self.map, self.header.control_off, control::BYTES) else {
+        let Some(raw) = block_read(&self.map, self.header.control_off, control::BODY_END) else {
             return; // keep the previous snapshot rather than act on a torn one
         };
         let Some(lifecycle) = Lifecycle::from_wire(get_u32(&raw, control::LIFECYCLE)) else {
@@ -696,14 +782,20 @@ impl ProducerChannel {
     }
 
     fn write_status(&mut self) {
-        let (state, frames, drawn, epoch) =
-            (self.state.to_wire(), self.frames, self.drawn, self.applied_size_epoch);
-        block_write(&self.map, self.header.status_off, status::BYTES, move |raw| {
+        let (state, frames, drawn, epoch, refusal) = (
+            self.state.to_wire(),
+            self.frames,
+            self.drawn,
+            self.applied_size_epoch,
+            self.refusal.to_wire(),
+        );
+        block_write(&self.map, self.header.status_off, status::BODY_END, move |raw| {
             put_u32(raw, status::STATE, state);
             put_u32(raw, status::DRAWN_WIDTH, drawn.0);
             put_u32(raw, status::DRAWN_HEIGHT, drawn.1);
             put_u64(raw, status::FRAMES, frames);
             put_u64(raw, status::APPLIED_SIZE_EPOCH, epoch);
+            put_u32(raw, status::REFUSAL, refusal);
         });
     }
 }

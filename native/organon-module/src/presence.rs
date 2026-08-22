@@ -15,7 +15,29 @@
 //! | quit on purpose vs. vanished | **yes** | [`crate::ProducerState::Gone`] is a farewell the producer writes |
 //! | paused vs. hung | **yes** | the liveness counter is bumped once per producer *loop*, not once per *frame*, so a paused producer still moves it |
 //! | starting vs. never going to start | **yes, by clock** | `Starting` is a state with a deadline, and the deadline is what turns row 3 into row 4 |
+//! | **alive but not producing** vs. paused | **yes** | 🚨 see below — this one nearly got away |
 //! | **hung vs. exited without a farewell** | 🚨 **no** | both are a counter that stopped moving, and nothing inside a shared mapping distinguishes them |
+//!
+//! # 🚨 The row that nearly got away: a producer that refuses every frame
+//!
+//! A producer that declines to draw — because the target is a size it cannot use, because a
+//! resource never loaded — is **alive and silent**. It ticks, so the liveness counter moves,
+//! so every rule above says it is fine. And the state it most resembles is
+//! [`ProducerState::Paused`], which is the **arrival state**: the least alarming conclusion
+//! the console could possibly reach, about the case §4.6 most needs it to name.
+//!
+//! Two things close it, and it takes both:
+//!
+//! 1. **The producer may say so** — [`ProducerState::Refusing`] plus a [`RefusalReason`], which
+//!    is what makes the sentence specific rather than merely alarmed.
+//! 2. 🚨 **The console measures frame silence against the clock anyway**, separately from
+//!    liveness, and only while it has asked for [`Lifecycle::Running`]. This is the
+//!    load-bearing half: (1) trusts the party *least able to notice it has stopped*, and a
+//!    producer wedged in its own render loop will never write the word.
+//!
+//! ⚠️ **The lifecycle condition is not a detail.** An `Attached` producer publishes one frame
+//! and then legitimately nothing, for ever — so a frame-silence rule that ignored the
+//! lifecycle would accuse every correctly-paused module within seconds of arriving.
 //!
 //! ⚠️ **The last row is the honest limit and it is not a gap this crate should close.** The
 //! thing that genuinely knows a process died is the process handle, and the console holds
@@ -39,7 +61,7 @@
 
 use std::time::Duration;
 
-use crate::wire::ProducerState;
+use crate::wire::{Lifecycle, ProducerState, RefusalReason};
 
 /// When a silence becomes a symptom. Every value is a **policy**, not a fact, so it is a
 /// value rather than a constant — a console on a 30 Hz display and a headless test have
@@ -61,6 +83,16 @@ pub struct Timings {
     pub stall_after: Duration,
     /// How long before it is called lost. Must be at least [`Timings::stall_after`].
     pub dead_after: Duration,
+    /// How long a producer the console has asked to **run** may publish no frames before it is
+    /// called [`Presence::NotProducing`].
+    ///
+    /// ⚠️ Measured against the **frame** counter, not the liveness counter, and applied only
+    /// while the console has asked for [`Lifecycle::Running`] — see the module docs.
+    ///
+    /// Two seconds: long enough that a shader compile, a level load or a first-frame
+    /// allocation is not accused of having stopped, short enough that a frozen viewport is
+    /// named before the person looking at it starts wondering.
+    pub produce_within: Duration,
 }
 
 impl Default for Timings {
@@ -72,8 +104,34 @@ impl Default for Timings {
             // a wedged viewport is told inside the time they would have started wondering.
             stall_after: Duration::from_millis(1000),
             dead_after: Duration::from_secs(5),
+            produce_within: Duration::from_secs(2),
         }
     }
+}
+
+/// Everything one poll observed, gathered so [`Presence::judge`] is a pure function of it.
+///
+/// 📌 A struct rather than seven arguments, and the reason is the tests: the interesting cases
+/// here are *combinations* — refusing while stalled, running while paused, published-once then
+/// silent — and a positional call of seven values is a call whose meaning nobody can check by
+/// reading it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Observed {
+    pub state: ProducerState,
+    pub refusal: RefusalReason,
+    /// Whether the producer has ever published a frame.
+    pub published_any: bool,
+    /// What the CONSOLE has asked for. Its own record, never read back off the wire — the
+    /// question this answers is "did I ask this producer to run?", and only one party knows.
+    pub asked_for: Lifecycle,
+    /// How long the liveness counter has stood still.
+    pub silent: Duration,
+    /// How long the frame counter has stood still, restarted whenever the console asks for
+    /// [`Lifecycle::Running`] so a producer is never accused of not answering a question it
+    /// has not yet been asked.
+    pub frames_silent: Duration,
+    /// How long the console has had the channel.
+    pub since_open: Duration,
 }
 
 /// What the console believes about the producer, weighing the producer's own claim against a
@@ -93,6 +151,12 @@ pub enum Presence {
     Live,
     /// The heartbeat stopped recently. Might come back.
     Stalled { silent: Duration },
+    /// 🚨 **Alive, and no longer drawing.** §4.6's *"stopped producing"*, said as its own thing
+    /// because it is the one failure whose symptom is a perfectly healthy heartbeat. `reason`
+    /// is `Some` when the producer said why and `None` when the clock caught it first — and
+    /// the second is not a lesser answer, it is the one that works on a producer too wedged
+    /// to speak.
+    NotProducing { silent: Duration, reason: Option<RefusalReason> },
     /// The heartbeat stopped long enough, or it never started in time. ⚠️ Named for the
     /// observation, not a cause — see the module docs' table.
     Lost { silent: Duration },
@@ -103,9 +167,10 @@ pub enum Presence {
 impl Presence {
     /// Is the picture this producer last drew still something the console may show?
     ///
-    /// 🚨 True for exactly two states, and `Stalled` is deliberately not one of them: §4.6
-    /// puts *hung* in the same row as *died*, with the same instruction. The threshold is the
-    /// place to argue about how patient the console is; the rule is not.
+    /// 🚨 True for exactly two states, and neither `Stalled` nor `NotProducing` is one of
+    /// them: §4.6 puts *hung* and *stopped producing* in the same row as *died*, with the same
+    /// instruction. The thresholds are the place to argue about how patient the console is;
+    /// the rule is not.
     pub fn picture_may_be_shown(&self) -> bool {
         matches!(self, Presence::Starting { .. } | Presence::Live)
     }
@@ -126,6 +191,19 @@ impl Presence {
                 format!("{producer} is starting — {:.0} s so far", elapsed.as_secs_f32())
             }
             Presence::Live => format!("{producer} is running"),
+            Presence::NotProducing { silent, reason } => match reason {
+                Some(r) => format!(
+                    "{producer} has stopped drawing — {}. Nothing for {:.0} s. {restart_verb} to \
+                     restart it",
+                    r.because(),
+                    silent.as_secs_f32()
+                ),
+                None => format!(
+                    "{producer} is running but has drawn nothing for {:.0} s. {restart_verb} to \
+                     restart it",
+                    silent.as_secs_f32()
+                ),
+            },
             Presence::Stalled { silent } => format!(
                 "{producer} has stopped responding — nothing for {:.1} s. {restart_verb} to \
                  restart it",
@@ -139,37 +217,53 @@ impl Presence {
         }
     }
 
-    /// The verdict, from what the producer claims and what the counter and clock show.
+    /// The verdict, from what the producer claims and what the counters and clock show.
     ///
-    /// `silent` is how long the liveness counter has stood still; `since_open` is how long
-    /// the console has had the channel.
-    pub(crate) fn judge(
-        state: ProducerState,
-        published_any: bool,
-        silent: Duration,
-        since_open: Duration,
-        t: &Timings,
-    ) -> Presence {
-        // A farewell outranks every clock: the producer said it was going, so no amount of
-        // silence afterwards makes it a mystery.
-        if state == ProducerState::Gone {
+    /// 🚨 **The order of the tests is the design**, and it is worth reading in order:
+    ///
+    /// 1. **A farewell outranks every clock.** The producer said it was going, so no amount of
+    ///    silence afterwards makes it a mystery.
+    /// 2. **Death outranks every claim.** A `Refusing` word written five seconds ago by a
+    ///    process that has since stopped is a stale claim, and reporting it would name a cause
+    ///    for a producer that is simply gone.
+    /// 3. **Row 3's deadline**, before anything that assumes production has started.
+    /// 4. **A stalled loop outranks missing frames**, because it *explains* them — reporting
+    ///    "not producing" about a producer whose whole loop has stopped would name the
+    ///    symptom and hide the cause. A producer that is genuinely refusing is heartbeating
+    ///    fine, so it never reaches this test.
+    /// 5. **Then the two halves of the refusal answer**: the producer's own word, believed
+    ///    immediately; and the clock, for one that never says anything.
+    pub(crate) fn judge(o: Observed, t: &Timings) -> Presence {
+        if o.state == ProducerState::Gone {
             return Presence::Gone;
         }
-        if silent >= t.dead_after {
-            return Presence::Lost { silent };
+        if o.silent >= t.dead_after {
+            return Presence::Lost { silent: o.silent };
         }
-        if !published_any && state == ProducerState::Starting {
-            return if since_open >= t.start_within {
+        if !o.published_any && o.state == ProducerState::Starting {
+            return if o.since_open >= t.start_within {
                 // 🚨 Row 3 becoming row 4. The producer is still bumping its counter — it is
                 // alive and simply not producing — and saying "starting" for ever would be
                 // the sentence that looks most like working software.
-                Presence::Lost { silent: since_open }
+                Presence::Lost { silent: o.since_open }
             } else {
-                Presence::Starting { elapsed: since_open }
+                Presence::Starting { elapsed: o.since_open }
             };
         }
-        if silent >= t.stall_after {
-            return Presence::Stalled { silent };
+        if o.silent >= t.stall_after {
+            return Presence::Stalled { silent: o.silent };
+        }
+        if o.state == ProducerState::Refusing {
+            return Presence::NotProducing {
+                silent: o.frames_silent,
+                reason: Some(o.refusal),
+            };
+        }
+        // ⚠️ Only while the console has ASKED for Running. An `Attached` producer draws one
+        // frame and then legitimately nothing for ever, and that is the state every module
+        // arrives in — a rule that skipped this condition would accuse each one on arrival.
+        if o.asked_for == Lifecycle::Running && o.frames_silent >= t.produce_within {
+            return Presence::NotProducing { silent: o.frames_silent, reason: None };
         }
         Presence::Live
     }
@@ -206,8 +300,11 @@ pub enum Poll<'a> {
     /// The producer is fine and there is nothing new — it is paused, or the console polled
     /// twice inside one of its frames.
     Holding,
-    /// §4.6's fourth row, said three ways because they are three different sentences.
+    /// §4.6's fourth row, said four ways because they are four different sentences.
     Stalled { silent: Duration },
+    /// Alive, and no longer drawing — see [`Presence::NotProducing`], the one failure whose
+    /// symptom is a perfectly healthy heartbeat.
+    NotProducing { silent: Duration, reason: Option<RefusalReason> },
     Lost { silent: Duration },
     Gone,
 }
@@ -218,7 +315,10 @@ impl Poll<'_> {
         match self {
             Poll::Frame(_) => Present::Upload,
             Poll::Starting { .. } | Poll::Holding => Present::Keep,
-            Poll::Stalled { .. } | Poll::Lost { .. } | Poll::Gone => Present::Forget,
+            Poll::Stalled { .. }
+            | Poll::NotProducing { .. }
+            | Poll::Lost { .. }
+            | Poll::Gone => Present::Forget,
         }
     }
 
@@ -228,11 +328,13 @@ impl Poll<'_> {
             Poll::Starting { elapsed } => Presence::Starting { elapsed },
             Poll::Frame(_) | Poll::Holding => Presence::Live,
             Poll::Stalled { silent } => Presence::Stalled { silent },
+            Poll::NotProducing { silent, reason } => Presence::NotProducing { silent, reason },
             Poll::Lost { silent } => Presence::Lost { silent },
             Poll::Gone => Presence::Gone,
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -242,63 +344,159 @@ mod tests {
         start_within: Duration::from_secs(10),
         stall_after: Duration::from_millis(1000),
         dead_after: Duration::from_secs(5),
+        produce_within: Duration::from_secs(2),
     };
 
     fn s(ms: u64) -> Duration {
         Duration::from_millis(ms)
     }
 
+    /// A healthy producer: drawing, told to run, nothing silent. Every case below is this with
+    /// one thing changed — which is what makes them readable, and what a positional `judge`
+    /// would have cost.
+    fn well() -> Observed {
+        Observed {
+            state: ProducerState::Producing,
+            refusal: RefusalReason::Unspecified,
+            published_any: true,
+            asked_for: Lifecycle::Running,
+            silent: s(0),
+            frames_silent: s(0),
+            since_open: s(60_000),
+        }
+    }
+
     #[test]
     fn a_paused_producer_is_live_because_it_still_loops() {
         // The whole reason the liveness counter is not the frame counter.
-        assert_eq!(
-            Presence::judge(ProducerState::Paused, true, s(0), s(60_000), &T),
-            Presence::Live
-        );
+        let o = Observed {
+            state: ProducerState::Paused,
+            asked_for: Lifecycle::Attached,
+            frames_silent: s(600_000),
+            ..well()
+        };
+        assert_eq!(Presence::judge(o, &T), Presence::Live);
     }
 
     #[test]
     fn a_farewell_outranks_every_clock() {
-        assert_eq!(
-            Presence::judge(ProducerState::Gone, true, s(600_000), s(600_000), &T),
-            Presence::Gone
-        );
-        assert_eq!(Presence::judge(ProducerState::Gone, false, s(0), s(0), &T), Presence::Gone);
+        let o = Observed {
+            state: ProducerState::Gone,
+            silent: s(600_000),
+            frames_silent: s(600_000),
+            ..well()
+        };
+        assert_eq!(Presence::judge(o, &T), Presence::Gone);
+        let fresh = Observed {
+            state: ProducerState::Gone,
+            published_any: false,
+            since_open: s(0),
+            ..well()
+        };
+        assert_eq!(Presence::judge(fresh, &T), Presence::Gone);
     }
 
     #[test]
     fn starting_times_out_into_lost_rather_than_sitting_for_ever() {
         // §4.6's explicit requirement for row three.
+        let base = Observed {
+            state: ProducerState::Starting,
+            published_any: false,
+            asked_for: Lifecycle::Attached,
+            ..well()
+        };
         assert!(matches!(
-            Presence::judge(ProducerState::Starting, false, s(0), s(9_999), &T),
+            Presence::judge(Observed { since_open: s(9_999), ..base }, &T),
             Presence::Starting { .. }
         ));
         assert!(matches!(
-            Presence::judge(ProducerState::Starting, false, s(0), s(10_000), &T),
+            Presence::judge(Observed { since_open: s(10_000), ..base }, &T),
             Presence::Lost { .. }
         ));
     }
 
     #[test]
     fn a_producer_that_has_produced_is_never_called_starting_again() {
-        // A live producer whose state word still says Starting — a producer that published a
-        // frame before it got round to stamping Producing — must not be dragged back to row
-        // three by the start deadline it has already passed.
-        assert_eq!(
-            Presence::judge(ProducerState::Starting, true, s(0), s(60_000), &T),
-            Presence::Live
-        );
+        // A live producer whose state word still says Starting — one that published a frame
+        // before it got round to stamping Producing — must not be dragged back to row three by
+        // a deadline it has already passed.
+        let o = Observed { state: ProducerState::Starting, ..well() };
+        assert_eq!(Presence::judge(o, &T), Presence::Live);
     }
 
     #[test]
     fn silence_walks_live_to_stalled_to_lost() {
-        assert_eq!(Presence::judge(ProducerState::Producing, true, s(999), s(9_999), &T), Presence::Live);
+        assert_eq!(Presence::judge(Observed { silent: s(999), ..well() }, &T), Presence::Live);
         assert!(matches!(
-            Presence::judge(ProducerState::Producing, true, s(1000), s(9_999), &T),
+            Presence::judge(Observed { silent: s(1000), ..well() }, &T),
             Presence::Stalled { .. }
         ));
         assert!(matches!(
-            Presence::judge(ProducerState::Producing, true, s(5000), s(9_999), &T),
+            Presence::judge(Observed { silent: s(5000), ..well() }, &T),
+            Presence::Lost { .. }
+        ));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Alive and silent — §4.6's "stopped producing"
+    // -----------------------------------------------------------------------------------
+
+    /// 🚨 The load-bearing half: the clock catches a producer that never says anything, which
+    /// is the case the producer's own word cannot cover.
+    #[test]
+    fn a_running_producer_that_draws_nothing_is_caught_without_saying_a_word() {
+        let quiet = Observed { frames_silent: s(2000), ..well() };
+        assert_eq!(
+            Presence::judge(quiet, &T),
+            Presence::NotProducing { silent: s(2000), reason: None }
+        );
+        assert_eq!(
+            Presence::judge(Observed { frames_silent: s(1999), ..well() }, &T),
+            Presence::Live,
+            "and not one moment before the deadline"
+        );
+    }
+
+    /// The producer's own word is believed at once — a demonstrably live producer that says it
+    /// cannot draw is not made to wait out a deadline to prove it.
+    #[test]
+    fn a_declared_refusal_needs_no_deadline() {
+        let o = Observed {
+            state: ProducerState::Refusing,
+            refusal: RefusalReason::SizeUnsupported,
+            frames_silent: s(0),
+            ..well()
+        };
+        assert_eq!(
+            Presence::judge(o, &T),
+            Presence::NotProducing { silent: s(0), reason: Some(RefusalReason::SizeUnsupported) }
+        );
+    }
+
+    /// ⚠️ The condition without which this rule would accuse **every module on arrival**:
+    /// `Attached` is the state a module arrives in, and an attached producer draws once and
+    /// then legitimately nothing, for ever.
+    #[test]
+    fn an_attached_producer_is_never_accused_of_not_drawing() {
+        let o = Observed { asked_for: Lifecycle::Attached, frames_silent: s(600_000), ..well() };
+        assert_eq!(Presence::judge(o, &T), Presence::Live);
+    }
+
+    /// A stalled loop **explains** missing frames, so it outranks them: naming the symptom
+    /// while the cause is available would be the less useful of two true sentences.
+    #[test]
+    fn a_stalled_loop_outranks_missing_frames_and_a_stale_claim() {
+        let o = Observed {
+            state: ProducerState::Refusing,
+            refusal: RefusalReason::SizeUnsupported,
+            silent: s(1000),
+            frames_silent: s(9000),
+            ..well()
+        };
+        assert!(matches!(Presence::judge(o, &T), Presence::Stalled { .. }));
+        // And once it is genuinely gone, the claim is not resurrected as a cause.
+        assert!(matches!(
+            Presence::judge(Observed { silent: s(5000), ..o }, &T),
             Presence::Lost { .. }
         ));
     }
@@ -310,18 +508,26 @@ mod tests {
         assert!(Presence::Starting { elapsed: s(0) }.picture_may_be_shown());
         assert!(Presence::Live.picture_may_be_shown());
         assert!(!Presence::Stalled { silent: s(1500) }.picture_may_be_shown());
+        assert!(!Presence::NotProducing { silent: s(2500), reason: None }.picture_may_be_shown());
+        assert!(!Presence::NotProducing {
+            silent: s(0),
+            reason: Some(RefusalReason::SizeUnsupported)
+        }
+        .picture_may_be_shown());
         assert!(!Presence::Lost { silent: s(9000) }.picture_may_be_shown());
         assert!(!Presence::Gone.picture_may_be_shown());
     }
 
     #[test]
     fn present_and_picture_may_be_shown_cannot_disagree() {
-        // Two answers to one question, so they are checked against each other rather than
-        // each being checked alone.
+        // Two answers to one question, so they are checked against each other rather than each
+        // being checked alone.
         let polls = [
             Poll::Starting { elapsed: s(1) },
             Poll::Holding,
             Poll::Stalled { silent: s(1500) },
+            Poll::NotProducing { silent: s(2500), reason: None },
+            Poll::NotProducing { silent: s(0), reason: Some(RefusalReason::SizeUnsupported) },
             Poll::Lost { silent: s(9000) },
             Poll::Gone,
         ];
@@ -338,22 +544,34 @@ mod tests {
 
     #[test]
     fn every_sentence_names_the_producer_and_the_way_back() {
-        for p in [
+        let all = [
             Presence::Starting { elapsed: s(2000) },
             Presence::Stalled { silent: s(1500) },
+            Presence::NotProducing { silent: s(2500), reason: None },
+            Presence::NotProducing { silent: s(0), reason: Some(RefusalReason::SizeUnsupported) },
             Presence::Lost { silent: s(9000) },
             Presence::Gone,
-        ] {
+        ];
+        for p in all {
             let line = p.sentence("ascent", "console module restart ascent");
             assert!(line.contains("ascent"), "{line}");
         }
-        // Every state a person has to act on names the verb; the two that resolve themselves
-        // do not, because a verb offered for a condition that is about to clear is noise.
-        for p in [Presence::Stalled { silent: s(1500) }, Presence::Lost { silent: s(9000) }, Presence::Gone] {
+        // Every state a person has to act on names the verb; the one that resolves itself does
+        // not, because a verb offered for a condition about to clear is noise.
+        for p in all.iter().skip(1) {
             assert!(
                 p.sentence("ascent", "console module restart ascent").contains("restart"),
                 "{p:?} leaves the person with no way back"
             );
         }
+    }
+
+    /// A reason's words belong to the reason, so a rectangle never restates them.
+    #[test]
+    fn a_declared_reason_reaches_the_sentence() {
+        let line =
+            Presence::NotProducing { silent: s(0), reason: Some(RefusalReason::SizeUnsupported) }
+                .sentence("ascent", "restart");
+        assert!(line.contains(RefusalReason::SizeUnsupported.because()), "{line}");
     }
 }

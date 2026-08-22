@@ -61,11 +61,28 @@ pub const SLOTS: u32 = 3;
 /// Every row a producer writes is padded up to this.
 ///
 /// It is `wgpu::COPY_BYTES_PER_ROW_ALIGNMENT` (256) written out by hand, because this crate
-/// must not depend on `wgpu` (see the manifest). Matching it is not cosmetic: it means a
-/// producer's `copy_texture_to_buffer` staging layout and this ring's layout are the same
-/// layout, so the copy out is one `memcpy` per row into the mapping rather than a repack.
-/// `gpu::tests::the_row_alignment_is_wgpus` pins the two numbers equal whenever the `wgpu`
-/// feature is on — the constant is duplicated, the *agreement* is tested.
+/// must not depend on `wgpu` (see the manifest). `gpu::tests::the_row_alignment_is_wgpus` pins
+/// the two numbers equal whenever the `wgpu` feature is on — the constant is duplicated, the
+/// *agreement* is tested.
+///
+/// # 🚨 Padded, not tight — and the reason, because the rule alone loses the argument
+///
+/// The obvious alternative is a **tightly packed** row of `width * bpp` bytes, on the
+/// reasoning that then no transport has to know about `COPY_BYTES_PER_ROW_ALIGNMENT`. It
+/// costs strictly more work on **both** sides: a producer whose frame came off the GPU
+/// through `copy_texture_to_buffer` has padded rows in hand and must repack them to strip the
+/// padding, and the console must then re-pad to upload. Matching the alignment means the
+/// producer's staging layout **is** the ring's layout, so the copy out is one `memcpy` per row
+/// and the console's `write_texture` sends the rows up as they lie.
+///
+/// ⚠️ **And the disagreement is invisible at every width anyone would test.** At 640, 1280 and
+/// 1920, `width * 4` is *already* 256-aligned, so a tight producer and a padded consumer agree
+/// **by accident** and every test either side would naturally write passes. It breaks at the
+/// first width that is not — 900 wide is 3600 tight against 3840 padded — and the symptom is a
+/// **sheared picture**, not an error, because every byte is a valid pixel and only the row
+/// boundaries have moved. That is why `FrameCapacity::max_row_stride` is pinned at an
+/// unaligned width in `wire`'s tests and why the channel suite carries a 900-wide round trip:
+/// a sweep of nice widths exercises the padding path zero times while looking complete.
 pub const ROW_ALIGNMENT: u32 = 256;
 
 /// Per-slot header, ahead of the pixels.
@@ -99,6 +116,15 @@ pub(crate) const OFF_INPUT_CAPACITY: usize = 0x48;
 /// no API in this crate through which a producer can write a control word.
 pub mod control {
     pub const BYTES: usize = 64;
+    /// 🚨 **Where the seqlock's body ENDS, and it is not `BYTES`.**
+    ///
+    /// A seqlock brackets ordinary loads and stores; the atomics in this block are *not*
+    /// ordinary and must never be copied as part of the body. Reading them as plain bytes
+    /// would be a data race on the very words the other party stores to atomically — the
+    /// same mistake `organon-core::ipc`'s `Reader` avoids by starting its body copy at byte
+    /// 4 rather than 0, and for the same reason. So the body is `SEQ + 4 .. BODY_END`, every
+    /// atomic lives at or after `BODY_END`, and `wire::tests` pins that.
+    pub const BODY_END: usize = 0x20;
     /// Seqlock counter; odd while the console is mid-write. Outside the body it guards.
     pub const SEQ: usize = 0x00;
     /// [`super::Lifecycle`] as `u32`.
@@ -122,6 +148,10 @@ pub mod control {
 /// The status block — **the producer writes, the console reads, and never the reverse.**
 pub mod status {
     pub const BYTES: usize = 64;
+    /// Where the seqlock's body ends. See [`super::control::BODY_END`] — same rule, and the
+    /// two are deliberately allowed to differ, because the two blocks carry different fields
+    /// and pinning them equal would be a coincidence maintained by hand.
+    pub const BODY_END: usize = 0x28;
     /// Seqlock counter; odd while the producer is mid-write.
     pub const SEQ: usize = 0x00;
     /// [`super::ProducerState`] as `u32`.
@@ -132,14 +162,17 @@ pub mod status {
     /// The `SIZE_EPOCH` the producer has actually adopted. Lets the console answer "has the
     /// resize landed?" without inferring it from dimensions that may coincide.
     pub const APPLIED_SIZE_EPOCH: usize = 0x18;
+    /// [`super::RefusalReason`] as `u32`. Meaningful only while [`STATE`] is
+    /// [`super::ProducerState::Refusing`].
+    pub const REFUSAL: usize = 0x20;
     /// 🚨 **The liveness counter, and it is NOT the frame counter.** Bumped once per producer
     /// loop iteration whether or not a frame was published, which is what lets a consumer
     /// tell *paused* from *hung*: a paused producer still loops. Atomic, outside the seqlock
     /// body.
-    pub const ALIVE: usize = 0x20;
+    pub const ALIVE: usize = 0x28;
     /// The newest COMMITTED slot, or [`super::NO_SLOT`]. Atomic, outside the seqlock body,
     /// and stamped only after that slot's own seqlock closed.
-    pub const LATEST_SLOT: usize = 0x28;
+    pub const LATEST_SLOT: usize = 0x30;
 }
 
 /// The console to producer input ring's header. Records follow at `input_off + HEADER_BYTES`.
@@ -295,6 +328,20 @@ pub enum ProducerState {
     /// module that quit on purpose is indistinguishable from one that hung, and the console
     /// would spend the whole death timeout painting "starting…" over a deliberate exit.
     Gone = 3,
+    /// 🚨 **Alive, looping, and unable to produce — the state that would otherwise read as
+    /// healthy.**
+    ///
+    /// A producer that declines every frame bumps its liveness counter exactly like a paused
+    /// one, so without this word the console concludes *`Paused`* — which is the **arrival
+    /// state**, and therefore the least alarming thing it could possibly decide. §4.6 requires
+    /// *"stopped producing"* to be sayable, and this is precisely the case that produces it.
+    ///
+    /// ⚠️ It is a **claim**, and a claim is not the mechanism. `Presence::judge` also measures
+    /// frame silence against the clock, so a producer that stops publishing **without** saying
+    /// so is still caught — this word only makes the console's sentence specific instead of
+    /// merely alarmed. Believing the claim alone would trust the party least able to notice
+    /// that it has stopped.
+    Refusing = 4,
 }
 
 impl ProducerState {
@@ -304,11 +351,56 @@ impl ProducerState {
             1 => Some(ProducerState::Producing),
             2 => Some(ProducerState::Paused),
             3 => Some(ProducerState::Gone),
+            4 => Some(ProducerState::Refusing),
             _ => None,
         }
     }
     pub const fn to_wire(self) -> u32 {
         self as u32
+    }
+}
+
+/// Why a producer cannot draw. A **closed set**, and small.
+///
+/// 🚨 **A name, never free text**, and the reason is not economy of bytes. A string a module
+/// wrote, rendered inside the console's own chrome, is the module speaking in the console's
+/// voice — the same objection that keeps a lighting scene a *name* rather than an RGB triple,
+/// one layer over. The producer names a condition; the console owns the sentence.
+///
+/// ⚠️ **Two variants, because two are what exist.** Ascent's producer has exactly one real
+/// refusal (a target it cannot draw into), and `region.rs`'s standing rule is that an
+/// unreachable arm is an untested branch pretending to be a design. A third arrives with a
+/// producer that has it, a wire tag, and a sentence — not before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum RefusalReason {
+    /// The producer declined and did not say why. Also what a `Refusing` state means to a
+    /// console too old to know a newer reason's tag.
+    #[default]
+    Unspecified = 0,
+    /// The size the console is asking for is one this producer cannot draw at.
+    SizeUnsupported = 1,
+}
+
+impl RefusalReason {
+    pub const fn from_wire(v: u32) -> Option<RefusalReason> {
+        match v {
+            0 => Some(RefusalReason::Unspecified),
+            1 => Some(RefusalReason::SizeUnsupported),
+            _ => None,
+        }
+    }
+    pub const fn to_wire(self) -> u32 {
+        self as u32
+    }
+
+    /// The clause the console's sentence uses. Written here so the reason's words belong to
+    /// the reason rather than being restated at every place a rectangle is drawn.
+    pub const fn because(self) -> &'static str {
+        match self {
+            RefusalReason::Unspecified => "it is declining to draw",
+            RefusalReason::SizeUnsupported => "it cannot draw at the size this viewport asks for",
+        }
     }
 }
 
@@ -701,10 +793,16 @@ mod tests {
             ProducerState::Producing,
             ProducerState::Paused,
             ProducerState::Gone,
+            ProducerState::Refusing,
         ] {
             assert_eq!(ProducerState::from_wire(s.to_wire()), Some(s));
         }
-        assert_eq!(ProducerState::from_wire(4), None);
+        assert_eq!(ProducerState::from_wire(5), None);
+        for r in [RefusalReason::Unspecified, RefusalReason::SizeUnsupported] {
+            assert_eq!(RefusalReason::from_wire(r.to_wire()), Some(r));
+            assert!(!r.because().is_empty(), "a reason with no words is not a reason");
+        }
+        assert_eq!(RefusalReason::from_wire(2), None);
     }
 
     /// One seqlock implementation serves both blocks (`channel::BLOCK_SEQ`), which is only
@@ -716,6 +814,52 @@ mod tests {
         assert_eq!(control::SEQ, 0);
         assert_eq!(status::SEQ, 0);
         assert_eq!(control::BYTES, status::BYTES, "and one read buffer serves both");
+    }
+
+    /// 🚨 **Every atomic lives OUTSIDE its block's seqlock body**, and this is the test that
+    /// keeps it true. A seqlock brackets ordinary loads and stores; copying an atomic word as
+    /// part of the body is a plain read racing an atomic write — the data race the lock exists
+    /// to remove, moved rather than fixed. `organon-core::ipc` starts its body copy at byte 4
+    /// for exactly this reason, and the same rule pushes `ALIVE`, `LATEST_SLOT`,
+    /// `CONSOLE_ALIVE` and `READER_HOLD` past each `BODY_END`.
+    #[test]
+    fn no_atomic_sits_inside_a_seqlock_body() {
+        for off in [control::SEQ, control::CONSOLE_ALIVE, control::READER_HOLD] {
+            assert!(
+                off == control::SEQ || off >= control::BODY_END,
+                "control atomic at {off:#x} is inside the body it would race"
+            );
+        }
+        for off in [status::SEQ, status::ALIVE, status::LATEST_SLOT] {
+            assert!(
+                off == status::SEQ || off >= status::BODY_END,
+                "status atomic at {off:#x} is inside the body it would race"
+            );
+        }
+        // And every body field is inside it, or a write would land nowhere at all. The `u64`s
+        // are listed with their width, because a field that starts inside the body and ends
+        // outside it is the same bug wearing a smaller hat.
+        for (off, width) in [
+            (control::LIFECYCLE, 4),
+            (control::REQ_WIDTH, 4),
+            (control::REQ_HEIGHT, 4),
+            (control::SIZE_EPOCH, 8),
+            (control::CLOSE, 4),
+        ] {
+            assert!((4..=control::BODY_END - width).contains(&off), "control {off:#x}");
+        }
+        for (off, width) in [
+            (status::STATE, 4),
+            (status::DRAWN_WIDTH, 4),
+            (status::DRAWN_HEIGHT, 4),
+            (status::FRAMES, 8),
+            (status::APPLIED_SIZE_EPOCH, 8),
+            (status::REFUSAL, 4),
+        ] {
+            assert!((4..=status::BODY_END - width).contains(&off), "status {off:#x}");
+        }
+        const { assert!(control::BODY_END <= control::BYTES) };
+        const { assert!(status::BODY_END <= status::BYTES) };
     }
 
     /// `CLAUDE.md` invariant 4, pinned where it is decided rather than where it is described.

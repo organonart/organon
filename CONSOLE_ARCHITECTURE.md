@@ -7206,7 +7206,36 @@ shows on the *liveness* path instead, which is where a fact about the producer b
 | quit on purpose vs. vanished | **yes** | `ProducerState::Gone` is a farewell the producer writes |
 | paused vs. hung | **yes** | 🚨 the liveness counter is bumped once per producer **loop**, not once per **frame** |
 | starting vs. never going to start | **yes, by clock** | `Starting` has a deadline — §4.6's third row must time out into the fourth |
+| **alive but drawing nothing** vs. paused | **yes** | 🚨 see below — this is the row that nearly got away |
 | hung vs. exited without a farewell | 🚨 **no** | both are a counter that stopped, and nothing in a shared mapping separates them |
+
+##### 🚨 The row that nearly got away: a producer that refuses every frame
+
+Raised by the Ascent session against the first cut of this contract, and it was right: **a
+producer that declines to draw is alive and silent.** It ticks, so the liveness counter moves,
+so every rule above says it is fine — and the state it most resembles is `Paused`, which is
+the **arrival state**. The least alarming conclusion available, about the case §4.6 most needs
+named.
+
+Two things close it and it takes both:
+
+1. **The producer may say so** — `ProducerState::Refusing` plus a `RefusalReason`, which makes
+   the sentence specific rather than merely alarmed.
+2. 🚨 **The console times frame silence against its own clock anyway**, separately from
+   liveness. This is the load-bearing half, because (1) trusts the party *least able to notice
+   that it has stopped*: a producer wedged in its own render loop will never write the word.
+
+⚠️ **The reason is a name, never free text**, and that is not economy of bytes — a string a
+module wrote, rendered inside the console's own chrome, is the module speaking in the
+console's voice. Same objection that keeps a lighting scene a name rather than an RGB triple.
+Two variants, because two are what exist; a third arrives with a producer that has one.
+
+⚠️ **And the rule only applies while the console has asked for `Running`** — which is not a
+detail. An `Attached` producer draws once and then legitimately nothing, for ever, and that is
+the state *every* module arrives in, so a frame-silence rule that skipped this condition would
+accuse each one on arrival. Asking for `Running` restarts the clock, so a producer is never
+accused of not answering a question it has only just been asked. A stalled loop still outranks
+missing frames, because it **explains** them.
 
 ⚠️ The last row is stated rather than closed. The thing that genuinely knows a process died is
 the **process handle**, which the console holds the moment it spawns the module — that is
@@ -7318,6 +7347,20 @@ so the copy out is one `memcpy` per row rather than a repack, and the console's 
 sends the padded rows up as they lie (`write_texture` has no alignment requirement; only
 `copy_texture_to_buffer` does). The constant is duplicated; the **agreement** is tested, under
 the `wgpu` feature.
+
+🚨 **The rows are padded rather than tight, and the argument matters more than the rule,
+because the two conventions agree by accident at every width anyone would test.** The obvious
+alternative is a tightly packed `width * bpp` row — on the reasoning that then no transport
+has to know about `COPY_BYTES_PER_ROW_ALIGNMENT` — and it costs strictly more work on *both*
+sides: the producer repacks to strip padding it already has, and the console re-pads to upload.
+⚠️ At 640, 1280 and 1920 wide, `width * 4` is **already** 256-aligned, so a tight producer and
+a padded consumer produce identical bytes and every test either side would naturally write
+passes. It breaks at the first width that is not — **900 is 3600 tight against 3840 padded** —
+and the symptom is a **sheared picture rather than an error**, because every byte is a valid
+pixel and only the row boundaries moved. That is why the suite carries a 900-wide round trip
+and a 437-wide one: a sweep of nice widths exercises the padding path zero times while looking
+complete. ✏️ This came up as a real disagreement with Ascent's first producer, which had
+stripped the padding; it would have passed both sides' tests.
 
 ## 2. Seams the next tiers consume
 

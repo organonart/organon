@@ -10,6 +10,7 @@
 //! |---|---|
 //! | [`SimProducer::abandon_frame`] | a producer that **dies mid-frame** — the seqlock left odd, half a picture in a slot |
 //! | [`SimProducer::stop`] / [`SimProducer::depart`] | a producer that **stops**, with and without a farewell |
+//! | [`SimProducer::refuse`] | 🚨 a producer that is **alive and silent** — still ticking, drawing nothing, with and without saying why |
 //! | [`SimProducer::draw`] at a new size | a **size change**, including one the console did not ask for |
 //! | [`crate::ProducerChannel::scribble_over`] | a producer that **ignores the reader's hold** — the tearing the ring exists to prevent |
 //!
@@ -36,12 +37,13 @@ pub struct SimProducer {
     /// The size the next [`SimProducer::draw`] uses when no size is given.
     size: (u32, u32),
     stopped: bool,
+    refusing: bool,
 }
 
 impl SimProducer {
     pub fn new(ch: ProducerChannel) -> SimProducer {
         let size = (ch.capacity().max_width, ch.capacity().max_height);
-        SimProducer { ch, size, stopped: false }
+        SimProducer { ch, size, stopped: false, refusing: false }
     }
 
     pub fn channel(&mut self) -> &mut ProducerChannel {
@@ -74,7 +76,7 @@ impl SimProducer {
     /// Draw and publish one frame at an explicit size — including one the console never
     /// asked for, which is a producer being independently sized and is legal.
     pub fn draw_at(&mut self, w: u32, h: u32) -> Option<u64> {
-        if self.stopped {
+        if self.stopped || self.refusing {
             return None;
         }
         self.size = (w, h);
@@ -119,6 +121,21 @@ impl SimProducer {
             // exactly the state a killed process leaves behind, and a `Drop` that "cleaned
             // up" would be simulating a courtesy a dead process cannot perform.
         }
+    }
+
+    /// 🚨 Keep ticking and draw nothing — **alive and silent**, the state that would otherwise
+    /// read as healthy. `say_so` chooses whether the producer is well-behaved enough to name
+    /// its refusal, because the console has to reach the same verdict either way.
+    pub fn refuse(&mut self, say_so: Option<crate::wire::RefusalReason>) {
+        self.refusing = true;
+        if let Some(reason) = say_so {
+            self.ch.refuse(reason);
+        }
+    }
+
+    /// Draw again after a refusal.
+    pub fn resume(&mut self) {
+        self.refusing = false;
     }
 
     /// Stop looping. No farewell — the shape of a crash, a hang, or a process killed from
