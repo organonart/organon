@@ -8987,16 +8987,28 @@ const ATTN_LEAVES: &[&str] = &[
 /// segment. Same admission rule as [`ATTN_LEAVES`].
 const MLP_LEAVES: &[&str] = &[
     "gate_proj", "up_proj", "down_proj", "gate_up_proj", "c_fc", "fc_in", "fc_out", "w1",
-    "w2", "w3", "dense_h_to_4h", "dense_4h_to_h", "linear_1", "linear_2",
+    "w2", "w3", "dense_h_to_4h", "dense_4h_to_h", "linear_1", "linear_2", "fc1", "fc2",
 ];
+
+/// Container path segments that mean **feed-forward**, matched as a substring against
+/// *any* segment. Same admission rule as the leaf tables, one level up: a container
+/// only belongs here if no architecture in circulation gives an attention module a
+/// segment containing it.
+///
+/// ⚠️ The attention container check runs first (see [`classify_site`]), so an entry
+/// here can only ever *lose* a race, never steal one — but it can still swallow a name
+/// that is neither kind, which is why `densereludense` is spelled out in full rather
+/// than reduced to `dense`.
+const MLP_CONTAINERS: &[&str] = &["mlp", "ffn", "feed_forward", "feedforward", "densereludense"];
 
 /// Classify an adapted module by its name tail.
 ///
 /// ⚠️ **A name table is a silent-failure surface**, so this is layered rather than a
 /// list of seven strings: an exact match on the final path segment first (covering the
 /// conventions actually in circulation — llama/mistral/gemma `q_proj`…`down_proj`,
-/// GPT-2's `c_attn`/`c_fc`, GPT-NeoX's fused `query_key_value`, and the `wq`/`w1`
-/// family), then a *container* fallback on any segment (`…self_attn.…`, `…mlp.…`).
+/// GPT-2's `c_attn`/`c_fc`, GPT-NeoX's fused `query_key_value`, OPT's bare `fc1`/`fc2`,
+/// and the `wq`/`w1` family), then a *container* fallback on any segment
+/// (`…self_attn.…`, `…mlp.…`, T5's `…DenseReluDense.…`).
 /// Anything still unmatched is [`SiteKind::Unclassified`] and is **reported**, never
 /// dropped: an unrecognised architecture must look like an unrecognised architecture,
 /// not like a layer that was never trained.
@@ -9033,6 +9045,27 @@ const MLP_LEAVES: &[&str] = &[
 /// entries here: they name a feed-forward projector outside any transformer layer, so
 /// in practice they arrive with no layer index and are reported as `layerless` before
 /// this function's answer is used at all.
+///
+/// # Two gaps, closed against a measured tree rather than a remembered one
+///
+/// Both were left open deliberately when the tables were last audited, because closing
+/// them needed HuggingFace names nobody was willing to guess at. They were then read
+/// out of an installed **transformers 5.5.0** (`transformers/models`, 453 packages):
+///
+/// | Added | Evidence |
+/// |---|---|
+/// | `fc1` / `fc2` (leaf) | OPT-style decoders declare `self.fc1` / `self.fc2` **directly on the layer**, so the path is `…decoder.layers.N.fc1` with no `mlp`/`ffn` segment for the container fallback to catch — they were `Unclassified`. **155** classes in that tree define `self.fc1`; every one uses it for feed-forward. Exactly one has *Attention* in its name, `Mask2FormerMaskedAttentionDecoderLayer`, and it is not a counterexample: there `fc1`/`fc2` are the `dim_feedforward` pair while attention is `self_attn` / `cross_attn`. `fc2` scans identically |
+/// | `densereludense` (container) | T5 and its family name the feed-forward block `self.DenseReluDense` — `…block.N.layer.1.DenseReluDense.wo`. Its attention siblings are `SelfAttention` / `EncDecAttention`, already caught by the attention container, so the two cannot collide |
+///
+/// 🚨 **A table entry that can never match is exactly as bad as a wrong one, and it is
+/// invisible.** The obvious companion to `DenseReluDense` is `DenseGatedActDense` —
+/// and it is **dead**. `T5DenseGatedActDense` is a *class*; the attribute it is bound
+/// to is `self.DenseReluDense` in **both** the gated and the ungated variant, across
+/// all seven families that use the layout (`t5`, `mt5`, `umt5`, `longt5`, `udop`,
+/// `pop2piano`, `pix2struct`). `self.DenseGatedActDense` occurs **zero** times in the
+/// tree, so no module path can ever contain that segment. Adding it would compile,
+/// read as thorough, change no test, and cover nothing. It is not here, and
+/// `an_unmatchable_table_entry_is_dead_weight` is the test that says why.
 fn classify_site(module: &str) -> SiteKind {
     let lower = module.to_ascii_lowercase();
     let segs: Vec<&str> = lower.split('.').filter(|s| !s.is_empty()).collect();
@@ -9051,9 +9084,7 @@ fn classify_site(module: &str) -> SiteKind {
     if segs.iter().any(|s| s.contains("attn") || s.contains("attention")) {
         return SiteKind::Attn;
     }
-    if segs.iter().any(|s| {
-        s.contains("mlp") || s.contains("ffn") || s.contains("feed_forward") || s.contains("feedforward")
-    }) {
+    if segs.iter().any(|s| MLP_CONTAINERS.iter().any(|c| s.contains(c))) {
         return SiteKind::Mlp;
     }
     SiteKind::Unclassified
@@ -22527,13 +22558,15 @@ mod tests {
         );
 
         // T5: the same shape, found auditing the rest of the table. Its FFN output
-        // projection is `wo`; its ATTENTION output projection is `o`.
+        // projection is `wo`; its ATTENTION output projection is `o`. Removing `wo`
+        // from the attention table stopped the mis-labelling; the `densereludense`
+        // container is what now carries it to the node it belongs on.
         assert_eq!(
             classify_site("block.0.layer.1.DenseReluDense.wo"),
-            SiteKind::Unclassified,
-            "T5's FFN down-proj must not be drawn on the attention ring"
+            SiteKind::Mlp,
+            "T5's FFN down-proj belongs on the MLP node, not the attention ring"
         );
-        assert_eq!(classify_site("block.0.layer.1.DenseReluDense.wi"), SiteKind::Unclassified);
+        assert_eq!(classify_site("block.0.layer.1.DenseReluDense.wi"), SiteKind::Mlp);
         // T5's attention still resolves, through `SelfAttention`.
         assert_eq!(classify_site("block.0.layer.0.SelfAttention.o"), SiteKind::Attn);
         assert_eq!(classify_site("block.0.layer.0.SelfAttention.q"), SiteKind::Attn);
@@ -22582,6 +22615,105 @@ mod tests {
             MLP_LEAVES.len(),
             MLP_LEAVES.iter().collect::<std::collections::BTreeSet<_>>().len(),
             "MLP_LEAVES has a duplicate"
+        );
+    }
+
+    #[test]
+    fn a_layer_that_declares_its_ffn_inline_still_lands_on_the_mlp_node() {
+        // OPT-style decoders declare `self.fc1` / `self.fc2` directly on the layer, so
+        // there is no `mlp`/`ffn` segment for the container fallback to catch and the
+        // module was `Unclassified` — the layer's MLP node stayed dark while a real
+        // measurement existed for it. Read out of transformers 5.5.0: 155 classes
+        // define `self.fc1` and every one of them uses it for feed-forward.
+        assert_eq!(classify_site("model.decoder.layers.3.fc1"), SiteKind::Mlp);
+        assert_eq!(classify_site("model.decoder.layers.3.fc2"), SiteKind::Mlp);
+        // The whole point of the leaf entry is that nothing upstream names the site.
+        assert_eq!(classify_site("fc1"), SiteKind::Mlp, "no container to fall back to");
+        // And the one class in that tree with `Attention` in its name is not a
+        // counterexample: its `fc1`/`fc2` are the `dim_feedforward` pair, while its
+        // attention is `self_attn` / `cross_attn` — which the attention container
+        // catches first, exactly as it should.
+        assert_eq!(classify_site("transformer_module.decoder.layers.0.self_attn.out_proj"), SiteKind::Attn);
+
+        // End to end: it reaches the MLP accumulator, not just the classifier.
+        let sites = delta_sites(&delta_summary(vec![delta_module(
+            "model.decoder.layers.3.fc1",
+            64,
+            64,
+            1.0e-2,
+        )]));
+        let s = sites.layers[&3];
+        assert!(s.mlp_rms > 0.0, "OPT's FFN up-proj lights the MLP node");
+        assert_eq!(s.attn_rms, 0.0);
+        assert!(sites.unclassified.is_empty(), "and is no longer reported as unknown");
+    }
+
+    #[test]
+    fn t5s_feed_forward_container_carries_the_leaves_the_attention_table_gave_back() {
+        // `wo` was removed from ATTN_LEAVES because it named T5's FFN output. That
+        // stopped the mis-label but left the module `Unclassified`; `densereludense`
+        // is what finishes the job. The attention container still wins its own paths,
+        // and it is checked first, so the two can never fight over one name.
+        assert_eq!(classify_site("encoder.block.1.layer.1.DenseReluDense.wo"), SiteKind::Mlp);
+        assert_eq!(classify_site("encoder.block.1.layer.1.DenseReluDense.wi_0"), SiteKind::Mlp);
+        assert_eq!(
+            classify_site("encoder.block.1.layer.0.SelfAttention.o"),
+            SiteKind::Attn,
+            "unchanged — T5 attention resolves through its own container"
+        );
+        assert_eq!(classify_site("decoder.block.1.layer.1.EncDecAttention.o"), SiteKind::Attn);
+        // Lower-cased before splitting, so the CamelCase segment must be matched
+        // lower-cased too — the one way this entry could be silently dead.
+        assert_eq!(classify_site("BLOCK.1.LAYER.1.DENSERELUDENSE.WO"), SiteKind::Mlp);
+
+        let sites = delta_sites(&delta_summary(vec![delta_module(
+            "base_model.model.encoder.block.5.layer.1.DenseReluDense.wo",
+            64,
+            64,
+            1.0e-2,
+        )]));
+        let s = sites.layers[&5];
+        assert!(s.mlp_rms > 0.0, "T5's FFN down-proj lights the MLP node");
+        assert_eq!(s.attn_rms, 0.0, "and never the attention ring");
+        assert!(sites.unclassified.is_empty());
+    }
+
+    #[test]
+    fn an_unmatchable_table_entry_is_dead_weight() {
+        // 🚨 A pattern that can never match is exactly as bad as a wrong one, and it is
+        // invisible — it compiles, it reads as thorough, and no test moves when it is
+        // added or removed. The obvious companion to `DenseReluDense` is
+        // `DenseGatedActDense`, and it is precisely that: `T5DenseGatedActDense` is a
+        // CLASS, and the attribute it is bound to is `self.DenseReluDense` in both the
+        // gated and the ungated variant. `self.DenseGatedActDense` occurs zero times in
+        // transformers 5.5.0, so no module path can carry that segment.
+        //
+        // This test is the standing guard: every container pattern must be reachable by
+        // a name in the corpus below, so an unmatchable one fails here rather than
+        // sitting in the table forever looking like coverage.
+        const NAMES_IN_CIRCULATION: &[&str] = &[
+            "model.layers.0.mlp.down_proj",
+            "transformer.h.0.mlp.c_fc",
+            "model.layers.0.feed_forward.w2",
+            "model.layers.0.block_sparse_moe.experts.0.ffn.w1",
+            "encoder.layers.0.feedforward.linear",
+            "encoder.block.1.layer.1.DenseReluDense.wo",
+        ];
+        for pat in MLP_CONTAINERS {
+            assert!(
+                NAMES_IN_CIRCULATION
+                    .iter()
+                    .any(|n| n.to_ascii_lowercase().split('.').any(|s| s.contains(pat))),
+                "container pattern `{pat}` matches no name in circulation — it is dead \
+                 weight, not coverage"
+            );
+        }
+        // And the reason `densegatedactdense` is absent, stated as an assertion rather
+        // than as a comment somebody has to believe.
+        assert!(
+            !MLP_CONTAINERS.contains(&"densegatedactdense"),
+            "`DenseGatedActDense` is a class name, never a module attribute — it can \
+             never appear in a path"
         );
     }
 

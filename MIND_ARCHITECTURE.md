@@ -768,7 +768,7 @@ producing the right node *count*, and nothing else would notice.
 
 | The mapping | Node | Why |
 |---|---|---|
-| `gate_proj` / `up_proj` / `down_proj` (+ `c_fc`, `w1`…`w3`, `dense_h_to_4h`, …) | the layer's **`Mlp`** | |
+| `gate_proj` / `up_proj` / `down_proj` (+ `c_fc`, `fc1`/`fc2`, `w1`…`w3`, `dense_h_to_4h`, …), or any `…mlp.…` / `…ffn.…` / `…feed_forward.…` / T5's `…DenseReluDense.…` parent | the layer's **`Mlp`** | |
 | `q_proj` / `k_proj` / `v_proj` / `o_proj` (+ `query_key_value`, `c_attn`, `wq`…`wo`, …) | **every** `Head` of the layer, identically | ⚠️ see the limit below |
 | everything the layer adapts, recognised or not | the layer's **`Backbone`** | so an unlisted name can never make a trained layer look untouched |
 
@@ -788,6 +788,41 @@ is redundant on its true positives and wrong on its false ones is all cost. The
 admission rule now sits above `ATTN_LEAVES` in the source, and both tables were audited
 against it — the conclusion for every remaining entry is written there so nobody
 re-audits the table from scratch.
+
+📌 **The two gaps that audit left open are now closed, against a tree that was read
+rather than remembered** — an installed **transformers 5.5.0** (`transformers/models`,
+453 packages). Both had been parked because closing them needed HuggingFace names
+nobody was willing to guess at, and a guess in the table whose whole purpose is
+not-guessing is the same mistake in a new costume.
+
+- **`fc1` / `fc2` joined the MLP leaf table.** OPT-style decoders declare them
+  **directly on the layer**, so the path is `…decoder.layers.N.fc1` with no `mlp`/`ffn`
+  segment for the container fallback to catch — and `classify_site` is handed the tail
+  *after* the layer index, which for OPT is the bare leaf `fc1`. They were
+  `Unclassified`: a layer whose MLP node stayed dark while a real measurement for it
+  existed. **155** classes in that tree define `self.fc1` and every one is
+  feed-forward; exactly one has *Attention* in its name
+  (`Mask2FormerMaskedAttentionDecoderLayer`) and it is not a counterexample — there
+  `fc1`/`fc2` are the `dim_feedforward` pair while attention is `self_attn` /
+  `cross_attn`. `fc2` scans identically.
+- **`densereludense` joined a new `MLP_CONTAINERS` table.** T5 and its family name the
+  feed-forward block `self.DenseReluDense`; its attention siblings are `SelfAttention`
+  / `EncDecAttention`, which the attention container already catches and which is
+  checked first, so the two can never fight over a name. This is what *finishes* the
+  `wo` removal above: that removal stopped T5's FFN down-projection being drawn on the
+  attention ring, but left it `Unclassified` — the container is what puts it on the
+  node it belongs to.
+
+🚨 **A table entry that can never match is exactly as bad as a wrong one, and it is
+invisible.** The obvious companion to `DenseReluDense` is `DenseGatedActDense` — and it
+is dead. `T5DenseGatedActDense` is a *class*; the attribute it is bound to is
+`self.DenseReluDense` in **both** the gated and the ungated variant, in all seven
+families using the layout (`t5`, `mt5`, `umt5`, `longt5`, `udop`, `pop2piano`,
+`pix2struct`). `self.DenseGatedActDense` occurs **zero** times in the tree, so no module
+path can carry that segment. Measured, not argued: adding it and skipping the one guard
+below leaves **654/654** tests passing — it compiles, reads as thorough, and covers
+nothing. `an_unmatchable_table_entry_is_dead_weight` is the standing guard that makes
+the next such entry fail instead.
 
 ⚠️ **Uniform across heads is a limit, not a shortcut, and the picture says so.**
 `q_proj` is *one* tensor covering every head; resolving per-head needs per-output-row
@@ -857,6 +892,8 @@ reports the real extremes so a readout can print what was actually measured.
 | the silhouette distinguishes it from the live lens | **measured** (offline) | mutation-tested: removing the radial displacement fails with *"an untouched site pinches to the rest radius"* |
 | an unrecognised module name is reported, never guessed | **measured** (offline) | mutation-tested: falling back to `Mlp` fails with *"nor onto the MLP node"* |
 | a generic leaf never outvotes its parent | **measured** (offline) | mutation-tested both ways: re-admitting `dense` fails with *"BERT's FFN up-proj must not be drawn on the attention ring — left: Attn, right: Unclassified"*, re-admitting `wo` with the T5 equivalent, and deleting the container fallback fails the Falcon and Meta-llama guards, so those two are not passing by accident |
+| OPT's inline `fc1`/`fc2` and T5's `DenseReluDense` reach the MLP node | **measured** (offline) | the leaf and the container are mutation-tested one at a time: dropping `fc1`/`fc2` fails with *"left: Unclassified, right: Mlp"* on `model.decoder.layers.3.fc1`, dropping `densereludense` fails two tests, one of them *"T5's FFN down-proj belongs on the MLP node, not the attention ring — left: Unclassified, right: Mlp"*. The names behind both were read out of an installed transformers 5.5.0, not recalled |
+| no container pattern is unmatchable | **measured** (offline) | `an_unmatchable_table_entry_is_dead_weight` requires every entry in `MLP_CONTAINERS` to be reachable by a name in circulation. Adding the dead `densegatedactdense` fails only that test — with it skipped, all **654** others pass, which is the measurement of how invisible a dead entry is |
 | **anything on a screen** | 🚨 **never run** | no adapter has been read on any machine, nothing has ever written the adapter sidecar, and no GPU has drawn this. Every claim above is arithmetic and geometry, checked offline |
 
 📌 **No `Shared` change and no `LAYOUT_VERSION` movement.** The view rides the `mind[2]`
