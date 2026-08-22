@@ -16,9 +16,10 @@ not be.
 ## What this software actually is
 
 Organon is a desktop visualizer, an audio plugin and two standalone instruments. It is not
-a server and it has no accounts. It opens exactly one outbound connection, to a model
-endpoint you configure yourself (below); everything else about the threat model is
-**local**: files you open, and things already running on your machine.
+a server and it has no accounts. Every outbound connection it can open goes to a service on
+your own machine that you configured yourself — a model endpoint, and (since #147) a local
+Unsloth Studio; both are listed below. Everything else about the threat model is **local**:
+files you open, and things already running on your machine.
 
 Worth knowing before you go looking:
 
@@ -48,6 +49,19 @@ Worth knowing before you go looking:
   sends your prompts across the network in cleartext. It is your file and your choice, but
   the code is looser than its own comment claims, and that gap is written here rather than
   discovered.
+- **There is now one credential, and Organon never stores it.** `organon-core/src/unsloth.rs`
+  talks to a local Unsloth Studio (a training app you install separately) over plain HTTP,
+  authenticated with a bearer token read from the **`UNSLOTH_API_KEY` environment variable**.
+  Organon does not write that token anywhere — not to a preset, not to a settings file, not
+  to a sidecar — so there is no file of ours to leak it and nothing to clean up. It lives
+  only in the process, and `StudioToken`'s `Debug` and `Display` are hand-written to redact
+  so it cannot reach a log or a panic through a `{:?}`. Two limits stated rather than
+  implied: the environment variable is readable by anything running as you (that is its
+  ceiling, and it is the same ceiling any keychain-free option has), and as with the agent
+  endpoint above there is **no TLS** and no check that the configured host is loopback — a
+  `ORGANON_UNSLOTH_ENDPOINT` pointed off-machine sends the bearer token in cleartext.
+  `https://` is refused by name rather than silently downgraded, which is the one part of
+  that the code does enforce.
 - **Vendored third-party code lives under `native/vendor/`.** If the flaw is upstream's,
   say so and report it upstream too; we will still take the report here so the vendored
   copy gets updated.

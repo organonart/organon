@@ -111,6 +111,15 @@ pub mod math;
 pub mod panels;
 pub mod params;
 pub mod tabs;
+/// #147 Tier 1 — the connection to Unsloth Studio: an endpoint, a bearer token held as a
+/// secret, a `/api/health` probe, and the three refusals (*not configured* / *unreachable*
+/// / *unauthorized*) that a person fixes three different ways. Beside [`lora`] because they
+/// are the two halves of one tier — that module reads what a fine-tune moved, this one
+/// reaches the service that catalogs them. Hand-rolled HTTP/1.1 over `std::net`, so core's
+/// invariant (no `nih_plug`, `wgpu`, `egui`, `winit`) and its dependency list are both
+/// untouched. 🚨 The token is read from `UNSLOTH_API_KEY` and never written anywhere by us
+/// — the module doc defends that placement and names what it does not buy.
+pub mod unsloth;
 /// organon#49 T5a — the viewpoint's band and origin. Named for the word the code already
 /// used ("the viewpoint may tip", "where the viewpoint starts"), and deliberately NOT `camera`:
 /// `organon_console::camera` is a different subject (who owns the viewpoint, hand or agent) and

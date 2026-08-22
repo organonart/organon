@@ -749,8 +749,10 @@ it. #147 names that cliff and this tier stops short of it deliberately.
 | **anything against a real adapter** | 🚨 **never run** | no adapter has been parsed on any machine. Every fixture here is synthetic. #147's own closing line — *"nothing here has been run"* — is still true of the file format; what this tier makes false is only *"no arithmetic exists"* |
 
 📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no renderer, no network.** T3
-(below) is what turns these numbers into a lens; T1 is what discovers adapters over the
-Studio's API. This module knows about neither.
+(below) is what turns these numbers into a lens; T1 (§2.9) is the connection over which
+adapters will be *discovered*. This module knows about neither. ⚠️ T1 landed with
+`/api/health` and nothing else, so `/api/models/loras` still has no caller — the adapter
+path still has to be handed to `lora.rs` by something, and nothing does.
 
 ### 2.8 The Delta lens (#147 Tier 3) — *landed; nothing has ever selected it on a machine*
 
@@ -873,6 +875,54 @@ thing than the one they asked for.
 view added to one and not the other is either a selector that silently does nothing or
 a value nothing decodes. Both now say `2`.
 
+### 2.9 The Unsloth Studio connection (#147 Tier 1) — *landed; never spoken to a Studio*
+
+`organon-core/src/unsloth.rs`. An endpoint, a bearer token, a `GET /api/health` probe, and
+three refusals. It is the boundary between Organon and a **local service the user
+installed** — the fourth kind of extension `doc/organon_mind_training_lens.md` §2 argues the
+taxonomy does not have, whose whole trust surface is a socket and a credential.
+
+**The three refusals are the tier.** *Not configured*, *unreachable* and *unauthorized* are
+fixed three different ways — mint a key, start the app, rotate the key — so each has its own
+`StudioError` variant and its own `remedy()` sentence, and a test asserts they are neither
+equal nor identically worded. A fourth variant, `Refused`, keeps a `5xx` out of the three:
+the Studio answering `503` is reachable *and* authorized, and calling it "unreachable" would
+send somebody to restart a service that is plainly running.
+
+🚨 **The token: read from `UNSLOTH_API_KEY`, never written anywhere by us.** Not the preset
+store (presets are shared and exported), not `ui_theme.json`, not a sidecar of our own — a
+file would be readable by exactly the same audience as the environment variable, so it buys
+no confidentiality and adds an artifact that gets backed up and attached to bug reports.
+`StudioToken`'s `Debug` **and** `Display` are hand-written to redact, no error variant carries
+the secret, and four tests pin that — the mutation that leaks it fails
+`token_debug_redacts` *and* `config_debug_redacts` at once. What an attacker with read access
+to `HKCU\Environment` gets is the key in full; that is the honest ceiling, and beating it
+needs an OS keychain, i.e. a dependency and a platform matrix.
+
+⚠️ **The probe cannot detect a bad key, by construction, and this is the trap to carry
+forward.** `/api/health` is *unauthenticated* — it answers `200` with a wrong key and with
+none at all — so a green probe proves the Studio is **running**, never that our credential is
+**good**. A UI that renders it as "connected" would be another status line that cannot be
+wrong. `probe_cannot_detect_a_bad_token` pins the limitation so that fixing it (a future
+Studio gating health, or a proxy in front of one) *fails a test* rather than passing
+silently. `Unauthorized` is reachable and tested here; it becomes reachable in anger the
+moment T4/T5 call an authenticated route through `StudioClient::get`.
+
+| | State | Evidence |
+|---|---|---|
+| the three refusals, and their sentences | **measured** (offline) | 27 unit tests; mutating any one refusal into another fails 2–3 tests by name |
+| redaction of the token | **measured** (offline) | `Debug`, `Display`, `StudioConfig`, and every rendering of every error |
+| request composition, status classification, chunked/`Content-Length` framing | **measured** (offline) | pure functions, canned responses |
+| the real `TcpTransport` | **measured** (offline) | two real-socket tests with no Studio: a closed ephemeral port → `Unreachable`, and a listener this test stands up itself, which asserts the *server* saw `Authorization: Bearer …` |
+| **anything against a real Studio** | 🚨 **never run** | the Studio was not running on organon-one when this landed (nothing listening on `127.0.0.1:8888` or `192.168.0.7:8888`). The `Unauthorized` path in particular has never been produced by the actual app |
+
+📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no new dependency, no UI.** Hand-rolled
+HTTP/1.1 over `TcpStream`, the house pattern; `StudioTransport` mirrors `organon-agent`'s
+`ChatClient` split so every test runs with no network and no key. ⚠️ `unsloth::extract_body`
+duplicates `organon_agent::extract_http_body` and cannot avoid it — that crate depends on
+core, so the dependency cannot point the other way; collapsing them means changing the
+Performer's live path, which T1 deliberately did not.
+
 ## 3. The honesty ledger
 
 What the product currently claims, and how true it is. Keep this honest — it is the
@@ -883,7 +933,7 @@ brand.
 | Layer / head / expert counts, dims, vocab, quant mix | **measured** (from the file) | `gguf.rs`, header only |
 | The specimen's wiring | **measured** | `gguf_architecture_graph` |
 | Parameter counts, weight bytes, bits/weight, KV cost | **derived** | exact functions of the tensor directory |
-| `‖ΔW‖_F` per adapted module, and the update's singular values | **measured** — an exact function of the adapter file | `lora.rs`. ⚠️ Two caveats it owes wherever it is rendered. **The base may be quantized**: an adapter trained on a 4-bit base is a delta against weights that are not the released ones, and the file states only `base_model_name_or_path` — #147 T1's `is_quantized` is what answers it from data. And **nothing has been read from a real adapter yet**; the arithmetic is tested against synthetic fixtures only |
+| `‖ΔW‖_F` per adapted module, and the update's singular values | **measured** — an exact function of the adapter file | `lora.rs`. ⚠️ Two caveats it owes wherever it is rendered. **The base may be quantized**: an adapter trained on a 4-bit base is a delta against weights that are not the released ones, and the file states only `base_model_name_or_path` — the Studio's `/api/models/checkpoints` carries `is_quantized`, which is what would answer it from data. ⚠️ T1 (§2.9) built the *connection* only; that route still has no caller, so this caveat is unanswered today. And **nothing has been read from a real adapter yet**; the arithmetic is tested against synthetic fixtures only |
 | Effective rank, stable rank, "which layers this fine-tune changed most" | **derived** | exact functions of the singular values. The effective rank is Roy & Vetterli (2007) — `exp` of the entropy of the normalised spectrum — stated in `lora.rs` rather than left implicit, because at least three quantities go by that name |
 | **The Delta lens's glow and silhouette** (#147 T3) | **measured** — the RMS weight displacement at each site, an exact function of the adapter file | §2.8. 🚨 **It drives the SAME visual channel as the per-layer generation glow below, which is a proxy**, so the two are made distinguishable *in the picture*: the Delta lens deforms the specimen's silhouette (a live specimen is a straight-sided cylinder; a delta specimen has a waist), it cannot move (the ring's overwrite is gated to view 0), and its head ring is perfectly round because it has no per-head resolution. The mode selector is off-screen and is deliberately not the answer. ⚠️ Two things the *quantity* still owes wherever it is written in words: the mapping to brightness is a **fixed** five-decade log window — a display choice, the only non-exact step — and per-head is a **limit**, so a bright ring means "this layer's attention moved", never "these heads moved" |
 | "This layer learned \<concept\>" | 🚨 **contested claim** | norm is not importance and effective rank is not meaning. Not currently rendered anywhere; recorded now so the first lens that wants to say it finds the row already written |
@@ -962,4 +1012,5 @@ capability to the seam it plugs into.
 | **Packaging** | #483 Tier 4: an `.app` around `organon-mind`, embedding the visual, its own name/icon/namespace |
 | ~~**The Delta lens** (#147 T3)~~ | **landed** — §2.8. ⚠️ Note what changed on the way: the per-site scalar is *not* `per_layer_fro()`, because a raw Frobenius norm grows with matrix size and would light the MLP brightest on every model before any training happened. It is RMS-per-weight (`‖ΔW‖_F / sqrt(out·in)`), which pools exactly and is shape-free |
 | **The checkpoint scrub** (#147 T3's extension) | the same builder, one `DeltaSites` per checkpoint on a slider — `CheckpointInfo{path, loss}` from `/api/models/checkpoints` is already the index. Needs T1 (the API client) and the adapter picker that writes `ipc::adapter_sidecar_path()`, which nothing does yet |
-| **Anything that talks to Unsloth Studio** (#147 T1/T4/T5) | a hand-rolled HTTP client over `TcpStream`, the shape `organon-agent`'s `HttpChatClient` and `mcp_http.rs` already have. 🚨 **Not `Shared`** — step-rate telemetry from someone else's process must not buy a permanent offset-sensitive layout commitment |
+| ~~**The Studio connection** (#147 T1)~~ | **landed** — §2.9. `organon-core/src/unsloth.rs`: endpoint, bearer token, `/api/health`, and the three refusals. ⚠️ It has never spoken to a running Studio, and the probe **cannot** detect a bad key because that route is unauthenticated — do not render a green probe as "connected" |
+| **Anything else that talks to Unsloth Studio** (#147 T4/T5) | `StudioClient::get` is the seam — it already refuses without a credential and maps `401`/`403` to `Unauthorized`. An SSE reader is the same hand-rolled `TcpStream` shape with the connection held open. 🚨 **Not `Shared`** — step-rate telemetry from someone else's process must not buy a permanent offset-sensitive layout commitment |

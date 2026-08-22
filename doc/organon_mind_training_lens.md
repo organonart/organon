@@ -100,6 +100,20 @@ does not apply. Organon is a *client* of the result, never the owner of the run.
 preset value and must not land in the preset store or `ui_theme.json`; #147 T1 owns that decision
 and should make it explicitly rather than by whichever file is nearest.
 
+> ✏️ **Decided while building T1, and the decision is "nowhere".** The token is read from
+> `UNSLOTH_API_KEY` — the Studio's own name for it — and Organon **never writes it anywhere**.
+> `organon-core/src/unsloth.rs` defends that at length; the short form is that a file of ours
+> would be readable by exactly the same audience as the environment variable, so it buys no
+> confidentiality while adding an artifact that gets backed up, synced and attached to bug
+> reports. `MIND_ARCHITECTURE.md` §2.9 records what landed.
+>
+> ⚠️ **And one thing this section did not anticipate: `/api/health` is unauthenticated, so the
+> probe cannot detect the third refusal.** It answers `200` with a wrong key and with none at
+> all, which means a green probe proves the Studio is *running*, never that the credential is
+> *good*. `Unauthorized` is implemented and tested, and becomes reachable in anger only when
+> T4/T5 call an authenticated route. Anything rendering the probe as "connected" would be
+> asserting something it never checked.
+
 ---
 
 ## 3. The seams it plugs into, and one it must not
