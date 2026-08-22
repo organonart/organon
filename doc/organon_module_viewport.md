@@ -338,7 +338,7 @@ library where a second host can drive it.
 dump, which is the test of whether it is the right one. And `fly.ps1` keeps working throughout,
 because the winit host stays.
 
-### 4.4 The frame boundary — two mechanisms, and **nobody has measured either**
+### 4.4 The frame boundary — two mechanisms, and B is now measured
 
 This is the whole engineering content, and it is the one place this document refuses to recommend
 without a number.
@@ -363,20 +363,47 @@ process coexisting with an Organon session is solved rather than new.
 - ⚠️ The cost is a GPU→CPU readback **and** a CPU→GPU upload per frame, plus the fence wait. The
   bandwidth arithmetic is easy and is not the risk; the **stall** is what decides it.
 
-🚨 **What must be measured before either is chosen, and it needs a GPU and therefore this machine:**
+✏️ **Two of the three numbers this section asked for now exist**, measured on this machine and
+recorded at `doc/measurements/module-frame-boundary-2026-08-21.md` (harness:
+`native/organon-render/tests/frame_boundary.rs`, `#[ignore]`d, `cargo test -p organon-render
+--release -- --ignored --nocapture`). RTX 5090, **Vulkan** — wgpu's own choice, since nothing in
+this tree restricts `Backends::` — `Rgba8UnormSrgb`, 64 iterations after warm-up, median.
 
-1. Wall-clock cost of a readback of a region-sized texture on the 5090, including the fence wait —
-   *on the producer's queue*, because that is the number that becomes stutter in the game.
-2. Frames of latency between "the module drew it" and "the console painted it", counted rather
-   than reasoned about.
-3. What that does to the console's own frame budget, against the 16.7 ms figure §1.15 already
-   measures other things against.
+| | 640×360 | 1280×720 | 1920×1080 | 2560×1440 |
+|---|---:|---:|---:|---:|
+| **1. producer's added stall** | 0.06 ms | 0.13 ms | 0.20 ms | 0.35 ms |
+| **3. full round trip** | 0.19 ms | 0.44 ms | 0.80–0.88 ms | 1.41–1.55 ms |
+| … as a share of 16.7 ms | 1.1 % | **2.6 %** | 4.8–5.3 % | **8.4–9.3 %** |
 
-📌 **A gives the better answer and B gives an answer this week**, and they are not exclusive: the
-contract is *"a producer yields a texture the console can sample, at a size the console asks
-for"*, which says nothing about how the bytes travel. **B first, behind the same seam, and A when
-the measurement says the copy is what hurts** — with the recorded measurement as the reason,
-because a zero-copy path adopted without one is `unsafe` per-backend code bought on a hunch.
+📌 **So the copy is affordable at region size and still affordable at the full pane, and
+that settles the ordering rather than the mechanism.** B first, behind the same seam; A when the
+measurement says the copy is what hurts. It does **not** say A is unnecessary — it says A is not
+yet *justified*, which is the standard this section itself set for buying `unsafe` per-backend
+interop.
+
+⚠️ **Two conditions on that reading, both of which would overturn it:**
+
+1. **A preallocated ring, not a per-frame allocation.** Measured: fresh staging buffer plus
+   destination texture per iteration costs **2.72 ms at 1440p against 1.37 ms reused**, and 3.3×
+   of the gap is `memcpy out` copying *identical bytes* — first-touch page faulting, not
+   bandwidth. 🚨 A naive per-frame path therefore measures 2.7 ms, reads that as a verdict on
+   mechanism B, and buys `unsafe` interop to fix an allocator problem.
+2. **60 Hz.** At 120 Hz the full pane at 1440p is 17–19 % of a frame and would want another
+   look. A region still would not.
+
+🚨 **The third number is still missing and nothing above is a proxy for it.** Frames of
+latency between *"the module drew it"* and *"the console painted it"* was not attempted, because
+it needs a second process and a protocol that does not exist. The numbers above are **throughput
+and stall**, which is a different question from **how stale the painted frame is** — and staleness
+is what §6 says stops being affordable at full screen. Mechanism A was not measured at all: nothing
+here says a shared GPU texture is faster, slower, or works.
+
+⚠️ Nor was the shared-memory ring itself — its synchronisation, double-buffering and tearing are
+untouched, and `memcpy out` here lands in process-local memory rather than a memory-mapped file.
+The GPU was otherwise idle throughout; a real producer's copy competes with its own render and a
+real console's re-upload competes with `World`. And `memcpy out` is a **CPU** number on the fastest
+consumer GPU available — it will not travel to another machine, so nothing above should be quoted
+as *"the cost of a frame copy"* without the adapter line beside it.
 
 ### 4.5 The frame arbiter, and the one thing that genuinely changes
 
@@ -589,9 +616,9 @@ A spine rather than a schedule; each rung is independently useful and none needs
 
 | | | Wants |
 |---|---|---|
-| **T0** | **Measure the frame boundary** (§4.4's three numbers) on this machine. Nothing that fixes a mechanism starts until these exist. | a GPU |
+| ✅ **T0** | **Measure the frame boundary** — **done for numbers 1 and 3** (§4.4, and `doc/measurements/module-frame-boundary-2026-08-21.md`). Number 2, cross-process staleness, still needs T1 and T2 to exist before it can be taken at all. | a GPU |
 | **T1** | **Ascent's refactor** — the library owns the device, the pipelines, `render_into(texture, size)`, `step(dt)` and `feed(input)`; `main.rs` keeps the window and the pump, and `fly.ps1` keeps working. | the parallel Ascent session |
-| **T2** | **The contract crate** — permissive, console-side, both trees depend on it, `cargo tree` gates both. | T0's answer to *which* mechanism |
+| **T2** | **The contract crate** — permissive, console-side, both trees depend on it, `cargo tree` gates both. **B**, per T0, with a preallocated ring rather than a per-frame allocation — that condition is the measurement's, not a preference. | T1's real signatures |
 | **T3** | **`modules.json`, `organon-module.toml`, and the approve verb** — on the harness precedent, with `layout.rs`'s refusal discipline. Approve, build, record the built commit, diff, revoke. | — |
 | **T4** | **The producer qualifier** — `3d <producer>`, the dynamic ring cached per §1.15's measurement, `only_one_because` moved, `engine_plan`'s boolean corrected and tested. | T3, for a producer to name |
 | **T5** | **Lifecycle and input** — `Attached`/`Running`, the click latch, the way out, the four failure sentences. | T3, T4 |
@@ -599,6 +626,11 @@ A spine rather than a schedule; each rung is independently useful and none needs
 
 ⚠️ **T0 before T2 is not caution, it is the ordering that stops a wire format being designed for a
 mechanism that turns out to be the wrong one.**
+
+✏️ **That ordering has now paid.** T0 answered before T2 was written, and it changed T2's brief in
+two ways a wire format would have had to be rebuilt for: the mechanism is **B**, and the ring must
+be **preallocated**, because the naive shape costs double and fails in a way that reads like a
+verdict on the mechanism rather than on the allocator.
 
 ---
 
@@ -628,5 +660,9 @@ built if it is wrong.
    transition. The alternative is the portal's unbuilt full-screen rectangle plus whatever §4.4
    measures.
 
-And one thing nobody can answer from here: **§4.4's three numbers do not exist**, and this
-document declines to recommend a frame mechanism without them.
+✏️ **And the thing this document originally declined to answer, it now can.** §4.4's numbers 1
+and 3 were measured on the 5090 the day this landed: the copy is affordable at region size (2.6 %
+of a frame at 1280×720) and still affordable at the full pane (8–9 % at 1440p), so **mechanism B**
+is the one to build, with a preallocated ring. What is still open is **number 2** — how *stale* the
+painted frame is across two processes — which cannot be taken until there are two processes, and
+which is the number §6's full-screen handoff exists to sidestep.
