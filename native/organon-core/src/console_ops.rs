@@ -98,7 +98,8 @@ pub enum ConsoleOp {
     /// put half of that knowledge on the wire side of the lane.
     Screen(String),
     /// **How the pane inside the window is divided, and what each part holds** — a region word
-    /// (`organon_console::region::REGION_WORDS`) and a content word (`…::CONTENT_WORDS`).
+    /// (`organon_console::region::REGION_WORDS`), a content word (`…::CONTENT_WORDS`) and, for a
+    /// `3d` region, an optional producer.
     ///
     /// 🚨 **A FOURTH axis, orthogonal to [`ConsoleOp::Posture`] and [`ConsoleOp::Screen`] both**,
     /// and the separation is the design rather than an arrangement — the argument `screen`'s doc
@@ -111,11 +112,27 @@ pub enum ConsoleOp {
     /// and content vocabularies, and the refusals that name them, live in the console's own
     /// crate. Parsing here would put half of that knowledge on the wire side of the lane.
     ///
-    /// 📌 **Both words are required, and neither has a default.** Unlike `patch`'s `kind` there
-    /// is no older spelling of this line to stay compatible with, so a half-written one is
-    /// malformed rather than a command with defaults — and guessing would rearrange a window
-    /// somebody is looking at.
-    Viewport { region: String, content: String },
+    /// 📌 **The first two words are required, and neither has a default.** Unlike `patch`'s
+    /// `kind` there is no older spelling of this line to stay compatible with, so a half-written
+    /// one is malformed rather than a command with defaults — and guessing would rearrange a
+    /// window somebody is looking at.
+    ///
+    /// 🚨 **`producer` is a THIRD word and it is optional — T4.** `doc/organon_module_viewport.md`
+    /// §4.2: a region holding `3d` is a rectangle a *producer* draws into, and the producer is
+    /// now sayable. **Absent, it means Organon's own `World`**, which is what every `viewport`
+    /// line has always meant — so a line written by an older build is still a line this one reads
+    /// correctly, and a line this one writes for an Organon viewport is byte-identical to the one
+    /// it wrote before the word existed.
+    ///
+    /// ⚠️ **Spelled `producer <word>` on the wire, not as a bare third word**, for
+    /// [`ConsoleOp::Stack`]'s reason in full: the slash grammar fills optional arguments by
+    /// keyword, so a bare third word would make the typed line and the sidecar line disagree —
+    /// the drift the four doors exist to prevent. §4.2 illustrates it as `viewport left 3d
+    /// ascent`; that spelling would need a second grammar for one verb.
+    ///
+    /// A `String` rather than a parsed producer, on the rule the two words above follow: the
+    /// producer vocabulary is `modules.json`'s and the refusal that lists it is the console's.
+    Viewport { region: String, content: String, producer: Option<String> },
     /// **What is IN a region that holds `panel`** — an action word
     /// (`organon_console::panel_stack::STACK_ACTIONS`) and a panel word (a
     /// `organon_core::panels::Panel::slug`, or the clearing word `all`).
@@ -421,7 +438,13 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Theme(name) => format!("theme {name}"),
         ConsoleOp::Posture(word) => format!("posture {word}"),
         ConsoleOp::Screen(word) => format!("screen {word}"),
-        ConsoleOp::Viewport { region, content } => format!("viewport {region} {content}"),
+        // The optional word is written **only when it is set**, so a command that named no
+        // producer produces the byte-identical line it produced before the word existed. The
+        // `Stack` arm below is the same rule and landed first.
+        ConsoleOp::Viewport { region, content, producer } => match producer {
+            Some(producer) => format!("viewport {region} {content} producer {producer}"),
+            None => format!("viewport {region} {content}"),
+        },
         // The optional word is written **only when it is set**, so a command that named no
         // region produces the byte-identical line it produced before the word existed.
         ConsoleOp::Stack { action, panel, region } => match region {
@@ -468,7 +491,19 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
         "viewport" => {
             let region = it.next()?.to_string();
             let content = it.next()?.to_string();
-            Some(ConsoleOp::Viewport { region, content })
+            // 🚨 **The optional third word, read by KEYWORD** — the `stack` arm's rule below,
+            // arrived at T4 for the same reason and with the same two refusals. A trailing
+            // `producer` with no word after it is **malformed**, not "a command with a default":
+            // the caller said which producer and the line lost it, and guessing at that point
+            // would put the wrong renderer in a rectangle somebody is looking at, which §4.2
+            // calls strictly worse than a refusal. ⚠️ An unknown keyword is likewise malformed
+            // rather than ignored, so a newer build's line does not half-apply here.
+            let producer = match it.next() {
+                None => None,
+                Some("producer") => Some(it.next()?.to_string()),
+                Some(_) => return None,
+            };
+            Some(ConsoleOp::Viewport { region, content, producer })
         }
         // The `viewport` arm's rule twice over — two required words, both unvalidated. The
         // action and the panel are the console crate's tables to refuse against, and a bare
@@ -614,10 +649,40 @@ mod tests {
                 // real content kind and the clearing word ride the trip: `off` is the only way
                 // back from a split, so one that survived a single direction would be a console
                 // somebody cannot un-divide.
-                ConsoleOp::Viewport { region: "full".into(), content: "agent".into() },
-                ConsoleOp::Viewport { region: "left".into(), content: "agent".into() },
-                ConsoleOp::Viewport { region: "bottomright".into(), content: "panel".into() },
-                ConsoleOp::Viewport { region: "right".into(), content: "off".into() },
+                ConsoleOp::Viewport {
+                    region: "full".into(),
+                    content: "agent".into(),
+                    producer: None,
+                },
+                ConsoleOp::Viewport {
+                    region: "left".into(),
+                    content: "agent".into(),
+                    producer: None,
+                },
+                ConsoleOp::Viewport {
+                    region: "bottomright".into(),
+                    content: "panel".into(),
+                    producer: None,
+                },
+                ConsoleOp::Viewport {
+                    region: "right".into(),
+                    content: "off".into(),
+                    producer: None,
+                },
+                // T4's optional third word. It rides the trip for the reason `Stack`'s region
+                // does: a producer that survived one direction only would put the **wrong
+                // renderer** in a rectangle somebody is looking at, which §4.2 calls strictly
+                // worse than a refusal.
+                ConsoleOp::Viewport {
+                    region: "left".into(),
+                    content: "3d".into(),
+                    producer: None,
+                },
+                ConsoleOp::Viewport {
+                    region: "left".into(),
+                    content: "3d".into(),
+                    producer: Some("ascent".into()),
+                },
                 // What is IN a `panel` region. Both words ride the trip for `Viewport`'s
                 // reason, and `all` above all: it is the only way to empty a column, so a
                 // spelling that survived one direction only would leave a stack somebody
@@ -703,9 +768,29 @@ mod tests {
             assert_eq!(
                 console_op_to_line(&ConsoleOp::Viewport {
                     region: "topright".into(),
-                    content: "panel".into()
+                    content: "panel".into(),
+                    producer: None
                 }),
                 "viewport topright panel"
+            );
+            // 🚨 **The line an Organon viewport writes is byte-identical to the one it wrote
+            // before T4** — which is the whole of "an omitted producer means Organon", spelled
+            // as bytes rather than as an intention.
+            assert_eq!(
+                console_op_to_line(&ConsoleOp::Viewport {
+                    region: "left".into(),
+                    content: "3d".into(),
+                    producer: None
+                }),
+                "viewport left 3d"
+            );
+            assert_eq!(
+                console_op_to_line(&ConsoleOp::Viewport {
+                    region: "left".into(),
+                    content: "3d".into(),
+                    producer: Some("ascent".into())
+                }),
+                "viewport left 3d producer ascent"
             );
             assert_eq!(
                 console_op_to_line(&ConsoleOp::Stack {
@@ -800,7 +885,34 @@ mod tests {
             // only the console holds those tables, and only it can refuse them out loud.
             assert_eq!(
                 parse_console_op("viewport middle agent"),
-                Some(ConsoleOp::Viewport { region: "middle".into(), content: "agent".into() })
+                Some(ConsoleOp::Viewport {
+                    region: "middle".into(),
+                    content: "agent".into(),
+                    producer: None
+                })
+            );
+            // T4's third word, and both of its refusals. ⚠️ A trailing `producer` with no word
+            // after it is **malformed**, not a command with a default: the caller said which
+            // producer and the line lost it. An unknown keyword is malformed too, so a newer
+            // build's line does not half-apply here.
+            assert_eq!(
+                parse_console_op("viewport left 3d producer ascent"),
+                Some(ConsoleOp::Viewport {
+                    region: "left".into(),
+                    content: "3d".into(),
+                    producer: Some("ascent".into())
+                })
+            );
+            assert_eq!(
+                parse_console_op("viewport left 3d producer"),
+                None,
+                "a producer word that lost its value is malformed, not a default"
+            );
+            assert_eq!(
+                parse_console_op("viewport left 3d ascent"),
+                None,
+                "a bare third word is not the spelling — the wire and the composer agree or \
+                 neither is trustworthy"
             );
             // `stack` is the second two-word verb and carries both halves of the same rule.
             assert_eq!(parse_console_op("stack"), None);

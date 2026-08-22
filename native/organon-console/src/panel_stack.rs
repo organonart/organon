@@ -239,10 +239,13 @@ pub fn resolve_target(layout: &Layout, named: Option<Region>) -> Result<Region, 
             Home::Nowhere => Err(Refusal::NoRegion),
         };
     };
-    match layout.get(region) {
+    match layout.held_ref(region) {
         Some(Content::Panel) => Ok(region),
         held => Err(Refusal::NotAPanelRegion {
             region: region.as_word().to_string(),
+            // ⚠️ **The kind word alone, not the whole phrase.** A `3d ascent` region is refused
+            // here for holding `3d`, which is the fact that matters — the producer is not why
+            // a panel cannot go in it.
             holding: held.map_or("nothing", Content::as_word).to_string(),
             panel_regions: word_list(&layout.regions_holding(Content::Panel)),
         }),

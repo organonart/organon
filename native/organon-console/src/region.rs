@@ -130,21 +130,78 @@
 //! [`Content::ThreeD`] is the one kind that may be held once.
 //!
 //! 🚨 **The limit belongs to the PRODUCER, not to the idea of a viewport**, and
-//! [`Content::only_one_because`] is where that is said rather than assumed. A region holding
-//! `3d` is a rectangle a producer draws into; today the only producer is Organon's `World`, and
-//! *Organon* is what cannot be drawn twice in a frame — `console_main.rs`'s `engine_plan`
-//! renders it at most once because `frame_index` and the TAA jitter phase riding it are shared
-//! between targets. A producer that could fill four regions at once would inherit a refusal it
-//! has no reason to obey, so the reason travels with the refusal instead of being folded into
-//! the word `3d`. ⚠️ What is **not** available today is attributing it in the type system: there
-//! is one producer, and inventing a `Producer` enum with one variant to hang the limit off would
-//! be exactly the untested branch this module refused to build in Tier 1. So the attribution is
-//! a reason string and a doc, and the seam for a second producer is that
-//! `only_one_because` is the single site that decides.
+//! [`Producer::only_one_because`] is where that is said rather than assumed. A region holding
+//! `3d` is a rectangle a producer draws into; **Organon** is what cannot be drawn twice in a
+//! frame — `console_main.rs`'s `engine_plan` renders it at most once because `frame_index` and
+//! the TAA jitter phase riding it are shared between targets. A producer that could fill four
+//! regions at once would inherit a refusal it has no reason to obey, so the reason travels with
+//! the refusal instead of being folded into the word `3d`.
+//!
+//! ✏️ **The type-system half of that has arrived — T4.** This section used to end: *"there is
+//! one producer, and inventing a `Producer` enum with one variant to hang the limit off would be
+//! exactly the untested branch this module refused to build in Tier 1."* There are two now
+//! ([`Producer::Organon`] and [`Producer::Hosted`], `doc/organon_module_viewport.md` §4.2), both
+//! reachable and both tested, so the objection has been discharged rather than overruled —
+//! it was about an **unreachable** arm, and neither of these is one. [`Content::only_one_because`]
+//! survives as a one-line forward so that [`Layout::assign`] and [`Layout::from_placements`] ask
+//! one question; the site that **decides** is the producer's.
+//!
+//! 📌 **Two hosted viewports are therefore legal**, and that is the point rather than a gap: a
+//! separate process rendering into its own texture shares no `frame_index` and no jitter phase,
+//! so it answers `None` and inherits nothing.
 //!
 //! ⚠️ **A displacement is still allowed to move it.** `full 3d` while `left` holds `3d`
 //! displaces `left` and stands, because containment has exactly one reading — the refusal is
 //! for a *second* copy, not for the one copy being widened.
+//!
+//! # 🚨 The producer qualifier — T4, and the representation is the tier's real decision
+//!
+//! `doc/organon_module_viewport.md` §4.2: **`3d <producer>`, never a content word called
+//! `ascent`.** `CONTENT_WORDS` stays the fixed four-word table it has always been — the argument
+//! at [`Content::ThreeD`] is that the content vocabulary must never name a renderer, and an
+//! application's name makes that mistake with a different spelling. So the producer is a
+//! **qualifier inside `3d`**, and an omitted one means [`Producer::Organon`]: every layout
+//! written before this, every doc line and every existing command continues to mean exactly what
+//! it meant.
+//!
+//! ⚠️ **A producer name is a runtime string** — it comes from `modules.json`, not from a table
+//! in this file — so something had to give, and choosing was the tier. Three shapes were real:
+//!
+//! | | Keeps | Costs |
+//! |---|---|---|
+//! | **a `String` in [`Content`]** *(taken)* | no new type, no cap, no global, no leak; the name is what it is | [`Content`], [`ContentCmd`], [`Layout`] and [`Placed`] lose `Copy` |
+//! | an inline fixed-capacity name | every `Copy` derive, zero allocation | a bounded-string type nothing else in this tree has, and a `Layout` sized from `MAX_PRODUCER × 4` |
+//! | an interned `&'static str` | `Copy`, and a small [`Layout`] | a process-global table that leaks, and a **second** place producer names live |
+//!
+//! 📌 **The `Copy` loss is what it looks like and the allocation is not.** [`Layout`]'s doc
+//! claims the array is *"`Copy`-cheap, has no allocation"*, and the allocation half is the one
+//! [`plan`] leans on — it runs on the draw path and builds a [`Placed`] per region every frame.
+//! It still holds: [`Content::Agent`], [`Content::Panel`] and `ThreeD(Organon)` are unit-shaped
+//! and clone with **no allocation at all**, so a console nobody has approved a module in
+//! allocates exactly what it allocated before. Only a *hosted* producer clones a short string,
+//! at most once per region — which is `CLAUDE.md` invariant 4 arriving as a cost rather than as
+//! a behaviour: the new capability is inert *and* free until somebody uses it.
+//!
+//! ⚠️ **Purity survives the change.** [`Layout::assign`] was `let mut next = *self`; it is
+//! `self.clone()`, which is the same statement with the same guarantee — a refusal still leaves
+//! `self` untouched with nothing to unwind.
+//!
+//! # 🚨 Two producer resolvers, because a typed word and a stored word are different questions
+//!
+//! [`Producer::resolve`] is the **command** door: it takes the approved set and refuses an
+//! unapproved name **by name, listing the approved ones**. §4.2 is explicit that it must never
+//! fall back to Organon's `World` — a person would get a picture, and the wrong one, which is
+//! strictly worse than a refusal.
+//!
+//! [`Producer::stored`] is the **file** door, and it deliberately does **not** ask about
+//! approval. Modules plan §10, inherited by §3.5: *a layout referencing a module you have
+//! stopped trusting must not fail to open.* A revoked module is not a corrupt layout; it is a
+//! region whose producer declines to run, and what it draws is the module registry's own
+//! vacancy sentence. Checking approval here would turn a revocation into a layout that will not
+//! load — the one outcome §3.5 forbids.
+//!
+//! 📌 That asymmetry is [`Content::resolve`] and [`ContentCmd::resolve`]'s, one level down: two
+//! resolvers over one vocabulary, differing in exactly what each caller may be wrong about.
 //!
 //! # What is NOT here
 //!
@@ -381,11 +438,196 @@ pub const REGION_ALIASES: &[(&str, &str)] = &[
 /// the list have to agree, and the only way to guarantee that is for one to *be* the other.
 pub const REGION_COUNT: usize = Region::ALL.len();
 
+/// **Who draws the picture in a `3d` region.**
+///
+/// 🚨 **Two variants, and the objection to inventing this type has been discharged rather than
+/// overruled.** This module's header used to record a standing refusal to mint a `Producer` enum
+/// *"with one variant"*, on the rule that an unreachable arm is an untested branch pretending to
+/// be a design. T4 supplies the second — a hosted module out of `modules.json`
+/// (`doc/organon_module_viewport.md` §4.2) — and both arms are reachable from a command a person
+/// types, so the rule is satisfied rather than waived.
+///
+/// ⚠️ **`Hosted` carries the NAME, never a capability.** Whether that name is approved is a fact
+/// about `modules.json` at the instant somebody asks, and it changes under a layout that is
+/// already on screen — a revocation must leave the region standing and let the rectangle say so
+/// (§3.5). So this type answers *which producer was named*, and
+/// [`crate::module::ModuleRegistry::vacancy`] answers *whether it can draw*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Producer {
+    /// Organon's own `World` — the producer a viewport means when no producer is named, and the
+    /// only one that existed before T4. [`crate::module::DEFAULT_PRODUCER`] is the word.
+    Organon,
+    /// A module approved in `modules.json`, by the name it declared in its manifest.
+    ///
+    /// ⚠️ **A `String`, not a `&'static str`** — the name comes out of a file at runtime. See
+    /// this module's header for the three shapes that were weighed and why this one won.
+    Hosted(String),
+}
+
+impl Producer {
+    /// The producer a **typed** qualifier names, against the set that is approved right now.
+    ///
+    /// `None` — an omitted qualifier — is [`Producer::Organon`], which is what keeps every
+    /// command written before T4 meaning exactly what it meant. The word
+    /// [`crate::module::DEFAULT_PRODUCER`] resolves to the same value, so saying it out loud and
+    /// leaving it out are one thing rather than two.
+    ///
+    /// 🚨 **An unknown or unapproved name is refused, and NEVER approximated to Organon.**
+    /// §4.2: *"`3d` with a typo must never silently fall back to Organon's World — the person
+    /// would get a picture, and the wrong one, which is worse than a refusal."* That is
+    /// [`Region::resolve`]'s exact-not-approximate rule, with a sharper consequence than usual:
+    /// an approximation here runs the wrong renderer rather than merely picking the wrong
+    /// rectangle.
+    ///
+    /// `approved` is passed in rather than read, so every decision in this module stays a
+    /// headless test — the store is `console_main.rs`'s to reach and `registry.rs`'s to cache.
+    pub fn resolve(word: Option<&str>, approved: &[&str]) -> Result<Self, UnknownProducer> {
+        match Self::stored(word)? {
+            Producer::Organon => Ok(Producer::Organon),
+            Producer::Hosted(name) => {
+                if approved.iter().any(|a| *a == name) {
+                    Ok(Producer::Hosted(name))
+                } else {
+                    Err(UnknownProducer {
+                        word: name,
+                        why: WhyNotAProducer::NotApproved,
+                        approved: approved.iter().map(|a| (*a).to_string()).collect(),
+                    })
+                }
+            }
+        }
+    }
+
+    /// The producer a **stored** qualifier names — from `layouts.json`, where approval is not
+    /// this function's question.
+    ///
+    /// 🚨 **Deliberately does not consult the approved set**, and that is §3.5 rather than an
+    /// omission: *a layout referencing a module you have stopped trusting must not fail to
+    /// open.* A revoked module is a region whose producer declines to run — a sentence in a
+    /// rectangle — never a load that refuses. See this module's header.
+    ///
+    /// What it *does* refuse is a word that could not be a producer name at all
+    /// ([`crate::module::check_producer_name`]: empty, over-long, whitespace, a control
+    /// character), because such a word cannot have come from any manifest and cannot be
+    /// looked up.
+    pub fn stored(word: Option<&str>) -> Result<Self, UnknownProducer> {
+        let Some(word) = word else { return Ok(Producer::Organon) };
+        if word == crate::module::DEFAULT_PRODUCER {
+            return Ok(Producer::Organon);
+        }
+        // The one name check, borrowed from the registry rather than restated: a producer name
+        // is the module's identity, and two spellings of "what may be one" is how the file and
+        // the vocabulary come to disagree about the same string.
+        crate::module::check_producer_name(word).map_err(|fault| UnknownProducer {
+            word: word.to_string(),
+            why: WhyNotAProducer::BadName(fault),
+            approved: Vec::new(),
+        })?;
+        Ok(Producer::Hosted(word.to_string()))
+    }
+
+    /// The word this producer travels as — `None` for [`Producer::Organon`], which travels as
+    /// **nothing at all**.
+    ///
+    /// 🚨 **`None` rather than `"organon"` is what makes an old file still an old file.** A
+    /// saved layout holding Organon's viewport writes `3d`, byte for byte what it wrote before
+    /// T4 existed, so nothing that reads `layouts.json` — including an older console — sees a
+    /// word it does not know.
+    pub fn as_word(&self) -> Option<&str> {
+        match self {
+            Producer::Organon => None,
+            Producer::Hosted(name) => Some(name),
+        }
+    }
+
+    /// Why at most one region may hold a viewport with this producer — `None` when any number
+    /// may.
+    ///
+    /// 🚨 **The single site that decides uniqueness, moved here from [`Content`] exactly as
+    /// `Content::only_one_because`'s own doc predicted it would be**: *"a future producer might
+    /// fill four regions happily, and would otherwise inherit a refusal it has no reason to
+    /// obey."*
+    ///
+    /// It answers with a **reason** rather than a bool, because the reason is what carries the
+    /// attribution: a person who reads the refusal learns that Organon's temporal history is the
+    /// limit, not that the console only ever wants one picture.
+    pub fn only_one_because(&self) -> Option<&'static str> {
+        match self {
+            Producer::Organon => Some(
+                "its producer is Organon, and Organon draws at most one frame per console \
+                 frame — `frame_index` and the TAA jitter phase riding it are shared between \
+                 targets, so two live pictures would trade phases and flicker",
+            ),
+            // 🚨 **A hosted module has no reason of its own, and inheriting Organon's would be
+            // a rule about viewports.** A separate process rendering into its own texture shares
+            // no `frame_index` and no jitter phase with anything, so two Ascent viewports are a
+            // thing this architecture permits. Whether anybody wants them is a different
+            // question, and the refusal machinery must not answer it by accident (§4.2).
+            Producer::Hosted(_) => None,
+        }
+    }
+}
+
+/// Why a word is not a producer. Carried so [`UnknownProducer`]'s sentence can say which of the
+/// two failures it is without the display site re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhyNotAProducer {
+    /// The word could not be any module's name — [`crate::module::check_producer_name`] said so
+    /// and its refusal is carried whole rather than re-worded.
+    BadName(crate::module::ModuleFault),
+    /// A usable name that nothing in `modules.json` answers to.
+    NotApproved,
+}
+
+/// A word no producer answers to, carrying the ones that do.
+///
+/// 🚨 **The approved list is carried rather than looked up at the display site**, on
+/// [`UnknownWord::shorts`]' rule and for its reason: a refusal that named no alternatives would
+/// leave the person who typed a wrong producer as the one person who has not been told the right
+/// ones. `organon` is always in the sentence, because it is always a legal answer and it is the
+/// one name `modules.json` can never contain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownProducer {
+    /// Exactly what was asked for, unmodified.
+    pub word: String,
+    pub why: WhyNotAProducer,
+    /// Every approved producer name, in registry order. Empty is the ordinary case — nothing
+    /// has been approved — and the sentence says so rather than trailing off.
+    pub approved: Vec<String>,
+}
+
+impl std::fmt::Display for UnknownProducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.why {
+            WhyNotAProducer::BadName(fault) => write!(f, "{}", fault.sentence()),
+            WhyNotAProducer::NotApproved => {
+                // `organon` first and always: it is the producer an omitted qualifier means, so
+                // a list that left it out would read as though `3d` alone had stopped working.
+                let mut known = vec![format!("`{}`", crate::module::DEFAULT_PRODUCER)];
+                known.extend(self.approved.iter().map(|a| format!("`{a}`")));
+                write!(
+                    f,
+                    "`{}` is not an approved module, so no viewport can name it — known \
+                     producers: {}. Approving one is `{}`",
+                    self.word,
+                    known.join(", "),
+                    crate::module::APPROVE_VERB,
+                )
+            }
+        }
+    }
+}
+
 /// What a region holds.
 ///
 /// Three kinds, and the remaining absence is the scope rather than an oversight: **`media` waits
 /// on §1.13's placement question.**
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠️ **`Clone` but not `Copy` since T4** — [`Content::ThreeD`] carries a [`Producer`], whose
+/// hosted arm is a runtime name. The module header weighs the three representations and prices
+/// what this one costs; the short of it is that the allocation-free property [`plan`] leans on
+/// survives, because every value that existed before T4 is still unit-shaped.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Content {
     /// A live agent — the tab the console is showing, whichever front-end it is.
     Agent,
@@ -397,14 +639,18 @@ pub enum Content {
     /// 🚨 **The viewport is the general thing and Organon is the first application of it**,
     /// which is James's own ordering and is why the word is `3d` rather than `world`: the region
     /// says *a 3D picture belongs here*, and which engine draws it is the producer's business.
-    /// Today there is exactly one producer — Organon's `World`, the same one
-    /// [`crate::portal`] shows — and everything specific to it lives behind
-    /// [`Content::only_one_because`] and in `console_main.rs`, never in this word.
+    ///
+    /// ✏️ **T4 makes "which engine" SAYABLE, and the word did not have to change to do it.**
+    /// The producer rides *inside* this variant as a [`Producer`] rather than beside it as a
+    /// fifth content word — `doc/organon_module_viewport.md` §4.2, and the argument is this
+    /// doc's own: a content word called `ascent` would name an application exactly as `world`
+    /// would have named a renderer. [`CONTENT_WORDS`] is untouched.
     ///
     /// ⚠️ **The Rust spelling is `ThreeD` because an identifier cannot begin with a digit.** The
     /// *word* is `3d`, and the word is what travels — on the wire, in `--help`, in the ring and
-    /// in every refusal.
-    ThreeD,
+    /// in every refusal. A hosted producer travels as a **second** word after it
+    /// ([`Content::as_words`]), never as part of the first.
+    ThreeD(Producer),
 }
 
 impl Content {
@@ -414,14 +660,43 @@ impl Content {
     /// ⚠️ **Not the same set as [`CONTENT_WORDS`]**, which carries [`CLEAR_WORD`] as well — that
     /// is the whole reason [`ContentCmd`] exists beside this enum, and the difference is pinned
     /// by [`tests::the_word_tables_and_the_resolvers_are_one_vocabulary`].
-    pub const ALL: &'static [Content] = &[Content::Agent, Content::Panel, Content::ThreeD];
+    ///
+    /// ⚠️ **`ThreeD` appears here with its DEFAULT producer**, which is what keeps this a list of
+    /// *kinds*: the producer is a qualifier, and a table of kinds that enumerated producers
+    /// would be the fifth-content-word mistake §4.2 refuses, spelled in Rust instead of in the
+    /// vocabulary.
+    pub const ALL: &'static [Content] =
+        &[Content::Agent, Content::Panel, Content::ThreeD(Producer::Organon)];
 
-    /// The word this content travels as.
-    pub fn as_word(self) -> &'static str {
+    /// The word this content travels as — **the kind word alone**, never the producer.
+    ///
+    /// ⚠️ `3d ascent` and `3d` both answer `"3d"` here, and that is deliberate: this is the word
+    /// that has to be a member of [`CONTENT_KIND_WORDS`], and a function that sometimes returned
+    /// two words would break every caller that quotes it into a fixed table. The phrase a whole
+    /// assignment is spelled as is [`Content::as_words`].
+    pub fn as_word(&self) -> &'static str {
         match self {
             Content::Agent => "agent",
             Content::Panel => "panel",
-            Content::ThreeD => "3d",
+            Content::ThreeD(_) => "3d",
+        }
+    }
+
+    /// The **whole phrase** this content is written and spoken as: `3d`, or `3d ascent`.
+    ///
+    /// 🚨 **This is what a saved layout stores**, and the round trip is the reason it exists:
+    /// [`crate::layout::SavedLayout`] keeps `region word → this`, and
+    /// [`crate::layout::resolve`] reads it back through [`Content::resolve_with`]. Organon's
+    /// producer contributes **nothing** ([`Producer::as_word`] is `None` for it), so a
+    /// `layouts.json` written before T4 and one written after it are the same bytes for the same
+    /// arrangement.
+    pub fn as_words(&self) -> String {
+        match self {
+            Content::ThreeD(p) => match p.as_word() {
+                Some(name) => format!("{} {name}", self.as_word()),
+                None => self.as_word().to_string(),
+            },
+            other => other.as_word().to_string(),
         }
     }
 
@@ -432,11 +707,14 @@ impl Content {
     /// difference between the two resolvers rather than an inconsistency. A *command* may say
     /// "empty this region"; a region cannot **hold** emptiness, so anything describing what a
     /// region holds — a saved layout, say — reads its words through here.
+    ///
+    /// ⚠️ **A bare `3d` is Organon's viewport**, which is what makes this function's answer
+    /// unchanged for every word it has ever been given.
     pub fn resolve(word: &str) -> Result<Self, UnknownWord> {
         Content::ALL
             .iter()
-            .copied()
             .find(|c| c.as_word() == word)
+            .cloned()
             .ok_or_else(|| UnknownWord {
                 word: word.to_string(),
                 kind: "content",
@@ -450,19 +728,101 @@ impl Content {
 
     /// Why at most one region may hold this kind — `None` when any number may.
     ///
-    /// 🚨 **The single site that decides uniqueness, and it answers with a REASON rather than a
-    /// bool** — because the reason is what says whose limit it is. `3d` is limited by the
-    /// producer behind it (Organon's `World` renders once per frame), not by anything about
-    /// viewports, and a caller reading the refusal should learn that rather than concluding the
-    /// console only ever wants one picture. See the module header on why this is a reason string
-    /// and not a `Producer` type.
-    pub fn only_one_because(self) -> Option<&'static str> {
+    /// ✏️ **A one-line forward since T4, and the delegation IS the move this function's own doc
+    /// predicted.** It used to answer for `3d` itself, with a note saying the limit really
+    /// belonged to the producer and that *"a future producer might fill four regions happily,
+    /// and would otherwise inherit a refusal it has no reason to obey."* That producer exists,
+    /// so the reason now comes from [`Producer::only_one_because`] and nowhere else.
+    ///
+    /// 📌 **It survives rather than being deleted** because [`Layout::assign`] and
+    /// [`Layout::from_placements`] both ask *"may this content be held twice?"* about a
+    /// [`Content`], and two call sites each unwrapping a `ThreeD` to reach its producer is how
+    /// the two come to disagree about a rule they are supposed to share.
+    pub fn only_one_because(&self) -> Option<&'static str> {
         match self {
             Content::Agent | Content::Panel => None,
-            Content::ThreeD => Some(
-                "its producer is Organon, and Organon draws at most one frame per console \
-                 frame — `frame_index` and the TAA jitter phase riding it are shared between \
-                 targets, so two live pictures would trade phases and flicker",
+            Content::ThreeD(producer) => producer.only_one_because(),
+        }
+    }
+
+    /// A content word and its optional producer qualifier, as a **typed** command gives them —
+    /// so an unapproved producer is refused by name against `approved`.
+    ///
+    /// ⚠️ **A producer on anything but `3d` is refused rather than ignored**, because a command
+    /// that silently drops a word somebody typed is indistinguishable from one that honoured it.
+    /// The refusal is [`UnknownWord`] over [`CONTENT_KIND_WORDS`]' one member that takes a
+    /// producer, which is the same "here is the table that would have worked" shape every other
+    /// refusal in this module has.
+    pub fn resolve_with(
+        word: &str,
+        producer: Option<&str>,
+        approved: &[&str],
+    ) -> Result<Self, ContentRefusal> {
+        let kind = Content::resolve(word).map_err(ContentRefusal::UnknownContent)?;
+        Self::qualify(kind, producer, |p| {
+            Producer::resolve(p, approved).map_err(ContentRefusal::UnknownProducer)
+        })
+    }
+
+    /// [`Content::resolve_with`] for a **stored** pair — see [`Producer::stored`] for why
+    /// approval is not asked about here.
+    pub fn resolve_stored(word: &str, producer: Option<&str>) -> Result<Self, ContentRefusal> {
+        let kind = Content::resolve(word).map_err(ContentRefusal::UnknownContent)?;
+        Self::qualify(kind, producer, |p| {
+            Producer::stored(p).map_err(ContentRefusal::UnknownProducer)
+        })
+    }
+
+    /// The half the two resolvers share: attach a producer to a kind, or refuse because the kind
+    /// has none to attach. Written once so a producer cannot be legal at one door and dropped at
+    /// the other.
+    fn qualify(
+        kind: Content,
+        producer: Option<&str>,
+        resolve: impl FnOnce(Option<&str>) -> Result<Producer, ContentRefusal>,
+    ) -> Result<Self, ContentRefusal> {
+        match kind {
+            Content::ThreeD(_) => Ok(Content::ThreeD(resolve(producer)?)),
+            other => match producer {
+                None => Ok(other),
+                Some(word) => Err(ContentRefusal::NotAViewport {
+                    content: other.as_word(),
+                    producer: word.to_string(),
+                }),
+            },
+        }
+    }
+}
+
+/// Why a content word and a producer qualifier are not, together, something a region can hold.
+///
+/// 🚨 **One type over both halves, because the caller is asking one question.** A door reading
+/// `3d ascent` has two words in hand and has to say which of them is wrong; two error types
+/// would put that decision at the call site, where the two doors would come to phrase it
+/// differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentRefusal {
+    /// The first word is not a content kind.
+    UnknownContent(UnknownWord),
+    /// The second word is not a producer this build will draw. See [`UnknownProducer`].
+    UnknownProducer(UnknownProducer),
+    /// A producer named beside a content kind that has none.
+    NotAViewport { content: &'static str, producer: String },
+}
+
+impl std::fmt::Display for ContentRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Carried whole rather than re-worded, on [`Refusal::AlreadyHeld`]'s rule: the two
+            // inner types already say the whole sentence, and a wrapper that prefixed them would
+            // be a second phrasing of one refusal.
+            ContentRefusal::UnknownContent(e) => write!(f, "{e}"),
+            ContentRefusal::UnknownProducer(e) => write!(f, "{e}"),
+            ContentRefusal::NotAViewport { content, producer } => write!(
+                f,
+                "`{content}` has no producer, so `{producer}` names nothing — a producer \
+                 qualifies `3d`, which is the one thing a region holds that something has to \
+                 draw"
             ),
         }
     }
@@ -477,7 +837,9 @@ impl Content {
 /// draw path must then match and refuse to draw. The precedent for a clearing word riding the
 /// same argument as the real values is `console.background`, whose `Choice` carries the three
 /// backdrop **sources** (`world`/`off`/`substrate`) beside the materials.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠️ **`Clone` but not `Copy` since T4**, for [`Content`]'s reason and no other.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContentCmd {
     Hold(Content),
     /// Empty the region. Refused if it is already empty, or if it holds the last agent.
@@ -502,8 +864,8 @@ pub const CONTENT_KIND_WORDS: &[&str] = &["agent", "panel", "3d"];
 pub const CONTENT_WORDS: &[&str] = &["agent", "panel", "3d", CLEAR_WORD];
 
 impl ContentCmd {
-    /// The word this command travels as.
-    pub fn as_word(self) -> &'static str {
+    /// The word this command travels as — the kind word alone, on [`Content::as_word`]'s rule.
+    pub fn as_word(&self) -> &'static str {
         match self {
             ContentCmd::Hold(c) => c.as_word(),
             ContentCmd::Clear => CLEAR_WORD,
@@ -512,11 +874,14 @@ impl ContentCmd {
 
     /// The command a word names, or a refusal carrying the words that do. [`Region::resolve`]'s
     /// rule: exact, never approximated.
+    ///
+    /// ⚠️ **A bare `3d` is Organon's viewport**, so every word this has ever accepted still means
+    /// what it meant. A producer qualifier goes through [`ContentCmd::resolve_with`].
     pub fn resolve(word: &str) -> Result<Self, UnknownWord> {
         match word {
             "agent" => Ok(ContentCmd::Hold(Content::Agent)),
             "panel" => Ok(ContentCmd::Hold(Content::Panel)),
-            "3d" => Ok(ContentCmd::Hold(Content::ThreeD)),
+            "3d" => Ok(ContentCmd::Hold(Content::ThreeD(Producer::Organon))),
             CLEAR_WORD => Ok(ContentCmd::Clear),
             _ => Err(UnknownWord {
                 word: word.to_string(),
@@ -525,6 +890,41 @@ impl ContentCmd {
                 shorts: &[], // See [`Content::resolve`]: the content words have none.
             }),
         }
+    }
+
+    /// The command a content word and an optional producer qualifier name, against the set of
+    /// modules approved right now.
+    ///
+    /// 🚨 **[`CLEAR_WORD`] with a producer is refused**, and it is worth being explicit about
+    /// why rather than letting it fall out of the code: `off` says *empty this region*, and a
+    /// producer qualifies what a region **holds**. `viewport left off producer ascent` is a
+    /// caller who has confused emptying with assigning, and a command that quietly emptied the
+    /// region anyway would look exactly like one that had honoured both words.
+    pub fn resolve_with(
+        word: &str,
+        producer: Option<&str>,
+        approved: &[&str],
+    ) -> Result<Self, ContentRefusal> {
+        if word == CLEAR_WORD {
+            return match producer {
+                None => Ok(ContentCmd::Clear),
+                Some(p) => Err(ContentRefusal::NotAViewport {
+                    content: CLEAR_WORD,
+                    producer: p.to_string(),
+                }),
+            };
+        }
+        Content::resolve_with(word, producer, approved)
+            .map(ContentCmd::Hold)
+            // The kind resolver quotes [`CONTENT_KIND_WORDS`] and a *command* may also say
+            // `off`, so the table in the refusal is widened here rather than there — the same
+            // split [`Content::resolve`] and [`ContentCmd::resolve`] already keep.
+            .map_err(|e| match e {
+                ContentRefusal::UnknownContent(u) => {
+                    ContentRefusal::UnknownContent(UnknownWord { known: CONTENT_WORDS, ..u })
+                }
+                other => other,
+            })
     }
 }
 
@@ -690,13 +1090,20 @@ impl std::fmt::Display for LayoutFault {
 /// Which region holds what, right now.
 ///
 /// A fixed array indexed by [`Region::ALL`] position rather than a map: the vocabulary is twelve
-/// words, so the layout is `Copy`-cheap, has no allocation, and cannot hold a region twice.
+/// words, so the layout is cheap to clone, has no allocation, and cannot hold a region twice.
+///
+/// ✏️ **`Copy` until T4, and the sentence above said `Copy`-cheap.** [`Content::ThreeD`] now
+/// carries a producer name, which is a runtime string. **The clause that was actually
+/// load-bearing survives intact**: the only variant that allocates is a *hosted* producer, so a
+/// console with no approved module clones this array with no allocation at all, exactly as it
+/// copied it before — and that, not `Copy` itself, is what [`plan`] leans on every frame. The
+/// module header prices the three representations that were weighed.
 ///
 /// ✏️ **Was nine, over four cells.** The array is sized from the vocabulary rather than from a
 /// count somebody keeps in step: [`Region::slot`] is a position in [`Region::ALL`], and a test walks
 /// every region through it, so a mismatch is a panic in the suite rather than a silent
 /// out-of-bounds arm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
     held: [Option<Content>; REGION_COUNT],
 }
@@ -708,7 +1115,7 @@ impl Default for Layout {
     /// compares against this value and draws the pre-region path unchanged when they match,
     /// so the default is not merely equivalent but *the same code*.
     fn default() -> Self {
-        let mut held = [None; REGION_COUNT];
+        let mut held: [Option<Content>; REGION_COUNT] = std::array::from_fn(|_| None);
         held[0] = Some(Content::Agent); // Region::Full is ALL[0].
         Layout { held }
     }
@@ -729,12 +1136,23 @@ impl Layout {
     /// The empty layout. **Not reachable through [`Layout::assign`]** — every command's result
     /// must hold an agent — and it exists for tests and for building a layout from scratch.
     pub fn vacant() -> Self {
-        Layout { held: [None; REGION_COUNT] }
+        // `from_fn` rather than `[None; N]` since T4: the repeat syntax needs `Copy`, and
+        // `Content` gave it up to carry a producer name.
+        Layout { held: std::array::from_fn(|_| None) }
     }
 
     /// What this region holds, if anything.
+    ///
+    /// ⚠️ **Answers with an owned value rather than a borrow**, which is a clone since T4. It is
+    /// the shape every caller already had, and the clone is free for the three unit-shaped
+    /// values — see the type's own doc. [`Layout::held_ref`] is the borrow, for the draw path.
     pub fn get(&self, region: Region) -> Option<Content> {
-        self.held[region.slot()]
+        self.held[region.slot()].clone()
+    }
+
+    /// [`Layout::get`] without the clone, for a caller that only wants to look.
+    pub fn held_ref(&self, region: Region) -> Option<&Content> {
+        self.held[region.slot()].as_ref()
     }
 
     /// Every occupied region and what it holds, in [`Region::ALL`] order.
@@ -748,7 +1166,7 @@ impl Layout {
 
     /// Does anything hold an agent? The invariant every command's *result* must satisfy.
     pub fn has_agent(&self) -> bool {
-        self.occupied().iter().any(|(_, c)| *c == Content::Agent)
+        self.held.iter().any(|c| c.as_ref() == Some(&Content::Agent))
     }
 
     /// The first region holding `content`, in [`Region::ALL`] order — `None` if nothing does.
@@ -756,8 +1174,14 @@ impl Layout {
     /// For a kind [`Content::only_one_because`] limits there is at most one, so "first" is
     /// "the one"; for the others this is the same determinism `console_main.rs` already relies
     /// on to decide which agent region gets the live tab.
+    ///
+    /// 🚨 **Equality is exact, and since T4 that includes the PRODUCER.**
+    /// `region_holding(Content::ThreeD(Producer::Organon))` answers *"which region holds a
+    /// viewport Organon draws"* and passes over one holding `3d ascent` — which is precisely
+    /// what `console_main.rs`'s `region_showing_world` needs, and what stops `engine_plan` being
+    /// asked for a `World` frame nobody paints.
     pub fn region_holding(&self, content: Content) -> Option<Region> {
-        self.occupied().into_iter().find(|(_, c)| *c == content).map(|(r, _)| r)
+        Region::ALL.iter().copied().find(|r| self.held_ref(*r) == Some(&content))
     }
 
     /// **Every** region holding `content`, in [`Region::ALL`] order.
@@ -768,7 +1192,11 @@ impl Layout {
     /// was one stack. With a column per region (#98 Tier C) a refusal that names *the* panel
     /// region would be naming one of several, so the refusal reads this instead.
     pub fn regions_holding(&self, content: Content) -> Vec<Region> {
-        self.occupied().into_iter().filter(|(_, c)| *c == content).map(|(r, _)| r).collect()
+        Region::ALL
+            .iter()
+            .copied()
+            .filter(|r| self.held_ref(*r) == Some(&content))
+            .collect()
     }
 
     /// Put `cmd` in `region`, or say why not. **Pure** — the layout that comes back is a new
@@ -781,7 +1209,11 @@ impl Layout {
     /// uniqueness check sits between them, and is asked of what **survives** the displacement —
     /// so widening a `3d` region from `left` to `full` is allowed while a second copy is not.
     pub fn assign(&self, region: Region, cmd: ContentCmd) -> Result<Change, Refusal> {
-        let mut next = *self;
+        // `clone` rather than `*self` since T4 — the same statement with the same guarantee.
+        // What makes this function pure is that the result is a **new value** and `self` is
+        // never written; whether reaching that value costs a memcpy or a memcpy plus one short
+        // string is not what the property rests on.
+        let mut next = self.clone();
         let mut displaced = Vec::new();
         match cmd {
             ContentCmd::Clear => {
@@ -817,15 +1249,17 @@ impl Layout {
                 // refuse `full 3d` from a console holding `left 3d` — a widening, not a second
                 // copy. The check runs before anything is written because `assign` is pure and
                 // a refusal must leave `self` untouched with nothing to unwind.
+                //
+                // ⚠️ **Equality includes the producer since T4**, which is the whole of how the
+                // rule generalises: `left 3d` while `right` holds `3d ascent` is not a second
+                // copy of anything, because Organon's limit is about Organon. And a hosted
+                // producer answers `None`, so the branch is not even entered for it.
                 if let Some(because) = content.only_one_because() {
-                    if let Some(other) = self
-                        .occupied()
-                        .into_iter()
-                        .find(|(held, c)| {
-                            *c == content && *held != region && !displaced.contains(held)
-                        })
-                        .map(|(held, _)| held)
-                    {
+                    if let Some(other) = Region::ALL.iter().copied().find(|held| {
+                        self.held_ref(*held) == Some(&content)
+                            && *held != region
+                            && !displaced.contains(held)
+                    }) {
                         return Err(Refusal::AlreadyHeld {
                             asked: region,
                             content,
@@ -864,19 +1298,20 @@ impl Layout {
             return Err(LayoutFault::Empty);
         }
         let mut out = Layout::vacant();
-        for (i, (region, content)) in places.iter().copied().enumerate() {
-            if out.get(region).is_some() {
+        for (i, (region, content)) in places.iter().enumerate() {
+            let (region, content) = (*region, content.clone());
+            if out.held_ref(region).is_some() {
                 return Err(LayoutFault::Repeated { region });
             }
             // Against everything already placed, in the order given — so the sentence names the
             // pair in the order a reader of the file would meet them.
-            for (earlier, _) in places[..i].iter().copied() {
+            for (earlier, _) in places[..i].iter() {
                 if earlier.cells() & region.cells() != 0 {
-                    return Err(LayoutFault::Overlap { a: earlier, b: region });
+                    return Err(LayoutFault::Overlap { a: *earlier, b: region });
                 }
             }
             if let Some(because) = content.only_one_because() {
-                if let Some(first) = out.region_holding(content) {
+                if let Some(first) = out.region_holding(content.clone()) {
                     return Err(LayoutFault::Twice { content, first, second: region, because });
                 }
             }
@@ -1012,7 +1447,7 @@ pub fn region_rect(pane: egui::Rect, region: Region) -> Option<egui::Rect> {
 }
 
 /// One rectangle of the divided pane, and what belongs in it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Placed {
     pub region: Region,
     /// `None` is an **unassigned** region, and it is not a gap in this list — see [`plan`].
@@ -1074,6 +1509,16 @@ mod tests {
     }
     fn panel() -> ContentCmd {
         ContentCmd::Hold(Content::Panel)
+    }
+    /// Organon's viewport — what a bare `3d` has always meant and still means.
+    fn organon_3d() -> Content {
+        Content::ThreeD(Producer::Organon)
+    }
+    /// A viewport a hosted module draws. The name is `ascent` throughout because that is the
+    /// module `doc/organon_module_viewport.md` is written about; nothing here knows anything
+    /// else about it, which is §4.6's *"the console must never learn what the module is"*.
+    fn hosted_3d(name: &str) -> Content {
+        Content::ThreeD(Producer::Hosted(name.to_string()))
     }
 
     /// Does this intersection enclose nothing? ⚠️ **`Rect::area()` will not answer this** — an
@@ -1430,7 +1875,7 @@ mod tests {
     /// for the first time will meet.
     #[test]
     fn the_editor_layout_two_columns_flanking_the_instrument_is_reachable() {
-        let three_d = ContentCmd::Hold(Content::ThreeD);
+        let three_d = ContentCmd::Hold(organon_3d());
         // The agent moves out of `full` first, or nothing else may be assigned at all.
         let too_soon = Layout::default().assign(Region::Left, panel());
         assert_eq!(too_soon, Err(Refusal::LastAgent { asked: Region::Left }));
@@ -1453,7 +1898,7 @@ mod tests {
             vec![
                 (Region::Left, Content::Panel),
                 (Region::Right, Content::Panel),
-                (Region::TopCenter, Content::ThreeD),
+                (Region::TopCenter, organon_3d()),
                 (Region::BottomCenter, Content::Agent),
             ],
         );
@@ -1714,7 +2159,7 @@ mod tests {
         for c in [
             ContentCmd::Hold(Content::Agent),
             ContentCmd::Hold(Content::Panel),
-            ContentCmd::Hold(Content::ThreeD),
+            ContentCmd::Hold(organon_3d()),
             ContentCmd::Clear,
         ] {
             assert!(CONTENT_WORDS.contains(&c.as_word()), "{c:?} is unlisted");
@@ -1735,7 +2180,7 @@ mod tests {
             let c = Content::resolve(word).unwrap_or_else(|_| panic!("`{word}` is unresolvable"));
             assert_eq!(c.as_word(), *word, "`{word}` does not spell itself back");
         }
-        for c in Content::ALL.iter().copied() {
+        for c in Content::ALL.iter() {
             assert!(CONTENT_KIND_WORDS.contains(&c.as_word()), "{c:?} is unlisted");
         }
         assert_eq!(CONTENT_KIND_WORDS.len(), Content::ALL.len());
@@ -1799,15 +2244,15 @@ mod tests {
         );
         let twice = Layout::from_placements(&[
             (Region::Left, Content::Agent),
-            (Region::TopRight, Content::ThreeD),
-            (Region::BottomRight, Content::ThreeD),
+            (Region::TopRight, organon_3d()),
+            (Region::BottomRight, organon_3d()),
         ])
         .expect_err("two live pictures");
         let LayoutFault::Twice { content, first, second, because } = twice.clone() else {
             panic!("{twice:?} is not the uniqueness fault");
         };
-        assert_eq!((content, first, second), (Content::ThreeD, Region::TopRight, Region::BottomRight));
-        assert_eq!(Some(because), Content::ThreeD.only_one_because());
+        assert_eq!((content, first, second), (organon_3d(), Region::TopRight, Region::BottomRight));
+        assert_eq!(Some(because), organon_3d().only_one_because());
         assert!(twice.to_string().contains("Organon"), "whose limit it is: {twice}");
         assert_eq!(
             Layout::from_placements(&[(Region::Full, Content::Panel)]),
@@ -1835,7 +2280,7 @@ mod tests {
         let p = pane();
         for a in Region::ALL.iter().copied() {
             for b in Region::ALL.iter().copied() {
-                for ca in Content::ALL.iter().copied() {
+                for ca in Content::ALL.iter().cloned() {
                     let Ok(built) = Layout::from_placements(&[(a, ca), (b, Content::Agent)]) else {
                         continue;
                     };
@@ -1854,27 +2299,27 @@ mod tests {
     /// than to viewports, and is the sentence a future producer would change.
     #[test]
     fn only_one_region_may_hold_the_live_3d_and_the_refusal_says_whose_limit_it_is() {
-        let three_d = ContentCmd::Hold(Content::ThreeD);
+        let three_d = ContentCmd::Hold(organon_3d());
         let split = Layout::default()
             .assign(Region::Left, agent())
             .expect("left agent")
             .layout
-            .assign(Region::Right, three_d)
+            .assign(Region::Right, three_d.clone())
             .expect("right 3d")
             .layout;
-        assert_eq!(split.region_holding(Content::ThreeD), Some(Region::Right));
+        assert_eq!(split.region_holding(organon_3d()), Some(Region::Right));
 
         // …and a second one, in a region that overlaps nothing, is refused rather than moved.
         let corners = split
             .assign(Region::TopLeft, agent())
             .expect("topleft displaces left")
             .layout;
-        let e = corners.assign(Region::BottomLeft, three_d).expect_err("a second 3d");
+        let e = corners.assign(Region::BottomLeft, three_d.clone()).expect_err("a second 3d");
         let Refusal::AlreadyHeld { asked, content, by, because } = e.clone() else {
             panic!("{e:?} is not the uniqueness refusal");
         };
-        assert_eq!((asked, content, by), (Region::BottomLeft, Content::ThreeD, Region::Right));
-        assert_eq!(Some(because), Content::ThreeD.only_one_because());
+        assert_eq!((asked, content, by), (Region::BottomLeft, organon_3d(), Region::Right));
+        assert_eq!(Some(because), organon_3d().only_one_because());
         let text = e.to_string();
         assert!(text.contains("bottomleft") && text.contains("right"), "{text}");
         assert!(text.contains("Organon"), "the refusal must name whose limit it is: {text}");
@@ -1887,12 +2332,12 @@ mod tests {
             .assign(Region::Left, agent())
             .expect("left agent")
             .layout
-            .assign(Region::BottomRight, three_d)
+            .assign(Region::BottomRight, three_d.clone())
             .expect("bottomright 3d")
             .layout;
-        let widened = corner.assign(Region::Right, three_d).expect("right contains bottomright");
+        let widened = corner.assign(Region::Right, three_d.clone()).expect("right contains bottomright");
         assert_eq!(widened.displaced, vec![Region::BottomRight]);
-        assert_eq!(widened.layout.region_holding(Content::ThreeD), Some(Region::Right));
+        assert_eq!(widened.layout.region_holding(organon_3d()), Some(Region::Right));
 
         // The other two kinds are unlimited, and that is a property of the kind rather than an
         // accident of this layout: two agents and two panels are both ordinary.
@@ -1909,6 +2354,232 @@ mod tests {
             .expect("a second panel is ordinary")
             .layout;
         assert_eq!(two_panels.occupied().len(), 3);
+    }
+
+    /// 🚨 **The refusal is ORGANON's, and a hosted producer does not inherit it — T4.**
+    ///
+    /// Three properties, and each one fails differently if the delegation is wrong:
+    ///
+    /// * a hosted producer answers `None`, so **two hosted viewports are legal** — the thing
+    ///   §4.2 says the refusal machinery must not decide by accident;
+    /// * Organon's own reason is unchanged word for word, so a person who has read the refusal
+    ///   before reads the same sentence;
+    /// * the two do not collide — `left 3d` beside `right 3d ascent` is not a second copy of
+    ///   anything, because equality includes the producer.
+    ///
+    /// ⚠️ **Mutation-tested rather than asserted.** Making `Producer::Hosted`'s
+    /// `only_one_because` answer Organon's reason fails this at *"two hosted viewports"*;
+    /// making `Producer::Organon` answer `None` fails
+    /// `only_one_region_may_hold_the_live_3d_and_the_refusal_says_whose_limit_it_is` at its
+    /// `expect_err`.
+    #[test]
+    fn the_uniqueness_refusal_belongs_to_organon_and_a_hosted_producer_does_not_inherit_it() {
+        assert_eq!(
+            Producer::Hosted("ascent".into()).only_one_because(),
+            None,
+            "a separate process rendering into its own texture shares no jitter phase"
+        );
+        assert_eq!(hosted_3d("ascent").only_one_because(), None, "and `Content` forwards to it");
+        assert_eq!(
+            organon_3d().only_one_because(),
+            Producer::Organon.only_one_because(),
+            "`Content::only_one_because` is a forward, not a second opinion"
+        );
+        assert!(organon_3d()
+            .only_one_because()
+            .expect("Organon's limit is unchanged")
+            .contains("TAA jitter phase"));
+
+        // Two hosted viewports, in regions that overlap nothing. Before T4 this was the shape
+        // that produced `Refusal::AlreadyHeld`.
+        let two_hosted = Layout::default()
+            .assign(Region::Left, agent())
+            .expect("left agent")
+            .layout
+            .assign(Region::TopRight, ContentCmd::Hold(hosted_3d("ascent")))
+            .expect("topright ascent")
+            .layout
+            .assign(Region::BottomRight, ContentCmd::Hold(hosted_3d("ascent")))
+            .expect("a SECOND ascent viewport is a thing the architecture permits");
+        assert_eq!(two_hosted.layout.occupied().len(), 3);
+        assert_eq!(
+            two_hosted.layout.regions_holding(hosted_3d("ascent")),
+            vec![Region::TopRight, Region::BottomRight]
+        );
+
+        // …and Organon's viewport beside a hosted one is not a second copy of either.
+        let mixed = Layout::default()
+            .assign(Region::Left, agent())
+            .expect("left agent")
+            .layout
+            .assign(Region::TopRight, ContentCmd::Hold(hosted_3d("ascent")))
+            .expect("topright ascent")
+            .layout
+            .assign(Region::BottomRight, ContentCmd::Hold(organon_3d()))
+            .expect("Organon's limit is about Organon")
+            .layout;
+        assert_eq!(mixed.region_holding(organon_3d()), Some(Region::BottomRight));
+        assert_eq!(mixed.region_holding(hosted_3d("ascent")), Some(Region::TopRight));
+        // 🚨 **`region_holding` distinguishes them, which is what stops `engine_plan` being
+        // asked for a `World` frame for a rectangle Organon is not drawing.**
+        assert_eq!(mixed.region_holding(hosted_3d("something-else")), None);
+
+        // The whole-layout door enforces exactly the same rule, because it asks the same
+        // function — two hosted placements build, two Organon ones do not.
+        assert!(Layout::from_placements(&[
+            (Region::Left, Content::Agent),
+            (Region::TopRight, hosted_3d("ascent")),
+            (Region::BottomRight, hosted_3d("ascent")),
+        ])
+        .is_ok());
+        let fault = Layout::from_placements(&[
+            (Region::Left, Content::Agent),
+            (Region::TopRight, organon_3d()),
+            (Region::BottomRight, organon_3d()),
+        ])
+        .expect_err("two Organon viewports are still two live pictures");
+        assert!(fault.to_string().contains("TAA jitter phase"), "{fault}");
+    }
+
+    /// 🚨 **An omitted producer is Organon, and an unapproved one is refused BY NAME — never
+    /// approximated to Organon.**
+    ///
+    /// §4.2 is explicit about the asymmetry and about why it is not a nicety: *"`3d` with a typo
+    /// must never silently fall back to Organon's World — the person would get a picture, and
+    /// the wrong one, which is worse than a refusal."*
+    ///
+    /// ⚠️ **Mutation-tested.** Replacing [`Producer::resolve`]'s `Err` arm with
+    /// `Ok(Producer::Organon)` fails this at *"an unapproved producer is refused"*; dropping the
+    /// `word == DEFAULT_PRODUCER` arm fails it at *"saying `organon` out loud is the same as
+    /// leaving it out"*.
+    #[test]
+    fn an_omitted_producer_is_organon_and_an_unapproved_one_is_refused_by_name() {
+        let approved = ["ascent"];
+        assert_eq!(Producer::resolve(None, &approved), Ok(Producer::Organon));
+        assert_eq!(Producer::resolve(None, &[]), Ok(Producer::Organon), "with nothing approved");
+        assert_eq!(
+            Producer::resolve(Some(crate::module::DEFAULT_PRODUCER), &[]),
+            Ok(Producer::Organon),
+            "saying `organon` out loud is the same as leaving it out"
+        );
+        assert_eq!(
+            Producer::resolve(Some("ascent"), &approved),
+            Ok(Producer::Hosted("ascent".into()))
+        );
+
+        let e = Producer::resolve(Some("ascent"), &[])
+            .expect_err("an unapproved producer is refused, never approximated");
+        assert_eq!(e.why, WhyNotAProducer::NotApproved);
+        let text = e.to_string();
+        assert!(text.contains("ascent"), "the refusal names what was asked for: {text}");
+        assert!(
+            text.contains(crate::module::DEFAULT_PRODUCER),
+            "…and `organon`, which is always an answer: {text}"
+        );
+        assert!(
+            text.contains(crate::module::APPROVE_VERB),
+            "…and the verb that would fix it: {text}"
+        );
+        // The approved ones are listed, so the person who typed a wrong producer is not the one
+        // person who has not been told the right ones.
+        let listed = Producer::resolve(Some("asent"), &approved).expect_err("a typo").to_string();
+        assert!(listed.contains("`ascent`"), "{listed}");
+
+        // A word no manifest could have declared is refused at BOTH doors, because it is not a
+        // question about approval at all.
+        for bad in ["", "two words", "organon-\u{7}"] {
+            assert!(Producer::resolve(Some(bad), &approved).is_err(), "`{bad}` at the command");
+            assert!(Producer::stored(Some(bad)).is_err(), "`{bad}` in a file");
+        }
+    }
+
+    /// 🚨 **A stored producer is NOT checked against the approved set, and that is §3.5.**
+    ///
+    /// *"A layout referencing a module you have stopped trusting must not fail to open."* A
+    /// revoked module is a region whose producer declines to run — a sentence in the rectangle —
+    /// never a load that refuses. `crate::layout::resolve` is the caller that depends on it.
+    ///
+    /// ⚠️ **Mutation-tested.** Routing `Producer::stored` through `Producer::resolve` with an
+    /// empty approved set fails this at its first assertion, which is exactly the revocation
+    /// case.
+    #[test]
+    fn a_stored_producer_survives_revocation_because_approval_is_not_its_question() {
+        assert_eq!(Producer::stored(Some("ascent")), Ok(Producer::Hosted("ascent".into())));
+        assert_eq!(Producer::stored(None), Ok(Producer::Organon));
+        assert_eq!(Producer::stored(Some(crate::module::DEFAULT_PRODUCER)), Ok(Producer::Organon));
+    }
+
+    /// 🚨 **A producer is a qualifier on `3d` and on nothing else** — refused rather than
+    /// dropped, because a command that silently ignores a word somebody typed is
+    /// indistinguishable from one that honoured it.
+    #[test]
+    fn a_producer_beside_a_content_kind_that_has_none_is_refused_rather_than_ignored() {
+        let approved = ["ascent"];
+        for word in ["agent", "panel", CLEAR_WORD] {
+            let e = ContentCmd::resolve_with(word, Some("ascent"), &approved)
+                .expect_err("a producer qualifies `3d` and nothing else");
+            assert_eq!(
+                e,
+                ContentRefusal::NotAViewport { content: word, producer: "ascent".into() },
+                "`{word}` must name itself in the refusal"
+            );
+            assert!(e.to_string().contains(word), "{e}");
+        }
+        // …and the same words with no producer are exactly what they always were.
+        assert_eq!(
+            ContentCmd::resolve_with("agent", None, &approved),
+            Ok(ContentCmd::Hold(Content::Agent))
+        );
+        assert_eq!(ContentCmd::resolve_with(CLEAR_WORD, None, &approved), Ok(ContentCmd::Clear));
+        assert_eq!(
+            ContentCmd::resolve_with("3d", None, &approved),
+            Ok(ContentCmd::Hold(organon_3d())),
+            "a bare `3d` is Organon's viewport — the whole of 'an omitted producer means Organon'"
+        );
+        assert_eq!(
+            ContentCmd::resolve_with("3d", Some("ascent"), &approved),
+            Ok(ContentCmd::Hold(hosted_3d("ascent")))
+        );
+        // An unknown content word still quotes the COMMAND table, which carries `off` — the
+        // widening `ContentCmd::resolve_with` does over `Content::resolve_with`'s kinds.
+        let e = ContentCmd::resolve_with("media", None, &approved).expect_err("not a word yet");
+        assert!(e.to_string().contains(CLEAR_WORD), "the command table carries `off`: {e}");
+    }
+
+    /// 🚨 **The word travels; the phrase is written down.** [`Content::as_word`] must stay a
+    /// member of [`CONTENT_KIND_WORDS`] whatever the producer is, and [`Content::as_words`] must
+    /// spell Organon's viewport as **`3d` alone** — which is what makes every `layouts.json`
+    /// written before T4 byte-identical to one written after it.
+    ///
+    /// ⚠️ **Mutation-tested.** Making `Producer::as_word` answer `Some("organon")` for
+    /// `Organon` fails this at the `as_words` assertion **and** fails
+    /// `crate::layout::tests::every_reachable_arrangement_round_trips_through_the_stored_form`'s
+    /// stored bytes; making `as_word` answer the whole phrase fails
+    /// `the_word_tables_and_the_resolvers_are_one_vocabulary`.
+    #[test]
+    fn the_producer_is_a_second_word_and_never_part_of_the_first() {
+        assert_eq!(organon_3d().as_word(), "3d");
+        assert_eq!(hosted_3d("ascent").as_word(), "3d", "the kind word never carries a producer");
+        assert!(CONTENT_KIND_WORDS.contains(&hosted_3d("ascent").as_word()));
+
+        assert_eq!(organon_3d().as_words(), "3d", "Organon contributes NO word at all");
+        assert_eq!(hosted_3d("ascent").as_words(), "3d ascent");
+        assert_eq!(Content::Agent.as_words(), "agent");
+        assert_eq!(Content::Panel.as_words(), "panel");
+
+        // The phrase round-trips through the stored door, which is the property
+        // `crate::layout::resolve` is built on.
+        for content in [organon_3d(), hosted_3d("ascent"), Content::Agent, Content::Panel] {
+            let phrase = content.as_words();
+            let mut words = phrase.split_whitespace();
+            let kind = words.next().expect("a phrase has a kind word");
+            assert_eq!(
+                Content::resolve_stored(kind, words.next()),
+                Ok(content.clone()),
+                "`{phrase}` did not read back as itself"
+            );
+            assert_eq!(words.next(), None, "a phrase is at most two words");
+        }
     }
 
     /// Neither resolver approximates, and both refusals carry the table that would have worked.

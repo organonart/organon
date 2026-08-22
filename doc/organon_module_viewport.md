@@ -266,7 +266,29 @@ restructuring the region model**. This design is the collection of that promise.
   predicted this: *"a future producer might fill four regions happily, and would otherwise inherit
   a refusal it has no reason to obey."* That prediction arrives now.
 
-### 4.2 🚨 The vocabulary: `3d ascent`, not a content word called `ascent`
+### 4.2 🚨 The vocabulary: `3d <producer>`, not a content word called `ascent` — **BUILT (T4)**
+
+> ✏️ **This section is now describing the tree rather than proposing to it.** Everything below
+> shipped, with **two changes worth knowing before you read the rest** — both made because the
+> console's own rules outranked this document's shorthand:
+>
+> 1. 🚨 **The spelling is `viewport left 3d producer ascent`, not `viewport left 3d ascent`.**
+>    §1.8's grammar fills *required* arguments positionally and *optional* ones **by keyword**, at
+>    every one of the four doors. #98 Tier C settled this one verb over: `ConsoleOp::Stack`'s
+>    optional region is spelled `region <word>` *"because the slash grammar fills optional
+>    arguments by keyword: a bare third word would make the typed line and the sidecar line
+>    disagree, which is the drift the four doors exist to prevent."* The illustrative form below
+>    would have needed a second grammar for one verb. **James, this is a departure from what you
+>    read** — it is one decision to reverse, and reversing it means letting the grammar accept a
+>    trailing positional optional for *every* verb.
+> 2. 📌 **A `3d ascent` region draws a SENTENCE, not a picture.** Nothing renders a hosted
+>    producer — there is no protocol and no process; §9's T3b and T5 own those. The rectangle
+>    carries `ModuleState`'s line, which is §4.6's first two rows and the only two reachable with
+>    nothing running.
+>
+> `CONSOLE_ARCHITECTURE.md` §1.14's *"`3d <producer>` — the producer qualifier, T4"* is the living
+> description; what follows is the argument that produced it, kept because the argument is the
+> part worth having.
 
 James said *"viewport type `ascent`"*. Taken literally that is a fourth content word beside
 `agent`, `panel` and `3d` — and it is the one thing `region.rs` argues against at length: `world`
@@ -281,17 +303,29 @@ viewport left 3d              # the default producer — Organon's World, today'
 viewport left 3d ascent       # the same rectangle, a different producer
 ```
 
-- `CONTENT_WORDS` stays a fixed four-word table, and
+- ✅ `CONTENT_WORDS` stays a fixed four-word table, and
   `the_word_tables_and_the_resolvers_are_one_vocabulary` keeps passing unchanged.
-- Producer names are a **second, dynamic vocabulary** sourced from the approved-module list —
+- ✅ Producer names are a **second, dynamic vocabulary** sourced from the approved-module list —
   the shape §1.15 already built and measured for saved-layout names: a `NarrowFn` over a library,
   **cached rather than read straight**, because the candidate walk runs on the draw path and asks
-  n + 1 times per call. That measurement is inherited; do not re-learn it.
-- An omitted producer means `organon`, so every existing layout, every `layouts.json` written
-  before this, and every line in the docs continues to mean exactly what it meant.
-- An unapproved or unknown producer is **refused by name**, listing the approved ones. `3d` with a
+  n + 1 times per call. That measurement is inherited; do not re-learn it. *(Built as
+  `registry::viewport_options` over T3a's `ModuleRegistry::for_completion` — no second cache. The
+  ring also reads the **content** word, so a producer offered beside `agent` answers `Ring::Empty`
+  with the reason rather than staying silent.)*
+- ✅ An omitted producer means `organon`, so every existing layout, every `layouts.json` written
+  before this, and every line in the docs continues to mean exactly what it meant. *(Checked as
+  bytes: Organon's producer contributes **no word at all**, so a captured layout stores `3d` and a
+  sidecar line reads `viewport left 3d`, byte-identical to what they were.)*
+- ✅ An unapproved or unknown producer is **refused by name**, listing the approved ones. `3d` with a
   typo must never silently fall back to Organon's World — the person would get a picture, and the
   wrong one, which is worse than a refusal.
+- ⚠️ **…at the COMMAND door only.** A producer read out of a **saved layout** is deliberately not
+  checked against the approved set, because §3.5 requires that *"a layout referencing a module you
+  have stopped trusting must not fail to open."* So there are two resolvers — `Producer::resolve`
+  (typed, refuses by name) and `Producer::stored` (from a file, refuses only a word no manifest
+  could have declared). A revoked module is a region whose producer declines to run, which is what
+  §3.5 asks for; checking approval on load would have turned a revocation into an arrangement that
+  will not come back.
 
 📌 **And uniqueness becomes the producer's property, which is where its own doc said it belonged.**
 `only_one_because` moves from `Content` to the producer: Organon answers with today's reason
@@ -299,6 +333,20 @@ viewport left 3d ascent       # the same rectangle, a different producer
 reason of its own — a separate process rendering into its own texture has no jitter phase to
 trade. **Two Ascent viewports are a thing the architecture permits**; whether anyone wants them is
 a different question, and the refusal machinery should not answer it by accident.
+
+✅ **Built, and §8's open question is closed.** It is a `Producer` enum — `Organon | Hosted(String)`
+— and `region.rs`'s standing objection to inventing one is **discharged rather than overruled**:
+that objection was to an enum *with one variant*, an unreachable arm pretending to be a design.
+There are two now and both are reachable from a command a person types.
+`Content::only_one_because` survives as a one-line forward so that `Layout::assign` and
+`Layout::from_placements` ask one question rather than each unwrapping a `ThreeD` for itself.
+
+⚠️ **The representation was the real work of the tier and it is not free.** A producer name is a
+runtime string, so `Content` gave up `Copy` — and `ContentCmd`, `Layout` and `Placed` with it. The
+two alternatives (an inline fixed-capacity name; an interned `&'static str`) are weighed in
+`region.rs`'s header. 📌 The property `plan` leans on survives: every value that existed before T4
+is still unit-shaped and clones with **no allocation**, so a console with no approved module costs
+exactly what it cost before.
 
 ### 4.3 What Ascent gives up, and it is exactly three things
 
@@ -421,6 +469,15 @@ must not count as `region_holds_world`, or the console renders a `World` frame n
 starves the backdrop for it. That is one call site and one boolean, and getting it wrong is
 silent — a wasted frame is not an error. It wants its own test, and the test is cheap because
 `engine_plan` is pure.
+
+✅ **Done in T4, and the prediction about the invariant held exactly.**
+`Console::region_showing_world` is now a free `region_showing_world(&Layout)` — split out so the
+answer can be tested with no window — and it asks for `Content::ThreeD(Producer::Organon)`
+precisely. `the_engine_is_asked_for_at_most_one_frame` is **unedited**: widening its input space
+for a hosted producer would assert that a hosted module is a claimant, which is the opposite of
+what this section says. The claim lives in
+`a_hosted_producer_does_not_make_the_console_render_a_world_frame`, where it is about the arbiter's
+**input** rather than about the arbiter.
 
 ### 4.6 What the console must never learn, and what it must always be able to say
 
@@ -620,7 +677,7 @@ A spine rather than a schedule; each rung is independently useful and none needs
 | **T1** | **Ascent's refactor** — the library owns the device, the pipelines, `render_into(texture, size)`, `step(dt)` and `feed(input)`; `main.rs` keeps the window and the pump, and `fly.ps1` keeps working. | the parallel Ascent session |
 | **T2** | **The contract crate** — permissive, console-side, both trees depend on it, `cargo tree` gates both. **B**, per T0, with a preallocated ring rather than a per-frame allocation — that condition is the measurement's, not a preference. | T1's real signatures |
 | **T3** | **`modules.json`, `organon-module.toml`, and the approve verb** — on the harness precedent, with `layout.rs`'s refusal discipline. Approve, build, record the built commit, diff, revoke. | — |
-| **T4** | **The producer qualifier** — `3d <producer>`, the dynamic ring cached per §1.15's measurement, `only_one_because` moved, `engine_plan`'s boolean corrected and tested. | T3, for a producer to name |
+| ✅ **T4** | **The producer qualifier** — `3d <producer>`, the dynamic ring cached per §1.15's measurement, `only_one_because` moved, `engine_plan`'s boolean corrected and tested. **All four landed** (`CONSOLE_ARCHITECTURE.md` §1.14). ⚠️ Two departures from §4.2 as written: the spelling is keyword-tagged (`producer ascent`), and a *stored* producer is not checked against the approved set — §3.5. 📌 It draws no picture; a hosted region carries `ModuleState`'s sentence, which is what T5 replaces. | T3, for a producer to name |
 | **T5** | **Lifecycle and input** — `Attached`/`Running`, the click latch, the way out, the four failure sentences. | T3, T4 |
 | **T6** | **The ladder** — rung 2 is already legal; rung 3 is the handoff, or the portal's full-screen tier, and that is a decision T0 informs. | §6 |
 
@@ -655,6 +712,12 @@ built if it is wrong.
    name. The Ascent session independently agreed and raised the same objection to itself:
    **two agents agreeing with each other is not the same as you agreeing**, and a vocabulary word
    is cheap now and permanent later. If you meant the literal fourth word, say so before T4.
+   ⚠️ **T4 has now shipped it, and it shipped with a second departure this item did not
+   anticipate: the producer is a KEYWORD, so the line is `viewport left 3d producer ascent`.**
+   §1.8's grammar tags optional arguments by name at all four doors — `console stack … region
+   <word>` is the same shape, settled in #98 Tier C — and a bare third word would have made the
+   typed line and the sidecar line disagree. Both departures are one decision each to reverse and
+   neither is load-bearing on anything below it; §4.2's banner has the detail.
 4. **Full screen may be a handoff rather than a grow** (§6). Ascent's own window, over the console,
    using the host it already has — which buys the flight feel outright and costs the animated
    transition. The alternative is the portal's unbuilt full-screen rectangle plus whatever §4.4

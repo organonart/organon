@@ -92,6 +92,8 @@ use serde_json::{json, Map, Value};
 
 use crate::command::{ArgKind, ArgSpec, CommandSpec, Reversal};
 use crate::layout::{self, LayoutCmd, Library};
+use crate::module::{self, ModuleRegistry};
+use crate::region::{Content, ContentCmd};
 
 /// Which machinery answers a verb. See the module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +172,26 @@ pub const VERB_LAYOUT: &str = "console.layout";
 /// The argument `console.layout` carries the layout's name in. Same rule as [`THEME_ARG`], and
 /// the same alias on the other side ([`layout_options`] is asked for one argument by name).
 pub const LAYOUT_NAME_ARG: &str = "layout";
+
+/// `console.viewport` — the third console-lane name this crate has to **recognise**, and for
+/// [`VERB_LAYOUT`]'s reason: its producer argument is a ring of the modules that are actually
+/// approved ([`viewport_options`]).
+///
+/// ⚠️ **Spelled here and aliased by `console_main`**, with the same silent failure mode a second
+/// spelling would have: the verb would keep working and the ring would simply stop appearing.
+pub const VERB_VIEWPORT: &str = "console.viewport";
+/// The **optional** argument `console.viewport` carries the producer qualifier in —
+/// `doc/organon_module_viewport.md` §4.2's `3d <producer>`.
+///
+/// 🚨 **Keyword-tagged, so the typed line is `/viewport left 3d producer ascent`** rather than
+/// §4.2's illustrative `viewport left 3d ascent`. That is not a preference: `parse_args` fills
+/// **required** arguments positionally and **optional** ones by keyword, and `#98 Tier C` already
+/// paid for the alternative — `ConsoleOp::Stack`'s own doc records that its optional region is
+/// spelled `region <word>` on the wire *"because the slash grammar fills optional arguments by
+/// keyword: a bare third word would make the typed line and the sidecar line disagree, which is
+/// the drift the four doors exist to prevent."* One grammar, one spelling, four doors; the
+/// design document's shorter form would have needed a second grammar for one verb.
+pub const VIEWPORT_PRODUCER_ARG: &str = "producer";
 
 /// `/media` — show a file from disk in this conversation.
 ///
@@ -774,8 +796,78 @@ pub fn unmapped_tab(tab_word: &str) -> String {
 fn console_narrow(name: &str) -> Option<NarrowFn> {
     match name {
         VERB_LAYOUT => Some(layout_options),
+        VERB_VIEWPORT => Some(viewport_options),
         _ => None,
     }
+}
+
+/// `/viewport <region> 3d producer ` — the modules that are actually approved, plus `organon`.
+///
+/// 🚨 **A second dynamic vocabulary over a stored library, and the measurement is inherited
+/// rather than re-taken.** [`Registry::value_candidates`] asks the ring once and then reaches
+/// [`coerce`] per candidate, which asks again — `n + 1` reads per call, on the **draw** path.
+/// §1.15 measured that at 10.1 ms for a hundred entries against a 16.7 ms frame when the library
+/// is read straight from disk. `ModuleRegistry::for_completion` is T3a's answer to exactly that,
+/// with the same 200 ms TTL, the same store-root key and the same invalidation on write — so
+/// this reads it and builds nothing of its own. A second cache would be a second thing to
+/// invalidate.
+///
+/// 🚨 **It reads the CONTENT word, which is why the hook has to exist at all.** A producer
+/// qualifies `3d` and nothing else, so the ring for `viewport left agent producer ` is
+/// [`Ring::Empty`] carrying the reason rather than a list — and [`coerce`] then refuses the word
+/// with that same sentence while it is still in the composer. `None` there would leave the
+/// declared `ArgKind::Text` to accept it, and a producer silently attached to `agent` is a word
+/// somebody typed that nothing acted on.
+///
+/// ⚠️ **`organon` is always offered and is never in `modules.json`** — `check_producer_name`
+/// reserves it. Leaving it out of the ring would make the one producer that has always existed
+/// the one the completion cannot spell.
+///
+/// ⚠️ **No data directory answers `None`, not [`Ring::Empty`]** — [`layout_options`]' rule one
+/// surface over: an empty answer would tell somebody whose modules are merely *unreachable* that
+/// they have approved nothing.
+fn viewport_options(arg: &str, positional: &[&str]) -> Option<Ring> {
+    if arg != VIEWPORT_PRODUCER_ARG {
+        return None;
+    }
+    // The content word, read through `region`'s own resolver rather than compared against a
+    // literal — a fifth content word would otherwise silently mean "no ring".
+    match ContentCmd::resolve(positional.get(1).copied()?).ok()? {
+        ContentCmd::Hold(Content::ThreeD(_)) => {
+            let root = ModuleRegistry::store_root()?;
+            Some(producer_ring(&ModuleRegistry::for_completion(&root)))
+        }
+        other => Some(Ring::Empty(format!(
+            "`{}` has no producer — a producer qualifies `3d`, which is the one thing a region \
+             holds that something has to draw",
+            other.as_word()
+        ))),
+    }
+}
+
+/// The ring an approved set makes — **pure**, so every property of it is a test rather than a
+/// claim about a store the suite must not write to (`%APPDATA%\OrganonShell\modules.json` is the
+/// real one).
+///
+/// The doc beside each name is what approving it recorded: the module's human-readable name and
+/// the short commit, so a person choosing between two producers is choosing between two facts
+/// rather than two words.
+fn producer_ring(registry: &ModuleRegistry) -> Ring {
+    // 🚨 **Never [`Ring::Empty`], because there is always exactly one answer.** An empty modules
+    // file does not mean a `3d` region has no producer; it means the only producer is the one
+    // the console wrote. A ring that said "none" here would be describing a viewport that cannot
+    // be drawn, which is the opposite of the truth.
+    let mut options = vec![(
+        module::DEFAULT_PRODUCER.to_string(),
+        "Organon's own World — what `3d` means with no producer named".to_string(),
+    )];
+    options.extend(
+        registry
+            .modules
+            .iter()
+            .map(|m| (m.producer.clone(), format!("{} — approved at {}", m.name, m.short_commit()))),
+    );
+    Ring::Options(options)
 }
 
 /// `/layout load ` and `/layout delete ` — the arrangements that are actually saved.
@@ -2708,5 +2800,192 @@ mod tests {
         // 🚨 …and the same word under `save` is simply a name. This is the assertion that would
         // fail if the ring were declared on the argument instead of chosen by the action.
         assert!(matches!(reg.resolve("/layout save nope"), Resolved::Run { .. }));
+    }
+
+    /// The `console.viewport` spec this crate's tests drive — the three slots
+    /// `console_main.rs` declares, spelled here because the catalog lives in the root crate.
+    /// ⚠️ Held in step with the real one by
+    /// [`crate::registry::tests::the_viewport_verb_carries_the_producer_ring`]'s hook check plus
+    /// `console_main.rs`'s own catalog tests; this is a fixture, not a second catalog.
+    fn viewport_spec() -> Vec<CommandSpec> {
+        vec![CommandSpec {
+            name: VERB_VIEWPORT.into(),
+            doc: "Divide the pane into regions and say what each one holds".into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: "region".into(),
+                    kind: ArgKind::Choice(
+                        crate::region::REGION_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec {
+                    name: "content".into(),
+                    kind: ArgKind::Choice(
+                        crate::region::CONTENT_WORDS.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec {
+                    name: VIEWPORT_PRODUCER_ARG.into(),
+                    kind: ArgKind::Text,
+                    required: false,
+                },
+            ],
+            reversal: Reversal::Recoverable,
+        }]
+    }
+
+    fn registry_of(producers: &[&str]) -> ModuleRegistry {
+        ModuleRegistry {
+            modules: producers
+                .iter()
+                .map(|p| module::ApprovedModule {
+                    producer: (*p).to_string(),
+                    name: format!("{p} the module"),
+                    url: format!("https://example.invalid/{p}.git"),
+                    commit: "0".repeat(40),
+                    ..Default::default()
+                })
+                .collect(),
+            extra: Default::default(),
+        }
+    }
+
+    /// CONTRACT: the ring is `organon` **plus** whatever is approved, in file order.
+    ///
+    /// 🚨 **`organon` is always first and is never in the file** — `check_producer_name`
+    /// reserves it, so a ring built from the registry alone would leave the one producer that
+    /// has always existed as the one the completion cannot spell.
+    ///
+    /// ⚠️ **Never `Ring::Empty`.** An empty `modules.json` does not mean a `3d` region has no
+    /// producer; it means the only producer is the one the console wrote. `Ring::Empty` there
+    /// would describe a viewport that cannot be drawn, which is the opposite of the truth — and
+    /// [`coerce`] would then refuse `organon` itself.
+    #[test]
+    fn the_producer_ring_is_organon_plus_whatever_is_approved() {
+        let Ring::Options(bare) = producer_ring(&ModuleRegistry::default()) else {
+            panic!("an empty registry still has one producer");
+        };
+        assert_eq!(
+            bare.iter().map(|(o, _)| o.as_str()).collect::<Vec<_>>(),
+            [module::DEFAULT_PRODUCER]
+        );
+
+        let Ring::Options(options) = producer_ring(&registry_of(&["ascent", "orrery"])) else {
+            panic!("options, never empty");
+        };
+        assert_eq!(
+            options.iter().map(|(o, _)| o.as_str()).collect::<Vec<_>>(),
+            [module::DEFAULT_PRODUCER, "ascent", "orrery"],
+            "`organon` first, then file order"
+        );
+        assert!(options[1].1.contains("ascent the module"), "the doc is what approving recorded");
+        assert!(options[1].1.contains("000000000000"), "…including the short commit");
+    }
+
+    /// 🚨 **The producer ring depends on the CONTENT word, and a content kind with no producer
+    /// says so rather than staying silent.**
+    ///
+    /// A `None` there would leave the declared `ArgKind::Text` to accept the word, so
+    /// `/viewport left agent producer ascent` would run with a word nothing acted on. Driven
+    /// through the real [`Registry::candidates`] and [`Registry::resolve`], over a registry this
+    /// test owns rather than the store the suite must never write to.
+    ///
+    /// ⚠️ **Mutation-tested.** Returning `None` instead of `Ring::Empty` for a non-`3d` content
+    /// fails this at *"`agent` has no producer"* — `resolve` starts answering `Run`. Dropping
+    /// the `positional.get(1)` read (narrowing every content word) fails it the same way.
+    #[test]
+    fn the_producer_ring_is_offered_for_3d_and_refused_by_name_for_everything_else() {
+        // 🚨 **The SHIPPED hook first, on the branches that touch no store.** The fixture below
+        // is a copy of its shape with the file read swapped out, and a fixture that were the
+        // only thing tested would let the real one drift into silence — which is the failure
+        // this whole test is about. These four assertions are the shipped function.
+        for word in ["agent", "panel", crate::region::CLEAR_WORD] {
+            let ring = viewport_options(VIEWPORT_PRODUCER_ARG, &["left", word])
+                .unwrap_or_else(|| panic!("`{word}` must say why it has no producer, not stay silent"));
+            let Ring::Empty(why) = ring else { panic!("`{word}` has no producers to offer") };
+            assert!(why.contains(word), "the sentence names the content word: {why}");
+            assert!(why.contains("3d"), "…and what a producer does qualify: {why}");
+        }
+        assert_eq!(viewport_options("region", &["left", "3d"]), None, "the other slots have no opinion");
+        assert_eq!(viewport_options("content", &["left", "3d"]), None);
+        assert_eq!(
+            viewport_options(VIEWPORT_PRODUCER_ARG, &["left"]),
+            None,
+            "no content word yet, no ring — the same 'not enough typed' answer `layout` gives"
+        );
+        assert_eq!(
+            viewport_options(VIEWPORT_PRODUCER_ARG, &["left", "media"]),
+            None,
+            "a word that is not a content command at all is the declared kind's to refuse"
+        );
+
+        fn hook(arg: &str, positional: &[&str]) -> Option<Ring> {
+            if arg != VIEWPORT_PRODUCER_ARG {
+                return None;
+            }
+            match ContentCmd::resolve(positional.get(1).copied()?).ok()? {
+                ContentCmd::Hold(Content::ThreeD(_)) => {
+                    Some(producer_ring(&registry_of(&["ascent"])))
+                }
+                other => Some(Ring::Empty(format!("`{}` has no producer", other.as_word()))),
+            }
+        }
+        let mut reg = Registry::new(&viewport_spec());
+        reg.entries[0].narrow = Some(hook);
+
+        let names = |line: &str| -> Vec<String> {
+            reg.candidates(line)
+                .map(|p| p.candidates.iter().map(|c| c.label.clone()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            names("/viewport left 3d producer "),
+            [module::DEFAULT_PRODUCER, "ascent"],
+            "the producers a `3d` region may name"
+        );
+        assert_eq!(names("/viewport left 3d producer a"), ["ascent"], "the typed stem filters");
+
+        assert!(matches!(reg.resolve("/viewport left 3d"), Resolved::Run { .. }));
+        assert!(matches!(
+            reg.resolve("/viewport left 3d producer ascent"),
+            Resolved::Run { .. }
+        ));
+        // 🚨 **An unapproved producer is refused in the composer, while the words are still
+        // there to be fixed** — and it lists the ones that would have worked.
+        let Resolved::Refused(message) = reg.resolve("/viewport left 3d producer nope") else {
+            panic!("`nope` is not an approved module")
+        };
+        assert!(message.contains("nope"), "{message}");
+        assert!(message.contains("ascent"), "{message}");
+        assert!(message.contains(module::DEFAULT_PRODUCER), "{message}");
+
+        // …and a producer beside a content kind that has none is refused with the reason,
+        // rather than accepted by the declared `Text`.
+        let Resolved::Refused(message) = reg.resolve("/viewport left agent producer ascent") else {
+            panic!("`agent` has no producer")
+        };
+        assert!(message.contains("no producer"), "{message}");
+    }
+
+    /// CONTRACT: the hook reaches the real entry, keyed on the catalog name — the join a rename
+    /// could break silently. [`the_layout_verb_carries_the_ring_and_nothing_else_does`]'s rule
+    /// for the second verb that has one.
+    #[test]
+    fn the_viewport_verb_carries_the_producer_ring() {
+        let reg = Registry::new(&viewport_spec());
+        let entry = reg.entry("viewport").expect("the verb is typeable");
+        assert!(entry.narrow.is_some(), "`{VERB_VIEWPORT}` is the verb the hook is keyed on");
+        assert!(console_narrow(VERB_VIEWPORT).is_some());
+        assert!(console_narrow("console.stack").is_none(), "the other three-slot verb has none");
+
+        // The declared kind is untouched: `Text` is what the MCP schema and `/help` say, and
+        // neither has the content word in hand.
+        let slot =
+            entry.args().iter().find(|a| a.name == VIEWPORT_PRODUCER_ARG).expect("the slot");
+        assert_eq!(slot.kind, ArgKind::Text);
+        assert!(!slot.required, "an omitted producer means Organon — it cannot be required");
     }
 }

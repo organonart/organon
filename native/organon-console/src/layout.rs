@@ -225,7 +225,13 @@ pub fn check_name(name: &str) -> Result<(), Refusal> {
 pub struct SavedLayout {
     /// The name it is stored, merged and recalled under. See [`check_name`].
     pub name: String,
-    /// Region word → content word, in [`Region::ALL`] order when this console wrote it.
+    /// Region word → what it holds, in [`Region::ALL`] order when this console wrote it.
+    ///
+    /// ✏️ **The value is a PHRASE since T4, not always one word** — `3d ascent` where a viewport
+    /// names a producer, `3d` where it is Organon's. [`crate::region::Content::as_words`] writes
+    /// it and [`resolve`] splits it on whitespace. 🚨 **Every file written before T4 is
+    /// byte-identical under this rule**, because Organon's producer contributes no word at all;
+    /// that is the whole reason an omitted qualifier means Organon rather than the reverse.
     ///
     /// ⚠️ **A `BTreeMap`, so the file is written in a stable order** — [`crate::prefs`]'s reason:
     /// a file whose lines shuffle on every save is one nobody can diff or keep in version
@@ -254,7 +260,11 @@ impl SavedLayout {
             regions: layout
                 .occupied()
                 .into_iter()
-                .map(|(r, c)| (r.as_word().to_string(), c.as_word().to_string()))
+                // ⚠️ **The whole PHRASE, not the kind word** — `3d ascent` where a producer was
+                // named, `3d` where it was Organon. [`Content::as_words`] owns that asymmetry,
+                // and it is why a `layouts.json` written before T4 and one written after it are
+                // the same bytes for the same arrangement.
+                .map(|(r, c)| (r.as_word().to_string(), c.as_words()))
                 .collect(),
             extra: BTreeMap::new(),
         }
@@ -588,15 +598,38 @@ impl Library {
 /// carries the same sentence every frame as the backstop.
 pub fn resolve(saved: &SavedLayout, pane: Option<egui::Rect>) -> Result<Layout, Refusal> {
     let mut places: Vec<(Region, Content)> = Vec::new();
-    for (region_word, content_word) in &saved.regions {
+    for (region_word, held) in &saved.regions {
         let region = Region::resolve(region_word).map_err(Refusal::UnknownRegion)?;
+        // 🚨 **The stored value is a PHRASE since T4** — `3d` or `3d ascent` — so it is split
+        // here rather than read as one word. Splitting on whitespace is the same rule the
+        // sidecar line lives by, and it is why `module::check_producer_name` forbids whitespace
+        // in a producer name: a two-word producer would arrive as a producer and a stray word.
+        let mut words = held.split_whitespace();
+        let content_word = words.next().unwrap_or("");
+        let producer_word = words.next();
+        if let Some(extra) = words.next() {
+            return Err(Refusal::TooManyWords { region: region_word.clone(), extra: extra.to_string() });
+        }
         // Named separately from every other unknown word, because it is the one a person is
         // likeliest to write by hand — it is a word the *command* takes — and "not a content" is
         // a poor answer to it. What is wrong is that a region holding nothing is simply absent.
         if content_word == CLEAR_WORD {
             return Err(Refusal::ClearWordStored { region: region_word.clone() });
         }
-        let content = Content::resolve(content_word).map_err(Refusal::UnknownContent)?;
+        // 🚨 **`resolve_stored`, which does NOT ask whether the producer is approved.** Modules
+        // plan §10 and `doc/organon_module_viewport.md` §3.5: *a layout referencing a module you
+        // have stopped trusting must not fail to open.* A revoked module is a region whose
+        // producer declines to run — a sentence in the rectangle — and refusing the load here
+        // would turn a revocation into an arrangement that will not come back.
+        //
+        // ⚠️ **The unknown-CONTENT arm is kept as it was** rather than folded into the new one:
+        // a stored word this build does not have is the refusal §1.15's table already describes
+        // and the sentence a person may already have seen, and re-routing it would change what
+        // an old `layouts.json` says on a new console for no gain.
+        let content = Content::resolve_stored(content_word, producer_word).map_err(|e| match e {
+            region::ContentRefusal::UnknownContent(u) => Refusal::UnknownContent(u),
+            other => Refusal::NotHoldable(other),
+        })?;
         places.push((region, content));
     }
     // Largest-first, so an overlap is reported against the wider region — the word a person would
@@ -657,6 +690,18 @@ pub enum Refusal {
     UnknownRegion(UnknownWord),
     /// A stored content word this build does not have.
     UnknownContent(UnknownWord),
+    /// The stored phrase is two legal-looking words that are not something a region can hold —
+    /// a producer name nothing could answer to, or a producer beside a content kind that has
+    /// none. ⚠️ **Carried rather than restated**, so [`crate::region::ContentRefusal`] and this
+    /// cannot drift into two explanations of one rule.
+    ///
+    /// 🚨 **An UNAPPROVED producer is not in here**, and that absence is §3.5 rather than an
+    /// oversight — see [`resolve`].
+    NotHoldable(region::ContentRefusal),
+    /// The stored phrase has a third word. A region holds a content and at most a producer;
+    /// anything after that is a file this build cannot read whole, and reading it in part is
+    /// how an arrangement quietly becomes a different one.
+    TooManyWords { region: String, extra: String },
     /// [`CLEAR_WORD`] stored as what a region holds. See [`resolve`].
     ClearWordStored { region: String },
     /// The arrangement is not a layout — overlapping regions, two live pictures, no agent.
@@ -704,6 +749,17 @@ impl std::fmt::Display for Refusal {
                 f,
                 "this layout names something to hold that this build does not have — {e}. It is \
                  refused whole rather than loaded in part, for the reason a missing region is"
+            ),
+            Refusal::NotHoldable(e) => write!(
+                f,
+                "this layout names something no region can hold — {e}. It is refused whole \
+                 rather than loaded in part, for the reason a missing region is"
+            ),
+            Refusal::TooManyWords { region, extra } => write!(
+                f,
+                "this layout says `{region}` holds more than a content and a producer — `{extra}` \
+                 is a third word, and a file this build cannot read whole is refused rather than \
+                 read in part"
             ),
             Refusal::ClearWordStored { region } => write!(
                 f,
@@ -811,7 +867,7 @@ mod tests {
     fn every_reachable_arrangement_round_trips_through_the_stored_form() {
         for a in Region::ALL.iter().copied() {
             for b in Region::ALL.iter().copied() {
-                for kind in Content::ALL.iter().copied() {
+                for kind in Content::ALL.iter().cloned() {
                     let Ok(first) = Layout::default().assign(a, ContentCmd::Hold(Content::Agent))
                     else {
                         continue;
@@ -824,7 +880,7 @@ mod tests {
                     assert_eq!(
                         resolve(&stored, Some(pane())),
                         Ok(live),
-                        "{a:?}/{b:?}/{kind:?} did not survive the round trip"
+                        "{a:?}/{b:?} did not survive the round trip"
                     );
                 }
             }
@@ -858,7 +914,7 @@ mod tests {
         // refusal — which is the forward-compatibility story stated from the other side.
         let widened = saved("newer", &[("left", "agent"), ("topcenter", "3d")]);
         let built = resolve(&widened, Some(pane())).expect("`topcenter` resolves in this build");
-        assert_eq!(built.get(Region::TopCenter), Some(Content::ThreeD));
+        assert_eq!(built.get(Region::TopCenter), Some(Content::ThreeD(region::Producer::Organon)));
 
         let gone = saved("future", &[("left", "agent"), ("right", "media")]);
         let e = resolve(&gone, Some(pane())).expect_err("`media` is not in the vocabulary yet");
@@ -871,6 +927,80 @@ mod tests {
         let e = resolve(&cleared, Some(pane())).expect_err("`off` is not something a region holds");
         assert_eq!(e, Refusal::ClearWordStored { region: "right".into() });
         assert!(e.to_string().contains("left out of the file"), "{e}");
+    }
+
+    /// 🚨 **A file written before T4 loads as exactly what it loaded before T4, and one written
+    /// after it round-trips its producer.**
+    ///
+    /// The first half is the whole of *"an omitted producer means Organon"*, checked as **bytes**
+    /// rather than as an intention: a layout captured from an Organon viewport stores the string
+    /// `3d`, so an older console reads it and a newer one reads it the same way.
+    ///
+    /// ⚠️ **Mutation-tested.** Making `SavedLayout::capture` store `c.as_word()` again (the
+    /// pre-T4 line) fails this at *"a hosted producer survives the file"* — the stored value
+    /// becomes `3d` and the layout comes back as Organon's, which is the silent wrong-renderer
+    /// outcome §4.2 forbids. Making `Producer::as_word` answer `Some("organon")` fails it at the
+    /// first assertion instead.
+    #[test]
+    fn a_producer_survives_the_file_and_an_organon_viewport_still_writes_one_word() {
+        let organon = Layout::default()
+            .assign(Region::Left, ContentCmd::Hold(Content::Agent))
+            .expect("left")
+            .layout
+            .assign(Region::Right, ContentCmd::Hold(Content::ThreeD(region::Producer::Organon)))
+            .expect("right 3d")
+            .layout;
+        let stored = SavedLayout::capture("desk", &organon);
+        assert_eq!(
+            stored.regions.get("right").map(String::as_str),
+            Some("3d"),
+            "Organon's viewport writes the one word it has always written"
+        );
+        assert_eq!(resolve(&stored, Some(pane())), Ok(organon));
+
+        let hosted_content =
+            Content::ThreeD(region::Producer::Hosted("ascent".into()));
+        let hosted = Layout::default()
+            .assign(Region::Left, ContentCmd::Hold(Content::Agent))
+            .expect("left")
+            .layout
+            .assign(Region::Right, ContentCmd::Hold(hosted_content.clone()))
+            .expect("right 3d ascent")
+            .layout;
+        let stored = SavedLayout::capture("game", &hosted);
+        assert_eq!(stored.regions.get("right").map(String::as_str), Some("3d ascent"));
+        assert!(stored.holds().contains("right 3d ascent"), "{}", stored.holds());
+        assert_eq!(
+            resolve(&stored, Some(pane())),
+            Ok(hosted),
+            "a hosted producer survives the file"
+        );
+
+        // 🚨 **§3.5: a stored producer nothing has approved still LOADS.** `resolve` never
+        // consults the approved set, so revoking a module leaves a region whose producer
+        // declines to run rather than an arrangement that will not come back.
+        let revoked = saved("was-approved", &[("left", "agent"), ("right", "3d never-approved")]);
+        let built = resolve(&revoked, Some(pane())).expect("a revoked module is not a bad layout");
+        assert_eq!(
+            built.get(Region::Right),
+            Some(Content::ThreeD(region::Producer::Hosted("never-approved".into())))
+        );
+
+        // …and a word no manifest could have declared is still refused, because that is a
+        // different question from approval.
+        let e = resolve(
+            &saved("bad", &[("left", "agent"), ("right", "3d ascent extra")]),
+            Some(pane()),
+        )
+        .expect_err("three words is not something a region holds");
+        assert_eq!(
+            e,
+            Refusal::TooManyWords { region: "right".into(), extra: "extra".into() }
+        );
+        let e = resolve(&saved("bad", &[("left", "agent"), ("right", "agent ascent")]), Some(pane()))
+            .expect_err("a producer qualifies `3d` and nothing else");
+        assert!(matches!(e, Refusal::NotHoldable(_)), "{e:?}");
+        assert!(e.to_string().contains("ascent"), "{e}");
     }
 
     /// 🚨 **A saved layout meets every refusal an assignment meets, and one more.** These are the
@@ -963,7 +1093,7 @@ mod tests {
     #[test]
     fn a_refused_layout_leaves_the_caller_with_what_it_already_had() {
         let standing = two_columns();
-        let mut live = standing;
+        let mut live = standing.clone();
         for bad in [
             saved("a", &[("left", "agent"), ("top", "panel")]),
             saved("b", &[("full", "panel")]),
@@ -1011,7 +1141,7 @@ mod tests {
         let mut seen_small = 0;
         for a in Region::ALL.iter().copied() {
             for b in Region::ALL.iter().copied() {
-                for kind in Content::ALL.iter().copied() {
+                for kind in Content::ALL.iter().cloned() {
                     let Ok(built) =
                         Layout::from_placements(&[(a, Content::Agent), (b, kind)])
                     else {
