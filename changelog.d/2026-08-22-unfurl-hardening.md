@@ -1,4 +1,4 @@
-### The unfurl gets a `twitter:image` and a canonical, and the apex/www split is named
+### The link preview was broken by the apex/www redirect, not by the cache
 
 The card shipped and a paste still showed nothing, so the served page was checked rather than the
 repository: `og:image` resolves, `og.png` returns 2400×1260 `image/png`, `twitter:card` is
@@ -7,18 +7,32 @@ cause is the unfurl cache** — the link was pasted before the card existed, and
 caches the result per URL for hours to days, with no invalidation when the tags change. Appending
 any query string is a new URL to every cache and is the way to test it.
 
-⚠️ **The check did surface one genuine weakness: `og:url` says `https://organon.art/` and the page
-is served from `https://www.organon.art/`.** A scraper hitting the apex takes a redirect to `www`
-and then reads an `og:url` pointing back at the apex. Most follow it; some treat `og:url` as
-canonical and re-fetch, and a few give up. That is a coin-flip nobody should be relying on, so both
-pages now carry an explicit `<link rel="canonical">` naming the apex, which states the intent
-rather than leaving it to be inferred from a tag that means something slightly different.
+🚨 **That first diagnosis was wrong, and forcing a refresh through Telegram's @WebpageBot is what
+disproved it.** A manual purge returned *no preview at all* — which is not what a stale cache looks
+like. Measured with a crawler user-agent:
 
-🚨 **The real fix is a domain setting and it is not in this repository.** Vercel currently makes
-`www` primary and redirects the apex to it; making the **apex** primary would remove the redirect
-entirely and make the tags describe the URL that is actually served. That is one toggle in the
-project's Domains panel, and it is a decision about the brand rather than about the markup, so it
-is named here instead of worked around.
+```
+https://organon.art/og.png       308  ->  https://www.organon.art/og.png
+https://www.organon.art/og.png   200      image/png, 114110 B
+```
+
+**Telegram follows the redirect for the PAGE and refuses to follow one for the IMAGE.** It fetched
+the HTML through the apex→www 308 without complaint, read all six og tags, then found an
+`og:image` that answered 308 rather than an image — and rendered nothing. The apex/www split was
+recorded in the first draft of this entry as a theoretical weakness worth hardening against. It was
+the bug.
+
+✏️ **So every absolute URL on both pages now names `www`, the host that answers 200** — `og:url`,
+`og:image`, `twitter:image` and the canonical. ⚠️ **These are coupled to a setting that is not in
+this repository**, and the coupling is stated at the tags themselves: Vercel makes `www` primary,
+and if that is ever flipped to the apex the redirect reverses and every one of these lines has to
+flip with it *in the same change* — or the identical bug returns pointing the other way, with the
+same silent symptom.
+
+📌 **The lesson is about the diagnosis rather than the tags.** "It is the cache" explained the first
+observation, was consistent with the second, and was still wrong; what settled it was fetching the
+resource as a crawler instead of reasoning about who caches what. A redirect that every browser
+follows invisibly is exactly the kind of thing that only fails for the one client that does not.
 
 ✏️ **`twitter:image` is added even though `og:image` is supposed to be enough.** X falls back to
 the Open Graph tag, and so do most consumers — but not all of them, and a handful of unfurlers read
