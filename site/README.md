@@ -60,9 +60,46 @@ corrected like any other statement of fact.
 
 ## Deploy
 
-Static, no build step. Deployed from this directory as the project root.
-`vercel.json` sets `cleanUrls`, which does nothing today and is the one line that
-makes a second page cost nothing.
+Static, no build step. Vercel, team **Organon**, project **`organon`** — the same
+project that has always held `organon.art`, repointed from `organonart/organon-private`
+to this repository on 2026-08-22. Repointing rather than creating a project is why
+there was no DNS change: `organon.art` and `www.organon.art` never left the project
+they were attached to.
+
+| Setting | Value |
+|---|---|
+| Production branch | `main` |
+| Root Directory | `site` |
+| Framework Preset | Other |
+| Build / Output / Install | all empty |
+
+⚠️ **Root Directory is `site`, so `vercel.json` must stay in this directory** — Vercel
+reads it from the root directory, not from the repository root. Moving it up one level
+silently stops `cleanUrls` from applying, which nothing today would reveal, because
+there is only one page and it is `index.html`. The first `/docs` link would be the thing
+that broke.
+
+🚨 **These live in the Vercel dashboard, not in this repository, so this table is a
+mirror and the dashboard is authoritative.** It is written down because the settings are
+invisible from here and a wrong one fails in a way that looks like a broken page — a
+build command left over from the previous repository, for instance, fails on the first
+push against a directory with no `package.json`.
+
+**The Ignored Build Step is the one worth having and the one to check first:**
+
+```
+git diff --quiet HEAD^ HEAD ./
+```
+
+Exit 0 skips the build, exit 1 proceeds, and `./` is the root directory — so a deployment
+happens only when something in `site/` actually changed. This repository takes many
+commits a day and almost none of them are the site. ⚠️ The consequence to remember is the
+inverse: **a change made anywhere else cannot deploy this page.** If a future `/docs` is
+generated from something outside `site/`, that generator's output has to land in here or
+the site will not rebuild — and the symptom is a deployment that never fires rather than
+one that fails.
+
+`cleanUrls` does nothing today and is the one line that makes a second page cost nothing.
 
 ## Not here yet
 
