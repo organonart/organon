@@ -20,11 +20,19 @@ Every section ends in a link out. There is nothing to buy, nothing to sign up
 for, and — until there is a release — nothing to download.
 
 ⚠️ **`doc/organon_prd.md` §1.1 is canonical for the identity claim and this page
-quotes it rather than re-authoring it.** The hero is the one-or-two-sentence
-version verbatim. That rule is why the wording is what it is: the claim was once
+quotes it rather than re-authoring it.** It appears **verbatim** under *The
+definition, in the words the repository uses* in §The role. The claim was once
 spelled six different ways across the tree, which is how it came to be stale in
 six places at once, and a site is the surface most likely to become the seventh.
 If §1.1 changes, this page changes in the same breath.
+
+📌 **The headline is deliberately NOT §1.1**, and the reason is worth keeping
+because the first cut got it wrong. §1.1 is a *definition* — accurate, canonical,
+and the wrong thing for a front page to open with; leading with it made the page
+read as a specification rather than an idea. The headline is what Organon is
+*for*, the standfirst says what it replaces, and the definition arrives one
+screen down where a reader who wants it will look. Quoting §1.1 is an obligation
+about **wording**, not about **position**.
 
 🚨 **The *State of play* section is §12 of the same document**, and it is on the
 page rather than behind a link on purpose. The sections above it describe what
