@@ -19,12 +19,28 @@
 //! | Trust | **data, never instruction** | the console's own record |
 //!
 //! **A manifest must never be able to grant itself anything**, and here that is structural
-//! rather than a convention someone has to remember. The two sets of grant names are two
-//! *types* — [`Requested`] and [`Granted`] — with no conversion between them except
-//! [`Requested::grant`], which takes the names a person chose. [`ApprovedModule::approve`]
-//! is the only constructor of an approval record and it takes [`Granted`] as a **separate
-//! argument** from the manifest. There is no `From<ModuleManifest> for ApprovedModule`, and
-//! [`tests`] carries a coherence tripwire that stops the crate compiling if one is added.
+//! rather than a convention someone has to remember. Three things make it so, and it takes all
+//! three:
+//!
+//! 1. The two sets of grant names are two *types* — [`Requested`] and [`Granted`] — with no
+//!    conversion between them except [`Requested::grant`], which takes the names a person
+//!    chose and refuses one that was never asked for.
+//! 2. [`ApprovedModule::approve`] takes those **names**, not a finished [`Granted`], and
+//!    derives the grant from the manifest it is approving. ⚠️ **This is the part an earlier
+//!    version got wrong**: taking a `Granted` stopped a manifest granting *itself* anything
+//!    and still let a caller pair manifest A with a `Granted` computed from manifest B's
+//!    requests. Taking names leaves no pair to mismatch.
+//! 3. There is no `From<ModuleManifest> for ApprovedModule`, and [`tests`] carries a
+//!    coherence tripwire that stops the crate compiling if one is added.
+//!
+//! ⚠️ **Where "structural" stops, stated rather than left to be assumed.** It is a property of
+//! the approval *step*. [`ApprovedModule`]'s fields are public — as `SavedLayout`'s and
+//! `HarnessSpec`'s are — and `modules.json` is a file a person can edit, so a record can be
+//! *assembled* holding grants no manifest requested. Nothing here can catch that, because a
+//! manifest lives in a repo and [`ModuleRegistry::load`] has a file and no repository.
+//! [`ApprovedModule::check`] validates everything a file can be wrong about **on its own**;
+//! grants are not one of those things, and a check that pretended otherwise would be the
+//! security property people believe they have that §3.4 warns about, one layer down.
 //!
 //! # 🚨 The unit is a commit
 //!
@@ -209,8 +225,14 @@ impl Requested {
 
     /// Grant exactly `chosen` of what was requested.
     ///
-    /// 🚨 **This is the approval step, and it is the only bridge between the two types.**
-    /// The argument is what a person picked, never what the manifest asked for.
+    /// 🚨 **The only bridge between the two types, and the one site of the rule.** The argument
+    /// is what a person picked, never what the manifest asked for.
+    ///
+    /// 📌 [`ApprovedModule::approve`] calls this on the manifest it is approving rather than
+    /// accepting a [`Granted`] from its caller, which is what stops one manifest's grants
+    /// being attached to another's approval. So a [`Granted`] built by hand here is a
+    /// **preview** — a surface can use it to show what a selection would grant, and nothing
+    /// consumes it but the stored record.
     ///
     /// ⚠️ **A name that was not requested is refused** ([`ModuleFault::NotRequested`]) rather
     /// than granted anyway. Granting something nobody asked for is the console inventing a
@@ -461,13 +483,29 @@ pub struct ApprovedModule {
 }
 
 impl ApprovedModule {
-    /// Approve `source`, for the module `manifest` says it is, with exactly `granted`.
+    /// Approve `source`, for the module `manifest` says it is, granting exactly `grant`.
     ///
     /// 🚨 **The manifest supplies identity. The caller supplies grants.** That split is the
-    /// whole of §3.1 and it is why this takes two arguments that look like they could be one.
-    /// [`Granted`] cannot be produced from a [`ModuleManifest`] by any route — the only
-    /// constructors are [`Granted::none`] and [`Requested::grant`], and the latter takes the
-    /// names a person picked.
+    /// whole of §3.1, and the shape of this signature is what makes it structural rather than
+    /// something a call site has to remember.
+    ///
+    /// ⚠️ **`grant` is a list of NAMES, not a [`Granted`], and that is the fix for a real
+    /// hole.** An earlier version of this took a finished [`Granted`] as its third argument.
+    /// That stopped a manifest granting *itself* anything — [`Requested::grant`] is still the
+    /// only way to build one — but it did not stop a caller pairing manifest **A** with a
+    /// [`Granted`] computed from manifest **B**'s requests, which is the same failure one step
+    /// out: a grant answering a request nobody made of *this* module. Taking names means there
+    /// is no pair left to mismatch. The [`Granted`] is derived **here**, from
+    /// `manifest.requests`, so a grant is always an answer to the request being approved and a
+    /// name that module never asked for is refused ([`ModuleFault::NotRequested`]).
+    ///
+    /// ⚠️ **What this does NOT reach, said plainly rather than implied away.** Like every other
+    /// record type in this crate, [`ApprovedModule`]'s fields are public and `modules.json` is
+    /// a file a person can edit, so a record can be *assembled* carrying anything. Nothing in
+    /// the registry can check that against a manifest, because the manifest lives in a repo the
+    /// console may not even have cloned — [`ModuleRegistry::load`] has a file and no
+    /// repository. **The approval step is structural; the stored record is checked only for
+    /// what a file can be wrong about on its own**, and its grants are not one of those things.
     ///
     /// 📌 [`ApprovedModule::built`] is always `None` here. Approving is not building; §3.4's
     /// two commits stay two fields, and the second one is filled by whatever eventually
@@ -475,7 +513,7 @@ impl ApprovedModule {
     pub fn approve(
         manifest: &ModuleManifest,
         source: ModuleSource,
-        granted: Granted,
+        grant: &[&str],
     ) -> Result<Self, ModuleFault> {
         check_producer_name(&manifest.producer)?;
         if source.url.is_empty() {
@@ -503,7 +541,9 @@ impl ApprovedModule {
             url: source.url,
             commit: source.commit,
             reference: source.reference,
-            granted,
+            // 🚨 Derived from **this** manifest's requests. That is the whole reason the
+            // argument is a list of names and not a `Granted` — see the doc above.
+            granted: manifest.requests.grant(grant)?,
             built: None,
             extra: BTreeMap::new(),
         })
@@ -1040,7 +1080,7 @@ mod tests {
         let m = ModuleManifest::parse(&hostile).expect("a manifest with extra keys still parses");
         assert_eq!(m.requests.len(), 2, "what it ASKED for survives, because that is a request");
 
-        let approved = ApprovedModule::approve(&m, source(), Granted::none()).unwrap();
+        let approved = ApprovedModule::approve(&m, source(), &[]).unwrap();
         assert!(approved.granted.is_empty(), "the manifest's `granted` key granted nothing");
         assert!(
             !approved.granted.contains("audio"),
@@ -1063,6 +1103,36 @@ mod tests {
         assert!(overreach.sentence().contains("never requested"));
     }
 
+    /// CONTRACT: **an approval grants only what the manifest being approved asked for.**
+    ///
+    /// 🚨 The hole this closes is one step out from `a_manifest_cannot_grant_itself`, and it
+    /// is the one an automated review found: `approve` used to take a finished [`Granted`], so
+    /// nothing stopped a caller pairing manifest **A** with grants computed from manifest
+    /// **B**'s requests — a grant answering a request nobody made of *this* module. `approve`
+    /// now takes names and derives the grant from the manifest in its own hand, which is what
+    /// makes the pairing unrepresentable rather than merely discouraged.
+    ///
+    /// Both directions are checked: a name the *other* manifest requested is still refused
+    /// here, and a name this one requested is granted.
+    #[test]
+    fn an_approval_grants_only_what_this_manifest_asked_for() {
+        // Two modules asking for different things.
+        let quiet = ModuleManifest { requests: Requested::of(&["input"]), ..manifest("ascent") };
+        let loud = ModuleManifest { requests: Requested::of(&["audio"]), ..manifest("wobble") };
+        assert!(loud.requests.contains("audio"), "the other module really does want audio");
+
+        // The grant the OTHER manifest would have justified is refused for this one.
+        let err = ApprovedModule::approve(&quiet, source(), &["audio"]).unwrap_err();
+        assert_eq!(err, ModuleFault::NotRequested { grant: "audio".into() });
+        assert!(err.sentence().contains("audio"), "{}", err.sentence());
+
+        // …and this manifest's own request is granted, so the guard refuses rather than
+        // refusing everything.
+        let ok = ApprovedModule::approve(&quiet, source(), &["input"]).unwrap();
+        assert!(ok.granted.contains("input"));
+        assert!(!ok.granted.contains("audio"));
+    }
+
     /// CONTRACT: `CLAUDE.md` invariant 4 — a new capability defaults to inert.
     #[test]
     fn nothing_is_granted_by_default() {
@@ -1070,7 +1140,7 @@ mod tests {
         assert!(Granted::default().is_empty());
         assert!(ApprovedModule::default().granted.is_empty());
         let approved =
-            ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap();
+            ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap();
         assert_eq!(approved.granted.len(), 0);
     }
 
@@ -1104,7 +1174,7 @@ mod tests {
     fn approving_a_branch_with_no_commit_is_refused() {
         let no_commit =
             ModuleSource { commit: String::new(), ..source() };
-        let err = ApprovedModule::approve(&manifest("ascent"), no_commit, Granted::none())
+        let err = ApprovedModule::approve(&manifest("ascent"), no_commit, &[])
             .unwrap_err();
         assert!(matches!(err, ModuleFault::NoCommit { .. }));
     }
@@ -1124,7 +1194,7 @@ mod tests {
 
         let sha256_source = ModuleSource { commit: SHA256.into(), ..source() };
         let approved =
-            ApprovedModule::approve(&manifest("ascent"), sha256_source, Granted::none()).unwrap();
+            ApprovedModule::approve(&manifest("ascent"), sha256_source, &[]).unwrap();
         assert_eq!(approved.commit, SHA256);
         assert_eq!(approved.short_commit().len(), SHORT_COMMIT);
     }
@@ -1134,7 +1204,7 @@ mod tests {
     fn a_commit_that_is_not_an_object_name_is_refused() {
         let bad = ModuleSource { commit: "deadbeef".into(), ..source() };
         let err =
-            ApprovedModule::approve(&manifest("ascent"), bad, Granted::none()).unwrap_err();
+            ApprovedModule::approve(&manifest("ascent"), bad, &[]).unwrap_err();
         assert_eq!(
             err,
             ModuleFault::BadCommit { producer: "ascent".into(), commit: "deadbeef".into() }
@@ -1153,7 +1223,7 @@ mod tests {
     fn the_approved_commit_and_the_built_commit_are_two_fields() {
         let other = "fedcba9876543210fedcba9876543210fedcba98";
         let mut approved =
-            ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap();
+            ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap();
         approved.built = Some(BuildRecord {
             commit: other.into(),
             dirty: false,
@@ -1206,7 +1276,7 @@ mod tests {
     fn an_approved_but_unbuilt_producer_names_the_commit_and_the_verb() {
         let mut registry = ModuleRegistry::default();
         registry
-            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap())
             .unwrap();
         let state = registry.vacancy("ascent").expect("nothing draws it yet");
         assert_eq!(
@@ -1229,7 +1299,7 @@ mod tests {
     fn a_built_module_has_nothing_to_say_instead_of_a_picture() {
         let mut registry = ModuleRegistry::default();
         let mut module =
-            ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap();
+            ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap();
         module.built =
             Some(BuildRecord { commit: HASH.into(), dirty: false, extra: BTreeMap::new() });
         registry.upsert(module).unwrap();
@@ -1246,7 +1316,7 @@ mod tests {
     fn a_revoked_module_is_a_sentence_not_a_failure() {
         let mut registry = ModuleRegistry::default();
         registry
-            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap())
             .unwrap();
         assert!(registry.revoke("ascent"));
         assert!(!registry.revoke("ascent"), "revoking twice reports that nothing was there");
@@ -1388,7 +1458,7 @@ mod tests {
         let root = temp_root("round-trip");
         let mut registry = ModuleRegistry::default();
         registry
-            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap())
             .unwrap();
         registry.save(&root).unwrap();
         assert_eq!(ModuleRegistry::load(&root).registry, registry);
@@ -1500,10 +1570,10 @@ mod tests {
     fn the_producer_vocabulary_is_read_from_memory() {
         let mut registry = ModuleRegistry::default();
         registry
-            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap())
             .unwrap();
         registry
-            .upsert(ApprovedModule::approve(&manifest("wobble"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("wobble"), source(), &[]).unwrap())
             .unwrap();
         assert_eq!(registry.producers(), vec!["ascent", "wobble"], "in file order");
     }
@@ -1518,7 +1588,7 @@ mod tests {
 
         let mut registry = ModuleRegistry::default();
         registry
-            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap())
             .unwrap();
         registry.save(&root).unwrap();
 
@@ -1538,7 +1608,7 @@ mod tests {
         let b = temp_root("ring-b");
         let mut registry = ModuleRegistry::default();
         registry
-            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap())
             .unwrap();
         registry.save(&a).unwrap();
 
@@ -1557,7 +1627,7 @@ mod tests {
     fn a_producer_is_found_by_an_exact_name() {
         let mut registry = ModuleRegistry::default();
         registry
-            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), Granted::none()).unwrap())
+            .upsert(ApprovedModule::approve(&manifest("ascent"), source(), &[]).unwrap())
             .unwrap();
         assert!(registry.get("ascent").is_some());
         assert!(registry.get("Ascent").is_none(), "case is not folded");

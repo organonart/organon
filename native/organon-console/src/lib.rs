@@ -93,8 +93,10 @@
 //! [`module`] is what "approve a repo" means, as data — `doc/organon_module_viewport.md` §3.
 //! Two files with two authors: `organon-module.toml` in the module's own repo **requests**,
 //! and `modules.json` beside `harnesses.json` **grants**. The split is structural rather than
-//! documented: the two grant sets are two types with no conversion between them, so a manifest
-//! cannot grant itself anything. The unit of trust is a **commit**, so a record naming only a
+//! documented: the two grant sets are two types with no conversion between them, and the approval
+//! step takes the **names** a person chose rather than a finished grant — so a manifest cannot
+//! grant itself anything, and one manifest's grants cannot be attached to another's approval
+//! either. The unit of trust is a **commit**, so a record naming only a
 //! branch is refused by name on load; and the commit that was *built* is a second field from
 //! the commit that was *approved*, because the record is a lie exactly when they silently
 //! differ. Nothing here starts a process — no clone, no build, no launch.

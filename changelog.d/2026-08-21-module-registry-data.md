@@ -11,20 +11,39 @@ this the right thing to build first — all of it is decidable headlessly, and 3
 repo and is written by its author; `modules.json` lives beside `harnesses.json`, `layouts.json` and
 `preferences.json` in the console's store and is written by Organon at a person's instruction. The
 first **requests**; the second **grants**. A manifest that could grant itself anything would be a
-permission system where the request and the answer come from the same party, so here the two sets of
+permission system where the request and the answer come from the same party, so the two sets of
 grant names are two *types* — `Requested` and `Granted` — with no conversion between them except
 `Requested::grant`, which takes the names a person chose and refuses one that was never asked for.
-`ApprovedModule::approve` is the only constructor of an approval record, and it takes `Granted` as a
-**separate argument** from the manifest.
+`ApprovedModule::approve` takes those **names**, and derives the grant from the manifest in its own
+hand.
+
+⚠️ **That last sentence is a correction, and the hole it closes is one step out from the obvious
+one.** The first version of `approve` took a finished `Granted` as its third argument. That stopped a
+manifest granting *itself* anything — and it still let a caller pair manifest **A** with a `Granted`
+computed from manifest **B**'s requests, which is a grant answering a request nobody made of *this*
+module. An automated review found it; nothing outside tests calls `approve` yet, and the next tier is
+precisely the one that wires a real approval flow through it, so it was the moment to fix rather than
+note. It also mattered more than "belt and braces" because of what the file claims about itself: the
+stated goal is an invariant that is **structural rather than caller discipline**, and stopping one
+step short of that is worse than not claiming it, because the next reader trusts the claim and skips
+the check. Taking names leaves no pair to mismatch.
 
 ⚠️ **There is no `From<ModuleManifest> for ApprovedModule`, and the crate will not compile if one is
 added.** A `#[cfg(test)]` `From` impl that never runs sits beside the tests as a coherence tripwire:
-a second one anywhere in the crate is `E0119: conflicting implementations`. The behavioural half is
-`a_manifest_cannot_grant_itself`, which parses a hostile manifest spelling every key the approval
+a second one anywhere in the crate is `E0119: conflicting implementations`. The behavioural halves
+are `a_manifest_cannot_grant_itself`, which parses a hostile manifest spelling every key the approval
 record uses — `granted`, `grants`, `url`, `commit`, `built` — and asserts the approval carries none
-of them. The manifest type deliberately keeps **no** bag of unknown fields, unlike a saved layout:
-Organon only ever reads that file, so tolerate-and-drop is the correct posture *and* it means there
-is nowhere for a grant to hide.
+of them; and `an_approval_grants_only_what_this_manifest_asked_for`, which approves one module with
+the grant a *different* module's manifest would have justified. The manifest type deliberately keeps
+**no** bag of unknown fields, unlike a saved layout: Organon only ever reads that file, so
+tolerate-and-drop is the correct posture *and* it means there is nowhere for a grant to hide.
+
+⚠️ **Where "structural" stops is written down rather than implied.** It is a property of the approval
+*step*. `ApprovedModule`'s fields are public — as every other record type's in this crate are — and
+`modules.json` is a file a person can edit, so a record can be *assembled* holding grants no manifest
+requested. Nothing in the registry can catch that, because a manifest lives in a repo and the loader
+has a file and no repository. The stored record is checked for everything a file can be wrong about
+on its own, and its grants are not one of those things.
 
 🚨 **The unit of trust is a commit.** `doc/organon_modules_plan.md` §11.3: a repo says where the
 bytes live, a commit says which bytes — tags move, branches move, force-push rewrites history. So a
