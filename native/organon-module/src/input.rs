@@ -361,6 +361,61 @@ pub(crate) fn drain(map: &Mapping, header: &Header, out: &mut Vec<InputEvent>) -
 mod tests {
     use super::*;
 
+    /// 🚨 **A one-way table is invisible to the compiler in exactly one direction, and it is
+    /// never the direction you are editing.** This crate already met that once — a
+    /// `RefusalReason` variant with the `because()` arm the compiler demands and no `from_wire`
+    /// arm, which nothing demands: it encoded fine and decoded to `None` for ever. The Ascent
+    /// session then found the *same shape* in its own `Key` from the other end, where `ALL` was
+    /// hand-written and every test that iterated it would have passed **by not looking at the
+    /// new variant**.
+    ///
+    /// So this closes the class rather than the instance, and it takes both halves:
+    ///
+    /// * **The exhaustive `match` below** is the half a scan cannot provide — adding a variant
+    ///   stops this file compiling until somebody lists it, which is the moment to notice the
+    ///   other two places it belongs.
+    /// * **The scan** is the half the match cannot provide — it catches a `from_wire` arm for a
+    ///   code no variant claims, and a variant in `ALL` that `from_wire` cannot produce.
+    ///
+    /// 📌 `Key` is generated from the `keys!` table and is structurally safe already; it is
+    /// scanned anyway, because a guard that covers "the ones I thought were at risk" is a guard
+    /// that stops covering whatever moves next.
+    #[test]
+    fn no_wire_vocabulary_here_is_one_way() {
+        // Exhaustive: a sixth button will not compile until it is named.
+        fn census(b: MouseButton) -> u16 {
+            match b {
+                MouseButton::Left => 1,
+                MouseButton::Middle => 2,
+                MouseButton::Right => 3,
+                MouseButton::Back => 4,
+                MouseButton::Forward => 5,
+            }
+        }
+        for &b in MouseButton::ALL {
+            assert_eq!(census(b), b.to_wire(), "{b:?} disagrees with the census");
+        }
+        let declared: std::collections::BTreeSet<u16> =
+            MouseButton::ALL.iter().map(|b| b.to_wire()).collect();
+        assert_eq!(declared.len(), MouseButton::ALL.len(), "two buttons share a code");
+        let decodable: std::collections::BTreeSet<u16> =
+            (0..=0xFFu16).filter(|&c| MouseButton::from_wire(c).is_some()).collect();
+        assert_eq!(
+            decodable, declared,
+            "MouseButton::ALL and from_wire disagree: a variant that encodes and never decodes, \
+             or a code that decodes and belongs to no variant"
+        );
+
+        // Same scan over the generated key table. `to_wire` is `self as u16`, so a variant
+        // added to the macro is encodable the instant it exists — the scan is what proves it is
+        // also readable back.
+        let keys: std::collections::BTreeSet<u16> = Key::ALL.iter().map(|k| k.to_wire()).collect();
+        assert_eq!(keys.len(), Key::ALL.len(), "two keys share a code");
+        let key_decodable: std::collections::BTreeSet<u16> =
+            (0..=0x1FFu16).filter(|&c| Key::from_wire(c).is_some()).collect();
+        assert_eq!(key_decodable, keys, "Key::ALL and from_wire disagree");
+    }
+
     #[test]
     fn every_key_and_button_round_trips_through_its_wire_code() {
         for &k in Key::ALL {

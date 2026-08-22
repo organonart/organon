@@ -926,6 +926,116 @@ mod tests {
         assert_eq!(RefusalReason::from_wire(all.len() as u32), None);
     }
 
+    /// 🚨 **The same guard as `input::tests::no_wire_vocabulary_here_is_one_way`, over the four
+    /// vocabularies that live in this file** — see that test for why it takes both an exhaustive
+    /// `match` and a scan, and for the near-miss that earned it.
+    ///
+    /// This file is where it bit: `RefusalReason::FormatUnsupported` shipped its first cut with
+    /// the `because()` arm the compiler demands and **no `from_wire` arm**, which nothing
+    /// demands. It encoded fine and decoded to `None` for ever — so a format refusal would have
+    /// reached the console as *"the producer said something I do not understand"*, in the one
+    /// state that exists to be legible. The round-trip test that was already here passed,
+    /// because it iterated a hand-written list that did not know about the new variant either.
+    #[test]
+    fn no_wire_vocabulary_here_is_one_way() {
+        use std::collections::BTreeSet;
+
+        // Four exhaustive matches. A new variant in any of them stops this file compiling
+        // until somebody lists it — which is the moment to notice `from_wire` needs an arm.
+        fn pixel(v: PixelFormat) -> u32 {
+            match v {
+                PixelFormat::Rgba8UnormSrgb => 1,
+                PixelFormat::Bgra8UnormSrgb => 2,
+            }
+        }
+        fn lifecycle(v: Lifecycle) -> u32 {
+            match v {
+                Lifecycle::Attached => 0,
+                Lifecycle::Running => 1,
+            }
+        }
+        fn state(v: ProducerState) -> u32 {
+            match v {
+                ProducerState::Starting => 0,
+                ProducerState::Producing => 1,
+                ProducerState::Paused => 2,
+                ProducerState::Gone => 3,
+                ProducerState::Refusing => 4,
+            }
+        }
+        fn refusal(v: RefusalReason) -> u32 {
+            match v {
+                RefusalReason::Unspecified => 0,
+                RefusalReason::SizeUnsupported => 1,
+                RefusalReason::FormatUnsupported => 2,
+            }
+        }
+
+        /// Every code the census names must round-trip, and no other code may decode.
+        fn check<T: Copy + std::fmt::Debug>(
+            name: &str,
+            all: &[T],
+            code: impl Fn(T) -> u32,
+            to_wire: impl Fn(T) -> u32,
+            from_wire: impl Fn(u32) -> Option<T>,
+        ) {
+            let declared: BTreeSet<u32> = all
+                .iter()
+                .map(|&v| {
+                    assert_eq!(code(v), to_wire(v), "{name}: {v:?} disagrees with the census");
+                    to_wire(v)
+                })
+                .collect();
+            assert_eq!(declared.len(), all.len(), "{name}: two variants share a wire tag");
+            let decodable: BTreeSet<u32> =
+                (0..=0xFFu32).filter(|&c| from_wire(c).is_some()).collect();
+            assert_eq!(
+                decodable, declared,
+                "{name}: a variant that encodes and never decodes, or a code that decodes and \
+                 belongs to no variant"
+            );
+        }
+
+        check(
+            "PixelFormat",
+            &[PixelFormat::Rgba8UnormSrgb, PixelFormat::Bgra8UnormSrgb],
+            pixel,
+            PixelFormat::to_wire,
+            PixelFormat::from_wire,
+        );
+        check(
+            "Lifecycle",
+            &[Lifecycle::Attached, Lifecycle::Running],
+            lifecycle,
+            Lifecycle::to_wire,
+            Lifecycle::from_wire,
+        );
+        check(
+            "ProducerState",
+            &[
+                ProducerState::Starting,
+                ProducerState::Producing,
+                ProducerState::Paused,
+                ProducerState::Gone,
+                ProducerState::Refusing,
+            ],
+            state,
+            ProducerState::to_wire,
+            ProducerState::from_wire,
+        );
+        check(
+            "RefusalReason",
+            &[
+                RefusalReason::Unspecified,
+                RefusalReason::SizeUnsupported,
+                RefusalReason::FormatUnsupported,
+            ],
+            refusal,
+            RefusalReason::to_wire,
+            RefusalReason::from_wire,
+        );
+    }
+
     /// One seqlock implementation serves both blocks (`channel::BLOCK_SEQ`), which is only
     /// sound while both keep their counter at the same offset. Two `const`s in two modules
     /// agreeing by coincidence is exactly the kind of thing that stops being true in a
