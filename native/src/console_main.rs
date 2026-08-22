@@ -3011,6 +3011,38 @@ enum ViewportTarget {
     Region,
 }
 
+/// Which region, if any, is asking **Organon** to render into it — [`engine_plan`]'s second
+/// input, as a pure function of the layout.
+///
+/// 🚨 **Split out of [`Console::region_showing_world`] in T4 so the answer can be tested without
+/// a window**, and because that is the boolean whose new failure mode is silent. It was
+/// `region_holding(Content::ThreeD)` while there was one producer; a region holding `3d ascent`
+/// is a rectangle a **hosted module** draws into, and counting it here would make [`engine_plan`]
+/// return `Some(ViewportTarget::Region)` for a rectangle that paints a sentence — one `World`
+/// render per frame, thrown away, with the backdrop starved for it and **nothing to say so,
+/// because a wasted frame is not an error**.
+///
+/// `doc/organon_module_viewport.md` §4.5: *"A hosted module is not a claimant on that. It does
+/// not render `World`, does not touch `frame_index`, and does not share the TAA jitter phase."*
+/// ⚠️ That is also why [`tests::the_engine_is_asked_for_at_most_one_frame`] is **not** widened
+/// for a hosted producer: widening it would assert that a hosted module is a claimant, which is
+/// the opposite of what is true. The claim is made here instead, where it is about the input
+/// rather than about the arbiter.
+///
+/// ⚠️ **It sits ABOVE [`engine_plan`]'s doc block on purpose.** An earlier version of this tier
+/// put it between that block and its function, which left the at-most-one-frame argument — the
+/// portal precedence, the two rejected rules, the TAA jitter phase — attached by rustdoc to this
+/// two-line lookup, and left `engine_plan` documented by a sentence about which region is asking.
+/// A comment above the wrong item is not a smaller version of a wrong comment; it is the same
+/// defect, and the person it misleads is whoever next changes the precedence rule.
+fn region_showing_world(
+    layout: &organon_console::region::Layout,
+) -> Option<organon_console::region::Region> {
+    layout.region_holding(organon_console::region::Content::ThreeD(
+        organon_console::region::Producer::Organon,
+    ))
+}
+
 /// What the engine is asked to draw this frame: the backdrop's source, and **which viewport
 /// presentation, if any, gets the World** — pure, so the invariant below is a test rather than a
 /// promise.
@@ -3054,31 +3086,6 @@ enum ViewportTarget {
 /// comes back the moment the last one goes. Two live rectangles showing two different scenes
 /// would need the second `World` that `render_surfaces`' doc prices at ~50 shaders and ~62
 /// pipelines, and would still trade jitter phases; one at a time is the honest version.
-/// Which region, if any, is asking **Organon** to render into it — [`engine_plan`]'s second
-/// input, as a pure function of the layout.
-///
-/// 🚨 **Split out of [`Console::region_showing_world`] in T4 so the answer can be tested without
-/// a window**, and because that is the boolean whose new failure mode is silent. It was
-/// `region_holding(Content::ThreeD)` while there was one producer; a region holding `3d ascent`
-/// is a rectangle a **hosted module** draws into, and counting it here would make [`engine_plan`]
-/// return `Some(ViewportTarget::Region)` for a rectangle that paints a sentence — one `World`
-/// render per frame, thrown away, with the backdrop starved for it and **nothing to say so,
-/// because a wasted frame is not an error**.
-///
-/// `doc/organon_module_viewport.md` §4.5: *"A hosted module is not a claimant on that. It does
-/// not render `World`, does not touch `frame_index`, and does not share the TAA jitter phase."*
-/// ⚠️ That is also why [`tests::the_engine_is_asked_for_at_most_one_frame`] is **not** widened
-/// for a hosted producer: widening it would assert that a hosted module is a claimant, which is
-/// the opposite of what is true. The claim is made here instead, where it is about the input
-/// rather than about the arbiter.
-fn region_showing_world(
-    layout: &organon_console::region::Layout,
-) -> Option<organon_console::region::Region> {
-    layout.region_holding(organon_console::region::Content::ThreeD(
-        organon_console::region::Producer::Organon,
-    ))
-}
-
 fn engine_plan(
     portal_open: bool,
     region_holds_world: bool,
