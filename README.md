@@ -9,9 +9,11 @@ quotes it rather than re-authoring it. Every surface that describes Organon is m
 same: the identity claim was once spelled a different way in every document that mentioned it,
 which is how it came to be stale in all of them at once.
 
-⚠️ **Two surfaces have not caught up, and are named rather than glossed** — `CLAUDE.md`'s naming
-section, which describes the *mechanism* and so moves with it under issue #111, and the sites,
-which are built outside this repository. ⚠️ **The count of how many there were lives in §1.1 and
+⚠️ **One surface has not caught up, and is named rather than glossed** — `CLAUDE.md`'s naming
+section, which describes the *mechanism* and so moves with it under issue #111. ✏️ [`site/`](site/README.md)
+is `organon.art`, and it came into this repository so that it could be held to the same rule: it
+quotes §1.1 and §12 rather than carrying a seventh wording. `organonmind.org` is still built
+elsewhere, in [`organonart/organon-mind`](https://github.com/organonart/organon-mind). ⚠️ **The count of how many there were lives in §1.1 and
 deliberately not here**: a number copied out of its source is a number that drifts from it, which
 is the defect this whole arrangement exists to end.
 
@@ -137,9 +139,10 @@ native/organon-core     the host-free spine: math, IPC, params, GGUF, editions
 native/organon-render   the renderer — 36 surface modules, 50 shaders
 native/organon-mind     Organon Mind's own code
 native/organon-console    Organon Console's compositor and terminal
+site                    organon.art — one hand-authored page, no build step
 ```
 
-That is the whole repository: Rust, and the documentation for it. No npm, no
+That is the whole repository: Rust, its documentation, and one static page. No npm, no
 TypeScript, no build step outside cargo.
 
 Two processes, on purpose: the editor owns the controls and a separate binary owns the
