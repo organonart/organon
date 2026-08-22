@@ -88,7 +88,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 /// One size: launch a producer, poll at 60 Hz, and report the age of every frame taken.
-fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<Measured> {
+fn measure(w: u32, h: u32, draw_every: Option<u64>, want: usize) -> Option<Measured> {
     // ⚠️ **A counter, not just the pid and the size** — and it was a real defect, not a
     // precaution. The two tests here run on different threads of one process and both measure
     // 1280×720, so a name built from `(pid, w, h)` gave them **one channel file**: two consoles
@@ -115,31 +115,63 @@ fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<Measured> {
     let _producer = Producer(child);
 
     let mut ages: Vec<f64> = Vec::with_capacity(SAMPLES);
+    // 🚨 **The second quantity, and it is the one a person experiences.** See `Measured::onscreen`.
+    let mut onscreen: Vec<f64> = Vec::with_capacity(SAMPLES * 4);
+    let mut held: Option<(f64, Instant)> = None;
     let mut taken = 0usize;
     let mut polls = 0usize;
     // 🚨 **The producer's ACHIEVED period, from its own frame indices** — see `Measured::period`.
     let mut first: Option<(u64, Instant)> = None;
     let mut last: Option<(u64, Instant)> = None;
     // A ceiling so a producer that never draws fails the test rather than hanging it.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while taken < SAMPLES + WARMUP && Instant::now() < deadline {
+    // ⚠️ Scaled to the condition: a producer drawing every 250 ms needs 60 frames and 15 s, and a
+    // fixed 30 s ceiling would silently skip exactly the slow-producer rows this rig now exists
+    // to measure — the regime where the two candidate laws disagree.
+    let deadline = Instant::now()
+        + Duration::from_millis(20_000 + (want as u64 + WARMUP as u64) * draw_every.unwrap_or(17));
+    while taken < want + WARMUP && Instant::now() < deadline {
         let next = Instant::now() + POLL;
         polls += 1;
+        // 🚨 **The rig has to behave like a console, and this line was missing.** A real host calls
+        // `heartbeat()` once per frame (`ModuleHost::observe` does); `poll()` does not do it for
+        // you. Without it the producer's own symmetric judgement fires — `organon-module-sim`
+        // leaves after twenty seconds of a motionless console counter, exactly as it should — and
+        // the run simply ends.
+        //
+        // ⚠️ **The symptom was a skipped row, not an error**, and it skipped precisely the slowest
+        // condition, because that is the one whose run exceeds twenty seconds. So the rig was
+        // quietly unable to measure the regime it was extended to measure, and the P = 100 row
+        // was finishing inside the window by luck. Found by asking why 250 ms produced 24 samples
+        // when the arithmetic said 140 would fit.
+        console.heartbeat();
         if let Poll::Frame(view) = console.poll(Instant::now()) {
             // ⚠️ `age` answers `None` on a negative or absurd result — the two clocks are one
             // machine's `SystemTime`, which is shared but not monotonic. A skipped sample is
             // better than a duration nobody can stand behind, and the count is reported.
             if let Some(age) = view.age() {
                 taken += 1;
+                let now = Instant::now();
+                // What the console now holds, and when it started holding it. Kept whether or
+                // not this sample counts, so the on-screen figure is never computed from a
+                // frame acquired during warm-up.
+                held = Some((age.as_secs_f64() * 1000.0, now));
                 if taken > WARMUP {
                     ages.push(age.as_secs_f64() * 1000.0);
-                    let now = Instant::now();
                     // The frame index counts every frame the producer BEGAN, including ones
                     // this consumer never saw — which is exactly what makes it a measure of the
                     // producer's cadence rather than of the consumer's.
                     first.get_or_insert((view.frame_index, now));
                     last = Some((view.frame_index, now));
                 }
+            }
+        }
+        // 🚨 **Sampled at EVERY poll, including the ones that returned nothing.** That is the
+        // whole difference between the two figures: `ages` only hears from polls that took a
+        // frame, and the console goes on painting the one it holds through every poll in
+        // between. A frame the console keeps for 100 ms is on the glass for 100 ms.
+        if taken > WARMUP {
+            if let Some((at_acquire, when)) = held {
+                onscreen.push(at_acquire + when.elapsed().as_secs_f64() * 1000.0);
             }
         }
         let now = Instant::now();
@@ -155,12 +187,21 @@ fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<Measured> {
     };
     console.request_close();
     let _ = std::fs::remove_file(&path);
-    if ages.len() < SAMPLES / 2 {
-        eprintln!("  {w}x{h}: only {} sample(s) in 30 s — skipped", ages.len());
+    // ⚠️ Against `want`, not the module-wide `SAMPLES`. A slow-producer condition deliberately
+    // asks for fewer frames — 80 at a 250 ms cadence is already 20 s — and a fixed threshold of
+    // `SAMPLES / 2` silently discarded exactly the rows this rig exists to measure, printing
+    // "only 80 sample(s)" for a condition that had collected every one it asked for.
+    if ages.len() < want / 2 {
+        eprintln!(
+            "  {w}x{h}: only {} of {want} sample(s) before the deadline — skipped",
+            ages.len()
+        );
         return None;
     }
     ages.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    onscreen.sort_by(|a, b| a.partial_cmp(b).unwrap());
     Some(Measured {
+        onscreen: percentile(&onscreen, 0.5),
         median: percentile(&ages, 0.5),
         p90: percentile(&ages, 0.9),
         worst: *ages.last().unwrap(),
@@ -172,6 +213,20 @@ fn measure(w: u32, h: u32, draw_every: Option<u64>) -> Option<Measured> {
 
 /// One condition's result.
 struct Measured {
+    /// 🚨 **The age of the picture ON THE GLASS, sampled at every poll** — the quantity a person
+    /// experiences, and **not** the one [`Measured::median`] reports.
+    ///
+    /// ⚠️ **Two different questions, and this rig originally answered only the first.** `median`
+    /// is the age of a frame *at the moment the console takes it*, sampled only on polls that
+    /// returned one. Between takes the console goes on painting what it holds, and that frame
+    /// keeps ageing — so a producer drawing every 100 ms leaves a picture up for 100 ms however
+    /// often the console looks.
+    ///
+    /// 📌 **The distinction is invisible whenever the producer is at least as fast as the poll**,
+    /// because then every poll takes a new frame and the two coincide. Every condition measured
+    /// before this field existed was ~60 Hz on both sides, so the terms never separated — which
+    /// is how a relation can fit the data perfectly and still be the wrong law.
+    onscreen: f64,
     median: f64,
     p90: f64,
     worst: f64,
@@ -210,7 +265,7 @@ fn how_stale_is_the_frame_the_console_takes() {
     println!("  {:>11}  {:>9}  {:>9}  {:>9}  {:>6}", "size", "median", "p90", "worst", "torn");
     let mut any = false;
     for (w, h) in [(640u32, 360u32), (1280, 720), (1920, 1080), (2560, 1440)] {
-        let Some(m) = measure(w, h, None) else { continue };
+        let Some(m) = measure(w, h, None, SAMPLES) else { continue };
         let (med, p90, worst, polls, torn) = (m.median, m.p90, m.worst, m.polls, m.torn);
         any = true;
         println!(
@@ -233,93 +288,108 @@ fn how_stale_is_the_frame_the_console_takes() {
     assert!(any, "no size produced a measurement — the producer never drew");
 }
 
-/// 🚨 **The control that turns the number above into an explanation.**
+/// 🚨 **The control that turns the number above into an explanation — and the experiment that
+/// separates two laws which agreed on every condition measured before it.**
 ///
 /// The size sweep shows staleness barely moving between 640×360 and 2560×1440 — nine times the
-/// pixels for a few per cent — which is not what a transport cost looks like. The hypothesis is
-/// that the age of a frame at poll time is dominated by **the phase between two free-running
-/// loops**: the producer publishes every P ms, the consumer looks every 16.7 ms, the two are
-/// unsynchronised, so the age at the moment of looking is spread roughly uniformly over P and the
-/// median lands near P/2.
+/// pixels for a few per cent — which is not what a transport cost looks like. So the hypothesis
+/// is **phase**: two free-running loops sampling each other. Hold the size fixed, move the
+/// producer's period P, and watch.
 ///
-/// ⚠️ **The two readings have completely different consequences**, which is why this is worth a
-/// second test rather than a paragraph. If it is transport, the fix is mechanism A — the shared
-/// GPU texture, `unsafe`, per-backend — and §6's *"flying inside a small pane may not be the
-/// thing"* is settled against. If it is phase, the transport contributes almost nothing, the fix
-/// is a faster producer or a synchronised one, and §6 stays open.
+/// ⚠️ **The two readings have completely different consequences.** If it is transport, the fix is
+/// mechanism A — the shared GPU texture, `unsafe`, per-backend — and §6's *"flying inside a small
+/// pane may not be the thing"* is settled against. If it is phase, the transport contributes
+/// almost nothing and §6 stays open.
 ///
-/// So: hold the size fixed and move **P**. If the median tracks the period, it is phase.
+/// # 🚨 Two quantities, and the difference is invisible at 60 Hz on both sides
 ///
-/// # ✏️ The model this test was first written with was wrong, and the measurement said so
+/// This rig reports **two** medians, because there are two questions and they are not the same:
 ///
-/// The first version predicted **median ≈ P/2** and asserted a band around it. It passed at 4, 8
-/// and 16 ms and failed at 33 ms, reporting 6.43 ms where P/2 is 16.5 — and the failure was the
-/// useful part, because the reason is structural rather than noise.
+/// | | what it is | sampled |
+/// |---|---|---|
+/// | **acquired** | how old a frame is **when the console takes it** | only on polls that returned one |
+/// | **on screen** | how old the picture **currently being painted** is | **every** poll |
 ///
-/// Once the producer is **slower than the consumer**, the consumer is no longer the thing doing
-/// the sampling: every frame is seen at the first poll after it appears, so the age is spread
-/// over the *poll* interval instead. The honest model is therefore
+/// They coincide whenever the producer is at least as fast as the poll, because then every poll
+/// takes a fresh frame — and every condition measured before this test existed was ~60 Hz on both
+/// sides. 📌 **That is how a relation can fit all the data and still be the wrong law.** The
+/// published `0.55 × min(P, Q)` describes *acquired*; a person looking at a rectangle is
+/// experiencing *on screen*, and once P > Q the console holds one frame across many polls while
+/// it ages.
 ///
-/// > **median ≈ half of `min(producer period, poll interval)`** — half of whichever loop is
-/// > *faster*, because that is the one setting how long a frame sits unlooked-at.
-///
-/// 🚨 Which strengthens the conclusion rather than weakening it: staleness is bounded by the two
-/// **cadences** at both ends of the sweep, and the frame size — nine times the pixels between the
-/// smallest and largest — moves it by a few per cent. The transport is not what a person would be
-/// waiting for.
+/// ✏️ **The history is worth keeping, because the same mistake happened twice.** A first version
+/// predicted `median ≈ P/2` for the acquired figure and failed at a 33 ms period; the fix — half
+/// of whichever loop is *faster* — was right about acquisition and was then published as though
+/// it described what a person sees. The Ascent session caught it by noticing that a table in one
+/// of my own messages computed `0.55 × P` while the formula printed beside it said
+/// `0.55 × min(P, Q)`. **The arithmetic was producer-dominated; only the formula was not.**
 #[test]
 #[ignore = "spawns a producer process and measures wall-clock; run explicitly"]
-fn staleness_tracks_the_producers_period_rather_than_the_frame_size() {
-    println!("\nstaleness against the PRODUCER's period, fixed at 1280x720, consumer at 60 Hz\n");
-    let poll_ms = POLL.as_secs_f64() * 1000.0;
+fn what_is_on_screen_tracks_the_producer_and_what_is_acquired_tracks_the_faster_loop() {
+    let q = POLL.as_secs_f64() * 1000.0;
+    println!("\nstaleness, 1280x720, consumer polling every {q:.1} ms\n");
     println!(
-        "  {:>8}  {:>9}  {:>9}  {:>9}  {:>11}  {:>13}",
-        "asked", "achieved", "median", "p90", "min(P,16.7)", "median / that"
+        "  {:>7} {:>9} {:>10} {:>10} {:>8} {:>9} {:>9} {:>9}",
+        "asked", "achieved", "acquired", "on screen", "0.5P", "0.5min", "acq/min", "scr/P"
     );
     let mut rows = Vec::new();
-    for p in [4u64, 8, 16, 33] {
-        let Some(m) = measure(1280, 720, Some(p)) else { continue };
-        // 🚨 **The ACHIEVED period, never the asked-for one.** See `Measured::period`: under an
-        // unoptimised build the simulator cannot honour a 4 ms request, every condition collapses
-        // to the same real cadence, and a rig reading the flag would conclude the transport is at
-        // fault. Reading the frame indices makes that run a *confirming* point instead.
-        let sampling = m.period.min(poll_ms);
-        let ratio = m.median / sampling;
-        rows.push((p, m.period, m.median, sampling, ratio));
+    // 🚨 P = 100 and P = 250 are the point of this list. `min(P, Q)` predicts ~8 ms for both;
+    // `0.5 × P` predicts 50 ms and 125 ms. A 6× and a 15× gap — one run decides it.
+    for p in [8u64, 16, 33, 100, 250] {
+        // Fewer samples as the producer slows, or a 250 ms cadence would need a minute.
+        let want = if p >= 100 { 80 } else { 200 };
+        let Some(m) = measure(1280, 720, Some(p), want) else { continue };
+        let half_p = 0.5 * m.period;
+        let half_min = 0.5 * m.period.min(q);
+        rows.push((p, m.period, m.median, m.onscreen, half_p, half_min));
         println!(
-            "  {p:>5} ms  {:>6.1} ms  {:>6.2} ms  {:>6.2} ms  {sampling:>8.1} ms  {ratio:>12.2}",
-            m.period, m.median, m.p90
+            "  {p:>4} ms {:>6.1} ms {:>7.2} ms {:>7.2} ms {half_p:>5.1} ms {half_min:>6.1} ms \
+             {:>8.2} {:>9.2}",
+            m.period,
+            m.median,
+            m.onscreen,
+            m.median / half_min,
+            m.onscreen / m.period,
         );
     }
-    assert!(rows.len() >= 3, "not enough cadences produced a measurement");
+    assert!(rows.len() >= 4, "not enough cadences produced a measurement");
 
-    // 🚨 **The claim: the median is a fraction of the sampling window, whatever that window is.**
-    // If staleness were the transport it would be a *constant* instead — flat in milliseconds
-    // while the window moved — and this band is what fails then. That is the reading that would
-    // reopen §4.4's mechanism-A question, so it gets an assertion rather than a paragraph.
-    //
-    // ⚠️ A wide band on purpose. This is a claim about a *mechanism*; pinning it to a tight
-    // constant would make it a flaky test about this machine's scheduler. 0.2–1.0 fails a flat
-    // line and fails a median larger than the whole window (which would mean frames are being
-    // missed rather than sampled), and those are the two readings that change what gets built.
-    for (asked, achieved, med, sampling, ratio) in &rows {
+    let separated: Vec<_> = rows.iter().filter(|r| r.1 > q * 2.0).collect();
+    assert!(
+        !separated.is_empty(),
+        "no condition had a producer meaningfully slower than the poll, so this run cannot \
+         distinguish the two laws — which is exactly the hole it exists to close. The usual \
+         cause is an unoptimised producer; build with --release."
+    );
+
+    for (asked, period, acquired, onscreen, half_p, half_min) in &separated {
+        // 🚨 **The claim about what a person sees: it tracks the PRODUCER, and the poll interval
+        // does not enter.** This is the assertion that fails if `min` were the law for the
+        // on-screen figure — at P = 100 that would be ~8 ms against a measured ~50.
+        let ratio = onscreen / period;
         assert!(
-            (0.2..=1.0).contains(ratio),
-            "asked for {asked} ms, the producer achieved {achieved:.1} ms, and the median age was \
-             {med:.2} ms — {ratio:.2} of the {sampling:.1} ms sampling window, where the phase \
-             model predicts about half. A ratio far below the band means staleness is NOT tracking \
-             the window, i.e. it is the TRANSPORT, and §4.4's mechanism-A question is reopened"
+            (0.35..=0.85).contains(&ratio),
+            "asked {asked} ms, achieved {period:.1} ms: the picture on screen was {onscreen:.1} \
+             ms old, {ratio:.2} of the producer's period. The producer-dominated law predicts \
+             about half ({half_p:.1} ms); `min(P, Q)` would predict {half_min:.1} ms"
+        );
+        // …and the acquired figure does NOT track the producer once it is slower than the poll,
+        // because the console takes each frame at the first poll after it appears.
+        assert!(
+            acquired < &(period * 0.35),
+            "asked {asked} ms: the ACQUIRED age was {acquired:.1} ms, which is tracking the \
+             producer rather than the poll — the two figures were supposed to separate here"
         );
     }
-    // And the sweep has to have actually swept — otherwise every row above is one condition
-    // measured four times, which would satisfy the band while proving nothing.
-    let widest = rows.iter().map(|r| r.3).fold(f64::MIN, f64::max);
-    let narrowest = rows.iter().map(|r| r.3).fold(f64::MAX, f64::min);
-    assert!(
-        widest > narrowest * 1.8,
-        "every condition ended up sampling over about the same window ({narrowest:.1}–\
-         {widest:.1} ms), so this run says nothing about whether staleness tracks it. The usual \
-         cause is an unoptimised producer that cannot honour the fast cadences — build with \
-         --release."
-    );
+
+    // And the acquired figure follows the faster loop across the whole sweep, which is the
+    // relation that was published and is correct about the quantity it names.
+    for (asked, _, acquired, _, _, half_min) in &rows {
+        let ratio = acquired / half_min;
+        assert!(
+            (0.4..=2.0).contains(&ratio),
+            "asked {asked} ms: acquired age {acquired:.2} ms is {ratio:.2}x half the faster \
+             loop's period ({half_min:.1} ms), which is not the relation `min` describes"
+        );
+    }
 }
