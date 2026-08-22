@@ -71,7 +71,28 @@ readout can print what was actually measured.
 carries *every* module the adapter touched, recognised or not, and unrecognised names are
 **reported** rather than guessed onto a site. An architecture spelled a way nobody listed
 must look like an unrecognised architecture, not like a layer nobody trained; falling back
-to `Mlp` instead fails with `nor onto the MLP node`. Modules with no layer index
+to `Mlp` instead fails with `nor onto the MLP node`.
+
+🚨 **And a generic leaf must never outvote its parent — the first draft of that table got
+this wrong twice.** The exact-tail match runs *before* the container fallback, so a leaf
+name reused by the other kind of site does not merely mis-label: it overrides the parent
+that would have got it right and lands a real measurement on the wrong node as a confident
+picture, which is strictly worse than not recognising the name at all. **`dense`** was in
+the attention table, and HuggingFace BERT names the attention output *and* both FFN
+projections with a bare `dense` leaf — `intermediate.dense` and `output.dense` are
+feed-forward and are not under an `attention.` parent, so both were being drawn on the
+attention ring. Auditing the rest of the table on the same rule turned up **`wo`**: T5's
+FFN output projection is `…DenseReluDense.wo` while its *attention* output is
+`…SelfAttention.o`, so that entry moved T5's feed-forward update onto the attention ring
+too. ⚠️ Neither removal loses anything, which is the tell that both were redundant from
+the start — Falcon's `self_attention.dense` and Meta-llama's `attention.wo` are still
+caught by the container fallback, pinned by regression tests that fail if that fallback is
+deleted. An entry that is redundant on its true positives and wrong on its false ones is
+all cost. The admission rule — *a leaf belongs in a table only if it cannot name a site of
+the other kind in any architecture in circulation* — is now written above the tables, with
+the verdict on every remaining entry, so nobody re-audits it from scratch. The tables are
+hoisted to module consts so a test can assert they are disjoint, which is the same defect
+one layer in. Modules with no layer index
 (`lm_head`, an embedding adapter) are reported too, rather than folded into layer 0 —
 there is no node for them, and attributing them to a real layer would brighten it with a
 measurement that is not about it.
