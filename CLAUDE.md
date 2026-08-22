@@ -77,7 +77,7 @@ already.
 **Hooks enforce the doc discipline** (`.claude/settings.json` — the file is the
 authority; re-count with
 `python3 -c "import json;d=json.load(open('.claude/settings.json'));print(sum(len(h['hooks']) for g in d['hooks'].values() for h in g))"`
-— **8** at the time of writing, four per event. ⚠️ On Windows that line prints the
+— **9** at the time of writing (four SessionStart, five Stop). ⚠️ On Windows that line prints the
 Microsoft Store's *"Python was not found"* and exits 49; prefix `wsl.exe -e` there):
 
 - *SessionStart* — `load-architecture-doc.sh` injects the **root** `ARCHITECTURE.md`
@@ -93,8 +93,18 @@ Microsoft Store's *"Python was not found"* and exits 49; prefix `wsl.exe -e` the
   core doubled without anyone noticing.
 - *Stop* — `architecture-doc-check.sh` reminds you if a load-bearing file changed
   without a matching architecture-doc update; `doc-coherence.sh` checks the durable docs
-  for duplicate table keys and unbalanced code fences; `web-architecture-doc-check.sh`
+  for duplicate table keys and unbalanced code fences; `bar-agreement-check.sh` pins the
+  **two published copies of the seven-leg verification bar** byte-identical — the copy in
+  `CONTRIBUTING.md` that a contributor reads, and the copy in
+  `.claude/skills/coordinate-sessions/BRIEF.md` that a *worker session* is handed, since a
+  worker cannot load the coordinator's skill; `web-architecture-doc-check.sh`
   and `status-week-check.sh` are wired too and never fire here (see the ⏸ note below).
+
+  📌 **The bar is duplicated and the agreement is tested** — `organon-module`'s
+  `ROW_ALIGNMENT` move (`CONSOLE_ARCHITECTURE.md` §1.20), applied to prose. Duplication a
+  check pins is a copy; duplication nothing pins is a fork waiting to happen, and this one
+  already forked once: a six-command version of the bar circulated in briefs for months
+  while `CONTRIBUTING.md` was right, because nobody diffs paragraphs.
 
 ⚠️ **"Always prints" is a promise the two measuring hooks now keep, and it is worth
 knowing what it rests on.** Both are Python inside, and until #1 T1 both were spelled
@@ -332,10 +342,12 @@ native/organon-module/ the HOSTED-MODULE CONTRACT — the frame ring, the input
               never an edge to the GPL crates. → CONSOLE_ARCHITECTURE.md §1.20
 doc/arch/     the architecture child docs (render, topology)
 doc/          Organon Mind's public doc set (PRD, build plan, the honesty essay)
-.claude/skills/  organon-cli — driving the running app via the `organon` command.
-              A real directory, NOT a symlink: a git symlink here materialises as a
-              24-byte text file on any Windows checkout and the skill silently
-              does not load (#19).
+.claude/skills/  organon-cli — driving the running app via the `organon` command;
+              coordinate-sessions — one session driving workers (SKILL.md is the
+              coordinator's half, BRIEF.md the half a worker is pointed at, because a
+              worker cannot load a skill). Real directories, NOT symlinks: a git symlink
+              here materialises as a 24-byte text file on any Windows checkout and the
+              skill silently does not load (#19).
 changelog.d/  one Markdown fragment per change, concatenated into CHANGELOG.md at
               release by `native/tools/changelog.py`. Write your entry HERE, not in
               CHANGELOG.md.                         → changelog.d/README.md

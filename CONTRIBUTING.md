@@ -128,6 +128,15 @@ suite 44 tests while it stayed green.
 *"my tests ran"* are different claims, and the gap between them is exactly what the seventh command
 closes.
 
+📌 **This block has a second home, and the two are pinned equal.** A session coordinating
+other sessions cannot hand a worker a skill — a worker in its own worktree has the files and
+not the skill — so the same seven commands are published at
+`.claude/skills/coordinate-sessions/BRIEF.md`, where a worker can `git show` them out of a
+checkout it already has. `.claude/hooks/bar-agreement-check.sh` diffs the two command blocks on
+every Stop and refuses if they have forked. ⚠️ **Edit the bar here and the hook will tell you
+about the other copy** — which is the point, because the six-command version drifted for months
+precisely because nothing diffed prose.
+
 **Be precise about what you verified.** `cargo test` includes offline shader validation,
 so it catches binding, type and uniformity errors without a GPU — but it cannot see
 pipeline/layout mismatches, runtime GPU behaviour, UI layout, or *the actual look*. A

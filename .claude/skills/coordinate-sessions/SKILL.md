@@ -5,6 +5,12 @@ description: Run work as a coordinator session driving worker sessions and subag
 
 # Coordinating sessions
 
+> **This skill is the implementation of pattern 15 · Coordinated Sessions**, in
+> `doc/r&d/conversational_agent_control_surfaces.md` — the catalogue's section VII. Read the
+> pattern for *why* each rule below is here; read this file for *what to do*. The pattern states
+> its consequences and its costs, which is the part a skill cannot carry without becoming an
+> essay.
+
 You are the **coordinator**. You hold the goal, the design and the merge button. Workers hold
 context you do not want, and produce artifacts you verify. This file exists so that it is run the
 same way every time instead of being reinvented per session.
@@ -22,6 +28,29 @@ What it *can* do is `spawn_task`, which puts a **chip** in the user's view; **on
 into a real session with its own working directory. The loop is not zero-touch and must not be
 described as though it were. It costs **one click per worker instead of a copy-pasted prompt**,
 which is the whole improvement.
+
+## 🚨 A worker cannot read this file, so half of it lives somewhere the worker can reach
+
+A skill under `.claude/skills/` is loaded by the session whose project directory holds it. A
+worker in its own worktree — or in another repository entirely — has the *files* and not the
+*skill*. So every rule here reached a worker only by being **retyped into a brief by hand**,
+which made the whole contract *rememberable rather than checkable* from the far side. The
+measured cost: the verification bar circulated in briefs for months in a six-command form with a
+hole in it, while `CONTRIBUTING.md`'s copy was right the whole time.
+
+📌 **`BRIEF.md`, beside this file, is the worker-readable half** — the bar, the process rules,
+the report-back contract, written in the second person. A brief **cites it by command**; a brief
+that paraphrases it has already started to drift.
+
+```bash
+git show origin/main:.claude/skills/coordinate-sessions/BRIEF.md
+```
+
+⚠️ This is the same correction `CONSOLE_ARCHITECTURE.md` §1.20 made when it moved the
+reserved-key set **into the mapped header** rather than leaving it a `pub const` only linking
+modules could see: a hosted module deliberately does not link its host, so from the far side the
+set was rememberable, not checkable — *exactly the kind of promise that drifts*. Publish it where
+the other party can read it, and the drift becomes impossible rather than merely discouraged.
 
 ## The three registries, and they are not the same thing
 
@@ -76,7 +105,11 @@ Six parts, in this order. A brief missing the fourth or fifth produces work that
    `main`? `git show origin/<branch>:<path>`.
 2. **The task, scoped by what it is NOT.** The "not yours" list prevents more damage than the
    "yours" list creates. Name the files another worker owns, and name yourself as the one to ask.
-3. **The verification bar, verbatim**, with the baseline numbers so a drop is visible.
+3. **The verification bar, as the command that prints it** — `BRIEF.md`, per rule 1 applied to
+   this file itself. 🚨 **Never the numbers.** An earlier version of this template asked for "the
+   baseline numbers so a drop is visible", which contradicted the bar section below and lost:
+   a count in a brief is stale within hours, and a worker handed one has to guess whether it
+   found a regression or an out-of-date brief. Tell it to measure its own.
 4. 🚨 **The traps already paid for.** The highest-value part of a brief and the most often skipped.
 5. **Process rules**: branch off `origin/main` (never local `main` — it goes stale); never stack
    PRs; builds **synchronous, inside the turn**; commit and push **before the turn ends**; PR
@@ -88,47 +121,41 @@ Also standard: mutation-test every claimed invariant (break it, watch it fail, q
 `git commit -F` with a heredoc, because backticks in `-m` are command-substituted by bash; and
 never "verified working" — the house phrase is **"green and ready to try"**.
 
-## 🚨 The verification bar is SEVEN legs
+## 🚨 The verification bar is SEVEN legs — and it lives in `BRIEF.md`
 
-```bash
-cd native
-cargo test  -p organon-console --lib
-cargo test  -p organon-core
-cargo check --features console-edition --bin organon-console
-cargo check --tests -p organic-math-native --features console-edition
-cargo test  -p organic-math-native --bin organon-console --features console-edition
-cargo test  -p organic-math-native --bin organon --features console-edition
-cargo test  -p organic-math-native --lib  --features console-edition
-```
+The commands are **not repeated here**, on purpose. They exist in exactly two places —
+`CONTRIBUTING.md` for a contributor and `BRIEF.md` for a worker — and
+`.claude/hooks/bar-agreement-check.sh` pins those two byte-identical on every Stop. A third copy
+in this file would be the copy nobody diffs, which is how the six-command version survived. What
+you need as the coordinator is not the commands but **what to demand back**:
 
-🚨 **Do not put expected counts in a brief — tell the worker to measure its own
-baseline.** Counts age faster than anything else here: leg 7 was **324** when this file was
-written and **332** about three hours later, across three merges. A worker handed a stale number
-sees a mismatch and has to decide whether it found a regression or an out-of-date brief, and the
-cheap wrong answer is to assume the brief. **Measure `origin/main` before changing anything, then
-compare against what you measured** — by stashing, not by remembering. A baseline you took beats
-one you were given.
+⚠️ **The seventh leg is the one that goes missing, and its absence is invisible.** Leg 4 only
+`check`s the root crate's lib target and legs 5–6 test *binaries*, so without leg 7 **no leg runs
+the root crate's lib tests** — every unit test under `native/src/` sits in that hole. A PR whose
+tests live there can report "all six legs green" while none of its own tests has executed.
+Measured 2026-08-22; found by a worker whose new tests were entirely in that target.
 
-⚠️ **The seventh is the one that goes missing, and its absence is invisible.** Leg 4 only `check`s
-the root crate's lib target and legs 5–6 test *binaries*, so without it **no leg runs the root
-crate's 324 lib tests** — every unit test under `native/src/` sits in that hole. A PR whose tests
-live there can report "all six legs green" while none of its own tests has executed. Measured
-2026-08-22; found by a worker whose new tests were entirely in that target.
+🚨 **Do not put expected counts in a brief — tell the worker to measure its own baseline.**
+Counts age faster than anything else here: leg 7 was **324** when this file was written and
+**332** about three hours later, across three merges. A worker handed a stale number sees a
+mismatch and has to decide whether it found a regression or an out-of-date brief, and the cheap
+wrong answer is to assume the brief. A baseline it took beats one you gave it.
 
-📌 **`CARGO_PROFILE_TEST_OPT_LEVEL=0` turns ~43 minutes into ~70 seconds.** Codegen only. Put it in
-every brief.
-
-🚨 Never `--workspace` on `cargo test` here (the root package alone is the default, so it skips
-`organon-core` silently), never a bare `cargo test`, never `cargo fmt`.
-
-📌 **Require workers to say which leg ran their tests and what the number was.** "The bar is green"
-and "my tests ran" are different claims.
+📌 **Require it to say which leg ran its tests and what the number was.** "The bar is green" and
+"my tests ran" are different claims.
 
 📌 **And require the pair — before and after.** A single number proves nothing: it is the
 *delta* that says tests were added and none were lost. Two workers have now reported "the bar is
 green" with counts identical to the baseline, and in one case that was correct (its tests were in
 another target) while in the other it was the hole in the bar. The pair distinguishes them; one
 number does not.
+
+⚠️ **A worker that is green, ticking and has run none of your tests is the failure this section
+exists for**, and it is the hardest state to see because every signal it emits says healthy. It
+has an exact analogue one layer down: `CONSOLE_ARCHITECTURE.md` §1.20's *producer that refuses
+every frame* — alive, so the liveness counter moves, so every rule says it is fine, and the
+state it most resembles is the arrival state. The console closes it by timing frame silence
+against **its own clock**, separately from liveness. The before/after pair is that clock.
 
 ## Merging under branch protection
 
