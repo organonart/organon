@@ -110,7 +110,7 @@ xtask                          (build tooling; depends on no member)
 only place in this graph where "keep the edges few" is enforced from outside this repository.
 Every other leaf may grow an edge to `organon-core` the day it needs one; this one may not,
 because a second repository's licence CI reads the same graph. See the table's row and
-`CONSOLE_ARCHITECTURE.md` §1.19.
+`CONSOLE_ARCHITECTURE.md` §1.20.
 
 | Crate | Its own direct deps | The rule it is held to |
 |---|---|---|
