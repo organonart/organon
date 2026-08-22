@@ -33,9 +33,13 @@
   is now Mind's editor by default** — so Mind's viewport is the scene itself rather than a
   mirror of it, with `ORGANON_EDITOR_WGPU=0` as the bring-up fallback. #617 Tier 1 makes it
   two modes (workstation / immersive). See §2.4.
-- **Phase B** (scientific honesty) — **begun**: #522 T1, the real activation tap, landed
-  via **PR #528**. Whether it reports `MEASURED` or falls back to `PROXY` on Metal is
-  unverified; see §3.
+- **Phase B** (scientific honesty) — #522 T1, the real activation tap, landed via
+  **PR #528** and is now **confirmed MEASURED by running it** (2026-08-21, RTX 5090 /
+  CUDA, a 48-layer Gemma). The per-layer glow is real tapped tensors, not the
+  entropy proxy — the #1 honesty gap is closed for `layer_norm` and `mlp_act`.
+  `head_summ` stays a labeled proxy (that is #522 Tier 2's flash-attention trade),
+  and **Metal is still unrun**. See §3 and §3.1 — §3.1 also corrects the acceptance
+  test this file used to give, which the real profile does not satisfy.
 
 > The previous header said "#520 Tier 1 — in review" for a week after PR #521 merged it,
 > while the body below moved on without it. Update this line whenever a phase moves —
@@ -762,7 +766,45 @@ brand.
 | `‖ΔW‖_F` per adapted module, and the update's singular values | **measured** — an exact function of the adapter file | `lora.rs`. ⚠️ Two caveats it owes wherever it is rendered. **The base may be quantized**: an adapter trained on a 4-bit base is a delta against weights that are not the released ones, and the file states only `base_model_name_or_path` — #147 T1's `is_quantized` is what answers it from data. And **nothing has been read from a real adapter yet**; the arithmetic is tested against synthetic fixtures only |
 | Effective rank, stable rank, "which layers this fine-tune changed most" | **derived** | exact functions of the singular values. The effective rank is Roy & Vetterli (2007) — `exp` of the entropy of the normalised spectrum — stated in `lora.rs` rather than left implicit, because at least three quantities go by that name |
 | "This layer learned \<concept\>" | 🚨 **contested claim** | norm is not importance and effective rank is not meaning. Not currently rendered anywhere; recorded now so the first lens that wants to say it finds the row already written |
-| The per-layer glow during generation | **proxy** — *labeled*, **pending verification** | entropy + confidence, **not** real activations. This is the #1 honesty gap. ⚠️ **The upgrade has landed but is unconfirmed:** #522 T1 (PR #528) ships the real activation tap in `bin/mind_runtime.rs`, which sets `FLAG_RESID_MEASURED` / `FLAG_MLP_MEASURED` and prints one line on the first token saying which path it took — `activation tap MEASURED` or `PROXY — capture returned nothing`. **Nobody has run it on Metal yet**, so we do not know which. Until someone does (`./deploy.sh --with-llm`, then a terminal-run `organic-math-mind-runtime`), this row stays **proxy**: the ledger records what is *confirmed*, not what is *implemented*. If it prints MEASURED, this row becomes **measured** and the depth profile should rise monotonically with depth instead of showing the proxy's travelling sine |
+| The per-layer glow during generation | **measured** — `layer_norm` + `mlp_act`; `head_summ` is still a labeled proxy | ✅ **Confirmed by running it, 2026-08-21** — organon-one (RTX 5090, CUDA 13.3), `gemma-4-12B-it-QAT-Q4_0.gguf`, 48L×16H, all layers GPU-offloaded. The runtime printed `mind-runtime: activation tap MEASURED — real per-layer tensors (#522 T1) (48 layers requested)`, and frames carry `flags=0x6`/`0x7` (`FLAG_RESID_MEASURED` + `FLAG_MLP_MEASURED`), so the #482 dashboard's provenance glyphs for these two read `=`. **It was the Windows/CUDA path that got there first, not Metal** — the tap is the safe `llama-cpp-4` `cb_eval` API, so this is evidence about the API, not about one backend; Metal remains unrun. ⚠️ **The prediction this row used to make was wrong, and the correction matters more than the flag** — see §3.1 |
+
+### 3.1 What the measured depth profile actually looks like
+
+⚠️ **This row predicted that a measured profile would "rise monotonically with depth
+instead of showing the proxy's travelling sine." It does not, and a reader checking the
+glow against that sentence would have concluded the tap had failed.** What the residual
+norms actually do on a real model is climb to a **mid-late peak and then fall away**, with
+a sharp collapse at the final layer. Measured over four consecutive tokens of a real
+generation (`layer_norm`, 48 layers, normalized by `normalize_tap` so the token's own max
+is 1.5):
+
+```text
+token 55  L0=0.695  ... rises to L22=1.500 ... L29=0.719 ... L46=0.852  L47=0.072
+token 57  L0=0.585  ... rises to L25=1.500 ... L29=0.770 ... L46=0.754  L47=0.110
+```
+
+`mlp_act` is more lopsided still: layers 0–1 carry the maximum and the rest of the stack
+sits **two orders of magnitude** below it (0.006–0.09), which is the well-known
+early-layer outlier behaviour, not a bug in the tap.
+
+📌 **So "monotonic" is the wrong acceptance test. Three properties actually distinguish
+measured from proxy, and each is decisive on its own:**
+
+1. **The proxy cannot reach 1.5.** Its two factors are each ≤ 1.0
+   (`(0.30 + 0.70*entropy) * (0.45 + 0.55*wave)`), so its ceiling is **1.0**. The measured
+   path divides by the token's own max, so its max is **exactly 1.5000**. Observed:
+   1.5000 in 4/4 frames, both channels.
+2. **The proxy has a floor.** `layer_norm` cannot go below `0.30*0.45 = 0.135` and
+   `mlp_act` cannot go below `0.25*0.40 = 0.100`. Observed: **160 of 192** `mlp_act`
+   samples below 0.100, reaching 0.0057.
+3. **The proxy travels; a real profile does not.** The proxy's phase is
+   `(tok*0.35 + lp*6.0)`, so its argmax moves every token by construction. Observed
+   argmax stayed at L25 (once L22) and argmin at L47 across all four tokens, with a
+   Pearson **r of 0.94–0.97** between consecutive tokens' profiles.
+
+The visible quantity was always *relative* depth profile — `normalize_tap` says so — and
+that is what these numbers are. A future reader wanting to re-confirm the tap should check
+those three properties, not the shape.
 
 ---
 
