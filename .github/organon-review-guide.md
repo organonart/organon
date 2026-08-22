@@ -90,6 +90,7 @@ Three more faces of the class above, all found in one night, none of which fails
   **two** halves: an exhaustive match (catches a new variant) *and* a scan of the wire-code space
   (catches a decode arm no variant claims, and a variant `from_wire` cannot produce). Neither alone
   is sufficient.
+
 🚨 **A doc-hook challenge is not answered by "this change does not move the doc."** That
 is the wrong question. The right one is **"does the doc already say the thing this change is
 about?"** — a living-state doc can be silent about something a diff merely *touches*, and
@@ -108,7 +109,6 @@ positive, check the doc rather than the diff.
   side's generator.** Two macro-generated tables agreeing with each other says nothing about the
   *numbers*: renumber a key and both sides move together, every test passes, and every keystroke
   changes meaning in the other process. Pin borrowed identifiers as **literals**.
-
 
 🚨 **The code did not change; what it MEANS did.** This class produced three separate
 defects in one night, none of which failed a test and two of which were caught only by review. It
