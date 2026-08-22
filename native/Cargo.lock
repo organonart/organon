@@ -2957,6 +2957,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
