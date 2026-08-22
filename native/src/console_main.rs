@@ -3248,9 +3248,9 @@ impl Console {
             // quiet default from costing a diagnostic rather than a distraction.
             //
             // ✏️ **The quiet half is no longer hidden, it is filed.** It goes to the pane's
-            // status log (`organon_console::status_log`), which is one hover away on the band and
-            // one click from being open — so `trace` here means "this is machinery", not "throw
-            // this away unless somebody guessed to turn a mode on".
+            // status log (`organon_console::status_log`), which the permanent status line at the
+            // top of the pane summarises and one click drops down — so `trace` here means "this
+            // is machinery", not "throw this away unless somebody guessed to turn a mode on".
             for note in harness::cwd_notes(&resolved) {
                 eprintln!("organon-console: {} — {}", spec.name, note.text);
                 if note.always {

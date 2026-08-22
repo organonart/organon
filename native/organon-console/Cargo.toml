@@ -35,7 +35,7 @@ repository = "https://github.com/organonart/organon"
 # `Edition` as a value.
 console-edition = ["organon-core/console-edition"]
 
-# FIVE dependencies, each because a `use` in src/ needs it (the organon-mind rule:
+# SIX dependencies, each because a `use` in src/ needs it (the organon-mind rule:
 # an unused dep is silent by default, so every edge here must earn its line). The
 # window stack (winit/wgpu/egui-winit/the vendored egui-wgpu) still belongs to the
 # root-crate binary that owns the window.
@@ -46,12 +46,21 @@ console-edition = ["organon-core/console-edition"]
 #   dirs         — the one store-path resolver (the #658 lesson, recorded in
 #                  organon-mind/Cargo.toml: a hand-rolled `$HOME` put the store in
 #                  `%TEMP%` on Windows). Never resolve the store any other way.
-# All four additions are workspace-wide deps already — nothing new downloads.
+#   chrono       — LOCAL civil time for the status log's timestamps
+#                  (`status_log::LogTime::now`, the crate's only clock read). ⚠️ std has
+#                  no timezone at all — `SystemTime` is UTC seconds and nothing in the
+#                  standard library can turn that into the wall clock a reader compares
+#                  against. The only alternatives were unsafe FFI (`GetLocalTime` /
+#                  `localtime_r`) inside a UI crate that builds on three platforms, or
+#                  timestamping in UTC and asking the reader to do arithmetic. Held to
+#                  `clock` + `std` — no serde, no `oldtime`, no wasm bindings.
+# All four earlier additions are workspace-wide deps already — nothing new downloads.
 [dependencies]
 organon-core = { path = "../organon-core" }
 egui = "0.33.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 portable-pty = "0.9.0"
 alacritty_terminal = "0.26.0"

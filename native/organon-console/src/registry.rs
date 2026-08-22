@@ -116,8 +116,9 @@ pub const VERB_HELP: &str = "view.help";
 /// 🚨 **It no longer means "narrate into my conversation", and that is the whole of the change.**
 /// It used to widen the scrollback: every quiet remark interleaved above the first message, so
 /// the one verb offered for *seeing more* worked by making the flow noisier. It now opens a
-/// bounded panel over the band — `organon_console::status_log` owns the argument — holding every
-/// line the console has written about the session. The conversation is untouched in both states.
+/// bounded drop-down out of the pane's own status line — `organon_console::status_log` owns the
+/// argument — holding every line the console has written about the session. The conversation is
+/// untouched in both states.
 ///
 /// 🚨 **A view-lane verb, and that is a decision about scope rather than about plumbing.**
 /// Everything the log holds is one pane talking about itself: which directory its agent started
@@ -130,9 +131,9 @@ pub const VERB_HELP: &str = "view.help";
 /// consequence of the scope rather than an oversight — a tab you are debugging can be open while
 /// the one you are working in stays shut. `ORGANON_TRACE=1` opens every tab's log.
 ///
-/// ⚠️ **The band's indicator is the other way in**, and it is the one a hand finds: the log is a
-/// click away without anybody having to know this word exists. The verb stays because a panel
-/// with no *named* way out is a panel people close by restarting the console.
+/// ⚠️ **The pane's permanent status line is the other way in**, and it is the one a hand finds:
+/// the log is a click away without anybody having to know this word exists. The verb stays
+/// because a panel with no *named* way out is a panel people close by restarting the console.
 pub const VERB_TRACE: &str = "view.trace";
 /// The argument `/trace` carries its state in.
 pub const TRACE_ARG: &str = "state";

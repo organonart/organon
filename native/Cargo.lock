@@ -2950,6 +2950,7 @@ name = "organon-console"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "chrono",
  "dirs",
  "egui",
  "organon-core",

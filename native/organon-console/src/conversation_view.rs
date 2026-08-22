@@ -54,7 +54,9 @@ use crate::mcp_http::{mcp_config_json, ConfigFile, McpHttp};
 use crate::panel_stack;
 use crate::posture::Form;
 use crate::registry;
-use crate::status_log::{log_label, LogSlot, Remark, StatusLog};
+use crate::status_log::{
+    drop_mark, Health, Remark, StatusLog, LOG_MARK_EXCEPTION, LOG_MARK_QUIET,
+};
 use crate::text_diff::{self, DiffRow, LineDiff};
 use crate::theme::Theme;
 use crate::theme_edit::{self, EditKey, ThemeChange, ThemeEditor};
@@ -535,11 +537,9 @@ fn start_approvals(
 fn audit_line(wiring: Option<&ApprovalWiring>, offered: &[String]) -> Remark {
     let Some(wiring) = wiring else {
         // Nothing was served, so nothing was checked — an absence of proof, said out loud.
-        return Remark {
-            text: "approvals are not wired — nothing was served and nothing could be checked"
-                .to_string(),
-            always: true,
-        };
+        return Remark::note(
+            "approvals are not wired — nothing was served and nothing could be checked",
+        );
     };
     audit_remark(&wiring.handler, &wiring.served, offered)
 }
@@ -551,7 +551,12 @@ fn audit_line(wiring: Option<&ApprovalWiring>, offered: &[String]) -> Remark {
 /// the three verdicts is news*.
 fn audit_remark(handler: &str, served: &[String], offered: &[String]) -> Remark {
     let audit = ExposureAudit::of(handler, served, offered);
-    Remark { text: audit.summary(), always: !audit.confirms_withholding() }
+    let text = audit.summary();
+    if audit.confirms_withholding() {
+        Remark::machinery(text)
+    } else {
+        Remark::note(text)
+    }
 }
 
 /// One conversation tab: a live agent, the transcript it is writing, and the composer.
@@ -590,8 +595,10 @@ pub struct ConversationPane {
     /// [`crate::status_log`].** It used to widen the *conversation* — every quiet remark
     /// interleaved into the scrollback above the first message — which made `/trace on` a way of
     /// making the flow **noisier** rather than of opening a different window. It now opens the
-    /// **status log**: a bounded panel above the band, holding every line the console has
-    /// written about this session. The conversation is untouched by it in either state, which is
+    /// **status log**: a bounded drop-down out of the pane's permanent status line, holding every
+    /// line the console has written about this session. ✏️ #127 hung it above the *band*, which
+    /// pushed the composer up the screen; #129 moved it to a layer at the top, because *"the
+    /// entry box should never move"*. The conversation is untouched by it in either state, which is
     /// James's governing sentence — *"it should not feel like part of the conversational flow"* —
     /// made a property of where a line lives rather than of a mode.
     ///
@@ -935,13 +942,10 @@ impl ConversationPane {
         // trace rule that is never gated. See [`ConversationPane::trace`].
         let mut log = StatusLog::default();
         for name in registry.collisions() {
-            log.push(Remark {
-                text: format!(
-                    "`{name}` cannot be typed as a slash command — another verb already holds \
-                     that word"
-                ),
-                always: true,
-            });
+            log.push(Remark::note(format!(
+                "`{name}` cannot be typed as a slash command — another verb already holds that \
+                 word"
+            )));
         }
         let (approvals, wiring, inbox) = match start_approvals(&specs, dispatch) {
             Ok((held, wiring, inbox, notes)) => {
@@ -950,18 +954,15 @@ impl ConversationPane {
                 // pane does not exist yet; the log is capped far above the handful of lines
                 // this can produce.
                 for text in notes {
-                    log.push(Remark { text, always: true });
+                    log.push(Remark::note(text));
                 }
                 (Some(held), Some(wiring), inbox)
             }
             Err(error) => {
-                log.push(Remark {
-                    text: format!(
-                        "approvals are not wired ({error}) — a tool that needs permission will \
-                         fail instead of asking"
-                    ),
-                    always: true,
-                });
+                log.push(Remark::note(format!(
+                    "approvals are not wired ({error}) — a tool that needs permission will fail \
+                     instead of asking"
+                )));
                 // A dead channel rather than an `Option<Receiver>`: the drain already
                 // treats a disconnected inbox as "nothing to read", so the unwired case
                 // needs no second code path.
@@ -1107,7 +1108,7 @@ impl ConversationPane {
         self.log.iter()
     }
 
-    /// The status log itself — read by the panel that draws it and by the band's indicator.
+    /// The status log itself — read by the pane's status line and by the drop-down it opens.
     pub fn status_log(&self) -> &StatusLog {
         &self.log
     }
@@ -2019,7 +2020,7 @@ impl ConversationPane {
 
     /// Add an **exception** to the console's own remarks about this session — recorded in the
     /// status log like everything else, and additionally drawn at the head of the scrollback and
-    /// lighting the band's indicator. Public because the tab's working directory is decided by
+    /// lighting the pane's status line. Public because the tab's working directory is decided by
     /// whoever opened the tab (`console_main`), not in here, and it is exactly the kind of thing
     /// this pane exists to say out loud.
     ///
@@ -2030,7 +2031,7 @@ impl ConversationPane {
     /// send that failed, an audit that proved nothing, a tab with no project. If a line is true
     /// and routine it belongs in [`Self::trace`] — which no longer means it is thrown away.
     pub fn note(&mut self, line: String) {
-        self.remark(Remark { text: line, always: true });
+        self.remark(Remark::note(line));
     }
 
     /// Add a line to the status log and **nowhere else** — the machinery, not the news.
@@ -2038,11 +2039,12 @@ impl ConversationPane {
     /// ⚠️ **This is no longer a way of hiding something.** Before [`crate::status_log`] a traced
     /// line was drawn only under `/trace on`, interleaved into the conversation, so choosing it
     /// meant choosing between noise and silence. It now means "the log, and only the log": the
-    /// line is kept, it is one hover away on the band, and it is in the panel `/trace on` opens.
+    /// line is kept, it is summarised on the pane's status line, and it is in the panel a click on
+    /// that line — or `/trace on` — drops down.
     /// So the test is simply whether the thing described is an exception — and when it is
     /// ambiguous, this is the right answer.
     pub fn trace(&mut self, line: String) {
-        self.remark(Remark { text: line, always: false });
+        self.remark(Remark::machinery(line));
     }
 
     fn remark(&mut self, remark: Remark) {
@@ -2078,12 +2080,12 @@ impl ConversationPane {
         }
     }
 
-    /// The band's indicator was clicked: open the log, or close it if it is already open.
+    /// The status line was clicked: open the log, or close it if it is already open.
     pub fn toggle_log(&mut self) {
         self.set_tracing(!self.tracing);
     }
 
-    /// Whether the status log is open. Read by [`draw`] and by [`status_strip`].
+    /// Whether the status log is open. Read by [`draw`], [`status_line`] and [`log_drop_down`].
     pub fn tracing(&self) -> bool {
         self.tracing
     }
@@ -2102,13 +2104,23 @@ impl ConversationPane {
 /// Bottom-up, because the composer's and the strip's heights are known and the scrollback's
 /// is whatever is left — the layout every chat client resolves in that order.
 ///
-/// ⚠️ **The order of these four calls is the visual order, upside down.** In a bottom-up
+/// ⚠️ **The order of these calls is the visual order, upside down.** In a bottom-up
 /// column the *first* thing added sits lowest, so this reads: strip at the very bottom,
 /// composer above it, a rule, and the scrollback taking everything that is left. The status
 /// used to be added between the composer and the rule, which put it *above* the composer —
 /// where a one-line band with a rule under it reads as a divider rather than as the thing it
 /// is. [`status_strip`] belongs with the composer, at the bottom, which is where Claude
 /// Desktop puts the model affordance and where a hand looking for it goes.
+///
+/// 🚨 **THE ENTRY BOX NEVER MOVES, and that is a layout invariant rather than a preference.**
+/// James, 2026-08-21, on the surface #127 shipped: *"its positioning isn't right. It should not
+/// be displacing the entry box. The entry box should never move."* Everything that can appear,
+/// vanish or resize now lives on one side or the other of the composer and never between the
+/// band and it: the status log is a permanent one-row line at the **top** of the pane plus an
+/// `egui::Area` drop-down that takes no layout space at all. The property is measured, not
+/// asserted — [`composer_rect`] publishes the box's rect every frame and
+/// [`tests::the_entry_box_never_moves_when_the_status_log_opens`] compares it open against
+/// closed at two pane heights.
 /// `theme_name` is the palette's canonical name, handed down because this crate is given the
 /// palette's *values* and cannot recover its label — once a stored override has been laid over
 /// it, the live palette equals none of the compiled ones. The live editor files what it saves
@@ -2142,14 +2154,6 @@ pub fn draw(
     let area = ui.max_rect();
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         status_strip(ui, pane, theme);
-        // 🚨 **Immediately above the band, which is where it comes FROM.** In a bottom-up column
-        // the second thing added sits directly over the first, so the log opens as a drawer out
-        // of the indicator that was clicked — not as a window over the page and not, above all,
-        // as a region of the transcript. James's governing sentence is *"it should not feel like
-        // part of the conversational flow"*, and a panel wearing the band's own fill and edge,
-        // hinged to the band, is the strongest available statement that it is chrome. It draws
-        // nothing at all while the log is closed, so the ordinary console is untouched.
-        log_panel(ui, pane, theme);
         ui.add_space(4.0);
         composer(ui, pane, theme, theme_name);
         // Above the composer, and drawn AFTER it: the composer's own keys may have completed
@@ -2161,7 +2165,20 @@ pub fn draw(
         ui.add_space(4.0);
         ui.separator();
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            // 🚨 **The status line is the FIRST thing in the top-down remainder, and it is one
+            // row whatever it says.** Everything below it — including the scrollback — is laid
+            // out after it, so a change of state moves nothing; and it is on the far side of the
+            // bottom-up column from the composer, so it cannot move the entry box at all. That
+            // is the whole reason the surface moved here: #127 drew the log between the band and
+            // the composer, and opening it pushed the box James types into up the screen.
+            let line = status_line(ui, pane, theme);
+            ui.add_space(4.0);
             out = scrollback(ui, pane, images, exhibits, theme, form);
+            // 🚨 **LAST, and in a layer of its own.** The drop-down is an `egui::Area`, so it
+            // takes no space in this column and cannot displace anything: it hangs off the
+            // status line and paints over the page, Quake-console style. Drawing it after the
+            // scrollback is what puts it above the transcript within that layer's own order.
+            log_drop_down(ui, pane, theme, line, area);
         });
     });
     out.theme = theme_change;
@@ -2343,8 +2360,8 @@ fn scrollback(
                 // 🚨 **`tracing` is deliberately NOT read here, and that is the change.** It used
                 // to widen this loop to the whole log, which is how `/trace on` came to mean
                 // "make my conversation noisier" — the one thing James asked for the opposite
-                // of. Every quiet line still exists, in `crate::status_log`, one hover away on
-                // the band; what it no longer has is a route into the flow.
+                // of. Every quiet line still exists, in `crate::status_log`, summarised at the
+                // top of the pane; what it no longer has is a route into the flow.
                 //
                 // ⚠️ Anything written here was once drawn NOWHERE at all, so "approvals are not
                 // wired — a tool that needs permission will fail instead of asking" had never
@@ -2644,7 +2661,7 @@ fn join_drives(laid_out: Vec<LaidOutSurface>, drives: Vec<PanelDrive>) -> Vec<Su
 ///
 /// 🚨 **It no longer takes the trace mode, and that is deliberate rather than tidying.** `/trace
 /// on` now opens the status log ([`crate::status_log`]) and must not reach into the transcript at
-/// all — a click on the band's indicator that also put `— turn complete` under every reply would
+/// all — a click on the status line that also put `— turn complete` under every reply would
 /// be exactly the leak this change closes, arriving by a new route. A caption is not a
 /// [`Remark`] and has no log to move to, so the honest consequence is that the successful one is
 /// simply not drawn: the reply is on the page and the composer is live again, which is the
@@ -4025,7 +4042,22 @@ pub enum ModeSeverity {
 pub struct ModeMarker {
     /// **What is happening**, in the words a reader needs — the mode's *name* is on the
     /// plate beside it, so this never spends the band's one line repeating it.
+    ///
+    /// ✏️ **This is now the plate's HOVER rather than the band's text.** See [`Self::short`].
     pub text: String,
+    /// The same fact in **two words**, which is what the band draws.
+    ///
+    /// 🚨 **The persistent-warning invariant is kept; the verbosity is not.** James, 2026-08-21:
+    /// *"we don't want to show words like `default` and `allow all` at all times. That would be a
+    /// sort of verbose form of the interface. We should have either icons or some other way of
+    /// not having to show all those characters."* The resting state — `default` — is now a single
+    /// dim [`mode_glyph`] and no words at all, which is the whole of what he asked for. An
+    /// abnormal mode still carries **words**, because "the console may not be the one being
+    /// asked" is the one thing on this band that a colour alone must not be trusted to say, and
+    /// this section's note argues at length that the warning must be standing rather than
+    /// dismissible. Two words is the compromise: legible without being a sentence, and the
+    /// sentence is one hover away in [`Self::text`].
+    pub short: String,
     pub severity: ModeSeverity,
 }
 
@@ -4067,10 +4099,23 @@ pub struct ModeSlot {
 // ⚠️ [`Theme::mode_alert`]'s amber and not red, for the reason already argued for the mode
 // marker: this band is looked at for hours, and a permanent klaxon trains the eye to skip it.
 
-/// What the plate says, in one word.
-pub const SESSION_ALLOW_LABEL: &str = "allow all";
+/// **The plate's mark.** `×` for the same reason [`mode_glyph`] uses it: the console is not
+/// asking. The two facts are still told apart — this plate wears [`Theme::mode_alert`] and its
+/// own two words, and it is the only one of the pair that is clickable to *revoke* — but they
+/// answer the same question and the eye should not have to learn two symbols for it.
+///
+/// ✏️ **This replaced the words `allow all`, which James named as one of the two offenders.**
+pub const SESSION_ALLOW_LABEL: &str = MODE_GLYPH_SILENT;
 
-/// The standing marker's sentence — **what is happening**, on the band's one line.
+/// The standing marker's **two words**, which is what the band draws beside the mark.
+///
+/// ✏️ **The sentence moved to the hover.** It was `you allowed everything — the console is not
+/// asking` — 48 characters standing on a one-line band, and the segment James photographed being
+/// painted over. [`SESSION_ALLOW_MARKER`] is still that sentence and is still what the plate's
+/// hover and the revoke target carry; the band gets the short form.
+pub const SESSION_ALLOW_SHORT: &str = "allowing all";
+
+/// The standing marker's sentence — **what is happening** — on the plate's hover.
 pub const SESSION_ALLOW_MARKER: &str = "you allowed everything — the console is not asking";
 
 /// The whole consequence, for the button's hover and the plate's.
@@ -4086,7 +4131,10 @@ pub const SESSION_ALLOW_CONSEQUENCE: &str =
 /// the mode's does, and so the sentence has one home.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionAllowSlot {
+    /// The whole sentence, for the hover. See [`SESSION_ALLOW_MARKER`].
     pub marker: &'static str,
+    /// The two words the band draws. See [`SESSION_ALLOW_SHORT`].
+    pub short: &'static str,
 }
 
 /// The wire spelling of the mode in which the console is the approval authority.
@@ -4106,18 +4154,49 @@ pub fn mode_marker(mode: &str) -> Option<ModeMarker> {
         "" | MODE_DEFAULT => None,
         "acceptEdits" => Some(ModeMarker {
             text: "edits are auto-accepted".to_string(),
+            short: "auto-edits".to_string(),
             severity: ModeSeverity::Note,
         }),
         "dontAsk" => Some(ModeMarker {
             text: "you are not being asked — anything needing permission is refused".to_string(),
+            short: "not asking".to_string(),
             severity: ModeSeverity::Alert,
         }),
         _ => Some(ModeMarker {
             text: "not the console's default — approvals may not reach you".to_string(),
+            short: "non-default".to_string(),
             severity: ModeSeverity::Note,
         }),
     }
 }
+
+/// **The icon the permission plate draws instead of the mode's name.**
+///
+/// 🚨 **`◈` = you are being asked; `×` = you are not.** That is the only distinction this band
+/// has ever needed to carry at a glance, and it is the one the mode's *name* was never carrying:
+/// `dontAsk` and `acceptEdits` tell a reader nothing about which of the two they are in. `◈` is
+/// already the console's approval mark — it is what `status_reading` puts in front of
+/// *"permission requests — waiting on you"* and what the approval card's own `◈ may I` uses — so
+/// the plate is not teaching a new symbol, it is repeating one.
+///
+/// ⚠️ **Both are on the glyph allowlist and both are drawn `.monospace()`** — `×` U+00D7 is in
+/// Hack *and* Ubuntu-Light, `◈` U+25C8 in Hack alone. See
+/// [`tests::no_symbol_the_console_draws_is_a_glyph_egui_lacks`], which walks these.
+///
+/// ⚠️ **An unrecognised mode gets `◈`, not `×`.** The console does not know that it has stopped
+/// being asked, and a mark that asserts it would be a guess; the colour and
+/// [`ModeMarker::short`] carry "this is not the default", which is what is actually known.
+pub fn mode_glyph(mode: &str) -> &'static str {
+    match mode.trim() {
+        "dontAsk" => MODE_GLYPH_SILENT,
+        _ => MODE_GLYPH_ASKS,
+    }
+}
+
+/// The plate's mark when approvals still reach the human. See [`mode_glyph`].
+pub const MODE_GLYPH_ASKS: &str = "◈";
+/// The plate's mark when they do not. See [`mode_glyph`].
+pub const MODE_GLYPH_SILENT: &str = "×";
 
 /// The full consequence sentence for a mode the picker offers, for the plate's hover.
 /// `None` for a mode that arrived from outside the picker.
@@ -4285,15 +4364,6 @@ pub struct StripContent {
     /// filtering here: the marker is set where the chip is built, and a second rule written
     /// at a draw site is the drift this band already spends its comments preventing.
     pub chips: Vec<Chip>,
-    /// **The status log's indicator**, or `None` while the log is empty.
-    ///
-    /// 🚨 **This replaced the band's one-line echo of the most recent remark**, and the swap is
-    /// the point of the whole change. A line of the log on the band was the log's *only* way to
-    /// be seen without being in the conversation, so it had to be a line — and a line of
-    /// diagnostic text sitting on the band is chrome that is loud when nothing is wrong, which is
-    /// what James struck. The indicator says only whether there is something to look at; the
-    /// lines are behind a hover and a click. See [`crate::status_log`].
-    pub log: Option<LogSlot>,
 }
 
 /// One dim right-hand chip, and whether a person sees it without asking.
@@ -4557,10 +4627,6 @@ pub fn strip_content(
     live: LiveCounts,
     facts: &SessionFacts,
     session: Option<&str>,
-    // The status log's indicator, or `None` for an empty log. ⚠️ **`Option` here is not
-    // redundant with the slot's own emptiness**: a log with no lines has nothing to open, and a
-    // control that opens nothing is worse than no control. See [`LogSlot`].
-    log: Option<LogSlot>,
 ) -> StripContent {
     let model = match (&facts.model, failure.is_some()) {
         (Some(raw), _) => ModelSlot::Named(model_label(raw)),
@@ -4634,8 +4700,10 @@ pub fn strip_content(
     // Derived on the same rule and for a sharper version of the same reason: the console
     // granting itself the authority to stop asking must be visible for exactly as long as
     // that is true, and neither stick nor be dismissible.
-    let session_allow =
-        live.session_allow.then_some(SessionAllowSlot { marker: SESSION_ALLOW_MARKER });
+    let session_allow = live.session_allow.then_some(SessionAllowSlot {
+        marker: SESSION_ALLOW_MARKER,
+        short: SESSION_ALLOW_SHORT,
+    });
     // Two measurements or nothing. `context_fill` refuses when either half is missing,
     // and there is no arm here that supplies one — see [`ContextSlot`].
     let context = match facts.context_fill() {
@@ -4651,8 +4719,71 @@ pub fn strip_content(
         reading: status_reading(failure, live, facts),
         context,
         chips,
-        log,
     }
+}
+
+/// **How much of the left half the two permission marks need**, before the model plate takes any.
+///
+/// 🚨 **The third instance of the same rule, one level down**, and it is needed for the same
+/// reason the other two were: the marks are unconditional — they are the standing statement about
+/// whether the console is still the authority — so at a width where *something* must give, what
+/// gives is the identity beside them, by truncating. Without this the marks simply drew past the
+/// end of the left group and under the chips, which is the overlap in a new place.
+///
+/// The arithmetic mirrors what [`mode_plate`] and [`session_allow_plate`] actually build: one
+/// mono glyph inside `MODEL_PAD_X`/`MODEL_STROKE`, plus the gap before it.
+fn band_marks_reserve(ui: &egui::Ui, content: &StripContent) -> f32 {
+    let spacing = ui.spacing().item_spacing.x;
+    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+    let plate = |glyph: &str| {
+        ui.painter()
+            .layout_no_wrap(glyph.to_string(), mono.clone(), egui::Color32::WHITE)
+            .size()
+            .x
+            + MODEL_PAD_X as f32 * 2.0
+            + MODEL_STROKE * 2.0
+            + spacing
+    };
+    let mut width = 0.0;
+    if let Some(mode) = content.mode.mode.as_deref() {
+        width += plate(mode_glyph(mode));
+    }
+    if content.session_allow.is_some() {
+        width += plate(SESSION_ALLOW_LABEL);
+    }
+    width
+}
+
+/// **The least room the band's left half is worth having**, below which the telemetry chips are
+/// dropped rather than the identity squeezed.
+///
+/// 🚨 **Priority, stated as a number.** The model chip is what the band is *for* — James kept it
+/// deliberately, on the Claude Desktop model: you should always be able to see which model you
+/// are talking to. The session spend and the last turn's duration are harness telemetry and are
+/// already behind `/trace on`. So when the two cannot both fit, the telemetry goes and the
+/// identity stays, rather than the identity eliding to `cla…` beside a full-width cost.
+const BAND_LEFT_FLOOR: f32 = 190.0;
+
+/// **Draw one of the band's optional words, or drop it.** Answers whether it was drawn.
+///
+/// 🚨 **This is the "drop by priority" half of the band's width rule, and the plates keep their
+/// marks either way.** [`strip_right_reserve`] stops the left group as a whole from running under
+/// the right one; within that group the *marks* are small and unconditional while the **words**
+/// beside them are the give. A word that does not fit is not drawn at all — never half-drawn and
+/// never overlapping — and the sentence it abbreviates is still on the plate's hover, which is
+/// where the whole of it lived even when the two words did fit.
+///
+/// ⚠️ **Measured, not truncated.** `Label::truncate` on a two-word marker produces `not a…`,
+/// which is a warning a reader has to guess at; the mark beside it is already carrying the same
+/// fact unambiguously, so dropping the word is strictly better than eliding it. The reading is
+/// the one item that truncates, because a truncated sentence is still a sentence.
+fn band_word(ui: &mut egui::Ui, text: &str, color: Color32) -> Option<egui::Response> {
+    let style = egui::TextStyle::Small.resolve(ui.style());
+    let wanted = ui.painter().layout_no_wrap(text.to_string(), style, Color32::WHITE).size().x;
+    if wanted + ui.spacing().item_spacing.x > ui.available_width() {
+        return None;
+    }
+    Some(ui.label(RichText::new(text).color(color).small()))
 }
 
 fn standing_color(standing: Standing, theme: &Theme) -> Color32 {
@@ -4679,12 +4810,6 @@ enum StripAct {
     ChooseModel(ModelRow),
     /// A permission mode was clicked. `&'static str` because the shortlist is this file's.
     ChooseMode(&'static str),
-    /// The status log's indicator was clicked: open the log, or close it if it is open.
-    ///
-    /// ⚠️ **No confirmation and no cost**, for [`Self::RevokeSessionAllow`]'s reason turned the
-    /// other way: it opens a read-only panel over the console's own chrome, changes nothing
-    /// about the session, and the same click closes it again.
-    ToggleLog,
     /// The standing-allow marker was clicked: start asking again.
     ///
     /// ⚠️ **No confirmation, deliberately.** It revokes an authority rather than granting
@@ -4710,13 +4835,6 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
         },
         pane.mapper.facts(),
         pane.transcript.session_id(),
-        // ⚠️ **The whole log's reading, not one line of it.** This used to hand the band the most
-        // recent remark a quiet pane was drawing — which meant the band could only say something
-        // by saying a *sentence*, and a sentence on the band is the chrome James struck. The
-        // indicator is derived from the log's contents by [`StatusLog::slot`]; nothing here
-        // decides what deserves attention, which is what stops the band and the log from coming
-        // to disagree.
-        pane.log.slot(),
     )
     .switching_to(pane.pending_model.as_ref().map(|p| p.label.as_str()));
     let rows = model_rows(&pane.models, pane.mapper.facts().model.as_deref());
@@ -4724,57 +4842,93 @@ fn status_strip(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) {
         Some(StripAct::ChooseModel(row)) => pane.choose_model(&row),
         Some(StripAct::ChooseMode(mode)) => pane.choose_permission_mode(mode),
         Some(StripAct::RevokeSessionAllow) => pane.revoke_session_allow(),
-        Some(StripAct::ToggleLog) => pane.toggle_log(),
         None => {}
     }
 }
 
-/// How many rows of log the panel shows before it scrolls.
+// ---------------------------------------------------------------------------
+// The status line and the log it drops down
+// ---------------------------------------------------------------------------
+//
+// 🚨 **This surface replaced #127's drawer, and the reason is a layout invariant.** #127 drew
+// the log immediately above the band, in a bottom-up column — so opening it pushed the composer
+// up the screen. James, 2026-08-21: *"its positioning isn't right. It should not be displacing
+// the entry box. The entry box should never move. So put the entry box back where it was and put
+// the status log at the top, sort of like a Quake console drop-down. … By default, it's a status
+// line and it sums up everything with a nice color theme to let you know everything's okay or
+// warning or attention. And then you can click it and it expands down like a dropdown and shows
+// more detail about whatever needs your attention."*
+//
+// So there are two pieces and the split is the design:
+//
+// * [`status_line`] is **permanent and exactly one row**, at the top of the pane. It never
+//   appears or vanishes, so nothing below it can move when it changes; only its colour and its
+//   words do. It is drawn in the top-down remainder, i.e. on the far side of the composer from
+//   the band, which is what makes "the entry box never moves" structural rather than careful.
+// * [`log_drop_down`] is an **`egui::Area`** — a layer, not a child. It takes no space in any
+//   column, so opening it cannot displace anything by construction; it hangs off the status
+//   line's bottom edge and paints over the page.
+
+/// How many rows of log the drop-down shows before it scrolls.
 ///
 /// ⚠️ **A ceiling, not a size**: the panel takes the smaller of this and [`LOG_PANEL_SHARE`] of
-/// what the pane has left, so a short console does not have its conversation squeezed to nothing
-/// by a log somebody opened. Both bounds are needed — the fraction alone would make the panel
-/// enormous on a tall window, and the row count alone would eat a short one whole.
-const LOG_PANEL_ROWS: f32 = 9.0;
+/// what the pane has below the status line, so a short console does not have its conversation
+/// covered whole by a log somebody opened. Both bounds are needed — the fraction alone would make
+/// the panel enormous on a tall window, and the row count alone would cover a short one entirely.
+const LOG_PANEL_ROWS: f32 = 12.0;
 
-/// The most of the remaining pane the log may take.
-const LOG_PANEL_SHARE: f32 = 0.45;
+/// The most of the pane below the status line the drop-down may cover.
+const LOG_PANEL_SHARE: f32 = 0.55;
 
-/// The mark on an exception's row, and the one on everything else.
-///
-/// ⚠️ Both are drawn `.monospace()` for the band's tofu reason, and they are the same **width**
-/// on that face, which is what keeps the text of every row on one left edge. A ragged gutter in a
-/// log is what makes it unreadable at a glance, which is the only way anybody reads a log.
-const LOG_MARK_EXCEPTION: &str = "●";
-const LOG_MARK_QUIET: &str = "·";
+/// The status line's own padding and rule — the same shape [`STRIP_CHROME`] names for the band,
+/// spelled separately because the two surfaces are allowed to differ and a shared constant would
+/// hide it if they ever did.
+const STATUS_LINE_CHROME: f32 = STRIP_PAD_Y as f32 * 2.0 + STRIP_STROKE * 2.0;
 
-/// **The status log, opened.** Draws nothing while it is closed.
+/// The dim word at the right of the status line, naming the surface a click opens.
 ///
-/// 🚨 **This is the surface the whole change exists to create**, and its rules are the module doc
-/// of [`crate::status_log`]. Two things about it are load-bearing rather than styling:
+/// ⚠️ **Two words rather than a glyph.** A caret alone is discoverable only by people who already
+/// know; this is the one place the console gets to say what the surface *is*, and it costs a
+/// fixed, measured 60-odd points that the summary truncates against.
+const STATUS_LINE_NAME: &str = "status log";
+
+/// Which of the palette's three states a [`Health`] is.
 ///
-/// - **It is not in the transcript.** It is a bounded panel over the console's own chrome, hinged
-///   to the band it is opened from. James: *"it should not feel like part of the conversational
-///   flow"* — a log rendered inline fails that however it is styled, so the placement is the
-///   requirement and the frame is what states it.
-/// - **It shows the log whole**, exceptions and machinery alike, newest at the bottom. There is
-///   no filter and no mode: the quiet/loud decision has already been spent on which lines reach
-///   the *conversation*, and spending it twice would give this surface its own opinion about what
-///   is worth keeping — which is exactly the judgement that kept leaking chrome back into the
-///   flow.
-fn log_panel(ui: &mut egui::Ui, pane: &ConversationPane, theme: &Theme) {
-    if !pane.tracing {
-        return;
+/// 🚨 **Pure, and it reaches for fields the [`Theme`] already owns** — no colour is invented for
+/// this surface. `ok`/`asking`/`bad` are exactly "fine / worth your attention / broken", which is
+/// the axis James named, and the band next to it already teaches the eye what each one means.
+fn health_color(health: Health, theme: &Theme) -> Color32 {
+    match health {
+        Health::Ok => theme.ok,
+        Health::Warning => theme.asking,
+        Health::Attention => theme.bad,
     }
-    let log = pane.status_log();
-    let row = ui.text_style_height(&egui::TextStyle::Body);
-    // The frame's own padding and rule, plus the header row, all of which the reservation has to
-    // cover for the same reason the band's does — see `strip_box`.
-    let chrome = STRIP_PAD_Y as f32 * 2.0 + STRIP_STROKE * 2.0 + row + 8.0;
-    let height =
-        (row * LOG_PANEL_ROWS + chrome).min((ui.available_height() * LOG_PANEL_SHARE).max(chrome));
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), height),
+}
+
+/// **The permanent one-line summary at the top of the pane, and the door to the log.**
+///
+/// Returns the rect it occupied, which is what [`log_drop_down`] hangs off.
+///
+/// 🚨 **It is always drawn and it is always one row.** An indicator that appears when there is
+/// something to say is an indicator that reflows the page when there is — and the whole point of
+/// this tier is that nothing reflows. So an empty log gets `nothing to report`, in
+/// [`Theme::ok`], on a line that is the same height as the one carrying a broken pipe.
+///
+/// 🚨 **Everything it says is derived from the log's contents** by [`StatusLog::summary`], on
+/// every frame. There is no flag anybody sets and nothing here judges anything — which is what
+/// stops it becoming the status line this tree keeps finding, the kind that cannot be wrong.
+fn status_line(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme) -> egui::Rect {
+    let summary = pane.status_log().summary();
+    let open = pane.tracing();
+    // The taller of the two faces this line can draw, for `strip_box`'s reason: the mark and the
+    // summary are `Monospace`, the surface's name is `Body`, and reserving one of them is right
+    // only by accident of which happens to be taller.
+    let row = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.text_style_height(&egui::TextStyle::Monospace));
+    let color = health_color(summary.health, theme);
+    let inner = ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), row + STATUS_LINE_CHROME),
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
             Frame::new()
@@ -4785,50 +4939,224 @@ fn log_panel(ui: &mut egui::Ui, pane: &ConversationPane, theme: &Theme) {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("status log").color(theme.dim).monospace());
-                        // ✏️ **`` `/trace off` closes `` was drawn here and is gone.** #127 put
-                        // it in to name the way out, and the argument — a panel with no stated
-                        // exit is one people close by restarting the console — is a real one.
-                        // It is the same argument `PALETTE_KEYS` made before #125 deleted it,
-                        // and James's rule reaches both: *"We never want text just pasted in
-                        // explaining something into the UI."* A keystroke taught on screen for
-                        // as long as the panel is open is ambience, however true it is.
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        // The name is a fixed item and the summary is the flexible one, measured
+                        // first for the reason `strip_right_reserve` spells out at length: a
+                        // label truncating to "whatever is left" is not bounded by anything when
+                        // nothing has been taken yet, and the two then paint over each other.
+                        let reserve = status_line_reserve(ui);
+                        let left = reading_room(ui.available_width(), reserve);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(left, ui.available_height()),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                // ⚠️ `.monospace()` at both marks is the tofu fix the band and
+                                // the approval card already carry — egui's proportional face has
+                                // neither `●` nor `·`.
+                                ui.label(
+                                    RichText::new(drop_mark(open)).color(theme.dim).monospace(),
+                                );
+                                ui.label(
+                                    RichText::new(if summary.health == Health::Ok {
+                                        LOG_MARK_QUIET
+                                    } else {
+                                        LOG_MARK_EXCEPTION
+                                    })
+                                    .color(color)
+                                    .monospace(),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        // Dim while healthy, coloured when not: a console with
+                                        // nothing to report should not be shouting in green at
+                                        // the top of every frame, and one that broke should be
+                                        // impossible to read past.
+                                        RichText::new(&summary.text)
+                                            .color(if summary.health == Health::Ok {
+                                                theme.dim
+                                            } else {
+                                                color
+                                            })
+                                            .monospace(),
+                                    )
+                                    .truncate(),
+                                );
+                            },
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    RichText::new(STATUS_LINE_NAME).color(theme.dim).small(),
+                                );
+                            },
+                        );
+                    });
+                });
+        },
+    );
+    let rect = inner.response.rect;
+    let clicked = ui
+        .interact(rect, ui.id().with("status-line"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if open {
+            "the console's own log — click to close, or `/trace off`"
+        } else {
+            "the console's own log — click to open, or `/trace on`"
+        })
+        .clicked();
+    if clicked {
+        pane.toggle_log();
+    }
+    rect
+}
+
+/// What the status line's fixed right-hand item needs, before the flexible summary takes any.
+///
+/// The same arithmetic as [`strip_right_reserve`] and for the same measured reason; kept separate
+/// because the two surfaces reserve different things and a shared function would have to take a
+/// list of them, which is a worse way of saying "these are different".
+fn status_line_reserve(ui: &egui::Ui) -> f32 {
+    let spacing = ui.spacing().item_spacing.x;
+    let style = egui::TextStyle::Small.resolve(ui.style());
+    let name = ui
+        .painter()
+        .layout_no_wrap(STATUS_LINE_NAME.to_string(), style, egui::Color32::WHITE)
+        .size()
+        .x;
+    name + spacing * 2.0
+}
+
+/// **The status log, dropped down over the page.** Draws nothing while it is closed.
+///
+/// 🚨 **An `egui::Area`, which is the whole point.** A child of the column would take space and
+/// therefore move something; a layer cannot. It is positioned under [`status_line`]'s rect and
+/// constrained to `area` — the conversation's own rect, handed down rather than re-derived,
+/// because by the time this runs the column's cursor has moved and `ui.max_rect()` no longer
+/// describes the pane.
+///
+/// ⚠️ **The id is derived from the `Ui`'s**, not a constant: a console divided into regions draws
+/// several of these panes, and a fixed `Id` would give them one shared drop-down that opens in
+/// whichever region drew last.
+///
+/// ⚠️ **It shows the log whole**, exceptions and machinery alike, newest at the bottom. There is
+/// no filter and no mode: the quiet/loud decision has already been spent on which lines reach the
+/// *conversation*, and spending it twice would give this surface its own opinion about what is
+/// worth keeping — exactly the judgement that kept leaking chrome back into the flow.
+///
+/// ⚠️ **A row TRUNCATES; it never wraps and there is no horizontal scrollbar.** A trace line that
+/// wraps stops looking like an entry — the second visual row has no timestamp and no mark, so the
+/// column that makes the surface readable is broken by the first long line. A horizontal
+/// scrollbar was the other candidate and is worse: it puts every long line behind a gesture, and
+/// the identifying half of a console line is its beginning. The whole text is on the row's hover.
+fn log_drop_down(
+    ui: &mut egui::Ui,
+    pane: &ConversationPane,
+    theme: &Theme,
+    line: egui::Rect,
+    area: egui::Rect,
+) {
+    if !pane.tracing() {
+        return;
+    }
+    let log = pane.status_log();
+    let row = ui.text_style_height(&egui::TextStyle::Monospace);
+    let top = line.bottom() + 4.0;
+    let below = (area.bottom() - top).max(row);
+    let rows = (row * LOG_PANEL_ROWS).min(below * LOG_PANEL_SHARE).max(row);
+    let width = line.width();
+    egui::Area::new(ui.id().with("status-log-drop"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(line.left(), top))
+        .constrain_to(area)
+        .show(ui.ctx(), |ui| {
+            Frame::new()
+                .fill(theme.strip_fill)
+                .stroke(egui::Stroke::new(STRIP_STROKE, theme.strip_edge))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(STRIP_PAD_X, STRIP_PAD_Y))
+                .show(ui, |ui| {
+                    ui.set_min_width(width);
+                    ui.set_max_width(width);
+                    ui.horizontal(|ui| {
+                        // 🚨 **The date lives here and nowhere else, and that is what a session
+                        // spanning midnight costs.** The rows say `HH:MM:SS` so they stay a
+                        // column; `00:07:03` under `23:58:11` is unreadable unless something
+                        // names the day, so the header names it — one date, or both.
+                        let head = match log.date_span() {
+                            Some(span) => format!("status log · {span}"),
+                            None => "status log".to_string(),
+                        };
+                        ui.label(RichText::new(head).color(theme.dim).monospace().small());
+                        // ✏️ **`` `/trace off` closes `` was drawn here and is gone**, and #130's
+                        // reasoning survives this surface's move intact: a keystroke taught on
+                        // screen for as long as the panel is open is ambience, however true it
+                        // is, and James's rule reaches it — *"We never want text just pasted in
+                        // explaining something into the UI."*
                         //
-                        // ⚠️ **The way out is still named, one action later** — the band's own
-                        // status-log indicator toggles this panel and its hover reads
-                        // `status log · … · click to close`. That is an answer to something you
+                        // ⚠️ **The way out is still named, one action later**, and better than it
+                        // was: the status line this panel hangs off is directly above it, carries
+                        // its own `-` disclosure mark, and its hover reads *"the console's own log
+                        // — click to close, or `/trace off`"*. That is an answer to something you
                         // did, which is the form the rule leaves standing.
                     });
                     ui.separator();
                     egui::ScrollArea::vertical()
-                        .auto_shrink(false)
+                        .id_salt("status-log-rows")
+                        .max_height(rows)
+                        .auto_shrink([false, true])
                         // Newest at the bottom, and the view sits there: a log is read from its
                         // end, and the end is where anything that just happened is.
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
+                            if log.is_empty() {
+                                ui.label(
+                                    RichText::new("nothing yet")
+                                        .color(theme.dim)
+                                        .monospace()
+                                        .italics(),
+                                );
+                                return;
+                            }
                             for remark in log.iter() {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 6.0;
-                                    let (mark, color) = if remark.always {
-                                        (LOG_MARK_EXCEPTION, theme.bad)
-                                    } else {
-                                        (LOG_MARK_QUIET, theme.dim)
-                                    };
-                                    ui.label(RichText::new(mark).color(color).monospace());
-                                    ui.label(
-                                        RichText::new(&remark.text).color(if remark.always {
-                                            theme.prose
-                                        } else {
-                                            theme.dim
-                                        }),
-                                    );
-                                });
+                                log_row(ui, remark, theme);
                             }
                         });
                 });
-        },
-    );
+        });
 }
+
+/// One entry of the log, as one line: **time, mark, text.**
+///
+/// 🚨 **Structure by alignment, not by chrome.** James, 2026-08-21: *"it looks too much like
+/// unstructured text. It should be more like entries in a trace log where each line is an entry.
+/// And I don't mean add more rounded borders around each entry."* So there is no frame, no fill
+/// and no rule per row. What makes a row read as an entry is that three things line up down the
+/// panel: a fixed-width clock, a one-character mark, and the text — all in the mono face, which
+/// is what a trace log looks like and is also the only face that carries `●` and `·`.
+fn log_row(ui: &mut egui::Ui, remark: &Remark, theme: &Theme) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(RichText::new(remark.at.clock()).color(theme.dim).monospace().small());
+        let (mark, mark_color) = if remark.always {
+            (LOG_MARK_EXCEPTION, theme.bad)
+        } else {
+            (LOG_MARK_QUIET, theme.dim)
+        };
+        ui.label(RichText::new(mark).color(mark_color).monospace());
+        ui.add(
+            egui::Label::new(
+                RichText::new(&remark.text)
+                    .color(if remark.always { theme.prose } else { theme.dim })
+                    .monospace(),
+            )
+            .truncate(),
+        )
+        .on_hover_text(&remark.text);
+    });
+}
+
 
 /// Draw the band.
 ///
@@ -4871,68 +5199,96 @@ fn strip_box(
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        let mut act = model_plate(ui, content, models, theme);
-                        act = act.or(mode_plate(ui, content, theme));
-                        // Immediately after the mode, because the two answer one question
-                        // between them — "is the console still the authority?" — and reading
-                        // them apart would be reading half the answer.
-                        act = act.or(session_allow_plate(ui, content, theme));
                         let reading = &content.reading;
                         // 🚨 `seen_text`, not `text`: an echo of the agent's own last line is
                         // off the band unless the pane is tracing. See `StatusReading`.
                         let reading_text = reading.seen_text(tracing);
                         // 🚨 `chips_seen`, not `chips`: the spend and the last turn's duration
                         // are harness telemetry and are drawn only while tracing. See `Chip`.
-                        // Read here rather than at the draw site below because the reading's
+                        // Read here rather than at the draw site below because the left half's
                         // width budget depends on how wide they are — `strip_right_reserve`.
-                        let chips = content.chips_seen(tracing);
-                        // The indicator's face, read once: the width budget below needs it and
-                        // the draw site needs the same string. See `strip_right_reserve`.
-                        let log_face = content.log.as_ref().map(log_label);
+                        let mut chips = content.chips_seen(tracing);
+                        // 🚨 **The chips are the first whole segment to go**, before anything on
+                        // the left is squeezed — see [`BAND_LEFT_FLOOR`] for the priority and why
+                        // it is the identity that stays. Decided once, here, so the reservation
+                        // and the draw site below cannot disagree about what is on the band.
+                        if reading_room(
+                            ui.available_width(),
+                            strip_right_reserve(ui, &chips),
+                        ) < BAND_LEFT_FLOOR
+                        {
+                            chips.clear();
+                        }
+                        // 🚨 **The WHOLE left half is bounded, not just the reading — and that
+                        // is what #129 changed.** The reservation used to be taken after the
+                        // plates had already been added, so it bounded the one flexible item and
+                        // nothing else: a model name long enough, or a permission marker long
+                        // enough, still ran under the right-hand group, which is the overlap
+                        // James photographed (`allow all` painted over `you allowed
+                        // everything…`). Measuring first and allocating the remainder to a
+                        // sub-`Ui` makes it structural: nothing in the left group can be drawn
+                        // outside a rect that was sized before any of it existed.
                         let room = reading_room(
                             ui.available_width(),
-                            strip_right_reserve(ui, &chips, log_face),
+                            strip_right_reserve(ui, &chips),
                         );
-                        if !reading_text.is_empty() && room > 0.0 {
-                            // 🚨 **Bounded, not merely truncating.** `Label::truncate` measures
-                            // against the `Ui` it is added to, so the bound has to be the `Ui`:
-                            // this allocation is what stops the reading from claiming the width
-                            // the ring and the chips are about to need. It shrinks to the text
-                            // when the text is short, so nothing moves on an ordinary band.
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(room, ui.available_height()),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    // ⚠️ **`.monospace()` is the tofu fix, not a style
-                                    // choice.** `status_reading` builds these strings with
-                                    // `◈` (U+25C8) and `●` (U+25CF); egui's PROPORTIONAL
-                                    // face has neither, so `● generating` drew as a box.
-                                    // The mono face carries them — it renders `htop`'s box
-                                    // drawing in the terminal tab next door — and this is
-                                    // the same fix the approval card's own `◈ may I`
-                                    // already carries. Leave it on, or the band's symbols
-                                    // come back as boxes.
-                                    //
-                                    // Full size, not `.small()`: this is a *reading*, the
-                                    // second thing a hand looks for after the model name,
-                                    // and it is the only item between the plates and the
-                                    // dim half. Left small it would be the one shrunken
-                                    // word in a band that is otherwise one size, which
-                                    // reads as a mistake rather than as a hierarchy.
-                                    RichText::new(reading_text)
-                                        .color(standing_color(reading.standing, theme))
-                                        .monospace(),
-                                )
-                                .truncate(),
-                            );
-                                },
-                            );
-                        }
+                        let mut act: Option<StripAct> = None;
+                        let left = ui.allocate_ui_with_layout(
+                            egui::vec2(room, ui.available_height()),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                // The identity, bounded by what the two marks will need — see
+                                // [`band_marks_reserve`]. It shrinks to its text when there is
+                                // room, so an ordinary band is unchanged.
+                                let identity = reading_room(
+                                    ui.available_width(),
+                                    band_marks_reserve(ui, content),
+                                );
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(identity, ui.available_height()),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| act = model_plate(ui, content, models, theme),
+                                );
+                                act = act.take().or(mode_plate(ui, content, theme));
+                                // Immediately after the mode, because the two answer one
+                                // question between them — "is the console still the
+                                // authority?" — and reading them apart would be reading half
+                                // the answer.
+                                act = act.take().or(session_allow_plate(ui, content, theme));
+                                // 🚨 The last item and the first to give way: at a width the
+                                // plates have already spent, there is nothing left for a
+                                // sentence and an ellipsis on its own says less than nothing.
+                                if !reading_text.is_empty() && ui.available_width() > 1.0 {
+                                    ui.add(
+                                        egui::Label::new(
+                                            // ⚠️ **`.monospace()` is the tofu fix, not a style
+                                            // choice.** `status_reading` builds these strings
+                                            // with `◈` (U+25C8) and `●` (U+25CF); egui's
+                                            // PROPORTIONAL face has neither, so `● generating`
+                                            // drew as a box. The mono face carries them — it
+                                            // renders `htop`'s box drawing in the terminal tab
+                                            // next door — and this is the same fix the approval
+                                            // card's own `◈ may I` already carries. Leave it
+                                            // on, or the band's symbols come back as boxes.
+                                            //
+                                            // Full size, not `.small()`: this is a *reading*,
+                                            // the second thing a hand looks for after the model
+                                            // name, and it is the only item between the plates
+                                            // and the dim half. Left small it would be the one
+                                            // shrunken word in a band that is otherwise one
+                                            // size, which reads as a mistake rather than as a
+                                            // hierarchy.
+                                            RichText::new(reading_text)
+                                                .color(standing_color(reading.standing, theme))
+                                                .monospace(),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            },
+                        );
                         // The dim half. Right-aligned so the eye lands on the model and the
-                        // standing first; the log is added last and is therefore leftmost,
-                        // which is what gives it the slack and lets it truncate into it.
+                        // standing first.
                         //
                         // ⚠️ **Dim, not small.** These carry numbers a hand reads across a
                         // desk — the session's spend, the turn it just paid for — and at
@@ -4940,11 +5296,8 @@ fn strip_box(
                         // opposite them on the same band. Colour is what makes this half
                         // secondary; size was doing a second job it was never needed for,
                         // and doing it at the cost of the one thing on the band with a
-                        // number in it. The band is still one line: the reserved row above
-                        // now covers this face, and the log still [`Label::truncate`]s into
-                        // whatever slack the chips leave — larger text simply means less of
-                        // it fits before the ellipsis.
-                        ui.with_layout(
+                        // number in it.
+                        let right = ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
                                 // First in a right-to-left layout is rightmost: the ring
@@ -4952,23 +5305,24 @@ fn strip_box(
                                 // that is true continuously belongs and where the eye
                                 // learns to find it without reading.
                                 context_ring(ui, &content.context, theme);
-                                // The same `chips` the reading's budget was measured
-                                // against, drawn with the separator that measurement used
-                                // — see `CHIP_SEP`.
+                                // The same `chips` the budget was measured against, drawn with
+                                // the separator that measurement used — see `CHIP_SEP`.
                                 if !chips.is_empty() {
                                     ui.label(RichText::new(chips.join(CHIP_SEP)).color(theme.dim));
                                 }
-                                // The status log's door. Left of the chips, so it is the
-                                // innermost of the right-hand group and lands beside the
-                                // reading — the two things on the band that can say something
-                                // is wrong, next to each other.
-                                if let (Some(slot), Some(face)) = (&content.log, log_face) {
-                                    if log_indicator(ui, slot, face, tracing, theme).clicked() {
-                                        act = Some(StripAct::ToggleLog);
-                                    }
-                                }
                             },
                         );
+                        // 🚨 **Published so "no segment paints over its neighbour" can be
+                        // MEASURED.** Both rects are the groups' own *content* bounds —
+                        // `allocate_ui_with_layout` and `with_layout` return `min_rect`, not the
+                        // size they asked for — so this reports what was actually drawn rather
+                        // than what was intended. See [`band_group_rects`]; the band's height is
+                        // NOT a detector here, because `Ui::horizontal` does not wrap and an
+                        // overflowing left group stays exactly one row tall while running
+                        // straight under the chips.
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(band_rects_id(), (left.response.rect, right.response.rect))
+                        });
                         act
                     })
                     .inner
@@ -4977,6 +5331,22 @@ fn strip_box(
         },
     )
     .inner
+}
+
+/// The id [`strip_box`] files its two group rects under.
+fn band_rects_id() -> egui::Id {
+    egui::Id::new("organon-console-band-rects")
+}
+
+/// **What the band's two halves actually occupied on the last frame** — `(left, right)`.
+///
+/// 🚨 Same argument as [`composer_rect`]: the overlap James photographed twice is a geometric
+/// fact, and a geometric fact asserted in prose is one nobody notices breaking. Nothing in the
+/// draw path reads this; it exists so
+/// [`tests::the_bands_two_halves_never_overlap_however_narrow_it_gets`] can check the property
+/// instead of the height, which cannot see it.
+pub fn band_group_rects(ctx: &egui::Context) -> Option<(egui::Rect, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<(egui::Rect, egui::Rect)>(band_rects_id()))
 }
 
 /// The context ring: how full the model's window was at the **last request**.
@@ -5007,21 +5377,20 @@ fn strip_box(
 /// after it is then handed a zero-width rect and lays out leftwards over what is already there.
 /// Truncating "to what is left" is only a bound when something has already been taken.
 ///
-/// So the fixed items are **measured first** and the reading is given the remainder. The ring
-/// allocates a Body-height square every frame, measured or not ([`context_ring`]), and the
-/// chips are one non-wrapping Body run — both are exactly as wide as they are and neither can
-/// give way.
+/// So the fixed items are **measured first** and everything to their left is given the
+/// remainder. The ring allocates a Body-height square every frame, measured or not
+/// ([`context_ring`]), and the chips are one non-wrapping Body run — both are exactly as wide as
+/// they are and neither can give way.
 ///
-/// 🚨 **The status log's indicator joins the fixed set, and that is a change of kind rather than
-/// of arithmetic.** What used to sit in that place was a *line* of the log, which was explicitly
-/// left out of this budget because it was the second flexible item and truncating into slack was
-/// its whole behaviour. An indicator cannot truncate: it is two or five characters saying whether
-/// anything is wrong, and an ellipsis where it should be is the band losing the one item it is
-/// least allowed to lose. So it is measured, and the flexible reading gives way to it.
+/// ⚠️ **Fixed items keep their space, the variable half gives way** — and at a width too narrow
+/// for even the fixed set, [`reading_room`] returns nought and the left half is allocated a
+/// zero-width rect, inside which the plates draw nothing and the reading is not drawn at all.
 ///
-/// ⚠️ **Fixed items keep their space, the variable one gives way** — and at a width too narrow
-/// for even the fixed set, [`reading_room`] returns nought and the reading is simply not drawn.
-fn strip_right_reserve(ui: &egui::Ui, chips: &[&str], log: Option<&str>) -> f32 {
+/// ✏️ **The status log's indicator used to be measured here and no longer exists.** The log's
+/// door is now the permanent [`status_line`] at the top of the pane, so the band has one fewer
+/// fixed item and hands that width back to the reading — which is the direction James asked the
+/// band to move in: *"we don't want to show words like `default` and `allow all` at all times."*
+fn strip_right_reserve(ui: &egui::Ui, chips: &[&str]) -> f32 {
     let spacing = ui.spacing().item_spacing.x;
     // Through the painter rather than `Ui::fonts`: laying a galley out takes the font cache
     // mutably, and the painter is the handle that has it.
@@ -5034,72 +5403,21 @@ fn strip_right_reserve(ui: &egui::Ui, chips: &[&str], log: Option<&str>) -> f32 
     if !chips.is_empty() {
         width += spacing + measure(chips.join(CHIP_SEP), egui::TextStyle::Body);
     }
-    if let Some(label) = log {
-        // ⚠️ **Monospace, because that is the face it is drawn in** — the `●` tofu fix. Measuring
-        // it as Body would under-reserve on every palette whose mono face is wider, which is the
-        // usual one, and the reading would creep back over it.
-        width += spacing + measure(label.to_string(), egui::TextStyle::Monospace);
-    }
-    // One more gap, between the reading and the first thing to its right.
+    // One more gap, between the left half and the first thing to its right.
     width + spacing
 }
 
-/// How much of the band the flexible reading may take.
+/// How much of a band its flexible half may take.
 ///
 /// Pure, and a function rather than the subtraction written inline, because the property worth
-/// pinning is the one a narrow window breaks: **the reading never takes room the fixed items
-/// need**, and it never asks for a negative width. See
+/// pinning is the one a narrow window breaks: **the flexible half never takes room the fixed
+/// items need**, and it never asks for a negative width. See
 /// [`tests::the_band_gives_the_fixed_items_their_width_before_the_echo`].
+///
+/// Used by both bands — [`strip_box`] for its whole left group, and [`status_line`] for its
+/// summary. One arithmetic, so the two cannot come to disagree about what "narrow" does.
 fn reading_room(available: f32, reserved: f32) -> f32 {
     (available - reserved).max(0.0)
-}
-
-/// **The status log's door: one small mark on the band, hovered for a peek and clicked to open.**
-///
-/// 🚨 **It says whether, never what.** James: *"Maybe we should have one line somewhere that we
-/// mouse over to show more, but it should not feel like part of the conversational flow. … When
-/// everything is moving right, I generally don't care about this stuff unless there is some
-/// exception or problem."* So the quiet face is the word `log` in [`Theme::dim`] — present enough
-/// to be found and aimed at, saying nothing — and the loud face adds a dot in [`Theme::bad`].
-/// Which one is drawn is [`log_label`]'s answer to [`LogSlot::attention`], which is
-/// [`crate::status_log::StatusLog::unread`] read out: nothing here judges anything.
-///
-/// ⚠️ **`.monospace()` is the tofu fix, not a style choice** — the same one the reading and the
-/// approval card carry. egui's PROPORTIONAL face has no `●`, and it is the face this whole band
-/// would otherwise be drawn in.
-///
-/// ⚠️ **The hover names the count and the log names itself.** A peek that showed the lines and
-/// nothing else would leave "is that all of them?" unanswerable without opening the panel, which
-/// is the question the peek exists to settle.
-fn log_indicator(
-    ui: &mut egui::Ui,
-    slot: &LogSlot,
-    face: &str,
-    open: bool,
-    theme: &Theme,
-) -> egui::Response {
-    let color = if slot.attention { theme.bad } else { theme.dim };
-    ui.add(egui::Label::new(RichText::new(face).color(color).monospace()).sense(egui::Sense::click()))
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_ui(|ui| {
-            for line in &slot.latest {
-                ui.label(RichText::new(line).color(theme.prose));
-            }
-            let held = if slot.lines == 1 {
-                "1 line".to_string()
-            } else {
-                format!("{} lines", slot.lines)
-            };
-            // The count first, then what a click does. The unread tally is stated only when
-            // there is one — "0 unread" is a sentence about nothing.
-            let summary = match (slot.unread, open) {
-                (0, false) => format!("status log · {held} · click to open"),
-                (0, true) => format!("status log · {held} · click to close"),
-                (n, false) => format!("status log · {held} · {n} new · click to open"),
-                (n, true) => format!("status log · {held} · {n} new · click to close"),
-            };
-            ui.label(RichText::new(summary).color(theme.dim).small());
-        })
 }
 
 fn context_ring(ui: &mut egui::Ui, slot: &ContextSlot, theme: &Theme) {
@@ -5285,10 +5603,9 @@ fn model_plate(
             }
             if let Some(pending) = &content.pending_model {
                 // Dim, italic and arrowed: it reads as a destination rather than as the
-                // identity beside it, which is exactly the distinction being kept.
-                ui.label(
-                    RichText::new(format!("→ {pending}")).color(theme.dim).small().italics(),
-                );
+                // identity beside it, which is exactly the distinction being kept. Dropped
+                // rather than elided at a narrow width — `→ Def…` is not a destination.
+                let _ = band_word(ui, &format!("→ {pending}"), theme.dim);
             }
         });
     let response = plate
@@ -5380,22 +5697,33 @@ fn mode_plate(ui: &mut egui::Ui, content: &StripContent, theme: &Theme) -> Optio
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin::symmetric(MODEL_PAD_X, MODEL_PAD_Y))
         .show(ui, |ui| {
-            ui.label(RichText::new(mode).color(accent).small().monospace());
+            // 🚨 **A mark, not the mode's name.** `default` was a word on the band from the
+            // first frame of every session and said nothing a reader could act on; the mark
+            // says the one thing they can — whether approvals still reach them. See
+            // [`mode_glyph`], and `.monospace()` there for the tofu rule.
+            ui.label(RichText::new(mode_glyph(mode)).color(accent).monospace());
         });
+    // ⚠️ **The mode's name has NOT been dropped, it has moved.** It is the first row of the
+    // plate's hover, so `which mode is this?` is still answerable from the band — it simply is
+    // not asserted at a reader who did not ask. The picker underneath spells all three out.
+    let hover = match mode_consequence(mode) {
+        Some(consequence) => format!("{mode} — {consequence}"),
+        None => format!("{mode} — a mode this build has not measured"),
+    };
     let response = plate
         .response
         .interact(egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let response = match mode_consequence(mode) {
-        Some(consequence) => response.on_hover_text(consequence),
-        None => response,
-    };
-    // The persistent marker. Truncated like everything else on the band, because one line
-    // is one line — the whole sentence is on the plate's hover.
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hover);
+    // The persistent marker, in its **short** form — see [`ModeMarker::short`] for why the
+    // sentence is on the hover and two words are on the band, and [`band_word`] for what a band
+    // too narrow to hold even those does instead. ⚠️ **The mark above is unconditional**, so a
+    // pane narrow enough to lose the words still says that the console may not be the one being
+    // asked; the words are the give, the warning is not.
     if let Some(marker) = &content.mode.marker {
-        ui.add(
-            egui::Label::new(RichText::new(&marker.text).color(accent).small()).truncate(),
-        );
+        if let Some(word) = band_word(ui, &marker.short, accent) {
+            word.on_hover_text(&marker.text);
+        }
     }
     egui::Popup::menu(&response)
         .show(|ui| mode_picker(ui, mode, theme))
@@ -5435,17 +5763,20 @@ fn session_allow_plate(
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!("{SESSION_ALLOW_CONSEQUENCE}\n\nClick to revoke."))
         .clicked();
-    // Truncated like every other label on the band; the whole sentence is on the hover.
-    let marker = ui
-        .add(
-            egui::Label::new(RichText::new(slot.marker).color(theme.mode_alert).small())
-                .truncate(),
-        )
-        .on_hover_text(format!("{SESSION_ALLOW_CONSEQUENCE}\n\nClick to revoke."));
+    // ✏️ The **short** form — see [`SESSION_ALLOW_SHORT`] for what moved and why — and dropped
+    // rather than elided when the band is too narrow for it ([`band_word`]). ⚠️ The plate above
+    // is unconditional, so the grant is still stated and still revocable at any width.
+    let marker = band_word(ui, slot.short, theme.mode_alert).map(|word| {
+        word.on_hover_text(format!(
+            "{}\n\n{SESSION_ALLOW_CONSEQUENCE}\n\nClick to revoke.",
+            slot.marker
+        ))
+    });
     // The marker itself is clickable too, because it is the wider target and it is what the
     // eye actually lands on — the plate beside it is the label, not the button.
-    (clicked || marker.interact(egui::Sense::click()).clicked())
-        .then_some(StripAct::RevokeSessionAllow)
+    let marker_clicked =
+        marker.map(|m| m.interact(egui::Sense::click()).clicked()).unwrap_or(false);
+    (clicked || marker_clicked).then_some(StripAct::RevokeSessionAllow)
 }
 
 /// The three modes, each labelled by what happens.
@@ -6679,7 +7010,7 @@ fn composer_box(
     let inner = measured.clamp(row * COMPOSER_ROWS as f32, row * COMPOSER_MAX_ROWS);
     let band = inner + 2.0 * COMPOSER_PAD_Y as f32 + 2.0 * COMPOSER_STROKE;
 
-    ui.allocate_ui_with_layout(
+    let placed = ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), band),
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
@@ -6766,8 +7097,36 @@ fn composer_box(
             framed.end(ui);
             (submit, id)
         },
-    )
-    .inner
+    );
+    // 🚨 **Published so the invariant can be MEASURED.** "The entry box never moves" was stated
+    // in prose and was false for the whole life of #127; a property nothing reads is a property
+    // nobody notices breaking. See [`composer_rect`].
+    let rect = placed.response.rect;
+    ui.ctx().data_mut(|d| d.insert_temp(composer_rect_id(), rect));
+    placed.inner
+}
+
+/// The id [`composer_box`] files its rect under, and [`composer_rect`] reads it back from.
+fn composer_rect_id() -> egui::Id {
+    egui::Id::new("organon-console-composer-rect")
+}
+
+/// **Where the entry box was drawn on the last frame**, or `None` before it has been drawn.
+///
+/// 🚨 **This exists to make one sentence checkable.** James, 2026-08-21: *"The entry box should
+/// never move."* [`draw`]'s layout is what makes that true — everything that can appear or vanish
+/// is on one side or the other of the composer, and the status log's drop-down is a layer rather
+/// than a child — but the layout is four nested closures and the property is not visible in any
+/// one of them. So the box states where it landed, and
+/// [`tests::the_entry_box_never_moves_when_the_status_log_opens`] compares that rect with the log
+/// closed against open, at more than one pane height.
+///
+/// ⚠️ **One id for the process, not one per pane**, which is right for what it is used for and
+/// would be wrong for anything else: a console divided into regions draws several composers and
+/// the last one wins. It is a measurement hook, never a layout input — nothing in the draw path
+/// reads it, so a stale or contested value cannot move anything.
+pub fn composer_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(composer_rect_id()))
 }
 
 // ---------------------------------------------------------------------------
@@ -8190,18 +8549,18 @@ mod tests {
     /// ring was absent — the half of it that still holds is this one.)
     #[test]
     fn the_band_carries_no_ring_fill_until_both_halves_are_measured() {
-        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None);
         assert_eq!(cold.context, ContextSlot::Unknown, "nothing measured");
 
         let window_only = SessionFacts { context_window: Some(1_000_000), ..started("m") };
-        let half = strip_content(None, live(0, 0), &window_only, None, None);
+        let half = strip_content(None, live(0, 0), &window_only, None);
         assert_eq!(
             half.context,
             ContextSlot::Unknown,
             "a denominator alone is not a proportion"
         );
 
-        let both = strip_content(None, live(0, 0), &filled(54_050, 1_000_000), None, None);
+        let both = strip_content(None, live(0, 0), &filled(54_050, 1_000_000), None);
         let ContextSlot::Known(fill) = both.context else {
             panic!("{:?}", both.context)
         };
@@ -8272,7 +8631,7 @@ mod tests {
         let mut facts = started("claude-opus-5[1m]");
         facts.cost_usd = Some(0.42);
         facts.last_turn_duration_ms = Some(7_389);
-        let content = strip_content(None, live(0, 2), &facts, Some("abc"), None);
+        let content = strip_content(None, live(0, 2), &facts, Some("abc"));
         let band = format!(
             "{} {} {:?}",
             content.chips_seen(true).join(CHIP_SEP),
@@ -8314,7 +8673,7 @@ mod tests {
     /// `the_ring_cannot_contradict_the_percentage_it_prints` for the case that got through.
     #[test]
     fn the_ring_turns_amber_at_three_quarters_and_not_before() {
-        let at = |prompt| strip_content(None, live(0, 0), &filled(prompt, 1_000), None, None).context;
+        let at = |prompt| strip_content(None, live(0, 0), &filled(prompt, 1_000), None).context;
 
         for prompt in [0, 1, 500, 748, 749, 750, 751, 999, 1_000] {
             let slot = at(prompt);
@@ -8345,7 +8704,7 @@ mod tests {
     /// two cannot part company again.
     #[test]
     fn the_ring_cannot_contradict_the_percentage_it_prints() {
-        let slot = strip_content(None, live(0, 0), &filled(7_495, 10_000), None, None).context;
+        let slot = strip_content(None, live(0, 0), &filled(7_495, 10_000), None).context;
         assert_eq!(shown_percent(slot), 74, "74.95% has not reached 75 and must not claim it");
         assert!(!slot.is_high(), "and a ring below the threshold is not amber");
     }
@@ -8411,8 +8770,8 @@ mod tests {
     /// Latest-wins all the way through, which is what makes that true for free.
     #[test]
     fn the_ring_follows_the_last_prompt_down_as_well_as_up() {
-        let grown = strip_content(None, live(0, 0), &filled(800_000, 1_000_000), None, None);
-        let compacted = strip_content(None, live(0, 0), &filled(120_000, 1_000_000), None, None);
+        let grown = strip_content(None, live(0, 0), &filled(800_000, 1_000_000), None);
+        let compacted = strip_content(None, live(0, 0), &filled(120_000, 1_000_000), None);
         assert!(grown.context.is_high());
         assert!(!compacted.context.is_high(), "a compacted context is not a full one");
         let ContextSlot::Known(fill) = compacted.context else {
@@ -8463,7 +8822,7 @@ mod tests {
     fn before_the_first_line_the_strip_says_it_is_connecting() {
         let cold = LiveCounts::default();
         assert!(!cold.generating, "nothing has opened a message, so nothing claims one is open");
-        let content = strip_content(None, cold, &SessionFacts::default(), None, None);
+        let content = strip_content(None, cold, &SessionFacts::default(), None);
         assert_eq!(content.model, ModelSlot::Connecting, "the plate says it is coming");
         assert_eq!(content.reading.standing, Standing::Connecting);
         assert_eq!(
@@ -8491,7 +8850,7 @@ mod tests {
     #[test]
     fn the_model_becomes_the_headline_once_init_arrives() {
         let content =
-            strip_content(None, live(0, 0), &started("claude-opus-5[1m]"), Some("abc-123"), None);
+            strip_content(None, live(0, 0), &started("claude-opus-5[1m]"), Some("abc-123"));
         let ModelSlot::Named(label) = &content.model else { panic!("{:?}", content.model) };
         assert_eq!(label.name, "claude-opus-5");
         assert_eq!(label.variant.as_deref(), Some("1M"));
@@ -8524,7 +8883,6 @@ mod tests {
             },
             &facts,
             Some("abc-123"),
-            None,
         );
         assert_eq!(content.reading.standing, Standing::Dead);
         assert_eq!(content.reading.text, "the agent stopped listening: broken pipe");
@@ -8535,11 +8893,11 @@ mod tests {
     #[test]
     fn waiting_on_a_human_outranks_working() {
         let facts = started("claude-opus-5");
-        let both = strip_content(None, live(1, 4), &facts, Some("abc"), None);
+        let both = strip_content(None, live(1, 4), &facts, Some("abc"));
         assert_eq!(both.reading.standing, Standing::Asking);
         assert_eq!(both.reading.text, "◈ 1 permission request — waiting on you");
 
-        let working = strip_content(None, live(0, 4), &facts, Some("abc"), None);
+        let working = strip_content(None, live(0, 4), &facts, Some("abc"));
         assert_eq!(working.reading.standing, Standing::Working);
         assert_eq!(
             working.reading.text, "● 4 tools running",
@@ -8558,11 +8916,11 @@ mod tests {
         facts.needs_action = Some("pick one of the three options".into());
         facts.last_status_detail = Some("asked a question".into());
 
-        let idle = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        let idle = strip_content(None, live(0, 0), &facts, Some("abc"));
         assert_eq!(idle.reading.standing, Standing::Asking);
         assert_eq!(idle.reading.text, "◈ pick one of the three options");
 
-        let resumed = strip_content(None, live(0, 1), &facts, Some("abc"), None);
+        let resumed = strip_content(None, live(0, 1), &facts, Some("abc"));
         assert_eq!(resumed.reading.standing, Standing::Working);
         assert_eq!(resumed.reading.text, "● 1 tool running");
     }
@@ -8575,7 +8933,7 @@ mod tests {
     #[test]
     fn an_open_message_reports_generating_and_nothing_more_than_that() {
         let facts = started("claude-opus-5");
-        let content = strip_content(None, live_generating(0, 0), &facts, Some("abc"), None);
+        let content = strip_content(None, live_generating(0, 0), &facts, Some("abc"));
         assert_eq!(content.reading.standing, Standing::Generating);
         assert_eq!(content.reading.text, "● generating");
         for invented in ["%", "/s", "tok", "eta", "left", "of"] {
@@ -8586,7 +8944,7 @@ mod tests {
             );
         }
         // The same session with the bracket closed is the old reading, unchanged.
-        let closed = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        let closed = strip_content(None, live(0, 0), &facts, Some("abc"));
         assert_eq!(closed.reading.standing, Standing::Ready);
         assert_eq!(closed.reading.text, "ready");
     }
@@ -8605,7 +8963,7 @@ mod tests {
         facts.needs_action = Some("pick one of the three options".into());
         facts.last_status_detail = Some("asked a question".into());
 
-        let with_tools = strip_content(None, live_generating(0, 2), &facts, Some("abc"), None);
+        let with_tools = strip_content(None, live_generating(0, 2), &facts, Some("abc"));
         assert_eq!(with_tools.reading.standing, Standing::Working);
         assert_eq!(
             with_tools.reading.text, "● 2 tools running",
@@ -8613,7 +8971,7 @@ mod tests {
              something is"
         );
 
-        let writing = strip_content(None, live_generating(0, 0), &facts, Some("abc"), None);
+        let writing = strip_content(None, live_generating(0, 0), &facts, Some("abc"));
         assert_eq!(
             writing.reading.standing,
             Standing::Generating,
@@ -8623,7 +8981,7 @@ mod tests {
         assert_eq!(writing.reading.text, "● generating");
 
         // …and the moment the bracket closes, the demand is what is left to say.
-        let idle = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        let idle = strip_content(None, live(0, 0), &facts, Some("abc"));
         assert_eq!(idle.reading.standing, Standing::Asking);
         assert_eq!(idle.reading.text, "◈ pick one of the three options");
     }
@@ -8634,7 +8992,7 @@ mod tests {
     #[test]
     fn a_dead_agent_and_a_pending_question_both_still_outrank_generating() {
         let facts = started("claude-opus-5");
-        let asked = strip_content(None, live_generating(1, 0), &facts, Some("abc"), None);
+        let asked = strip_content(None, live_generating(1, 0), &facts, Some("abc"));
         assert_eq!(asked.reading.standing, Standing::Asking);
         assert_eq!(asked.reading.text, "◈ 1 permission request — waiting on you");
 
@@ -8646,7 +9004,6 @@ mod tests {
             live_generating(0, 0),
             &facts,
             Some("abc"),
-            None,
         );
         assert_eq!(gone.reading.standing, Standing::Dead);
         assert_eq!(gone.reading.text, "the agent process ended");
@@ -8668,7 +9025,7 @@ mod tests {
     fn a_quiet_session_reports_what_the_last_turn_said() {
         let mut facts = started("claude-opus-5");
         facts.last_status_detail = Some("wrote the strip and ran the tests".into());
-        let content = strip_content(None, live(0, 0), &facts, Some("abc"), None);
+        let content = strip_content(None, live(0, 0), &facts, Some("abc"));
         assert_eq!(content.reading.standing, Standing::Ready);
         assert_eq!(content.reading.text, "wrote the strip and ran the tests");
     }
@@ -8689,7 +9046,7 @@ mod tests {
             cache_read_input_tokens: 50_000,
         });
         let counts = LiveCounts { remembered: 2, ..live(0, 0) };
-        let content = strip_content(None, counts, &facts, Some("abc"), None);
+        let content = strip_content(None, counts, &facts, Some("abc"));
         assert_eq!(
             content.chips_seen(true),
             vec!["session $0.1234", "2 remembered decisions", "last turn 7.4s"]
@@ -8833,7 +9190,7 @@ mod tests {
     fn the_plate_keeps_the_confirmed_model_while_a_switch_is_in_flight() {
         let facts = started("claude-opus-5[1m]");
         let switching =
-            strip_content(None, live(0, 0), &facts, Some("abc"), None).switching_to(Some("Sonnet"));
+            strip_content(None, live(0, 0), &facts, Some("abc")).switching_to(Some("Sonnet"));
         let ModelSlot::Named(label) = &switching.model else { panic!("{:?}", switching.model) };
         assert_eq!(
             label.name, "claude-opus-5",
@@ -8842,7 +9199,7 @@ mod tests {
         assert_eq!(switching.pending_model.as_deref(), Some("Sonnet"));
 
         // …and once the repeat init lands, the marker has nothing left to say.
-        let settled = strip_content(None, live(0, 0), &started("claude-sonnet-5"), Some("abc"), None);
+        let settled = strip_content(None, live(0, 0), &started("claude-sonnet-5"), Some("abc"));
         assert_eq!(settled.pending_model, None);
         let ModelSlot::Named(label) = &settled.model else { panic!("{:?}", settled.model) };
         assert_eq!(label.name, "claude-sonnet-5");
@@ -8872,7 +9229,7 @@ mod tests {
         let mode_of = |mode: &str| {
             let mut facts = started("claude-opus-5");
             facts.permission_mode = Some(mode.to_string());
-            strip_content(None, live(0, 0), &facts, Some("abc"), None).mode
+            strip_content(None, live(0, 0), &facts, Some("abc")).mode
         };
 
         let ordinary = mode_of("default");
@@ -8898,8 +9255,72 @@ mod tests {
         assert!(unmeasured.marker.is_some(), "an unrecognised mode is precisely the unclear case");
 
         // Before the first init there is no mode and nothing to mark.
-        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None);
         assert_eq!(cold.mode, ModeSlot::default());
+    }
+
+    /// 🚨 CONTRACT: **the resting band spells nothing out — but an abnormal one still uses
+    /// words.**
+    ///
+    /// James, 2026-08-21: *"we don't want to show words like `default` and `allow all` at all
+    /// times. That would be a sort of verbose form of the interface. We should have either icons
+    /// or some other way of not having to show all those characters."* So the two named
+    /// offenders are gone from the resting band — `default` is a dim [`mode_glyph`] and nothing
+    /// else, and `allow all` is not drawn at all when there is no standing allow.
+    ///
+    /// 🚨 **And the persistent-warning invariant is unchanged, which is the half a "make it
+    /// compact" change would quietly lose.** An abnormal mode still carries two words on the
+    /// band, permanently, uncloseable — see [`ModeMarker::short`]. Colour alone is not allowed to
+    /// be the only statement that the console may not be the one being asked.
+    ///
+    /// ⚠️ **Mutation-checked, both run.** Make [`mode_glyph`] return the mode's name and this
+    /// fails with `left: "default", right: "◈"`; empty `dontAsk`'s [`ModeMarker::short`] and it
+    /// fails with *"dontAsk's band words are not two words"*.
+    #[test]
+    fn the_resting_band_carries_marks_and_the_abnormal_one_still_carries_words() {
+        // The resting state: nothing on the band spells the mode out.
+        assert_eq!(mode_glyph(MODE_DEFAULT), MODE_GLYPH_ASKS);
+        assert!(
+            !mode_glyph(MODE_DEFAULT).contains(MODE_DEFAULT),
+            "the band is still spelling `default` at rest",
+        );
+        assert!(mode_marker(MODE_DEFAULT).is_none(), "and it says nothing beside it");
+        assert!(
+            !SESSION_ALLOW_LABEL.contains("allow"),
+            "the plate is still spelling `allow all`: {SESSION_ALLOW_LABEL}",
+        );
+
+        // The abnormal states: a mark AND two words, every time.
+        for mode in ["acceptEdits", "dontAsk", "plan"] {
+            let marker = mode_marker(mode).expect("not the default");
+            assert!(
+                marker.short.split_whitespace().count() <= 2 && !marker.short.is_empty(),
+                "{mode}'s band words are not two words: {:?}",
+                marker.short,
+            );
+            assert!(
+                marker.short.len() < marker.text.len(),
+                "{mode}'s short form is not shorter than its sentence",
+            );
+            assert!(
+                !marker.short.contains(mode),
+                "{mode}'s marker repeats the mode's own name, which the plate already carries",
+            );
+        }
+        // `dontAsk` is the one state whose mark differs, because it is the one where approvals
+        // do not reach the human at all.
+        assert_eq!(mode_glyph("dontAsk"), MODE_GLYPH_SILENT);
+        assert_eq!(mode_glyph("acceptEdits"), MODE_GLYPH_ASKS);
+        assert_eq!(
+            mode_glyph("plan"),
+            MODE_GLYPH_ASKS,
+            "an unmeasured mode must not ASSERT that you are not being asked",
+        );
+
+        // The standing allow keeps its two words and its whole sentence, in two places.
+        assert!(SESSION_ALLOW_SHORT.split_whitespace().count() <= 2);
+        assert!(SESSION_ALLOW_SHORT.len() < SESSION_ALLOW_MARKER.len());
+        assert!(SESSION_ALLOW_MARKER.contains("allowed"), "the hover still says what happened");
     }
 
     /// 🚨 CONTRACT: **the capability tools a caller hands down are the ones served, and the
@@ -9056,7 +9477,7 @@ mod tests {
         let mut log = StatusLog::default();
         log.push(quiet.clone());
         assert_eq!(log.len(), 1, "a passing audit was thrown away rather than logged");
-        assert!(!log.attention(), "a guarantee that is holding lit the band's indicator");
+        assert!(!log.attention(), "a guarantee that is holding lit the status line");
 
         // 🚨 The breach.
         let breach = line(&[handler]);
@@ -9091,7 +9512,7 @@ mod tests {
         facts.last_turn_duration_ms = Some(5_100);
         facts.needs_action = Some("What are we working on?".into());
         let counts = LiveCounts { remembered: 2, ..live(0, 0) };
-        let content = strip_content(None, counts, &facts, Some("abc"), None);
+        let content = strip_content(None, counts, &facts, Some("abc"));
 
         // Quiet: the tally, and nothing else.
         assert_eq!(
@@ -9116,11 +9537,11 @@ mod tests {
         // ⚠️ And the readings that are NOT narration are on the quiet band, unconditionally.
         // A pane that hid these would be quiet about the only three things it can tell you
         // that the page above it cannot.
-        let dead = strip_content(Some("the agent stopped listening"), live(0, 0), &facts, None, None);
+        let dead = strip_content(Some("the agent stopped listening"), live(0, 0), &facts, None);
         assert_eq!(dead.reading.seen_text(false), "the agent stopped listening");
-        let asking = strip_content(None, live(1, 0), &facts, Some("abc"), None);
+        let asking = strip_content(None, live(1, 0), &facts, Some("abc"));
         assert_eq!(asking.reading.seen_text(false), "◈ 1 permission request — waiting on you");
-        let working = strip_content(None, live(0, 2), &facts, Some("abc"), None);
+        let working = strip_content(None, live(0, 2), &facts, Some("abc"));
         assert_eq!(working.reading.seen_text(false), "● 2 tools running");
         assert_eq!(
             content.model,
@@ -9141,9 +9562,15 @@ mod tests {
     /// ⚠️ **Mutation-checked**: spell [`reading_room`] as a bare subtraction and the narrow
     /// case below fails with a negative width — which egui turns into a panic on the
     /// allocation, not into a smaller label.
+    ///
+    /// ✏️ **What the reservation covers changed with #129 and the property did not.** The status
+    /// log's indicator has left the band, so it is no longer measured here; and the remainder is
+    /// now given to the **whole left group** rather than to the reading alone, which is what
+    /// makes the model plate and the permission markers unable to overflow either. See
+    /// [`the_band_holds_one_line_at_a_narrow_width`] for the end-to-end half of that.
     #[test]
     fn the_band_gives_the_fixed_items_their_width_before_the_echo() {
-        // Ordinary: the reading gets everything the fixed items do not need, and no more.
+        // Ordinary: the left half gets everything the fixed items do not need, and no more.
         assert_eq!(reading_room(600.0, 180.0), 420.0);
         assert!(
             reading_room(600.0, 180.0) + 180.0 <= 600.0,
@@ -9157,33 +9584,112 @@ mod tests {
         // And the reservation itself grows with what is actually on the right, so hiding the
         // telemetry hands the width back to the reading rather than leaving a hole.
         let ctx = egui::Context::default();
-        let (bare, full, logged, loud) = {
-            let mut out = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+        let (bare, full) = {
+            let mut out = (0.0_f32, 0.0_f32);
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    out.0 = strip_right_reserve(ui, &[], None);
-                    out.1 = strip_right_reserve(ui, &["session $1.18", "last turn 5.1s"], None);
-                    out.2 = strip_right_reserve(ui, &[], Some(crate::status_log::LOG_QUIET));
-                    out.3 = strip_right_reserve(ui, &[], Some(crate::status_log::LOG_ATTENTION));
+                    out.0 = strip_right_reserve(ui, &[]);
+                    out.1 = strip_right_reserve(ui, &["session $1.18", "last turn 5.1s"]);
                 });
             });
             out
         };
-        // 🚨 **The indicator is a FIXED item and must be measured.** It replaced a line of log
-        // text, which was deliberately excluded from this budget because it truncated into
-        // whatever slack was left — the behaviour an indicator must not have. Drop it from
-        // `strip_right_reserve` and this pair collapses to equal, which is the mutation.
-        assert!(
-            logged > bare,
-            "the log's indicator takes width and the reading was not told: {logged} vs {bare}"
-        );
-        assert!(
-            loud > logged,
-            "the attention face is wider than the quiet one and must reserve more: {loud} vs \
-             {logged}"
-        );
         assert!(bare > 0.0, "the ring is allocated every frame, measured or not: {bare}");
-        assert!(full > bare, "chips take width and the reading must be told: {full} vs {bare}");
+        assert!(full > bare, "chips take width and the left half must be told: {full} vs {bare}");
+    }
+
+    /// 🚨 CONTRACT: **at a width too narrow for everything, segments give way — they do not
+    /// paint over each other, and the band stays one line.**
+    ///
+    /// James photographed the failure twice, and #125's fix covered only the flexible reading:
+    /// `allow all` was still drawn *over* `you allowed everything…` because the left group's own
+    /// items had no budget at all. The fix is structural — [`strip_box`] measures the right-hand
+    /// fixed set first and allocates the remainder to a sub-`Ui`, so nothing in the left group
+    /// can be drawn outside a rect that was sized before any of it existed.
+    ///
+    /// ⚠️ **The band's HEIGHT cannot see this and it is worth saying why**, because it is the
+    /// obvious assertion and it is useless: `Ui::horizontal` does not wrap, so an overflowing
+    /// left group stays exactly one row tall and simply runs under the chips — which is precisely
+    /// what the photograph shows. Measuring the height was tried here and passed against
+    /// deliberately broken code. The rects are what settle it, hence [`band_group_rects`].
+    ///
+    /// ⚠️ **Mutation-checked**: give the left group `ui.available_width()` instead of
+    /// [`reading_room`]'s remainder and this fails at every width below 900 pt, naming both
+    /// rects.
+    #[test]
+    fn the_bands_two_halves_never_overlap_however_narrow_it_gets() {
+        let ctx = egui::Context::default();
+        let mut pane = FakePane::new("x");
+        pane.want_focus = false;
+        let busy = the_busiest_band();
+        for width in [260.0_f32, 380.0, 520.0, 900.0] {
+            let mut rects = None;
+            for _ in 0..3 {
+                let _ = strip_frame_at(&ctx, &busy, &mut pane, width);
+                rects = band_group_rects(&ctx);
+            }
+            let (left, right) = rects.expect("the band drew and published its halves");
+            assert!(
+                left.right() <= right.left() + 0.5,
+                "at {width} pt the band's left half runs under its right: left {left:?}, right \
+                 {right:?}",
+            );
+        }
+    }
+
+    /// The busiest band that can occur: a long model id with a badge, a pending switch, a
+    /// `dontAsk` marker, a standing allow, both telemetry chips, a pending-approvals reading and
+    /// a full ring. Shared by the two band-geometry contracts so they cannot drift apart about
+    /// what "busiest" means.
+    fn the_busiest_band() -> StripContent {
+        let mut facts = started("claude-opus-5[1m]");
+        facts.cost_usd = Some(1.2345);
+        facts.last_turn_duration_ms = Some(7_389);
+        facts.permission_mode = Some("dontAsk".into());
+        facts.context_window = Some(1_000_000);
+        facts.last_prompt_tokens = Some(910_000);
+        strip_content(
+            None,
+            LiveCounts {
+                pending_approvals: 2,
+                running_tools: 0,
+                remembered: 9,
+                session_allow: true,
+                has_session: true,
+                generating: true,
+            },
+            &facts,
+            Some("11111111-2222-3333-4444-555555555555"),
+        )
+        .switching_to(Some("Default (recommended)"))
+    }
+
+    /// ⚠️ **A companion, not the contract** — see
+    /// [`the_bands_two_halves_never_overlap_however_narrow_it_gets`] for why height alone proves
+    /// nothing. This still pins the *other* half of "one band": that nothing in it is ever taller
+    /// than the row [`strip_box`] reserved, which is how the ring or a plate would break it.
+    #[test]
+    fn the_band_holds_one_line_at_a_narrow_width() {
+        let ctx = egui::Context::default();
+        let mut pane = FakePane::new("x");
+        pane.want_focus = false;
+
+        let busy = the_busiest_band();
+
+        // 260 pt is narrower than a single console tab is ever likely to be and is the point:
+        // the property has to hold where the fixed set alone is wider than the band.
+        for width in [260.0_f32, 380.0, 520.0, 900.0] {
+            let mut band = 0.0;
+            for _ in 0..3 {
+                band = strip_frame_at(&ctx, &busy, &mut pane, width).0;
+            }
+            assert!(band > 0.0, "the band vanished at {width} pt");
+            assert!(
+                band < 44.0,
+                "the band became two lines at {width} pt ({band}) — a segment wrapped instead \
+                 of giving way",
+            );
+        }
     }
 
     /// 🚨 CONTRACT: **a turn that ended well leaves no caption; a turn that failed or was
@@ -9240,7 +9746,7 @@ mod tests {
         let facts = started("claude-opus-5");
         let band = |on: bool| {
             let counts = LiveCounts { session_allow: on, ..live(0, 0) };
-            strip_content(None, counts, &facts, Some("abc"), None)
+            strip_content(None, counts, &facts, Some("abc"))
         };
 
         assert_eq!(band(false).session_allow, None, "the console asking is not news");
@@ -9272,7 +9778,6 @@ mod tests {
             LiveCounts { session_allow: true, ..live(0, 0) },
             &facts,
             Some("abc"),
-            None,
         );
         let mode = both.mode.marker.expect("the mode still speaks for itself");
         let ours = both.session_allow.expect("and so does ours");
@@ -9294,7 +9799,6 @@ mod tests {
             LiveCounts { session_allow: true, ..live(0, 0) },
             &facts,
             Some("abc"),
-            None,
         );
         assert!(ours_only.mode.marker.is_none());
         assert!(ours_only.session_allow.is_some());
@@ -9307,7 +9811,7 @@ mod tests {
     fn a_standing_allow_is_not_one_of_the_remembered_decisions() {
         let facts = started("claude-opus-5");
         let counts = LiveCounts { session_allow: true, remembered: 0, ..live(0, 0) };
-        let content = strip_content(None, counts, &facts, Some("abc"), None);
+        let content = strip_content(None, counts, &facts, Some("abc"));
         assert!(
             !content.chips_seen(true).iter().any(|c| c.contains("remembered")),
             "no entries, so no chip: {:?}",
@@ -9363,11 +9867,11 @@ mod tests {
     #[test]
     fn the_bands_symbols_are_the_ones_the_mono_face_has_to_draw() {
         let facts = started("claude-opus-5");
-        let asking = strip_content(None, live(1, 0), &facts, Some("abc"), None);
+        let asking = strip_content(None, live(1, 0), &facts, Some("abc"));
         assert!(asking.reading.text.starts_with('◈'), "{}", asking.reading.text);
-        let working = strip_content(None, live(0, 2), &facts, Some("abc"), None);
+        let working = strip_content(None, live(0, 2), &facts, Some("abc"));
         assert!(working.reading.text.starts_with('●'), "{}", working.reading.text);
-        let writing = strip_content(None, live_generating(0, 0), &facts, Some("abc"), None);
+        let writing = strip_content(None, live_generating(0, 0), &facts, Some("abc"));
         assert_eq!(writing.reading.text, "● generating");
         // Box drawing is the one class the proportional face definitely lacks, and it is
         // what the turn marker used to reach for. Nothing on the band may use it.
@@ -9431,9 +9935,9 @@ mod tests {
         // The band's status half, in every state that carries a symbol.
         let facts = started("claude-opus-5");
         for (name, content) in [
-            ("asking", strip_content(None, live(1, 0), &facts, Some("abc"), None)),
-            ("working", strip_content(None, live(0, 2), &facts, Some("abc"), None)),
-            ("writing", strip_content(None, live_generating(0, 0), &facts, Some("abc"), None)),
+            ("asking", strip_content(None, live(1, 0), &facts, Some("abc"))),
+            ("working", strip_content(None, live(0, 2), &facts, Some("abc"))),
+            ("writing", strip_content(None, live_generating(0, 0), &facts, Some("abc"))),
         ] {
             check(name, &content.reading.text);
             // The traced set, which is a superset of the quiet one — the glyph guard has to
@@ -9452,6 +9956,58 @@ mod tests {
             // Belt and braces on the one that regressed: the dingbats are gone by name.
             assert!(!mark.contains('✓') && !mark.contains('✗'), "{state:?} is back on a dingbat");
         }
+        // 🚨 **The status log's surfaces — the newest sites, and the reason the guard grew.** A
+        // disclosure caret (`▾`) and a clock separator are exactly the characters somebody
+        // reaches for here, and the first is tofu. Every string these two surfaces can draw is
+        // checked: the marks, the summary in all three of its states, the timestamp column, the
+        // header's date span (including the `→` a session crossing midnight puts in it), and the
+        // plates' new compact faces.
+        for open in [true, false] {
+            check("the status line's disclosure mark", drop_mark(open));
+        }
+        check("the status line's name", STATUS_LINE_NAME);
+        check("a log row's exception mark", crate::status_log::LOG_MARK_EXCEPTION);
+        check("a log row's quiet mark", crate::status_log::LOG_MARK_QUIET);
+        {
+            use crate::status_log::{LogTime, Remark as R, StatusLog};
+            let mut log = StatusLog::default();
+            check("an empty log's summary", &log.summary().text);
+            log.push(R {
+                text: "ok /theme organon".into(),
+                always: false,
+                at: LogTime { year: 2026, month: 8, day: 21, hour: 23, minute: 58, second: 11 },
+            });
+            check("a quiet log's summary", &log.summary().text);
+            check("a log row's clock", &log.iter().next().expect("one line").at.clock());
+            log.push(R::note("could not send: broken pipe"));
+            check("an unread log's summary", &log.summary().text);
+            log.push(R::note("the agent process ended"));
+            check("a multiply-unread log's summary", &log.summary().text);
+            log.acknowledge();
+            check("an acknowledged log's summary", &log.summary().text);
+            check("the log header's date", &log.date_span().expect("two lines have a day"));
+            log.push(R {
+                text: "after midnight".into(),
+                always: false,
+                at: LogTime { year: 2026, month: 8, day: 22, hour: 0, minute: 7, second: 3 },
+            });
+            check(
+                "the log header's date span",
+                &log.date_span().expect("a crossed midnight still has a span"),
+            );
+        }
+        // The permission plates' compact faces — a mark instead of the mode's name, and two
+        // words instead of a sentence. `×` is Latin-1 and in both faces; `◈` is Hack's.
+        for mode in [MODE_DEFAULT, "acceptEdits", "dontAsk", "plan"] {
+            check("the permission plate's mark", mode_glyph(mode));
+            if let Some(marker) = mode_marker(mode) {
+                check("a permission marker's band words", &marker.short);
+                check("a permission marker's sentence", &marker.text);
+            }
+        }
+        check("the standing allow's mark", SESSION_ALLOW_LABEL);
+        check("the standing allow's band words", SESSION_ALLOW_SHORT);
+        check("the standing allow's sentence", SESSION_ALLOW_MARKER);
         // The density rows — the newest site, and the reason this guard is an allowlist. A
         // disclosure triangle is the obvious character for both marks and is in none of the
         // four fonts, exactly like the dingbats above.
@@ -9632,12 +10188,23 @@ mod tests {
     /// One frame of the strip, headless — the same shape [`composer_frame`] uses, measuring
     /// the room the band took *away from what follows it*.
     fn strip_frame(ctx: &egui::Context, content: &StripContent, pane: &mut FakePane) -> (f32, f32) {
+        strip_frame_at(ctx, content, pane, 900.0)
+    }
+
+    /// [`strip_frame`] at a chosen pane width — the narrow case is the one that breaks a band,
+    /// and a fixed 900 pt harness cannot see it.
+    fn strip_frame_at(
+        ctx: &egui::Context,
+        content: &StripContent,
+        pane: &mut FakePane,
+        width: f32,
+    ) -> (f32, f32) {
         let mut band = 0.0;
         let mut left = 0.0;
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(900.0, 700.0),
+                egui::vec2(width, 700.0),
             )),
             ..Default::default()
         };
@@ -9666,6 +10233,164 @@ mod tests {
             });
         });
         (band, left)
+    }
+
+    /// One whole frame of the real [`draw`], headless — every child in its real order, which is
+    /// the only way a layout invariant about one of them can be measured at all. Answers where
+    /// the entry box landed, via [`composer_rect`].
+    fn draw_frame(
+        ctx: &egui::Context,
+        pane: &mut ConversationPane,
+        height: f32,
+    ) -> Option<egui::Rect> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(760.0, height),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = draw(
+                    ui,
+                    pane,
+                    &SurfaceImages::new(),
+                    &Default::default(),
+                    &Theme::organon(),
+                    "organon",
+                    &Form::TERMINAL,
+                    crate::panel_stack::Home::Nowhere,
+                );
+            });
+        });
+        composer_rect(ctx)
+    }
+
+    /// 🚨🚨 **CONTRACT: THE ENTRY BOX NEVER MOVES.** This is the reason #129 exists.
+    ///
+    /// James, 2026-08-21, on the surface #127 shipped: *"its positioning isn't right. It should
+    /// not be displacing the entry box. The entry box should never move. So put the entry box
+    /// back where it was and put the status log at the top, sort of like a Quake console
+    /// drop-down."* #127 drew the log between the band and the composer in a bottom-up column,
+    /// so opening it pushed the box James types into up the screen by nine rows.
+    ///
+    /// **What this pins is the rect, not the arrangement**: the composer's rect with the log
+    /// closed must equal its rect with the log open, *exactly* — not "about the same" — and at
+    /// more than one pane height, because a share-of-the-pane bound is precisely the kind that
+    /// holds at 700 pt and fails at 360. It also closes the log again and checks the box came
+    /// back to the same place, which is the direction a linger or an animation would break.
+    ///
+    /// ⚠️ **Mutation-checked**: put `log_drop_down` back in the bottom-up column as a child (or
+    /// give the status line a height that varies with the summary) and the second assertion
+    /// fails naming both rects. A prose invariant is what got us here.
+    #[test]
+    fn the_entry_box_never_moves_when_the_status_log_opens() {
+        for height in [700.0_f32, 460.0, 360.0] {
+            let ctx = egui::Context::default();
+            let mut pane = rewrap_bench::bench_pane(Transcript::new());
+            pane.want_focus = false;
+            // A log with real content in it, including an exception — so the summary is in its
+            // widest state and the drop-down has more rows than it can show.
+            for i in 0..40 {
+                pane.trace(format!("ok /viewport center agent ({i})"));
+            }
+            pane.note("could not send: broken pipe".to_string());
+
+            let mut closed = None;
+            for _ in 0..3 {
+                closed = draw_frame(&ctx, &mut pane, height);
+            }
+            let closed = closed.expect("the composer drew and published its rect");
+
+            pane.set_tracing(true);
+            let mut open = None;
+            for _ in 0..3 {
+                open = draw_frame(&ctx, &mut pane, height);
+            }
+            let open = open.expect("the composer still drew with the log open");
+            assert_eq!(
+                closed, open,
+                "the status log moved the entry box at {height} pt: closed {closed:?}, open \
+                 {open:?}",
+            );
+
+            pane.set_tracing(false);
+            let mut shut = None;
+            for _ in 0..3 {
+                shut = draw_frame(&ctx, &mut pane, height);
+            }
+            assert_eq!(
+                Some(closed),
+                shut,
+                "the entry box did not come back to where it was at {height} pt",
+            );
+            assert!(closed.width() > 0.0 && closed.height() > 0.0, "an empty rect proves nothing");
+        }
+    }
+
+    /// 🚨 CONTRACT: **the status line is one row in every state it can be in.**
+    ///
+    /// It is permanent and it sits above the scrollback, so a line that grew with what it had to
+    /// say would reflow the transcript under it every time the console said something — the
+    /// reshuffle the band spent a whole tier eliminating, arriving at a new surface.
+    ///
+    /// ⚠️ **Mutation-checked**: make the summary label `.wrap()` instead of `.truncate()` and
+    /// this fails at state 2 with `[30.0, 30.0, 42.0, …]` — the long line becoming two rows.
+    ///
+    /// ⚠️ **And a correction worth keeping, because I got it wrong first.** I claimed *dropping*
+    /// `.truncate()` would fail this, and it does not: an egui `left_to_right` layout defaults to
+    /// `Extend`, so an unbounded label runs off the end at exactly one row tall. `.truncate()`'s
+    /// real job here is the **horizontal** bound — it is what keeps the summary off the surface's
+    /// name at the right, the same rule as [`strip_right_reserve`] one surface over — and height
+    /// cannot see that any more than it could see the band's overlap. Same lesson as
+    /// [`the_bands_two_halves_never_overlap_however_narrow_it_gets`], found the same way: by
+    /// running the mutation instead of asserting it.
+    #[test]
+    fn the_status_line_is_one_row_in_every_state() {
+        let ctx = egui::Context::default();
+        let theme = Theme::organon();
+        let line_at = |ctx: &egui::Context, pane: &mut ConversationPane, width: f32| {
+            let mut rect = egui::Rect::NOTHING;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 700.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    rect = status_line(ui, pane, &theme);
+                });
+            });
+            rect
+        };
+        let mut pane = rewrap_bench::bench_pane(Transcript::new());
+        pane.want_focus = false;
+        let mut heights: Vec<f32> = Vec::new();
+        for width in [900.0_f32, 300.0] {
+            // Empty, quiet, broken, read — the four the summary can be in.
+            heights.push(line_at(&ctx, &mut pane, width).height());
+            pane.trace("stderr: Warning: no stdin data received on the first turn".to_string());
+            heights.push(line_at(&ctx, &mut pane, width).height());
+            pane.note(
+                "approvals are not wired (address already in use) — a tool that needs \
+                 permission will fail instead of asking, and nothing else on screen says so"
+                    .to_string(),
+            );
+            heights.push(line_at(&ctx, &mut pane, width).height());
+            pane.log.acknowledge();
+            heights.push(line_at(&ctx, &mut pane, width).height());
+        }
+        let first = heights[0];
+        assert!(first > 0.0, "the status line took no space at all: {heights:?}");
+        for (i, h) in heights.iter().enumerate() {
+            assert!(
+                (h - first).abs() < 0.5,
+                "the status line changed height at state {i}: {heights:?}",
+            );
+        }
     }
 
     /// 🚨 **The strip must not swallow the pane, and must stay one line.**
@@ -9704,19 +10429,9 @@ mod tests {
             },
             &facts,
             Some("11111111-2222-3333-4444-555555555555"),
-            // ✏️ **The log's contribution to the busiest band is now bounded by construction.**
-            // This used to be a diagnostic line repeated eight times — the widest thing that
-            // could arrive — because the band drew the log's *text*. It draws an indicator, so
-            // the widest possible case is the attention face, and that is what this asks for.
-            Some(LogSlot {
-                lines: 42,
-                attention: true,
-                unread: 3,
-                latest: vec!["stderr: something".to_string()],
-            }),
         )
         .switching_to(Some("Default (recommended)"));
-        let empty = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        let empty = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None);
 
         let mut busy_band = 0.0;
         let mut left = 0.0;
@@ -9761,7 +10476,7 @@ mod tests {
     #[test]
     fn the_cold_band_reports_a_cost_and_a_ring_and_does_not_grow() {
         let theme = Theme::organon();
-        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None, None);
+        let cold = strip_content(None, LiveCounts::default(), &SessionFacts::default(), None);
 
         // (1) There is something on the right from the first frame, and it is true.
         assert_eq!(
@@ -9796,7 +10511,6 @@ mod tests {
             LiveCounts { remembered: 9, has_session: true, ..live(0, 3) },
             &facts,
             Some("11111111-2222-3333-4444-555555555555"),
-            Some(LogSlot { lines: 7, attention: false, unread: 0, latest: Vec::new() }),
         );
         assert_eq!(settled.chips.len(), 3, "the settled band carries all three chips");
 
@@ -11025,7 +11739,7 @@ mod tests {
             !accepted.log.exceptions().any(|r| r.text.contains("/theme dark")),
             "an acceptance reached the conversation"
         );
-        assert!(!accepted.log.attention(), "an acceptance lit the band's indicator");
+        assert!(!accepted.log.attention(), "an acceptance lit the status line");
 
         // The fixture's own `local` is `NoDispatch`, which refuses everything — so this is the
         // refusal path with nothing rigged.
@@ -11049,7 +11763,7 @@ mod tests {
             refused.log.exceptions().any(|r| r.text == refusal),
             "a refusal did not reach the conversation: {refusal}"
         );
-        assert!(refused.log.attention(), "a refusal left the band's indicator dark");
+        assert!(refused.log.attention(), "a refusal left the status line dark");
     }
 
     /// `/trace on` and `/trace off`, through the same lane a typed line takes.
@@ -11094,7 +11808,7 @@ mod tests {
         );
     }
 
-    /// 🚨 CONTRACT: **opening the log is what clears the band's indicator, in both directions.**
+    /// 🚨 CONTRACT: **opening the log is what clears the status line, in both directions.**
     ///
     /// The other half of this lives in [`crate::status_log`], where the arithmetic is; what is
     /// pinned here is that the *verb* is wired to it. A `/trace on` that opened the panel and
@@ -11117,31 +11831,56 @@ mod tests {
         assert!(pane.status_log().attention(), "a new exception did not light the indicator");
     }
 
-    /// 🚨 CONTRACT: **the band's indicator is derived from the log and nothing else.**
+    /// 🚨 CONTRACT: **the status line is derived from the log and nothing else, and it is the
+    /// ONLY surface that reports it.**
     ///
-    /// `strip_content` is handed [`crate::status_log::StatusLog::slot`] rather than a flag some
-    /// caller maintained, so there is no second opinion to drift. An empty log offers no
-    /// indicator at all — there would be nothing to open.
+    /// The summary is [`crate::status_log::StatusLog::summary`] read out; there is no flag some
+    /// caller maintained, so there is no second opinion to drift. And #129 removed the band's
+    /// own indicator — two doors to one surface is duplication, and the band is the thing James
+    /// asked to say *less* — so this also pins that the band knows nothing about the log at all.
+    ///
+    /// ⚠️ **Mutation-checked**: give [`StripContent`] a log field again and this stops compiling,
+    /// which is the strongest form the check can take.
     #[test]
-    fn the_band_reads_the_indicator_off_the_log() {
-        let facts = SessionFacts::default();
-        let empty = strip_content(None, live(0, 0), &facts, Some("abc"), None);
-        assert!(empty.log.is_none(), "the band offered a control that opens nothing");
+    fn the_status_line_reads_the_summary_off_the_log_and_the_band_knows_nothing_of_it() {
+        let theme = Theme::organon();
+        let mut pane = palette_pane();
+        assert_eq!(
+            pane.status_log().summary().health,
+            Health::Ok,
+            "a fresh tab is not in trouble",
+        );
 
-        let mut log = crate::status_log::StatusLog::default();
-        log.push(Remark { text: "stderr: warming up".into(), always: false });
-        let quiet = strip_content(None, live(0, 0), &facts, Some("abc"), log.slot());
-        let quiet = quiet.log.expect("one line is a log");
-        assert!(!quiet.attention, "machinery lit the band");
-        assert_eq!(log_label(&quiet), crate::status_log::LOG_QUIET);
+        pane.trace("stderr: warming up".to_string());
+        let quiet = pane.status_log().summary();
+        assert_eq!(quiet.health, Health::Ok, "machinery lit the status line");
+        assert_eq!(health_color(quiet.health, &theme), theme.ok);
+        assert_eq!(quiet.text, "all clear · 1 line");
 
-        log.push(Remark { text: "could not send: broken pipe".into(), always: true });
-        let loud = strip_content(None, live(0, 0), &facts, Some("abc"), log.slot())
-            .log
-            .expect("two lines is a log");
-        assert!(loud.attention, "an exception left the band quiet");
-        assert_eq!(log_label(&loud), crate::status_log::LOG_ATTENTION);
-        assert_eq!(loud.lines, 2, "the hover has to be able to say how much is behind it");
+        pane.note("could not send: broken pipe".to_string());
+        let loud = pane.status_log().summary();
+        assert_eq!(loud.health, Health::Attention, "an exception left the status line green");
+        assert_eq!(health_color(loud.health, &theme), theme.bad);
+        assert_eq!(loud.text, "could not send: broken pipe");
+        assert_eq!(loud.lines, 2, "the summary knows how much is behind it");
+
+        pane.toggle_log();
+        let read = pane.status_log().summary();
+        assert_eq!(read.health, Health::Warning, "a session that broke is not 'all clear'");
+        assert_eq!(health_color(read.health, &theme), theme.asking);
+
+        // 🚨 The three states are three DIFFERENT colours, all of them the theme's own. A palette
+        // that answered the same colour twice would make one of the states unreadable.
+        assert_ne!(theme.ok, theme.asking);
+        assert_ne!(theme.asking, theme.bad);
+        assert_ne!(theme.ok, theme.bad);
+
+        // …and the band, meanwhile, has nothing to say about any of it.
+        let band = strip_content(None, live(0, 0), pane.mapper.facts(), Some("abc"));
+        assert!(
+            !format!("{band:?}").contains("log"),
+            "the band grew a second door to the status log: {band:?}",
+        );
     }
 
     /// 🚨 **A refusal keeps the band whatever the mode.** The quiet default costs a
