@@ -6265,7 +6265,7 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme
 ///
 /// 🚨 **Shared with [`crate::region_line`]** for [`completion_held`]'s reason and one of its
 /// own: the id is whatever the caller's box turned out to have, so nothing here is about the
-/// composer in particular. #129 measured the region line without it — Tab on `add su` produced
+/// composer in particular. #131 measured the region line without it — Tab on `add su` produced
 /// `add surface ` with the caret still at 6, and the next two characters landed as
 /// `add suXYrface `. The same defect the composer's `/hxelp` was, on a second surface.
 pub(crate) fn put_caret_at_end(ctx: &egui::Context, id: egui::Id, text: &str) {
@@ -6496,7 +6496,7 @@ const PALETTE_COMPLETE_STEPS: usize = 4;
 /// appears out of nowhere has not been deleted from, so it is not treated as though it had.
 ///
 /// 🚨 **Shared with [`crate::region_line`], which is the whole reason it is `pub(crate)`.** That
-/// control gained self-completion in #129 and inherited this rule with it — and a second copy
+/// control gained self-completion in #131 and inherited this rule with it — and a second copy
 /// would be a second answer to *"may this frame complete?"*, which is the one question the two
 /// surfaces must never disagree about. The measurements above were taken here and hold there.
 pub(crate) fn completion_held(before: &str, after: &str, held: bool) -> bool {

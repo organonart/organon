@@ -5765,7 +5765,7 @@ viewport …` from a terminal, fills it"*. Tier C's version named a control that
 there, which is exactly the status line that cannot be right — the two arms it used to have (one
 for "a line was drawn", one for "too short") collapse back into one.
 
-##### 🚨 Input parity with the composer — #129
+##### 🚨 Input parity with the composer — #131
 
 James, on a running console: *"currently these do not auto-complete terms when we have specified
 them with a few characters."*
@@ -6360,7 +6360,7 @@ path silently breaks the three-products-simultaneously guarantee that
   `tab_takes_the_highlighted_candidate` drive `egui::Event::Text` and `Event::Key` through
   `region_line::draw` at a real 320 pt column width — so *"a character reaches the box"* and
   *"Tab takes the highlighted candidate"* are now measured rather than asserted, and the
-  measurement is what found the defect. ✏️ **#129 widened that driving and it paid twice over**:
+  measurement is what found the defect. ✏️ **#131 widened that driving and it paid twice over**:
   `a_prefix_completes_itself_all_the_way_to_a_runnable_line`,
   `the_caret_follows_a_line_the_console_rewrote` and
   `a_deletion_is_never_undone_by_the_completion_that_produced_the_line` type character by
@@ -6381,7 +6381,7 @@ path silently breaks the three-products-simultaneously guarantee that
   goes to the wrong reader, and the symptom is one lost Tab rather than anything that looks
   broken. ⚠️ Nor has anyone judged the band: four fixed rows against `MIN_SIDE`-adjacent regions,
   a note that clips rather than wraps, and whether a control that is always showing two words
-  reads as a control or as clutter — all taste calls, all James's. 🚨 **#129 adds one more, and
+  reads as a control or as clutter — all taste calls, all James's. 🚨 **#131 adds one more, and
   it is the sharpest**: self-completion takes the verb at the **first** keystroke, so typing
   `add` in full now yields `add dd`. That is the composer's behaviour applied consistently, and
   whether it is right for a two-verb control is a question only a hand can answer. If it is

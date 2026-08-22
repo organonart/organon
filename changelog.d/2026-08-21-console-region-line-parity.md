@@ -1,4 +1,4 @@
-### Organon Console: a panel column's command line completes itself, and its caret keeps up (#129)
+### Organon Console: a panel column's command line completes itself, and its caret keeps up (#131)
 
 James, on a running console: *"currently these do not auto-complete terms when we have specified
 them with a few characters."*

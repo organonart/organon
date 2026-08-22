@@ -116,7 +116,7 @@
 //! next frame's owner is `None` and the composer has its keys back, which is a way *out* of the
 //! control that costs nothing to build and nothing to explain.
 //!
-//! # 🚨 Input parity with the composer — #129, and what it turned out to be
+//! # 🚨 Input parity with the composer — #131, and what it turned out to be
 //!
 //! James, on a running console: *"currently these do not auto-complete terms when we have
 //! specified them with a few characters."*
@@ -945,7 +945,7 @@ fn consume_keys(ui: &egui::Ui, lines: &mut Lines, region: Region, palette: &Regi
 const COMPLETE_STEPS: usize = 3;
 
 /// Take the completion when there is only one, with no Tab — the composer's §1.9 rule, arriving
-/// on this surface as #129.
+/// on this surface as #131.
 ///
 /// James: *"currently these do not auto-complete terms when we have specified them with a few
 /// characters."* On a control with two verbs and one closed panel table, almost every line is
@@ -1488,7 +1488,7 @@ mod tests {
     /// and [`tests::a_note_appearing_does_not_take_the_box_with_it`] is the case that does catch
     /// its removal.
     ///
-    /// ✏️ **The expected line changed with #129 and the ODD-LOOKING VALUE IS THE POINT — do not
+    /// ✏️ **The expected line changed with #131 and the ODD-LOOKING VALUE IS THE POINT — do not
     /// "fix" it.** These six keystrokes used to leave `add su`. Self-completion now takes `a` at
     /// the first keystroke (it is the only action beginning with it) and rewrites the line to
     /// `add `, so the `d`, `d` that follow are typed *after* a word that is already finished.
@@ -1576,7 +1576,7 @@ mod tests {
             lines.begin();
             frame(&ctx, &reg, &mut lines, typed(c), 320.0);
         }
-        // ✏️ `add dd`, not `add`, since #129 — see
+        // ✏️ `add dd`, not `add`, since #131 — see
         // [`typing_survives_the_palette_opening`]'s doc for why the value looks wrong and is
         // right. One keystroke landing would leave `add `, which is what this distinguishes.
         assert_eq!(
@@ -1713,7 +1713,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #129 — parity with the composer's input affordances
+    // #131 — parity with the composer's input affordances
     // -----------------------------------------------------------------------
 
     /// Two frames of empty input to take focus, which is what every driven test below starts on.
