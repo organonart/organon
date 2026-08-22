@@ -5381,6 +5381,14 @@ arrangement that will not come back. A revoked module is a region whose producer
 revoked while the console is running — clap and `op_from` check only the *shape*, with the same
 function the console uses.
 
+⚠️ **So an unapproved producer's refusal lands on stderr and reaches nobody, exactly as `Overlap`,
+`LastAgent` and `AlreadyHeld` already do.** That is §1.3's standing property of this lane — it is
+fire-and-forget with no return path — and T4 neither introduces nor worsens it. What *is* new is
+that the composer's own `coerce` refuses an unapproved producer **before the line is sent**, over
+`viewport_options`' ring, which is the one door where a person can still edit the words. The CLI
+and MCP doors cannot: their answer depends on a file that may move between validating and
+draining.
+
 #### 🚨 `engine_plan`'s boolean is now "…whose producer is Organon", and getting it wrong is silent
 
 `region_showing_world` is split out of `Console` as a pure function so it can be tested without a
