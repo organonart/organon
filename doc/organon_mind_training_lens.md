@@ -284,12 +284,23 @@ forgotten and rediscovered as a surprise.
 
 ## 6. What this does not claim
 
-- **Nothing here closes the inference honesty gap.** §3's #1 recorded gap is that the per-layer
-  generation glow is a *labeled proxy*, with the real tap shipped (#522 T1) but unconfirmed on any
-  machine — `mind_runtime.rs:930` prints which path it took and nobody has read that line. A
-  measured *training* signal is not evidence about a *generation* tap. #110 is gated on that
-  question and stays gated; the tiers here are not, because a fine-tune's delta and a trainer's
-  loss curve are measured whatever the tap turns out to do.
+- ✏️ **The inference honesty gap is narrower than this document first said, and the correction
+  arrived in review.** The draft claimed the real activation tap was *"unconfirmed on any
+  machine"*. It was already confirmed when that sentence was written: `1f15568` — an ancestor of
+  this branch — records the tap printing `activation tap MEASURED — real per-layer tensors` on
+  **2026-08-21, on organon-one, running `gemma-4-12B-it-QAT-Q4_0.gguf`**, with frames carrying
+  `FLAG_RESID_MEASURED` + `FLAG_MLP_MEASURED`. So `layer_norm` and `mlp_act` are **measured**;
+  what remains a labeled proxy is **`head_summ`** alone, and the confirmation is Windows/CUDA —
+  **Metal is still unrun**. 🚨 That is a much narrower and still-true gap, and stating the wide
+  version was itself the failure principle 5 warns about, pointed the other way: *understating*
+  what is measured is as much a provenance error as overstating it. ⚠️ **Consequence beyond this
+  document:** #110 was explicitly gated on that tap reporting MEASURED, and it did — so that gate
+  is lifted, and anyone still treating #110 as blocked on it is working from the same stale
+  reading.
+- **Nothing here closes what is left of it.** A measured *training* signal is still not evidence
+  about `head_summ`, and none of these tiers touches it. The tiers do not depend on it either: a
+  fine-tune's delta and a trainer's loss curve are measured whatever the attention summary turns
+  out to be.
 - **The Frobenius norm is not importance**, effective rank is not meaning, and a fine-tune moving
   layer 12 the most does not mean layer 12 holds the skill. Each of those is a contested claim
   under principle 5 and must be marked as one.
