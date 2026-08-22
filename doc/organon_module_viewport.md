@@ -509,13 +509,14 @@ interop.
 
 ✏️ **The third number was taken in T5** — `doc/measurements/module-staleness-2026-08-22.md`. It
 needed a second process and a protocol; T2 built the protocol, T5 built the launcher, and
-`organon-module-sim` is a producer in its own program. **The frame the console takes is 8–11 ms
-old at a 60 Hz consumer — half a frame — p90 15–16 ms, worst 17–18 ms, and flat across nine times
-the pixels.**
+`organon-module-sim` is a producer in its own program. **The picture on screen is `≈0.50 × the
+producer's period` old** — 8–11 ms when both ends run at 60 Hz, half a frame, flat across nine
+times the pixels; **50 ms from a producer drawing at 10 Hz to be cheap.** ⚠️ The poll interval does
+not enter: polling faster does not make a frame younger, it shortens how long a stale one stays up.
 
 🚨 **The control is what actually decides §6.** Size barely moved it, so the hypothesis had to be
 tested rather than asserted: hold the size fixed and move the producer's cadence. Staleness is
-`≈0.55 × min(producer period, poll interval)` — set by the two loops' **phase**, with the frame size
+`≈0.50 × the producer's period` (the poll interval does **not** enter) — set by the two loops' **phase**, with the frame size
 absent from the expression. So the reading that would have forced mechanism A — *staleness is the
 copy, therefore buy `unsafe` per-backend interop* — is **not** what the measurement says, and
 mechanism A stays not-yet-justified on this evidence as well as on T0's. ⚠️ It was still not
@@ -819,12 +820,18 @@ and not the other. Both are real, and both are cheaper than a zero-copy shared t
 before anything has been measured.
 
 ✏️ **Something has now been measured, and it moves this paragraph without settling it**
-(`doc/measurements/module-staleness-2026-08-22.md`). The frame the console takes is **half a frame
-old at 60 Hz** and — the part that matters — staleness is `≈0.55 × min(producer period, poll
-interval)`, flat across nine times the pixels. So the sentence above that reads *"a copied frame at
-one or two frames of latency"* is right about the magnitude and wrong about the **cause**: it is
-not the copy, it is two free-running loops sampling each other, and 1440p is not worse than
-640×360.
+(`doc/measurements/module-staleness-2026-08-22.md`). The picture on screen is
+**`≈0.50 × the producer's period` old**, flat across nine times the pixels — half a frame when both
+ends run at 60 Hz. So the sentence above that reads *"a copied frame at one or two frames of
+latency"* is right about the magnitude and wrong about the **cause**: it is not the copy, and 1440p
+is not worse than 640×360.
+
+🚨 **And the poll interval does not enter, which is the part with a consequence.** Polling faster
+does not make a frame younger — it shortens how long a stale one stays up. So a module that idles
+cheaply is the thing that puts an old picture on the glass: **a producer drawing at 10 Hz shows a
+50 ms frame however often the console looks.** ⚠️ On a *still* scene that costs nothing, because
+nothing is moving and nothing is late; what it actually buys is how far a resize trails the border
+being dragged. That is a feel rather than a figure, and it wants a hand on a border.
 
 🚨 **Which changes what the handoff is FOR.** It was framed as the escape from a transport cost
 that would be intolerable at full screen; that cost is not there. What is still there — and is now

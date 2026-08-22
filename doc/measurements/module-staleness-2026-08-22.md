@@ -17,10 +17,20 @@ is what T2 put on the wire for exactly this.
 
 ## The short answer
 
-**Staleness is set by the two loops' cadences, not by the frame size.** At a 60 Hz consumer against
-a ~16 ms producer, the median frame the console takes is **8–11 ms old**, p90 **15–16 ms**, worst
-**17–18 ms** — that is **half a frame at 60 Hz**, and it barely moves between 640×360 and 2560×1440
-despite nine times the pixels.
+**Staleness is set by the producer's frame rate, not by the frame size — and not by how often the
+console looks.**
+
+> **The picture on screen is `≈0.50 × P` old, where P is the producer's period.**
+> Measured to two decimal places from P = 35 ms to P = 250 ms. The poll interval does not appear.
+
+At the case that actually ships — a 60 Hz producer against a 60 Hz console — that is **8–11 ms,
+half a frame**, and it barely moves between 640×360 and 2560×1440 despite **nine times the
+pixels**. A module drawing at 10 Hz to be cheap puts a **50 ms** picture on the glass.
+
+⚠️ **A second, different figure is also measured here and must not be quoted as this one**: how old
+a frame is *when the console takes it*, which is `≈0.55 × min(P, Q)`. The two coincide whenever the
+producer keeps up with the poll and diverge by **15× at P = 250 ms**. Publishing the second as
+though it were the first is the mistake this document made and now records.
 
 🚨 **So §6 stays open.** The reading that would have closed it — staleness dominated by the copy,
 therefore fix it with mechanism A's `unsafe` per-backend interop — is not what the measurement
@@ -99,19 +109,48 @@ The table above is not what a transport cost looks like, so the hypothesis has t
 than asserted: the age of a frame at poll time is dominated by **the phase between two free-running
 loops**. Hold the size fixed and move the producer's period.
 
-| asked for | producer **achieved** | median | p90 | faster loop's period | median ÷ that |
-|---|---:|---:|---:|---:|---:|
-| 4 ms | 4.8 ms | 2.49 ms | 4.53 ms | 4.8 ms | **0.52** |
-| 8 ms | 8.8 ms | 4.83 ms | 7.97 ms | 8.8 ms | **0.55** |
-| 16 ms | 16.8 ms | 10.08 ms | 15.34 ms | 16.7 ms | **0.60** |
-| 33 ms | 33.8 ms | 9.16 ms | 15.37 ms | 16.7 ms | **0.55** |
+🚨 **This section originally reported one number and called it "staleness". There are two, they
+are different quantities, and the difference is invisible at 60 Hz on both sides — which was every
+condition measured here.** See *the third trap* below for how that was caught. Both are now
+measured:
 
-**The last column is flat at ≈0.55 across an eight-fold change in cadence.** Staleness is
-`≈0.55 × min(producer period, poll interval)` and the frame size is not in the expression.
+| | what it is | sampled |
+|---|---|---|
+| **acquired** | how old a frame is **when the console takes it** | only on polls that returned one |
+| **on screen** | how old the picture **currently being painted** is | **every** poll |
 
-⚠️ **The second column is the one the rig reads, and it is not the first.** See *the second trap*
-below: what a producer was *asked* for and what it *achieved* are different numbers, and a rig that
-believes the flag reaches the wrong architectural conclusion.
+1280×720, consumer polling every 16.7 ms, producer cadence swept:
+
+| asked | achieved **P** | acquired | **on screen** | 0.5·P | 0.5·min(P,Q) | **scr ÷ P** |
+|---|---:|---:|---:|---:|---:|---:|
+| 8 ms | 8.8 ms | 4.72 ms | 4.72 ms | 4.4 | 4.4 | 0.54 |
+| 16 ms | 17.4 ms | 13.02 ms | 13.04 ms | 8.7 | 8.3 | 0.75 |
+| 33 ms | 34.9 ms | 10.22 ms | **17.10 ms** | 17.4 | 8.3 | **0.49** |
+| 100 ms | 100.6 ms | 8.71 ms | **50.60 ms** | 50.3 | 8.3 | **0.50** |
+| 250 ms | 250.6 ms | 9.37 ms | **125.08 ms** | 125.3 | 8.3 | **0.50** |
+
+## 🚨 The two laws, and which question each answers
+
+> **What is on the glass: `≈0.50 × P`. The poll interval does not enter.**
+>
+> **What the console acquires: `≈0.55 × min(P, Q)`.**
+
+At P = 250 ms the two predictions are **125 ms and 8.3 ms — a 15× gap** — and the measurement is
+125.08. There is no ambiguity left.
+
+📌 **The physical reason, which is the part that convinces:** the console can only paint what has
+been published. Between publishes the newest frame simply ages, and a poll landing anywhere in that
+window paints it at whatever age it has reached — so the mean is P/2 however often you look.
+**Polling faster does not make a frame younger**; it reduces how long a stale one *stays* on
+screen, which is the other column.
+
+⚠️ **The 17.4 ms row is the ill-behaved one and it is not noise to be averaged away.** P ≈ Q is
+resonance: the two loops beat against each other, and the acquired figure lands at 13.02 ms where
+half the faster period is 8.7. Both laws are asymptotic and neither describes the crossover. A
+producer deliberately matched to the console's frame rate is sitting exactly there.
+
+⚠️ **The `achieved` column is the one the rig reads, never the `asked` one.** See *the second trap*
+below.
 
 🚨 **Two readings, two completely different consequences, which is why this control exists.** If
 staleness were the transport, the fix is mechanism A — the shared GPU texture, `unsafe`,
@@ -136,6 +175,45 @@ strengthened rather than weakened: staleness is bounded by the cadences at *both
 and by the frame size at neither.
 
 ---
+
+## 🚨 The third trap: a law that fit every measurement and was still wrong
+
+`≈0.55 × min(P, Q)` was published as *"staleness"*. It fits every number in the size sweep — and it
+had to, because **every condition there ran ~60 Hz on both sides, where `min(P, Q)` and `0.5 × P`
+are the same expression.** The term that distinguishes them was never varied.
+
+⚠️ **It was not caught by a measurement. It was caught by someone reading two of my own sentences
+next to each other.** I sent the Ascent session a table of what its `Attached` pacing would cost:
+
+| pace | figure I gave |
+|---|---:|
+| 100 ms | ~55 ms |
+| 33 ms | ~18 ms |
+| 16 ms | ~9 ms |
+
+Every row is `0.55 × P`. The formula printed directly above it says `0.55 × min(P, 16.7)`, which
+gives **9.2 ms** for the first row. **The arithmetic I actually performed was the producer-dominated
+law; only the formula was not** — and I did not notice, because in the regime I had measured they
+agree.
+
+📌 **This is the same defect as the second trap, one level up.** There, a lever was not connected
+to the quantity it named. Here, a *term* was not connected to anything: `Q` sat in the published
+expression, was never varied, and could not have been falsified by any data I had. **A relation
+that cannot be wrong on the evidence available is not a finding, it is a guess wearing one.**
+
+🚨 **And it was consequential.** Ascent was holding a constant on this answer. `min` says its 100 ms
+idle pacing costs ~9 ms of staleness — negligible, leave it. The truth is **50 ms**, and the honest
+version of the advice is different again: on a *still* picture that costs nothing at all, and what
+it really buys is how far a resize trails the border being dragged.
+
+⚠️ **A fourth trap fell out of testing the third.** Extending the sweep to 250 ms produced *"only 24
+of 80 samples"* — because the rig **never called `heartbeat()`**. A real console does it once per
+frame; `poll()` does not do it for you. So `organon-module-sim` correctly concluded nobody was
+watching and left after twenty seconds — and the rows that take longer than twenty seconds are
+exactly the slow-producer rows the extension existed to measure. The rig was silently unable to
+reach the regime it had just been built for, and the symptom was a skipped row rather than an
+error. **A test rig that does not behave like the thing it stands in for cannot measure the cases
+where that difference matters.**
 
 ## 🚨 The second trap, and it produced a wrong answer about *architecture* rather than a wrong number
 
