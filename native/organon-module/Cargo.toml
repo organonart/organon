@@ -58,6 +58,20 @@ wgpu = ["dep:wgpu"]
 # `cfg(test)` without the feature.
 sim = []
 
+# 🚨 **A producer in its own process, and the ONLY reason it is a binary.** §4.4's number 2 —
+# how stale the painted frame is — is a subtraction the crate could already express
+# (`FrameView::age`) and could not perform, because both halves of the test suite live in one
+# process. `required-features = ["sim"]` keeps it off every default build, which is the same
+# gate the `sim` feature already carries and for the same reason: the simulator can write a
+# slot while ignoring the reader's hold.
+#
+# ⚠️ It adds NO dependency — `cargo tree -p organon-module` is unchanged, and Ascent's
+# no-GPL-edge job reads that graph.
+[[bin]]
+name = "organon-module-sim"
+path = "src/bin/module_sim.rs"
+required-features = ["sim"]
+
 [dependencies]
 memmap2 = "0.9"
 wgpu = { version = "30", optional = true }

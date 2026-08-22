@@ -128,18 +128,25 @@
 //!   which is the standard §4.4 set for buying `unsafe` per-backend interop. When it is, it
 //!   goes behind this same API.
 //!
-//! # ⚠️ The number this crate still does not have
+//! # ✏️ The number this crate did not have, and now does
 //!
 //! §4.4's number 2 — **frames of latency between "the module drew it" and "the console
-//! painted it"** — is not measured here and nothing in this crate estimates it. Both halves of
-//! the test suite live in one process, which proves correctness and says nothing about
-//! staleness.
+//! painted it"** — was not measurable here, and the reason was structural rather than lazy:
+//! both halves of the test suite live in one process, which proves correctness and says
+//! nothing about staleness. What this crate could do was put the *instrument* on the wire.
+//! Every frame carries the producer's `SystemTime` at publish and [`FrameView::age`] is the
+//! difference, so the measurement became a subtraction rather than a research project.
 //!
-//! ✏️ **What has changed is that it is now a subtraction rather than a research project.**
-//! Every frame carries the producer's `SystemTime` at publish, and [`FrameView::age`] is the
-//! difference — so the moment two processes exist, the number can be *taken* rather than
-//! reasoned about. That was the thing the design said could not be done until T1 and T2
-//! existed. They now do.
+//! **T5 performed it**, using the one thing that was missing — a second process.
+//! `src/bin/module_sim.rs` (behind the `sim` feature) is a producer in its own program, and
+//! `tests/staleness.rs` is the rig. `doc/measurements/module-staleness-2026-08-22.md` is the
+//! answer: **8–11 ms median at a 60 Hz consumer — half a frame — and flat across nine times
+//! the pixels.**
+//!
+//! 🚨 **The control is the part worth carrying here**, because it is a fact about this
+//! protocol: staleness is `≈0.6 × min(producer period, poll interval)`, so it is set by the
+//! two loops' **cadences** and the frame size is not in the expression. A reader who finds a
+//! viewport feeling behind should look at how often the two ends run, not at the copy.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -158,7 +165,7 @@ pub mod sim;
 
 pub use channel::{
     channel_file_name, Control, ModuleChannel, OpenFault, ProducerChannel, ProducerStatus,
-    TICK_FLOOR,
+    CHANNEL_ENV, TICK_FLOOR,
 };
 pub use input::{Button, DrainReport, InputEvent, Key, MouseButton, PushFault, RESERVED};
 pub use presence::{Poll, Presence, Present, Timings};

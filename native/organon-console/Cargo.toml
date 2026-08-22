@@ -71,3 +71,11 @@ alacritty_terminal = "0.26.0"
 #          so nothing new downloads, and `toml` is a plain crates.io crate: it brings no
 #          nih_plug edge and the acceptance test above is unaffected.
 toml = "0.7"
+#   organon-module — the hosted-module contract (`module_host.rs`, T5). ⚠️ **Default features,
+#          i.e. NO `wgpu`**: this package holds the launch, the channel and the verdict, and the
+#          texture belongs to the root-crate binary that owns the device — which is the same
+#          split as every other GPU thing here, and it is what keeps `cargo tree -p
+#          organon-console | grep wgpu` empty. The edge points this way only; that crate must
+#          never depend on anything in this tree, because `organonart/ascent` links it and its
+#          own invariant forbids a GPL arrow.
+organon-module = { path = "../organon-module" }

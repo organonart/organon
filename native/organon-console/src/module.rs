@@ -181,6 +181,37 @@ pub const DIFF_VERB: &str = "console module diff";
 /// The verb that withdraws an approval. Same rule as [`DIFF_VERB`].
 pub const REVOKE_VERB: &str = "console module revoke";
 
+/// The verb that stops a running producer and starts it again — **T5's, and the fifth**.
+///
+/// 🚨 **It is here rather than passed as a bare string at one call site**, which
+/// `organon-module`'s [`Presence::sentence`](organon_module::Presence::sentence) asked for
+/// explicitly: that crate takes the restart verb as a **parameter** so a protocol a game in
+/// another repository links carries no Organon command spellings, and the corollary is that
+/// Organon must then have exactly one place where all five live. Both properties hold at once
+/// only if this constant exists.
+///
+/// # ⚠️ The deliberate answer `presence.rs` asked for, and it goes the other way
+///
+/// That doc predicted `module_work::tests::the_verb_constants_and_the_action_words_are_one_table`
+/// would fail, and reasoned: *"`restart` is a thing the console does to a producer, not a thing
+/// a person approves, so it is not one of `MODULE_ACTIONS`."*
+///
+/// **The premise is right and the conclusion does not follow, so `restart` IS one of
+/// [`crate::module_work::MODULE_ACTIONS`].** That table is not a list of approvals — `diff` and
+/// `revoke` are not approvals either. Its own doc says what it is: *"the action words
+/// `console module` takes"*, read by clap's value parser, by the slash grammar's completion ring
+/// and by `ModuleCmd::resolve`. It is the **grammar**.
+///
+/// And the grammar is exactly what this constant is spent on: the sentence in a dead
+/// rectangle ends *"`console module restart` to restart it"*. A verb named in a sentence and
+/// missing from the table a person's typing is resolved against is a refusal that cannot be
+/// acted on — which is the one failure those constants exist to prevent, arriving through the
+/// door built to stop it.
+///
+/// So the test does not get nudged; it gets a fifth row on both sides and goes on meaning what
+/// it meant.
+pub const RESTART_VERB: &str = "console module restart";
+
 /// How much of a commit hash a sentence in a rectangle shows.
 ///
 /// The record keeps the whole hash — that is the point of §3.2 — but forty characters in a

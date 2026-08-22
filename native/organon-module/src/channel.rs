@@ -71,6 +71,27 @@ pub fn channel_file_name(producer: &str, instance: u32) -> String {
     format!("module-{producer}-{instance}.frames")
 }
 
+/// **The environment variable a launched producer reads to find its channel.**
+///
+/// 🚨 **The handoff had to be named somewhere, and it belongs here for
+/// [`channel_file_name`]'s reason exactly**: it is an agreement between two separately built
+/// binaries in two repositories, and a convention held on one side only drifts silently — the
+/// symptom being a module that starts, finds nothing and exits, which the console then reports
+/// as *"launched, not yet producing"* for ten seconds before calling it lost. One spelling, in
+/// the crate both trees link.
+///
+/// ⚠️ **An environment variable rather than an argument, because a producer is somebody else's
+/// program.** A module's binary already has a command line of its own — Ascent's has
+/// `--headless`, `--dump` and a flight mode — and an argument this protocol inserted would have
+/// to be understood by an argument parser the protocol does not own. An environment variable is
+/// invisible to a `clap` that was never told about it, so **presence is the discriminator**: a
+/// binary that finds this set is being hosted, and one that does not is being run by a person.
+///
+/// 📌 The **value is a full path**, not a name, because the directory is the console's —
+/// `organon-core::ipc::ns_file`'s, so a Console session and an Organon session do not collide —
+/// and resolving it is one line at the console's call site. See [`channel_file_name`].
+pub const CHANNEL_ENV: &str = "ORGANON_MODULE_CHANNEL";
+
 /// Why a producer could not attach to a channel.
 #[derive(Debug)]
 pub enum OpenFault {

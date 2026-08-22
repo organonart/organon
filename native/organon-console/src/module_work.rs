@@ -99,7 +99,7 @@ pub const NONE_GRANT: &str = "none";
 ///
 /// The one table, read by clap's `PossibleValuesParser`, by the slash grammar's `Choice` ring
 /// and by [`ModuleCmd::resolve`] — so a fifth verb is one line here and not four.
-pub const MODULE_ACTIONS: &[&str] = &["approve", "build", "diff", "revoke"];
+pub const MODULE_ACTIONS: &[&str] = &["approve", "build", "diff", "revoke", "restart"];
 
 /// 🚨 **What approving actually costs, in the words a person reads while they do it.**
 ///
@@ -225,6 +225,60 @@ pub trait Workshop: Send + Sync {
     /// a job's filesystem reach is the same seam as its process reach — a test drives both
     /// with one fake and can assert on either.
     fn ensure_dir(&self, path: &Path) -> Result<(), WorkFault>;
+
+    /// **Start a module's own binary and do not wait for it** — T5's launch, and the third
+    /// thing this seam exists for.
+    ///
+    /// 🚨 **A different shape from [`Workshop::run`], not a variant of it.** `run` starts a
+    /// program that ends, and its whole value is what the program said. This starts a program
+    /// that is *supposed* to outlive the call, and its value is a **handle**: nothing is
+    /// collected, nothing is waited for, and the only two questions ever asked of the result
+    /// are *has it exited* and *stop*. Folding the two together would mean a `run` that
+    /// sometimes blocks for minutes and sometimes returns immediately, on the frame thread.
+    ///
+    /// 🚨 **`program` is a `Path`, and that is the one place a string outside [`Tool`]'s closed
+    /// set reaches the OS.** It is not a loosening: the path is *derived* by
+    /// [`module_binary`] from the store root and the producer name — the same rule and the
+    /// same gate as [`artifact_dir`], with [`crate::module::check_producer_name`] between a
+    /// manifest and a path component. **No field of any manifest is ever passed here.** A
+    /// `binary = ` key in `organon-module.toml` would be a manifest granting itself arbitrary
+    /// execution under the word "approve", which is the thing this file's header forbids, and
+    /// it is forbidden by the *absence of the field* rather than by a check.
+    ///
+    /// `env` is the handoff — [`organon_module::CHANNEL_ENV`] and the IPC namespace. It is a
+    /// list rather than the ambient environment because a launch has to be reproducible in a
+    /// test that has not exported anything.
+    fn spawn(
+        &self,
+        program: &Path,
+        cwd: &Path,
+        env: &[(&str, String)],
+    ) -> Result<Box<dyn ModuleProcess>, WorkFault>;
+}
+
+/// **A launched module, from the console's side of the process boundary.**
+///
+/// 🚨 **Two questions and nothing else.** `organon-module`'s `presence.rs` writes down the
+/// honest limit of the shared mapping — *"hung and exited-without-a-farewell are not
+/// distinguishable from inside a shared mapping, and the thing that genuinely knows is the
+/// process handle, which is the launcher's."* This is that handle, and [`ModuleProcess::exited`]
+/// is the answer the channel cannot reach. Anything more (stdout, a signal, a working set)
+/// would be the console learning what the module *is*.
+pub trait ModuleProcess: Send {
+    /// `Some` once the process has ended, carrying its exit code — or `Some(None)` when it was
+    /// killed by a signal, which is neither a success nor a status. `None` while it is running.
+    ///
+    /// ⚠️ **Non-blocking, and it must stay that way**: this is called once per console frame.
+    fn exited(&mut self) -> Option<Option<i32>>;
+
+    /// End it. Called when the console stops hosting this producer — the region was cleared,
+    /// the approval was revoked, a restart was asked for, or the console is going away.
+    ///
+    /// 📌 **The kill is here and the polite request is on the channel.**
+    /// `ModuleChannel::request_close` asks; this does not. A console that only ever asked would
+    /// leak a process every time a module ignored it, and a console that only ever killed would
+    /// deny a module the chance to shut down cleanly — so the host does both, in that order.
+    fn kill(&mut self);
 }
 
 /// [`Workshop`] against the real machine.
@@ -269,6 +323,72 @@ impl Workshop for ProcessWorkshop {
     fn ensure_dir(&self, path: &Path) -> Result<(), WorkFault> {
         std::fs::create_dir_all(path)
             .map_err(|e| WorkFault::NoDirectory { path: path.display().to_string(), why: e.to_string() })
+    }
+
+    fn spawn(
+        &self,
+        program: &Path,
+        cwd: &Path,
+        env: &[(&str, String)],
+    ) -> Result<Box<dyn ModuleProcess>, WorkFault> {
+        let mut cmd = std::process::Command::new(program);
+        cmd.current_dir(cwd);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        // ⚠️ **Inherited, deliberately.** A module's own diagnostics are the only thing that
+        // explains a producer which starts and draws nothing, and the console's stderr is where
+        // every other subsystem here already reports. Capturing them would need a reader thread
+        // per module to avoid filling a pipe and deadlocking the child — which is a thread and
+        // a buffer bought to make a message harder to find.
+        cmd.stdin(std::process::Stdio::null());
+        let child = cmd.spawn().map_err(|e| WorkFault::LaunchFailed {
+            path: program.display().to_string(),
+            why: if e.kind() == std::io::ErrorKind::NotFound {
+                // The most common cause by far, and the one whose OS message ("The system
+                // cannot find the file specified") names neither the module nor the verb.
+                format!("{e} — `{}` produces it", crate::module::BUILD_VERB)
+            } else {
+                e.to_string()
+            },
+        })?;
+        Ok(Box::new(SpawnedProcess { child, ended: None }))
+    }
+}
+
+/// [`ModuleProcess`] over a real [`std::process::Child`].
+struct SpawnedProcess {
+    child: std::process::Child,
+    /// 🚨 **The answer is remembered, because `try_wait` only reports it once.** After it
+    /// reaps, a second call returns `Ok(None)` — indistinguishable from "still running" — so a
+    /// host that asked every frame would see the death for exactly one frame and then decide
+    /// the process was fine again. That is a stale picture with extra steps.
+    ended: Option<Option<i32>>,
+}
+
+impl ModuleProcess for SpawnedProcess {
+    fn exited(&mut self) -> Option<Option<i32>> {
+        if self.ended.is_none() {
+            // An error from `try_wait` means the handle itself is unusable, which is not a
+            // state to keep asking about: treat it as gone, with no status to report.
+            match self.child.try_wait() {
+                Ok(Some(status)) => self.ended = Some(Some(status.code().unwrap_or(-1))),
+                Ok(None) => {}
+                Err(_) => self.ended = Some(None),
+            }
+        }
+        self.ended
+    }
+
+    fn kill(&mut self) {
+        if self.ended.is_some() {
+            return;
+        }
+        let _ = self.child.kill();
+        // Reaped immediately so the child does not become a zombie on Unix — `kill` alone
+        // signals, it does not collect.
+        let _ = self.child.wait();
+        self.ended = Some(None);
     }
 }
 
@@ -321,6 +441,17 @@ pub enum WorkFault {
     BuildFailed { producer: String, tail: String },
     /// `git diff` ran and did not succeed.
     DiffFailed { producer: String, tail: String },
+    /// 🚨 **T5: the module's own binary would not start.** Its own variant rather than
+    /// [`WorkFault::ToolFailed`] because that one names a [`Tool`], and this program is not one
+    /// — it is `<checkout>/target/release/<producer>`, which is the whole point.
+    ///
+    /// The overwhelmingly common cause is a `modules.json` claiming a build that is no longer
+    /// on the disk: a `target` directory cleaned by hand, or a store restored from a backup
+    /// that skipped it. `is_built()` reads the **record**, so it says yes and the file is gone.
+    LaunchFailed { path: String, why: String },
+    /// The frame channel could not be created — no `$TMPDIR`, a full disk, or a mapping the OS
+    /// refused. Nothing can be hosted without it, so it is a refusal rather than a rectangle.
+    ChannelFailed { producer: String, why: String },
 }
 
 impl From<ModuleFault> for WorkFault {
@@ -393,6 +524,13 @@ impl WorkFault {
             WorkFault::DiffFailed { producer, tail } => {
                 format!("`{producer}` could not be compared:\n{tail}")
             }
+            WorkFault::LaunchFailed { path, why } => {
+                format!("{path} would not start: {why}")
+            }
+            WorkFault::ChannelFailed { producer, why } => format!(
+                "`{producer}` has nowhere to draw — its frame channel could not be created: \
+                 {why}"
+            ),
         }
     }
 }
@@ -407,13 +545,20 @@ impl std::fmt::Display for WorkFault {
 // The action word
 // ---------------------------------------------------------------------------------------
 
-/// Which of the four a `console module` line is asking for.
+/// Which of the five a `console module` line is asking for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleCmd {
     Approve,
     Build,
     Diff,
     Revoke,
+    /// 🚨 **T5's, and the one that runs no program in this file.** Restarting is *stop the
+    /// process and launch it again* — [`crate::module_host`], on the frame thread, in
+    /// microseconds — so it takes `revoke`'s route rather than a job's: no network, no
+    /// compiler, nothing to queue behind. The verb is here because
+    /// [`crate::module::RESTART_VERB`] is printed inside a rectangle that a person then types
+    /// at, and a sentence naming a word the grammar refuses is worse than no sentence.
+    Restart,
 }
 
 impl ModuleCmd {
@@ -426,6 +571,7 @@ impl ModuleCmd {
             "build" => Ok(ModuleCmd::Build),
             "diff" => Ok(ModuleCmd::Diff),
             "revoke" => Ok(ModuleCmd::Revoke),
+            "restart" => Ok(ModuleCmd::Restart),
             other => Err(format!(
                 "`{other}` is not something `console module` does — {}",
                 MODULE_ACTIONS.join(", ")
@@ -439,6 +585,7 @@ impl ModuleCmd {
             ModuleCmd::Build => "build",
             ModuleCmd::Diff => "diff",
             ModuleCmd::Revoke => "revoke",
+            ModuleCmd::Restart => "restart",
         }
     }
 }
@@ -744,6 +891,32 @@ impl Built {
 /// function of the store root and the producer cannot: whatever asks, asks the same way.
 pub fn artifact_dir(store_root: &Path, producer: &str) -> Result<PathBuf, WorkFault> {
     Ok(checkout_dir(store_root, producer)?.join("target").join("release"))
+}
+
+/// The file extension an executable carries here. `.exe` on Windows, nothing elsewhere.
+///
+/// ⚠️ `std::env::consts::EXE_SUFFIX` rather than a `cfg!` chain, so this is right on a platform
+/// nobody has thought about yet — and it is the *host* suffix, which is correct because the
+/// binary was built by this machine's `cargo` a moment ago.
+const EXE_SUFFIX: &str = std::env::consts::EXE_SUFFIX;
+
+/// **The binary a module is launched from** — `<checkout>/target/release/<producer>[.exe]`.
+///
+/// 🚨 **Derived, never recorded, and never named by the module.** [`artifact_dir`]'s argument
+/// applies unchanged — a stored path is a second statement of where the build went and the two
+/// can come apart — but here there is a second and stronger one. A `binary = ` key in
+/// `organon-module.toml` would be a string, written by somebody else, arriving at
+/// [`std::process::Command::new`]; this file's header forbids exactly that for [`Tool`] and the
+/// rule does not weaken because the program is the module's own. The producer name is the only
+/// influence a manifest has, it is a name the *person* typed and the repository agreed to
+/// (`IdentityMismatch`), and [`crate::module::check_producer_name`] gates it before it is a path
+/// component.
+///
+/// 📌 **So a module's cargo package must produce a binary named after its producer**, which is
+/// the convention `ascent` already satisfies. It is a real constraint and it is the cheap end
+/// of the trade: the alternative is reading a program name out of a file a person can edit.
+pub fn module_binary(store_root: &Path, producer: &str) -> Result<PathBuf, WorkFault> {
+    Ok(artifact_dir(store_root, producer)?.join(format!("{producer}{EXE_SUFFIX}")))
 }
 
 /// **Build the approved commit**, and record what was actually built.
@@ -1140,6 +1313,20 @@ mod tests {
             self.dirs.lock().unwrap().push(path.to_path_buf());
             Ok(())
         }
+
+        /// 🚨 **A panic, not a stub returning something inert.** Not one verb in this file
+        /// launches anything — `approve`, `build`, `diff` and `revoke` run `git` and `cargo`
+        /// and wait for them — so a `spawn` reached from a job is a job that has grown a
+        /// capability it must not have. A `Ok(never-exits)` here would let that land silently
+        /// and be discovered as a stray process; this fails the test that did it, by name.
+        fn spawn(
+            &self,
+            program: &Path,
+            _cwd: &Path,
+            _env: &[(&str, String)],
+        ) -> Result<Box<dyn ModuleProcess>, WorkFault> {
+            panic!("a `module_work` verb tried to launch {} — none of them may", program.display());
+        }
     }
 
     /// The happy path's script: an existing checkout, a fetch that resolves, a manifest.
@@ -1457,6 +1644,14 @@ mod tests {
             fn ensure_dir(&self, _: &Path) -> Result<(), WorkFault> {
                 Ok(())
             }
+            fn spawn(
+                &self,
+                _: &Path,
+                _: &Path,
+                _: &[(&str, String)],
+            ) -> Result<Box<dyn ModuleProcess>, WorkFault> {
+                panic!("`build` does not launch anything")
+            }
         }
         let err = build(&NoCargo, &store(), &approved()).unwrap_err();
         assert_eq!(err, WorkFault::ToolMissing { tool: Tool::Cargo });
@@ -1692,14 +1887,30 @@ mod tests {
         }
     }
 
-    /// CONTRACT: **the four verb spellings and the four action words are one table.** A
-    /// sentence in a rectangle names a verb by constant (§4.6) and a person types it into a
-    /// command whose action word comes from `MODULE_ACTIONS`; the two coming apart is a
-    /// refusal that cannot be acted on.
+    /// CONTRACT: **the verb spellings and the action words are one table.** A sentence in a
+    /// rectangle names a verb by constant (§4.6) and a person types it into a command whose
+    /// action word comes from `MODULE_ACTIONS`; the two coming apart is a refusal that cannot be
+    /// acted on.
+    ///
+    /// ✏️ **Five since T5, and the fifth was argued rather than added.** `organon-module`'s
+    /// `Presence::sentence` predicted this test would fail when `RESTART_VERB` arrived, and
+    /// reasoned that `restart` should therefore stay out of `MODULE_ACTIONS` — *"a thing the
+    /// console does to a producer, not a thing a person approves."*
+    ///
+    /// The premise is right and the conclusion does not follow. This table is not a list of
+    /// approvals — `diff` and `revoke` are not approvals either — it is the **grammar** of
+    /// `console module`, read by clap's value parser, by the slash ring and by
+    /// [`ModuleCmd::resolve`]. And the grammar is precisely what the constant is spent on: a dead
+    /// rectangle ends *"`console module restart` to restart it"*, so a person reads that verb and
+    /// types it. Leaving it out of the table would print a verb the grammar refuses — which is
+    /// the exact drift this test exists to catch, walking in through the door built to stop it.
+    ///
+    /// So it got a fifth row on both sides and goes on meaning what it meant. See
+    /// [`crate::module::RESTART_VERB`].
     #[test]
     fn the_verb_constants_and_the_action_words_are_one_table() {
-        use crate::module::{APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB};
-        let verbs = [APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB];
+        use crate::module::{APPROVE_VERB, BUILD_VERB, DIFF_VERB, RESTART_VERB, REVOKE_VERB};
+        let verbs = [APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB, RESTART_VERB];
         assert_eq!(verbs.len(), MODULE_ACTIONS.len());
         for (verb, action) in verbs.iter().zip(MODULE_ACTIONS) {
             assert_eq!(*verb, format!("console module {action}"));

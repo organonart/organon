@@ -2610,6 +2610,24 @@ struct Console {
     /// ⚠️ Built at construction rather than per frame: `Registry::new` clones every spec and
     /// walks them for collisions, which is a cost per keystroke on the candidate path.
     line_registry: organon_console::registry::Registry,
+    /// **The hosted modules this console currently has running** — T5.
+    ///
+    /// 🚨 **Owned by the `Console` and released by [`Console::service_module_hosts`]'s `retain`**, so
+    /// dropping the console ends every module process: `ModuleHost::drop` asks, kills, and takes
+    /// the channel file off the disk. A `HashMap` on the stack would leave a fleet of orphans
+    /// holding GPUs every time the window closed.
+    module_hosts: organon_console::module_host::ModuleHosts,
+    /// One destination texture per hosted producer, preallocated and reused. See
+    /// [`HostedTexture`].
+    module_textures: HashMap<String, HostedTexture>,
+    /// **Where each hosted region was drawn last frame**, in points — what the next frame asks
+    /// the producer to draw at.
+    ///
+    /// 📌 [`Console::viewport_points`]' arrangement and its reason exactly: a rect is an output
+    /// of the layout that produced it, so the size a producer is asked for is always one frame
+    /// behind, and points rather than pixels because it is the *ratio* to the window that
+    /// survives a scale nobody has measured yet.
+    module_points: HashMap<String, (f32, f32)>,
     /// **The viewport's render target — ONE texture serving both presentations.**
     ///
     /// 🚨 **One, not one each, and that is [`engine_plan`]'s guarantee spent rather than a
@@ -2846,10 +2864,7 @@ fn draw_regions(
     theme: &Theme,
     viewport: &mut RegionViewport<'_>,
     panels: &mut RegionPanels<'_>,
-    // What is approved right now — read once per frame through
-    // `ModuleRegistry::for_completion`'s bounded-staleness cache (§1.15's measurement, T3a's
-    // implementation), never per region and never straight off the disk.
-    modules: &organon_console::module::ModuleRegistry,
+    hosted: &mut RegionHosted<'_>,
     draw_active_pane: &mut dyn FnMut(&mut egui::Ui),
 ) -> Option<egui::Rect> {
     use organon_console::region::{plan, Content, Producer};
@@ -2970,24 +2985,35 @@ fn draw_regions(
             Some(Content::ThreeD(Producer::Organon)) => {
                 paint_region_notice(&mut child, content_rect, slot.region, theme)
             }
-            // 🚨 **A hosted producer — T4, and NOTHING here draws its picture.** There is no
-            // protocol and no process yet (`doc/organon_module_viewport.md` T3b/T5 own those),
-            // so what this rectangle can honestly do is say why it is not a picture. §4.6's
-            // first two rows are exactly the two states `ModuleState` can reach with nothing
-            // running, which is why only those two exist.
+            // 🚨 **A hosted producer — T5, and this is where the picture arrives.** The whole
+            // decision was made before the UI pass by [`Console::service_module_hosts`]: a texture id
+            // if there is a picture the console may show, and a sentence otherwise. This site
+            // chooses between them and does nothing else.
             //
             // ⚠️ **Never a blank and never a stale texture.** §1.14's vacancy rule applies with
             // more force to a picture than to an empty quarter: a rectangle that was rendering
             // and now is not is precisely what a broken viewport looks like, and the texture is
             // still there and still valid, which is what makes showing it the easiest wrong
-            // thing to do.
-            Some(Content::ThreeD(Producer::Hosted(name))) => paint_module_notice(
-                &mut child,
-                content_rect,
-                slot.region,
-                modules.vacancy(name),
-                theme,
-            ),
+            // thing to do. That is not re-decided here — `image` is `None` for every verdict
+            // §4.6 forbids painting through, because `FrameTexture::apply` was handed the whole
+            // `Poll` and dropped the picture itself.
+            Some(Content::ThreeD(Producer::Hosted(name))) => {
+                let shown = hosted.frames.get(name.as_str());
+                // 🚨 **Remembered for the NEXT frame's `ask_size`.** A rect is an output of the
+                // layout that produced it, so a producer is always asked for the size its
+                // rectangle had a frame ago — `render_viewport`'s arrangement, unchanged.
+                // Collected out of the closure for `RegionPanels::ran`'s reason: applying it
+                // needs `&mut self`, and `self` is split into disjoint field borrows here.
+                hosted.rects.push((name.clone(), content_rect));
+                paint_module(
+                    &mut child,
+                    content_rect,
+                    slot.region,
+                    shown.and_then(|f| f.image),
+                    shown.and_then(|f| f.notice.as_deref()),
+                    theme,
+                );
+            }
             // 🚨 **Vacant is a name, never a blank.** §1.9's `Ring::Empty` argument at the scale
             // of a sixth of a window: a region that draws nothing at all is indistinguishable
             // from one that is broken. The *name* is what carries that, and it is all that
@@ -3049,6 +3075,24 @@ struct RegionPanels<'a> {
     /// it cannot see `OrganicMathParams`, a `ParamSetter` or a `World`. Unchanged from when a
     /// panel was an element in a transcript; only its address moved.
     draw: organon_console::panel_stack::OrganonDraw<'a>,
+}
+
+/// What a **hosted** `3d` region draws this frame, and where it ended up.
+///
+/// 🚨 **The registry is not in here, and its absence is the change T5 makes to this walk.** The
+/// walk used to be handed `&ModuleRegistry` and ask it `vacancy(name)` per region — which was
+/// right while nothing could run, because the registry was the only party with an answer. It is
+/// now one of three (the registry, the process handle, the channel), and the arbitration between
+/// them is [`Console::service_module_hosts`]'s. Leaving a registry lookup at this site would be a
+/// second, poorer answer to a question already answered.
+struct RegionHosted<'a> {
+    /// What [`Console::service_module_hosts`] resolved for each producer, before the UI pass.
+    frames: &'a HashMap<String, ModuleFrame>,
+    /// **Where each hosted region was drawn**, collected out of the frame closure so the next
+    /// frame can ask that producer for that size. `RegionPanels::ran`'s arrangement and its
+    /// reason: applying it needs `&mut self`, which is split into disjoint field borrows for the
+    /// whole closure.
+    rects: &'a mut Vec<(String, egui::Rect)>,
 }
 
 /// What the `3d` region draws this frame — the live viewport's three inputs, bundled so the
@@ -3162,25 +3206,55 @@ fn paint_region_notice(
 /// `None` from `vacancy` is the working case (§1.17), and there is nothing to draw for it yet:
 /// no protocol, no process, no picture. It falls back to the region's own name, which is what
 /// every other rectangle with nothing to show already draws.
-fn paint_module_notice(
+fn paint_module(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     region: organon_console::region::Region,
-    state: Option<organon_console::module::ModuleState>,
+    image: Option<egui::TextureId>,
+    sentence: Option<&str>,
     theme: &Theme,
 ) {
-    let Some(state) = state else {
-        // Approved, and a `BuildRecord` naming those exact bytes. ⚠️ **Reachable, and only from
-        // a hand-written `modules.json`** — nothing in this build fills `built` (T3b does) — so
-        // it is not the unreachable arm `region.rs` refuses to write: a file can put the
-        // registry in this state today, and a rectangle has to draw something when it does.
-        // T5 replaces it with a picture; until then the honest answer is the one a region with
-        // nothing to show already gives.
+    // 🚨 **A picture wins, and nothing else is drawn over it.** `image` is `Some` only when the
+    // producer is live and the console holds a frame it is allowed to show — see
+    // [`ModuleFrame`]. A notice painted on top of a working module would be the console
+    // narrating a rectangle that is doing exactly what it was asked to.
+    if let Some(id) = image {
+        let painter = ui.painter();
+        painter.image(
+            id,
+            rect,
+            // UV 0..1 with no fit policy to get wrong. ⚠️ **The producer's frame and this
+            // rectangle can legitimately differ in size for a few milliseconds** — the console
+            // asks and the producer answers per frame, so a frame in flight when the request
+            // changed carries the old size — and stretching it is the right answer: it is a
+            // good picture that has not caught up, not something to letterboard or to hide.
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            // The identity multiplier, not a colour. Nothing the theme has any business tinting
+            // somebody else's render with — `paint_viewport`'s rule, and it applies with more
+            // force here because this render is not ours.
+            egui::Color32::WHITE,
+        );
+        // The console's own edge, the same phosphor hairline a viewport and a patch panel wear,
+        // which is what says "a thing, deliberately placed" rather than "the render leaked".
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0_f32, theme.panel_edge),
+            egui::StrokeKind::Inside,
+        );
+        return;
+    }
+    let word = region.as_word();
+    ui.painter().rect_filled(rect, 0.0, theme.panel_fill);
+    let Some(sentence) = sentence else {
+        // 🚨 **No picture and nothing to say.** The frames of a cold start before the device
+        // exists, and the frame between a region being asked for and `service_modules` having
+        // run. Falls back to the region's own name, which is what every other rectangle with
+        // nothing to show already draws — never a blank, on §1.9's argument at the scale of a
+        // sixth of a window.
         paint_region_notice(ui, rect, region, theme);
         return;
     };
-    let word = region.as_word();
-    ui.painter().rect_filled(rect, 0.0, theme.panel_fill);
     let inner = rect.shrink(REGION_NOTICE_PAD);
     let mut text = ui.new_child(
         egui::UiBuilder::new()
@@ -3193,7 +3267,7 @@ fn paint_module_notice(
     // construction rather than by hoping the text is short.
     text.set_clip_rect(inner.intersect(ui.clip_rect()));
     text.label(egui::RichText::new(word).monospace().strong().color(theme.panel_title));
-    text.label(egui::RichText::new(state.sentence()).monospace().color(theme.panel_text));
+    text.label(egui::RichText::new(sentence).monospace().color(theme.panel_text));
 }
 
 /// The hairlines **between** regions — and only between them.
@@ -3233,6 +3307,49 @@ fn paint_region_edges(
 /// The inset a region's notice text sits at, in points. The patch panel's `PAD`, so a notice
 /// and a panel in adjacent regions line up rather than each having their own idea of a margin.
 const REGION_NOTICE_PAD: f32 = 8.0;
+
+/// **What one hosted producer's rectangle shows this frame** — a picture, or a sentence.
+///
+/// 🚨 **Both fields, and they are not alternatives to each other in the type.** `image` is `None`
+/// whenever `FrameTexture::view()` is, which covers *nothing has arrived yet* and *every state
+/// §4.6 forbids painting through* in one answer — `gpu.rs`'s own words: *"a call site that draws
+/// the sentence whenever this is `None` has implemented the whole vacancy rule."* So the paint
+/// site's rule is one line: a picture if there is one, the sentence otherwise, and never a blank.
+///
+/// ⚠️ `notice` can be `Some` **while a picture is showing**? No — and that is worth stating
+/// rather than leaving to be inferred. `ModuleHost::observe` returns a notice for every presence
+/// except `Live`, and every non-`Live` presence either has no picture yet (`Starting`) or has had
+/// it dropped (`Forget`). The pairing that cannot happen is *image and notice both set*, and the
+/// pairing that can is *neither* — a cold start before the device exists.
+struct ModuleFrame {
+    image: Option<egui::TextureId>,
+    notice: Option<String>,
+}
+
+/// The console's end of one module's picture: the preallocated destination texture, and its egui
+/// registration.
+///
+/// 📌 **Two objects because they have different lifetimes.** `FrameTexture` reallocates only when
+/// the producer's frame size genuinely changes; the `TextureId` must be renewed with it, and must
+/// **not** be renewed at any other time. `registered` is what keeps the two in step without
+/// either of them knowing about the other.
+struct HostedTexture {
+    tex: organon_module::gpu::FrameTexture,
+    id: Option<egui::TextureId>,
+    /// The `FrameTexture::allocations()` value `id` was made against. `None` until the first
+    /// registration.
+    registered: Option<u64>,
+}
+
+impl HostedTexture {
+    fn new(format: organon_module::PixelFormat) -> HostedTexture {
+        HostedTexture {
+            tex: organon_module::gpu::FrameTexture::new(format),
+            id: None,
+            registered: None,
+        }
+    }
+}
 
 /// Which **presentation** of the viewport the one World frame is being drawn for.
 ///
@@ -3284,6 +3401,34 @@ fn region_showing_world(
     layout.region_holding(organon_console::region::Content::ThreeD(
         organon_console::region::Producer::Organon,
     ))
+}
+
+/// Every **hosted** producer this layout names, in `Region::ALL` order — [`region_showing_world`]'s
+/// exact complement, and a pure function of the layout for its reason.
+///
+/// 🚨 **The two together are total over `Content::ThreeD`, and neither overlaps the other.** That
+/// is the whole of §4.5 in two functions: a region holding `3d` asks *either* Organon for a
+/// `World` frame *or* a module for a texture, never both and never neither.
+/// `a_hosted_producer_does_not_make_the_console_render_a_world_frame` pins the first half; this
+/// is what the second half is read from.
+///
+/// ⚠️ **Duplicates are kept.** Two regions may hold one producer — §4.2 moved `only_one_because`
+/// off the content word precisely so a hosted module can answer *"as many as you like"*, since a
+/// separate process rendering into its own texture has no jitter phase to trade. This tier hosts
+/// **one process per producer** and paints its texture into both rectangles, which is the honest
+/// reading of "the console asks for a size": two regions asking for two sizes is one producer
+/// being asked twice a frame, and the last ask would win. See [`Console::service_module_hosts`], which
+/// resolves it by asking for the **larger** rather than by refusing the layout.
+fn hosted_producers(layout: &organon_console::region::Layout) -> Vec<String> {
+    use organon_console::region::{Content, Producer};
+    layout
+        .occupied()
+        .into_iter()
+        .filter_map(|(_, c)| match c {
+            Content::ThreeD(Producer::Hosted(name)) => Some(name),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What the engine is asked to draw this frame: the backdrop's source, and **which viewport
@@ -3488,6 +3633,9 @@ impl Console {
             module_rx,
             module_tx,
             module_inflight: HashSet::new(),
+            module_hosts: Default::default(),
+            module_textures: HashMap::new(),
+            module_points: HashMap::new(),
             surface_pane: 0,
             surface_clock: 0,
             // Closed, and not seeded from the environment. `ORGANON_SHELL_BACKDROP` exists and
@@ -4816,6 +4964,41 @@ impl Console {
             self.revoke_module(&root, registry, producer);
             return;
         }
+        // 🚨 **`restart` runs here too, and for `revoke`'s reason rather than by resemblance.**
+        // It touches no network and no compiler: it drops a host — which asks the producer to
+        // close, kills the process and removes the channel file — and forgets any remembered
+        // launch refusal. Microseconds. The verb a person reaches for when a rectangle has told
+        // them something is wrong must not be queueable behind the build that broke it.
+        //
+        // ⚠️ **It stops and does not start.** The next frame's `service_module_hosts` launches
+        // it, because that function already asks `ensure` for every producer a region names —
+        // and a launch here would be a *second* launch site, which is how a producer comes to be
+        // started twice against one channel. `ProducerChannel::open` names that exact hazard as
+        // the one thing its side of the rule cannot prevent.
+        if cmd == ModuleCmd::Restart {
+            if self.module_hosts.restart(producer) {
+                eprintln!("organon-console: `{producer}` stopped — it will start again this frame");
+            } else if registry.get(producer).is_none() {
+                eprintln!(
+                    "organon-console: {}",
+                    WorkFault::NotApproved {
+                        producer: producer.to_string(),
+                        known: registry.producers().iter().map(|s| s.to_string()).collect(),
+                    }
+                    .sentence()
+                );
+            } else {
+                // Approved, and nothing was running under that name — a region has to be
+                // holding it for anything to be. Said rather than silently succeeding, because
+                // a verb that appears to work and changes nothing is the defect this console
+                // keeps a tally of.
+                eprintln!(
+                    "organon-console: `{producer}` is not running — a region has to be showing \
+                     it before there is anything to restart"
+                );
+            }
+            return;
+        }
 
         // 🚨 One job per module. All four verbs work in one checkout, and two `git checkout`s
         // or two `cargo build`s in one directory are not slow, they are wrong.
@@ -4862,7 +5045,7 @@ impl Console {
                 Some(m) => Ok(ModuleJob::Diff(Box::new(m), reference)),
                 None => Err(WorkFault::NotApproved { producer: job_producer.clone(), known }),
             },
-            ModuleCmd::Revoke => unreachable!("answered above"),
+            ModuleCmd::Revoke | ModuleCmd::Restart => unreachable!("answered above"),
         };
         let plan = match plan {
             Ok(p) => p,
@@ -6169,6 +6352,210 @@ impl Console {
         Some(id)
     }
 
+    /// **Every hosted module this frame: launched, polled, uploaded, and told what to say.**
+    ///
+    /// 🚨 **The one place a module's pixels reach the GPU**, and the reason it is here rather
+    /// than at the paint site is [`Console::render_viewport`]'s exactly: the frame closure holds
+    /// `self` split into disjoint field borrows, and this needs the device, the queue and the
+    /// egui renderer at once. So it runs *before* the UI pass and hands the walk a finished
+    /// answer — a texture id, or a sentence.
+    ///
+    /// # The order, and what each step is not allowed to skip
+    ///
+    /// 1. **Release** every producer no region names. [`ModuleHosts::retain`] is the single
+    ///    release site, for [`Console::render_viewport`]'s argument: a region cleared, a region
+    ///    retargeted, a layout replaced and a tab closed are four routes to one fact, and
+    ///    releasing at each verb is how one of them comes to be missed.
+    /// 2. **Ensure** each named producer is running, or collect the sentence saying why not.
+    /// 3. **Ask** for the size the region was drawn at *last* frame — the same one-frame-behind
+    ///    arrangement the viewport already has, because a rect is an output of the layout that
+    ///    produced it.
+    /// 4. **Observe**, then hand the whole `Poll` to [`FrameTexture::apply`].
+    ///
+    /// 🚨 **Step 4 hands over the poll and never a frame**, which is what makes §4.6's *never the
+    /// last good frame* unforgettable here rather than remembered: `apply` drops the picture on
+    /// any verdict that forbids painting whether or not this function asked it to, and
+    /// `FrameTexture::view()` then answers `None`, and the paint site draws the sentence. There
+    /// is no branch at this site that could decide otherwise.
+    ///
+    /// ⚠️ **`Forget` drops the picture, not the allocation** — and the egui registration is kept
+    /// with it. A producer that died and is restarted must not pay for a new texture and a new
+    /// registration; that is the per-frame-allocation trap arriving on the recovery path, where
+    /// it costs something only after something has already gone wrong.
+    fn service_module_hosts(
+        &mut self,
+        layout: &organon_console::region::Layout,
+        registry: &organon_console::module::ModuleRegistry,
+    ) -> HashMap<String, ModuleFrame> {
+        use organon_console::module_host::Notice;
+
+        let wanted = hosted_producers(layout);
+        let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
+        self.module_hosts.retain(&wanted_refs);
+        // The textures go with the hosts. Freed through `free_module_texture` so the egui
+        // registration goes too — a freed texture behind a live `TextureId` is the dangling
+        // registration `free_exhibit` already warns about.
+        let stale: Vec<String> = self
+            .module_textures
+            .keys()
+            .filter(|k| !wanted.contains(k))
+            .cloned()
+            .collect();
+        for name in stale {
+            self.free_module_texture(&name, "no region is asking for it");
+        }
+        self.module_points.retain(|k, _| wanted.contains(k));
+        if wanted.is_empty() {
+            return HashMap::new();
+        }
+
+        let Some(store_root) = organon_console::module::ModuleRegistry::store_root() else {
+            // No data directory: nothing can have been fetched, so the registry is empty and
+            // every producer is `NotApproved`. Said through the same sentence rather than a
+            // special one.
+            return wanted
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        ModuleFrame {
+                            image: None,
+                            notice: Some(
+                                Notice::Registry(
+                                    organon_console::module::ModuleState::NotApproved {
+                                        producer: name.clone(),
+                                    },
+                                )
+                                .sentence(),
+                            ),
+                        },
+                    )
+                })
+                .collect();
+        };
+        let channel_dir = organon_core::ipc::ns_file("modules");
+        if let Err(e) = std::fs::create_dir_all(&channel_dir) {
+            eprintln!(
+                "organon-console: {} could not be made ({e}) — no module can be hosted",
+                channel_dir.display()
+            );
+            return HashMap::new();
+        }
+        let namespace = organon_core::ipc::namespace().to_string();
+        let shop = organon_console::module_work::ProcessWorkshop;
+
+        let mut out = HashMap::new();
+        // ⚠️ **Deduplicated, and the size is the LARGER of the rectangles asking.** Two regions
+        // may hold one producer (see [`hosted_producers`]); one process draws one frame, so the
+        // console asks once. Taking the larger means the smaller rectangle scales a good picture
+        // down rather than scaling a small one up, which is the direction that does not look
+        // soft.
+        let mut asked: Vec<&str> = wanted_refs.clone();
+        asked.sort_unstable();
+        asked.dedup();
+        for name in asked {
+            if let Some(notice) = self.module_hosts.ensure(
+                &shop,
+                registry,
+                &store_root,
+                &channel_dir,
+                name,
+                &namespace,
+            ) {
+                out.insert(
+                    name.to_string(),
+                    ModuleFrame { image: None, notice: Some(notice.sentence()) },
+                );
+                continue;
+            }
+            let frame = self.pump_module(name);
+            out.insert(name.to_string(), frame);
+        }
+        out
+    }
+
+    /// One hosted producer's frame: ask for a size, observe, upload.
+    ///
+    /// Split out of [`Console::service_module_hosts`] because the loop there holds `&mut self` across
+    /// an `ensure` and this needs it again for the renderer — one host at a time keeps every
+    /// borrow local, and it is also the whole of what a second call site (a full-screen handoff,
+    /// §6) would need.
+    fn pump_module(&mut self, name: &str) -> ModuleFrame {
+        let Some((device, queue)) = self.world.device().cloned().zip(self.world.queue().cloned())
+        else {
+            // No device yet — the first frames of a cold start. Nothing to upload into, and
+            // nothing worth saying about it: the region is about to have one.
+            return ModuleFrame { image: None, notice: None };
+        };
+        // The size the region was drawn at last frame, as a fraction of the window applied to
+        // the swapchain — `render_viewport`'s measurement, never points times a remembered
+        // scale.
+        if let (Some(points), Some(window_points), Some(gpu)) =
+            (self.module_points.get(name).copied(), self.window_points, self.gpu.as_ref())
+        {
+            let swapchain = (gpu.config.width.max(1), gpu.config.height.max(1));
+            let (w, h) = scene_input::pane_pixels_in(swapchain, points, window_points);
+            if let Some(host) = self.module_hosts.get_mut(name) {
+                host.ask_size(w, h);
+            }
+        }
+        let Some(host) = self.module_hosts.get_mut(name) else {
+            return ModuleFrame { image: None, notice: None };
+        };
+        let held = self
+            .module_textures
+            .entry(name.to_string())
+            .or_insert_with(|| HostedTexture::new(organon_console::module_host::FRAME_FORMAT));
+        let obs = host.observe(std::time::Instant::now());
+        let notice = obs.notice.map(|n| n.sentence());
+        // 🚨 The whole poll, never a frame. See [`Console::service_module_hosts`].
+        held.tex.apply(&device, &queue, &obs.poll);
+        drop(obs.poll);
+
+        // 🚨 **Re-registered only when the texture underneath genuinely changed**, which is what
+        // `FrameTexture::allocations` is for: it grows on a real size change and never per frame
+        // and never on a restart. Registering every frame would leak an egui `TextureId` sixty
+        // times a second — invisible in a screenshot, fatal in an afternoon.
+        let image = match (held.tex.view(), self.renderer.as_mut()) {
+            (Some(view), Some(renderer)) => {
+                if held.registered != Some(held.tex.allocations()) {
+                    if let Some(old) = held.id.take() {
+                        renderer.free_texture(&old);
+                    }
+                    // Linear, like every other picture the console samples into a rectangle
+                    // whose exact pixel size it does not control.
+                    held.id = Some(renderer.register_native_texture(
+                        &device,
+                        view,
+                        wgpu::FilterMode::Linear,
+                    ));
+                    held.registered = Some(held.tex.allocations());
+                }
+                held.id
+            }
+            // No picture to show, or no renderer yet. The registration is deliberately NOT freed
+            // in the first case — see this function's caller on why `Forget` drops the picture
+            // and not the allocation.
+            _ => None,
+        };
+        ModuleFrame { image, notice }
+    }
+
+    /// Drop one module's texture and its egui registration, saying why.
+    ///
+    /// [`Console::free_exhibit`]'s discipline and its unconditional log, for its reason: a
+    /// silently dropped texture reads as *"the picture is still there"*. `[module]` is the tag to
+    /// grep for.
+    fn free_module_texture(&mut self, name: &str, why: &str) {
+        let Some(held) = self.module_textures.remove(name) else { return };
+        if let Some(id) = held.id {
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.free_texture(&id);
+            }
+        }
+        eprintln!("[module] released `{name}`'s texture — {why}");
+    }
+
     /// Drop the viewport's texture and its egui registration, saying why —
     /// [`Console::free_surface`]'s body and its unconditional log, with the one clause that
     /// identifies it changed.
@@ -6297,6 +6684,28 @@ impl Console {
         // ONE render for whichever presentation [`engine_plan`] gave the frame to; the two call
         // sites below paint it, and at most one of them is reached.
         let viewport_image = self.render_viewport();
+        // …and the hosted modules, which are not rendered at all: this launches what a region
+        // asks for, takes the newest whole frame out of each producer's ring and uploads it.
+        // 📌 **Beside `render_viewport` and after it** — it answers the same question for the
+        // other kind of viewport, it needs the same `&mut self` the frame closure is about to
+        // give up, and it must come after everything that installs a substrate rig for the same
+        // reason `render_viewport` does: it touches the device.
+        //
+        // ⚠️ **The registry is read here rather than inside the walk.** T4 read it per frame
+        // through `for_completion`'s bounded-staleness cache and handed it down; the answer is
+        // now arbitrated between three parties (see [`RegionHosted`]), so it is consumed here and
+        // the walk is handed a finished result. The cache is unchanged and so is the condition:
+        // nothing is read at all unless a region names a hosted producer.
+        let layout_now = self.layout.clone();
+        let module_frames = {
+            let registry = (!hosted_producers(&layout_now).is_empty())
+                .then(organon_console::module::ModuleRegistry::store_root)
+                .flatten()
+                .map(|root| organon_console::module::ModuleRegistry::for_completion(&root))
+                .unwrap_or_default();
+            self.service_module_hosts(&layout_now, &registry)
+        };
+        let mut module_rects: Vec<(String, egui::Rect)> = Vec::new();
         // Which presentation that was, so the paint sites can tell "I have the frame" from "the
         // other one does". Read after the render, from the same function the render asked, so
         // the picture and the notice cannot disagree about who owns the world this frame.
@@ -6433,36 +6842,6 @@ impl Console {
         // method and this are two calls to the free `region_showing_world`, so the answer this
         // frame draws with and the answer `engine_plan` was given cannot come apart.
         let three_d_region = region_showing_world(&layout);
-        // 🚨 **What is approved, taken ONCE for the whole frame** — a region holding a hosted
-        // producer asks it what to say instead of a picture. `for_completion` rather than
-        // `load`: this runs on the draw path, and §1.15's measurement of the same shape one
-        // library over is 10.1 ms against a 16.7 ms frame when the file is read straight. The
-        // cache is T3a's, store-root-keyed, 200 ms, invalidated by every write — so a module
-        // approved or revoked in another window is in the rectangle before anybody could notice
-        // it was not.
-        //
-        // ⚠️ Taken once for the whole walk rather than inside the hosted arm, because computing
-        // it in there would be a second borrow of `self` while the closure holds disjoint field
-        // borrows — but **only when the layout actually holds a hosted producer**. `store_root`
-        // is `dirs::data_dir()`, a shell API call on Windows, and a console nobody has approved
-        // a module in must pay nothing at all for a capability it is not using (`CLAUDE.md`
-        // invariant 4, as a cost rather than as a behaviour).
-        let modules = layout
-            .occupied()
-            .iter()
-            .any(|(_, c)| {
-                matches!(
-                    c,
-                    organon_console::region::Content::ThreeD(
-                        organon_console::region::Producer::Hosted(_)
-                    )
-                )
-            })
-            .then(organon_console::module::ModuleRegistry::store_root)
-            .flatten()
-            .map(|root| organon_console::module::ModuleRegistry::for_completion(&root))
-            .unwrap_or_default();
-        let modules = modules.as_ref();
         // The console's one panel column, split out of `self` for the closure. Shared rather
         // than mutable: a `/organon` line asks for a push by leaving a value on
         // `ConversationOutput`, which is applied after the closure with `&mut self` in hand —
@@ -6800,7 +7179,10 @@ impl Console {
                                     true
                                 },
                             },
-                            modules,
+                            &mut RegionHosted {
+                                frames: &module_frames,
+                                rects: &mut module_rects,
+                            },
                             &mut draw_active_pane,
                         );
                     }
@@ -6915,6 +7297,19 @@ impl Console {
         // a yielded region from quietly resizing the portal's own texture underneath it.
         self.viewport_points =
             portal_rect.or(region_viewport_rect).map(|r| (r.width(), r.height()));
+        // The same one-frame-behind arrangement for every hosted producer.
+        //
+        // ⚠️ **`max`, not last-one-wins**, and it is the whole answer to two regions holding one
+        // producer: one process draws one frame, so the console asks once, and asking for the
+        // larger means the smaller rectangle scales a good picture *down*. Last-one-wins would
+        // make the size depend on `Region::ALL` order — a picture that is soft in one rectangle
+        // and sharp in the other, for a reason nothing on screen explains.
+        self.module_points.clear();
+        for (name, rect) in module_rects {
+            let e = self.module_points.entry(name).or_insert((0.0, 0.0));
+            e.0 = e.0.max(rect.width());
+            e.1 = e.1.max(rect.height());
+        }
         // The camera gesture into the world, once per frame, after the UI and before the next
         // render — `wgpu_editor`'s precedent exactly, so a drag reaches the camera in the frame
         // it was made. This is the line the whole "shows the World, not the substrate" argument
