@@ -7,9 +7,10 @@
 <meta name="description" content="Organon is a native GPU application. You divide the window into regions, declare what each holds, and save the arrangement under a name. Every arrangement includes an agent that can operate the whole application through the same commands you use.">
 
 <!-- No analytics, no cookies, no external requests: no fonts, no scripts, no
-     trackers. One file, self-contained. Same rule as organonmind.org, and the
-     same letterhead — this page is the front door to a repository, not an
-     advertisement for a product. -->
+     trackers. One file, self-contained. Same rule as organonmind.org — this
+     page is the front door to a repository, not an advertisement for a
+     product. The LOOK diverges from that site deliberately; see the token
+     block. -->
 
 <link rel="icon" href="/favicon.svg">
 <meta property="og:type" content="website">
@@ -20,22 +21,43 @@
 <meta name="twitter:card" content="summary">
 <style>
 /* ── Tokens ───────────────────────────────────────────────────────────────
-   The paper half is shared with organonmind.org and with the publications:
-   white ground, system sans, wordmark in tracked monospace. The pane half is
-   Organon's own — warm graphite, charcoal, taupe hairlines, bone-white type,
-   per the PRD's visual identity. The page is the paper; the plates are the
-   instrument. Deliberately single-theme: it does not follow the reader's
-   operating system, and every colour is painted explicitly. */
-:root{
-  /* Warm bone, never #ffffff, and every rule a cool blue-grey. Two temperatures
-     on purpose: the PAPER and its chrome are cool, the INSTRUMENT is warm —
-     PRD §5.4 says the shell is "near-black with a hint of brown, never
-     blue-black", so the plates keep their own temperature rather than being
-     tinted to match the page they sit on. */
-  --paper:#faf9f7; --raise:#f2f1ed; --ink:#1a1a1f; --muted:#55606e; --faint:#8996a6;
-  --rule:#dde3ea; --rule-strong:#c3cdd8; --link:#2f5ea8; --dot:#d7dee7;
+   ⚠️ This page is DARK and organonmind.org is stark white. That divergence is a
+   decision, not drift: what carries the family resemblance is the structure —
+   the tracked-monospace wordmark, the labelled meta block, the measure, the
+   colophon, the refusal to advertise — and the surface is allowed to differ,
+   because one of these sites is a publication and the other is a front door to
+   an application whose own shell is dark. Do not "restore" the white ground for
+   consistency; the consistency lives one level up.
 
-  --pane:#141210; --pane-panel:#1d1a16; --pane-rule:#332e26;
+   Deliberately single-theme: it does not follow the reader's operating system,
+   and every colour is painted explicitly. */
+:root{
+  /* ── The ground, and where it comes from ────────────────────────────────
+     pi.dev's ground is #161d27 — HSV(215°, 44%, 15%). Organon's mark is
+     #d9c7a0, hue 41°. Rotating THE HUE ALONE and keeping Pi's saturation and
+     value gives #272216, which is this palette's origin.
+
+     📌 It is worth knowing that this landed on a colour the product had already
+     specified rather than near one: PRD §5.4 asks for a shell that is
+     "near-black with a hint of brown, never blue-black". The derivation and the
+     identity doc agree, which is why the ground is warm rather than merely
+     not-blue.
+
+     ⚠️ Every value below is the SAME HUE, 41°, varying only in saturation and
+     value. Do not introduce a second hue here. The one chromatic exception is
+     --link, and it is the same 41° too — Pi's pale blue accent rotated by the
+     same amount, which is how the favicon's taupe became the link colour. */
+  --paper:#272216; --panel:#312b1d; --raise:#1f1b12;
+  --ink:#ece7dd; --muted:#aa9f8c; --faint:#7f7563;
+  --rule:#413928; --rule-strong:#564b34; --link:#d9c7a0; --dot:#332c1d;
+  --accent:#d9c7a0;
+
+  /* ⚠️ The plates are DARKER than the page, not lighter, and that inversion is
+     deliberate now that the page is dark: a terminal is an inset well you look
+     into, not a card sitting on top. On the earlier light ground they were the
+     only dark thing on the page; here they have to earn the distinction a
+     different way. */
+  --pane:#151109; --pane-panel:#1e190f; --pane-rule:#3a3222;
   --pane-ink:#ece7dd; --pane-muted:#968d80; --pane-accent:#d9c7a0; --pane-warn:#d99a63;
 
   /* Two families and no sans at all — a serif for headings AND body, a mono for
@@ -58,8 +80,9 @@ body{
   background-color:var(--paper); color:var(--ink); font-family:var(--serif);
   font-size:18px; line-height:1.6; margin:0; padding:0 0 7rem;
   text-rendering:optimizeLegibility;
-  /* The faint dotted field. One gradient, no asset, and it sits far enough back
-     that it reads as paper tooth rather than as a grid you are meant to see. */
+  /* The faint dotted field, as Pi has one. One gradient, no asset, and it sits
+     far enough back that it reads as texture rather than as a grid you are
+     meant to see — --dot is one step off --paper and nothing more. */
   background-image:radial-gradient(circle at 1px 1px,var(--dot) 1px,transparent 0);
   background-size:26px 26px;
   background-attachment:fixed;
@@ -81,12 +104,12 @@ p code,li code,td code,dd code{background:var(--raise);border:1px solid var(--ru
    The wordmark gets the same treatment as a publication masthead — monospace,
    uppercase, widely tracked — so the identity is one element used
    consistently rather than a logo. */
-/* A bordered bar, in the same blue-grey as every other panel — Pi's chrome
-   language rather than a bare row of links floating on the paper. */
+/* A bordered bar, one step lighter than the ground — Pi's chrome language
+   rather than a bare row of links floating on the page. */
 .mast{
   display:flex;align-items:center;justify-content:space-between;gap:1.5rem;
   flex-wrap:wrap;margin:1.6rem 0 0;padding:.7rem 1.1rem;
-  border:1px solid var(--rule);border-radius:3px;background:var(--paper);
+  border:1px solid var(--rule);border-radius:3px;background:var(--panel);
 }
 .wordmark{font-family:var(--mono);font-size:.8rem;letter-spacing:.3em;text-transform:uppercase;margin:0;font-weight:500}
 .mastnav{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;display:flex;gap:1.6rem}
@@ -119,7 +142,7 @@ h1{
 
 .meta{
   font-family:var(--mono);font-size:.72rem;line-height:1.9;text-align:left;
-  border:1px solid var(--rule);border-radius:3px;background:var(--paper);
+  border:1px solid var(--rule);border-radius:3px;background:var(--panel);
   margin:3.4rem auto 0;padding:.85rem 1rem;display:grid;
   grid-template-columns:max-content minmax(0,1fr);gap:0 1.6rem;max-width:44rem;
 }
@@ -379,28 +402,28 @@ td:first-child{white-space:nowrap}
         <svg viewBox="0 0 320 152" role="img" aria-label="A window divided into three full-height columns on a three-by-two cell grid. The left column is labelled left, holding agent; the middle column is labelled center, holding 3d; the right column is labelled right, holding panel. The six underlying cells are drawn as faint dashed guides." style="margin-top:1rem;border:1px solid var(--rule);background:var(--raise)">
           <g font-family="ui-monospace, Menlo, Consolas, monospace">
             <!-- the six cells, as guides -->
-            <g stroke="#c9ced6" stroke-width="1" stroke-dasharray="2 3">
+            <g style="stroke:var(--rule-strong)" stroke-width="1" stroke-dasharray="2 3">
               <line x1="112" y1="16" x2="112" y2="136"/>
               <line x1="208" y1="16" x2="208" y2="136"/>
               <line x1="16"  y1="76" x2="304" y2="76"/>
             </g>
             <!-- the three declared regions -->
-            <g fill="none" stroke="#0f1114" stroke-width="1.4">
+            <g fill="none" style="stroke:var(--ink)" stroke-width="1.4">
               <rect x="16"  y="16" width="96" height="120"/>
               <rect x="112" y="16" width="96" height="120"/>
               <rect x="208" y="16" width="96" height="120"/>
             </g>
-            <g font-size="8" letter-spacing="1.2" fill="#8b919b">
+            <g font-size="8" letter-spacing="1.2" style="fill:var(--faint)">
               <text x="24" y="32">LEFT</text>
               <text x="120" y="32">CENTER</text>
               <text x="216" y="32">RIGHT</text>
             </g>
-            <g font-size="10" fill="#0f1114">
+            <g font-size="10" style="fill:var(--ink)">
               <text x="24" y="82">agent</text>
               <text x="120" y="82">3d</text>
               <text x="216" y="82">panel</text>
             </g>
-            <g font-size="7.5" letter-spacing="1" fill="#8b919b">
+            <g font-size="7.5" letter-spacing="1" style="fill:var(--faint)">
               <text x="24" y="128">l</text>
               <text x="120" y="128">c</text>
               <text x="216" y="128">r</text>
@@ -430,44 +453,44 @@ td:first-child{white-space:nowrap}
       <figure>
         <svg viewBox="0 0 320 176" role="img" aria-label="Four inputs — the organon command line, a slash command in the composer, an agent tool call, and a control inside a region — converge on one dispatch, console.viewport, with the arguments region left and content agent." style="border:1px solid var(--rule);background:var(--raise)">
           <g font-family="ui-monospace, Menlo, Consolas, monospace" font-size="8.5">
-            <g fill="none" stroke="#c9ced6" stroke-width="1">
+            <g fill="none" style="stroke:var(--rule-strong)" stroke-width="1">
               <rect x="14" y="12" width="118" height="22"/>
               <rect x="14" y="44" width="118" height="22"/>
               <rect x="14" y="76" width="118" height="22"/>
               <rect x="14" y="108" width="118" height="22"/>
             </g>
-            <g fill="#0f1114">
+            <g style="fill:var(--ink)">
               <text x="22" y="26">organon ...</text>
               <text x="22" y="58">/viewport ...</text>
               <text x="22" y="90">tool call</text>
               <text x="22" y="122">a control</text>
             </g>
-            <g fill="#8b919b" font-size="6.5" letter-spacing="1">
+            <g style="fill:var(--faint)" font-size="6.5" letter-spacing="1">
               <text x="80" y="26">CLI</text>
               <text x="80" y="58">HUMAN</text>
               <text x="80" y="90">AGENT</text>
               <text x="80" y="122">REGION</text>
             </g>
-            <g stroke="#8b919b" stroke-width="1" fill="none">
+            <g style="stroke:var(--faint)" stroke-width="1" fill="none">
               <path d="M132 23 H164 V71"/>
               <path d="M132 55 H164"/>
               <path d="M132 87 H164"/>
               <path d="M132 119 H164 V79"/>
               <path d="M164 75 H196"/>
             </g>
-            <path d="M196 75 l-6 -3.4 v6.8 z" fill="#8b919b"/>
-            <g fill="none" stroke="#0f1114" stroke-width="1.4"><rect x="198" y="52" width="108" height="46"/></g>
-            <g fill="#0f1114">
+            <path d="M196 75 l-6 -3.4 v6.8 z" style="fill:var(--faint)"/>
+            <g fill="none" style="stroke:var(--ink)" stroke-width="1.4"><rect x="198" y="52" width="108" height="46"/></g>
+            <g style="fill:var(--ink)">
               <text x="206" y="70">console.viewport</text>
             </g>
-            <g fill="#8b919b" font-size="7.5">
+            <g style="fill:var(--faint)" font-size="7.5">
               <text x="206" y="84">region: left</text>
               <text x="206" y="94">content: agent</text>
             </g>
-            <g fill="#8b919b" font-size="6.5" letter-spacing="1.4">
+            <g style="fill:var(--faint)" font-size="6.5" letter-spacing="1.4">
               <text x="198" y="46">ONE DISPATCH</text>
             </g>
-            <g fill="#8b919b" font-size="7">
+            <g style="fill:var(--faint)" font-size="7">
               <text x="14" y="150">Two tests hold this shape: every console verb is typeable</text>
               <text x="14" y="162">as a slash command, and all four surfaces of a verb</text>
               <text x="14" y="174">produce the same operation value.</text>

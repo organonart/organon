@@ -1,10 +1,10 @@
 # site/ — organon.art
 
 **The page for `organon.art`, and the front door to this repository.** One file,
-hand-authored, no build step and no external requests. Same letterhead lineage as
+hand-authored, no build step and no external requests. Sibling to
 [`organonmind.org`](https://organonmind.org), whose source is in
 [`organonart/organon-mind`](https://github.com/organonart/organon-mind) — the two
-sites are meant to read as one outfit on two kinds of paper.
+sites share a structure and deliberately not a surface; see **The look**.
 
 ```
 index.html    the page
@@ -47,8 +47,8 @@ own header warns about.
   banner. ⚠️ **This is a promise about *other hosts*, not about file count** —
   self-hosted `.woff2` files under `site/fonts/` would keep it intact, because
   they are served from the same origin. A Google Fonts link would break it. Type
-  is system-only *today* only because the licensed faces have not been bought
-  yet; see **The look**.
+  is system-only *today* because the OFL faces have not been added to the tree
+  yet, not because anything needs buying; see **The look**.
 - **Single theme.** It does not follow the reader's operating system. Every
   colour is painted explicitly, the way a publication has a canonical appearance.
 - **Hand-authored HTML is the document.** There is no markdown source and no
@@ -57,27 +57,40 @@ own header warns about.
 
 ## The look
 
-**Same outfit as organonmind.org, not the same paper.** The publications are
-stark white with system sans; this page is warm bone (`#faf9f7`, never
-`#ffffff`), warm near-black ink, a serif for headings *and* body, and cool
-blue-grey for every hairline, panel border and small mono label. A faint dotted
-field sits behind it all — one CSS gradient, no asset. What carries the family
-resemblance is the *structure*: the tracked-monospace wordmark, the labelled
-meta block, the measure, the colophon.
+**Dark, warm, and derived rather than picked.** pi.dev's ground is `#161d27` —
+HSV(215°, 44%, 15%). Organon's mark is `#d9c7a0`, hue 41°. Rotating **the hue
+alone**, keeping Pi's saturation and value, gives **`#272216`**, and that is the
+origin of this palette.
 
-⚠️ **The two temperatures are deliberate and must not be "fixed".** The paper and
-its chrome are cool blue-grey; the plates are warm graphite. Tinting the plates
-to match the page would break the PRD's §5.4, which says the shell is
-*"near-black with a hint of brown, never blue-black"* — the plates depict the
-application, so they carry the application's colour, not the website's.
+📌 It landed on a colour the product had already specified rather than near one:
+PRD §5.4 asks for a shell that is *"near-black with a hint of brown, never
+blue-black"*. The derivation and the identity doc agree, which is why the ground
+is warm rather than merely not-blue.
 
-🚨 **Both font stacks lead with faces this repository does not ship**, and this
-is a licensing state rather than an oversight. `Plantin MT Pro` needs a Monotype
-**web** licence — a desktop licence does not permit `@font-face` — and
-`Commit Mono` needs its business licence. Until the `.woff2` files are in
-`site/fonts/` there are no `@font-face` blocks at all, so nothing 404s and every
-reader falls through the stack behind them. Adding the files plus two
-`@font-face` blocks is the whole change; nothing else moves.
+⚠️ **Every token is the same hue, 41°, varying only in saturation and value —
+including the link colour**, which is Pi's pale blue accent rotated by the same
+amount and comes out as the favicon's taupe. Do not introduce a second hue.
+
+⚠️ **This page is dark and `organonmind.org` is stark white, and that divergence
+is a decision rather than drift.** What carries the family resemblance is the
+*structure* — the tracked-monospace wordmark, the labelled meta block, the
+measure, the colophon, the refusal to advertise. The surface is allowed to
+differ: one of these sites is a publication, the other is a front door to an
+application whose own shell is dark. Do not "restore" a light ground for
+consistency; the consistency lives one level up.
+
+⚠️ **The plates are darker than the page, not lighter.** On a dark ground a
+terminal is an inset well you look into, not a card sitting on top — the
+inversion is deliberate, and it is what stops the plates dissolving into the
+page now that both are dark.
+
+🚨 **Both font stacks lead with faces this repository does not ship**, and there
+are no `@font-face` blocks at all, so nothing 404s and every reader falls through
+to the stack behind them. `Commit Mono` is **SIL Open Font License 1.1** — read
+out of the file's own name table, so nothing needs buying — and the serif aims at
+**Source Serif 4**, also OFL. ⚠️ Shipping either means also shipping the OFL text
+alongside it and adding a line to the repository's `NOTICE`; the licence requires
+it to travel with the files.
 
 ## The plates
 
