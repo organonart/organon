@@ -17,6 +17,7 @@ members = [
     "organon-world",
     "organon-visual",
     "organon-console",
+    "organon-module",
 ]
 
 [package]

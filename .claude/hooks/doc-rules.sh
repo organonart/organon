@@ -25,10 +25,10 @@
 
 DOC_RULES="
 ARCHITECTURE.md|native/src/params.rs native/organon-core/src/ipc.rs native/src/param_table.rs
-doc/arch/topology.md|native/Cargo.toml native/organon-core/Cargo.toml native/organon-mind/Cargo.toml native/organon-render/Cargo.toml native/organon-scene/Cargo.toml native/organon-agent/Cargo.toml native/organon-world/Cargo.toml native/organon-visual/Cargo.toml native/organon-console/Cargo.toml native/tools/crate-churn.py
+doc/arch/topology.md|native/Cargo.toml native/organon-core/Cargo.toml native/organon-mind/Cargo.toml native/organon-render/Cargo.toml native/organon-scene/Cargo.toml native/organon-agent/Cargo.toml native/organon-world/Cargo.toml native/organon-visual/Cargo.toml native/organon-console/Cargo.toml native/organon-module/Cargo.toml native/tools/crate-churn.py
 doc/arch/render.md|native/organon-render/src/*.rs native/organon-render/src/*.wgsl native/organon-world/src/world.rs native/organon-world/src/rt.rs native/organon-world/src/*.wgsl native/organon-visual/src/*.rs native/src/*.wgsl
 MIND_ARCHITECTURE.md|native/organon-core/src/edition.rs native/organon-mind/src/*.rs native/organon-core/src/gguf*.rs native/src/mind_main.rs native/src/bin/mind_runtime.rs native/src/bin/mind_writer.rs
-CONSOLE_ARCHITECTURE.md|native/organon-console/src/*.rs native/organon-console/Cargo.toml
+CONSOLE_ARCHITECTURE.md|native/organon-console/src/*.rs native/organon-console/Cargo.toml native/organon-module/src/*.rs native/organon-module/Cargo.toml
 .claude/skills/organon-cli/SKILL.md|native/src/bin/ctl.rs native/src/cli.rs
 web/ARCHITECTURE.md|web/src/contracts/sharedState.ts web/src/contracts/generatorOutput.ts web/src/contracts/renderer.ts web/src/contracts/stateSource.ts web/src/render/pbrRenderer.ts web/src/render/webgpuRenderer.ts web/src/state/store.ts native/organon-wasm/src/lib.rs native/organon-manifest/src/lib.rs
 "

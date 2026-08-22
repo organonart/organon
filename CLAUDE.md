@@ -325,6 +325,11 @@ native/organon-mind/   Organon Mind's own code (activation ring, Mind UI,
               model shell). No nih_plug.            → MIND_ARCHITECTURE.md
 native/organon-console/  Organon Console's compositor lib. No nih_plug, ever.
                                                     → CONSOLE_ARCHITECTURE.md
+native/organon-module/ the HOSTED-MODULE CONTRACT — the frame ring, the input
+              ring, the lifecycle. The one crate a module's OWN repo depends on,
+              so `cargo tree -p organon-module` is an acceptance test in TWO
+              trees: one dep (memmap2), no serde, no wgpu, no organon-core, and
+              never an edge to the GPL crates. → CONSOLE_ARCHITECTURE.md §1.19
 doc/arch/     the architecture child docs (render, topology)
 doc/          Organon Mind's public doc set (PRD, build plan, the honesty essay)
 .claude/skills/  organon-cli — driving the running app via the `organon` command.

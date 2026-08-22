@@ -2984,6 +2984,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "organon-module"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "organon-render"
 version = "0.1.0"
 dependencies = [
