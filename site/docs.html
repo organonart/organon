@@ -21,24 +21,38 @@
      (`generated_reference_is_current`). Its tables are deliberately NOT
      reproduced here: a second copy is a copy nothing pins. -->
 
+<link rel="canonical" href="https://www.organon.art/docs">
 <link rel="icon" href="/favicon.svg">
-<link rel="canonical" href="https://organon.art/docs">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Organon">
 <meta property="og:title" content="Organon — Documentation">
 <meta property="og:description" content="Build it, run it, and operate it: regions and layouts, the agent, the visualizer, the model inspector, and the organon command surface.">
-<meta property="og:url" content="https://organon.art/docs">
+<meta property="og:url" content="https://www.organon.art/docs">
 <meta name="twitter:card" content="summary_large_image">
 <!-- ⚠️ og:image must be an ABSOLUTE url and a raster: no scraper renders SVG,
      and a relative path is silently ignored by most of them. 2400×1260 because
      og.html is rendered at 1200×630 with a 2× device scale factor — state the
      PIXELS OF THE FILE here, not the CSS size it was laid out at. Source and
-     re-render command: site/og.html. -->
-<meta property="og:image" content="https://organon.art/og.png">
+     re-render command: site/og.html.
+
+     🚨 EVERY ABSOLUTE URL ON THIS PAGE NAMES www BECAUSE www IS VERCEL'S PRIMARY
+     DOMAIN AND THE APEX 308s TO IT. This is not cosmetic and it is not a
+     preference. Telegram fetches the PAGE through the redirect happily, then
+     refuses to follow one for the IMAGE — so an og:image on the apex resolves
+     to a 308, Telegram finds no image, and the link renders with NO PREVIEW AT
+     ALL. Measured: apex/og.png = 308, www/og.png = 200 image/png.
+
+     ⚠️ THESE URLS ARE COUPLED TO A SETTING THAT IS NOT IN THIS REPOSITORY. If
+     the primary domain is ever flipped to the apex, the redirect reverses and
+     every one of these lines has to flip WITH it, in the same change — or the
+     same bug returns pointing the other way, with the same silent symptom. -->
+<meta property="og:image" content="https://www.organon.art/og.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="2400">
 <meta property="og:image:height" content="1260">
 <meta property="og:image:alt" content="Organon — an extensible ecosystem that starts as a blinking cursor.">
+<meta name="twitter:image" content="https://www.organon.art/og.png">
+<meta name="twitter:image:alt" content="Organon — an extensible ecosystem that starts as a blinking cursor.">
 <style>
 /* ── Tokens ───────────────────────────────────────────────────────────────
    Copied from index.html, which owns them. Warm bone paper, warm near-black
@@ -131,6 +145,11 @@ p code,li code,td code,dd code,figcaption code{background:var(--raise);border:1p
 }
 .wordmark{font-family:var(--mono);font-size:.8rem;letter-spacing:.3em;text-transform:uppercase;margin:0;font-weight:500}
 .wordmark a{color:inherit;text-decoration:none}
+/* ⚠️ Deliberately --faint, and the one place on either page where that token
+   touches something visible: the separator carries no information, so it is
+   meant to sit quieter than the two words it divides. Raising it to --muted
+   would make the slash compete with the wordmark. Not a contrast oversight —
+   li::marker below is the same call. */
 .wordmark .sep{color:var(--faint)}
 .mastnav{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;display:flex;gap:1.6rem}
 .mastnav a{color:var(--muted);text-decoration:none;padding-bottom:.15rem;border-bottom:1px solid transparent}
@@ -154,11 +173,11 @@ p code,li code,td code,dd code,figcaption code{background:var(--raise);border:1p
 }
 .rail-h{
   font-family:var(--mono);font-size:.64rem;letter-spacing:.16em;text-transform:uppercase;
-  color:var(--faint);margin:0 0 .5rem;padding-bottom:.55rem;border-bottom:1px solid var(--rule);
+  color:var(--muted);margin:0 0 .5rem;padding-bottom:.55rem;border-bottom:1px solid var(--rule);
 }
 .rail-g{
   font-family:var(--mono);font-size:.6rem;letter-spacing:.15em;text-transform:uppercase;
-  color:var(--faint);margin:1.3rem 0 .3rem;
+  color:var(--muted);margin:1.3rem 0 .3rem;
 }
 .rail-g:first-of-type{margin-top:.9rem}
 .rail ul{list-style:none;margin:0;padding:0;max-width:none}
@@ -180,7 +199,7 @@ h1{
   font-size:clamp(1.9rem,3.4vw,2.5rem);line-height:1.22;margin:0;max-width:32rem;text-wrap:balance;
 }
 .docmeta{
-  font-family:var(--mono);font-size:.7rem;letter-spacing:.05em;color:var(--faint);
+  font-family:var(--mono);font-size:.7rem;letter-spacing:.05em;color:var(--muted);
   display:flex;flex-wrap:wrap;gap:.35rem 1.4rem;margin:1.2rem 0 0;
   border:1px solid var(--rule);border-radius:3px;background:var(--panel);padding:.6rem .9rem;
   max-width:var(--measure);
@@ -198,12 +217,12 @@ section{margin:2.8rem 0 0;scroll-margin-top:1.4rem}
 hr.rule{border:0;border-top:1px solid var(--rule);margin:2.8rem 0 0;max-width:none}
 h2{font-weight:400;font-style:italic;font-size:1.45rem;letter-spacing:-.003em;line-height:1.24;margin:0 0 .8rem;text-wrap:balance;scroll-margin-top:1.4rem}
 h3{font-weight:400;font-style:italic;font-size:1.1rem;margin:1.8rem 0 .45rem;scroll-margin-top:1.4rem}
-.part{font-family:var(--mono);font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin:0 0 .45rem}
+.part{font-family:var(--mono);font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin:0 0 .45rem}
 .lede{font-size:1.04rem}
 .aside{font-size:.95rem;color:var(--muted);border-left:2px solid var(--rule-strong);padding-left:.9rem;margin:1.3rem 0 0;max-width:var(--measure)}
 .aside p{margin:0 0 .5rem}
 .aside p:last-child{margin:0}
-.owns{font-family:var(--mono);font-size:.68rem;line-height:1.7;color:var(--faint);margin:1rem 0 0;max-width:var(--measure)}
+.owns{font-family:var(--mono);font-size:.68rem;line-height:1.7;color:var(--muted);margin:1rem 0 0;max-width:var(--measure)}
 .owns a{color:var(--muted)}
 
 /* A permalink beside every heading. Shown to keyboard users and on hover; it is
@@ -226,7 +245,7 @@ section:target{
 pre{font-family:var(--mono);font-size:.76rem;line-height:1.6;background:var(--raise);
   border:1px solid var(--rule-strong);border-radius:3px;padding:.75rem .95rem;margin:1.05rem 0;overflow-x:auto;max-width:var(--measure)}
 pre code{background:none;border:0;padding:0;font-size:1em}
-pre .c{color:var(--faint)}
+pre .c{color:var(--muted)}
 
 /* ── Plates ──────────────────────────────────────────────────────────────
    A plate is a picture of Organon, not a live thing. ⚠️ These stay WARM while
@@ -267,7 +286,7 @@ figure svg{display:block;width:100%;height:auto}
 .tablewrap.wide{max-width:none}
 table{border-collapse:collapse;width:100%;font-size:.92rem}
 th,td{text-align:left;padding:.5rem .9rem .5rem 0;border-bottom:1px solid var(--rule);vertical-align:top}
-th{font-family:var(--mono);font-size:.62rem;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);font-weight:500;border-bottom:1px solid var(--rule-strong)}
+th{font-family:var(--mono);font-size:.62rem;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);font-weight:500;border-bottom:1px solid var(--rule-strong)}
 td.n{white-space:nowrap}
 td code{white-space:nowrap}
 
