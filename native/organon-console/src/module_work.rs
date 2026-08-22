@@ -477,6 +477,17 @@ pub enum WorkFault {
     /// want different next actions — one is "fix the code", this one is "the repository does not
     /// produce the binary this contract requires", which is a manifest question.
     NoBinary { producer: String, expected: String },
+    /// 🚨 **A binary is there and THIS build did not produce it.**
+    ///
+    /// The one the existence check above cannot see, and the more dangerous of the two: a binary
+    /// left in `target/` by a previous commit satisfies `file_exists`, so the console records a
+    /// built commit and then **launches bytes that are not that commit's** — which defeats §3.4's
+    /// entire reason for recording a commit at all. Everything looks healthy.
+    ///
+    /// ⚠️ Its own variant rather than folding into [`WorkFault::NoBinary`], because the two want
+    /// different next actions from a person. *No binary* says the **repository** does not meet
+    /// the published contract. *This one* says the **checkout** is not what you think it is.
+    StaleBinary { producer: String, expected: String },
     /// The frame channel could not be created — no `$TMPDIR`, a full disk, or a mapping the OS
     /// refused. Nothing can be hosted without it, so it is a refusal rather than a rectangle.
     ChannelFailed { producer: String, why: String },
@@ -560,6 +571,17 @@ impl WorkFault {
                  {expected}. A module's repository must produce a release binary named for its \
                  producer from a plain `cargo build --release`; cargo SKIPS a `[[bin]]` whose \
                  `required-features` are off, silently and with exit 0, which is the usual cause"
+            ),
+            // ⚠️ **The sentence has to concede the exit code, or it reads as the console being
+            // broken.** The person's first reaction is *"but it built fine"* — and it did; cargo
+            // exited 0 and was honest, because it was asked to build a target it then had no
+            // reason to build. A refusal that does not say so is one nobody believes.
+            WorkFault::StaleBinary { producer, expected } => format!(
+                "`{producer}` built successfully and produced no binary — cargo exited 0 and was \
+                 honest, because it never built one. What is at {expected} is left over from an \
+                 earlier build, so it is NOT the commit just checked out, and launching it would \
+                 run bytes no record names. Usually a `[[bin]]` whose `required-features` are off. \
+                 Delete it and build again to see the real failure"
             ),
             WorkFault::ChannelFailed { producer, why } => format!(
                 "`{producer}` has nowhere to draw — its frame channel could not be created: \
@@ -953,6 +975,57 @@ pub fn module_binary(store_root: &Path, producer: &str) -> Result<PathBuf, WorkF
     Ok(artifact_dir(store_root, producer)?.join(format!("{producer}{EXE_SUFFIX}")))
 }
 
+/// **Did this cargo run actually produce `binary`?**
+///
+/// 🚨 **The question `file_exists` cannot answer, and the whole of the staleness half.** Cargo
+/// emits one `compiler-artifact` record per unit it built *or confirmed current*, each carrying
+/// the `executable` it produced. A target cargo skipped emits **nothing at all** — so the absence
+/// of a record naming our binary is cargo saying, in its own voice, that this build did not
+/// produce it.
+///
+/// # ⚠️ Three candidate mechanisms, measured rather than argued
+///
+/// Built as a scratch crate with a `required-features` bin and run in all four states
+/// (2026-08-22):
+///
+/// | | cargo exit | binary on disk | `compiler-artifact` | `file_exists` | mtime | this |
+/// |---|---|---|---|---|---|---|
+/// | skipped, nothing there before | 0 | no | none | refuses ✓ | refuses ✓ | refuses ✓ |
+/// | a real build | 0 | yes | yes | passes ✓ | passes ✓ | passes ✓ |
+/// | **an up-to-date rebuild** | 0 | yes | yes, `fresh` | passes ✓ | **REFUSES ✗** | passes ✓ |
+/// | **a stale leftover, now skipped** | 0 | yes | none | **PASSES ✗** | refuses ✓ | refuses ✓ |
+///
+/// 🚨 **The mtime candidate — stamp the build's start, compare the artifact's — fails on the one
+/// case that is ordinary.** Cargo does not relink when nothing changed, so a second build of the
+/// same commit leaves an mtime older than the build that just succeeded. The first two rows are
+/// misconfigurations; row three is Tuesday. A check that refuses an ordinary rebuild is withdrawn
+/// within a day, **and takes the row-four hole with it** — so it does not merely fail, it fails in
+/// the way that discredits the check it was meant to be.
+///
+/// 📌 **`fresh` is deliberately not consulted**, and it is the trap here because it *looks* like
+/// exactly what a staleness check should gate on. A fresh artifact is cargo asserting the binary
+/// on disk **is** current for these inputs — which is the question being asked, not a reason for
+/// suspicion. Gating on it re-introduces row three.
+///
+/// ⚠️ **Matched on file NAME, not on the full path, and the error direction is why.** Cargo prints
+/// an absolute path; a store root reached through a symlink, a junction or a short path yields a
+/// different spelling of the same file, and an exact compare would then refuse a good build — row
+/// three's failure by another road. The name is unambiguous within one package, and cargo is run
+/// in the module's own checkout, so every artifact it reports belongs to that checkout.
+///
+/// 📌 **A malformed or unparseable line is skipped, never fatal.** Cargo's record set grows, and a
+/// reason this build does not recognise is not evidence about our binary either way.
+fn produced_executable(stdout: &str, binary: &Path) -> bool {
+    let Some(want) = binary.file_name() else { return false };
+    stdout.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(|m| {
+        m.get("reason").and_then(|r| r.as_str()) == Some("compiler-artifact")
+            && m.get("executable")
+                .and_then(|e| e.as_str())
+                .map(|e| Path::new(&e.replace('\\', "/")).file_name() == Some(want))
+                .unwrap_or(false)
+    })
+}
+
 /// **Build the approved commit**, and record what was actually built.
 ///
 /// §3.4's corollary is the whole of this function's shape: *"`modules.json` records the commit
@@ -999,7 +1072,18 @@ pub fn build(
     let status = shop.run(Tool::Git, &["status", "--porcelain"], &checkout)?;
     let dirty = !status.stdout.trim().is_empty();
 
-    let built = shop.run(Tool::Cargo, &["build", "--release"], &checkout)?;
+    // ⚠️ **`json-render-diagnostics`, NOT plain `json`, and the difference is what a person sees
+    // when a build fails.** Both put machine-readable records on stdout; plain `json` *also* moves
+    // the compiler's diagnostics there, as JSON, leaving stderr holding two lines — `Compiling…`
+    // and `could not compile … due to 1 previous error`. [`ToolOutput::tail`] prefers stderr, so
+    // [`WorkFault::BuildFailed`] would carry that summary and **not the error**. Measured on a
+    // failing build: plain `json` leaves zero rendered diagnostics on stderr, this leaves the
+    // whole thing. It also makes stdout pure JSON, which is what [`produced_executable`] parses.
+    let built = shop.run(
+        Tool::Cargo,
+        &["build", "--release", "--message-format=json-render-diagnostics"],
+        &checkout,
+    )?;
     if !built.succeeded() {
         return Err(WorkFault::BuildFailed {
             producer: module.producer.clone(),
@@ -1029,6 +1113,20 @@ pub fn build(
     let binary = module_binary(store_root, &module.producer)?;
     if !shop.file_exists(&binary) {
         return Err(WorkFault::NoBinary {
+            producer: module.producer.clone(),
+            expected: binary.display().to_string(),
+        });
+    }
+    // 🚨 **…and the half `file_exists` cannot see.** A binary left by an earlier build satisfies
+    // the check above while belonging to a different commit, after which the record names bytes
+    // that are not the ones on disk and the console launches them. See [`produced_executable`] for
+    // the four measured cases and for why this is not an mtime comparison.
+    //
+    // ⚠️ **Second, not first**, so the two refusals land in the order a person can act on: with
+    // nothing on disk at all, *"the repository produces no such binary"* is the more useful
+    // sentence, and it is [`WorkFault::NoBinary`]'s.
+    if !produced_executable(&built.stdout, &binary) {
+        return Err(WorkFault::StaleBinary {
             producer: module.producer.clone(),
             expected: binary.display().to_string(),
         });
@@ -1635,6 +1733,32 @@ mod tests {
     // build — §3.4's corollary
     // -----------------------------------------------------------------------------------
 
+    /// What cargo's stdout looks like when it really did produce this producer's binary.
+    ///
+    /// 🚨 **The twin of [`Fake::produces`], and they are deliberately two statements rather than
+    /// one.** `produces` answers `file_exists` — *is a binary there?* This answers
+    /// [`produced_executable`] — *did THIS build make it?* A successful build says yes to both; the
+    /// whole of case D is a `Fake` that says yes to the first and no to the second, and collapsing
+    /// them into one switch would make that case unrepresentable in a test.
+    ///
+    /// ⚠️ **The path is derived from [`module_binary`] rather than written out**, so the `.exe`
+    /// suffix is whatever this platform's build would really emit. A hand-typed `"ascent"` would
+    /// pass on Linux and silently stop matching on Windows.
+    fn cargo_built(producer: &str) -> ToolOutput {
+        let exe = module_binary(&store(), producer).unwrap();
+        ToolOutput::ok(&format!(
+            "{{\"reason\":\"compiler-artifact\",\"executable\":{}}}\n\
+             {{\"reason\":\"build-finished\",\"success\":true}}",
+            serde_json::Value::from(exe.display().to_string())
+        ))
+    }
+
+    /// Cargo exited 0 and built nothing — a `[[bin]]` whose `required-features` are off. Measured
+    /// against a real scratch crate on 2026-08-22: the whole of stdout is one `build-finished`.
+    fn cargo_built_nothing() -> ToolOutput {
+        ToolOutput::ok("{\"reason\":\"build-finished\",\"success\":true}")
+    }
+
     fn build_shop(head: &str, status: &str, cargo: ToolOutput) -> Fake {
         Fake::new(vec![
             ("git rev-parse --git-dir", ToolOutput::ok(".git")),
@@ -1650,12 +1774,99 @@ mod tests {
         .produces(&store(), "ascent")
     }
 
+    /// 🚨 **CONTRACT: a binary this build did not produce is refused — case D, the one
+    /// `file_exists` cannot see.**
+    ///
+    /// Cargo exits 0, a binary from an earlier commit is still in `target/`, so the existence
+    /// check passes. Without this the console records a built commit and then launches bytes no
+    /// record names, with every indicator green.
+    ///
+    /// ⚠️ **Mutation-tested.** Deleting the `produced_executable` guard makes this return
+    /// `Ok(Built { .. })` — a recorded build of a commit whose binary is a different commit's.
+    #[test]
+    fn a_binary_this_build_did_not_produce_is_refused() {
+        let shop = build_shop(APPROVED, "", cargo_built_nothing());
+        match build(&shop, &store(), &approved()) {
+            Err(WorkFault::StaleBinary { producer, expected }) => {
+                assert_eq!(producer, "ascent");
+                let s = WorkFault::StaleBinary { producer, expected }.sentence();
+                // The sentence must concede the exit code, or the person disbelieves it.
+                assert!(s.contains("exited 0"), "{s}");
+                assert!(s.contains("required-features"), "{s}");
+            }
+            other => panic!("a stale binary must not be recorded as a build: {other:?}"),
+        }
+    }
+
+    /// 🚨 **CONTRACT: the two refusals are different sentences, because they are different
+    /// diagnoses.** *No binary* is a fact about the repository; *a stale binary* is a fact about
+    /// the checkout. A person's next action differs, so folding them together would make one of
+    /// the two unavailable.
+    #[test]
+    fn nothing_built_and_something_stale_do_not_share_a_sentence() {
+        let none = WorkFault::NoBinary { producer: "ascent".into(), expected: "/x".into() };
+        let stale = WorkFault::StaleBinary { producer: "ascent".into(), expected: "/x".into() };
+        assert_ne!(none.sentence(), stale.sentence());
+        for f in [&none, &stale] {
+            assert!(f.sentence().contains("ascent"));
+            assert!(!f.sentence().contains('\n'), "one line: {}", f.sentence());
+        }
+    }
+
+    /// 🚨 **CONTRACT: an up-to-date rebuild is NOT refused — case C, and the reason the mtime
+    /// design was rejected.**
+    ///
+    /// Cargo relinks nothing when nothing changed, so the binary is older than the build that just
+    /// succeeded — but it still reports the artifact, with `"fresh": true`. Measured on a real
+    /// scratch crate. ⚠️ `fresh` is deliberately not consulted: it is cargo asserting the on-disk
+    /// binary **is** current for these inputs, which is the question being asked. Gating on it
+    /// would refuse every repeat build — the common case, and the failure that gets a check
+    /// withdrawn and takes the case-D hole with it.
+    #[test]
+    fn an_up_to_date_rebuild_is_a_build() {
+        let exe = module_binary(&store(), "ascent").unwrap();
+        let fresh = ToolOutput::ok(&format!(
+            "{{\"reason\":\"compiler-artifact\",\"fresh\":true,\"executable\":{}}}",
+            serde_json::Value::from(exe.display().to_string())
+        ));
+        assert!(produced_executable(&fresh.stdout, &exe), "a fresh artifact is still an artifact");
+        let shop = build_shop(APPROVED, "", fresh);
+        assert!(build(&shop, &store(), &approved()).is_ok());
+    }
+
+    /// The parser itself, over the shapes cargo really emits and the ones it never does.
+    #[test]
+    fn only_an_artifact_naming_our_binary_counts() {
+        let exe = module_binary(&store(), "ascent").unwrap();
+        let art = |path: &str| {
+            format!("{{\"reason\":\"compiler-artifact\",\"executable\":\"{path}\"}}")
+        };
+
+        assert!(produced_executable(&art(&exe.display().to_string().replace('\\', "/")), &exe));
+        // 📌 Windows: cargo escapes its separators in JSON, and the parser normalises them.
+        assert!(produced_executable(
+            &art(&exe.display().to_string().replace('\\', "\\\\")),
+            &exe
+        ));
+        // A different binary in the same workspace is not ours.
+        assert!(!produced_executable(&art("/anywhere/somethingelse"), &exe));
+        // The two cases that emit no artifact at all.
+        assert!(!produced_executable("{\"reason\":\"build-finished\",\"success\":true}", &exe));
+        assert!(!produced_executable("", &exe));
+        // ⚠️ A record with no `executable` — a library unit — is not evidence of a binary.
+        assert!(!produced_executable("{\"reason\":\"compiler-artifact\"}", &exe));
+        // ⚠️ Unparseable lines are skipped, never fatal: cargo's record set grows, and a reason
+        // this build does not know is not evidence either way.
+        let noisy = format!("not json at all\n{{oops\n{}", art(&exe.display().to_string().replace('\\', "/")));
+        assert!(produced_executable(&noisy, &exe));
+    }
+
     /// CONTRACT: **the record names the commit that was BUILT.** A clean build of the
     /// approved commit is the case where the two agree, and the record says so through the
     /// one comparison site.
     #[test]
     fn a_clean_build_names_the_approved_bytes() {
-        let shop = build_shop(APPROVED, "", ToolOutput::ok(""));
+        let shop = build_shop(APPROVED, "", cargo_built("ascent"));
         let out = build(&shop, &store(), &approved()).unwrap();
         assert_eq!(out.record.commit, APPROVED);
         assert!(!out.record.dirty);
@@ -1668,7 +1879,7 @@ mod tests {
     /// — and the sentence must say the module is still not built.
     #[test]
     fn a_dirty_tree_is_recorded_as_dirty() {
-        let shop = build_shop(APPROVED, " M src/main.rs\n", ToolOutput::ok(""));
+        let shop = build_shop(APPROVED, " M src/main.rs\n", cargo_built("ascent"));
         let out = build(&shop, &store(), &approved()).unwrap();
         assert!(out.record.dirty);
         assert!(
@@ -1684,7 +1895,7 @@ mod tests {
     /// disagree.
     #[test]
     fn a_build_at_another_commit_says_so() {
-        let shop = build_shop(CANDIDATE, "", ToolOutput::ok(""));
+        let shop = build_shop(CANDIDATE, "", cargo_built("ascent"));
         let out = build(&shop, &store(), &approved()).unwrap();
         assert_eq!(out.record.commit, CANDIDATE);
         assert!(!out.record.names_approved_bytes(APPROVED));
