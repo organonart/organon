@@ -31,7 +31,33 @@
 
 .PARAMETER WithLlm
     Also build + embed the llama.cpp inference runtime (#367 Tier 2c), and install a
-    standalone copy next to the bundle. Needs cmake. OFF by default.
+    standalone copy next to the bundle. OFF by default.
+
+    Needs MORE than cmake, and every missing piece fails in a build script rather
+    than in Rust -- so the error names a C++ tool, not this switch. Measured on
+    organon-one 2026-08-21, first Windows build of this target:
+
+      * cmake            -- on PATH.
+      * MSVC cl.exe      -- run from a Developer Prompt, or call vcvars64.bat first.
+                            It is NOT on a normal shell's PATH.
+      * Ninja + CMAKE_GENERATOR=Ninja  -- see the warning below. Not optional.
+      * libclang         -- bindgen builds the llama binding. Set LIBCLANG_PATH
+                            (e.g. 'C:\Program Files\LLVM\bin').
+      * CUDA Toolkit     -- Cargo.toml's Windows table pins llama-cpp-4 to
+                            features = ['cuda'], so this is a CUDA build whether or
+                            not you wanted one. There is no CPU-only path here.
+
+    WARNING -- CMAKE_GENERATOR=Ninja is REQUIRED, and without it the build cannot
+    succeed at all. The `cmake` crate appends cargo's NUM_JOBS as `-j<N>` to the
+    build command whatever the generator is. MSBuild -- the default generator on
+    Windows -- has no `-j` switch, so it aborts with MSB1001 ('Unknown switch').
+    Lowering the number does not help; NUM_JOBS=1 fails identically, because the
+    switch itself is what MSBuild rejects. Ninja accepts `-j` and simply takes the
+    last one (the real command line ends up `ninja -j 32 -j32 install`).
+
+    Expect a long first build: ggml-cuda is 184 .cu files compiled for SEVEN GPU
+    architectures (sm_75 through sm_121a). Set CMAKE_CUDA_ARCHITECTURES to just
+    your own card's (120a for a 5090) if you only need to run it locally.
 
 .PARAMETER Force
     Stop any running plugin host that is holding the installed DLL, instead of
