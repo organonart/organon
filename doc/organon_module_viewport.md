@@ -513,7 +513,7 @@ the pixels.**
 
 🚨 **The control is what actually decides §6.** Size barely moved it, so the hypothesis had to be
 tested rather than asserted: hold the size fixed and move the producer's cadence. Staleness is
-`≈0.6 × min(producer period, poll interval)` — set by the two loops' **phase**, with the frame size
+`≈0.55 × min(producer period, poll interval)` — set by the two loops' **phase**, with the frame size
 absent from the expression. So the reading that would have forced mechanism A — *staleness is the
 copy, therefore buy `unsafe` per-backend interop* — is **not** what the measurement says, and
 mechanism A stays not-yet-justified on this evidence as well as on T0's. ⚠️ It was still not
@@ -703,7 +703,7 @@ before anything has been measured.
 
 ✏️ **Something has now been measured, and it moves this paragraph without settling it**
 (`doc/measurements/module-staleness-2026-08-22.md`). The frame the console takes is **half a frame
-old at 60 Hz** and — the part that matters — staleness is `≈0.6 × min(producer period, poll
+old at 60 Hz** and — the part that matters — staleness is `≈0.55 × min(producer period, poll
 interval)`, flat across nine times the pixels. So the sentence above that reads *"a copied frame at
 one or two frames of latency"* is right about the magnitude and wrong about the **cause**: it is
 not the copy, it is two free-running loops sampling each other, and 1440p is not worse than
