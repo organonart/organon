@@ -144,7 +144,7 @@
 //! the pixels.**
 //!
 //! 🚨 **The control is the part worth carrying here**, because it is a fact about this
-//! protocol: staleness is `≈0.6 × min(producer period, poll interval)`, so it is set by the
+//! protocol: staleness is `≈0.55 × min(producer period, poll interval)`, so it is set by the
 //! two loops' **cadences** and the frame size is not in the expression. A reader who finds a
 //! viewport feeling behind should look at how often the two ends run, not at the copy.
 

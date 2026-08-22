@@ -76,12 +76,12 @@ would be citing a measurement for something it did not measure.
 
 ## Staleness against frame size — consumer 60 Hz, producer ~16 ms
 
-| size | median | p90 | worst | median, in 60 Hz frames | torn |
-|---|---:|---:|---:|---:|---:|
-| 640×360 | 8.39 ms | 14.93 ms | 16.89 ms | 0.50 | 0 |
-| 1280×720 | 11.32 ms | 15.74 ms | 16.99 ms | 0.68 | 0 |
-| 1920×1080 | 7.77 ms | 15.19 ms | 17.49 ms | 0.47 | 0 |
-| 2560×1440 | 9.30 ms | 16.27 ms | 17.94 ms | 0.56 | 0 |
+| size | median | p90 | worst | producer achieved | median, in 60 Hz frames | torn |
+|---|---:|---:|---:|---:|---:|---:|
+| 640×360 | 8.51 ms | 15.03 ms | 16.92 ms | 16.5 ms | 0.51 | 0 |
+| 1280×720 | 7.10 ms | 15.67 ms | 17.15 ms | 16.8 ms | 0.43 | 0 |
+| 1920×1080 | 8.87 ms | 15.42 ms | 17.51 ms | 17.5 ms | 0.53 | 0 |
+| 2560×1440 | 8.90 ms | 16.26 ms | 18.52 ms | 18.4 ms | 0.53 | 0 |
 
 📌 **Read the column, not the rows.** 1440p has **nine times** the pixels of 640×360 and is not
 reliably worse — 1080p came in *below* 720p on this run. There is no trend here; there is scatter
@@ -99,15 +99,19 @@ The table above is not what a transport cost looks like, so the hypothesis has t
 than asserted: the age of a frame at poll time is dominated by **the phase between two free-running
 loops**. Hold the size fixed and move the producer's period.
 
-| producer draws every | median | p90 | faster loop's period | median ÷ that |
-|---|---:|---:|---:|---:|
-| 4 ms | 2.61 ms | 4.43 ms | 4.0 ms | **0.65** |
-| 8 ms | 4.49 ms | 8.08 ms | 8.0 ms | **0.56** |
-| 16 ms | 9.15 ms | 13.70 ms | 16.0 ms | **0.57** |
-| 33 ms | 10.08 ms | 16.13 ms | 16.7 ms | **0.60** |
+| asked for | producer **achieved** | median | p90 | faster loop's period | median ÷ that |
+|---|---:|---:|---:|---:|---:|
+| 4 ms | 4.8 ms | 2.49 ms | 4.53 ms | 4.8 ms | **0.52** |
+| 8 ms | 8.8 ms | 4.83 ms | 7.97 ms | 8.8 ms | **0.55** |
+| 16 ms | 16.8 ms | 10.08 ms | 15.34 ms | 16.7 ms | **0.60** |
+| 33 ms | 33.8 ms | 9.16 ms | 15.37 ms | 16.7 ms | **0.55** |
 
-**The last column is flat at ≈0.6 across an eight-fold change in cadence.** Staleness is
-`≈0.6 × min(producer period, poll interval)` and the frame size is not in the expression.
+**The last column is flat at ≈0.55 across an eight-fold change in cadence.** Staleness is
+`≈0.55 × min(producer period, poll interval)` and the frame size is not in the expression.
+
+⚠️ **The second column is the one the rig reads, and it is not the first.** See *the second trap*
+below: what a producer was *asked* for and what it *achieved* are different numbers, and a rig that
+believes the flag reaches the wrong architectural conclusion.
 
 🚨 **Two readings, two completely different consequences, which is why this control exists.** If
 staleness were the transport, the fix is mechanism A — the shared GPU texture, `unsafe`,
@@ -133,7 +137,46 @@ and by the frame size at neither.
 
 ---
 
-## ⚠️ The trap this rig set for itself, recorded because it produced a credible wrong table
+## 🚨 The second trap, and it produced a wrong answer about *architecture* rather than a wrong number
+
+The first version of the control read the **`--draw-every-ms` flag** as the producer's period. Run
+under `CARGO_PROFILE_TEST_OPT_LEVEL=0` — which is **this repository's standard bar setting**, so
+somebody will — it printed this:
+
+| asked for | median | median ÷ asked |
+|---|---:|---:|
+| 4 ms | 8.86 ms | 2.21 |
+| 8 ms | 8.39 ms | 1.05 |
+| 16 ms | 8.32 ms | 0.52 |
+| 33 ms | 8.27 ms | 0.50 |
+
+and failed with *"the median did not move with the producer's period — staleness would then be the
+**TRANSPORT** rather than sampling phase, and §4.4's mechanism-A question is reopened."*
+
+**That verdict is wrong, and it is the expensive kind of wrong**: it is a recommendation to buy
+`unsafe` per-backend GPU interop. The cause is that an unoptimised simulator cannot draw 1280×720
+in 4 ms — its per-pixel loop takes ~20 ms whatever the flag says — so **every condition collapsed
+to the same real cadence** and the lever was connected to nothing. The medians were flat because
+the sampling window never moved, which is the phase model working, not failing.
+
+**The fix is to measure the achieved period rather than trust the request** — read off the frame
+indices, which count every frame the producer *began*. Two things follow, and the second is why
+this is better than simply refusing to run unoptimised:
+
+- The rig can no longer reach the wrong verdict. The same unoptimised run now reports achieved
+  periods of 21.6 / 24.4 / 32.7 / 50.3 ms, ratios of **0.55 / 0.50 / 0.48 / 0.52** — *confirming*
+  the model — and then fails on a **separate** assertion with the right diagnosis: *"every
+  condition ended up sampling over about the same window (16.7–16.7 ms), so this run says nothing
+  about whether staleness tracks it. The usual cause is an unoptimised producer that cannot honour
+  the fast cadences — build with --release."*
+- 📌 The debug run stops being a contradiction and becomes **another point on the same line**, at a
+  period nobody asked for. A rig that only works in one build configuration is a rig whose one
+  configuration eventually stops being used.
+
+⚠️ The general shape, and it is the sharper cousin of the one below: *a lever that is not connected
+to the thing it names does not read as broken — it reads as a finding.*
+
+## ⚠️ The first trap this rig set for itself, recorded because it produced a credible wrong table
 
 The two tests here run on different threads of one process and both measure 1280×720. The channel
 file was named from `(pid, width, height)` — so they got **one file**: two consoles and two
@@ -156,6 +199,43 @@ measuring a second copy of itself produces numbers that are wrong in the flatter
 entirely reasonable on the page.*
 
 ---
+
+## The preallocation condition, asserted rather than intended
+
+§4.4's first condition on reading T0's numbers is *"a preallocated ring, not a per-frame
+allocation"* — because fresh-per-frame measures **2.72 ms against 1.37 ms** at 1440p, with 3.3× of
+the gap being `memcpy` of identical bytes into a destination that has never been touched. Page
+faulting, not bandwidth. A naive path therefore measures 2.7 ms, reads as a verdict on mechanism B,
+and buys `unsafe` interop to fix an allocator problem.
+
+That condition is a **counter on both halves**, so it is a test rather than a comment. Run on the
+same machine, same day:
+
+```
+cargo test -p organon-module --all-features -- --ignored --nocapture
+  gpu::tests::a_texture_goes_through_the_ring_and_comes_back_the_same_with_one_allocation … ok
+  adapter: NVIDIA GeForce RTX 5090, DiscreteGpu, driver NVIDIA 610.88, backend Vulkan
+```
+
+Eight frames through the real ring on the real GPU, `sim::verify` on every one — so a torn or
+mis-strided frame fails rather than passing quietly — and then:
+
+| | after 8 frames |
+|---|---:|
+| `FrameTexture::allocations()` (console's destination) | **1** |
+| `FrameReadback::allocations()` (producer's staging) | **1** |
+| `ModuleChannel::staging_allocations()` (the ring's copy buffer) | **1** |
+
+⚠️ **And `Forget` drops the picture, not the allocation.** The same test departs the producer,
+confirms `Poll::Gone`, asserts `texture.view().is_none()` — *never the last good frame* — and then
+asserts `allocations()` is **still 1**. A producer that died and is restarted must not pay for a
+new texture; that is the per-frame-allocation trap arriving on the recovery path, where it costs
+something only after something has already gone wrong.
+
+📌 The console-side half of this is the **egui registration**, which has the same shape in a
+different currency: `HostedTexture` renews its `TextureId` only when `FrameTexture::allocations()`
+changes. Registering per frame would leak a registration sixty times a second — invisible in a
+screenshot, fatal over an afternoon.
 
 ## What this does not settle
 
