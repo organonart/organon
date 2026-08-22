@@ -3915,7 +3915,7 @@ have lost a fact; moving them keeps it and pays nothing for it.
 | the yielded `3d` region's *"the portal has the world. … `organon console portal close` gives it back"* | the region's own word | ⚠️ **nowhere.** See below |
 | a second `agent` region's *"waiting for a tab of its own. … a second one needs Tier 2's per-region tab"* | the region's own word | ⚠️ **nowhere.** See below |
 | `no live tab — ⌘T opens one` | `no live tab` | the keystroke is in `/help` and in the menu; the pane states the condition |
-| the status log's `` `/trace off` closes `` (#127, hours old) | nothing | the band's own log indicator toggles the panel and its hover reads `… · click to close` |
+| the status log's `` `/trace off` closes `` (#127, hours old) | nothing | the status line the panel hangs off carries a disclosure mark, and its hover names both ways out (#129) |
 
 ⚠️ **Two of those went nowhere, and saying so is the point of the table.** The portal holding
 the world, and a second `agent` region having no tab, are both consequences of something already
@@ -6242,10 +6242,11 @@ them would suggest a name that then fails to load.
 
 ### 1.16 The status log — where the console says things that are not the conversation
 
-**`organon-console/src/status_log.rs`**, drawn by `conversation_view::log_panel` and pointed at by
-`log_indicator` on the status band. Every line the console writes about a session is recorded here.
-The conversation shows the exceptions. The band shows one small mark. `/trace on` — or a click on
-that mark — opens the panel.
+**`organon-console/src/status_log.rs`**, summarised by `conversation_view::status_line` — a
+permanent one-line strip at the **top** of the pane — and shown whole by `log_drop_down`, an
+`egui::Area` that hangs off that line and paints over the page. Every line the console writes
+about a session is recorded here. The conversation shows the exceptions. The status line shows a
+colour and a sentence. Clicking it — or `/trace on` — drops the log down.
 
 #### 🚨 The rule is where a line LIVES, not a judgement somebody has to remember
 
@@ -6263,30 +6264,70 @@ So there are now three places a line can be, and only the first is a decision an
 |---|---|---|
 | **The log** | everything, successes included | nobody — `StatusLog::push` classifies nothing |
 | **The conversation** | exceptions only | `Remark::always`, read at draw time by `StatusLog::exceptions` |
-| **The band** | one mark, quiet or lit | derived from the log's contents by `StatusLog::slot` |
+| **The status line** | one colour and one sentence | derived from the log's contents by `StatusLog::summary` |
 
 📌 **Nothing is classified show-or-hide when it is *written*, only when it is *drawn*** — which is
 `Remark::seen`'s old argument, kept and strengthened. One flag serves both surfaces, so the
-conversation and the indicator cannot come to disagree about which lines are exceptional. What is
+conversation and the summary cannot come to disagree about which lines are exceptional. What is
 gone is the *mode*: `seen(tracing)` no longer exists, because there is no state in which the
 scrollback shows more than the exceptions.
 
-#### 🚨 The indicator has to be trustworthy, which is the hard part
+#### 🚨 THE ENTRY BOX NEVER MOVES — the invariant this surface was rebuilt around
+
+#127 drew the log **immediately above the band**, in the bottom-up column, so opening it pushed the
+composer up the screen by nine rows. James, 2026-08-21: *"its positioning isn't right. It should not
+be displacing the entry box. The entry box should never move. So put the entry box back where it was
+and put the status log at the top, sort of like a Quake console drop-down."*
+
+The layout now makes that structural rather than careful. `draw`'s bottom-up column is exactly what
+it was before #127 — band, composer, command panel, rule, scrollback — and **everything the status
+log draws is on the far side of the composer from the band**:
+
+- `status_line` is the first child of the top-down remainder. It is **always present and always one
+  row**, so a change of state moves nothing below it either; only its colour and its words change.
+- `log_drop_down` is an `egui::Area` at `Order::Foreground`. A **layer, not a child**: it takes no
+  space in any column, so opening it cannot displace anything by construction. Its `Id` is derived
+  from the `Ui`'s, because a divided console draws several of these panes and a fixed id would give
+  them one shared drop-down.
+
+⚠️ **The property is measured, not asserted.** `composer_box` publishes its rect through
+`conversation_view::composer_rect`, and `the_entry_box_never_moves_when_the_status_log_opens` runs
+the real `draw` at 700 / 460 / 360 pt and compares the rect closed against open against closed
+again — `assert_eq`, not "about the same". Put the drop-down back in the column and it fails naming
+both rects (`closed [[8.0 588.5]…], open [[8.0 425.5]…]`). A prose invariant is what got us here.
+
+#### 🚨 The summary has to be trustworthy, which is the hard part
 
 This tree keeps finding the same defect — a status line that cannot be wrong is not a status line
 (`organon-swap` reading `failed` while swap was active; a lighting renderer printing `ambient is
-OFF` while running `--ambient glow`). An indicator that is silent when healthy is worth having
-**only if it reliably lights when things are not.** So:
+OFF` while running `--ambient glow`). A surface that is quiet when healthy is worth having **only if
+it reliably says so when things are not.** So:
 
-- `StatusLog::unread` walks the lines **on every call**. There is no cached flag to drift from them.
+- `StatusLog::summary` walks the lines **on every call**. There is no cached flag to drift from them.
 - The only carried state is a **high-water mark**, and it cannot disagree with the log about *which*
   lines exist: a line's identity is its sequence number, computed from the count of everything ever
   written minus what is still held.
-- Both directions are tested, and both are mutation-checked. Making the filter ignore `always` fails
-  five tests, the first with *"machinery lit the indicator — it will stop being read"*; making it
-  never light fails seven, the first with *"an exception left the indicator dark — the badge is a
-  lie"*; dropping `set_tracing`'s `acknowledge` fails one with *"opening the log did not clear the
-  indicator"*.
+- Both directions are mutation-checked, and the mutations were **run**, not asserted. Making
+  `unread`'s filter ignore `always` fails five tests, the first with *"machinery lit the status line
+  — it will stop being read"*; making `summary`'s health always `Ok` fails four, the first with *"an
+  exception left the status line green — the summary is a lie"*; dropping `set_tracing`'s
+  `acknowledge` fails one with *"opening the log did not clear the indicator"*.
+
+**Three states, not two**, each on a `Theme` field that already exists — no palette is invented for
+this surface:
+
+| `Health` | When | Colour |
+|---|---|---|
+| `Ok` | no exceptions in the log at all | `Theme::ok` |
+| `Warning` | exceptions, all of them read | `Theme::asking` |
+| `Attention` | an exception nobody has looked at | `Theme::bad` |
+
+⚠️ **`Warning` is what the clear-by-reading rule costs, and it is why there are three.** Once the
+reader has looked, "you have unread exceptions" is false — but "nothing has gone wrong this session"
+is *also* false, and collapsing back to `Ok` would be the log telling a comfortable lie about a
+session that broke twenty minutes ago. Collapse the arm and
+`an_acknowledged_exception_leaves_the_line_amber_and_never_green` fails with *"a session that broke
+is not 'all clear'"*.
 
 ⚠️ **It clears by being read, not by ageing**, and the two rejected rules are worth recording. *Never
 clears* is a badge permanently lit, which is a badge nobody reads — the silent failure by another
@@ -6294,19 +6335,77 @@ road. *Ages out* would go quiet precisely because somebody stepped away, which i
 for. Opening the log is the one event that is evidence a human looked; a new exception written
 afterwards lights it again, because it has not been looked at either.
 
-#### The panel is chrome, and its placement says so
+#### The drop-down reads as a trace, and every entry carries the time
 
-It is drawn **immediately above the band**, in the band's own fill and edge — in a bottom-up column
-the second child sits directly over the first, so the log opens as a drawer out of the mark that was
-clicked. Not a window over the page, and above all not a region of the transcript: *"it should not
-feel like part of the conversational flow"* is the governing sentence, and a log rendered inline
-fails it however it is styled. Bounded by the smaller of nine rows and 45% of what the pane has
-left — the fraction alone would swallow a tall window, the row count alone a short one.
+James: *"it looks too much like unstructured text. It should be more like entries in a trace log
+where each line is an entry. And I don't mean add more rounded borders around each entry."* So
+`log_row` draws **no frame, no fill and no rule per row**. What makes a row an entry is that three
+things line up down the panel: a fixed-width clock, a one-character mark (`●` exception / `·`
+machinery, the same width on the mono face), and the text — all `.monospace()`, which is what a
+trace log looks like and is also the only face that carries those two glyphs.
+
+**Timestamps are local wall clock, `HH:MM:SS`**, and the choice is against elapsed-since-start. What
+a reader does with a status line is correlate it against something outside the console — a terminal
+they were watching, a file's mtime, their own memory of "it was about ten past" — and every one of
+those is wall clock. Elapsed-since-start reads well *within* a session and is useless the moment the
+question leaves it, because it requires knowing when the session began, which is the one fact nobody
+remembers. `LogTime` is plain integers rather than a `DateTime` so a test can pin a stamp;
+`LogTime::now` is the crate's only clock read.
+
+⚠️ **A session that spans midnight is answered on the header, not on every row.** `00:07:03` under
+`23:58:11` is unreadable unless something names the day, so `StatusLog::date_span` gives the panel
+header one date, or `2026-08-21 → 2026-08-22` when the log crosses. The rows stay eight characters
+wide either way, which is what keeps them a column rather than a sentence.
+
+⚠️ **A row TRUNCATES; it never wraps and there is no horizontal scrollbar.** A wrapped trace line
+stops looking like an entry — the second visual row has no timestamp and no mark, so the column that
+makes the surface readable is broken by the first long line. A horizontal scrollbar was the other
+candidate and is worse: it puts every long line behind a gesture, and the identifying half of a
+console line is its beginning. The whole text is on the row's hover.
 
 ⚠️ **The panel shows the log whole**, exceptions and machinery alike, newest at the bottom. There is
 no filter and no mode: the quiet/loud decision has already been spent on which lines reach the
 *conversation*, and spending it twice would give this surface its own opinion about what is worth
 keeping — which is exactly the judgement that kept leaking chrome back into the flow.
+
+#### The band says less, and can no longer overlap itself
+
+James, same session: *"we don't want to show words like `default` and `allow all` at all times. That
+would be a sort of verbose form of the interface. We should have either icons or some other way of
+not having to show all those characters."*
+
+| Was | Is | Where the words went |
+|---|---|---|
+| `default` / `acceptEdits` / `dontAsk` on a plate | one mark — `mode_glyph`: `◈` you are asked, `×` you are not | the mode's name and its consequence are the plate's hover |
+| `edits are auto-accepted` (23 chars) | `ModeMarker::short` — `auto-edits` | the sentence is the marker's hover |
+| `you are not being asked — …` (58) | `not asking` | same |
+| `allow all` + `you allowed everything — the console is not asking` (48) | `×` + `allowing all` | `SESSION_ALLOW_MARKER` + `SESSION_ALLOW_CONSEQUENCE` on the hover |
+| the status log's indicator | **gone** — the status line at the top is the one door | — |
+
+🚨 **The persistent-warning invariant is unchanged, and that is the half a "make it compact" change
+would quietly lose.** §1.1's argument still stands: the hazard of `dontAsk` is not the moment of
+choosing, it is the hours afterwards when the band still looks like the authority. So the *mark* is
+unconditional and an abnormal mode still carries **two words**, permanently, uncloseable. Only the
+resting state — `default` — is a mark and nothing else, which is precisely what was asked for.
+Colour alone is never the only statement.
+
+🚨 **And the overlap is fixed structurally rather than shortened away.** #125 gave the *reading* a
+width budget; the left group's own items still had none, which is why James photographed `allow all`
+painted over `you allowed everything…`. `strip_box` now measures `strip_right_reserve` **first** and
+allocates the remainder to a sub-`Ui`, so nothing in the left half can be drawn outside a rect that
+was sized before any of it existed. The same rule runs twice more inside it: `band_marks_reserve`
+bounds the model plate against the two marks, and `band_word` **drops** an optional word that does
+not fit rather than eliding it to `not a…`. When even that is not enough, `BAND_LEFT_FLOOR` drops
+the **telemetry chips** — the lowest-priority segment on the band — before the identity is squeezed,
+because the model chip is what the band is for.
+
+⚠️ **The band's HEIGHT cannot see an overlap, and this cost a round.** `Ui::horizontal` does not
+wrap, so an overflowing left group stays exactly one row tall and simply runs under the chips. A
+height assertion was written first and **passed against deliberately broken code**. `strip_box` now
+publishes its two group rects through `band_group_rects`, and
+`the_bands_two_halves_never_overlap_however_narrow_it_gets` checks `left.right() <= right.left()` at
+260 / 380 / 520 / 900 pt. It found a real defect on its first run, which is the whole argument for
+measuring geometry rather than asserting it.
 
 #### What moved, and what `/trace` means now
 
@@ -6314,9 +6413,7 @@ keeping — which is exactly the judgement that kept leaking chrome back into th
 the flag at all. It still selects the band's own quiet half (`StatusReading::narration`,
 `Chip::narration`) — "show me the machinery" is one request and the band is chrome — but it is now
 forbidden from reaching the transcript, so **`element_seen` lost its mode parameter**: the
-`— turn complete` caption on a *successful* turn is simply not drawn, in either state. A click on
-the indicator that also put a caption under every reply would be this change's own leak, arriving by
-a new route.
+`— turn complete` caption on a *successful* turn is simply not drawn, in either state.
 
 Four `Remark`s were reclassified from the conversation to the log, each because the thing it
 describes is visible some other way or is not the console's own statement at all:
@@ -6331,16 +6428,14 @@ describes is visible some other way or is not the console's own statement at all
 while tracing, and `tracing` now means "the log is open" — which has nothing to say about whether a
 conversation has started.
 
-#### The band's width budget gained a fixed item
+#### The one dependency this crate gained
 
-What used to sit at the left of the band's dim half was a **line of the log**, deliberately excluded
-from `strip_right_reserve` because it was the second flexible item and truncating into slack was its
-whole behaviour. An indicator cannot truncate: it is two or five characters saying whether anything
-is wrong, and an ellipsis where it should be loses the one item the band is least allowed to lose.
-So it is measured — in `Monospace`, the face it is drawn in, or a wider mono face would let the
-reading creep back over it — and the flexible reading gives way to it. That is the property `#125`'s
-`◆ What are we working on?ession $1.18` overlap taught, applied to a new item rather than
-rediscovered.
+`chrono`, `default-features = false, features = ["clock", "std"]` — `LogTime::now` and nothing else.
+⚠️ std has **no timezone at all**: `SystemTime` is UTC seconds and nothing in the standard library
+turns that into the wall clock a reader compares against. The alternatives were unsafe FFI
+(`GetLocalTime` / `localtime_r`) inside a UI crate that builds on three platforms, or timestamping
+in UTC and asking the reader to do arithmetic — and a reader doing arithmetic on a status line is a
+reader who stops reading it.
 
 ## 2. Seams the next tiers consume
 
