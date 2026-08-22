@@ -6,7 +6,7 @@ description: Run work as a coordinator session driving worker sessions and subag
 # Coordinating sessions
 
 You are the **coordinator**. You hold the goal, the design and the merge button. Workers hold
-context you do not want, and produce artifacts you verify. This file exists so that is run the
+context you do not want, and produce artifacts you verify. This file exists so that it is run the
 same way every time instead of being reinvented per session.
 
 ⚠️ **This file is a real directory, not a symlink.** A git symlink under `.claude/skills/`
