@@ -611,7 +611,11 @@ fn input_crosses_in_order_and_only_once() {
 fn a_producer_can_read_the_promise_rather_than_having_to_remember_it() {
     let (_p, _console, mut producer) = pair("reserved-wire", cap(16, 16));
     let promised = producer.channel().reserved_keys().to_vec();
-    assert!(promised.contains(&Key::Escape.to_wire()));
+    // ⚠️ Against **literals**, not against `RESERVED`. The published set is derived from that
+    // const, so comparing the two would move both sides together and could not see the const
+    // change — the shape the Ascent session named, where a test derives both halves of its
+    // comparison from the one thing it is meant to be watching.
+    assert_eq!(promised, vec![0x29, 0x44], "Escape and F11, as USB HID numbers them");
     assert!(!promised.contains(&Key::W.to_wire()));
     // The two halves of the promise are the same promise: what the console refuses to encode,
     // and what it publishes that it will refuse.

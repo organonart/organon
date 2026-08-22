@@ -416,6 +416,57 @@ mod tests {
         assert_eq!(key_decodable, keys, "Key::ALL and from_wire disagree");
     }
 
+    /// 🚨 **The HID codes, as literals — because every other test here derives both sides from
+    /// the `keys!` table and therefore cannot see that table change.**
+    ///
+    /// `Key::ALL`, `to_wire` and `from_wire` are all generated from one macro invocation. That
+    /// is what makes them consistent, and it is exactly why consistency proves nothing about
+    /// the *values*: renumber `W` from `0x1A` to anything else and every test in this file
+    /// still passes, because both sides of each comparison moved together. ✏️ **The Ascent
+    /// session hit the same shape** — a test comparing `source()` against `source()`, which
+    /// agreed by construction and would have survived reverting the whole change it existed to
+    /// protect.
+    ///
+    /// ⚠️ **And a wrong value here does not fail anywhere — it changes what a keystroke MEANS
+    /// on the wire.** The usage ids are borrowed from an external standard precisely so neither
+    /// repository owns them; Ascent maps its `Source` onto these numbers and has pinned its own
+    /// side with literals. A renumber would silently rebind every key in the other process.
+    ///
+    /// 📌 Sampled rather than duplicated, on purpose: restating all hundred-odd rows would be a
+    /// second table, not an independent statement. What is pinned is the **start of each run**
+    /// (from which the rest follow by arithmetic) and the places HID is genuinely surprising —
+    /// which is where an error would actually be made.
+    #[test]
+    fn the_usage_ids_are_the_ones_usb_hid_specifies() {
+        // The start of each run. Everything between follows by arithmetic, so an error inside a
+        // run shows up as a duplicate — which `no_wire_vocabulary_here_is_one_way` catches.
+        assert_eq!(Key::A.to_wire(), 0x04);
+        assert_eq!(Key::Z.to_wire(), 0x1D);
+        assert_eq!(Key::F1.to_wire(), 0x3A);
+        assert_eq!(Key::F12.to_wire(), 0x45);
+        assert_eq!(Key::ControlLeft.to_wire(), 0xE0);
+        assert_eq!(Key::SuperRight.to_wire(), 0xE7);
+
+        // 🚨 HID's two genuine surprises, which is why they are here rather than in the run
+        // above. **Digit0 comes AFTER Digit9**, so the digits are not `Digit0 + n`; and the
+        // **arrows are Right, Left, Down, Up**, which is not the order anybody writes them in.
+        assert_eq!(Key::Digit1.to_wire(), 0x1E);
+        assert_eq!(Key::Digit9.to_wire(), 0x26);
+        assert_eq!(Key::Digit0.to_wire(), 0x27, "HID puts 0 after 9, not before 1");
+        assert_eq!(Key::ArrowRight.to_wire(), 0x4F);
+        assert_eq!(Key::ArrowLeft.to_wire(), 0x50);
+        assert_eq!(Key::ArrowDown.to_wire(), 0x51);
+        assert_eq!(Key::ArrowUp.to_wire(), 0x52, "HID's arrow order is R, L, D, U");
+
+        // The two the protocol promises about by name, so the promise is anchored to a number
+        // rather than to whatever the table currently says.
+        assert_eq!(Key::Escape.to_wire(), 0x29);
+        assert_eq!(Key::F11.to_wire(), 0x44);
+
+        // And the one a 6DOF producer binds first, which is the value Ascent pinned on its side.
+        assert_eq!(Key::W.to_wire(), 0x1A);
+    }
+
     #[test]
     fn every_key_and_button_round_trips_through_its_wire_code() {
         for &k in Key::ALL {
