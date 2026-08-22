@@ -1318,19 +1318,27 @@ pub struct World {
     // Galaxy can rebuild the graph WITHOUT re-picking the model. `None` until a model
     // loads (and cleared again on a failed load, like `neural_loaded`).
     mind_model: Option<(String, organon_core::gguf::GgufHeader)>,
-    // Last-seen `mind[2]` view mode — **0 = architecture specimen, 1 = embedding galaxy**
-    // — so a change rebuilds the graph once. Starts at 0 = the default, so with nothing
-    // set this seam never fires and the output is byte-identical to today.
+    // Last-seen `mind[2]` view mode — **0 = architecture specimen, 1 = embedding galaxy,
+    // 2 = the #147 T3 Delta lens** — so a change rebuilds the graph once. Starts at 0 =
+    // the default, so with nothing set this seam never fires and the output is
+    // byte-identical to today.
     //
-    // ⚠️ This said `0 specimen / 1 live / 2 galaxy`, which is the **retired** encoding from
-    // before Live stopped being a view. Decode through [`math::mind_view_mode`] and never
-    // by hand: it is the one place that knows `2.0` is a stale writer's value and must fall
-    // back to the specimen rather than selecting a view that no longer exists.
+    // ⚠️ This once said `0 specimen / 1 live / 2 galaxy`, which is the **retired**
+    // encoding from before Live stopped being a view. Decode through
+    // [`math::mind_view_mode`] and never by hand: it is the one place that knows which
+    // values exist, and an unknown one must fall back to the specimen rather than
+    // selecting a view that is not there.
     last_mind_view: u32,
     // #520 — the projected embedding cloud, cached so moving `extent` (or switching
     // back to Galaxy) rescales the graph from memory instead of re-reading and
     // re-projecting the .gguf, which takes seconds. Cleared with `mind_model`.
     mind_galaxy: Option<organon_core::gguf_data::GalaxyProjection>,
+    // #147 Tier 3 (the Delta lens): the adapter directory last read and the per-layer
+    // movement measured from it, cached on the same reasoning as `mind_galaxy` — the
+    // read parses a safetensors header and streams every `lora_A`/`lora_B` pair, so an
+    // extent slider move must rescale from memory rather than re-read the adapter.
+    // Keyed by the path so pointing the sidecar somewhere else re-reads once.
+    mind_delta: Option<(String, math::DeltaSites)>,
     // Last `neural_net[6]` (extent) the loaded mind graph was BUILT at. `extent` is
     // baked into the graph at build time, so without this a slider move did nothing to
     // an already-loaded specimen/galaxy — the bug #520 fixes.
@@ -1717,6 +1725,7 @@ impl World {
             mind_model: None,
             last_mind_view: 0,
             mind_galaxy: None,
+            mind_delta: None,
             last_mind_extent: f32::NAN,
             last_atlas_gen: 0,
             atlas_is_loaded: false,
@@ -2492,15 +2501,17 @@ impl World {
         // SAME `neural_loaded` slot the connectome path fills — so every Surface /
         // Material / palette applies for free. Select the Neural Network generator +
         // topology = Connectome to see it.
-        // #507 Tier 1 — the mind's topology mode (`Shared.mind[2]`): 0 = the Tier-1
-        // architecture skeleton, 1 = Live streaming (handled per-frame at the `topo == 5`
-        // seam), 2 = the **embedding galaxy**. A change between Specimen and Galaxy has
-        // to rebuild `neural_loaded` from the already-loaded model, so it edge-detects
-        // here alongside `model_gen`. Default 0 → never fires → today's behaviour.
-        // #520 — `mind[2]` selects the mind GEOMETRY only: 0 = the architecture
-        // specimen, 1 = the embedding galaxy. "Live" is no longer a mode — the glow
-        // rides the activation ring whenever frames are arriving (see the `topo == 5`
-        // seam), so Generate never yanks the view out from under you.
+        // #520 — `mind[2]` selects the mind GEOMETRY only: 0 = the #367 T1 architecture
+        // specimen, 1 = the #507 T1 embedding galaxy, 2 = the #147 T3 Delta lens. A
+        // change between any two of them has to rebuild `neural_loaded` from the
+        // already-loaded model, so it edge-detects here alongside `model_gen`. Default
+        // 0 → never fires → today's behaviour.
+        // "Live" is not a mode — the glow rides the activation ring whenever frames are
+        // arriving (see the `topo == 5` seam), so Generate never yanks the view out from
+        // under you. ⚠️ That seam is gated to view 0, which is also the guarantee the
+        // Delta lens rests on: a **measured** training-time quantity cannot be silently
+        // repainted by the **proxy** generation-time one, because they cannot share a
+        // picture.
         let mind_view = math::mind_view_mode(s.mind[2]);
         let view_changed = mind_view != self.last_mind_view;
         self.last_mind_view = mind_view;
@@ -2540,8 +2551,14 @@ impl World {
                     );
                     // A new model invalidates the cached projection.
                     self.mind_galaxy = None;
-                    self.neural_loaded =
-                        build_mind_graph(&loaded_path, &h, mind_view, extent, &mut self.mind_galaxy);
+                    self.neural_loaded = build_mind_graph(
+                        &loaded_path,
+                        &h,
+                        mind_view,
+                        extent,
+                        &mut self.mind_galaxy,
+                        &mut self.mind_delta,
+                    );
                     self.mind_model = Some((loaded_path, h));
                     self.atlas_is_loaded = false;
                     self.neural_mlp = None;
@@ -2569,8 +2586,14 @@ impl World {
             // views OWN `neural_loaded`, and the live glow overwrites `node_scalar` on
             // top of it per frame, so rebuilding here is safe while generating.
             if let Some((p, h)) = self.mind_model.clone() {
-                self.neural_loaded =
-                    build_mind_graph(&p, &h, mind_view, mind_extent, &mut self.mind_galaxy);
+                self.neural_loaded = build_mind_graph(
+                    &p,
+                    &h,
+                    mind_view,
+                    mind_extent,
+                    &mut self.mind_galaxy,
+                    &mut self.mind_delta,
+                );
                 self.atlas_is_loaded = false;
                 self.neural_load_gen = self.neural_load_gen.wrapping_add(1);
             }
@@ -11052,34 +11075,106 @@ fn jelly_stroke(x: f32) -> f32 {
 }
 
 /// Build the graph a loaded `.gguf` model contributes to `neural_loaded`, for the
-/// Mind topology mode in `Shared.mind[2]` (#367 Tier 1 / #507 Tier 1).
+/// Mind view in `Shared.mind[2]` (#367 T1 / #507 T1 / #147 T3), as decoded by
+/// [`math::mind_view_mode`].
 ///
 /// - **0 (or anything else)** — `math::gguf_architecture_graph`: the specimen, from
 ///   the header alone. This is the default and it is unchanged from #367 Tier 1.
-/// - **2** — `gguf_data::project_embedding_galaxy` + `math::embedding_galaxy_graph`:
+/// - **1** — `gguf_data::project_embedding_galaxy` + `math::embedding_galaxy_graph`:
 ///   the vocabulary embedding matrix, stride-sampled, dequantized, and projected to
 ///   3-D through a deterministic PCA basis. Nodes are lit by each token's **full**
 ///   N-D embedding norm — real geometry the 3-D shadow discards.
+/// - **2** — the **Delta lens**: `lora::read_adapter_dir` over the adapter directory
+///   named by `ipc::adapter_sidecar_path()`, folded to per-layer movement by
+///   `math::delta_sites` and drawn by `math::delta_lens_graph`. The specimen's own
+///   topology, shaped and lit by how far each site moved during a fine-tune.
 ///
-/// (Mode 1, Live, never reaches here: its base graph is chosen per-frame at the
-/// `topo == 5` seam.)
+/// (There is no Live view. The activation ring's per-frame overwrite happens at the
+/// `topo == 5` seam and is gated to view **0** — which is what keeps the measured
+/// training-time quantity and the proxy generation-time one off the same picture.)
 ///
-/// On a galaxy failure — no embedding tensor, an unsupported quantization, a
-/// truncated file — this returns `None`, which **clears** the graph exactly like a
-/// failed header parse does. Substituting the specimen would silently show the user a
-/// different thing than the one they asked for; an empty scene plus a stderr line
-/// saying why is the honest failure.
+/// On a galaxy **or** a Delta failure — no embedding tensor, an unsupported
+/// quantization, a truncated file, no adapter chosen, a DoRA adapter — this returns
+/// `None`, which **clears** the graph exactly like a failed header parse does.
+/// Substituting the specimen would silently show the user a different thing than the
+/// one they asked for; an empty scene plus a stderr line saying why is the honest
+/// failure.
 ///
 /// Note this is synchronous on the render thread: a galaxy read dequantizes ~20k rows
-/// and will hitch once when the mode is selected. Tier 1 accepts that (it happens on a
-/// deliberate user action, not per frame).
+/// and an adapter read streams every `lora_A`/`lora_B` pair, so either will hitch once
+/// when the view is selected. Both cache, so it is once per selection and not per
+/// frame.
 fn build_mind_graph(
     path: &str,
     h: &organon_core::gguf::GgufHeader,
     view: u32,
     extent: f32,
     cache: &mut Option<organon_core::gguf_data::GalaxyProjection>,
+    delta: &mut Option<(String, math::DeltaSites)>,
 ) -> Option<math::NeuralGraph> {
+    if view == 2 {
+        // #147 T3. The adapter directory rides a sidecar, not `Shared` — a path is not
+        // a control-rate value and `Shared` is append-only across a process boundary.
+        let dir = std::fs::read_to_string(ipc::adapter_sidecar_path())
+            .ok()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        let dir = match dir {
+            Some(d) => d,
+            None => {
+                eprintln!(
+                    "mind: delta lens — no adapter selected ({} is missing or empty); \
+                     clearing graph",
+                    ipc::adapter_sidecar_path().display()
+                );
+                *delta = None;
+                return None;
+            }
+        };
+        if delta.as_ref().map(|(p, _)| p.as_str()) != Some(dir.as_str()) {
+            let t0 = std::time::Instant::now();
+            match organon_core::lora::read_adapter_dir(&dir) {
+                Ok(summary) => {
+                    let sites = math::delta_sites(&summary);
+                    // Say what was measured, including what was NOT understood: an
+                    // unrecognised module name still counts into its layer's backbone,
+                    // but it lights no head or MLP node, and a silent version of that
+                    // would look like a layer nobody trained.
+                    let range = sites
+                        .rms_range()
+                        .map(|(lo, hi)| format!("{lo:.3e}…{hi:.3e} per weight"))
+                        .unwrap_or_else(|| "nothing moved".to_string());
+                    eprintln!(
+                        "mind: delta lens — {} adapted modules over {} layers, RMS {range} \
+                         ({} unclassified, {} layerless) from {dir} in {:.1}s",
+                        summary.modules.len(),
+                        sites.layers.len(),
+                        sites.unclassified.len(),
+                        sites.layerless.len(),
+                        t0.elapsed().as_secs_f32()
+                    );
+                    if let Some(base) = summary.config.base_model_name_or_path.as_deref() {
+                        // ⚠️ The delta is against whatever base the adapter was trained
+                        // on, which may be a 4-bit quantization rather than the released
+                        // weights. The file states the name and nothing more.
+                        eprintln!("mind: delta lens — base as the adapter states it: {base}");
+                    }
+                    *delta = Some((dir.clone(), sites));
+                }
+                Err(e) => {
+                    eprintln!("mind: delta lens unavailable for {dir} — clearing graph: {e}");
+                    *delta = None;
+                    return None;
+                }
+            }
+        }
+        let sites = match delta.as_ref() {
+            Some((_, s)) => s,
+            // Unreachable: the branch above either filled the cache or returned.
+            None => return None,
+        };
+        return Some(math::delta_lens_graph(h.n_layers, h.n_heads, extent, sites));
+    }
     if view == 1 {
         // Reuse the cached projection when we have one: rescaling to a new `extent` is
         // pure arithmetic, while re-projecting re-reads and dequantizes ~20k rows out of

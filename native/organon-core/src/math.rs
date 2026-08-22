@@ -7927,14 +7927,25 @@ pub fn gguf_architecture_graph(h: &crate::gguf::GgufHeader, extent: f32) -> Neur
 // function of numbers that are literally in the `.gguf`.
 // ---------------------------------------------------------------------------
 
-/// The Mind topology mode carried in the reserved `Shared.mind[2]` slot:
-/// **0** = architecture skeleton (the #367 Tier 1 specimen), **1** = Live streaming
-/// (#367 Tier 2), **2** = embedding galaxy (#507 Tier 1). Anything else (an older
-/// writer, a garbage float, NaN) reads as **0**, so the default stays the specimen
-/// and the seam is byte-identical to today when nothing sets it.
+/// The Mind **view** carried in the reserved `Shared.mind[2]` slot: **0** =
+/// architecture specimen (#367 Tier 1), **1** = embedding galaxy (#507 Tier 1),
+/// **2** = the Delta lens (#147 Tier 3 — the specimen shaped and lit by what a
+/// fine-tune moved). Anything else (an older writer, a garbage float, NaN) reads as
+/// **0**, so the default stays the specimen and the seam is byte-identical to today
+/// when nothing sets it.
+///
+/// ⚠️ **There is no "Live" value, and the doc comment here used to claim there
+/// was** — `1` meant Live before #520 retired it, so a reader trusting that
+/// sentence would have taken today's galaxy for a live stream. Live is a fact about
+/// the activation ring, not a view you select: frames arriving *are* live, and
+/// `world.rs`'s `topo == 5` seam only lets them overwrite `node_scalar` on view
+/// **0**. That gate is also what keeps the Delta lens honest — a measured
+/// training-time quantity can never be silently repainted by a proxy
+/// generation-time one, because they cannot occupy the same view.
 pub fn mind_view_mode(v: f32) -> u32 {
     match v {
         x if x == 1.0 => 1,
+        x if x == 2.0 => 2,
         _ => 0,
     }
 }
@@ -8793,6 +8804,366 @@ pub fn stream_frame_into_scalars(
         }
         i += 1;
     });
+}
+
+// ---------------------------------------------------------------------------
+// #147 Tier 3 — the Delta lens. The specimen lit by how far each site actually
+// MOVED during a fine-tune, from `lora.rs`'s measured adapter summary.
+// ---------------------------------------------------------------------------
+// Structurally this is `stream_frame_into_scalars`' twin: build the same
+// architecture topology, then overwrite `node_scalar` — from a **static adapter
+// summary** where the live path takes a **streamed frame**. Both writers walk
+// `for_each_arch_node`, which is the single source of truth for node order, so
+// neither can misattribute a value while still producing the right node count.
+//
+// 🚨 **The two lenses drive the same visual channel, so they must not be
+// confusable.** #226's node glow renders `node_scalar` whether it came from an
+// activation ring (a *labeled proxy* for "this site is busy right now", per
+// `MIND_ARCHITECTURE.md` §3) or from an adapter file (**measured** — "this site
+// moved this far during training"). Three things separate them, and none of them
+// is the off-screen mode selector:
+//
+//  1. **The silhouette.** The live lens rides `architecture_skeleton_graph` /
+//     `gguf_architecture_graph` unchanged — a straight-sided cylinder: every head
+//     ring has the same radius at every depth, forever. The Delta lens **displaces
+//     each site radially by its own movement** ([`DELTA_R_REST`]…1), so an
+//     adapter's footprint is a *profile* — bulging where it moved, pinched to the
+//     axis where it did not. A cylinder is never a delta view and a waisted
+//     specimen is never a live one.
+//  2. **It holds still.** The live glow is gated to view 0 at the `topo == 5`
+//     seam in `world.rs`, exactly as the embedding galaxy is; a Delta view can
+//     therefore never be overwritten by an arriving frame. Nothing in this lens
+//     changes between frames.
+//  3. **The head ring is perfectly round.** See the uniform-across-heads limit
+//     below — it is a *visible* statement that this lens has no per-head
+//     resolution, where the live lens's ring is ragged because its heads really
+//     do differ.
+//
+// ⚠️ **Uniform across heads is a limit, not an implementation shortcut.**
+// `q_proj` is ONE tensor covering every head; resolving a per-head norm needs
+// per-output-row norms of `ΔW`, which is the full `out × in` product #147 T2
+// deliberately did not build. So the head ring shows a **per-layer attention**
+// quantity drawn on per-head nodes. Do not read a bright ring as "these heads
+// moved"; read it as "this layer's attention moved".
+// ---------------------------------------------------------------------------
+
+/// The measured movement at one layer's three drawable sites, as **root-mean-square
+/// displacement per weight** — see [`DeltaSites`] for why that and not `‖ΔW‖_F`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DeltaSite {
+    /// Every adapted module of this layer, classified or not — what the layer's
+    /// whole update moved. Drawn on the `Backbone` node.
+    pub backbone_rms: f64,
+    /// The layer's attention projections (`q/k/v/o` and their aliases). Drawn on
+    /// **every** `Head` node of the layer, identically. See the limit above.
+    pub attn_rms: f64,
+    /// The layer's feed-forward projections (`gate/up/down` and their aliases).
+    /// Drawn on the `Mlp` node.
+    pub mlp_rms: f64,
+}
+
+/// A fine-tune's footprint, per layer, ready to light the specimen.
+///
+/// # 🚨 Why RMS-per-weight and not `‖ΔW‖_F`
+///
+/// Raw Frobenius norms are not comparable **between modules of different shape**:
+/// `‖ΔW‖_F` grows with the number of entries, so a `14336×4096` MLP projection
+/// outweighs a `4096×4096` attention projection by roughly `sqrt(3.5)` **before any
+/// training happens at all**. Lighting the specimen with raw norms would therefore
+/// paint every model's MLP nodes brighter than its attention nodes and invite the
+/// reading *"fine-tuning moves the MLP most"* — an artifact of matrix shape wearing
+/// the clothes of a measurement.
+///
+/// Dividing by `sqrt(out·in)` gives the **root-mean-square change of a single
+/// weight**, which is shape-free and composes exactly: over a group of modules the
+/// RMS is `sqrt(Σ‖ΔW_m‖²_F / Σ (out·in)_m)`, i.e. the RMS over the concatenation of
+/// all their entries. That is the accumulation [`delta_sites`] performs.
+///
+/// # 🚨 Why the display mapping is FIXED and not per-adapter
+///
+/// [`delta_glow`] maps an RMS onto `0..1` through a **fixed** five-decade log
+/// window ([`DELTA_RMS_LO`]…[`DELTA_RMS_HI`]), the same window for every adapter
+/// ever loaded. The obvious alternative — normalise by the adapter's own maximum —
+/// puts `1.0` at the top of *every* adapter and so makes a barely-trained LoRA and
+/// a heavily-trained one render **identically**, destroying precisely the
+/// comparison this lens exists to support. A log window rather than a linear one
+/// because per-weight displacements really do span decades between an adapter's
+/// quietest and loudest module, and a linear map would crush all but the loudest to
+/// black.
+///
+/// ⚠️ The window's ends are a **display** choice — the only one here that is not an
+/// exact function of the file. Values outside it clamp rather than wrap, so an
+/// out-of-range adapter reads as saturated-bright or dark, never as some other
+/// adapter's midtone. [`DeltaSites::rms_range`] reports the real extremes so a
+/// readout can print what was actually measured.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DeltaSites {
+    /// Indexed by layer number. Layers the adapter never touched are `Default`
+    /// (all zero) — an exact statement, not a missing value: nothing moved there.
+    pub layers: std::collections::BTreeMap<u32, DeltaSite>,
+    /// Adapted modules whose name matched neither the attention nor the MLP table.
+    /// They are still counted into `backbone_rms` — **nothing is ever silently
+    /// dropped** — but they light no head or MLP node. Named rather than ignored so
+    /// "the lens understood 336 of the 336 modules it was given" is answerable.
+    pub unclassified: Vec<String>,
+    /// Adapted modules with no layer index in their name (`lm_head`, an embedding
+    /// adapter). The architecture topology has no node for them, so they are
+    /// reported here rather than folded into a layer they do not belong to.
+    pub layerless: Vec<String>,
+}
+
+impl DeltaSites {
+    /// The smallest and largest **non-zero** per-weight RMS across every site, or
+    /// `None` if nothing moved anywhere. What a readout should print beside the
+    /// picture, because [`delta_glow`]'s fixed window deliberately does not tell you.
+    pub fn rms_range(&self) -> Option<(f64, f64)> {
+        let mut lo = f64::INFINITY;
+        let mut hi: f64 = 0.0;
+        for s in self.layers.values() {
+            for v in [s.backbone_rms, s.attn_rms, s.mlp_rms] {
+                if v > 0.0 {
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                }
+            }
+        }
+        if hi > 0.0 {
+            Some((lo, hi))
+        } else {
+            None
+        }
+    }
+}
+
+/// The bottom of [`delta_glow`]'s fixed log window: an RMS per-weight displacement
+/// at or below this reads as dark.
+pub const DELTA_RMS_LO: f64 = 1.0e-6;
+/// The top of [`delta_glow`]'s fixed log window: an RMS per-weight displacement at
+/// or above this reads as full brightness.
+pub const DELTA_RMS_HI: f64 = 1.0e-1;
+
+/// The radial scale a site with **no measured movement** is drawn at, as a fraction
+/// of the skeleton's own radius. Not zero: a completely untouched layer must still
+/// read as a layer rather than vanishing into the backbone, because "this site was
+/// not adapted" and "this site is not there" are different statements.
+pub const DELTA_R_REST: f32 = 0.30;
+
+/// Map a per-weight RMS displacement onto the glow's `0..1`, through the fixed
+/// five-decade window `[DELTA_RMS_LO, DELTA_RMS_HI]`.
+///
+/// Exactly zero (and anything non-finite or negative) maps to `0.0` — the adapter
+/// did not touch that site, which is a measurement, not a missing value.
+pub fn delta_glow(rms: f64) -> f32 {
+    if !rms.is_finite() || rms <= 0.0 {
+        return 0.0;
+    }
+    let lo = DELTA_RMS_LO.log10();
+    let hi = DELTA_RMS_HI.log10();
+    (((rms.log10() - lo) / (hi - lo)) as f32).clamp(0.0, 1.0)
+}
+
+/// Which drawable site an adapted module belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SiteKind {
+    Attn,
+    Mlp,
+    Unclassified,
+}
+
+/// Classify an adapted module by its name tail.
+///
+/// ⚠️ **A name table is a silent-failure surface**, so this is layered rather than a
+/// list of seven strings: an exact match on the final path segment first (covering
+/// the conventions actually in circulation — llama/mistral/gemma `q_proj`…`down_proj`,
+/// GPT-2's `c_attn`/`c_fc`, GPT-NeoX's fused `query_key_value`, and the `wq`/`w1`
+/// family), then a *container* fallback on any segment (`…self_attn.…`, `…mlp.…`).
+/// Anything still unmatched is [`SiteKind::Unclassified`] and is **reported**, never
+/// dropped: an unrecognised architecture must look like an unrecognised architecture,
+/// not like a layer that was never trained.
+fn classify_site(module: &str) -> SiteKind {
+    let lower = module.to_ascii_lowercase();
+    let segs: Vec<&str> = lower.split('.').filter(|s| !s.is_empty()).collect();
+    if let Some(tail) = segs.last() {
+        const ATTN: &[&str] = &[
+            "q_proj", "k_proj", "v_proj", "o_proj", "qkv_proj", "query_key_value", "c_attn",
+            "wq", "wk", "wv", "wo", "query", "key", "value", "out_proj", "dense",
+        ];
+        const MLP: &[&str] = &[
+            "gate_proj", "up_proj", "down_proj", "gate_up_proj", "c_fc", "fc_in", "fc_out",
+            "w1", "w2", "w3", "dense_h_to_4h", "dense_4h_to_h", "linear_1", "linear_2",
+        ];
+        if ATTN.contains(tail) {
+            return SiteKind::Attn;
+        }
+        if MLP.contains(tail) {
+            return SiteKind::Mlp;
+        }
+    }
+    // Container fallback: the parent module names the site even when the leaf does
+    // not. Checked in this order because a name carrying both (there is none in
+    // circulation) is better read as attention than as feed-forward — attention is
+    // the narrower claim.
+    if segs.iter().any(|s| s.contains("attn") || s.contains("attention")) {
+        return SiteKind::Attn;
+    }
+    if segs.iter().any(|s| {
+        s.contains("mlp") || s.contains("ffn") || s.contains("feed_forward") || s.contains("feedforward")
+    }) {
+        return SiteKind::Mlp;
+    }
+    SiteKind::Unclassified
+}
+
+/// Fold a measured [`crate::lora::AdapterSummary`] into per-layer site movement.
+///
+/// Every module contributes its `‖ΔW‖²_F` and its element count to the layer's
+/// **backbone** accumulator, and additionally to the attention or MLP accumulator
+/// when [`classify_site`] recognises it. The RMS is taken at the end, so each site's
+/// number is the root-mean-square change of one weight over the concatenation of
+/// every matrix folded into it — see [`DeltaSites`].
+pub fn delta_sites(summary: &crate::lora::AdapterSummary) -> DeltaSites {
+    use std::collections::BTreeMap;
+    // (Σ‖ΔW‖²_F, Σ out·in) per accumulator.
+    #[derive(Clone, Copy, Default)]
+    struct Acc {
+        sq: f64,
+        n: f64,
+    }
+    impl Acc {
+        fn add(&mut self, fro: f64, elems: f64) {
+            self.sq += fro * fro;
+            self.n += elems;
+        }
+        fn rms(self) -> f64 {
+            if self.n > 0.0 {
+                (self.sq / self.n).sqrt()
+            } else {
+                0.0
+            }
+        }
+    }
+
+    let mut acc: BTreeMap<u32, (Acc, Acc, Acc)> = BTreeMap::new(); // (backbone, attn, mlp)
+    let mut unclassified = Vec::new();
+    let mut layerless = Vec::new();
+
+    for m in &summary.modules {
+        let kind = classify_site(&m.module);
+        if kind == SiteKind::Unclassified {
+            unclassified.push(m.name.clone());
+        }
+        let layer = match m.layer {
+            Some(l) => l,
+            None => {
+                layerless.push(m.name.clone());
+                continue;
+            }
+        };
+        let elems = (m.out_features as f64) * (m.in_features as f64);
+        let e = acc.entry(layer).or_default();
+        e.0.add(m.delta_fro, elems);
+        match kind {
+            SiteKind::Attn => e.1.add(m.delta_fro, elems),
+            SiteKind::Mlp => e.2.add(m.delta_fro, elems),
+            SiteKind::Unclassified => {}
+        }
+    }
+
+    DeltaSites {
+        layers: acc
+            .into_iter()
+            .map(|(l, (b, a, f))| {
+                (l, DeltaSite { backbone_rms: b.rms(), attn_rms: a.rms(), mlp_rms: f.rms() })
+            })
+            .collect(),
+        unclassified,
+        layerless,
+    }
+}
+
+/// Overwrite `node_scalar` from a static adapter footprint, mirroring the node
+/// emission order exactly as [`stream_frame_into_scalars`] does: per layer `l` →
+/// `[backbone ← backbone_rms, head h ← attn_rms (every h, identically), mlp ←
+/// mlp_rms]`, each mapped through [`delta_glow`].
+///
+/// **Defensive by contract**, on the same terms as the live writer: every write is
+/// bounds-clamped to the *existing* `node_scalar.len()`, so this never grows,
+/// shrinks or reindexes the array — it can only overwrite the graph's own parallel
+/// scalars in place. The caller owes a base graph whose node count and order match
+/// these dims ([`arch_node_count`]).
+pub fn delta_into_scalars(
+    node_scalar: &mut [f32],
+    n_layers: u32,
+    n_heads: u32,
+    sites: &DeltaSites,
+) {
+    let n_layers = (n_layers as usize).max(1);
+    let n_heads = n_heads as usize;
+    let mut i = 0usize;
+    for_each_arch_node(n_layers, n_heads, |l, kind| {
+        let site = sites.layers.get(&(l as u32)).copied().unwrap_or_default();
+        let v = match kind {
+            ArchNode::Backbone => delta_glow(site.backbone_rms),
+            // ⚠️ Uniform across heads on purpose — `q_proj` is one tensor for all of
+            // them and T2 does not compute per-output-row norms. The ring is round
+            // because the resolution is not there, not because the heads agree.
+            ArchNode::Head(_) => delta_glow(site.attn_rms),
+            ArchNode::Mlp => delta_glow(site.mlp_rms),
+        };
+        if let Some(s) = node_scalar.get_mut(i) {
+            *s = v;
+        }
+        i += 1;
+    });
+}
+
+/// Build the **Delta lens** graph: the architecture specimen, lit *and shaped* by
+/// how far each site moved during a fine-tune (#147 Tier 3).
+///
+/// The topology is [`architecture_skeleton_graph`]'s, unchanged — same nodes, same
+/// order, same edges — so everything downstream of `neural_loaded` (Surface,
+/// Material, palette, camera) applies exactly as it does to the live specimen. Two
+/// things are then written over it, both from the same [`for_each_arch_node`] walk:
+///
+/// - `node_scalar`, via [`delta_into_scalars`] — the #226 glow;
+/// - each off-axis node's **radius about the residual backbone**, scaled from
+///   [`DELTA_R_REST`] at no movement to `1.0` at full. Backbone nodes sit on the
+///   axis (`x = y = 0`), so the scaling is a no-op on them by construction and the
+///   trunk never bends.
+///
+/// That second write is what makes the lens tell itself apart from the live
+/// activation glow at a glance — see this section's header. A live specimen is a
+/// straight-sided cylinder; a delta specimen has a waist.
+pub fn delta_lens_graph(
+    n_layers: u32,
+    n_heads: u32,
+    extent: f32,
+    sites: &DeltaSites,
+) -> NeuralGraph {
+    let mut g = architecture_skeleton_graph(n_layers, n_heads, extent);
+    let nl = (n_layers as usize).max(1);
+    let nh = n_heads as usize;
+    let mut i = 0usize;
+    for_each_arch_node(nl, nh, |l, kind| {
+        let site = sites.layers.get(&(l as u32)).copied().unwrap_or_default();
+        let m = match kind {
+            ArchNode::Backbone => delta_glow(site.backbone_rms),
+            ArchNode::Head(_) => delta_glow(site.attn_rms),
+            ArchNode::Mlp => delta_glow(site.mlp_rms),
+        };
+        if let Some(s) = g.node_scalar.get_mut(i) {
+            *s = m;
+        }
+        if kind != ArchNode::Backbone {
+            let k = DELTA_R_REST + (1.0 - DELTA_R_REST) * m;
+            if let Some(p) = g.nodes.get_mut(i) {
+                p.x *= k;
+                p.y *= k;
+            }
+        }
+        i += 1;
+    });
+    g
 }
 
 // ---------------------------------------------------------------------------
@@ -21434,14 +21805,14 @@ mod tests {
     #[test]
     fn mind_view_mode_defaults_to_the_specimen() {
         // #520 — `mind[2]` is the mind VIEW selector: 0 = architecture specimen (the
-        // default), 1 = embedding galaxy. There is no "live" value: the glow rides the
-        // activation ring whenever frames arrive, so it is a fact about the ring rather
-        // than a mode you select. Anything unrecognised — a stale snapshot from an older
-        // build that wrote 2, a garbage float, NaN — falls back to the specimen rather
-        // than selecting a view that does not exist.
+        // default), 1 = embedding galaxy, and (#147 T3) 2 = the Delta lens. There is no
+        // "live" value: the glow rides the activation ring whenever frames arrive, so it
+        // is a fact about the ring rather than a mode you select. Anything unrecognised —
+        // a garbage float, NaN, a value from a build that has more views than this one —
+        // falls back to the specimen rather than selecting a view that does not exist.
         assert_eq!(mind_view_mode(0.0), 0);
         assert_eq!(mind_view_mode(1.0), 1);
-        assert_eq!(mind_view_mode(2.0), 0, "the retired Live/Galaxy=2 value must fall back");
+        assert_eq!(mind_view_mode(2.0), 2, "#147 T3 — 2 is the Delta lens");
         assert_eq!(mind_view_mode(3.0), 0);
         assert_eq!(mind_view_mode(-1.0), 0);
         assert_eq!(mind_view_mode(1.5), 0);
@@ -21890,6 +22261,391 @@ mod tests {
         assert!(long[20..].iter().all(|&v| v == -1.0), "surplus nodes untouched");
         // The 20 arch nodes were written (no longer -1).
         assert!(long[..20].iter().all(|&v| v >= 0.0), "arch nodes overwritten");
+    }
+
+    // --- #147 Tier 3 — the Delta lens --------------------------------------
+
+    /// A minimal `AdapterConfig`. Nothing in the lens reads it — the lens consumes
+    /// `AdaptedModule::delta_fro` + the shape — but `AdapterSummary` owns one.
+    fn delta_cfg() -> crate::lora::AdapterConfig {
+        crate::lora::AdapterConfig {
+            peft_type: Some("LORA".into()),
+            declared_r: Some(16),
+            lora_alpha: 32.0,
+            use_rslora: false,
+            target_modules: vec![],
+            base_model_name_or_path: None,
+            alpha_pattern: Default::default(),
+        }
+    }
+
+    /// One adapted module of shape `out × in` whose update has the given
+    /// **per-weight RMS displacement** — i.e. `‖ΔW‖_F = rms · sqrt(out·in)`. Stating
+    /// the fixture in RMS rather than in Frobenius is deliberate: it is the quantity
+    /// the lens claims to draw, so a fixture built the other way round would be
+    /// deriving its expectation from the code under test.
+    fn delta_module(name: &str, out: usize, inn: usize, rms: f64) -> crate::lora::AdaptedModule {
+        let (stack, layer, module) = crate::lora::split_site(name);
+        let fro = rms * ((out as f64) * (inn as f64)).sqrt();
+        crate::lora::AdaptedModule {
+            name: name.to_string(),
+            stack,
+            layer,
+            module,
+            r: 16,
+            in_features: inn,
+            out_features: out,
+            alpha: 32.0,
+            alpha_from_pattern: false,
+            scale: 2.0,
+            delta_fro: fro,
+            singular_values: vec![fro],
+            effective_rank: 1.0,
+            stable_rank: 1.0,
+        }
+    }
+
+    fn delta_summary(modules: Vec<crate::lora::AdaptedModule>) -> crate::lora::AdapterSummary {
+        crate::lora::AdapterSummary {
+            config: delta_cfg(),
+            modules,
+            skipped: vec![],
+            rank_disagrees_with_config: vec![],
+        }
+    }
+
+    #[test]
+    fn delta_glow_window_is_fixed_and_clamps_at_both_edges() {
+        // Probe the EDGES, not comfortable midpoints: the two window ends, one decade
+        // outside each, and the zero case, which is a measurement ("nothing moved")
+        // rather than a missing value.
+        assert_eq!(delta_glow(DELTA_RMS_LO), 0.0, "the bottom of the window is dark");
+        assert_eq!(delta_glow(DELTA_RMS_HI), 1.0, "the top of the window is full");
+        assert_eq!(delta_glow(DELTA_RMS_LO / 10.0), 0.0, "below the window clamps, never wraps");
+        assert_eq!(delta_glow(DELTA_RMS_HI * 10.0), 1.0, "above the window clamps, never wraps");
+        assert_eq!(delta_glow(0.0), 0.0, "an untouched site is exactly dark");
+        assert_eq!(delta_glow(-1.0), 0.0);
+        assert_eq!(delta_glow(f64::NAN), 0.0);
+        assert_eq!(delta_glow(f64::INFINITY), 0.0, "non-finite is refused, not saturated");
+        // Five decades, so a decade is exactly a fifth of the range.
+        assert!((delta_glow(1.0e-5) - 0.2).abs() < 1.0e-6);
+        assert!((delta_glow(1.0e-2) - 0.8).abs() < 1.0e-6);
+        // Monotone across the window.
+        let mut prev = -1.0f32;
+        for k in 0..=10 {
+            let v = delta_glow(DELTA_RMS_LO * 10f64.powf(k as f64 * 0.5));
+            assert!(v >= prev, "monotone at step {k}");
+            prev = v;
+        }
+    }
+
+    #[test]
+    fn two_different_adapters_do_not_render_identically() {
+        // 🚨 THE property the fixed window exists for. A per-adapter max-normalise
+        // would put 1.0 at the top of BOTH of these and make a barely-trained adapter
+        // and a heavily-trained one pixel-identical — destroying exactly the
+        // comparison the lens is for. Same architecture, same modules, same shapes;
+        // the ONLY difference is how far the weights actually moved.
+        let quiet = delta_summary(vec![
+            delta_module("model.layers.0.self_attn.q_proj", 64, 64, 1.0e-5),
+            delta_module("model.layers.0.mlp.up_proj", 128, 64, 1.0e-5),
+        ]);
+        let loud = delta_summary(vec![
+            delta_module("model.layers.0.self_attn.q_proj", 64, 64, 1.0e-2),
+            delta_module("model.layers.0.mlp.up_proj", 128, 64, 1.0e-2),
+        ]);
+        let gq = delta_lens_graph(1, 2, 8.0, &delta_sites(&quiet));
+        let gl = delta_lens_graph(1, 2, 8.0, &delta_sites(&loud));
+        assert_eq!(gq.nodes.len(), gl.nodes.len(), "same architecture, same topology");
+        assert_ne!(gq.node_scalar, gl.node_scalar, "a louder adapter must not look identical");
+        let qmax = gq.node_scalar.iter().cloned().fold(0.0f32, f32::max);
+        let lmin = gl.node_scalar.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            qmax < lmin,
+            "every site of the quiet adapter must read darker than every site of the \
+             loud one (quiet max {qmax}, loud min {lmin})"
+        );
+        // And the geometry differs too, not only the brightness.
+        assert_ne!(gq.nodes, gl.nodes, "the silhouette carries the same measurement");
+    }
+
+    #[test]
+    fn shape_does_not_masquerade_as_movement() {
+        // 🚨 Raw ‖ΔW‖_F grows with the matrix's entry count, so lighting the specimen
+        // with it would paint the (much larger) MLP projection brighter than the
+        // attention projection on EVERY model, before any training happened — an
+        // artifact of shape wearing the clothes of a measurement. RMS-per-weight is
+        // what removes it: identical per-weight displacement ⇒ identical brightness,
+        // however differently shaped the two matrices are.
+        let attn = delta_module("model.layers.0.self_attn.q_proj", 4096, 4096, 1.0e-3);
+        let mlp = delta_module("model.layers.0.mlp.down_proj", 4096, 14336, 1.0e-3);
+        assert!(
+            mlp.delta_fro > attn.delta_fro * 1.5,
+            "the fixture really is lopsided in raw Frobenius ({} vs {})",
+            mlp.delta_fro,
+            attn.delta_fro
+        );
+        let sites = delta_sites(&delta_summary(vec![attn, mlp]));
+        let s = sites.layers[&0];
+        assert!(
+            (s.attn_rms - s.mlp_rms).abs() < 1.0e-12,
+            "same per-weight movement ⇒ same site value ({} vs {})",
+            s.attn_rms,
+            s.mlp_rms
+        );
+        assert_eq!(delta_glow(s.attn_rms), delta_glow(s.mlp_rms));
+    }
+
+    #[test]
+    fn a_site_is_the_rms_over_the_union_of_its_modules() {
+        // Combining is over the CONCATENATION of the matrices' entries, not an average
+        // of their RMS values — so a big quiet matrix must dominate a small loud one in
+        // exactly the proportion of their entry counts.
+        // 100 entries at 0.0 and 100 entries at 0.02 ⇒ sqrt((0 + 100·4e-4)/200) = 0.01414…
+        let s = delta_sites(&delta_summary(vec![
+            delta_module("model.layers.0.mlp.gate_proj", 10, 10, 0.0),
+            delta_module("model.layers.0.mlp.up_proj", 10, 10, 0.02),
+        ]));
+        let want = ((0.0 + 100.0 * 0.02f64 * 0.02) / 200.0).sqrt();
+        assert!((s.layers[&0].mlp_rms - want).abs() < 1.0e-12, "got {}", s.layers[&0].mlp_rms);
+        // The backbone sees every module of the layer, so here it equals the MLP site.
+        assert!((s.layers[&0].backbone_rms - want).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn the_backbone_carries_modules_no_name_table_recognises() {
+        // ⚠️ A hard-coded name table is a silent-failure surface: an architecture
+        // spelling nobody listed must NOT make a trained layer look untouched. The
+        // unrecognised module still lands on the backbone, and its name is reported.
+        let sites = delta_sites(&delta_summary(vec![delta_module(
+            "model.layers.3.some_future_block.weird_proj",
+            32,
+            32,
+            1.0e-2,
+        )]));
+        let s = sites.layers[&3];
+        assert!(s.backbone_rms > 0.0, "the layer's whole update is never dropped");
+        assert_eq!(s.attn_rms, 0.0, "it is not guessed onto the attention ring");
+        assert_eq!(s.mlp_rms, 0.0, "nor onto the MLP node");
+        assert_eq!(sites.unclassified, vec!["model.layers.3.some_future_block.weird_proj"]);
+    }
+
+    #[test]
+    fn classify_site_covers_the_conventions_in_circulation() {
+        for n in [
+            "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+            "attention.query_key_value", "attn.c_attn", "attention.wq", "attention.wo",
+            "self_attn.rotary_thing", // unlisted leaf, attention container
+        ] {
+            assert_eq!(classify_site(n), SiteKind::Attn, "{n}");
+        }
+        for n in [
+            "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "mlp.c_fc",
+            "feed_forward.w1", "feed_forward.w3", "mlp.dense_h_to_4h",
+            "mlp.some_unlisted_leaf", // unlisted leaf, MLP container
+        ] {
+            assert_eq!(classify_site(n), SiteKind::Mlp, "{n}");
+        }
+        assert_eq!(classify_site("lm_head"), SiteKind::Unclassified);
+        assert_eq!(classify_site("SELF_ATTN.Q_PROJ"), SiteKind::Attn, "case-insensitive");
+    }
+
+    #[test]
+    fn layerless_modules_are_reported_rather_than_folded_into_a_layer() {
+        // `lm_head` and embedding adapters have no layer index, and the architecture
+        // topology has no node for them. Silently attributing them to layer 0 would
+        // brighten a real layer with a measurement that is not about it.
+        let sites = delta_sites(&delta_summary(vec![
+            delta_module("base_model.model.lm_head", 32, 32, 1.0e-2),
+            delta_module("model.layers.0.self_attn.q_proj", 32, 32, 1.0e-3),
+        ]));
+        assert_eq!(sites.layerless, vec!["base_model.model.lm_head"]);
+        assert_eq!(sites.layers.len(), 1, "only the one real layer");
+        let s = sites.layers[&0];
+        let want = 1.0e-3;
+        assert!((s.backbone_rms - want).abs() < 1.0e-12, "lm_head did not leak in: {}", s.backbone_rms);
+    }
+
+    #[test]
+    fn delta_writer_maps_each_node_to_its_site() {
+        // The node-order contract, pinned the same way `stream_frame_into_scalars`'
+        // twin test pins it: 2 layers × 2 heads → [backbone, head0, head1, mlp] per
+        // layer. Both writers walk `for_each_arch_node`, so this is the assertion that
+        // a private re-implementation would break — misattributing every value while
+        // still producing the right node COUNT, which nothing else would catch.
+        let sites = delta_sites(&delta_summary(vec![
+            // layer 0: attention only
+            delta_module("model.layers.0.self_attn.q_proj", 8, 8, 1.0e-2), // glow 0.8
+            // layer 1: MLP only
+            delta_module("model.layers.1.mlp.up_proj", 8, 8, 1.0e-4), // glow 0.4
+        ]));
+        assert_eq!(arch_node_count(2, 2), 8);
+        let mut scal = vec![-1.0f32; 8];
+        delta_into_scalars(&mut scal, 2, 2, &sites);
+        let near = |a: f32, b: f32| (a - b).abs() < 1.0e-5;
+        // Layer 0: backbone (all of it = the q_proj), head0, head1, mlp (nothing).
+        assert!(near(scal[0], 0.8), "l0 backbone {}", scal[0]);
+        assert!(near(scal[1], 0.8), "l0 head0 {}", scal[1]);
+        assert!(near(scal[2], 0.8), "l0 head1 {}", scal[2]);
+        assert_eq!(scal[3], 0.0, "l0 mlp was never adapted");
+        // Layer 1: backbone (all of it = the up_proj), heads (nothing), mlp.
+        assert!(near(scal[4], 0.4), "l1 backbone {}", scal[4]);
+        assert_eq!(scal[5], 0.0, "l1 head0 was never adapted");
+        assert_eq!(scal[6], 0.0, "l1 head1 was never adapted");
+        assert!(near(scal[7], 0.4), "l1 mlp {}", scal[7]);
+    }
+
+    #[test]
+    fn delta_writer_indices_align_with_skeleton_nodes() {
+        // The scalar written into node i must correspond to skeleton node i's TYPE,
+        // for a shape where the three bands are separable. Three distinct movement
+        // levels, one per site kind, on every layer.
+        let (n_layers, n_heads) = (3u32, 5u32);
+        let g = architecture_skeleton_graph(n_layers, n_heads, 8.0);
+        let mut mods = Vec::new();
+        for l in 0..n_layers {
+            mods.push(delta_module(&format!("model.layers.{l}.self_attn.q_proj"), 8, 8, 1.0e-2));
+            mods.push(delta_module(&format!("model.layers.{l}.mlp.up_proj"), 8, 8, 1.0e-5));
+        }
+        let sites = delta_sites(&delta_summary(mods));
+        let mut scal = g.node_scalar.clone();
+        delta_into_scalars(&mut scal, n_layers, n_heads, &sites);
+        assert_eq!(scal.len(), g.nodes.len());
+        for (i, &t) in g.node_scalar.iter().enumerate() {
+            // Skeleton type channel: 0.25 backbone / 0.65 head / 1.0 mlp.
+            if (t - 0.65).abs() < 1e-6 {
+                assert!((scal[i] - 0.8).abs() < 1e-5, "head node {i} got the attention value: {}", scal[i]);
+            } else if (t - 1.0).abs() < 1e-6 {
+                assert!((scal[i] - 0.2).abs() < 1e-5, "mlp node {i} got the MLP value: {}", scal[i]);
+            } else {
+                // Backbone = both modules pooled: sqrt((1e-4 + 1e-10)/2) over 128 entries.
+                assert!(
+                    scal[i] > 0.2 && scal[i] < 0.8,
+                    "backbone node {i} got the layer's pooled value: {}",
+                    scal[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn delta_never_writes_out_of_bounds_on_mismatch() {
+        // Same contract as the live writer: writes are clamped to the EXISTING length,
+        // never resized or reindexed, whatever base graph the caller hands over.
+        let sites = delta_sites(&delta_summary(vec![delta_module(
+            "model.layers.0.self_attn.q_proj",
+            8,
+            8,
+            1.0e-2,
+        )]));
+        assert_eq!(arch_node_count(4, 3), 20);
+        let mut short = vec![-1.0f32; 5];
+        delta_into_scalars(&mut short, 4, 3, &sites);
+        assert_eq!(short.len(), 5, "length never changed (no resize)");
+        assert!((short[0] - 0.8).abs() < 1e-5, "node 0 is layer 0's backbone");
+        let mut long = vec![-1.0f32; 40];
+        delta_into_scalars(&mut long, 4, 3, &sites);
+        assert_eq!(long.len(), 40, "length never changed (no resize)");
+        assert!(long[20..].iter().all(|&v| v == -1.0), "surplus nodes untouched");
+        assert!(long[..20].iter().all(|&v| v >= 0.0), "arch nodes overwritten");
+        // An empty graph is the degenerate edge and must not panic.
+        let mut none: Vec<f32> = Vec::new();
+        delta_into_scalars(&mut none, 4, 3, &sites);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn the_delta_silhouette_is_what_tells_it_from_the_live_lens() {
+        // 🚨 The honesty requirement, as geometry. The live activation lens draws the
+        // skeleton UNCHANGED — a straight-sided cylinder, every head ring the same
+        // radius at every depth, forever. The Delta lens displaces each off-axis site
+        // by its own measured movement, so an adapter's footprint is a profile. That is
+        // what a viewer sees without the (off-screen) mode selector.
+        let sites = delta_sites(&delta_summary(vec![
+            delta_module("model.layers.0.self_attn.q_proj", 8, 8, 1.0e-1), // full
+            // layer 1 untouched entirely
+            delta_module("model.layers.2.self_attn.q_proj", 8, 8, 1.0e-4), // partway
+        ]));
+        let (nl, nh) = (3u32, 4u32);
+        let skel = architecture_skeleton_graph(nl, nh, 10.0);
+        let lens = delta_lens_graph(nl, nh, 10.0, &sites);
+        assert_eq!(lens.nodes.len(), skel.nodes.len(), "same topology");
+        assert_eq!(lens.edges, skel.edges, "same wiring — only position and glow move");
+
+        let radius = |g: &NeuralGraph, i: usize| (g.nodes[i].x.powi(2) + g.nodes[i].y.powi(2)).sqrt();
+        // Node layout: layer l starts at l*(1 + nh + 1) = l*6; +1..=nh are the heads.
+        let head = |l: usize, h: usize| l * 6 + 1 + h;
+        let back = |l: usize| l * 6;
+
+        // The live lens's ring: every head radius identical, at every depth.
+        let r0 = radius(&skel, head(0, 0));
+        for l in 0..3 {
+            for h in 0..4 {
+                assert!(
+                    (radius(&skel, head(l, h)) - r0).abs() < 1e-4,
+                    "the skeleton is a straight-sided cylinder (l{l} h{h})"
+                );
+            }
+        }
+        // The Delta lens's ring: a profile. Layer 0 is at full radius, layer 1 (never
+        // adapted) is at the rest radius, layer 2 sits strictly between.
+        let d0 = radius(&lens, head(0, 0));
+        let d1 = radius(&lens, head(1, 0));
+        let d2 = radius(&lens, head(2, 0));
+        assert!((d0 - r0).abs() < 1e-4, "a fully-moved site sits at the skeleton radius");
+        assert!((d1 - r0 * DELTA_R_REST).abs() < 1e-4, "an untouched site pinches to the rest radius");
+        assert!(d1 < d2 && d2 < d0, "layer 2 is strictly between ({d1} < {d2} < {d0})");
+        assert!(d1 > 0.0, "an untouched layer is still a layer, not a hole");
+        // The ring stays ROUND — the uniform-across-heads limit, made visible.
+        for h in 1..4 {
+            assert!((radius(&lens, head(0, h)) - d0).abs() < 1e-4, "head {h} shares the layer's value");
+        }
+        // The trunk never bends: backbone nodes are on the axis in both.
+        for l in 0..3 {
+            assert_eq!(lens.nodes[back(l)].x, 0.0);
+            assert_eq!(lens.nodes[back(l)].y, 0.0);
+            assert_eq!(lens.nodes[back(l)].z, skel.nodes[back(l)].z, "depth is untouched");
+        }
+    }
+
+    #[test]
+    fn delta_lens_graph_respects_the_node_cap() {
+        // The cap boundary, not a comfortable middle: `for_each_arch_node` stops mid
+        // layer at ARCH_CAP_N, and the geometry walk must stop with it rather than
+        // indexing past the graph it is deforming.
+        let sites = delta_sites(&delta_summary(vec![delta_module(
+            "model.layers.100.self_attn.q_proj",
+            8,
+            8,
+            1.0e-1,
+        )]));
+        let g = delta_lens_graph(200, 64, 10.0, &sites);
+        assert_eq!(g.nodes.len(), ARCH_CAP_N);
+        assert_eq!(g.node_scalar.len(), g.nodes.len());
+        assert_eq!(g.nodes.len(), arch_node_count(200, 64));
+        // Layer 100 is inside the cap (100 × 66 = 6600 > 4096 → it is not), so nothing
+        // is lit; what matters is that the walk terminated cleanly at the cap.
+        assert!(g.node_scalar.iter().all(|v| v.is_finite()));
+        // Degenerate dims must not panic either.
+        let z = delta_lens_graph(0, 0, 10.0, &DeltaSites::default());
+        assert_eq!(z.nodes.len(), 2, "0 layers floors to 1 → backbone + mlp");
+    }
+
+    #[test]
+    fn rms_range_reports_what_the_fixed_window_hides() {
+        // The window clamps, so a readout needs the real extremes from somewhere.
+        assert_eq!(DeltaSites::default().rms_range(), None, "nothing moved ⇒ nothing to report");
+        let sites = delta_sites(&delta_summary(vec![
+            delta_module("model.layers.0.self_attn.q_proj", 8, 8, 3.0),
+            delta_module("model.layers.1.mlp.up_proj", 8, 8, 1.0e-9),
+        ]));
+        let (lo, hi) = sites.rms_range().expect("two moved sites");
+        assert!((lo - 1.0e-9).abs() < 1e-15, "lo {lo}");
+        assert!((hi - 3.0).abs() < 1e-12, "hi {hi}");
+        // Both are outside the display window and clamp there, which is exactly why
+        // the range has to be available separately.
+        assert_eq!(delta_glow(lo), 0.0);
+        assert_eq!(delta_glow(hi), 1.0);
     }
 
     // --- Density-Map Attractor (#380 Tier 1) -------------------------------

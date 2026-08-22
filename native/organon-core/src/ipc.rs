@@ -3108,6 +3108,22 @@ pub fn model_sidecar_path() -> PathBuf {
     ns_file("model.txt")
 }
 
+/// #147 Tier 3 — the **LoRA adapter directory** the Delta lens measures. The visual
+/// reads it when the Mind view (`Shared.mind[2]`) selects the Delta lens, then hands
+/// it to `lora::read_adapter_dir` and lights the specimen by what the fine-tune
+/// moved. A directory path (holding `adapter_config.json` +
+/// `adapter_model.safetensors`), not a file; plain UTF-8, read with `.trim()`.
+/// Mirrors `model_sidecar_path` + `model_gen`.
+///
+/// 📌 A sidecar rather than a `Shared` field for the same reason every other path
+/// here is one: `Shared` is append-only and offset-sensitive across a process
+/// boundary, and a path is not a control-rate value. **Nothing writes it yet** — the
+/// picker that will is #147's later tier; until then the lens says so out loud
+/// rather than substituting something else.
+pub fn adapter_sidecar_path() -> PathBuf {
+    ns_file("adapter.txt")
+}
+
 /// #423 Tier 1 — the atlas sidecar: the editor scans a model library + hardware
 /// profile, serializes the derived `math::AtlasDoc` (context, KV element size,
 /// profile, design points) as JSON here, and bumps `Shared.atlas[0]`. The visual
@@ -3821,6 +3837,21 @@ mod ns_tests {
         assert_eq!(ipc_path(), ns_file_in(ns, "ipc.bin"));
         assert_eq!(mind_ring_path(), ns_file_in(ns, "mind.bin"));
         assert_eq!(namespace(), ns, "namespace must be stable within a process");
+    }
+
+    /// #147 T3 — the adapter sidecar is namespaced like every other one, and it is a
+    /// file of its own rather than a second meaning for `model.txt`. Sharing that
+    /// file would make "which .gguf" and "which adapter" the same string, and the
+    /// Delta lens needs both at once (dims from the model, movement from the adapter).
+    #[test]
+    fn adapter_sidecar_is_namespaced_and_distinct_from_the_model() {
+        let ns = namespace();
+        assert_eq!(adapter_sidecar_path(), ns_file_in(ns, "adapter.txt"));
+        assert_ne!(adapter_sidecar_path(), model_sidecar_path());
+        assert_ne!(
+            ns_file_in(crate::edition::Edition::Full.ipc_namespace(), "adapter.txt"),
+            ns_file_in(crate::edition::Edition::Mind.ipc_namespace(), "adapter.txt"),
+        );
     }
 
     /// The mindview saved-layout sidecar is namespaced like every other one, so an
