@@ -258,6 +258,51 @@ owns running the bar on `main` afterwards. ⚠️ Report a green gate as *"it wa
 gate earns its keep on the run that catches something, and saying otherwise turns a control into a
 formality.
 
+## 🚨 Two coordinators is the same failure as two workers, one layer up
+
+Measured: two coordinator sessions ruled on one tier for hours without telling anyone which
+decisions were whose. A worker collapsed them into *"the coordinator"*, misattributed a ruling, and
+caught it itself. ⚠️ **The failure is not disagreement — it is that a worker cannot tell a
+ruling from a suggestion when two sources speak in the same register.**
+
+- **Before popping a card, list the running sessions and read their titles.** This is the
+  two-workers rule applied to yourself, and it is the one most easily skipped because dispatching
+  feels like starting rather than joining.
+- **When a ruling matters, quote the session title it came from** — *"Per 'X coordinator': …"*.
+  It costs nothing and makes a wrong attribution visible immediately rather than after it has been
+  built on.
+- 🚨 **Tell a worker to refuse to arbitrate.** If two coordinators contradict each other,
+  it stops and tells both rather than picking. A worker quietly choosing between them is how one
+  coordinator builds on a decision the other reversed.
+- ⚠️ **A peer cannot receive a user instruction any more than it can lift one.** Handing a
+  remit to another coordinator is not something two agents can settle between themselves — do it in
+  practice if the work demands it, then **tell the user** and mark it provisional until they answer.
+
+## 🚨 Never publish your own `sessionId`
+
+`list_sessions` **excludes the current session**, so a coordinator cannot read its own id. Any id it
+publishes is therefore an *inference* — and the obvious candidate, the UUID in its own working or
+scratchpad directory, is **not** the `sessionId`. Measured: a coordinator published that UUID, was
+told once by a worker that the address did not resolve, answered by pointing at its title instead of
+correcting the fact, and then published the same bad id to a second party.
+
+📌 **So do not publish one at all.** Give your **title**, which `list_sessions` shows and
+`set_session_title` makes stable, and otherwise rely on the rule that already covers it: **reply on
+the channel the message arrived on.**
+
+⚠️ **Acknowledging a correction is not applying it.** That is the whole shape of the
+incident above, and it is worth checking against your own record before assuming otherwise.
+
+## 📌 A rule you can state fluently is not a rule you are applying
+
+The night that produced this file also produced, from its two coordinators: one that popped a
+duplicate card while its own skill said not to, and one that catalogued *"an inference in the
+register of an observation"* five times while committing five more. **In both cases the tell was
+that they were teaching the rule at the time.**
+
+Fluency is not compliance. When you write a rule down, spend one line checking the last thing you
+did against it.
+
 ## What to escalate
 
 **Escalate**: anything departing from the user's own words; anything only they can judge — visual,
