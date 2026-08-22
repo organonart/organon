@@ -347,9 +347,11 @@ doc/          Organon Mind's public doc set (PRD, build plan, the honesty essay)
 .claude/skills/  organon-cli — driving the running app via the `organon` command;
               coordinate-sessions — one session driving workers (SKILL.md is the
               coordinator's half, BRIEF.md the half a worker is pointed at, because a
-              worker cannot load a skill). Real directories, NOT symlinks: a git symlink
-              here materialises as a 24-byte text file on any Windows checkout and the
-              skill silently does not load (#19).
+              worker cannot load a skill); create-installer — taking a Windows build
+              to a machine that never built it, which is what `bundle.ps1` and
+              `deploy.ps1` deliberately do NOT do. Real directories, NOT symlinks: a
+              git symlink here materialises as a 24-byte text file on any Windows
+              checkout and the skill silently does not load (#19).
 changelog.d/  one Markdown fragment per change, concatenated into CHANGELOG.md at
               release by `native/tools/changelog.py`. Write your entry HERE, not in
               CHANGELOG.md.                         → changelog.d/README.md
