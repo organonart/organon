@@ -164,6 +164,18 @@ fn layout_actions() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(layout::LAYOUT_ACTIONS.iter().copied())
 }
 
+/// Possible-values parser for `console preset <ACTION>`.
+///
+/// Built from `organon_core::console_ops::PRESET_ACTIONS`, the same table `console_main`'s
+/// `CommandSpec` builds its `ArgKind::Choice` from — so the CLI and the slash palette cannot
+/// come to disagree about what a preset action is. That is §1.8's rule about a verb's *values*,
+/// which is the half this surface has always honoured.
+fn preset_actions() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        organon_core::console_ops::PRESET_ACTIONS.iter().copied(),
+    )
+}
+
 /// Possible-values parser for `console patch --kind <KIND>`.
 ///
 /// Unlike the two lists above this one is **built from the shared table**
@@ -588,6 +600,30 @@ enum ConsoleAction {
         /// What the layout is called — one word, no whitespace
         name: String,
     },
+    /// Load a preset — its look, and a panel of exactly the controls it changed
+    #[command(after_help = "`load` does two things. The preset's values reach the console's \
+                            parameter mirror, so the LOOK changes on the next frame — that half \
+                            happens whether or not any region is holding a panel column. And if \
+                            one is, a card built from what the preset changed replaces whatever \
+                            card the last preset left there.\n\n\
+                            ⚠️ The name is matched by unique case-insensitive SUBSTRING, not \
+                            exactly — preset names have spaces in them and the composer's \
+                            grammar takes one word per argument. A name matching two presets is \
+                            refused, naming both; a name matching none is refused, naming the \
+                            store.\n\n\
+                            ⚠️ `save` captures what the console's panels currently hold, and \
+                            records which controls differ from the factory default as what the \
+                            preset is ABOUT. A name that already exists is REPLACED.\n\n\
+                            ⚠️ There is no `list` here. A listing is a READ, and this lane is \
+                            fire-and-forget with no return path — so it lives where a read can \
+                            be answered: the tool `console.preset.list`.")]
+    Preset {
+        /// load or save
+        #[arg(value_parser = preset_actions())]
+        action: String,
+        /// Which preset — matched by substring for `load`, taken literally for `save`
+        name: String,
+    },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
                             the next prompt lands underneath them. They are ordinary \
@@ -921,6 +957,20 @@ fn run_console(action: ConsoleAction) -> ! {
                 std::process::exit(2);
             }
         },
+        // ⚠️ **No `check_name` here, unlike `Layout` directly above, and the difference is the
+        // whole reason these are two verbs.** A layout name is one a person invents, so
+        // whitespace in it is a mistake worth refusing at this boundary; a preset name already
+        // exists in `presets.json` and routinely contains whitespace (`Rails — Crystal
+        // Throat`). The sidecar line survives it because `ConsoleOp::Preset`'s parser takes the
+        // rest of the line rather than the next word — which is safe only because the name is
+        // the last field, and is stated in that op's doc.
+        ConsoleAction::Preset { action, name } => {
+            if name.trim().is_empty() {
+                eprintln!("organon: a preset has a name — `console preset {action} <NAME>`");
+                std::process::exit(2);
+            }
+            cli::ConsoleOp::Preset { action, name }
+        }
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
         // here; the fallback rather than an `expect` because it is not a guess — it is the

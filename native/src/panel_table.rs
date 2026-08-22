@@ -66,12 +66,6 @@ use crate::param_sink::Sink;
 use crate::params::OrganicMathParams;
 use nih_plug_egui::egui;
 
-// ⚠️ **The data half of the table has no non-test caller in this build, and that is expected
-// rather than a leftover.** `Item`, `ITEMS`, `DECLARED`, `draw_field` and `section` exist for
-// the preset-built panel (organon#124), which lands *after* the panels it groups do — the table
-// has to carry the grouping before anything can group by it. They are exercised by this
-// module's tests today; the `allow(dead_code)`s below come off with the first real caller.
-
 /// One entry of a panel's declaration, in the editor's own order.
 ///
 /// This is the *data* half of the table — what [`crate::preset`]'s diff is grouped by, and what
@@ -83,7 +77,6 @@ use nih_plug_egui::egui;
 /// therefore emits a heading *lazily*, before the first row under it that survives, so a section
 /// whose rows were all filtered away draws nothing rather than an empty heading.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(dead_code)]
 pub(crate) enum Item {
     /// A control. `field` is the identifier shared by `OrganicMathParams` and
     /// `PresetValues`; `wide` is the one piece of *presentation* the table carries, because a
@@ -91,6 +84,12 @@ pub(crate) enum Item {
     /// hero combos, `COMBO_W` otherwise) and it is invisible to every other control kind.
     Row { field: &'static str, label: &'static str, wide: bool },
     /// A `— shadows (Tier 1) —` sub-heading inside the card.
+    ///
+    /// ⚠️ Not constructed by any declaration yet — none of the four transplanted panels has an
+    /// internal sub-heading, and the eleven that do are still `Declared`. `group_exposed`
+    /// nevertheless has to know what one means, because a preset-built card's headings are the
+    /// same idiom one level out.
+    #[allow(dead_code)]
     Section(&'static str),
     /// A `help()` paragraph.
     Help(&'static str),
@@ -98,12 +97,16 @@ pub(crate) enum Item {
     /// carried by *name* rather than inline so that "how much of this panel is still
     /// hand-written" is a countable number rather than a feeling. Only legal in an `@labelled`
     /// panel; a `@generated` one fails to compile.
+    ///
+    /// ⚠️ Not constructed yet either: the first `@labelled` declaration is Surface's, and it is
+    /// the next change. The `compile_error!` in `panel!`'s `@draw` arm is what makes this a
+    /// guarantee rather than a convention, and that arm is checked today.
+    #[allow(dead_code)]
     Free(&'static str),
 }
 
 impl Item {
     /// The `PresetValues` field this item controls, if it controls one.
-    #[allow(dead_code)]
     pub(crate) fn field(&self) -> Option<&'static str> {
         match self {
             Item::Row { field, .. } => Some(field),
@@ -114,7 +117,6 @@ impl Item {
 
 /// The sub-heading the editor draws inside a card — `lib.rs`'s own idiom, in one place so a
 /// generated body and a hand-written one cannot render it differently.
-#[allow(dead_code)]
 pub(crate) fn section(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).weak().small());
 }
@@ -167,7 +169,6 @@ macro_rules! panel {
 
         /// Every item, in the editor's own order. **The data half of the table** — what a
         /// preset's diff is grouped by.
-        #[allow(dead_code)]
         pub(crate) const ITEMS: &[Item] = &[ $( panel!(@item $($it)*) ),* ];
 
         /// Each row's label, addressable by the field's **own identifier**, so a hand-written
@@ -284,7 +285,6 @@ panel!(@generated bloom, LOOK_BLOOM;
 /// a `panels::Panel` missing from `panels::PANELS` is invisible to the `/organon` rings, and for
 /// the same reason: Rust cannot enumerate a module's items.
 /// [`tests::every_declared_panel_is_in_the_index`] counts the arm.
-#[allow(dead_code)]
 pub(crate) const DECLARED: &[(&organon_core::panels::Panel, &[Item])] =
     &[(shadows::PANEL, shadows::ITEMS), (lighting::PANEL, lighting::ITEMS), (bloom::PANEL, bloom::ITEMS)];
 
@@ -300,7 +300,6 @@ pub(crate) const DECLARED: &[(&organon_core::panels::Panel, &[Item])] =
 /// fully joined, and only three panels are joined so far. A caller draws such a field from its
 /// param alone rather than dropping it — a field is never silently absent from a panel that
 /// claims to show what a preset changed.
-#[allow(dead_code)]
 pub(crate) fn draw_field(
     ui: &mut egui::Ui,
     w: f32,
@@ -311,6 +310,158 @@ pub(crate) fn draw_field(
     shadows::draw_one(ui, w, p, sink, name)
         || lighting::draw_one(ui, w, p, sink, name)
         || bloom::draw_one(ui, w, p, sink, name)
+}
+
+/// 🚨 **Draw ANY preset field, by name, whether or not a panel has ever mentioned it.**
+///
+/// This is what closes the gap [`draw_field`] leaves open, and it closes it completely: the
+/// arms are generated from `preset.rs`'s `for_each_tab_field!`, the same list `PresetValues`'
+/// capture, apply and tab partition are generated from. **Every field a preset can carry has a
+/// control here on the day it is added to that list**, with no edit in this file.
+///
+/// ⚠️ **The label is the param's own name**, because there is nowhere else for it to come from —
+/// a field with no table row has no short label, and §"What the table carries" says why the two
+/// differ. That is deliberately second-class rendering: `"Kaleido Spin"` where a joined panel
+/// would say `"spin"` under a *Scene Kaleidoscope* heading. A row that reads long and ungrouped
+/// is the visible argument for joining the next tab, which is better than the alternatives —
+/// dropping the field, or inventing a label.
+///
+/// ⚠️ **The control kind still comes from the param**, so this is not a lesser *widget*: a
+/// slider is the same slider and a dropdown carries the same variant names. Only the label and
+/// the grouping are missing, and only those.
+///
+/// Answers `false` for a name no preset field answers to — a renamed param, or a hand-edited
+/// `presets.json`. `Preset::unknown_exposed` is what reports those by name.
+pub(crate) fn draw_any_field(
+    ui: &mut egui::Ui,
+    w: f32,
+    p: &OrganicMathParams,
+    sink: &mut Sink,
+    name: &str,
+) -> bool {
+    // ⚠️ **One arm per field, not a lookup table**, for the reason the whole of this module is
+    // macros rather than data: an arm names the field once and derives `&p.$f` and
+    // `|pv| &mut pv.$f` from it, so a rename on either side is a compile error. A `HashMap<&str,
+    // …>` would need the accessor pair written out per entry, which is the second list this
+    // file exists to avoid. The linear scan costs a few hundred `&str` compares per drawn row
+    // and is invisible beside laying out one widget.
+    macro_rules! arm {
+        ($tab:ident, $f:ident, scalar) => {
+            if name == stringify!($f) {
+                let label = ::nih_plug::prelude::Param::name(&p.$f).to_string();
+                $crate::param_sink::auto_row(ui, w, &label, &p.$f, sink, |pv| &mut pv.$f);
+                return true;
+            }
+        };
+        ($tab:ident, $f:ident, enum, $ty:ident) => {
+            if name == stringify!($f) {
+                let label = ::nih_plug::prelude::Param::name(&p.$f).to_string();
+                $crate::param_sink::auto_row_wide(ui, w, &label, &p.$f, sink, |pv| &mut pv.$f);
+                return true;
+            }
+        };
+    }
+    crate::preset::for_each_tab_field!(arm);
+    false
+}
+
+// ===========================================================================================
+// A panel built from a preset (organon#124)
+// ===========================================================================================
+
+/// One heading of a preset-built panel, and the controls under it.
+///
+/// 🚨 **One card with sections, not a card per panel** — James's own second reading of the idea:
+/// *"we could construct custom panels **or even a single custom panel** with sections and
+/// sliders and dropdowns that are tailored to the exact changes that we made on that preset."*
+/// The second shape is the one that works, and it works because of what changed underneath it:
+/// `panel_stack::admit` now refuses a `Declared` panel at every door, so a column of Organon's
+/// own panels can only ever hold the four this build can draw. A preset touching a Generator
+/// field has no card to put it in. **A card of its own, sectioned by where the controls come
+/// from, has room for all of them.**
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Section {
+    /// The panel this group of controls comes from, or — for controls no joined panel homes
+    /// yet — the editor tab they belong to.
+    pub heading: &'static str,
+    /// The fields under it, in the editor's own order.
+    pub fields: Vec<&'static str>,
+    /// Whether [`heading`](Self::heading) names a panel (`true`) or a tab (`false`). ⚠️ It is
+    /// the difference between a control drawn with its short editor label and one drawn with
+    /// the param's own long name — see [`draw_any_field`] — so it is worth carrying rather than
+    /// re-deriving, and it is what a caller counts to report coverage honestly.
+    pub homed: bool,
+}
+
+/// **Group a preset's exposed fields into the sections of one card.**
+///
+/// Pure, and outside the drawing, so the shape of a preset-built panel is checkable without an
+/// `egui::Ui` — the same reason `panel_stack::admit` is a free function.
+///
+/// The order is the editor's twice over: joined panels first, in [`DECLARED`] order with each
+/// panel's own row order inside it; then everything else in `for_each_tab_field!`'s declaration
+/// order, grouped by tab. So two presets exposing the same fields build the same card.
+///
+/// ⚠️ **A name no field answers to is dropped here**, silently — but not *unreported*:
+/// `Preset::unknown_exposed` is what names those, and it is the caller's job to print them.
+/// This function's contract is "the sections that can be drawn", and a name with no field
+/// cannot be one.
+///
+/// ⚠️ **`Item::Help` is dropped.** A filtered card showing three rows and a paragraph about the
+/// whole panel is exactly the ambient explanatory prose #130 took out of this console; and the
+/// paragraph would be describing controls that are not on screen. A preset panel is a control
+/// surface, not a document.
+pub(crate) fn group_exposed(exposed: &[String]) -> Vec<Section> {
+    let want: std::collections::HashSet<&str> = exposed.iter().map(|s| s.as_str()).collect();
+    let mut out: Vec<Section> = Vec::new();
+    let mut taken: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+
+    for (panel, items) in DECLARED {
+        let fields: Vec<&'static str> =
+            items.iter().filter_map(Item::field).filter(|f| want.contains(f)).collect();
+        if !fields.is_empty() {
+            taken.extend(fields.iter().copied());
+            out.push(Section { heading: panel.title, fields, homed: true });
+        }
+    }
+
+    // Everything the joined panels did not claim, by tab, in declaration order. `tab_field_list`
+    // is the whole of what this build knows about where an un-joined field belongs — a tab, and
+    // no finer — which is precisely the coverage gap the four joined panels are closing.
+    for (name, tab) in crate::preset::PresetValues::tab_field_list() {
+        if !want.contains(name) || taken.contains(name) {
+            continue;
+        }
+        match out.iter_mut().find(|s| !s.homed && s.heading == tab.label()) {
+            Some(section) => section.fields.push(name),
+            None => out.push(Section { heading: tab.label(), fields: vec![name], homed: false }),
+        }
+    }
+    out
+}
+
+/// **Draw a preset-built card's body** — the sections [`group_exposed`] worked out, each control
+/// through the best rendering this build has for it.
+///
+/// A field a joined panel homes is drawn by [`draw_field`], so it arrives with the editor's own
+/// short label and width. Everything else falls to [`draw_any_field`] and the param's own name.
+/// ⚠️ **Nothing is skipped**, and that is the property worth keeping: a panel claiming to show
+/// what a preset changed must not quietly leave a control out of it.
+pub(crate) fn draw_preset_panel(
+    ui: &mut egui::Ui,
+    w: f32,
+    p: &OrganicMathParams,
+    sink: &mut Sink,
+    sections: &[Section],
+) {
+    for group in sections {
+        section(ui, &format!("— {} —", group.heading));
+        for field in &group.fields {
+            if !draw_field(ui, w, p, sink, field) {
+                draw_any_field(ui, w, p, sink, field);
+            }
+        }
+    }
 }
 
 /// The body of a declared panel, if this build has one — the Console's dispatch from a slug to
@@ -425,5 +576,101 @@ mod tests {
         ];
         assert_eq!(SAMPLE[0].field(), None);
         assert_eq!(SAMPLE[1].field(), Some("rt_shadows"));
+    }
+    // -----------------------------------------------------------------------
+    // A panel built from a preset (organon#124)
+    // -----------------------------------------------------------------------
+
+    /// 🚨 **The claim the feature makes, as an assertion**: the fields a preset changed become
+    /// sections of one card, headed by where the controls come from.
+    #[test]
+    fn a_preset_becomes_sections_headed_by_where_its_controls_come_from() {
+        let sections = group_exposed(&["shadow_bias".into(), "bloom_intensity".into()]);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].heading, organon_core::panels::LOOK_SHADOWS.title);
+        assert_eq!(sections[0].fields, vec!["shadow_bias"]);
+        assert!(sections[0].homed, "a joined panel homes its own field");
+        assert_eq!(sections[1].heading, organon_core::panels::LOOK_BLOOM.title);
+    }
+
+    /// ⚠️ **A field no joined panel homes still gets a section**, headed by its editor *tab*.
+    /// The alternative — dropping it — would make a card claiming to show what a preset changed
+    /// quietly incomplete, which is the one thing it must not be. `homed` is what says which
+    /// kind of section it is, and it is what a caller counts to report coverage honestly.
+    #[test]
+    fn a_field_with_no_joined_panel_is_grouped_by_tab_and_marked() {
+        // `kal_spin` is a Look field on the Scene Kaleidoscope card, which is still `Declared`.
+        let sections = group_exposed(&["kal_spin".into()]);
+        assert_eq!(sections.len(), 1);
+        assert!(!sections[0].homed, "no panel in the table owns it");
+        assert_eq!(sections[0].fields, vec!["kal_spin"]);
+        assert_ne!(
+            sections[0].heading,
+            organon_core::panels::LOOK_KALEIDOSCOPE.title,
+            "the tab is all this build knows — naming the panel would be a guess"
+        );
+    }
+
+    /// Joined panels first, then everything else by tab — so two presets exposing the same
+    /// fields build the same card whatever order the names arrive in.
+    #[test]
+    fn the_order_is_the_editors_and_not_the_callers() {
+        let a = group_exposed(&["kal_spin".into(), "shadow_bias".into()]);
+        let b = group_exposed(&["shadow_bias".into(), "kal_spin".into()]);
+        assert_eq!(a, b);
+        assert!(a[0].homed, "a joined panel leads");
+        assert!(!a[1].homed);
+    }
+
+    /// A field claimed by a joined panel is **not** repeated under its tab. The two passes are
+    /// over the same field space, so a missing `taken` check would draw every homed control
+    /// twice — once well and once badly.
+    #[test]
+    fn a_homed_field_is_not_repeated_under_its_tab() {
+        let sections = group_exposed(&["shadow_bias".into()]);
+        let all: Vec<&str> = sections.iter().flat_map(|s| s.fields.iter().copied()).collect();
+        assert_eq!(all, vec!["shadow_bias"]);
+    }
+
+    /// ⚠️ A name no field answers to is dropped **here** — `Preset::unknown_exposed` is what
+    /// reports it, and this function's contract is "the sections that can be drawn".
+    #[test]
+    fn a_name_with_no_field_makes_no_section() {
+        assert!(group_exposed(&["no_such_param".into()]).is_empty());
+        assert!(group_exposed(&[]).is_empty());
+    }
+
+    /// 🚨 **Every preset field has a control, whether or not a panel names it.** This is the
+    /// property `draw_any_field` exists for, asserted without an `egui::Ui` — the dispatch is
+    /// generated from `for_each_tab_field!`, so what can be checked here is that the two lists
+    /// are the same list. A field in the tab partition with no arm would be a control the
+    /// preset panel silently skips.
+    #[test]
+    fn every_preset_field_can_be_grouped() {
+        let every: Vec<String> = crate::preset::PresetValues::tab_field_list()
+            .into_iter()
+            .map(|(n, _)| n.to_string())
+            .collect();
+        let sections = group_exposed(&every);
+        let grouped: usize = sections.iter().map(|s| s.fields.len()).sum();
+        assert_eq!(
+            grouped,
+            every.len(),
+            "a preset-captured field fell out of the grouping and would never be drawn"
+        );
+    }
+
+    /// The coverage number this build reports, pinned so it moves visibly as panels join.
+    /// ⚠️ **It is a measurement, not a target** — the useful thing about it is that it goes up
+    /// in the same commit as a transplant, and is read off the tables rather than written here.
+    #[test]
+    fn the_joined_panels_home_ten_of_the_preset_field_space() {
+        let every: Vec<String> = crate::preset::PresetValues::tab_field_list()
+            .into_iter()
+            .map(|(n, _)| n.to_string())
+            .collect();
+        let sections = group_exposed(&every);
+        let homed: usize = sections.iter().filter(|s| s.homed).map(|s| s.fields.len()).sum();
+        assert_eq!(homed, 10, "the four transplanted panels draw ten controls between them");
     }
 }

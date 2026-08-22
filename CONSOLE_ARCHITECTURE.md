@@ -6583,6 +6583,128 @@ rather than a format it gets to choose. It is already resolved in this workspace
 pulls the same 0.7), so nothing new downloads, and it brings no `nih_plug` edge — the crate's
 acceptance test is unaffected.
 
+### 1.18 `/preset` — a panel built from what a preset changed
+
+James, on what a preset ought to be able to do: *"we create presets, and each preset sets a
+certain number of values. And so I think that we can tell from the preset what values we have
+adjusted from the default. And thereby, we could construct custom panels **or even a single
+custom panel** with sections and sliders and dropdowns that are **tailored to the exact changes
+that we made on that preset** … so that we could do `/preset load` and it would cause UI panels
+to appear where we have set them up to be."*
+
+`console.preset load <name>` does two things, and the order is the design. First the preset's
+values reach the console's `PresetValues` mirror, so **the look changes** on the next published
+frame — the same write path a dragged slider takes (§1.11). Second, if any region is holding a
+panel column, a card built from what that preset changed replaces whatever card the last preset
+left there.
+
+#### 🚨 One card with sections, not a column of filtered panels
+
+The first shape anyone reaches for is "push Organon's panels and show only the exposed rows of
+each". **#130 makes that impossible, and the impossibility is load-bearing rather than
+inconvenient**: `panel_stack::admit` now refuses a `Declared` panel at every door, so a column of
+Organon's own panels can hold only the four this build can draw. A preset touching a Generator
+field would have no card to put it in, and the honest options would have been to drop the control
+or to invent a card that no `/organon` ring can name.
+
+James's own second reading — *"or even a single custom panel"* — is the shape that works. The
+preset's card is **one card whose sections are named after where its controls come from**: a
+transplanted panel's title where one owns the field, and the editor **tab** where none does.
+`panel_table::group_exposed` is that grouping, and it is pure — the shape of a preset panel is
+checkable without an `egui::Ui`, for `admit`'s reason.
+
+⚠️ **A control with no transplanted panel is still drawn**, from the param alone:
+`panel_table::draw_any_field` generates one arm per field from `preset.rs`'s
+`for_each_tab_field!` — the same list `PresetValues`' capture, apply and tab partition are
+generated from — so **every field a preset can carry has a control on the day it joins that
+list**, with no edit anywhere. What it lacks is only the short editor label and the panel
+grouping: it reads `Kaleido Spin`, ungrouped, where a joined panel would say `spin` under *Scene
+Kaleidoscope*. The **control kind, range, unit, value formatting and dropdown options are
+identical**, because those come off the param. That deliberately second-class rendering is the
+visible argument for joining the next panel; dropping the field, or inventing a label for it,
+would both have hidden the gap.
+
+📌 **The coverage is reported, not hidden.** `preset load` prints how many controls the card
+holds and how many of them came from a transplanted panel — **ten of the preset field space
+today**, which is `panel_table::the_joined_panels_home_ten_of_the_preset_field_space`, read off
+the tables rather than written down. That number going up in the same commit as a transplant is
+the point of printing it.
+
+#### `panel_stack::Held` — the second thing a column can hold
+
+`Entry` carried a `&'static Panel`; it carries a `Held` now, which is that or
+`Held::Preset { name }`. ⚠️ **So `Entry` is no longer `Copy`** — a preset card carries a name a
+person typed, and there is no `&'static str` for that.
+
+⚠️ **The alternative was a synthetic `Panel` outside `panels::PANELS`, and it was refused.** It
+would have been the first thing in a column that no `/organon` ring could name and no
+`stack remove` word could address — a card you can create and cannot talk about. An arm costs one
+`match` at three sites and keeps `panels::PANELS` the one vocabulary. The consequence is stated
+rather than hidden: `Stack::remove_last` never matches a preset card, because its `slug` comes
+from `panels::find_by_slug`. `Stack::remove_presets` is what takes one out, and it filters on the
+arm rather than on a slug that "cannot collide" — the day somebody names a preset `surface`, that
+would have stopped being true.
+
+⚠️ **`Console::held_panel_slugs` lists a preset card too**, marked. That sentence answers *what is
+in this column* for a refusal, so omitting one would have made the refusal wrong about the very
+thing it describes, with the reader looking at a card the console had just said was not there.
+
+#### The verbs, and the two places this differs from `console.layout`
+
+`console.preset` (`load`/`save` + a name) is on the sidecar; `console.preset.list` is a **read**
+on the MCP lane, for §1.15's reason — that channel is fire-and-forget with no return path.
+`PRESET_ACTIONS` lives in `organon_core::console_ops` so `bin/ctl.rs`'s `PossibleValuesParser` and
+`console_main`'s `ArgKind::Choice` are built from one table.
+
+🚨 **A preset name has spaces in it, and a layout name may not.** That is the whole reason these
+are two verbs rather than one shape used twice. `layout::check_name` refuses whitespace, which is
+right for a name a person invents and wrong for one that already exists in `presets.json` —
+*Rails — Crystal Throat* is a factory preset. Two consequences:
+
+- **The sidecar line takes the rest of the line, not the next word.** `ConsoleOp::Preset`'s
+  parser is the only one on this lane that does, and it is safe only because the name is the last
+  field. Runs of whitespace normalise to single spaces on the round trip; a preset distinguished
+  from another only by double-spacing is not addressable, which is a consequence worth stating
+  rather than a case worth handling. `a_capability_call_becomes_the_sidecar_line_the_cli_would_have_written`
+  now uses a spaced name for exactly this reason — a single-word one would have passed whether or
+  not that arm was ever written.
+- **`load` matches by unique case-insensitive substring**, because the slash grammar fills one
+  word per required argument (`registry::parse_args`) and an exact match would make most of the
+  store untypeable in the composer this verb mainly exists for. **Ambiguity and absence are both
+  refused by name**, listing what would have worked — which is what makes the rule safe rather
+  than merely convenient: it never silently picks one.
+
+⚠️ **A console with no panel region still loads the look.** The card is refused by name and the
+look is not, because the two are separate promises and failing the second is no reason to withhold
+the first. That is the opposite of `set_stack`'s rule, deliberately: `stack add` has nothing to do
+*but* fill a column, so with nowhere to put a panel it has done nothing at all.
+
+⚠️ **`preset load` is not a "look" to `console_step`**, which is the one classification here worth
+arguing. It genuinely changes what is on screen — but what that function resolves is the console's
+*dressing* (`backdrop_source`, the substrate's material and rig), which is what the Tier-4 epoch
+ledger bands the transcript on. A preset writes the mirror and reaches the world through
+`OrganonPanels::overlay`, the same lane a dragged slider uses, and no slider bands the transcript
+either.
+
+#### ⚠️ What is not built
+
+**`/preset clear`.** Taking the card back out without loading another preset needs a verb with
+**no** argument, and every write on this lane carries at least one word — a zero-argument write
+would be the first of its kind and deserves its own change rather than riding in on this one.
+`console stack remove all` reaches the same state today by emptying the column, and loading
+another preset replaces the card. `Stack::remove_presets` is already there for it.
+
+**A preset's own region kind.** *"Panels to appear where we have set them up to be"* is honoured
+here by putting the card in the column a person already declared (`panel_stack::Home`), and
+deliberately **not** by creating a region — `viewport`'s job, and a preset silently rearranging a
+window somebody is looking at is the failure `ConsoleOp::Viewport`'s doc warns about. §1.15's rule
+that a saved layout records region → content-kind and *not* stack contents is what keeps the two
+composable: the layout supplies the rectangle, the preset supplies the contents, and neither has
+to know about the other.
+
+**Editing the exposed set from the console.** `Preset::expose` is there and nothing calls it; the
+set is seeded from the diff at save and edited nowhere yet.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |

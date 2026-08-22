@@ -648,6 +648,61 @@ pub struct OrganonPanels {
     /// this is consulted every frame.
     cached: Box<crate::ipc::Shared>,
     dirty: bool,
+    /// 🚨 **The loaded preset's card, if one is loaded** — its name and the sections
+    /// `panel_table::group_exposed` worked out from what it changed (organon#124).
+    ///
+    /// ⚠️ **One per console, not one per card**, which is §1.11's rule about the mirror applied
+    /// to the thing that filters it: two cards for one preset are two views of one instrument,
+    /// and a second set of sections would be a second claim about what that preset is about.
+    /// `panel_stack::Held::Preset` carries only the *name*, so the card and this agree by
+    /// looking each other up rather than by holding two copies.
+    preset_panel: Option<(String, Vec<crate::panel_table::Section>)>,
+}
+
+/// What a `preset load` turned out to be — reported by the console rather than assumed.
+///
+/// 🚨 **`homed` is the honest number and it is why this is a struct rather than a `()`.** A
+/// control the preset names that no transplanted panel owns is still drawn — under its *tab*
+/// rather than a panel, with the param's own long name — so "how much of this preset does this
+/// build have a real panel for" is a question only a count can answer. Burying it would remove
+/// the pressure that closes the gap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadedPreset {
+    pub name: String,
+    /// Every control the preset's exposed set names and this build can draw.
+    pub controls: usize,
+    /// How many of those came from a transplanted panel, with its editor label and grouping.
+    pub homed: usize,
+    /// Names in the preset's exposed set that this build has no field for. See
+    /// `Preset::unknown_exposed` — reported, never dropped.
+    pub unknown: Vec<String>,
+}
+
+/// **The preset store, as a report** — what `console.preset.list` answers.
+///
+/// ⚠️ **This exists because `preset` is a private module and `console_main.rs` is a *binary*.**
+/// The console's whole reach into Organon goes through [`OrganonPanels`], and a listing has no
+/// panels in it, so it is a free function beside them rather than a method — but it is the same
+/// door, and widening `mod preset` to `pub` to avoid one function would put the entire preset
+/// store into this crate's public API for the sake of tidiness.
+pub fn preset_listing() -> serde_json::Value {
+    let store = preset::load();
+    serde_json::json!({
+        "count": store.len(),
+        "presets": store
+            .iter()
+            .map(|p| serde_json::json!({
+                "name": p.name,
+                // 🚨 **What the preset is about, and whether anybody said so.**
+                // `exposed_fields` falls back to the diff when nobody has stated a set, so a
+                // caller cannot tell the two apart from the count alone — and the difference
+                // matters, because a stated set is curated and a diff is not.
+                "controls": p.exposed_fields().len(),
+                "stated": p.exposed.is_some(),
+                "unknown": p.unknown_exposed(),
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 impl Default for OrganonPanels {
@@ -662,7 +717,15 @@ impl OrganonPanels {
         let mirror = preset::PresetValues::capture_params_only(&params);
         let base = Box::new(mirror.to_shared());
         let cached = base.clone();
-        Self { params, mirror, base, material_gen: Arc::new(AtomicU32::new(0)), cached, dirty: false }
+        Self {
+            params,
+            mirror,
+            base,
+            material_gen: Arc::new(AtomicU32::new(0)),
+            cached,
+            dirty: false,
+            preset_panel: None,
+        }
     }
 
     /// Put whatever the panel has asked for on top of `dst`.
@@ -721,11 +784,136 @@ impl OrganonPanels {
     pub fn card(
         &mut self,
         ui: &mut egui::Ui,
-        panel: &'static organon_core::panels::Panel,
+        held: &organon_console::panel_stack::Held,
         theme: &organon_console::theme::Theme,
     ) {
+        use organon_console::panel_stack::Held;
         let style = console_card_style(theme);
-        crate::card_styled(ui, panel.title, &style, |ui| self.draw(ui, panel));
+        match held {
+            Held::Panel(panel) => {
+                crate::card_styled(ui, panel.title, &style, |ui| self.draw(ui, panel))
+            }
+            // ⚠️ **Drawn from `preset_panel`, matched by name.** A card whose preset is no
+            // longer the loaded one draws its heading and nothing else — it cannot invent
+            // sections, and saying so in prose is the ambience #130 took out. `/preset load`
+            // replaces the card and `/preset clear` removes it, so the state is reachable only
+            // by loading a second preset into a column somebody built by hand.
+            Held::Preset { name } => {
+                crate::card_styled(ui, name, &style, |ui| self.draw_preset(ui, name))
+            }
+        }
+    }
+
+    /// The body of a preset's own card. See [`crate::panel_table::group_exposed`].
+    fn draw_preset(&mut self, ui: &mut egui::Ui, name: &str) {
+        let w2 = ui.available_width().max(150.0);
+        let Some((loaded, sections)) = self.preset_panel.take() else { return };
+        if loaded == name {
+            let mut sink = Sink::Mirror(&mut self.mirror);
+            crate::panel_table::draw_preset_panel(ui, w2, &self.params, &mut sink, &sections);
+            self.dirty = true;
+        }
+        self.preset_panel = Some((loaded, sections));
+    }
+
+    /// **Resolve a preset by name and load it** — the console's whole `preset load`.
+    ///
+    /// 🚨 **The name is matched by unique case-insensitive substring, not exactly.** The slash
+    /// grammar fills one word per required argument and preset names have spaces in them
+    /// (`Rails — Crystal Throat` is a factory preset), so an exact match would make most of the
+    /// store untypeable in the composer this verb mainly exists for. Ambiguity and absence are
+    /// both refused **by name**, listing what would have worked — which is what makes the rule
+    /// safe rather than merely convenient: it never silently picks one.
+    ///
+    /// ⚠️ **The store is re-read per call rather than cached**, on `Console::set_layout`'s rule:
+    /// the file is the truth, and a cached copy would fight a preset saved by Organon's own
+    /// editor and win silently.
+    pub fn load_preset_named(&mut self, needle: &str) -> Result<LoadedPreset, String> {
+        let store = preset::load();
+        let want = needle.to_lowercase();
+        let hits: Vec<&preset::Preset> =
+            store.iter().filter(|p| p.name.to_lowercase().contains(&want)).collect();
+        let found = match hits.as_slice() {
+            [one] => *one,
+            [] => {
+                return Err(if store.is_empty() {
+                    format!("no preset matches `{needle}` — the preset store is empty")
+                } else {
+                    format!(
+                        "no preset matches `{needle}` — known: {}",
+                        store.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+                    )
+                })
+            }
+            many => {
+                return Err(format!(
+                    "`{needle}` matches {} presets — {} — name one of them more exactly",
+                    many.len(),
+                    many.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+                ))
+            }
+        };
+        let unknown = found.unknown_exposed();
+        let sections = self.apply_preset(found).to_vec();
+        Ok(LoadedPreset {
+            name: found.name.clone(),
+            controls: sections.iter().map(|s| s.fields.len()).sum(),
+            homed: sections.iter().filter(|s| s.homed).map(|s| s.fields.len()).sum(),
+            unknown,
+        })
+    }
+
+    /// **Save the console's current look as a preset**, and answer how many controls it turned
+    /// out to be about. See `Preset::capture` — the exposed set is seeded from the diff here.
+    ///
+    /// ⚠️ **Captured from the mirror, not from `OrganicMathParams`.** The mirror is what the
+    /// panels have been writing; the params object this console holds is metadata and is never
+    /// edited, so capturing it would save the factory defaults every time.
+    ///
+    /// ⚠️ **An existing name is replaced rather than appended**, because `save` under a name
+    /// that is already there is what a person means by *update this one* — and a second row
+    /// with the same name would make both unloadable by [`Self::load_preset_named`]'s substring
+    /// rule ever after.
+    pub fn save_preset_named(&self, name: &str) -> Result<usize, String> {
+        let mut store = preset::load();
+        let fresh = preset::Preset::capture(name, self.mirror.clone());
+        let about = fresh.exposed_fields().len();
+        match store.iter().position(|p| p.name == name) {
+            Some(at) => store[at] = fresh,
+            None => store.push(fresh),
+        }
+        if preset::save(&store) {
+            Ok(about)
+        } else {
+            Err(format!("`{name}` could not be written to the preset store"))
+        }
+    }
+
+    /// **Apply a preset**: its values to the mirror, and the card its exposed set asks for.
+    ///
+    /// 🚨 **The values land in the mirror, so the look changes immediately** — the console's
+    /// world is driven from `overlay`, and this is the same write path a knob takes. That is
+    /// what makes `preset load` a thing you *see* rather than a thing that rearranges a column.
+    fn apply_preset(&mut self, p: &crate::preset::Preset) -> &[crate::panel_table::Section] {
+        // ⚠️ **`overlay_tabs(SCENE)` rather than an assignment**, and the difference is not
+        // cosmetic. `preset::save` writes only the four Scene tabs' fields, so everything else
+        // in a loaded `PresetValues` is a *serde default* rather than a captured value —
+        // assigning the whole struct would drag the Audio, Synth and Settings fields to
+        // whatever the deserializer supplied, for a preset that never had an opinion about
+        // them. This is the Key Map recall path's own arrangement (#354), reused rather than
+        // re-derived.
+        let src = p.values.clone();
+        self.mirror.overlay_tabs(&src, &crate::preset::EditorTab::SCENE);
+        let sections = crate::panel_table::group_exposed(&p.exposed_fields());
+        self.preset_panel = Some((p.name.clone(), sections));
+        self.dirty = true;
+        &self.preset_panel.as_ref().expect("just set").1
+    }
+
+    /// Forget the loaded preset's card. `/preset clear`'s half of the work — the column's half
+    /// is `panel_stack::Stack::remove_presets`.
+    pub fn clear_preset(&mut self) {
+        self.preset_panel = None;
     }
 
     /// Draw one panel's body into `ui`. The frame and heading belong to the caller — [`Self::card`]
