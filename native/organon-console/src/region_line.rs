@@ -116,17 +116,60 @@
 //! next frame's owner is `None` and the composer has its keys back, which is a way *out* of the
 //! control that costs nothing to build and nothing to explain.
 //!
-//! # ⚠️ What this line deliberately does NOT do
+//! # 🚨 Input parity with the composer — #129, and what it turned out to be
 //!
-//! **No self-completion and no autorun.** Both are §1.9 rules of the composer's, and both rest
-//! on `completion_held` — the latch that keeps a completion from undoing a backspace on the
-//! frame it happens. That latch reads a shadow copy of the composer taken at the top of the
-//! frame, and reproducing it here without its measurement would reintroduce the worst defect the
-//! command panel has had (*"once I have typed slash surface, I am no longer able to backspace
-//! out of it"*). **Tab accepts, Enter runs**, which is the pair §1.9 says must never be the same
-//! key.
+//! James, on a running console: *"currently these do not auto-complete terms when we have
+//! specified them with a few characters."*
 //!
-//! **No history.** Up and Down move the highlight and mean nothing else here.
+//! ⚠️ **The narrowing was never missing, and neither was Tab.** Driven through real frames on
+//! the shipped code, `add su` narrowed to the single candidate `surface` and Tab took it. What
+//! was missing was the composer's **self-completion** — §1.9's *"do not show me the single
+//! choice, simply complete it because it is the only option"* — so a control whose whole
+//! vocabulary is two verbs and a panel name still asked for a Tab it could not need. That is the
+//! feature this section used to decline, and the paragraph declining it is the one it replaces.
+//!
+//! 🚨 **And a second defect fell out of the same probe, live and unnoticed: the caret did not
+//! move.** Tab on `add su` produced `add surface ` with egui's cursor still at index 6, so the
+//! next two characters landed as `add suXYrface `. That is the composer's `/hxelp` bug exactly,
+//! on the surface nobody had driven — and it is why Tab *appearing* to work is not evidence that
+//! completing works. Every path that rewrites the line wholesale now sets [`Line::want_caret`],
+//! drained once at the end of [`draw`] through the composer's own `put_caret_at_end`.
+//!
+//! ⚠️ **The backspace latch is SHARED, not reproduced.** The reason this section gave for
+//! declining self-completion was sound — `completion_held` is what stops a completion undoing
+//! the deletion that provoked it (*"once I have typed slash surface, I am no longer able to
+//! backspace out of it"*), and a second copy of that rule is a second answer to one question.
+//! So `conversation_view::completion_held` is `pub(crate)` and this module calls it, over a
+//! per-line [`Line::seen`] shadow that is `composer_seen`'s counterpart. One function, one
+//! measurement, two surfaces.
+//!
+//! **Tab still accepts and Enter still runs**, which is the pair §1.9 says must never be the
+//! same key. Self-completion changes *when* a line is finished, never *what* Enter does with it.
+//!
+//! # ⚠️ What this line still deliberately does NOT do
+//!
+//! **No autorun**, and here the classification decides it rather than a preference:
+//! `console.stack` is declared [`crate::command::Reversal::Permanent`] — `remove all` discards a
+//! column no single command rebuilds — so [`Candidate::fires`] is `false` for every candidate
+//! this control can produce and autorun could not fire it even if it were wired. Saying so is
+//! cheaper than a switch nothing can flip.
+//!
+//! **No history**, and this is a decision rather than an omission. Three reasons, in the order
+//! they bind:
+//!
+//! 1. **The recall case is already covered by not clearing.** The composer's buffer earns its
+//!    place mostly on refusals — a line with a typo you want back in front of you. A refused
+//!    line *stays in this box* ([`Act::Refused`]), so the thing history is for has already
+//!    happened by the time you would reach for it.
+//! 2. **Retyping costs two keystrokes now.** `a` self-completes to `add `, `s` to `add surface `.
+//!    A recall surface has to beat that, and it cannot.
+//! 3. **`arrow_owner`'s rule would take Up off the ring in the one state that needs it most.**
+//!    The composer hands Up to the history when the box is *empty*; an empty box here is the
+//!    resting state of the control, where the ring **is** its label. Adopting the rule would
+//!    make the arrows stop working on a resting column, which is a worse control than one with
+//!    no history.
+//!
+//! **No Escape.** Unchanged, and argued above: egui's own defocus is the way out.
 
 use egui::{Frame, RichText};
 use serde_json::Value;
@@ -238,6 +281,27 @@ pub struct RegionPalette {
     /// What to say when nothing narrows — a mistyped word has to be told so *before* Enter, not
     /// only after it.
     pub hint: Option<String>,
+}
+
+impl RegionPalette {
+    /// The one candidate left, when there is exactly one and taking it would change the line.
+    ///
+    /// 🚨 **[`crate::registry::Palette::sole_completion`]'s rule, restated over this palette
+    /// rather than shared with it.** The two structs are different types — this one carries a
+    /// `hint` the registry's carries as `empty_ring`, and its candidates have already been
+    /// un-expanded — so there is nothing to reuse but three lines, and the *rule* is what has to
+    /// match: one candidate, and it must not complete to the line it was derived from.
+    ///
+    /// ⚠️ **The second term is the termination rule and it is not defensive tidiness.** `add
+    /// surface ` narrows to nothing further, but a line whose sole completion is itself would be
+    /// rewritten to itself on every frame for ever — see the registry's own
+    /// `a_lone_candidate_completes_itself_without_ever_running`.
+    pub fn sole_completion(&self, line: &str) -> Option<&Candidate> {
+        match &self.candidates[..] {
+            [only] if only.completion != line => Some(only),
+            _ => None,
+        }
+    }
 }
 
 /// What this control offers, given the line as it stands.
@@ -412,6 +476,16 @@ pub struct Line {
     pub note: Option<String>,
     /// Ask egui for focus on the next frame this line draws.
     pub want_focus: bool,
+    /// The line as it stood when this frame began, so [`crate::conversation_view::completion_held`]
+    /// can tell an insertion from a deletion. `composer_seen`'s counterpart, per line.
+    seen: String,
+    /// Whether self-completion is latched off because the last edit removed text. See
+    /// [`self_complete`].
+    held: bool,
+    /// Put egui's caret at the end of the box on the way out of this frame. Set by every path
+    /// that rewrites the line **wholesale** — Tab's accept and the self-completion — because a
+    /// rewrite leaves egui's own cursor index wherever the typing left it.
+    want_caret: bool,
 }
 
 /// Every region's line, plus **the console's single answer to "who owns the keyboard"**.
@@ -561,6 +635,16 @@ pub fn draw(
         {
             let ui = &mut framed.content_ui;
             ui.set_width(ui.available_width());
+            // 🚨 **The line as this frame found it, taken before ANYTHING may rewrite it** —
+            // `notice_edit`'s position in the composer's pass, for its reason. Tab's accept runs
+            // below and grows the line, which must read as an insertion so the latch lets go and
+            // the accepted line may cascade; a shadow taken after it would read as a still frame
+            // and hold the completion off for one keystroke.
+            {
+                let state = lines.line_mut(region);
+                state.seen.clear();
+                state.seen.push_str(&state.text);
+            }
             let line = lines.line(region).clone();
             let pal = palette(registry, ctx, &line.text);
 
@@ -624,10 +708,46 @@ pub fn draw(
                         state.text.clear();
                         state.selected = 0;
                         state.note = None;
+                        // A cleared box is not a deletion somebody is recovering from — it is a
+                        // fresh line. Letting the latch go here is what makes the *next*
+                        // character self-complete instead of waiting one keystroke.
+                        state.held = false;
                     }
                     Act::Refused(message) => state.note = Some(message.clone()),
                     Act::Idle => {}
                 }
+            } else {
+                // 🚨 **Insertion or deletion, decided here and nowhere else** — `composer`'s
+                // arrangement exactly, and the reason the shadow is taken at the top of the
+                // frame: this is the one point at which both halves of the edit exist, the box
+                // having just written this frame's keystroke into `text`.
+                {
+                    let state = lines.line_mut(region);
+                    state.held = crate::conversation_view::completion_held(
+                        &state.seen,
+                        &state.text,
+                        state.held,
+                    );
+                }
+                self_complete(registry, ctx, lines, region);
+            }
+            // 🚨 **LAST, after every path that can rewrite the line wholesale** — Tab's accept
+            // above the box, the self-completion below it. `put_caret_at_end` writes state
+            // *between* frames, so the next frame's `TextEdit` loads a caret already at the end
+            // and the next character appends. Without it, completing `add su` left the cursor at
+            // 6 and the next characters landed inside the word it had just finished.
+            if std::mem::take(&mut lines.line_mut(region).want_caret) {
+                crate::conversation_view::put_caret_at_end(
+                    ui.ctx(),
+                    response.id,
+                    &lines.line(region).text,
+                );
+                // ⚠️ **The rewrite happened AFTER the box drew**, so this frame still shows the
+                // line as it was typed and the popover still shows the ring it was narrowed to.
+                // A keystroke schedules the next frame on its own; a completion is the console
+                // editing the line, so it has to ask for one — otherwise a completed line could
+                // sit unshown until the next unrelated event.
+                ui.ctx().request_repaint();
             }
             // 📌 **Over the top, never under the box.** The `Area` allocates nothing in this
             // `Ui`, so however long a refusal is it cannot move the thing that would let you
@@ -801,10 +921,70 @@ fn consume_keys(ui: &egui::Ui, lines: &mut Lines, region: Region, palette: &Regi
                     state.text = candidate.completion.clone();
                     state.selected = 0;
                     state.want_focus = true;
+                    // A wholesale rewrite; egui's caret does not follow it. See `draw`'s drain.
+                    state.want_caret = true;
                 }
             }
             _ => {}
         }
+    }
+}
+
+/// The most completions one frame may chain here.
+///
+/// 🚨 **A bound rather than a `loop`**, `conversation_view::PALETTE_COMPLETE_STEPS`' rule and its
+/// reason: completing rewrites the line, and the new line may have a lone candidate of its own.
+/// That cascade is wanted — `a` becomes `add `, whose ring is every panel word — and what it must
+/// not be able to do is spin. [`RegionPalette::sole_completion`] already refuses a candidate that
+/// would rewrite the line to itself, so a cycle would need two completions that alternate, which
+/// this grammar cannot produce and which a future panel table cannot be trusted not to.
+///
+/// ⚠️ **Two is the deepest this control's grammar goes** (action → panel; the `region` keyword is
+/// filtered out of the ring by [`palette`] and so can never be completed into). Three is one step
+/// of headroom, deliberately smaller than the composer's four because there is one fewer ring.
+const COMPLETE_STEPS: usize = 3;
+
+/// Take the completion when there is only one, with no Tab — the composer's §1.9 rule, arriving
+/// on this surface as #129.
+///
+/// James: *"currently these do not auto-complete terms when we have specified them with a few
+/// characters."* On a control with two verbs and one closed panel table, almost every line is
+/// unambiguous within two keystrokes, which is exactly the case where asking for a Tab is asking
+/// for a keystroke that carries no information.
+///
+/// 🚨 **It completes and never runs.** `console.stack` is [`crate::command::Reversal::Permanent`],
+/// so [`Candidate::fires`] is false for everything this control produces and autorun is not
+/// merely switched off here — it is unreachable. The line is left in the box for Enter, which is
+/// the one thing that may act.
+///
+/// 🚨 **Never on a deletion.** Asked once, outside the loop, exactly as `palette_complete` asks
+/// it: the cascade is one insertion's consequence, and re-asking per step would let a completion
+/// argue with the edit that started it. [`crate::conversation_view::completion_held`] is the
+/// shared rule and carries the measurements — without it, backspacing out of `add surface` would
+/// put the deleted characters straight back on the same frame, for ever.
+///
+/// ⚠️ **NOT gated on [`Lines::owner`], and the asymmetry with [`consume_keys`] is deliberate.**
+/// That function reads the *raw event list* on a line's behalf, so it must only run for the line
+/// that will get those events — last frame's measurement. This one reacts to text the box has
+/// already written, and the frame on which focus **arrives** is one where `owner` is still the
+/// old answer while typing lands regardless; gating would silently skip the first character's
+/// completion. Running it unconditionally costs nothing: a resting line has already completed,
+/// so there is never anything left for it to do.
+fn self_complete(registry: &Registry, ctx: Context, lines: &mut Lines, region: Region) {
+    if lines.line(region).held {
+        return;
+    }
+    for _ in 0..COMPLETE_STEPS {
+        let text = lines.line(region).text.clone();
+        let pal = palette(registry, ctx, &text);
+        let Some(only) = pal.sole_completion(&text) else { return };
+        let completion = only.completion.clone();
+        let state = lines.line_mut(region);
+        state.text = completion;
+        state.selected = 0;
+        // The answer to the previous line is not an answer to this one — `accept`'s rule.
+        state.note = None;
+        state.want_caret = true;
     }
 }
 
@@ -1307,6 +1487,19 @@ mod tests {
     /// the property true **by construction** rather than by a coincidence of the current layout,
     /// and [`tests::a_note_appearing_does_not_take_the_box_with_it`] is the case that does catch
     /// its removal.
+    ///
+    /// ✏️ **The expected line changed with #129 and the ODD-LOOKING VALUE IS THE POINT — do not
+    /// "fix" it.** These six keystrokes used to leave `add su`. Self-completion now takes `a` at
+    /// the first keystroke (it is the only action beginning with it) and rewrites the line to
+    /// `add `, so the `d`, `d` that follow are typed *after* a word that is already finished.
+    /// `add dd su` is therefore the honest result of pressing those six keys, and it is kept as
+    /// the assertion for two reasons: it still discriminates the defect exactly — one keystroke
+    /// landing leaves `add `, two leaves `add d`, all six leave this — and it is the **cost of
+    /// self-completion, standing in the suite** rather than argued about in prose. Muscle memory
+    /// that types a verb in full now overshoots it. That cost is the composer's too (`/b`
+    /// completes to `/background ` and `ackground` lands after it) and it is accepted here for
+    /// the same reason: a second completion rule would be a second vocabulary. See
+    /// [`a_prefix_completes_itself_all_the_way_to_a_runnable_line`] for the path this buys.
     #[test]
     fn typing_survives_the_palette_opening() {
         for width in [320.0_f32, 2400.0] {
@@ -1325,8 +1518,9 @@ mod tests {
             }
             assert_eq!(
                 lines.line(Region::Left).text,
-                "add su",
-                "at {width} pt: typing stopped once the candidate row appeared above the box"
+                "add dd su",
+                "at {width} pt: a keystroke went missing — one landing leaves `add `, two leave \
+                 `add d`; all six leave this"
             );
         }
     }
@@ -1382,9 +1576,12 @@ mod tests {
             lines.begin();
             frame(&ctx, &reg, &mut lines, typed(c), 320.0);
         }
+        // ✏️ `add dd`, not `add`, since #129 — see
+        // [`typing_survives_the_palette_opening`]'s doc for why the value looks wrong and is
+        // right. One keystroke landing would leave `add `, which is what this distinguishes.
         assert_eq!(
             lines.line(Region::Left).text,
-            "add",
+            "add dd",
             "a note appearing took the keyboard away from the box under it"
         );
         assert!(
@@ -1513,5 +1710,233 @@ mod tests {
     fn nothing_to_offer_draws_no_plate() {
         assert_eq!(overlay(None, "", true), Said::Nothing);
         assert_eq!(overlay(None, "   ", true), Said::Nothing);
+    }
+
+    // -----------------------------------------------------------------------
+    // #129 — parity with the composer's input affordances
+    // -----------------------------------------------------------------------
+
+    /// Two frames of empty input to take focus, which is what every driven test below starts on.
+    fn focused(ctx: &egui::Context, reg: &Registry, lines: &mut Lines) {
+        lines.line_mut(Region::Left).want_focus = true;
+        for _ in 0..2 {
+            lines.begin();
+            frame(ctx, reg, lines, Vec::new(), 320.0);
+        }
+    }
+
+    /// Type `s`, one character per frame, through the real widget.
+    fn type_in(ctx: &egui::Context, reg: &Registry, lines: &mut Lines, s: &str) {
+        for c in s.chars() {
+            lines.begin();
+            frame(ctx, reg, lines, typed(&c.to_string()), 320.0);
+        }
+    }
+
+    fn press(ctx: &egui::Context, reg: &Registry, lines: &mut Lines, key: egui::Key) {
+        lines.begin();
+        frame(
+            ctx,
+            reg,
+            lines,
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            320.0,
+        );
+    }
+
+    /// 🚨 **The report, as a test.** James: *"currently these do not auto-complete terms when we
+    /// have specified them with a few characters."*
+    ///
+    /// Three keystrokes and the line is a whole command. `a` is the only action beginning with
+    /// it, so it becomes `add ` — whose trailing space opens the panel ring; `s` narrows that
+    /// ring to several panels and completes nothing; `u` leaves `surface` alone and the line
+    /// finishes itself. **No Tab is pressed anywhere in this test**, which is the whole point:
+    /// the machinery this control already had needed one, and a control with two verbs and one
+    /// closed table almost never has anything to disambiguate.
+    ///
+    /// ⚠️ **Driven through real `egui::Event::Text` rather than asserted on the palette**, on
+    /// `typing_survives_the_palette_opening`'s rule: the shipped code's palette narrowed
+    /// correctly and its `Tab` accepted correctly, so a test that inspected either would have
+    /// passed with the reported defect fully present.
+    #[test]
+    fn a_prefix_completes_itself_all_the_way_to_a_runnable_line() {
+        let ctx = egui::Context::default();
+        let reg = registry();
+        let mut lines = Lines::default();
+        focused(&ctx, &reg, &mut lines);
+        type_in(&ctx, &reg, &mut lines, "a");
+        assert_eq!(
+            lines.line(Region::Left).text,
+            "add ",
+            "one unambiguous character did not finish the verb"
+        );
+        type_in(&ctx, &reg, &mut lines, "s");
+        assert_eq!(
+            lines.line(Region::Left).text,
+            "add s",
+            "`s` names several panels, so nothing may be chosen for the hand yet"
+        );
+        type_in(&ctx, &reg, &mut lines, "u");
+        assert_eq!(
+            lines.line(Region::Left).text,
+            "add surface ",
+            "a prefix that leaves one panel did not complete"
+        );
+        assert!(
+            matches!(act(&reg, column(), &lines.line(Region::Left).text), Act::Run { .. }),
+            "…and what it completed to must be a line Enter would run"
+        );
+    }
+
+    /// 🚨 **The defect the report's own machinery was hiding: the caret did not follow a
+    /// rewrite.** Measured on the shipped code — `add su`, Tab, then two characters produced
+    /// **`add suXYrface `**, because egui keeps its cursor as an index of its own and a wholesale
+    /// rewrite leaves it where the typing left it. That is `conversation_view`'s `/hxelp` bug
+    /// arriving on the surface nobody had driven, and it is why *"Tab appears to work"* was not
+    /// evidence that completing worked.
+    ///
+    /// ⚠️ **Both rewrite paths are checked**, because they are two different lines of code that
+    /// each have to remember [`Line::want_caret`]: Tab's accept in [`consume_keys`], and
+    /// [`self_complete`]. **Both mutations were run rather than assumed**: drop `want_caret` from
+    /// the Tab arm and this fails with `add sXYurface ` (Tab is pressed on `add s`, so the caret
+    /// is stranded at 5); drop it from [`self_complete`] and three tests fail, this one at
+    /// `asdd ` — the caret left at 1 by `a` becoming `add `.
+    #[test]
+    fn the_caret_follows_a_line_the_console_rewrote() {
+        // Tab's accept.
+        let ctx = egui::Context::default();
+        let reg = registry();
+        let mut lines = Lines::default();
+        focused(&ctx, &reg, &mut lines);
+        // `add ` arrives by self-completion; `su` then narrows the panel ring to one, which
+        // completes on its own — so Tab is driven from a line that is already whole, where the
+        // remaining candidate list is the one the caret bug was measured against.
+        type_in(&ctx, &reg, &mut lines, "as");
+        assert_eq!(lines.line(Region::Left).text, "add s");
+        press(&ctx, &reg, &mut lines, egui::Key::Tab);
+        let after_tab = lines.line(Region::Left).text.clone();
+        assert!(after_tab.starts_with("add "), "Tab took nothing: {after_tab:?}");
+        type_in(&ctx, &reg, &mut lines, "XY");
+        assert_eq!(
+            lines.line(Region::Left).text,
+            format!("{after_tab}XY"),
+            "the caret stayed where the typing left it, so the next characters landed inside the \
+             word Tab had just finished"
+        );
+
+        // …and the self-completion's own rewrite.
+        let ctx = egui::Context::default();
+        let mut lines = Lines::default();
+        focused(&ctx, &reg, &mut lines);
+        type_in(&ctx, &reg, &mut lines, "rZ");
+        assert_eq!(
+            lines.line(Region::Left).text,
+            "remove Z",
+            "a character typed after a self-completion landed inside the completed word"
+        );
+    }
+
+    /// 🚨 **Backspacing out of a completed line, which is the whole reason the latch is shared.**
+    ///
+    /// The composer's worst defect was a completion undoing the deletion that provoked it —
+    /// James: *"once I have typed slash surface, I am no longer able to backspace out of it."*
+    /// `conversation_view::completion_held` is that fix, and this control now calls **it** rather
+    /// than a copy: a second answer to *"may this frame complete?"* is the drift the crate's one
+    /// -vocabulary rule exists to stop.
+    ///
+    /// ⚠️ **Two deletions, not one, and the second is the case a one-frame rule gets wrong.** The
+    /// frame *after* a backspace changes nothing at all, so a rule that merely refused shrinking
+    /// frames would complete on the next one and undo the deletion one frame late — the same bug
+    /// at 60 Hz, presenting as a flicker. The latch is held until an insertion releases it, which
+    /// the last leg here proves it still does.
+    ///
+    /// ⚠️ **Mutation-measured**: remove the guard at the top of [`self_complete`] and this fails
+    /// on the *first* backspace — `add surface ` where `add surface` was asked for, the deletion
+    /// put back on the frame it happened. Nothing else in the suite notices.
+    #[test]
+    fn a_deletion_is_never_undone_by_the_completion_that_produced_the_line() {
+        let ctx = egui::Context::default();
+        let reg = registry();
+        let mut lines = Lines::default();
+        focused(&ctx, &reg, &mut lines);
+        type_in(&ctx, &reg, &mut lines, "asu");
+        assert_eq!(lines.line(Region::Left).text, "add surface ");
+        for expected in ["add surface", "add surfac", "add surfa"] {
+            press(&ctx, &reg, &mut lines, egui::Key::Backspace);
+            assert_eq!(
+                lines.line(Region::Left).text,
+                expected,
+                "a backspace was put straight back by the completion it provoked"
+            );
+        }
+        // A quiet frame must not complete either — the latch is held, not merely refused.
+        lines.begin();
+        frame(&ctx, &reg, &mut lines, Vec::new(), 320.0);
+        assert_eq!(lines.line(Region::Left).text, "add surfa", "a still frame completed");
+        // …and an insertion lets it go again.
+        type_in(&ctx, &reg, &mut lines, "c");
+        assert_eq!(
+            lines.line(Region::Left).text,
+            "add surface ",
+            "typing after a deletion must complete again"
+        );
+    }
+
+    /// 🚨 **The panel ring is the registry's, un-expanded and otherwise untouched.**
+    ///
+    /// This is what makes [`crate::registry::NarrowFn`] — the hook that lets one argument's
+    /// options depend on an earlier word — reach this control for free: [`palette`] asks
+    /// [`Registry::candidates`] and does nothing to the answer but rebuild each completion onto
+    /// the typed stem. `console.stack` declares no narrowing today (only `console.layout` does),
+    /// so there is no behaviour here to observe directly; what can be pinned is the property that
+    /// would carry it, and this is it.
+    ///
+    /// ⚠️ **A second filter here is exactly what this forbids**, `REGION_ARG` excepted — that one
+    /// is deliberate, argued in [`palette`], and asserted by
+    /// [`the_supplied_region_keyword_is_never_offered`]. Anything else that narrowed the ring
+    /// locally would be a second matching rule over one table, and a hook added to the registry
+    /// would silently not apply here.
+    #[test]
+    fn the_argument_ring_is_the_registrys_own_so_a_narrowing_hook_would_reach_it() {
+        let reg = registry();
+        for line in ["add ", "add s", "add su", "remove a", "add surface region "] {
+            let expanded = expand(line).expect("the fixture takes both actions");
+            let inner = reg.candidates(&expanded).expect("an expanded line is a command line");
+            let expected: Vec<&str> = inner
+                .candidates
+                .iter()
+                .map(|c| c.label.as_str())
+                .filter(|label| *label != REGION_ARG)
+                .collect();
+            let mine = palette(&reg, column(), line);
+            let got: Vec<&str> = mine.candidates.iter().map(|c| c.label.as_str()).collect();
+            assert_eq!(got, expected, "`{line}` was narrowed by something other than the registry");
+        }
+    }
+
+    /// 🚨 **A control this narrow cannot autorun, and the classification is what says so** —
+    /// not a switch, and not a preference. `console.stack` is [`Reversal::Permanent`], so
+    /// [`Candidate::fires`] is false for every candidate reachable here and the composer's
+    /// `palette_autorun` would decline every one of them even if it were wired in.
+    ///
+    /// ⚠️ Distinct from [`no_candidate_ever_fires`], which pins what this module *writes* into
+    /// the field. This pins the *reason* it is safe to write it: the catalog agrees.
+    #[test]
+    fn nothing_this_control_can_reach_is_a_command_autorun_would_fire() {
+        let stack = console()
+            .into_iter()
+            .find(|s| s.name == "console.stack")
+            .expect("the fixture declares the verb this control expands onto");
+        assert_eq!(
+            stack.reversal,
+            Reversal::Permanent,
+            "if `stack` ever became recoverable, autorun becomes a decision rather than a fact"
+        );
     }
 }

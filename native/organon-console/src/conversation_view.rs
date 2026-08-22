@@ -6250,7 +6250,7 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme
     }
 }
 
-/// Put egui's caret at the end of the composer's text.
+/// Put egui's caret at the end of a text box's text.
 ///
 /// 🚨 **This is state written *between* frames, which is why it works.** egui's `TextEdit`
 /// keeps its cursor as an index of its own, loaded at the top of the widget and stored at the
@@ -6262,7 +6262,13 @@ fn composer(ui: &mut egui::Ui, pane: &mut ConversationPane, theme: &Theme, theme
 /// ⚠️ **No state, no caret, no error.** `load_state` answers `None` until the box has drawn at
 /// least once — a dead pane, or the very first frame — and there is nothing to correct in that
 /// case, so the miss is silent by construction rather than by suppression.
-fn put_caret_at_end(ctx: &egui::Context, id: egui::Id, text: &str) {
+///
+/// 🚨 **Shared with [`crate::region_line`]** for [`completion_held`]'s reason and one of its
+/// own: the id is whatever the caller's box turned out to have, so nothing here is about the
+/// composer in particular. #129 measured the region line without it — Tab on `add su` produced
+/// `add surface ` with the caret still at 6, and the next two characters landed as
+/// `add suXYrface `. The same defect the composer's `/hxelp` was, on a second surface.
+pub(crate) fn put_caret_at_end(ctx: &egui::Context, id: egui::Id, text: &str) {
     let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return };
     let end = egui::text::CCursor::new(text.chars().count());
     state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::one(end)));
@@ -6488,7 +6494,12 @@ const PALETTE_COMPLETE_STEPS: usize = 4;
 /// by a test, by a recall, by anything that is not a keystroke — arrives with `before` equal to
 /// `after`, so the latch keeps whatever it held, and a fresh pane holds `false`. A line that
 /// appears out of nowhere has not been deleted from, so it is not treated as though it had.
-fn completion_held(before: &str, after: &str, held: bool) -> bool {
+///
+/// 🚨 **Shared with [`crate::region_line`], which is the whole reason it is `pub(crate)`.** That
+/// control gained self-completion in #129 and inherited this rule with it — and a second copy
+/// would be a second answer to *"may this frame complete?"*, which is the one question the two
+/// surfaces must never disagree about. The measurements above were taken here and hold there.
+pub(crate) fn completion_held(before: &str, after: &str, held: bool) -> bool {
     match after.len().cmp(&before.len()) {
         std::cmp::Ordering::Less => true,
         std::cmp::Ordering::Greater => false,

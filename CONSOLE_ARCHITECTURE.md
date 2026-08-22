@@ -5765,16 +5765,60 @@ viewport …` from a terminal, fills it"*. Tier C's version named a control that
 there, which is exactly the status line that cannot be right — the two arms it used to have (one
 for "a line was drawn", one for "too short") collapse back into one.
 
+##### 🚨 Input parity with the composer — #129
+
+James, on a running console: *"currently these do not auto-complete terms when we have specified
+them with a few characters."*
+
+⚠️ **The narrowing was never missing, and neither was Tab.** Driven through real
+`egui::Event::Text` on the shipped code, `add su` narrowed to the single candidate `surface` and
+Tab took it. **What was missing was self-completion** — §1.9's *"do not show me the single choice,
+simply complete it because it is the only option"* — so a control whose whole vocabulary is two
+verbs and one closed panel table still asked for a keystroke that carried no information. `a` now
+becomes `add `, and `add su` becomes `add surface `, with no Tab pressed.
+
+🚨 **A second defect fell out of the same probe, live and unnoticed: the caret did not follow a
+rewrite.** Tab on `add su` produced `add surface ` with egui's cursor still at index 6, so the
+next two characters landed as `add suXYrface `. That is §1.9's `/hxelp` bug arriving on the
+surface nobody had driven — and it is why *"Tab appears to work"* was not evidence that completing
+worked. Every path that rewrites the line wholesale now sets `Line::want_caret`, drained once at
+the end of `region_line::draw`.
+
+⚠️ **The two composer helpers are SHARED, not reproduced.** `conversation_view::completion_held`
+(the insertion-only latch that stops a completion undoing a backspace — *"once I have typed slash
+surface, I am no longer able to backspace out of it"*) and `conversation_view::put_caret_at_end`
+are `pub(crate)` and called from here, over a per-line `Line::seen` shadow that is
+`composer_seen`'s counterpart. A second copy of either would be a second answer to a question the
+two surfaces must never disagree about, and the measurements behind them were taken once.
+
+⚠️ **The cost is stated rather than hidden, and it stands in the suite.** Self-completion takes the
+verb at the *first* keystroke, so muscle memory that types `add` in full now overshoots into
+`add dd`. `region_line`'s `typing_survives_the_palette_opening` asserts exactly that string for
+exactly that reason. It is §1.9's cost too (`/b` completes to `/background ` and `ackground` lands
+after it) and it is accepted here for the same reason a second completion rule was rejected: one
+vocabulary. The line is visibly wrong the moment it happens — an empty ring, not runnable — and
+the latch makes backspacing out of it work.
+
 ##### ⚠️ What the control deliberately does NOT do
 
-**No self-completion and no autorun.** Both are §1.9 rules of the composer's and both rest on
-`completion_held` — the latch that keeps a completion from undoing a backspace on the frame it
-happens, read off a shadow copy taken at the top of the frame. Reproducing them here without that
-measurement would reintroduce the worst defect the command panel has had (*"once I have typed
-slash surface, I am no longer able to backspace out of it"*). **Tab accepts, Enter runs**, which is
-the pair §1.9 says must never be one key, and every candidate answers `fires: false`.
+**No autorun**, and here the classification decides it rather than a preference: `console.stack` is
+`Reversal::Permanent` (*`remove all` discards a column no single command rebuilds*), so
+`Candidate::fires` is `false` for every candidate this control can reach and autorun could not
+fire it even if it were wired. **Tab accepts, Enter runs** — the pair §1.9 says must never be one
+key — and self-completion changes *when* a line is finished, never what Enter does with it.
 
-**No history.** Up and Down move the highlight.
+**No history**, and this is a decision rather than an omission. Three reasons, in the order they
+bind: (1) the recall case is already covered by **not clearing** — the composer's buffer earns its
+place mostly on refusals, and a refused line stays in this box; (2) retyping now costs two
+keystrokes, which a recall surface cannot beat; (3) `arrow_owner`'s rule hands Up to the history
+when the box is **empty**, and an empty box here is the *resting state* of the control, where the
+ring **is** its label — so adopting it would stop the arrows working on a resting column.
+
+⚠️ **`NarrowFn` reaches this control for free**, because `region_line::palette` asks
+`Registry::candidates` and does nothing to the answer but rebuild each completion onto the typed
+stem. `console.stack` declares no narrowing today (only `console.layout` does), so there is no
+behaviour to observe — what is pinned instead is the property that would carry it: the ring here
+equals the registry's own, `REGION_ARG` excepted.
 
 ⚠️ **The leading slash is tolerated, not required.** `add surface` is the natural thing to type at
 a control; but Tier C shipped a slash line and taught one, so `/add surface` still works — one
@@ -6316,7 +6360,17 @@ path silently breaks the three-products-simultaneously guarantee that
   `tab_takes_the_highlighted_candidate` drive `egui::Event::Text` and `Event::Key` through
   `region_line::draw` at a real 320 pt column width — so *"a character reaches the box"* and
   *"Tab takes the highlighted candidate"* are now measured rather than asserted, and the
-  measurement is what found the defect. ⚠️ **What is still unmeasured is everything about the
+  measurement is what found the defect. ✏️ **#129 widened that driving and it paid twice over**:
+  `a_prefix_completes_itself_all_the_way_to_a_runnable_line`,
+  `the_caret_follows_a_line_the_console_rewrote` and
+  `a_deletion_is_never_undone_by_the_completion_that_produced_the_line` type character by
+  character through real frames, and the second of those pins a defect that was **live on the
+  shipped build and had been missed by every test that inspected the palette instead of the box**
+  — Tab completed the line and left egui's caret where the typing had put it, so the next
+  characters landed inside the word (`add suXYrface `). ⚠️ **That is the general lesson restated:
+  a control can pass "the palette narrows" and "Tab accepts" and still be unusable**, because
+  what a hand does next is a third fact neither of them contains.
+  ⚠️ **What is still unmeasured is everything about the
   surface as a surface.** No band has been looked at, no box has been clicked with a mouse, and
   the arbitration is exercised only as a value: `Lines::begin`/`owner`/`composer_owns_keys` are
   unit-tested, and the thing they are *for* — clicking from the composer into a column's line and
@@ -6327,7 +6381,11 @@ path silently breaks the three-products-simultaneously guarantee that
   goes to the wrong reader, and the symptom is one lost Tab rather than anything that looks
   broken. ⚠️ Nor has anyone judged the band: four fixed rows against `MIN_SIDE`-adjacent regions,
   a note that clips rather than wraps, and whether a control that is always showing two words
-  reads as a control or as clutter — all taste calls, all James's.
+  reads as a control or as clutter — all taste calls, all James's. 🚨 **#129 adds one more, and
+  it is the sharpest**: self-completion takes the verb at the **first** keystroke, so typing
+  `add` in full now yields `add dd`. That is the composer's behaviour applied consistently, and
+  whether it is right for a two-verb control is a question only a hand can answer. If it is
+  wrong, the whole of the fix is the guard at the top of `region_line::self_complete`.
   ⚠️ **And the general lesson, which cost this tier a round trip**: a headless suite that never
   drives the framework's own input path can be entirely green about a widget nobody can type
   into. The three tests above are cheap and were available the whole time.
