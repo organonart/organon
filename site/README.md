@@ -24,7 +24,8 @@ It is **rendered from `og.html`, never drawn by hand**, so a change to the
 headline or the palette is a diff rather than an image someone has to reproduce:
 
 ```
-chrome --headless=new --hide-scrollbars --force-device-scale-factor=2        --window-size=1200,630 --screenshot=site/og.png site/og.html
+chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 \
+       --window-size=1200,630 --screenshot=site/og.png site/og.html
 ```
 
 There is no image toolchain in this repository and none is wanted — headless
