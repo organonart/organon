@@ -44,6 +44,19 @@ executed. Measured 2026-08-22; found by a worker whose new tests were entirely i
 changes codegen only, so it is a fair substitute for a debug-profile run and not for a
 `--release` one.
 
+🚨 **And it is *actively dangerous* for anything timing-shaped.** Codegen-only means no
+test's **verdict** changes — unless the test's subject is **time**, in which case an unoptimised
+binary is a different experiment. Measured 2026-08-22: the module staleness rig's simulator cannot
+draw 1280×720 in 4 ms unoptimised, so every cadence in a sweep collapsed to one real period, the
+lever was connected to nothing, and the rig concluded *"staleness is the TRANSPORT"* — a
+recommendation to buy `unsafe` per-backend GPU interop, on a false premise, from a green run made
+exactly as this paragraph advises.
+
+⚠️ **So a timing rig must measure the quantity it varies rather than the knob it set** — read
+the achieved period off the data, never off the flag — and must **fail naming the real cause** when
+the sweep did not sweep. Run anything timing-shaped with `--release`, and say which you used where
+the numbers are recorded.
+
 🚨 Never `--workspace` on `cargo test` here without `--release`-scale time to spend, never a
 bare `cargo test` — `native/`'s root *package* is `organic-math-native`, so a bare invocation
 runs that package alone and skips `organon-core` **silently** — and **never `cargo fmt`**, which
