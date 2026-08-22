@@ -38,7 +38,8 @@ internal identifier for tidiness, and don't refuse to rename a leaf out of defer
 this list.
 
 - Repo: `github.com/organonart/organon`
-- Sites: **organon.art** and **organonmind.org** (built elsewhere; not in this repo)
+- Sites: **organon.art** — in this repo, at [`site/`](site/README.md) — and
+  **organonmind.org**, built elsewhere in `organonart/organon-mind`
 
 > **A note on issue numbers.** Comments and docs throughout this tree cite `#N` — mostly
 > below ~#700. Those point into the tracker this project used before it was
