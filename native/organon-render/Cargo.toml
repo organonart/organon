@@ -50,3 +50,8 @@ half = { version = "2", features = ["bytemuck"] }
 # upstream in `native/examples/` — it spans both crates (`rt_debug.wgsl` belongs to
 # `rt.rs`, which is still `world`'s), so it needs no dev-dep here.
 naga = { version = "30", features = ["wgsl-in"] }
+# `tests/frame_boundary.rs` (the §4.4 module-frame-boundary measurement, `#[ignore]`d) has to
+# block on `request_adapter`/`request_device`, which are async. Same version the root crate
+# and `organon-visual` already use, so this adds nothing to the lock file. Dev-only: it is
+# invisible to anyone depending on this crate, and the crate itself stays async-runtime-free.
+pollster = "0.4"
