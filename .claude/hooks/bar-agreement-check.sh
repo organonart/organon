@@ -42,14 +42,40 @@ for f in "$a" "$b"; do
   fi
 done
 
-# The block runs from the first leg to the closing fence. Anchoring on the first
-# COMMAND rather than on a heading keeps this working when either file's prose is
-# rewritten, which is the whole point of checking the commands and not the paragraphs.
+# 🚨 THE WHOLE FENCED BLOCK IS COMPARED, not the block from some anchor downwards —
+# and that distinction is a fix, not a preference. The first cut of this hook started
+# grabbing at the first leg (`cargo test  -p organon-console --lib`) and ran to the
+# closing fence, which left everything ABOVE the first leg outside the comparison. It
+# shipped in that state with a `cd native` duplicated in BRIEF.md's copy, and the check
+# reported the two copies identical, because the divergence sat in its blind spot. The
+# hook was mutation-tested before it landed — but only by mutating lines after the
+# anchor, which is a test that confirms the thing it was built from.
+#
+# 📌 So the anchor now selects WHICH block, and the whole of that block is compared. The
+# file is scanned fence to fence; a block is buffered as it is read; the block that
+# CONTAINS the anchor line is the one printed. Anchoring on a line inside the block
+# rather than on a preceding heading is still right — either file's prose may be
+# rewritten freely, and only the commands must agree — but "which block" and "what is
+# compared" are now two different questions, which is what the first version conflated.
+#
+# ⚠️ Note that CONTRIBUTING.md has a SECOND `cd native` block (the `--workspace` bar,
+# ~line 74), so `cd native` cannot itself be the anchor. The anchor has to be a line
+# unique to the seven-leg block.
 extract() {
   awk '
-    /^cargo test  -p organon-console --lib$/ { grab = 1 }
-    grab && /^```/                           { exit }
-    grab                                     { print }
+    /^```/ {
+      if (infence) {
+        if (found) { printf "%s", buf; exit }
+        infence = 0; buf = ""; found = 0
+      } else {
+        infence = 1; buf = ""; found = 0
+      }
+      next
+    }
+    infence {
+      buf = buf $0 "\n"
+      if ($0 == "cargo test  -p organon-console --lib") found = 1
+    }
   ' "$1"
 }
 

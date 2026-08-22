@@ -59,3 +59,24 @@
   324 → 332 in about three hours across three merges — and a worker handed one has to decide
   whether it found a regression or an out-of-date brief. The cheap wrong answer is to assume the
   brief. It is told to measure its own baseline, by stashing rather than by remembering.
+
+- 🚨 **The check that pins the two copies shipped with a blind spot, and the blind spot was
+  found by the review agent on this change's own PR — which is the pattern's failure signature
+  arriving on the pattern's own doorstep.** The first cut of `bar-agreement-check.sh` grabbed the
+  block *from* the first leg down to the closing fence, so everything **above** the first leg sat
+  outside the comparison. It landed with a `cd native` duplicated in `BRIEF.md`, and the check
+  reported the two copies identical, because the divergence was in the region it does not read.
+
+  ⚠️ **It had been mutation-tested, and the mutation tests passed.** They dropped leg 7 and
+  removed the file — both *after* the anchor. A mutation test written from the same mental model
+  as the code confirms the model rather than the code, and the failure it cannot see is the one
+  the model does not contain. This is what the PR body's own verification table asserted as PASS
+  while the artifact carried a divergence: **the coordinator's report was sincere and wrong, and
+  reading the artifact is what caught it.** Pattern 15's spine, demonstrated against pattern 15.
+
+  📌 The fix separates two questions the first version conflated: the anchor selects **which**
+  fenced block, and the **whole** of that block is compared. `cd native` cannot itself be the
+  anchor — `CONTRIBUTING.md` carries a second `cd native` block for the `--workspace` bar — so
+  the anchor stays a line unique to the seven-leg block, and now only chooses the block rather
+  than bounding the comparison. Four mutations now fail loudly: a duplicate line **before** the
+  anchor, a dropped leg after it, a reordering, and a whitespace-only change.

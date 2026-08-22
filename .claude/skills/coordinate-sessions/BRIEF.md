@@ -25,7 +25,6 @@ was stale.
 
 ```bash
 cd native
-cd native
 cargo test  -p organon-console --lib
 cargo test  -p organon-core
 cargo check --features console-edition --bin organon-console
