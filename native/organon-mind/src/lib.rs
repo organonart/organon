@@ -23,5 +23,8 @@ pub mod mind_console;
 pub mod mind_log;
 pub mod mind_ring;
 pub mod mind_shell;
+/// #147 Tier 4 — painting the training strip and the run shelf. The thinking (SSE framing,
+/// the fold, the state machine) is `organon_core::train`; this is the egui half only.
+pub mod mind_train;
 pub mod mind_ui;
 pub mod mind_viz;

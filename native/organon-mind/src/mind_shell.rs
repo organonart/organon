@@ -233,7 +233,24 @@ const DOCK_MIN_USEFUL: f32 = 96.0;
 /// Keep this in step with the widget heights in `lib.rs::mind_dashboard_ui`. The
 /// dock still yields to the squeeze rule below, and the dashboard still sits in a
 /// `ScrollArea`, so being wrong here degrades to scrolling rather than to clipping.
-pub const DASHBOARD_H: f32 = 320.0;
+///
+/// ✏️ **+24 for #147 Tier 4's training strip, and only for its quiet case.** The strip is
+/// one row above the three columns, and what it costs depends on what it has to say:
+///
+/// ```text
+///   no UNSLOTH_API_KEY (the ordinary case)   one weak line + spacing  =  24
+///   a configured Studio, nothing training    a card, ~84
+///   a live run                               that card plus curves, ~150
+/// ```
+///
+/// 📌 **Only the first is budgeted here, deliberately.** This constant is an *absolute*
+/// height, so every point added is taken from the viewport on every machine forever —
+/// including the great majority with no Unsloth Studio. The other two land in the
+/// `ScrollArea`, which is the documented degradation one paragraph up, and it is the right
+/// trade: you scroll to a training run while it is happening, you do not give it permanent
+/// screen on a machine that never trains. `lib.rs::mind_training_ui` draws the no-key case
+/// as a bare line rather than a card precisely so this number could stay small.
+pub const DASHBOARD_H: f32 = 344.0;
 
 /// Size the Tier 1 docks for a window of `window_w` × `window_h` points.
 ///

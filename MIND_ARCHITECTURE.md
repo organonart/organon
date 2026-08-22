@@ -961,6 +961,97 @@ duplicates `organon_agent::extract_http_body` and cannot avoid it — that crate
 core, so the dependency cannot point the other way; collapsing them means changing the
 Performer's live path, which T1 deliberately did not.
 
+### 2.10 The training strip and the run shelf (#147 Tier 4) — *landed; never spoken to a Studio*
+
+`organon-core/src/train.rs` (all the thinking) and `organon-mind/src/mind_train.rs` (all the
+drawing), with the call site in `lib.rs::mind_training_ui` — one row above the #482 dashboard's
+three columns in the Live Telemetry dock. Three routes, all bearer-authed, all `GET`:
+`/api/train/progress` (SSE), `/api/train/metrics` (backfill), `/api/train/runs` (the shelf).
+**Read-only against the Studio — no `POST` anywhere**, so nothing here can start, stop or alter a
+run.
+
+🚨 **It never calls `StudioClient::probe`, and that is the design rather than an omission.** §2.9's
+warning — a green health probe cannot mean "connected", because that route is unauthenticated — is
+binding on exactly this tier, and the way to obey it is not to probe at all. The link opens with an
+**authenticated** call, because the first authenticated call is the first evidence the credential
+works. What each state asserts:
+
+| `LinkState` | Studio running? | Credential good? | Run in progress? |
+|---|---|---|---|
+| `Unknown` | unknown | unknown | unknown |
+| `NotConfigured` | **not asked** — nothing was sent | we hold none | unknown |
+| `Misconfigured` | not asked — there was no address to try | unknown | unknown |
+| `Unreachable` | **no** — nothing answered | unknown, and stays unknown | unknown |
+| `Unauthorized` | **yes** — a `401` is an answer | **no**, and this is the only state that says so | unknown |
+| `Refused` | **yes** | unknown — a `5xx` is not a verdict on the key | unknown |
+| `Malformed` | something is there | unknown | unknown |
+| `Idle` | **yes** | **yes** | **no** |
+| `Live` | **yes** | **yes** | **yes** |
+
+So *"nothing is training"*, *"I cannot reach the Studio"* and *"my key is wrong"* are `Idle`,
+`Unreachable` and `Unauthorized` — three variants, three headlines, three remedies naming the actual
+knob, and a `LinkState::asserts()` sentence per state shown on hover so the claim behind the colour
+is not left to be inferred. `credential_proven()` is true for two states only and a test asserts
+the rest cannot claim it. `studio_answered()` is deliberately a *different* question: a `401`
+proves the app is up as surely as a `200` does.
+
+✏️ **A sixth refusal, found by building the UI rather than by reading T1.** T1 ships five, and a
+malformed `ORGANON_UNSLOTH_ENDPOINT` is none of them — `StudioConfig::from_env` reports it as an
+`EndpointError`, a *different type* from `StudioError`, so it cannot appear in a taxonomy built out
+of the latter. `Misconfigured` is that state. Folding it into `Malformed` would have sent somebody
+with a typo in an environment variable to go and inspect what is listening on a port.
+
+📌 **The Studio being absent is the normal case, and the code is shaped for it.** No credential →
+no thread and no socket, ever. Unreachable is `Severity::Quiet` (grey, not red — a red that fires
+daily is a red nobody reads). Reconnect doubles 2 s → 60 s and then **stops** after eight attempts,
+parking until a person asks again. ⚠️ `Unauthorized` and `Misconfigured` never retry at all: a key
+does not become valid by being resent, and on Windows a running process cannot see a rotated
+`UNSLOTH_API_KEY`, so that loop provably cannot succeed and no button offers it.
+
+🚨 **Three framings on one socket, and two of them fail silently.** A streaming FastAPI response is
+`Transfer-Encoding: chunked`, so the raw bytes carry hex size lines *interleaved with the SSE
+text*; fed to an SSE parser they parse as unknown fields and are dropped without complaint, so the
+stream **appears to work** while every chunk boundary corrupts the event it landed inside.
+`ChunkedDecoder` is incremental for the same reason `SseParser` is: a boundary lands wherever the
+network puts it. And a read ending on the `\r` of a `\r\n`, treated as a terminator, dispatches one
+read early and then reads a phantom blank line from the `\n` that follows.
+
+🚨 **`Last-Event-ID` on reconnect, plus backfill on every connect.** Losing the cursor loses steps,
+and a gap in a loss curve reads as a flat spot rather than as an error. The fold de-duplicates by
+step so the overlap the two mechanisms create is free. ⚠️ `grad_norm_history` is indexed by
+`grad_norm_step_history`, **not** `step_history` — the Studio serves two step vectors because the
+gradient norm is not logged at every step a loss is, and pairing it with the wrong one draws a
+curve whose x axis is quietly wrong while the shape still looks right.
+
+⚠️ **This tier does not reuse T1's timeout and does not change it.** `TIMEOUT_SECS` is 5 s for a
+constant-time route; a stream silent between heartbeats is healthy. `STREAM_POLL_SECS` (1 s) is the
+socket read timeout — a *responsiveness* budget, so the worker sees its stop flag promptly — and
+`STREAM_IDLE_SECS` (90 s) is the liveness budget across however many polls expire in a row.
+
+| | State | Evidence |
+|---|---|---|
+| SSE framing — comments, multi-`data:`, all three terminators, the BOM, `id`/`retry` rules | **measured** (offline) | 13 unit tests, including one that feeds the whole wire byte-at-a-time and asserts the result equals one read, and one that splits a single event at *every* offset |
+| chunked framing, and that it does not pollute the SSE stream | **measured** (offline) | split at every offset; plus an end-to-end head→de-chunk→SSE test |
+| the state machine's claims, and which states may claim the key is good | **measured** (offline) | 60 tests in `train.rs`; mutating `credential_proven` or a severity fails by name |
+| `Last-Event-ID` actually being sent on reconnect | **measured** (offline) | the composed request is asserted byte-wise, including that a cursor carrying a newline cannot split the request |
+| the drawing — which states are quiet, which are warm, what a filled dot means | **measured** (offline) | 7 tests in `mind_train.rs` |
+| **anything against a real Studio** | 🚨 **never run** | the Studio was not running on organon-one when this landed (nothing on `127.0.0.1:8888`). No SSE byte, no `401`, no run summary has come off the real app |
+| **the SSE `progress` payload's field names** | ⚠️ **inferred, not read** | the documented shape is `TrainingMetricsResponse`; the event payload's own names are assumed to match and are aliased for the plausible alternatives. Every field is optional, so a miss is a blank number rather than a parse failure — and because a blank number is what a miss *looks* like, `mind_train::payload_warning` says so once three events have arrived carrying nothing recognised |
+| **the strip's placement, size and colour** | 🚨 **never seen** | no GPU has drawn it. Whether one row is the right shape, whether the shelf belongs there at all, and whether grey-for-absent reads as calm rather than dead are all taste calls needing a person |
+
+⚠️ **The dock's height is absolute, so the strip is shaped around what it costs when there is
+nothing to say.** With no `UNSLOTH_API_KEY` — the ordinary case on almost every machine — it draws
+**one dim line and no card**, and `mind_shell::DASHBOARD_H` grows by 24 pt to cover exactly that.
+The card, its curves and the shelf overflow into the dashboard's `ScrollArea` instead of buying
+permanent viewport: you scroll to a training run while it is happening, you do not give it screen
+on a machine that never trains.
+
+📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no new dependency.** Editor-side readout,
+exactly as §5 routes one. ⚠️ `TrainingLink` holds its receiver in a `Mutex` because
+`mpsc::Receiver` is `Send` but not `Sync` and nih-plug's `create_egui_editor` requires the editor
+state to be `Sync` — a bare receiver in `PresetUi` fails at the *host* boundary with an error
+naming a private type, so a test in core pins it where the fix belongs.
+
 ## 3. The honesty ledger
 
 What the product currently claims, and how true it is. Keep this honest — it is the
@@ -974,6 +1065,8 @@ brand.
 | `‖ΔW‖_F` per adapted module, and the update's singular values | **measured** — an exact function of the adapter file | `lora.rs`. ⚠️ Two caveats it owes wherever it is rendered. **The base may be quantized**: an adapter trained on a 4-bit base is a delta against weights that are not the released ones, and the file states only `base_model_name_or_path` — the Studio's `/api/models/checkpoints` carries `is_quantized`, which is what would answer it from data. ⚠️ T1 (§2.9) built the *connection* only; that route still has no caller, so this caveat is unanswered today. And **nothing has been read from a real adapter yet**; the arithmetic is tested against synthetic fixtures only |
 | Effective rank, stable rank, "which layers this fine-tune changed most" | **derived** | exact functions of the singular values. The effective rank is Roy & Vetterli (2007) — `exp` of the entropy of the normalised spectrum — stated in `lora.rs` rather than left implicit, because at least three quantities go by that name |
 | **The Delta lens's glow and silhouette** (#147 T3) | **measured** — the RMS weight displacement at each site, an exact function of the adapter file | §2.8. 🚨 **It drives the SAME visual channel as the per-layer generation glow below, which is a proxy**, so the two are made distinguishable *in the picture*: the Delta lens deforms the specimen's silhouette (a live specimen is a straight-sided cylinder; a delta specimen has a waist), it cannot move (the ring's overwrite is gated to view 0), and its head ring is perfectly round because it has no per-head resolution. The mode selector is off-screen and is deliberately not the answer. ⚠️ Two things the *quantity* still owes wherever it is written in words: the mapping to brightness is a **fixed** five-decade log window — a display choice, the only non-exact step — and per-head is a **limit**, so a bright ring means "this layer's attention moved", never "these heads moved" |
+| **Loss, learning rate, gradient norm, step, and the run shelf** (#147 T4) | **measured (reported by the trainer)** — worth distinguishing from measured-by-us: these are someone else's numbers about someone else's process, and Organon neither computes nor checks them | §2.10. ⚠️ Three things the readout owes wherever it appears. **The x axis can be invented**: when the Studio serves a value history with no matching step vector the points are placed by index, and the legend says `x axis is index-derived` rather than presenting a guess as a report. **The loss and gradient curves are log-y and the learning rate is not** — a display choice, named in `mind_train.rs` rather than buried in the arithmetic, because training loss falls across orders of magnitude and a schedule does not. And **the SSE payload's field names are inferred, not read** — nothing here has met a running Studio, so a blank number may mean "the trainer reported nothing" or "this build asked for the wrong key", which is why the strip counts events and calls the second case out |
+| **"The link is healthy"** (#147 T4) | **measured** — but only for two of nine states, and the distinction is the point | 🚨 Only `Idle` and `Live` assert the credential works, because only they follow an *authenticated* `2xx`. This tier never runs the health probe at all: §2.9's route is unauthenticated, so a green probe would be a status line that cannot be wrong. `LinkState::asserts()` states each variant's claim in prose and is shown on hover, so "the Studio is running", "the key is good" and "a run is happening" are never conflated in the picture |
 | "This layer learned \<concept\>" | 🚨 **contested claim** | norm is not importance and effective rank is not meaning. Not currently rendered anywhere; recorded now so the first lens that wants to say it finds the row already written |
 | The per-layer glow during generation | **measured** — `layer_norm` + `mlp_act`; `head_summ` is still a labeled proxy | ✅ **Confirmed by running it, 2026-08-21** — organon-one (RTX 5090, CUDA 13.3), `gemma-4-12B-it-QAT-Q4_0.gguf`, 48L×16H, all layers GPU-offloaded. The runtime printed `mind-runtime: activation tap MEASURED — real per-layer tensors (#522 T1) (48 layers requested)`, and frames carry `flags=0x6`/`0x7` (`FLAG_RESID_MEASURED` + `FLAG_MLP_MEASURED`), so the #482 dashboard's provenance glyphs for these two read `=`. **It was the Windows/CUDA path that got there first, not Metal** — the tap is the safe `llama-cpp-4` `cb_eval` API, so this is evidence about the API, not about one backend; Metal remains unrun. ⚠️ **The prediction this row used to make was wrong, and the correction matters more than the flag** — see §3.1 |
 
@@ -1051,4 +1144,5 @@ capability to the seam it plugs into.
 | ~~**The Delta lens** (#147 T3)~~ | **landed** — §2.8. ⚠️ Note what changed on the way: the per-site scalar is *not* `per_layer_fro()`, because a raw Frobenius norm grows with matrix size and would light the MLP brightest on every model before any training happened. It is RMS-per-weight (`‖ΔW‖_F / sqrt(out·in)`), which pools exactly and is shape-free |
 | **The checkpoint scrub** (#147 T3's extension) | the same builder, one `DeltaSites` per checkpoint on a slider — `CheckpointInfo{path, loss}` from `/api/models/checkpoints` is already the index. Needs T1 (the API client) and the adapter picker that writes `ipc::adapter_sidecar_path()`, which nothing does yet |
 | ~~**The Studio connection** (#147 T1)~~ | **landed** — §2.9. `organon-core/src/unsloth.rs`: endpoint, bearer token, `/api/health`, and the three refusals. ⚠️ It has never spoken to a running Studio, and the probe **cannot** detect a bad key because that route is unauthenticated — do not render a green probe as "connected" |
-| **Anything else that talks to Unsloth Studio** (#147 T4/T5) | `StudioClient::get` is the seam — it already refuses without a credential and maps `401`/`403` to `Unauthorized`. An SSE reader is the same hand-rolled `TcpStream` shape with the connection held open. 🚨 **Not `Shared`** — step-rate telemetry from someone else's process must not buy a permanent offset-sensitive layout commitment |
+| ~~**The training strip and the run shelf** (#147 T4)~~ | **landed** — §2.10. `organon-core/src/train.rs` is the thinking (SSE + chunked framing, the fold, the state machine), `organon-mind/src/mind_train.rs` is the drawing, `lib.rs::mind_training_ui` is the call site. ⚠️ Two things to inherit rather than re-derive: it **never probes health**, because a green probe cannot mean "connected" and building the readout is where that stops being theoretical; and a streaming HTTP body is **chunked**, so an SSE parser fed raw socket bytes silently eats its own events at every chunk boundary |
+| **Anything else that talks to Unsloth Studio** (#147 T5) | `StudioClient::get` is the seam — it already refuses without a credential and maps `401`/`403` to `Unauthorized`. An SSE reader is the same hand-rolled `TcpStream` shape with the connection held open. 🚨 **Not `Shared`** — step-rate telemetry from someone else's process must not buy a permanent offset-sensitive layout commitment |

@@ -56,7 +56,9 @@ pub use organon_core::{edition, gguf, gguf_data, ipc, math, panels};
 /// Re-exported so every existing `crate::mind_ring::…` path in this crate still resolves,
 /// the same facade Tier 3 used for core. `mind_main.rs` stays here: it is the
 /// `organon-mind` **binary** and it needs nih-plug's standalone wrapper.
-pub use organon_mind::{mind_console, mind_log, mind_ring, mind_shell, mind_ui, mind_viz};
+pub use organon_mind::{
+    mind_console, mind_log, mind_ring, mind_shell, mind_train, mind_ui, mind_viz,
+};
 
 /// organon#49 Tier 3 — the **substrate** is its own crate now (`organon-scene`: no
 /// nih-plug, no wgpu, no egui). Re-exported so every existing
@@ -9039,6 +9041,45 @@ fn mind_observe(ctx: &egui::Context, state: &mut preset::PresetUi) {
     if state.mind_viz.active {
         ctx.request_repaint();
     }
+    train_observe(ctx, state);
+}
+
+/// #147 Tier 4 — open the Unsloth Studio link once, then fold whatever it delivered.
+///
+/// 📌 **Lazy and free when there is no Studio.** `TrainingLink::open` with no
+/// `UNSLOTH_API_KEY` spawns no thread and opens no socket, so a machine without the app
+/// pays one environment read for the whole session and the strip says so in words.
+///
+/// 🚨 **Nothing here blocks.** `drain` is a `try_recv` loop; the socket, the reconnect
+/// backoff and every read live on the worker thread. A Studio that accepts a connection and
+/// then says nothing costs this function zero.
+///
+/// ⚠️ A malformed `ORGANON_UNSLOTH_ENDPOINT` is **not** quietly replaced by the default —
+/// T1's `StudioEndpoint::from_env` refuses on purpose, because falling back would point the
+/// client somewhere the person did not type and make every later refusal name the wrong
+/// cause. It becomes `LinkState::Misconfigured`, which says exactly that.
+fn train_observe(ctx: &egui::Context, state: &mut preset::PresetUi) {
+    use organon_core::train::{LinkState, TrainingLink};
+    if state.train_link.is_none() {
+        let link = match organon_core::unsloth::StudioConfig::from_env() {
+            Ok(config) => TrainingLink::open(config),
+            Err(e) => TrainingLink::inert(LinkState::Misconfigured {
+                detail: e.to_string(),
+            }),
+        };
+        state.train_strip.set_state(link.born_state().clone());
+        state.train_link = Some(link);
+    }
+    if let Some(link) = state.train_link.as_mut() {
+        if link.drain(&mut state.train_strip) > 0 {
+            ctx.request_repaint();
+        }
+    }
+    // A live run must animate without a pointer in the window; an idle or absent Studio must
+    // not hold a repaint loop open for nothing.
+    if matches!(state.train_strip.state, LinkState::Live) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
 }
 
 fn mind_dashboard_ui(ui: &mut egui::Ui, state: &mut preset::PresetUi) {
@@ -9053,6 +9094,8 @@ fn mind_dashboard_ui(ui: &mut egui::Ui, state: &mut preset::PresetUi) {
         .weak()
         .small(),
     );
+
+    mind_training_ui(ui, state);
 
     let viz = &state.mind_viz;
     // The dashboard is ALWAYS compact. It lives in the bottom dock now, and the dock
@@ -9153,6 +9196,246 @@ fn mind_dashboard_ui(ui: &mut egui::Ui, state: &mut preset::PresetUi) {
             });
         });
     });
+}
+
+/// #147 Tier 4 — **the training strip**: one row above the dashboard's three columns, plus
+/// the run shelf folded away behind it.
+///
+/// 🚨 **The rule this surface exists to keep: a reachable Studio is never drawn as
+/// "connected".** T1 found `/api/health` unauthenticated, so a green probe proves only that
+/// the app is running — and `organon_core::train` answers that by never probing at all, so
+/// every state here is the result of an *authenticated* call. The status text is
+/// `LinkState::headline` (what happened) and the hover is `LinkState::asserts` (what that
+/// actually claims about the Studio, the key and the run), so the claim behind the colour is
+/// one hover away instead of being left for a viewer to infer.
+///
+/// 📌 **Absent is quiet.** The Studio is off most of the time; that reads as a dim grey line
+/// of prose, no spinner and no red. Only a rejected key, a `5xx` or an unreadable endpoint
+/// setting go warm.
+///
+/// ⚠️ It is a **strip above the columns**, not a fourth card column. A card added to any of
+/// the three columns would land on the tallest one and push `mind_shell::DASHBOARD_H` past
+/// 400 pt, and that constant is an *absolute* dock height — every point comes out of the
+/// viewport on every machine, whether or not it has a Studio. Only the no-key line is
+/// budgeted there (+24); the card and its curves overflow into the dashboard's `ScrollArea`
+/// on purpose, which is the trade that constant's doc spells out.
+fn mind_training_ui(ui: &mut egui::Ui, state: &mut preset::PresetUi) {
+    use organon_core::train::LinkState;
+    // 📌 **No key → one dim line, no card.** `mind_shell::DASHBOARD_H` is an ABSOLUTE dock
+    // height, so anything unconditional here is height taken from the viewport on every
+    // machine forever — including the great majority that have no Unsloth Studio at all.
+    // The state still gets its sentence and its remedy on hover, which is what
+    // distinguishes it from the two absences it must not be confused with; it just does not
+    // get chrome. Everything past "no key" means somebody has a Studio, and then the card
+    // is what they are here for.
+    if matches!(state.train_strip.state, LinkState::NotConfigured) {
+        let s = &state.train_strip.state;
+        ui.label(
+            egui::RichText::new(format!("Training — {}", s.headline()))
+                .small()
+                .weak(),
+        )
+        .on_hover_text(format!(
+            "{}\n\n{}",
+            s.asserts(),
+            s.remedy().unwrap_or_default()
+        ));
+        return;
+    }
+    card(ui, "Training (Unsloth Studio)", |ui| {
+        mind_training_body(ui, state);
+    });
+}
+
+/// The training card's contents. Split out of [`mind_training_ui`] only so the read-only
+/// section and the two parts that write state (`train_shelf_open`, `train_link`) can each
+/// take their own borrow of `state` in turn.
+fn mind_training_body(ui: &mut egui::Ui, state: &mut preset::PresetUi) {
+    use crate::mind_train as mt;
+    use crate::mind_viz::{provenance_row, Provenance};
+    use organon_core::train::LinkState;
+
+    let colour = mt::state_colour(&state.train_strip.state);
+
+    {
+        let strip = &state.train_strip;
+        // 📌 "measured (reported by the trainer)" is the honest marker, and it is worth its
+        // own sentence: these are someone else's numbers about someone else's process, which
+        // is a weaker claim than the measured-by-us readouts beside it.
+        provenance_row(
+            ui,
+            Provenance::Measured,
+            "loss · LR · gradient norm, as the trainer reports them",
+        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(
+                egui::RichText::new(mt::state_dot(&strip.state))
+                    .color(colour)
+                    .strong(),
+            )
+            .on_hover_text(strip.state.asserts());
+            ui.label(egui::RichText::new(strip.state.headline()).color(colour))
+                .on_hover_text(strip.state.asserts());
+            if strip.state.credential_proven() {
+                ui.label(
+                    egui::RichText::new(mt::numbers_line(strip))
+                        .monospace()
+                        .small(),
+                );
+            }
+        });
+
+        if let Some(remedy) = strip.state.remedy() {
+            ui.label(egui::RichText::new(remedy).small().weak());
+        }
+        if let Some(warning) = mt::payload_warning(strip) {
+            ui.label(egui::RichText::new(warning).small().color(colour));
+        }
+        // ⚠️ The RUN failing is not the LINK failing — see `TrainingStrip::run_error`.
+        if let Some(err) = strip.run_error.as_deref() {
+            ui.label(
+                egui::RichText::new(format!("the run reported: {err}"))
+                    .small()
+                    .color(egui::Color32::from_rgb(235, 150, 70)),
+            );
+        }
+
+        // The curves, only once there is something to draw. An empty plot frame with no data
+        // is a promise the strip cannot keep while the Studio is off.
+        if !strip.loss_curve.is_empty() {
+            let w = ui.available_width().max(120.0);
+            let rect = ui
+                .allocate_exact_size(egui::vec2(w, 44.0), egui::Sense::hover())
+                .0;
+            let p = ui.painter_at(rect);
+            let third = rect.width() / 3.0 - 4.0;
+            let cell = |i: usize| {
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + i as f32 * (third + 6.0), rect.top()),
+                    egui::vec2(third, rect.height()),
+                )
+            };
+            // ⚠️ Loss is log-y and LR is not, and neither is neutral — `mind_train`'s module
+            // doc carries the reasoning.
+            mt::paint_curve(&p, cell(0), &strip.loss_curve, mt::LOSS_COL, true);
+            mt::paint_curve(&p, cell(1), &strip.lr_curve, mt::LR_COL, false);
+            mt::paint_curve(&p, cell(2), &strip.grad_curve, mt::GRAD_COL, true);
+            ui.horizontal(|ui| {
+                for (label, col) in [
+                    ("loss (log)", mt::LOSS_COL),
+                    ("lr", mt::LR_COL),
+                    ("‖grad‖ (log)", mt::GRAD_COL),
+                ] {
+                    ui.label(egui::RichText::new(label).small().color(col));
+                }
+                if strip.misaligned_backfill {
+                    ui.label(
+                        egui::RichText::new("· x axis is index-derived")
+                            .small()
+                            .weak(),
+                    )
+                    .on_hover_text(
+                        "The Studio's history did not come with a matching step vector, so \
+                         these points are placed by index. The shape is right; the step \
+                         numbers under it are not reported.",
+                    );
+                }
+            });
+        }
+
+        if let Some(t) = strip.progress() {
+            let w = ui.available_width().max(60.0);
+            let rect = ui
+                .allocate_exact_size(egui::vec2(w, 4.0), egui::Sense::hover())
+                .0;
+            mt::paint_progress(&ui.painter_at(rect), rect, t, colour);
+        }
+
+        // ── The run shelf ────────────────────────────────────────────────
+        // Closed by default: history is not what you watch while something is happening.
+        // A shelf with no rows is drawn as a sentence, never as an empty list — and only
+        // once the credential is proven, because "you have never trained anything" and "I
+        // could not ask" are different statements.
+        if strip.state.credential_proven() {
+            let n = strip.runs.len();
+            let label = if n == 0 {
+                "Run shelf — no runs recorded yet".to_string()
+            } else {
+                format!("Run shelf ({n})")
+            };
+            // ⚠️ `default_open(false)`, never `open(Some(…))` mirrored into our own state.
+            // `open()` FORCES the value every frame, so a header driven that way swallows
+            // its own click and reads as a dead control. egui already persists the choice
+            // by id, which is one copy of the state rather than two that can disagree.
+            egui::CollapsingHeader::new(egui::RichText::new(label).small())
+                .id_salt("mind_train_shelf")
+                .default_open(false)
+                .show(ui, |ui| {
+                    for run in strip.runs.iter().take(24) {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let rect = ui
+                                .allocate_exact_size(
+                                    egui::vec2(56.0, 16.0),
+                                    egui::Sense::hover(),
+                                )
+                                .0;
+                            mt::paint_sparkline(
+                                &ui.painter_at(rect),
+                                rect,
+                                &run.loss_sparkline,
+                                mt::run_colour(run),
+                            );
+                            ui.label(
+                                egui::RichText::new(&run.status)
+                                    .small()
+                                    .color(mt::run_colour(run)),
+                            );
+                            let line = ui.label(
+                                egui::RichText::new(mt::run_line(run)).small().monospace(),
+                            );
+                            if let Some(dir) = run.output_dir.as_deref() {
+                                line.on_hover_text(format!("{}\n{dir}", run.id));
+                            } else {
+                                line.on_hover_text(&run.id);
+                            }
+                            if run.can_resume {
+                                ui.label(egui::RichText::new("resumable").small().weak());
+                            }
+                        });
+                    }
+                    if strip.runs.len() > 24 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "… and {} more the Studio is holding",
+                                strip.runs.len() - 24
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    }
+                });
+        }
+    }
+
+    // 🚨 A retry is offered ONLY where retrying could work. A rejected key is not offered
+    // one: on Windows a process cannot see a rotated `UNSLOTH_API_KEY` at all, so a button
+    // there would be a button that provably cannot succeed.
+    let can_retry = state
+        .train_link
+        .as_ref()
+        .map(|l| l.can_retry(&state.train_strip))
+        .unwrap_or(false);
+    if can_retry && ui.small_button("Ask the Studio again").clicked() {
+        if let Ok(config) = organon_core::unsloth::StudioConfig::from_env() {
+            let fresh = state.train_link.as_mut().map(|l| l.retry_now(config));
+            if let Some(fresh) = fresh {
+                state.train_link = Some(fresh);
+                state.train_strip.set_state(LinkState::Unknown);
+            }
+        }
+    }
 }
 
 fn audio_instrument_ui(
