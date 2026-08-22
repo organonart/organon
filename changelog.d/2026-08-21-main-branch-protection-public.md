@@ -18,7 +18,7 @@ rather than after the first release.
 ⚠️ **A file here is a record, not the enforcement.** The ruleset lives in repository
 settings; this directory is the source it was built from. Editing one without the other
 is how the two drift, so treat them like the architecture docs and change both in the
-same PR. `gh api repos/organonart/organon/rules/branch/main` is the check that matters —
+same PR. `gh api repos/organonart/organon/rules/branches/main` is the check that matters —
 it asks what rules the *branch* has, so it catches a ruleset whose condition never
 matched, which from the settings page looks identical to one that works.
 

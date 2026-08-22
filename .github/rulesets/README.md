@@ -34,17 +34,59 @@ one from the settings page:
 
 ```bash
 gh api repos/organonart/organon/rulesets --jq '.[] | {id, name, target, enforcement}'
-gh api repos/organonart/organon/rules/branch/main --jq '[.[].type]'   # what actually applies to main
+gh api repos/organonart/organon/rules/branches/main --jq '[.[].type]'   # what actually applies to main
 ```
 
 That second call is the one that matters. It asks *"what rules does this branch have"*
-rather than *"what rulesets exist"*, so it catches a condition that never matched.
+rather than *"what rulesets exist"*, so it catches a condition that never matched. Note
+`branches`, plural — `rules/branch/main` is a plausible-looking 404, and it is what this
+file said until the endpoint was actually run.
+
+🚨 **On Windows, do not build the input file with PowerShell redirection.** `>` and
+`Out-File` default to **UTF-16LE with a BOM** in PowerShell 5.1, and `gh` forwards those
+bytes verbatim, so GitHub answers `400 Problems parsing JSON` — an error that points at
+the ruleset when the ruleset is fine. Measured 2026-08-21 while applying these two.
+Fetch with `curl.exe -o`, which writes raw bytes, and check the first four before you
+POST:
+
+```powershell
+curl.exe -sS "https://raw.githubusercontent.com/organonart/organon/main/.github/rulesets/main.json" -o "$env:TEMP\main.json"
+([System.IO.File]::ReadAllBytes("$env:TEMP\main.json")[0..3] | % { $_.ToString('X2') }) -join ' '
+```
+
+`7B` (`{`) is good; `FF FE` is the BOM and the POST will fail. `Format-Hex -Count` is
+PowerShell 6+, which is why the check above is spelled the long way.
+
+### As applied — 2026-08-21
+
+Both rulesets are live: `main` is ruleset **21175994**, `release tags` is **21175996**,
+both `enforcement: active` with `current_user_can_bypass: "never"`.
+`GET /rules/branches/main` returns `["deletion","non_fast_forward","pull_request"]`.
+
+⚠️ **GitHub filled in two `pull_request` parameters the original file did not set**, and
+they are now pinned explicitly so the next reader sees a decision rather than a default:
+
+- **`allowed_merge_methods: ["merge","squash","rebase"]`** — all three, which is what
+  "unconstrained" looks like. Matches the repository settings; nothing changed.
+- **`require_extra_approval_for_unattributed_changes: true`** — GitHub's default, and
+  the one parameter here whose interaction with `required_approving_review_count: 0` is
+  **not yet established**. If a pull request contains commits GitHub cannot attribute to
+  its author, this may demand an approval that a solo maintainer cannot supply. Kept
+  `true` for now because the protection is real and the deadlock is hypothetical; the
+  symptom, if it happens, is a merge button asking for an approval when the required
+  count is zero. Set it to `false` in this file and `PATCH` ruleset 21175994 if it bites.
+
+📌 **What GitHub echoes back is wider than what it accepts.** The POST response also
+carries `required_reviewers` and `dismissal_restriction`, which are server-side
+representations rather than inputs. This file is the *intent*, not a byte-for-byte
+mirror of the response — do not paste a response body back over it.
 
 📌 **There is no emergency bypass, on purpose.** `bypass_actors` is empty, so the rules
 apply to the admin too — which is the entire point when the admin is also the only
 person who could bypass them. The valve is `enforcement`: an admin can flip a ruleset to
-`disabled` (or `evaluate`, which reports without blocking) in one click, do the thing,
-and flip it back. That leaves a trail in the audit log; a standing bypass does not.
+`disabled` in one click, do the thing, and flip it back. (There is also an `evaluate`
+enforcement mode that reports without blocking; it is untested here and may need a paid
+plan, whereas `disabled` always works.) That leaves a trail in the audit log; a standing bypass does not.
 
 ## `main.json`, rule by rule
 
