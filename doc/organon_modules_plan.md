@@ -670,3 +670,34 @@ are not rediscovered:
 3. ⚠️ **Do not let "a skill can do it" become a reason to skip a refusal.** A skill teaches an agent
    the happy path; the refusals are what protect the person when the agent is wrong, and they are
    read by a human, not by the skill.
+## 13. ✏️ Amendment — the first hosted module has a design, and it lives in its own document
+
+> Added 2026-08-21. A concrete consumer arrived for the second time, and this time it asked to be
+> **composited** rather than merely to exist: James, on Ascent — *"open up Organon, point to the
+> Ascent repo, and approve it as a module … available as a new viewport type."*
+
+The design is **`doc/organon_module_viewport.md`**, and it is a separate document rather than a
+third amendment because it decides a *contract* rather than a position: what Organon calls, what a
+module answers, what approval records, and what a rectangle says when the module is not there.
+
+What it settles, and what it owes back to this plan:
+
+- 🚨 **Hosted, and the deciding argument is NOT the licence.** §4's two kinds both assume the
+  module depends on Organon. Hosting a *linked* module inside Organon's process reverses that
+  arrow — the public root crate would depend on a private application repo — and, more
+  importantly, a mechanism adopted by rebuilding cannot answer a sentence whose every verb is
+  performed by a running program. `doc/organon_is_the_product.md` §2 names that shape already: a
+  linked module is the compile-time `Edition` wearing a different hat.
+- 🚨 **§10's table has a hole, and this design walks into it.** "The process is the boundary" is
+  true of a module at **run** time and false at **build** time. Pointing Organon at a repo means
+  Organon builds it, and §11.6 already says what a build is — `build.rs` and proc macros running
+  with your privileges. **Hosted-built-from-source is linked-level trust until the binary exists.**
+  The design names it rather than closing it; closing it is a sandbox, and that is not now.
+- ⚠️ **A grant can be *promised* rather than *enforced*, and the two must be spelled differently.**
+  The protocol carries no audio path, so a module cannot make a sound *through* Organon — and
+  nothing stops a separate process opening the audio device itself. §10's *"the protocol is the
+  permission set"* bounds what a module reaches **through the protocol**, and bounds nothing about
+  what it reaches on the machine.
+- 📌 **§9.5's registry question stays dissolved.** A URL plus a commit is the identity, exactly as
+  §11.2 argues, and the approval record is a file at the store root beside `harnesses.json` — the
+  precedent §4 already nominated.
