@@ -176,6 +176,15 @@ fn preset_actions() -> clap::builder::PossibleValuesParser {
     )
 }
 
+/// Possible-values parser for `console module <ACTION>`. Built from the shared table
+/// (`organon_console::module_work::MODULE_ACTIONS`) rather than restated, so a fifth verb is
+/// one line in that file and not four across the tree.
+fn module_actions() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        organon_console::module_work::MODULE_ACTIONS.iter().copied(),
+    )
+}
+
 /// Possible-values parser for `console patch --kind <KIND>`.
 ///
 /// Unlike the two lists above this one is **built from the shared table**
@@ -646,6 +655,46 @@ enum ConsoleAction {
         /// Which preset — matched by substring for `load`, taken literally for `save`
         name: String,
     },
+    /// Approve a repository as a viewport producer, build it, see what changed, or withdraw it
+    #[command(after_help = "\
+        `approve` fetches a repository at a commit, reads its `organon-module.toml`, and — if \
+        you say which grants — writes an approval into `modules.json` at the console's store \
+        root, beside `harnesses.json` and `layouts.json`.\n\n\
+        🚨 WITH NO `--grant`, NOTHING IS RECORDED. An approve without it is a dry run: it \
+        reports what the repository asks for and stops. `--grant none` approves it with \
+        nothing granted; `--grant audio,input` grants what was asked for. A grant the manifest \
+        never requested is refused.\n\n\
+        🚨 APPROVING GRANTS BUILD-TIME TRUST. `build` compiles the repository, which runs its \
+        build scripts and every procedural macro in its dependency graph WITH YOUR \
+        PRIVILEGES, before any of it is composited. The separate process a module runs in \
+        bounds what it can reach through the protocol; it bounds nothing about what the \
+        COMPILER does. Approve repositories you would run a script from.\n\n\
+        THE UNIT IS A COMMIT. `--at` takes a branch, a tag or a commit; what is RECORDED is \
+        always the forty-character hash it resolved to, with the reference beside it as \
+        provenance. Tags move and branches move; a hash does not.\n\n\
+        `diff` is the verb worth knowing: it shows what has changed since the commit you last \
+        trusted, and changes nothing. Trust is renewed at every update, and the update is the \
+        moment that matters — the code you audited is not the code that arrived.\n\n\
+        `revoke` takes the approval out and leaves the checkout alone. Every layout naming a \
+        revoked module still opens; the region says the module is not approved.")]
+    Module {
+        /// approve, build, diff, or revoke
+        #[arg(value_parser = module_actions())]
+        action: String,
+        /// Which module — the producer name a viewport asks for, and the directory its
+        /// checkout lives in
+        producer: String,
+        /// Where the bytes live: a git URL. Absent on a re-approval means the recorded one
+        #[arg(long)]
+        from: Option<String>,
+        /// Branch, tag or commit to take. Absent means the remote's own default
+        #[arg(long)]
+        at: Option<String>,
+        /// What to grant: `none`, or a comma-separated list of what the manifest requested.
+        /// ABSENT MEANS NOTHING IS RECORDED
+        #[arg(long)]
+        grant: Option<String>,
+    },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
                             the next prompt lands underneath them. They are ordinary \
@@ -1010,6 +1059,29 @@ fn run_console(action: ConsoleAction) -> ! {
                 std::process::exit(2);
             }
             cli::ConsoleOp::Preset { action, name }
+        }
+        // 🚨 **The producer name is refused HERE as well as at the console, for `Layout`'s
+        // reason plus one more.** It is a name on a whitespace-delimited line, so whitespace in
+        // it would arrive truncated — and it is **not** `Preset`'s case, which deliberately
+        // takes the rest of the line because preset names contain spaces. A producer name may
+        // not, because it is also the one directory component the console clones into: a name
+        // carrying `..` or a path separator would be a `git clone` into a directory a
+        // repository chose. `check_producer_name` is the single rule; this is where a human
+        // reads it, before a byte is written and while they can still see the output.
+        ConsoleAction::Module { action, producer, from, at, grant } => {
+            match organon_console::module::check_producer_name(&producer) {
+                Ok(()) => cli::ConsoleOp::Module {
+                    action,
+                    producer,
+                    url: from,
+                    reference: at,
+                    grant,
+                },
+                Err(e) => {
+                    eprintln!("organon: {}", e.sentence());
+                    std::process::exit(2);
+                }
+            }
         }
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
@@ -1961,6 +2033,81 @@ mod tests {
         }
         // A layout the state cannot honour is still a well-formed line here.
         assert!(parse(&["console", "layout", "load", "nonesuch"]).is_ok());
+    }
+
+    /// **`console module` takes an action and a producer, and grants nothing unless told to.**
+    ///
+    /// 🚨 The property worth a test at this door is the one that is a permission:
+    /// `--grant` is optional, and a line without it is a line without it — never a line that
+    /// picked a default. `doc/organon_module_viewport.md` §3.1.
+    #[test]
+    fn console_module_takes_an_action_and_a_producer_and_grants_nothing_by_default() {
+        for a in organon_console::module_work::MODULE_ACTIONS {
+            let c = parse(&["console", "module", a, "ascent"]).unwrap();
+            match c.cmd {
+                Cmd::Console {
+                    action: ConsoleAction::Module { action, producer, from, at, grant },
+                } => {
+                    assert_eq!(&action, a);
+                    assert_eq!(producer, "ascent");
+                    assert_eq!((from, at, grant.clone()), (None, None, None));
+                    assert!(grant.is_none(), "🚨 `{a}` must not invent a grant");
+                    let op = cli::ConsoleOp::Module {
+                        action,
+                        producer,
+                        url: None,
+                        reference: None,
+                        grant: None,
+                    };
+                    assert_eq!(
+                        cli::parse_console_op(&cli::console_op_to_line(&op)),
+                        Some(op),
+                        "`module {a} ascent` must survive the sidecar round trip"
+                    );
+                }
+                _ => panic!("`console module {a} ascent` parsed as something else"),
+            }
+            assert!(
+                parse(&["console", "module", a]).is_err(),
+                "`{a}` alone names no module"
+            );
+        }
+        assert!(parse(&["console", "module"]).is_err(), "neither word has a default");
+        assert!(parse(&["console", "module", "install", "ascent"]).is_err(), "no such action");
+        assert!(parse(&["console", "module", "update", "ascent"]).is_err(), "…nor this one");
+
+        // The full approve line, every optional flag set.
+        let c = parse(&[
+            "console", "module", "approve", "ascent", "--from", "https://x/ascent", "--at",
+            "main", "--grant", "audio,input",
+        ])
+        .unwrap();
+        match c.cmd {
+            Cmd::Console { action: ConsoleAction::Module { from, at, grant, .. } } => {
+                assert_eq!(from.as_deref(), Some("https://x/ascent"));
+                assert_eq!(at.as_deref(), Some("main"), "a branch is a fine thing to type");
+                assert_eq!(grant.as_deref(), Some("audio,input"));
+            }
+            _ => panic!("parsed as something else"),
+        }
+
+        // 🚨 **A producer clap cannot refuse still parses here, and `run_console` is what stops
+        // it.** Both halves are pinned: clap accepts the string, and the name rule rejects it.
+        // `..` is the sharp one — it satisfies every rule that existed before this tier and
+        // names the store root's parent.
+        for bad in ["..", "a/b", "two words", "organon"] {
+            let c = parse(&["console", "module", "build", bad]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Module { producer, .. } } => {
+                    assert_eq!(producer, bad, "clap has no table to refuse it against");
+                    assert!(
+                        organon_console::module::check_producer_name(&producer).is_err(),
+                        "`{bad}` must not reach a directory name"
+                    );
+                }
+                _ => panic!("parsed as something else"),
+            }
+        }
     }
 
     /// **`console camera` takes any subset of four flags and round-trips through the sidecar.**

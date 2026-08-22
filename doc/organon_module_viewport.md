@@ -1,9 +1,15 @@
 # A hosted module in a viewport — what "approve a repo" means, and the contract it buys
 
-> **Status: DESIGN. Nothing is built, no identifier has been renamed, and no code has been
-> touched by this document.** It answers four questions in writing so Organon's side and Ascent's
-> side can be refactored against the same contract instead of against each other. §9 is the order
-> the work goes in.
+> **Status: PART BUILT.** T0 (the frame-boundary measurement) and T3 (`modules.json`,
+> `organon-module.toml`, and the four verbs) have landed; §9 is the order and carries what each
+> rung's state is. Everything else here is still design. It answers four questions in writing so
+> Organon's side and Ascent's side can be refactored against the same contract instead of against
+> each other.
+>
+> ⚠️ **Where a section has been built, its living state is `CONSOLE_ARCHITECTURE.md`, not here.**
+> This document keeps the *argument* — why hosted, why a commit, why the diff is the valuable
+> verb — and says so at the top of each built section rather than being rewritten into a
+> description of the code.
 >
 > James, 2026-08-21:
 > *"I want to be able to open up Organon, point to the Ascent repo, and approve it as a module.
@@ -151,6 +157,38 @@ before any of this was proposed.
 
 ## 3. What "approve it as a module" means mechanically
 
+> ✅ **BUILT — T3a (the data) and T3b (the verbs), 2026-08-22.** This section was written as a
+> specification and every mechanism in it now exists:
+> `native/organon-console/src/module.rs` (two files, two authors, the types that decide them) and
+> `native/organon-console/src/module_work.rs` (`git`, `cargo`, and the four verbs), reached from
+> all four front doors as `console module approve|build|diff|revoke`.
+> `CONSOLE_ARCHITECTURE.md` §1.17 and §1.19 are its living state; **read those for what is true
+> today**, and read the argument below for why it is shaped this way.
+>
+> Four things the build settled that the text below could not:
+>
+> - **§3.4's hole is accepted and said, per its own option 1.** `module_work::BUILD_TRUST` is one
+>   constant reaching four surfaces — the dry run's sentence, the recorded approval's, the line
+>   printed before a build, and `organon console module --help`. Nothing scans a `build.rs`.
+> - **§3.1's "the manifest requests, the record grants" became a *gesture*, not only a pair of
+>   types.** `approve` with no `grant` word is a **dry run** that records nothing and reports what
+>   the repository asks for. Granting is the deliberate path; asking is the cheap one.
+> - **§3.2 lives in one function** — `fetch_and_resolve` resolves a branch, a tag, a hash or
+>   nothing at all to one forty-character hash before any record exists. `at main` is a fine thing
+>   to type; the branch is stored beside the hash as provenance and is never the identity.
+> - ⚠️ **A producer name turned out to be a directory name**, which none of the rules written for
+>   it in T3a covered: `..` satisfied all four and named the store root's parent.
+>   `check_producer_name` gained two path rules, checked at three gates.
+>
+> 🚨 **The general shape of that last one is worth carrying out of this document, because it will
+> happen again.** A validator's rules are only valid for the **uses that existed when they were
+> written**. T3a's four checks are all correct — every one is a true statement about a name
+> surviving a whitespace-delimited wire — and T3b silently invalidated the set by widening what
+> the value *is*, from a wire token to a path component. Nothing failed, nothing warned, and the
+> rules went on passing; only the question they were answering had changed. So **widening what a
+> value means is a change to every rule about it**, and the moment to re-read them is the moment
+> a value gains a second use, not the moment something goes wrong.
+
 ### 3.1 Two files, two authors, and never one file
 
 🚨 **The manifest requests; the approval record grants.** These must not be the same document and
@@ -195,6 +233,20 @@ distribution mechanism where the console can answer:
 `git diff <approved>..<candidate>` is one command. That is the console verb worth building — not
 "install", but **"show me what changed and ask again."**
 
+> ✅ **BUILT, T3b — and "one command" turned out to be two, which is worth recording because the
+> missing one fails in the least diagnosable direction.** Getting the candidate first needs a
+> fetch, and **`git fetch <url> <sha>` is refused by most hosts**:
+> `uploadpack.allowReachableSHA1InWant` is off by default, so a server declines to serve a bare
+> object name while that object is perfectly reachable from the default branch. So a commit that
+> *exists* reads as a commit that does not. The direct fetch is still tried first — it is the
+> cheap case, and the only one that reaches a commit outside the default branch's history — with
+> a full fetch and a local resolve as the fallback.
+>
+> 📌 And the affordance is finished by the *sentence*, not by the diff: it ends with the approve
+> line that would trust the candidate, hash included, so renewing trust is one line a person can
+> read rather than a verb they have to reassemble. **A diff nobody can act on is a report, not a
+> gate.**
+
 ### 3.4 🚨 The hole in §10's clean table: **building from source is linked-level trust**
 
 §10 draws the boundary crisply — linked has none, hosted has the process. §11.7 adds that source
@@ -219,8 +271,13 @@ So the honest table has three columns:
 available outcome** — a security property people believe they have. Three responses, and the right
 one for James today is the first:
 
-1. **Accept it and say it.** The approval gesture gates *building*; the process boundary gates
-   *running*. For a repo James owns, on James's machine, that is the true state of affairs.
+1. ✅ **Accept it and say it — TAKEN, T3b.** The approval gesture gates *building*; the process
+   boundary gates *running*. For a repo James owns, on James's machine, that is the true state of
+   affairs. It is said through `module_work::BUILD_TRUST`, one constant reaching four surfaces so
+   that three copies of a security disclosure cannot become three chances for one of them to
+   soften. 📌 And the corollary below was taken too: `BuildRecord` records the commit that was
+   *built* and whether the tree was dirty, and `names_approved_bytes` is the single site where
+   that is compared against the commit that was approved.
 2. **Prebuilt binaries outside the innermost tier** — §11.7's "source optional for hosted"
    arriving as a policy rather than a permission.
 3. **Build in a sandbox.** Real, and not now.
@@ -231,6 +288,15 @@ describes a binary that does not exist. If the tree was dirty at build time, rec
 than recording a commit as though it named the bytes.
 
 ### 3.5 Revocation, and the rule it must satisfy
+
+> ✅ **BUILT, T3b — and the rule below turned into a threading decision.** `revoke` is the one
+> verb of the four that runs **synchronously on the frame thread**: it touches no network and no
+> compiler, so the verb whose whole purpose is to withdraw trust cannot be queued behind a build,
+> cannot fail because a worker thread died, and needs nothing to be reachable. ⚠️ Two things fell
+> out that this text did not anticipate: a build finishing *after* a revocation must not
+> resurrect the approval (`ModuleRegistry::record_build` answers `false` and the console says the
+> build was dropped), and the **checkout is deliberately not deleted** — withdrawing trust is a
+> statement about what Organon will run, not a licence to remove somebody's working tree.
 
 §10 states the requirement and this design inherits it verbatim: **a layout referencing a module
 you have stopped trusting must not fail to open.** `layout.rs` already has the shape — a load is a
@@ -676,7 +742,7 @@ A spine rather than a schedule; each rung is independently useful and none needs
 | ✅ **T0** | **Measure the frame boundary** — **done for numbers 1 and 3** (§4.4, and `doc/measurements/module-frame-boundary-2026-08-21.md`). Number 2, cross-process staleness, still needs T1 and T2 to exist before it can be taken at all. | a GPU |
 | **T1** | **Ascent's refactor** — the library owns the device, the pipelines, `render_into(texture, size)`, `step(dt)` and `feed(input)`; `main.rs` keeps the window and the pump, and `fly.ps1` keeps working. | the parallel Ascent session |
 | **T2** | **The contract crate** — permissive, console-side, both trees depend on it, `cargo tree` gates both. **B**, per T0, with a preallocated ring rather than a per-frame allocation — that condition is the measurement's, not a preference. | T1's real signatures |
-| **T3** | **`modules.json`, `organon-module.toml`, and the approve verb** — on the harness precedent, with `layout.rs`'s refusal discipline. Approve, build, record the built commit, diff, revoke. | — |
+| ✅ **T3** | **`modules.json`, `organon-module.toml`, and the approve verb** — **done.** T3a landed the data (`module.rs`); T3b landed the verbs (`module_work.rs`), on the harness precedent with `layout.rs`'s refusal discipline: approve, build, record the built commit, diff, revoke. `CONSOLE_ARCHITECTURE.md` §1.17 and §1.19. ⚠️ Nothing launches and nothing draws — §4.6's *launched, not yet producing* and *died* states are unreachable because no process exists to be in them. | — |
 | ✅ **T4** | **The producer qualifier** — `3d <producer>`, the dynamic ring cached per §1.15's measurement, `only_one_because` moved, `engine_plan`'s boolean corrected and tested. **All four landed** (`CONSOLE_ARCHITECTURE.md` §1.14). ⚠️ Two departures from §4.2 as written: the spelling is keyword-tagged (`producer ascent`), and a *stored* producer is not checked against the approved set — §3.5. 📌 It draws no picture; a hosted region carries `ModuleState`'s sentence, which is what T5 replaces. | T3, for a producer to name |
 | **T5** | **Lifecycle and input** — `Attached`/`Running`, the click latch, the way out, the four failure sentences. | T3, T4 |
 | **T6** | **The ladder** — rung 2 is already legal; rung 3 is the handoff, or the portal's full-screen tier, and that is a decision T0 informs. | §6 |

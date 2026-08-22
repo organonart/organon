@@ -170,6 +170,17 @@ pub const APPROVE_VERB: &str = "console module approve";
 /// [`APPROVE_VERB`]: T3b registers it, this is where its spelling lives.
 pub const BUILD_VERB: &str = "console module build";
 
+/// The verb that shows what has changed since the approved commit.
+///
+/// 📌 **Beside the two above rather than in [`crate::module_work`], where T3b first put it.**
+/// The four spellings are one naming scheme and belong in one place — a sentence in a rectangle
+/// (§4.6) and a line a person types have to come from the same string, and two files holding two
+/// halves of that set is how the halves come to disagree.
+pub const DIFF_VERB: &str = "console module diff";
+
+/// The verb that withdraws an approval. Same rule as [`DIFF_VERB`].
+pub const REVOKE_VERB: &str = "console module revoke";
+
 /// How much of a commit hash a sentence in a rectangle shows.
 ///
 /// The record keeps the whole hash — that is the point of §3.2 — but forty characters in a
@@ -280,7 +291,7 @@ impl Granted {
 
 /// Is this a name a module may call itself?
 ///
-/// Five rules, each a fact rather than a taste:
+/// Seven rules, each a fact rather than a taste:
 ///
 /// * **Empty** — a producer with no name cannot be asked for.
 /// * **Longer than [`MAX_PRODUCER`]** — every refusal that lists the approved modules
@@ -289,6 +300,9 @@ impl Granted {
 ///   ([`crate::layout::check_name`]'s measurement, and the same wire), so a two-word producer
 ///   would arrive truncated: a command that appears to work and names something else.
 /// * **A control character** — it corrupts the line it travels on.
+/// * **`.` or `..`** — the name is also a directory name (see the comment at the check).
+/// * **A path separator** — same reason, and the one that has an attacker rather than a typo
+///   behind it.
 /// * **[`DEFAULT_PRODUCER`]** — reserved for Organon's own `World`, because `3d` with no
 ///   qualifier already means it.
 pub fn check_producer_name(name: &str) -> Result<(), ModuleFault> {
@@ -310,10 +324,77 @@ pub fn check_producer_name(name: &str) -> Result<(), ModuleFault> {
     if name.chars().any(char::is_control) {
         return bad("it contains a control character, which would corrupt the line it travels on");
     }
+    // 🚨 **A producer name is also a DIRECTORY name, and that was not true when the four rules
+    // above were written.** Every one of them is about a name surviving a whitespace-delimited
+    // wire. T3b made the same string the single path component under
+    // [`crate::module_work::checkout_dir`] — and `..` satisfies all four while naming the store
+    // root's parent. The name comes out of a manifest, which is data written by someone else,
+    // so the distance between these two lines and their absence is a clone landing in
+    // `<store>/modules/<producer>` versus a clone landing wherever a repo asked for.
+    if name == "." || name == ".." {
+        return bad(
+            "`.` and `..` name a directory rather than a module, and a module's name is also \
+             the directory its checkout lives in",
+        );
+    }
+    if name.contains('/') || name.contains('\\') || name.contains(':') {
+        return bad(
+            "it contains a path separator, and a module's name is also the one directory \
+             component its checkout lives under",
+        );
+    }
     if name == DEFAULT_PRODUCER {
         return bad("`organon` is the producer a viewport means when no producer is named");
     }
     Ok(())
+}
+
+/// The longest run of somebody else's text a sentence will render before it stops.
+const MAX_UNTRUSTED: usize = 120;
+
+/// Render a string **out of a manifest** — or out of a hand-edited `modules.json` — as data.
+///
+/// 🚨 **A manifest is text written by someone else, and some of it reaches sentences the console
+/// says in its own voice.** [`ModuleManifest::producer`] is safe by the time anything sees it
+/// ([`check_producer_name`] runs at parse), but [`ModuleManifest::name`], the requested grant
+/// names and [`ModuleManifest::kind`] are **not validated at all** — they are display text and a
+/// refusal's payload, and refusing a whole repository over an odd character in a display name
+/// would be the wrong trade. So they are rendered rather than restricted:
+///
+/// * **Quoted**, so a reader can see where somebody else's words start and stop.
+/// * **Control characters escaped**, newlines above all. Every console sentence is one
+///   `organon-console: …` line, so a `name` containing `"\n\norganon-console: ascent approved
+///   — granted audio"` would print a second line indistinguishable from the console's own — a
+///   repository forging the sentence that says what it was granted.
+/// * **Capped at [`MAX_UNTRUSTED`]**, so a megabyte of display name is a truncation rather than
+///   a scrollback nobody can get above.
+///
+/// ⚠️ **This is a rendering rule, not a trust boundary**, and the difference matters: it stops
+/// somebody else's text *reading* as Organon's, and does nothing about what the text says. The
+/// boundary is elsewhere — a manifest grants nothing (§3.1) and cannot name a program to run
+/// ([`crate::module_work::Tool`]).
+pub fn quoted_untrusted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for (n, c) in text.chars().enumerate() {
+        if n == MAX_UNTRUSTED {
+            out.push('…');
+            break;
+        }
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // The quote itself, so a name cannot appear to close the quoting and continue
+            // outside it — the same failure as the newline, one character in.
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Is this a git object name?
@@ -662,9 +743,14 @@ impl ModuleFault {
                 "{producer}'s manifest declares no kind — this build hosts one kind of \
                  module, `{VIEWPORT_KIND}`"
             ),
+            // ⚠️ **`kind` is quoted through [`quoted_untrusted`] and `producer` is not**, which is
+            // the whole distinction that function exists to draw: the producer has already been
+            // through [`check_producer_name`] by the time a manifest carries one, and the kind
+            // has been through nothing at all — it is whatever the file said.
             ModuleFault::UnknownKind { producer, kind } => format!(
-                "{producer}'s manifest declares kind `{kind}` — this build hosts one kind of \
-                 module, `{VIEWPORT_KIND}`"
+                "{producer}'s manifest declares kind {} — this build hosts one kind of \
+                 module, `{VIEWPORT_KIND}`",
+                quoted_untrusted(kind)
             ),
             ModuleFault::NotRequested { grant } => format!(
                 "`{grant}` was never requested — a grant answers a request, and granting one \
@@ -718,6 +804,23 @@ impl ModuleState {
 // ---------------------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------------------
+
+/// What [`ModuleRegistry::record_approval`] did with a slow job's answer.
+///
+/// Three outcomes rather than a `bool`, because all three are a different sentence to a person:
+/// a module they had never approved, a module whose approval they have just changed, and a
+/// module they revoked while it was working.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Approved {
+    /// Nothing answered to this name and nothing was meant to. Stored.
+    Added,
+    /// An approval was replaced. ⚠️ Said out loud by the caller: replacing an approval changes
+    /// what somebody trusts, under one word they typed.
+    Replaced,
+    /// 🚨 **The module was revoked while the job ran, so its answer was thrown away.** See
+    /// [`ModuleRegistry::record_approval`].
+    DroppedRevoked,
+}
 
 /// Everything that has been approved, in file order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -970,6 +1073,75 @@ impl ModuleRegistry {
                 self.modules.push(module);
                 Ok(false)
             }
+        }
+    }
+
+    /// Store the approval a **slow job** produced — and refuse to if the module was revoked
+    /// while that job was running.
+    ///
+    /// 🚨 **[`ModuleRegistry::record_build`]'s guard, in the direction that matters more, and
+    /// it is here rather than at the call site so the two sit side by side.** The invariant is
+    /// *a slow job cannot undo a revocation*, and it used to hold for builds only. An
+    /// asymmetric guard is worse than an absent one: the tested half is the evidence a reader
+    /// uses to conclude the whole thing is covered.
+    ///
+    /// ⚠️ **And approve is the worse half to leave open.** A resurrected *build* re-attaches an
+    /// artifact to an approval that still exists. A resurrected *approve* re-creates **an
+    /// approval and its grants** after a person deliberately withdrew trust — the one action
+    /// §3.5 exists to protect, and the one a person would most reasonably assume took effect
+    /// the moment they typed it. Worse, the grants that land are the ones chosen *before* the
+    /// revocation, so the revived record can carry a grant the person had already decided
+    /// against.
+    ///
+    /// 🚨 **`was_approved` is what makes this expressible at all, and it is not a flag that
+    /// could be derived here.** *Nothing under this name* means two opposite things: a **first**
+    /// approval, which must be stored, and a **revoked** one, which must not. Only the caller
+    /// knows which, because only the caller saw the registry when the job was dispatched. So
+    /// the argument is a fact about the past, and this function is the only place it is read.
+    ///
+    /// ⚠️ **Dropped, never re-revoked and never reconciled.** That is [`record_build`]'s answer
+    /// to the same condition, and two slow jobs behaving differently on one condition is how
+    /// the next reader concludes neither was deliberate.
+    ///
+    /// Refuses exactly what [`ModuleRegistry::upsert`] refuses, which is exactly what
+    /// [`ModuleRegistry::load`] refuses — and **after** the revocation check, because a record
+    /// that is being dropped has no reason to be described as malformed as well.
+    ///
+    /// [`record_build`]: ModuleRegistry::record_build
+    pub fn record_approval(
+        &mut self,
+        module: ApprovedModule,
+        was_approved: bool,
+    ) -> Result<Approved, ModuleFault> {
+        let answers = self.modules.iter().any(|m| m.producer == module.producer);
+        if was_approved && !answers {
+            return Ok(Approved::DroppedRevoked);
+        }
+        Ok(if self.upsert(module)? { Approved::Replaced } else { Approved::Added })
+    }
+
+    /// Hang a [`BuildRecord`] on the module approved under `producer`. `false` if nothing
+    /// answers to that name any more.
+    ///
+    /// 🚨 **The `false` is the whole reason this is a method rather than a field poke.** A
+    /// build takes minutes and a revocation takes microseconds, so a person can perfectly well
+    /// withdraw an approval while its build is running — and the record must then *stay*
+    /// withdrawn. Writing the build back through a fresh `upsert` would resurrect the approval,
+    /// grants and all, as a side effect of a compiler finishing. The caller says the build was
+    /// dropped instead.
+    ///
+    /// ⚠️ **The record is stored whatever commit it names.** §3.4: a build of a different
+    /// commit, or from a dirty tree, is a true fact about what was compiled, and
+    /// [`BuildRecord::names_approved_bytes`] is what decides whether it counts — refusing to
+    /// store it here would leave the module looking never-built, which is a *different* untrue
+    /// thing.
+    pub fn record_build(&mut self, producer: &str, built: BuildRecord) -> bool {
+        match self.modules.iter_mut().find(|m| m.producer == producer) {
+            Some(m) => {
+                m.built = Some(built);
+                true
+            }
+            None => false,
         }
     }
 
@@ -1249,6 +1421,71 @@ mod tests {
         // And a build of other bytes is not a build of these.
         assert!(!back.is_built(), "a drifted build does not describe the approved binary");
         assert!(!back.built.as_ref().unwrap().names_approved_bytes(&back.commit));
+    }
+
+    /// CONTRACT: 🚨 **a build finishing after a revocation does not resurrect the approval.**
+    ///
+    /// A build takes minutes and a revocation takes microseconds, so a person can perfectly
+    /// well withdraw an approval while its build is running. Storing the build through
+    /// anything that could *create* a record would restore that approval — grants and all — as
+    /// a side effect of a compiler finishing, which is the one way a permission could come
+    /// back without anybody granting it.
+    #[test]
+    fn a_build_cannot_resurrect_a_revoked_approval() {
+        let mut registry = ModuleRegistry::default();
+        registry.upsert(ApprovedModule::approve(&manifest("ascent"), source(), &["audio"]).unwrap())
+            .unwrap();
+        let record = BuildRecord { commit: HASH.into(), dirty: false, extra: BTreeMap::new() };
+
+        assert!(registry.record_build("ascent", record.clone()), "the approved one takes it");
+        assert!(registry.get("ascent").unwrap().is_built());
+
+        assert!(registry.revoke("ascent"));
+        assert!(
+            !registry.record_build("ascent", record),
+            "🚨 a build must not put back an approval a person withdrew"
+        );
+        assert!(registry.get("ascent").is_none(), "and nothing was created");
+        assert_eq!(registry.modules.len(), 0);
+    }
+
+    /// CONTRACT: 🚨 **an approval finishing after a revocation does not resurrect it either.**
+    ///
+    /// The sibling of [`tests::a_build_cannot_resurrect_a_revoked_approval`], and the reason
+    /// this one exists is that for a while only that one did. *A slow job cannot undo a
+    /// revocation* is the invariant; it held for builds and not for approvals, and **an
+    /// asymmetric guard is worse than an absent one** — the tested half is the evidence a
+    /// reader uses to conclude the whole thing is covered.
+    ///
+    /// ⚠️ The two halves of `was_approved` are both asserted here, because they are what makes
+    /// the guard expressible: *nothing under this name* means "store it, this is the first
+    /// approval" in one case and "drop it, somebody revoked" in the other, and only the
+    /// dispatch site can tell them apart.
+    #[test]
+    fn an_approval_cannot_resurrect_a_revoked_module() {
+        let approve = || {
+            ApprovedModule::approve(&manifest("ascent"), source(), &["audio"]).unwrap()
+        };
+        let mut registry = ModuleRegistry::default();
+
+        // Nothing under this name and none was expected: a first approval is stored.
+        assert_eq!(registry.record_approval(approve(), false), Ok(Approved::Added));
+        assert!(registry.get("ascent").is_some());
+
+        // Something under this name: a re-approval replaces it, and says so.
+        assert_eq!(registry.record_approval(approve(), true), Ok(Approved::Replaced));
+        assert_eq!(registry.modules.len(), 1);
+
+        // 🚨 Revoked while the job ran: the answer is thrown away, grants and all.
+        assert!(registry.revoke("ascent"));
+        assert_eq!(registry.record_approval(approve(), true), Ok(Approved::DroppedRevoked));
+        assert!(registry.get("ascent").is_none(), "the revocation stands");
+        assert_eq!(registry.modules.len(), 0, "and nothing was created");
+
+        // …and the same registry still accepts a genuine first approval afterwards, so the
+        // guard withdraws trust rather than wedging the name.
+        assert_eq!(registry.record_approval(approve(), false), Ok(Approved::Added));
+        assert!(registry.get("ascent").is_some());
     }
 
     /// CONTRACT: a dirty tree is recorded as such, and no hash it carries names the bytes.

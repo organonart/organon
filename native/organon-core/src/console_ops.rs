@@ -234,6 +234,45 @@ pub enum ConsoleOp {
     /// 📌 **There is no `list` here, for [`ConsoleOp::Layout`]'s reason**: a listing is a read
     /// and this lane has no return path, so it is `console.preset.list` on the MCP lane.
     Preset { action: String, name: String },
+    /// **Approve a repository as a module, build the approved commit, show what changed since
+    /// it, or withdraw the approval** — `organon_console::module_work::MODULE_ACTIONS` and the
+    /// producer name the module answers to.
+    ///
+    /// 🚨 **The manifest requests; this line grants.** `doc/organon_module_viewport.md` §3.1
+    /// keeps the module's own `organon-module.toml` and the console's `modules.json` as two
+    /// documents by two authors, and this is the second author writing. So [`ConsoleOp::Module`]
+    /// carries the URL, the reference and the grants — every one of which comes from a person —
+    /// and carries nothing a repository said about itself except the name it is being filed
+    /// under, which the console then checks the manifest agrees with.
+    ///
+    /// 🚨 **No `grant` word means NOTHING IS RECORDED**, and that is the invariant rather than
+    /// a convenience: `approve` with no grants is a *dry run* that fetches the commit, reads
+    /// the manifest and reports what it asks for. `CLAUDE.md` invariant 4 on the verb where it
+    /// matters most — a mistyped approve cannot grant anything, and the request is on screen
+    /// before the answer is typed. `grant none` is how a person says "approve it, grant it
+    /// nothing".
+    ///
+    /// ⚠️ **`reference` may name a branch and `commit` never does.** §3.2: tags move, branches
+    /// move. What travels on this line is what a person typed; the console resolves it to a
+    /// forty-character hash with `git` before anything reaches `modules.json`, so a record can
+    /// never hold a reference that has not decided what it trusts.
+    ///
+    /// Three optional words, all **keyword-tagged** on [`ConsoleOp::Stack`]'s rule: the slash
+    /// grammar fills optional arguments by keyword, so a bare positional would make the typed
+    /// line and the sidecar line disagree. A keyword with no word after it, or a word that is
+    /// not one of the three, is **malformed** rather than "a command with a default" — this
+    /// lane's standing contract is that a line it cannot read whole is skipped, and guessing
+    /// here would approve something nobody named.
+    ///
+    /// 📌 **There is no `list` here**, for [`ConsoleOp::Layout`]'s reason exactly: a listing is
+    /// a read and this lane has no return path. `modules.json` is legible meanwhile.
+    Module {
+        action: String,
+        producer: String,
+        url: Option<String>,
+        reference: Option<String>,
+        grant: Option<String>,
+    },
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -493,6 +532,21 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         },
         ConsoleOp::Layout { action, name } => format!("layout {action} {name}"),
         ConsoleOp::Preset { action, name } => format!("preset {action} {name}"),
+        // Each optional word only when it is set, on the `Stack` arm's rule — so a `revoke`
+        // line, which can never carry any of them, is three words and stays three words.
+        ConsoleOp::Module { action, producer, url, reference, grant } => {
+            let mut line = format!("module {action} {producer}");
+            if let Some(url) = url {
+                line.push_str(&format!(" from {url}"));
+            }
+            if let Some(reference) = reference {
+                line.push_str(&format!(" at {reference}"));
+            }
+            if let Some(grant) = grant {
+                line.push_str(&format!(" grant {grant}"));
+            }
+            line
+        }
         ConsoleOp::Block(rows) => format!("block {rows}"),
         ConsoleOp::Patch { up, rows, kind } => {
             format!("patch {up} {rows} {}", kind.as_word())
@@ -592,6 +646,30 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
                 return None;
             }
             Some(ConsoleOp::Preset { action, name })
+        }
+        // Two required words and three optional keyword pairs, in any order. ⚠️ **A repeated
+        // keyword is malformed rather than last-wins**: `grant none grant audio` is a line
+        // whose author disagreed with themselves about a permission, and picking one of the
+        // two would grant something on a guess.
+        "module" => {
+            let action = it.next()?.to_string();
+            let producer = it.next()?.to_string();
+            let (mut url, mut reference, mut grant) = (None, None, None);
+            while let Some(word) = it.next() {
+                let slot = match word {
+                    "from" => &mut url,
+                    "at" => &mut reference,
+                    "grant" => &mut grant,
+                    // An unknown keyword, exactly as the `stack` arm treats one: a newer
+                    // build's line is skipped whole rather than half-applied.
+                    _ => return None,
+                };
+                if slot.is_some() {
+                    return None;
+                }
+                *slot = Some(it.next()?.to_string());
+            }
+            Some(ConsoleOp::Module { action, producer, url, reference, grant })
         }
         // A row count that does not parse — or does not fit — is a malformed line, and a
         // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/
@@ -777,6 +855,57 @@ mod tests {
                 ConsoleOp::Layout { action: "load".into(), name: "desk".into() },
                 ConsoleOp::Layout { action: "delete".into(), name: "desk".into() },
                 ConsoleOp::Layout { action: "save".into(), name: "james.two-up_1".into() },
+                // 🚨 **Every spelling of the grant word rides the trip, and the `None` is the
+                // sharpest of them.** A line that *lost* its `grant` would arrive as a dry run
+                // — annoying but safe — while one that *gained* a grant it never carried would
+                // grant a permission nobody typed, which is the failure §3.1's whole two-file
+                // split exists to make impossible. `grant none` and no grant at all are two
+                // different commands and both have to survive.
+                ConsoleOp::Module {
+                    action: "approve".into(),
+                    producer: "ascent".into(),
+                    url: Some("https://github.com/organonart/ascent".into()),
+                    reference: None,
+                    grant: None,
+                },
+                ConsoleOp::Module {
+                    action: "approve".into(),
+                    producer: "ascent".into(),
+                    url: Some("https://github.com/organonart/ascent".into()),
+                    reference: Some("main".into()),
+                    grant: Some("none".into()),
+                },
+                ConsoleOp::Module {
+                    action: "approve".into(),
+                    producer: "ascent".into(),
+                    url: None,
+                    reference: Some(
+                        "0123456789abcdef0123456789abcdef01234567".into(),
+                    ),
+                    grant: Some("audio,input".into()),
+                },
+                ConsoleOp::Module {
+                    action: "build".into(),
+                    producer: "ascent".into(),
+                    url: None,
+                    reference: None,
+                    grant: None,
+                },
+                ConsoleOp::Module {
+                    action: "diff".into(),
+                    producer: "ascent".into(),
+                    url: None,
+                    reference: Some("main".into()),
+                    grant: None,
+                },
+                // The one that must never be lost: withdrawing trust.
+                ConsoleOp::Module {
+                    action: "revoke".into(),
+                    producer: "ascent".into(),
+                    url: None,
+                    reference: None,
+                    grant: None,
+                },
                 // Tier 5: the payload is a count, not a name — the first op on this lane whose
                 // argument is not a word.
                 ConsoleOp::Block(1),
@@ -913,6 +1042,58 @@ mod tests {
             assert_eq!(parse_console_op("patch"), None);
             assert_eq!(parse_console_op("patch up rows"), None);
             assert_eq!(parse_console_op("patch -1 12"), None, "negative is not a u16");
+        }
+
+        /// A `module` line is read whole or not at all — and the half that matters is the
+        /// grant.
+        ///
+        /// 🚨 **A line this parser cannot read must never half-apply here**, because the
+        /// thing it would half-apply is a permission. A dangling `grant`, a keyword this build
+        /// has never heard of, and an author who wrote `grant` twice are all skipped rather
+        /// than guessed at — an approval assembled out of a line somebody typed wrong is
+        /// exactly the failure `doc/organon_module_viewport.md` §3.1's two-file split exists
+        /// to make impossible.
+        #[test]
+        fn a_module_line_is_read_whole_or_not_at_all() {
+            assert_eq!(
+                parse_console_op("module revoke ascent"),
+                Some(ConsoleOp::Module {
+                    action: "revoke".into(),
+                    producer: "ascent".into(),
+                    url: None,
+                    reference: None,
+                    grant: None,
+                }),
+                "the three-word form is the whole of revoke"
+            );
+            assert_eq!(parse_console_op("module"), None, "no action, no producer");
+            assert_eq!(parse_console_op("module approve"), None, "an approve with nothing named");
+            assert_eq!(
+                parse_console_op("module approve ascent grant"),
+                None,
+                "a dangling `grant` is a lost grant list, not an empty one"
+            );
+            assert_eq!(
+                parse_console_op("module approve ascent from"),
+                None,
+                "the same rule for a dangling repository"
+            );
+            assert_eq!(
+                parse_console_op("module approve ascent with audio"),
+                None,
+                "a keyword this build has never heard of is skipped, never ignored"
+            );
+            assert_eq!(
+                parse_console_op("module approve ascent grant none grant audio"),
+                None,
+                "an author who disagreed with themselves about a permission gets neither"
+            );
+            // Order is free: the three keywords are tagged, so the line reads the same either
+            // way round — which is what stops a typed line and a written one disagreeing.
+            assert_eq!(
+                parse_console_op("module approve ascent grant audio at main from https://x"),
+                parse_console_op("module approve ascent from https://x at main grant audio"),
+            );
         }
 
         /// An unknown verb parses to `None` so the drain SKIPS it. That is the whole

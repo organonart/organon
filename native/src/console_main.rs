@@ -457,6 +457,30 @@ const CMD_LAYOUT_LIST: &str = "console.layout.list";
 const CMD_PRESET: &str = "console.preset";
 const CMD_PRESET_LIST: &str = "console.preset.list";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5: reserve rows in the transcript.
+/// `console.module` — **approve a repository as a viewport producer, build the approved
+/// commit, show what has changed since it, or withdraw the approval.**
+///
+/// `doc/organon_module_viewport.md` §3, and the one verb on this lane that changes what code
+/// this machine will run. Its four actions are
+/// [`organon_console::module_work::MODULE_ACTIONS`]; the work behind them is that module, off
+/// the frame thread; the record it writes is `modules.json`.
+const CMD_MODULE: &str = "console.module";
+/// [`CMD_MODULE`]'s repository. Optional: absent on `build`, `diff` and `revoke`, and on a
+/// re-approval of something already in `modules.json`, where the recorded URL is what it means.
+const CMD_FROM: &str = "from";
+/// [`CMD_MODULE`]'s branch, tag or commit. ⚠️ **Optional, and what is *recorded* is never this
+/// word** — §3.2: the console resolves it with `git` and stores the hash, keeping this as
+/// provenance.
+const CMD_AT: &str = "at";
+/// [`CMD_MODULE`]'s grants — comma-separated, or
+/// [`organon_console::module_work::NONE_GRANT`].
+///
+/// 🚨 **Optional, and its absence is the whole safety property of the verb.** An `approve` with
+/// no `grant` word is a **dry run**: it fetches, reads the manifest and reports what the
+/// repository asks for, and records nothing. `CLAUDE.md` invariant 4 where it counts — a
+/// mistyped approve cannot grant anything.
+const CMD_GRANT: &str = "grant";
+
 const CMD_BLOCK: &str = "console.block";
 /// See [`CMD_BACKGROUND`]. Console Spike Tier 5, the **corrected** verb: claim a rectangle the
 /// writer already left in its own output. The console records; it never writes.
@@ -512,6 +536,21 @@ const CMD_CONTENT: &str = "content";
 /// Not [`CMD_ARG`] and not [`CMD_CONTENT`], on [`CMD_ROWS`]' rule: a producer is neither a
 /// `name` that means a material nor a content kind, and a palette offering `ascent` under the
 /// heading "content" would be describing a table that does not contain it.
+///
+/// 📌 **Also [`CMD_MODULE`]'s first slot after the action, and sharing one constant is
+/// deliberate.** T4 and T3b each declared a `"producer"` argument on separate branches, and the
+/// merge caught it as `E0428` — the good kind of collision. They are one word meaning one thing:
+/// the name a module answers to. `console.viewport` asks *which producer draws this rectangle*
+/// and `console.module` asks *which module am I acting on*, and a person who has learned the
+/// word in one has learned it in the other. Not [`CMD_NAME`] for either, because that is aliased
+/// to the layout ring's argument and a producer is a different vocabulary.
+///
+/// ⚠️ **What sharing the string does NOT mean is sharing the ring.** `registry::options_for`
+/// is keyed by **verb**, so `console.viewport`'s producer ring reaches only that verb — which
+/// matters here rather than being a technicality: that ring offers `organon` alongside the
+/// approved set, and `organon` is the one name [`organon_console::module::check_producer_name`]
+/// refuses to a module. A ring keyed by argument *name* would complete `console module build `
+/// to a word all four of its actions reject.
 const CMD_PRODUCER: &str = organon_console::registry::VIEWPORT_PRODUCER_ARG;
 /// [`CMD_STACK`]'s two slots. Neither reuses [`CMD_ARG`] or [`CMD_REGION`], on [`CMD_ROWS`]'
 /// rule: `add` is not a `name`, and a panel is not a region. Both are `Choice`s over
@@ -909,6 +948,48 @@ fn console_specs() -> Vec<CommandSpec> {
             // is the right outcome for a verb that writes to a file.
             reversal: Reversal::Permanent,
         },
+        // 🚨 **The one verb on this lane that decides what code this machine will run**, and
+        // the schema is arranged so that the dangerous half is the half a person has to type.
+        // `action` and `producer` are required; `grant` is not — and an approve without it is a
+        // dry run that records nothing (see [`CMD_GRANT`]). So the shape of the command makes
+        // *asking what a repository wants* the cheap path and *granting it* the deliberate one.
+        //
+        // ⚠️ **What the schema cannot say is what the repository is.** `ArgKind::Text` states no
+        // value space for a URL or a reference, and there is no ring of producers that could
+        // include one nobody has approved yet. Every fact that decides this command — does the
+        // remote answer, does the commit exist, does the manifest parse, does it call itself
+        // what you called it — is a fact about somebody else's server at the moment the op is
+        // drained. [`Console::set_module`] and `organon_console::module_work` are the gates, and
+        // they refuse by name.
+        CommandSpec {
+            name: CMD_MODULE.into(),
+            doc: "Approve a repository as a viewport producer, build it, see what changed, or \
+                  withdraw the approval"
+                .into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec {
+                    name: CMD_ACTION.into(),
+                    kind: ArgKind::Choice(
+                        organon_console::module_work::MODULE_ACTIONS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                    ),
+                    required: true,
+                },
+                ArgSpec { name: CMD_PRODUCER.into(), kind: ArgKind::Text, required: true },
+                ArgSpec { name: CMD_FROM.into(), kind: ArgKind::Text, required: false },
+                ArgSpec { name: CMD_AT.into(), kind: ArgKind::Text, required: false },
+                ArgSpec { name: CMD_GRANT.into(), kind: ArgKind::Text, required: false },
+            ],
+            // 🚨 **Permanent, and each action earns it separately.** `approve` writes a file and
+            // grants a permission; `revoke` takes one out and nothing puts it back; `build`
+            // compiles somebody else's source with this user's privileges. `diff` alone is
+            // harmless — and it shares the verb, so it shares the ruling, which is the right
+            // way round: the practical effect is that autorun can never fire any of them.
+            reversal: Reversal::Permanent,
+        },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
         // therefore lives in TWO places that are both real gates rather than one that is
@@ -1102,6 +1183,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Stack { .. } => CMD_STACK,
         cli::ConsoleOp::Layout { .. } => CMD_LAYOUT,
         cli::ConsoleOp::Preset { .. } => CMD_PRESET,
+        cli::ConsoleOp::Module { .. } => CMD_MODULE,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -1267,6 +1349,35 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
             }
             Ok(cli::ConsoleOp::Preset { action: a, name: n })
         }
+        // 🚨 **The producer name is a REAL gate here, and it is the same gate twice for two
+        // different reasons.** `check_producer_name` refuses whitespace because the sidecar line
+        // is whitespace-delimited — [`CMD_LAYOUT`]'s argument exactly — and it also refuses `.`,
+        // `..` and path separators, because the console turns that same string into the one
+        // directory component a checkout lives under. A name that reached the console unchecked
+        // would be a `git clone` into a directory a repository chose.
+        //
+        // ⚠️ **The three optional words are not checked at all**, and that is not laziness: a URL
+        // is whatever a person's git can reach, and a reference is whatever their remote holds.
+        // The only thing that could be checked here is a shape neither of them has, and a gate
+        // that guesses at one would refuse a working repository.
+        CMD_MODULE => {
+            let a = word(CMD_ACTION)?;
+            let p = word(CMD_PRODUCER)?;
+            organon_console::module_work::ModuleCmd::resolve(&a)
+                .map_err(|e| format!("{name}: {e}"))?;
+            organon_console::module::check_producer_name(&p)
+                .map_err(|e| format!("{name}: {}", e.sentence()))?;
+            let optional = |slot: &str| -> Option<String> {
+                args.get(slot).and_then(Value::as_str).map(str::to_string)
+            };
+            Ok(cli::ConsoleOp::Module {
+                action: a,
+                producer: p,
+                url: optional(CMD_FROM),
+                reference: optional(CMD_AT),
+                grant: optional(CMD_GRANT),
+            })
+        }
         CMD_BLOCK => {
             let n = args
                 .get(CMD_ROWS)
@@ -1419,6 +1530,17 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
         cli::ConsoleOp::Preset { action, name } => {
             json!({ CMD_ACTION: action, CMD_NAME: name })
         }
+        // Five slots, three of them optional and every one spelled even when it is `null` —
+        // the `stack` arm's rule. ⚠️ **`grant` above all**: this is the record in
+        // `events.jsonl` of what somebody was granted, and an approval whose grant slot was
+        // simply absent from the audit line reads as though the question was never asked.
+        cli::ConsoleOp::Module { action, producer, url, reference, grant } => json!({
+            CMD_ACTION: action,
+            CMD_PRODUCER: producer,
+            CMD_FROM: url,
+            CMD_AT: reference,
+            CMD_GRANT: grant,
+        }),
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
         // optional argument and `op_from` maps straight back to `None`. Omitting the key
         // entirely would do the same thing; spelling it keeps the dispatch record — which is
@@ -1701,9 +1823,112 @@ fn console_step(
         // mirror, reaching the world through `OrganonPanels::overlay` — the same lane a dragged
         // slider uses, and no slider bands the transcript either. Folding it in here would make
         // a band appear at a moment nothing *behind* the glyphs moved.
-        | cli::ConsoleOp::Preset { .. } => return None,
+        | cli::ConsoleOp::Preset { .. }
+        // **And approving a module is not a look at all** — the furthest from one on this
+        // lane. It fetches a repository, writes `modules.json` and may run a compiler; it
+        // paints nothing, so banding the transcript here would mark a look change at a moment
+        // no pixel moved.
+        | cli::ConsoleOp::Module { .. } => return None,
     }
     Some((source, look))
+}
+
+/// What a refusal out of `modules.json` is prefixed with, so a person reading a line knows it
+/// is about their own record rather than about the command they just typed.
+const MODULES_FILE_NOTE: &str = "modules.json —";
+
+/// **What a module job was asked to do**, carrying everything it needs.
+///
+/// 🚨 **Built on the frame thread and then MOVED**, so the job owns all of it. Nothing here
+/// borrows the console, reads `modules.json` or touches the registry — which is what makes
+/// [`Console::service_modules`] the file's single writer.
+enum ModuleJob {
+    Approve {
+        url: String,
+        reference: Option<String>,
+        grant: organon_console::module_work::Grant,
+        /// 🚨 **Whether anything was approved under this producer when the job was dispatched**
+        /// — read once, at the completion, by
+        /// [`organon_console::module::ModuleRegistry::record_approval`], and carried here
+        /// because that is the only place it can be known. Its doc owns the reasoning: *nothing
+        /// under this name* means two opposite things at completion time — a first approval,
+        /// which must be stored, and one revoked while this job ran, which must not.
+        was_approved: bool,
+    },
+    Build(Box<organon_console::module::ApprovedModule>),
+    Diff(Box<organon_console::module::ApprovedModule>, Option<String>),
+}
+
+impl ModuleJob {
+    /// The line said **before** the thread starts. A clone or a build can be a minute away, and
+    /// a console that went quiet is indistinguishable from one that ignored the command.
+    fn started(&self, producer: &str) -> String {
+        match self {
+            ModuleJob::Approve { url, reference, grant, .. } => format!(
+                "fetching {url}{} for `{producer}` — {}",
+                reference.as_ref().map(|r| format!(" at {r}")).unwrap_or_default(),
+                match grant {
+                    organon_console::module_work::Grant::Show =>
+                        "no grants named, so this will report what it asks for and record \
+                         nothing",
+                    _ => "this will record an approval",
+                }
+            ),
+            ModuleJob::Build(m) => format!(
+                "building `{producer}` at {} — this runs the repository's build scripts with \
+                 your privileges",
+                m.short_commit()
+            ),
+            ModuleJob::Diff(m, _) => format!(
+                "comparing `{producer}` against {} — nothing will change",
+                m.short_commit()
+            ),
+        }
+    }
+
+    /// Do the work. Runs on the job's own thread; every decision inside is
+    /// `organon_console::module_work`'s.
+    fn run(
+        self,
+        shop: &dyn organon_console::module_work::Workshop,
+        root: &std::path::Path,
+        producer: &str,
+    ) -> Result<ModuleOutcome, organon_console::module_work::WorkFault> {
+        use organon_console::module_work as work;
+        match self {
+            ModuleJob::Approve { url, reference, grant, was_approved } => {
+                work::approve(shop, root, producer, &url, reference.as_deref(), &grant)
+                    .map(|a| ModuleOutcome::Approved { approval: Box::new(a), was_approved })
+            }
+            ModuleJob::Build(m) => {
+                work::build(shop, root, &m).map(|b| ModuleOutcome::Built(Box::new(b)))
+            }
+            ModuleJob::Diff(m, reference) => work::compare(shop, root, &m, reference.as_deref())
+                .map(|c| ModuleOutcome::Compared(Box::new(c))),
+        }
+    }
+}
+
+/// What a module job found.
+enum ModuleOutcome {
+    Approved {
+        approval: Box<organon_console::module_work::Approval>,
+        /// See [`ModuleJob::Approve`]. Threaded through to the completion because that is the
+        /// only place it is read, and it is read exactly once.
+        was_approved: bool,
+    },
+    Built(Box<organon_console::module_work::Built>),
+    Compared(Box<organon_console::module_work::Comparison>),
+}
+
+/// One job's answer, on its way back to the frame.
+///
+/// The producer travels with it because that is the key [`Console::module_inflight`] is holding,
+/// and a job that failed still has to release it — otherwise one unreachable remote locks a
+/// module out of every verb for the rest of the session.
+struct ModuleReport {
+    producer: String,
+    outcome: Result<ModuleOutcome, organon_console::module_work::WorkFault>,
 }
 
 /// The engine's frame behind the glyphs: sized to the **pane it is painted into** (not the
@@ -2294,6 +2519,24 @@ struct Console {
     /// Cloned into each loader thread. Held here so the channel stays open for the life of the
     /// console rather than closing the moment the last job finishes.
     exhibit_tx: std::sync::mpsc::Sender<(ExhibitKey, ExhibitLoad)>,
+    /// Where a module job sends what it found. Drained by [`Console::service_modules`].
+    ///
+    /// 🚨 **§1.13's exhibit pattern, and this is the case it was established for.** A clone is
+    /// a network, a build is a compiler, and neither is bounded in the only sense that
+    /// matters. One thread per job, results on an `mpsc`, and a frame that only ever collects
+    /// — the alternative is a console that stops drawing for the length of a `cargo build`.
+    module_rx: std::sync::mpsc::Receiver<ModuleReport>,
+    /// Cloned into each module job. Held here for [`Console::exhibit_tx`]'s reason: the
+    /// channel stays open for the life of the console rather than closing when the last job
+    /// finishes — which is also what makes a send *after* teardown a no-op rather than a panic.
+    module_tx: std::sync::mpsc::Sender<ModuleReport>,
+    /// Which producers have a job running.
+    ///
+    /// 🚨 **One job per module at a time, and the reason is the checkout.** All four verbs work
+    /// in `<store>/modules/<producer>`, and two `git checkout`s or two `cargo build`s in one
+    /// directory are not slow, they are wrong. ⚠️ `revoke` is deliberately **not** gated on
+    /// this: withdrawing trust must not be queueable behind a build (§3.5).
+    module_inflight: HashSet<String>,
     surface_pane: usize,
     /// Monotonic frame counter, used only as the cap's recency stamp.
     surface_clock: u64,
@@ -3189,6 +3432,7 @@ impl Console {
         // stays open for the console's whole life because the sender is held on the struct —
         // a channel whose last sender dropped would make every later `try_recv` an error.
         let (exhibit_tx, exhibit_rx) = std::sync::mpsc::channel();
+        let (module_tx, module_rx) = std::sync::mpsc::channel();
         Self {
             window: None,
             gpu: None,
@@ -3241,6 +3485,9 @@ impl Console {
             exhibit_clock: 0,
             exhibit_rx,
             exhibit_tx,
+            module_rx,
+            module_tx,
+            module_inflight: HashSet::new(),
             surface_pane: 0,
             surface_clock: 0,
             // Closed, and not seeded from the environment. `ORGANON_SHELL_BACKDROP` exists and
@@ -3816,6 +4063,25 @@ impl Console {
         // no slider bands the transcript either.
         if let cli::ConsoleOp::Preset { action, name } = op {
             self.set_preset(action, name);
+            return;
+        }
+        // Above the ledger for a reason stronger than `Viewport`, `Stack`, `Layout` or
+        // `Preset` have: this changes no pixel at all, in any rectangle, ever. It fetches a
+        // repository and writes a file.
+        //
+        // ⚠️ Named rather than counted, deliberately. This comment said "any of the three above
+        // it" and was silently wrong the moment `Preset` was inserted between them — a
+        // positional reference is invalidated by any insertion and does not conflict, so it
+        // arrives as prose nobody re-reads. That failure is cheap to avoid and expensive to
+        // find.
+        if let cli::ConsoleOp::Module { action, producer, url, reference, grant } = op {
+            self.set_module(
+                action,
+                producer,
+                url.as_deref(),
+                reference.as_deref(),
+                grant.as_deref(),
+            );
             return;
         }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
@@ -4472,6 +4738,297 @@ impl Console {
                             error: e.to_string(),
                         }
                     ),
+                }
+            }
+        }
+    }
+
+    /// **Approve a repository as a module, build it, see what changed, or withdraw it — or say
+    /// why not.**
+    ///
+    /// `doc/organon_module_viewport.md` §3. This function is the frame-thread half: it resolves
+    /// the words, reads `modules.json`, and then either answers immediately or hands the slow
+    /// part to a thread. `organon_console::module_work` is the other half and owns every
+    /// decision that needs `git` or `cargo`.
+    ///
+    /// # 🚨 Three of the four go off-thread; `revoke` deliberately does not
+    ///
+    /// A clone is a network and a build is a compiler, so `approve`, `build` and `diff` are
+    /// spawned and their answers collected by [`Console::service_modules`] — §1.13's exhibit
+    /// pattern, followed rather than re-invented.
+    ///
+    /// **`revoke` runs right here, synchronously**, and that is §3.5 rather than an
+    /// optimisation. It touches no network and no compiler, so the verb whose whole purpose is
+    /// to withdraw trust cannot be queued behind a build, cannot fail because a worker thread
+    /// died, and does not need anything to be reachable. What a revoked producer then produces
+    /// is a sentence in a rectangle (`ModuleState::NotApproved`) — never a layout that will not
+    /// open.
+    ///
+    /// # 🚨 The one gate, for [`Console::set_layout`]'s reason
+    ///
+    /// clap restricts the action word and [`op_from`] resolves it and the producer name again —
+    /// but neither can answer the questions that decide this command: *is anything approved
+    /// under that name*, *does the remote answer*, *does the commit exist*, *does the manifest
+    /// parse*, *does the repository call itself what you called it*. Every one is a fact about
+    /// somebody else's server at the moment the op is drained, so every refusal is spoken here
+    /// or in the job, by name.
+    ///
+    /// ⚠️ **The registry is re-read per command rather than held in memory** —
+    /// [`Console::set_layout`]'s rule and its reason: it is a small file and it is the truth,
+    /// and a copy cached at startup would fight a hand-edited `modules.json` and win silently.
+    fn set_module(
+        &mut self,
+        action_word: &str,
+        producer: &str,
+        url: Option<&str>,
+        reference: Option<&str>,
+        grant: Option<&str>,
+    ) {
+        use organon_console::module::ModuleRegistry;
+        use organon_console::module_work::{Grant, ModuleCmd, WorkFault};
+
+        let cmd = match ModuleCmd::resolve(action_word) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("organon-console: {e}");
+                return;
+            }
+        };
+        // Checked again at this end because a line written straight onto the sidecar by hand
+        // never met `op_from` — and this is the string that becomes a directory name.
+        if let Err(e) = organon_console::module::check_producer_name(producer) {
+            eprintln!("organon-console: {}", e.sentence());
+            return;
+        }
+        let Some(root) = ModuleRegistry::store_root() else {
+            eprintln!("organon-console: {}", WorkFault::NoStore.sentence());
+            return;
+        };
+        let load = ModuleRegistry::load(&root);
+        // Said once, here, where a person asked a question about modules — never per frame.
+        // `ModuleRegistry::for_completion` deliberately drops them for that reason.
+        for fault in &load.refused {
+            eprintln!("organon-console: {MODULES_FILE_NOTE} {}", fault.sentence());
+        }
+        let registry = load.registry;
+
+        if cmd == ModuleCmd::Revoke {
+            self.revoke_module(&root, registry, producer);
+            return;
+        }
+
+        // 🚨 One job per module. All four verbs work in one checkout, and two `git checkout`s
+        // or two `cargo build`s in one directory are not slow, they are wrong.
+        if self.module_inflight.contains(producer) {
+            eprintln!(
+                "organon-console: `{producer}` is already working — one job per module, \
+                 because they share one checkout"
+            );
+            return;
+        }
+
+        // What the job needs, resolved on this thread while the registry is in hand: the job
+        // owns everything it touches and never reads `modules.json`, which is what makes the
+        // registry a single-writer file (see [`Console::service_modules`]).
+        let approved = registry.get(producer).cloned();
+        let known: Vec<String> = registry.producers().iter().map(|s| s.to_string()).collect();
+        let job_producer = producer.to_string();
+        let grant = grant.map_or(Grant::Show, Grant::parse);
+        let reference = reference.map(str::to_string);
+
+        let plan: Result<ModuleJob, WorkFault> = match cmd {
+            ModuleCmd::Approve => {
+                // ⚠️ **No `from` means the repository already recorded**, which is what makes
+                // re-approving after a `diff` one short line. It is not a default: with
+                // nothing approved there is no URL to mean, and the refusal says so.
+                match url.map(str::to_string).or_else(|| approved.as_ref().map(|m| m.url.clone()))
+                {
+                    Some(url) => Ok(ModuleJob::Approve {
+                        url,
+                        reference,
+                        grant,
+                        // Captured HERE, on the frame thread, with the registry in hand — the
+                        // one moment this fact exists.
+                        was_approved: approved.is_some(),
+                    }),
+                    None => Err(WorkFault::NoSource { producer: job_producer.clone() }),
+                }
+            }
+            ModuleCmd::Build => match approved {
+                Some(m) => Ok(ModuleJob::Build(Box::new(m))),
+                None => Err(WorkFault::NotApproved { producer: job_producer.clone(), known }),
+            },
+            ModuleCmd::Diff => match approved {
+                Some(m) => Ok(ModuleJob::Diff(Box::new(m), reference)),
+                None => Err(WorkFault::NotApproved { producer: job_producer.clone(), known }),
+            },
+            ModuleCmd::Revoke => unreachable!("answered above"),
+        };
+        let plan = match plan {
+            Ok(p) => p,
+            Err(fault) => {
+                eprintln!("organon-console: {}", fault.sentence());
+                return;
+            }
+        };
+
+        // Said before the thread starts, because the next thing a person sees may be a minute
+        // away and a console that went quiet is indistinguishable from one that ignored them.
+        eprintln!("organon-console: {}", plan.started(producer));
+        self.module_inflight.insert(producer.to_string());
+        let tx = self.module_tx.clone();
+        let root = root.clone();
+        // Detached on purpose, [`Console::service_exhibits`]'s rule: the job owns everything it
+        // touches, and a console shutting down mid-clone should not wait on a network.
+        std::thread::spawn(move || {
+            let shop = organon_console::module_work::ProcessWorkshop;
+            let outcome = plan.run(&shop, &root, &job_producer);
+            let _ = tx.send(ModuleReport { producer: job_producer, outcome });
+        });
+    }
+
+    /// Take an approval out of `modules.json`. See [`Console::set_module`] for why this is the
+    /// one verb that does not go off-thread.
+    fn revoke_module(
+        &mut self,
+        root: &std::path::Path,
+        mut registry: organon_console::module::ModuleRegistry,
+        producer: &str,
+    ) {
+        if !registry.revoke(producer) {
+            eprintln!(
+                "organon-console: {}",
+                organon_console::module_work::WorkFault::NotApproved {
+                    producer: producer.to_string(),
+                    known: registry.producers().iter().map(|s| s.to_string()).collect(),
+                }
+                .sentence()
+            );
+            return;
+        }
+        match registry.save(root) {
+            // ⚠️ **What is deliberately NOT deleted is the checkout.** Withdrawing trust is a
+            // statement about what Organon will run, and it takes effect the moment the record
+            // is gone; deleting somebody's working tree — which they may have been editing — is
+            // a different act, and one no verb here should perform on their behalf.
+            Ok(()) => eprintln!(
+                "organon-console: `{producer}` revoked — a viewport asking for it will say it \
+                 is not approved, and every layout naming it still opens. Its checkout was \
+                 left where it is."
+            ),
+            Err(e) => eprintln!(
+                "organon-console: `{producer}` could not be revoked: {e} — the approval still \
+                 stands, which is the safe half of this failure to be on"
+            ),
+        }
+    }
+
+    /// Collect what the module jobs finished, and write down what they decided.
+    ///
+    /// 🚨 **This is the only writer of `modules.json` in the console**, and that is what the
+    /// jobs' shape buys: a job returns a value and never touches the file, so a build finishing
+    /// while an approval is being written cannot be two writers of one record.
+    ///
+    /// ⚠️ **A job's answer is applied against the registry as it is NOW, not as it was when the
+    /// job started.** Somebody may have revoked the module in the minute a build took, and the
+    /// right behaviour then is to keep it revoked and say the build was dropped — writing the
+    /// record back would resurrect an approval a person deliberately withdrew.
+    fn service_modules(&mut self) {
+        use organon_console::module::{Approved, ModuleRegistry};
+        use organon_console::module_work::Approval;
+
+        while let Ok(report) = self.module_rx.try_recv() {
+            self.module_inflight.remove(&report.producer);
+            let outcome = match report.outcome {
+                Ok(o) => o,
+                Err(fault) => {
+                    eprintln!("organon-console: {}", fault.sentence());
+                    continue;
+                }
+            };
+            let Some(root) = ModuleRegistry::store_root() else {
+                eprintln!(
+                    "organon-console: {}",
+                    organon_console::module_work::WorkFault::NoStore.sentence()
+                );
+                continue;
+            };
+            let mut registry = ModuleRegistry::load(&root).registry;
+            let written = match outcome {
+                ModuleOutcome::Approved { approval, was_approved } => {
+                    // 🚨 **The sentence is held back until the record is decided**, unlike the
+                    // two arms below. `Approval::sentence` says the module *is approved*; a
+                    // module revoked while its fetch was in flight is not, and saying so and
+                    // then dropping the record would be the console contradicting itself in
+                    // two consecutive lines about a permission.
+                    // Taken from the borrow before the value is consumed, so it can be *said*
+                    // after the record is decided rather than before.
+                    let said = approval.sentence();
+                    match *approval {
+                        // The dry run. Nothing to write — which is the whole of it.
+                        Approval::Requested { .. } => {
+                            eprintln!("organon-console: {said}");
+                            None
+                        }
+                        Approval::Recorded(module) => {
+                            match registry.record_approval(*module, was_approved) {
+                                Ok(Approved::DroppedRevoked) => {
+                                    eprintln!(
+                                        "organon-console: `{}` was revoked while it was being \
+                                         approved — the approval was dropped, grants and all, \
+                                         because a revocation is not undone by a job that \
+                                         started before it",
+                                        report.producer
+                                    );
+                                    None
+                                }
+                                Ok(outcome) => {
+                                    eprintln!("organon-console: {said}");
+                                    if outcome == Approved::Replaced {
+                                        // Said out loud: replacing an approval is a change to
+                                        // what somebody trusts, under one word they typed.
+                                        eprintln!(
+                                            "organon-console: `{}` replaced the approval that \
+                                             was stored under it",
+                                            report.producer
+                                        );
+                                    }
+                                    Some(())
+                                }
+                                Err(fault) => {
+                                    eprintln!("organon-console: {}", fault.sentence());
+                                    None
+                                }
+                            }
+                        }
+                    }
+                }
+                ModuleOutcome::Built(built) => {
+                    eprintln!("organon-console: {}", built.sentence());
+                    if registry.record_build(&built.producer, built.record.clone()) {
+                        Some(())
+                    } else {
+                        eprintln!(
+                            "organon-console: `{}` was revoked while it was building — the \
+                             build was dropped rather than approving it again",
+                            built.producer
+                        );
+                        None
+                    }
+                }
+                // 🚨 Nothing is written. §3.3: the verb is not "install", it is *"show me what
+                // changed and ask again"*, and the asking is a line the person types next.
+                ModuleOutcome::Compared(comparison) => {
+                    eprintln!("organon-console: {}", comparison.sentence());
+                    None
+                }
+            };
+            if written.is_some() {
+                if let Err(e) = registry.save(&root) {
+                    eprintln!(
+                        "organon-console: {} could not be written: {e} — nothing was recorded",
+                        root.join(organon_console::module::MODULES_FILE).display()
+                    );
                 }
             }
         }
@@ -5675,6 +6232,12 @@ impl Console {
         // below rather than after it — a `background` typed this frame reaches the World this
         // frame, not next. See [`Console::drain_console`].
         self.drain_console();
+
+        // …and then whatever the module jobs finished. After the drain rather than before it,
+        // so a `console module` line typed this frame has already started its thread and a
+        // job that was quick — a refusal, an unreachable remote — can report in the same
+        // frame instead of the next. This only ever COLLECTS: see [`Console::service_modules`].
+        self.service_modules();
 
         // The plugin's job, done by the terminal: publish the snapshot the world
         // and the CLI read. The same bytes every frame until a console command
@@ -7372,6 +7935,20 @@ mod cli_tests {
                 // `CMD_LAYOUT`'s reason: this gate is about the line being written, and the
                 // action that writes a file would write one on whatever machine runs the test.
                 CMD_PRESET => json!({ CMD_ACTION: "load", CMD_NAME: "Rails — Crystal Throat" }),
+                // 🚨 **`diff`, not `approve`, and for a sharper version of `CMD_LAYOUT`'s
+                // reason.** This gate is about the *line being written*; `approve` is the one
+                // action here that can grant a permission and write to `modules.json`, so
+                // picking it would be one edit away from a test that approves something on
+                // whatever machine runs it. `diff` changes nothing by construction (§3.3) —
+                // and the three optional slots ride along as `null`, which is what pins that
+                // an absent grant survives the round trip as an absent grant.
+                CMD_MODULE => json!({
+                    CMD_ACTION: "diff",
+                    CMD_PRODUCER: "ascent",
+                    CMD_FROM: null,
+                    CMD_AT: null,
+                    CMD_GRANT: null,
+                }),
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -7627,8 +8204,15 @@ mod cli_tests {
             // declares it there — beside the other verb that writes to a named store — and
             // `preset.list` sits after `layout.list` because `mcp_specs` pushes the reads at
             // the end, in the order it pushes them. The order here is the table's, read out.
+            // ✏️ `module` sits after `preset` and before `block` because `console_specs`
+            // declares it there. ⚠️ **Re-derived at the merge of organon#124 and T3b, not
+            // re-applied**: `preset`/`preset.list` and `module` landed on separate branches,
+            // and each side's row was correct against a table that did not have the other's
+            // verb in it. Reading the merged `console_specs()` out is the only way this line
+            // is right — which is the same reason the counts below are re-derived rather than
+            // nudged.
             "[background] | rig | theme | posture | screen | viewport | stack | layout | \
-             preset | block | patch | portal | camera | camera.read | layout.list | \
+             preset | module | block | patch | portal | camera | camera.read | layout.list | \
              preset.list | surface | help | trace | media | organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
@@ -7659,7 +8243,16 @@ mod cli_tests {
         // are 6 and 11 and they bring two separators with them, so 178 + 6 + 11 + 6 = 201 —
         // the arithmetic and the number agree by construction rather than by my having added
         // twenty-three.
-        assert_eq!(compact_line(&all, 0, 240).chars().count(), 201);
+        // ✏️ **210 with `module`** (§3, T3b) — the twenty-second verb and the ninth change to
+        // this line. 🚨 **Re-derived at the MERGE of organon#124 and T3b, which is the case the
+        // paragraph below is about.** Each branch was correct on its own: #124 read 201 against
+        // a table with no `module` in it, and T3b read 187 against one with no `preset` or
+        // `preset.list`. Neither number is a valid starting point for the other's addition, and
+        // adding one delta to the other branch's total is precisely the merge failure the
+        // hidden count below already records once. Read out of the merged row: the twenty-two
+        // words are 147 characters (`background` in brackets counts 12) and the twenty-one
+        // separators 63, so 147 + 63 = 210.
+        assert_eq!(compact_line(&all, 0, 240).chars().count(), 210);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -7696,7 +8289,17 @@ mod cli_tests {
         // so nineteen are hidden. The width arithmetic is why two is still the answer and not
         // three: `[background] | rig | +19` is 24 characters against 30, and a third word makes
         // it 32.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +19");
+        // ✏️ **Twenty-two verbs now, so `+20`.** 🚨 **And this is the second time that
+        // paragraph has been right, on the same line, in the same way.** organon#124 wrote
+        // `+19` and T3b wrote `+18`, both correct against their own table and neither a
+        // starting point for the other — exactly the shape of the `screen`/`organon` merge
+        // above, differing only in that these two numbers disagreed and so conflicted loudly
+        // instead of auto-merging quietly. Re-derived rather than either taken:
+        // `mcp_specs()` yields seventeen (fourteen on the sidecar plus three reads) and
+        // `view_entries()` five, and two are shown at this width, so twenty are hidden. The
+        // width arithmetic is why two is still the answer and not three:
+        // `[background] | rig | +20` is 24 characters against 30, and a third word makes it 32.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +20");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -7770,6 +8373,13 @@ mod cli_tests {
                 // rather than appended: `preset` is declared after `layout` and before `block`
                 // there, so it is between them here.
                 ("preset", false),
+                // ✏️ **`module` sits here and the case is the least arguable on the table.**
+                // `approve` writes a file and grants a permission; `revoke` takes one out and
+                // nothing puts it back; `build` compiles somebody else's source with this
+                // user's privileges. `diff` alone is harmless and shares the verb, which is
+                // the right way round — the practical effect of this `false` is that autorun
+                // can never fire any of the four.
+                ("module", false),
                 // Rows in the transcript, and a rectangle claimed in somebody else's output.
                 ("block", false),
                 ("patch", false),
@@ -8479,6 +9089,84 @@ mod cli_tests {
             cli::parse_console_op("layout save my desk"),
             Some(cli::ConsoleOp::Layout { action: "save".into(), name: "my".into() })
         );
+    }
+
+    /// 🚨 **The module verb's schema, and the one property in it that is a permission.**
+    ///
+    /// `doc/organon_module_viewport.md` §3.1: an approve with no `grant` records nothing. That
+    /// is the shape of the *command*, not a check somewhere downstream — so it is pinned here,
+    /// where the schema, [`op_from`], [`op_args`] and the sidecar line can all be seen at once.
+    ///
+    /// ⚠️ `cargo check --tests --features console-edition` only in this session; CI executes it.
+    #[test]
+    fn a_module_verb_carries_its_grant_or_carries_no_grant_at_all() {
+        use organon_console::module_work::MODULE_ACTIONS;
+
+        let spec = console_specs()
+            .into_iter()
+            .find(|s| s.name == CMD_MODULE)
+            .expect("console.module is declared");
+        let required: Vec<&str> =
+            spec.args.iter().filter(|a| a.required).map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            required,
+            [CMD_ACTION, CMD_PRODUCER],
+            "🚨 the action and the module are required and the grant is NOT — an approve \
+             that had to carry a grant would have no dry run, and a mistyped one would grant"
+        );
+
+        // Every action converts, and every line it writes is one the drain reads back.
+        for a in MODULE_ACTIONS {
+            let op = op_from(
+                CMD_MODULE,
+                &json!({ CMD_ACTION: a, CMD_PRODUCER: "ascent", CMD_FROM: null, CMD_AT: null, CMD_GRANT: null }),
+            )
+            .unwrap_or_else(|e| panic!("`{a} ascent`: {e}"));
+            let line = cli::console_op_to_line(&op);
+            assert_eq!(cli::parse_console_op(&line), Some(op), "line was {line:?}");
+        }
+
+        // 🚨 **Absent and present are two different lines, and neither becomes the other.**
+        let bare = op_from(
+            CMD_MODULE,
+            &json!({ CMD_ACTION: "approve", CMD_PRODUCER: "ascent", CMD_FROM: "https://x" }),
+        )
+        .unwrap();
+        assert_eq!(cli::console_op_to_line(&bare), "module approve ascent from https://x");
+        let granted = op_from(
+            CMD_MODULE,
+            &json!({ CMD_ACTION: "approve", CMD_PRODUCER: "ascent", CMD_FROM: "https://x", CMD_GRANT: "none" }),
+        )
+        .unwrap();
+        assert_eq!(
+            cli::console_op_to_line(&granted),
+            "module approve ascent from https://x grant none"
+        );
+        // …and the audit line spells every slot, including the one nobody set — an approval
+        // whose grant slot was simply missing from `events.jsonl` reads as though the question
+        // was never asked.
+        assert_eq!(
+            op_args(&bare),
+            json!({
+                CMD_ACTION: "approve",
+                CMD_PRODUCER: "ascent",
+                CMD_FROM: "https://x",
+                CMD_AT: null,
+                CMD_GRANT: null,
+            })
+        );
+
+        assert!(op_from(CMD_MODULE, &json!({ CMD_ACTION: "install", CMD_PRODUCER: "a" })).is_err());
+        assert!(op_from(CMD_MODULE, &json!({ CMD_ACTION: "build" })).is_err(), "no default");
+
+        // 🚨 **The producer gate, and the two failures it exists to prevent, measured rather
+        // than argued.** A name with whitespace would arrive at the console truncated; a name
+        // with `..` or a separator would be a `git clone` into a directory a repository chose.
+        for bad in ["", "two words", "..", ".", "a/b", "a\\b", "organon"] {
+            let e = op_from(CMD_MODULE, &json!({ CMD_ACTION: "build", CMD_PRODUCER: bad }))
+                .expect_err("a producer name that cannot be a directory must not reach the lane");
+            assert!(e.starts_with(CMD_MODULE), "the refusal names the verb: {e}");
+        }
     }
 
     /// A block is not a look, and `console_step` must say so rather than quietly folding it
