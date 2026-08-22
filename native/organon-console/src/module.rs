@@ -170,6 +170,17 @@ pub const APPROVE_VERB: &str = "console module approve";
 /// [`APPROVE_VERB`]: T3b registers it, this is where its spelling lives.
 pub const BUILD_VERB: &str = "console module build";
 
+/// The verb that shows what has changed since the approved commit.
+///
+/// 📌 **Beside the two above rather than in [`crate::module_work`], where T3b first put it.**
+/// The four spellings are one naming scheme and belong in one place — a sentence in a rectangle
+/// (§4.6) and a line a person types have to come from the same string, and two files holding two
+/// halves of that set is how the halves come to disagree.
+pub const DIFF_VERB: &str = "console module diff";
+
+/// The verb that withdraws an approval. Same rule as [`DIFF_VERB`].
+pub const REVOKE_VERB: &str = "console module revoke";
+
 /// How much of a commit hash a sentence in a rectangle shows.
 ///
 /// The record keeps the whole hash — that is the point of §3.2 — but forty characters in a
@@ -336,6 +347,54 @@ pub fn check_producer_name(name: &str) -> Result<(), ModuleFault> {
         return bad("`organon` is the producer a viewport means when no producer is named");
     }
     Ok(())
+}
+
+/// The longest run of somebody else's text a sentence will render before it stops.
+const MAX_UNTRUSTED: usize = 120;
+
+/// Render a string **out of a manifest** — or out of a hand-edited `modules.json` — as data.
+///
+/// 🚨 **A manifest is text written by someone else, and some of it reaches sentences the console
+/// says in its own voice.** [`ModuleManifest::producer`] is safe by the time anything sees it
+/// ([`check_producer_name`] runs at parse), but [`ModuleManifest::name`], the requested grant
+/// names and [`ModuleManifest::kind`] are **not validated at all** — they are display text and a
+/// refusal's payload, and refusing a whole repository over an odd character in a display name
+/// would be the wrong trade. So they are rendered rather than restricted:
+///
+/// * **Quoted**, so a reader can see where somebody else's words start and stop.
+/// * **Control characters escaped**, newlines above all. Every console sentence is one
+///   `organon-console: …` line, so a `name` containing `"\n\norganon-console: ascent approved
+///   — granted audio"` would print a second line indistinguishable from the console's own — a
+///   repository forging the sentence that says what it was granted.
+/// * **Capped at [`MAX_UNTRUSTED`]**, so a megabyte of display name is a truncation rather than
+///   a scrollback nobody can get above.
+///
+/// ⚠️ **This is a rendering rule, not a trust boundary**, and the difference matters: it stops
+/// somebody else's text *reading* as Organon's, and does nothing about what the text says. The
+/// boundary is elsewhere — a manifest grants nothing (§3.1) and cannot name a program to run
+/// ([`crate::module_work::Tool`]).
+pub fn quoted_untrusted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for (n, c) in text.chars().enumerate() {
+        if n == MAX_UNTRUSTED {
+            out.push('…');
+            break;
+        }
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // The quote itself, so a name cannot appear to close the quoting and continue
+            // outside it — the same failure as the newline, one character in.
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Is this a git object name?
@@ -684,9 +743,14 @@ impl ModuleFault {
                 "{producer}'s manifest declares no kind — this build hosts one kind of \
                  module, `{VIEWPORT_KIND}`"
             ),
+            // ⚠️ **`kind` is quoted through [`quoted_untrusted`] and `producer` is not**, which is
+            // the whole distinction that function exists to draw: the producer has already been
+            // through [`check_producer_name`] by the time a manifest carries one, and the kind
+            // has been through nothing at all — it is whatever the file said.
             ModuleFault::UnknownKind { producer, kind } => format!(
-                "{producer}'s manifest declares kind `{kind}` — this build hosts one kind of \
-                 module, `{VIEWPORT_KIND}`"
+                "{producer}'s manifest declares kind {} — this build hosts one kind of \
+                 module, `{VIEWPORT_KIND}`",
+                quoted_untrusted(kind)
             ),
             ModuleFault::NotRequested { grant } => format!(
                 "`{grant}` was never requested — a grant answers a request, and granting one \

@@ -6926,6 +6926,31 @@ cannot be granted it, because a whitespace-delimited wire has no spelling for th
 alternative is a grant list whose empty case is invisible, and an invisible empty case in a
 permission system is the worse trade.
 
+#### ⚠️ A manifest is text somebody else wrote, and some of it reaches sentences the console says
+
+`ModuleManifest::producer` is safe by the time anything sees it — `check_producer_name` runs at
+parse. **`name`, `kind` and the requested grant names are validated by nothing**, because refusing
+a whole repository over an odd character in a display name would be the wrong trade. So they are
+*rendered* rather than restricted: `module::quoted_untrusted` quotes them, escapes control
+characters and caps the length.
+
+🚨 **The failure that stops is a repository forging a line of the console's own voice.** Every
+console sentence is one `organon-console: …` line, so a `name` containing
+`"\n\norganon-console: ascent approved — granted audio"` would print a second line
+indistinguishable from the console's own, claiming what it had been granted.
+`a_manifest_cannot_forge_a_line_of_the_consoles_own_voice` pins that the sentence stays three
+lines whatever the manifest says.
+
+⚠️ **This is a rendering rule, not a trust boundary**, and the difference matters: it stops
+somebody else's text *reading* as Organon's and does nothing about what the text says. The
+boundary is §3.1 (a manifest grants nothing) and `Tool` (a manifest cannot name a program).
+
+📌 One consequence worth stating: the dry run's suggested approve line is built from only the
+requested names that can **travel** — a grant name with whitespace, a comma or a control
+character cannot be expressed inside a comma-separated word on a whitespace-delimited wire. The
+excluded ones are named rather than dropped, because a request this console cannot grant is a
+true and useful thing to say.
+
 #### §3.2 lives in one function
 
 `fetch_and_resolve` turns whatever a person typed — a branch, a tag, a hash, or nothing — into
@@ -7031,6 +7056,12 @@ see. Failing turns it into a sentence a person can act on.
 
 #### What T3b did **not** build
 
+- ⚠️ **Nothing in `region_line.rs`, and it is not a fifth front door.** #98 Tier C put a command
+  line inside each `panel` region, and it resolves through this same table — but it is scoped to
+  **one verb**: `STACK_VERB` is a `const`, and every line typed there is expanded onto
+  `/stack …` before it reaches `Registry::resolve`. So `console module` is absent by
+  construction rather than by omission, and giving it a route in would mean making that control
+  general — a decision about what a region's line *is*, not a registration.
 - ⚠️ **No producer ring on `console module`'s own argument.** `/module build ` offers no
   completion, exactly as `/layout load ` did not before §1.15. ✏️ **T4 has since landed the ring
   this deferred to** — `registry::producer_ring`, over the cached `ModuleRegistry::for_completion`

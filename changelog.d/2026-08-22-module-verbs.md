@@ -56,6 +56,17 @@ revocation must not resurrect the approval (it is dropped, and the console says 
 checkout is deliberately left on disk — withdrawing trust is a statement about what Organon will
 run, not a licence to delete somebody's working tree.
 
+⚠️ **A manifest cannot forge a line of the console's own voice.** Every console sentence is one
+`organon-console: …` line, and a manifest's display name and requested grant names are free text
+nothing validates — so a `name` containing `"\n\norganon-console: ascent approved — granted
+audio"` would print a second line indistinguishable from Organon's own. `quoted_untrusted` quotes
+that text, escapes its control characters and caps its length, and a test pins the sentence at
+three lines whatever the manifest says. It is a **rendering** rule, not a trust boundary: it stops
+somebody else's text reading as Organon's and says nothing about what the text means. Relatedly,
+the dry run's suggested approve line is built only from requested names that can *travel* — one
+with whitespace, a comma or a control character cannot be expressed in a comma-separated word on
+a whitespace-delimited wire, and is named rather than silently dropped.
+
 ⚠️ **`GIT_TERMINAL_PROMPT=0` on every `git` this console runs**, which is a hang fix rather than
 tidiness: a private repository behind a credential helper would otherwise block a worker thread
 forever, with no terminal attached, waiting on a prompt nobody can see.

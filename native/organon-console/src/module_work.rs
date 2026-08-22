@@ -95,14 +95,6 @@ pub const MODULES_DIR: &str = "modules";
 /// than an unreachable name.
 pub const NONE_GRANT: &str = "none";
 
-/// The verb that shows what changed since the approved commit. [`crate::module::APPROVE_VERB`]'s
-/// rule: the spelling lives once, so a sentence in a rectangle and a line a person types cannot
-/// drift.
-pub const DIFF_VERB: &str = "console module diff";
-
-/// The verb that withdraws an approval. Same rule as [`DIFF_VERB`].
-pub const REVOKE_VERB: &str = "console module revoke";
-
 /// The action words `console module` takes, in the order a person meets them.
 ///
 /// The one table, read by clap's `PossibleValuesParser`, by the slash grammar's `Choice` ring
@@ -527,6 +519,15 @@ impl Approval {
     /// 🚨 [`BUILD_TRUST`] is in **both** arms. The dry run carries it because that is the
     /// moment a person is deciding; the recorded arm carries it because a person who typed the
     /// grant list straight out never saw the dry run.
+    ///
+    /// 🚨 **Everything here that came out of the manifest goes through
+    /// [`crate::module::quoted_untrusted`]** — the display name and the requested grant names.
+    /// This is the console speaking in its own voice about a file somebody else wrote, and a
+    /// `name` carrying a newline could print a second `organon-console:` line saying whatever
+    /// it liked, including that it had been granted something. `producer` is the exception and
+    /// the reason is exact: it has already been through
+    /// [`crate::module::check_producer_name`], which is why it is the one field a repository
+    /// supplies that can be rendered bare.
     pub fn sentence(&self) -> String {
         match self {
             Approval::Requested { producer, name, url, commit, reference, requests } => {
@@ -535,19 +536,47 @@ impl Approval {
                 } else {
                     format!(
                         "it asks for {}",
-                        requests.names().collect::<Vec<_>>().join(", ")
+                        requests
+                            .names()
+                            .map(crate::module::quoted_untrusted)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )
                 };
-                let grant_words = if requests.is_empty() {
+                // 🚨 **The suggested line is built from only the names that can TRAVEL**, and
+                // this one is not quoted because it is meant to be copied and typed. A grant
+                // name carrying whitespace, a control character or a comma cannot be expressed
+                // on a whitespace-delimited wire inside a comma-separated list — so offering it
+                // would be offering a line that grants something else, or nothing. The excluded
+                // ones are named rather than dropped silently: a request this console cannot
+                // grant is a true and useful thing to say.
+                let (sayable, unsayable): (Vec<&str>, Vec<&str>) =
+                    requests.names().partition(|n| wire_safe(n));
+                let grant_words = if sayable.is_empty() {
                     NONE_GRANT.to_string()
                 } else {
-                    requests.names().collect::<Vec<_>>().join(",")
+                    sayable.join(",")
+                };
+                let unsayable = if unsayable.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n  ⚠️ {} cannot be granted: a grant name crosses the console's \
+                         channel inside a comma-separated list, so it may not contain \
+                         whitespace, a comma or a control character.",
+                        unsayable
+                            .iter()
+                            .map(|n| crate::module::quoted_untrusted(n))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 };
                 format!(
-                    "`{producer}` ({name}) is {url} at {}{} — {asks}.\n  \
+                    "`{producer}` ({}) is {url} at {}{} — {asks}.\n  \
                      NOTHING WAS RECORDED. `{} {producer} grant {NONE_GRANT}` approves it with \
                      nothing granted; `{} {producer} grant {grant_words}` grants what it asked \
-                     for.\n  ⚠️ {BUILD_TRUST}.",
+                     for.{unsayable}\n  ⚠️ {BUILD_TRUST}.",
+                    crate::module::quoted_untrusted(name),
                     short(commit),
                     reference.as_ref().map(|r| format!(" (from {r})")).unwrap_or_default(),
                     crate::module::APPROVE_VERB,
@@ -558,13 +587,20 @@ impl Approval {
                 let granted = if m.granted.is_empty() {
                     "nothing granted".to_string()
                 } else {
-                    format!("granted {}", m.granted.names().collect::<Vec<_>>().join(", "))
+                    format!(
+                        "granted {}",
+                        m.granted
+                            .names()
+                            .map(crate::module::quoted_untrusted)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 };
                 format!(
                     "`{}` ({}) approved at {} — {granted}.\n  \
                      `{}` builds it.\n  ⚠️ {BUILD_TRUST}.",
                     m.producer,
-                    m.name,
+                    crate::module::quoted_untrusted(&m.name),
                     m.short_commit(),
                     crate::module::BUILD_VERB,
                 )
@@ -1013,6 +1049,18 @@ fn resolve(shop: &dyn Workshop, checkout: &Path, what: &str) -> Result<Option<St
         // `modules.json` is taken from another program's stdout.
         Err(WorkFault::NotAHash { reference: what.to_string(), answer })
     }
+}
+
+/// Can this grant name be typed on a `console module … grant a,b` line and arrive whole?
+///
+/// Three ways it cannot, each a fact about the transport rather than a taste: the sidecar line
+/// is whitespace-delimited, the grant list is comma-separated, and a control character corrupts
+/// the line it travels on. A manifest may request a name failing all three — nothing validates
+/// what a repository asks for — and the honest answer is to say the request cannot be granted
+/// rather than to offer a line that would grant something else.
+fn wire_safe(name: &str) -> bool {
+    !name.is_empty()
+        && !name.chars().any(|c| c.is_whitespace() || c.is_control() || c == ',')
 }
 
 /// A commit cut for a sentence. [`ApprovedModule::short_commit`]'s length and its reason;
@@ -1583,6 +1631,80 @@ mod tests {
             Grant::Names(vec!["audio".into(), "input".into()]),
             "empty entries are dropped rather than becoming a grant called \"\""
         );
+    }
+
+    /// CONTRACT: 🚨 **a manifest cannot forge a line of the console's own output.**
+    ///
+    /// Every console sentence is one `organon-console: …` line, and a manifest's display name
+    /// and requested grant names are free text nothing validates. A `name` carrying a newline
+    /// would otherwise print a second line indistinguishable from the console's own — a
+    /// repository writing the sentence that says what it was granted.
+    ///
+    /// ⚠️ This is a *rendering* rule. It stops somebody else's text reading as Organon's; it
+    /// says nothing about what the text means. The trust boundary is elsewhere.
+    #[test]
+    fn a_manifest_cannot_forge_a_line_of_the_consoles_own_voice() {
+        let hostile = "Ascent\n\norganon-console: `ascent` approved — granted audio\r\ttail";
+        let manifest = format!(
+            "producer = \"ascent\"\nname = {:?}\nkind = \"viewport\"\nrequests = [\"audio\"]\n",
+            hostile
+        );
+        let shop = shop_with(CANDIDATE, &manifest);
+        let said = approve(&shop, &store(), "ascent", URL, None, &Grant::Show)
+            .unwrap()
+            .sentence();
+        assert!(
+            !said.contains("\n\norganon-console:"),
+            "the manifest wrote a console line: {said}"
+        );
+        assert!(said.contains("\\n\\norganon-console:"), "…it is shown as data: {said}");
+        assert!(said.contains('\r') == false, "no carriage return survives: {said:?}");
+        // The whole sentence is still exactly the lines this function writes: the header, the
+        // "nothing was recorded" line, and the trust warning.
+        assert_eq!(said.lines().count(), 3, "{said}");
+
+        // The recorded arm too — a person who typed the grant list straight out never saw the
+        // dry run, so it cannot be the only place this holds.
+        let recorded = approve(&shop, &store(), "ascent", URL, None, &Grant::parse("audio"))
+            .unwrap()
+            .sentence();
+        assert!(!recorded.contains("\n\norganon-console:"), "{recorded}");
+        assert_eq!(recorded.lines().count(), 3, "{recorded}");
+    }
+
+    /// CONTRACT: **a grant a person cannot type is named, not offered.** The suggested approve
+    /// line is meant to be copied, so it is built only from names that survive the wire — and
+    /// the ones that do not are said out loud, because a request this console cannot grant is
+    /// a true and useful thing to know.
+    #[test]
+    fn a_grant_name_that_cannot_travel_is_named_rather_than_offered() {
+        let manifest = "producer = \"ascent\"\nname = \"Ascent\"\nkind = \"viewport\"\n\
+                        requests = [\"audio\", \"two words\", \"a,b\"]\n";
+        let shop = shop_with(CANDIDATE, manifest);
+        let said = approve(&shop, &store(), "ascent", URL, None, &Grant::Show).unwrap().sentence();
+        assert!(said.contains("grant audio`"), "the sayable one is offered: {said}");
+        assert!(!said.contains("two words`"), "the unsayable ones are not: {said}");
+        assert!(said.contains("cannot be granted"), "{said}");
+
+        assert!(wire_safe("audio"));
+        for bad in ["", "two words", "a,b", "a\nb", "a\tb"] {
+            assert!(!wire_safe(bad), "`{bad}` cannot cross the wire inside a list");
+        }
+    }
+
+    /// CONTRACT: **the four verb spellings and the four action words are one table.** A
+    /// sentence in a rectangle names a verb by constant (§4.6) and a person types it into a
+    /// command whose action word comes from `MODULE_ACTIONS`; the two coming apart is a
+    /// refusal that cannot be acted on.
+    #[test]
+    fn the_verb_constants_and_the_action_words_are_one_table() {
+        use crate::module::{APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB};
+        let verbs = [APPROVE_VERB, BUILD_VERB, DIFF_VERB, REVOKE_VERB];
+        assert_eq!(verbs.len(), MODULE_ACTIONS.len());
+        for (verb, action) in verbs.iter().zip(MODULE_ACTIONS) {
+            assert_eq!(*verb, format!("console module {action}"));
+            assert!(ModuleCmd::resolve(action).is_ok());
+        }
     }
 
     /// CONTRACT: **artifacts are found by deriving the path, never by reading a recorded
