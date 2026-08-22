@@ -1,10 +1,10 @@
 # site/ — organon.art
 
 **The pages for `organon.art`, and the front door to this repository.** Two files,
-hand-authored, no build step and no external requests. Same letterhead lineage as
+hand-authored, no build step and no external requests. Sibling to
 [`organonmind.org`](https://organonmind.org), whose source is in
 [`organonart/organon-mind`](https://github.com/organonart/organon-mind) — the two
-sites are meant to read as one outfit on two kinds of paper.
+sites share a structure and deliberately not a surface; see **The look**.
 
 ```
 index.html    the landing page — what Organon is
@@ -49,8 +49,8 @@ own header warns about.
   banner. ⚠️ **This is a promise about *other hosts*, not about file count** —
   self-hosted `.woff2` files under `site/fonts/` would keep it intact, because
   they are served from the same origin. A Google Fonts link would break it. Type
-  is system-only *today* only because the licensed faces have not been bought
-  yet; see **The look**.
+  is system-only *today* because the OFL faces have not been added to the tree
+  yet, not because anything needs buying; see **The look**.
 - **Single theme.** It does not follow the reader's operating system. Every
   colour is painted explicitly, the way a publication has a canonical appearance.
 - **Hand-authored HTML is the document.** There is no markdown source and no
@@ -59,27 +59,53 @@ own header warns about.
 
 ## The look
 
-**Same outfit as organonmind.org, not the same paper.** The publications are
-stark white with system sans; this page is warm bone (`#faf9f7`, never
-`#ffffff`), warm near-black ink, a serif for headings *and* body, and cool
-blue-grey for every hairline, panel border and small mono label. A faint dotted
-field sits behind it all — one CSS gradient, no asset. What carries the family
-resemblance is the *structure*: the tracked-monospace wordmark, the labelled
-meta block, the measure, the colophon.
+**The palette is the application's, copied rather than resembled.** Every value
+comes from `native/src/theme_config.rs`'s shipped blue-slate `Palette::default()`,
+and the CSS custom properties carry that file's own surface names:
 
-⚠️ **The two temperatures are deliberate and must not be "fixed".** The paper and
-its chrome are cool blue-grey; the plates are warm graphite. Tinting the plates
-to match the page would break the PRD's §5.4, which says the shell is
-*"near-black with a hint of brown, never blue-black"* — the plates depict the
-application, so they carry the application's colour, not the website's.
+| Token | From | |
+|---|---|---|
+| `--paper` | `shell` | `#192228` — the application body behind everything |
+| `--panel` | `panel` / `card` | `#212a30` |
+| `--panel-hi` | `raised` | `#273139` |
+| `--raise` | `well` | `#141c22` — recessed: code, inputs |
+| `--ink` | `bone` | `#d1d6d9` — **never pure white** |
+| `--muted` / `--faint` | `titanium` / `muted` | `#8e999f` / `#606b72` |
+| `--rule` / `--rule-strong` | `hairline` / `edge_strong` | `#3a464f` / `#52616b` |
+| `--pane*` | `well_deep`, `well`, `card_header` | the plates |
 
-🚨 **Both font stacks lead with faces this repository does not ship**, and this
-is a licensing state rather than an oversight. `Plantin MT Pro` needs a Monotype
-**web** licence — a desktop licence does not permit `@font-face` — and
-`Commit Mono` needs its business licence. Until the `.woff2` files are in
-`site/fonts/` there are no `@font-face` blocks at all, so nothing 404s and every
-reader falls through the stack behind them. Adding the files plus two
-`@font-face` blocks is the whole change; nothing else moves.
+⚠️ **This is a copy, so if the theme moves it is wrong.** The trade is deliberate:
+it drifts *detectably*, because every value is named after the token it came from
+and a diff against `Palette::default()` is mechanical. A palette that merely
+rhymed with the product would drift silently.
+
+🚨 **Do not re-warm it.** PRD §5.4 still specifies a warm graphite shell *"never
+blue-black"*; the shipped theme moved to blue-slate and `theme.rs` says so in its
+own comments. The code is what ships, so this follows the code — **§5.4 is the
+thing that needs correcting.**
+
+📌 **Chroma is rationed, by the theme's own rule**: *"strong chroma belongs to
+data, selection, and status, and every saturated pixel spent on chrome devalues
+the data."* Small mono labels are grey, not teal. ⚠️ **Teal and amber are not
+declared as page-level tokens at all** — they reach the page only through
+`--pane-accent` and `--pane-warn`, which keeps the rule structural rather than
+remembered. Teal appears in exactly one place: the provenance plate, which is what
+teal is for in the application.
+
+⚠️ **This page is dark and `organonmind.org` is stark white, and that divergence
+is a decision rather than drift.** The family resemblance is carried by the
+*structure* — the tracked-monospace wordmark, the labelled meta block, the
+measure, the colophon, the refusal to advertise. One site is a publication; the
+other is the front door to an application whose own shell is dark. Do not
+"restore" a light ground for consistency; the consistency lives one level up.
+
+🚨 **Both font stacks lead with faces this repository does not ship**, and there
+are no `@font-face` blocks at all, so nothing 404s and every reader falls through
+to the stack behind them. `Commit Mono` is **SIL Open Font License 1.1** — read
+out of the file's own name table, so nothing needs buying — and the serif aims at
+**Source Serif 4**, also OFL. ⚠️ Shipping either means also shipping the OFL text
+alongside it and adding a line to the repository's `NOTICE`; the licence requires
+it to travel with the files.
 
 ## The plates
 

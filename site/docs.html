@@ -42,11 +42,26 @@
    together; site/README.md carries the one-line check. Only `--measure`
    differs, deliberately — see below. */
 :root{
-  --paper:#faf9f7; --raise:#f2f1ed; --ink:#1a1a1f; --muted:#55606e; --faint:#8996a6;
-  --rule:#dde3ea; --rule-strong:#c3cdd8; --link:#2f5ea8; --dot:#d7dee7;
+  /* 🚨 Copied from native/src/theme_config.rs's shipped blue-slate
+     Palette::default(), token for token — see site/index.html's own block for
+     the full reasoning, the chroma-rationing rule, and why PRD §5.4's warm
+     graphite is the thing that needs correcting rather than this.
+     ⚠️ These MUST stay byte-identical to index.html's; site/README.md carries
+     the one-line diff that checks it. */
+  --paper:#192228;      /* shell */
+  --panel:#212a30;      /* panel / card */
+  --panel-hi:#273139;   /* raised */
+  --raise:#141c22;      /* well — recessed */
+  --ink:#d1d6d9;        /* bone — never pure white */
+  --muted:#8e999f;      /* titanium — secondary text, i.e. LABELS */
+  --faint:#606b72;      /* muted — tertiary; DECORATION ONLY, 2.95:1 */
+  --rule:#3a464f;       /* hairline */
+  --rule-strong:#52616b;/* edge_strong */
+  --link:#7c9ab2;       /* `selected`, lightened for text on the shell */
+  --dot:#1f2830;
 
-  --pane:#141210; --pane-panel:#1d1a16; --pane-rule:#332e26;
-  --pane-ink:#ece7dd; --pane-muted:#968d80; --pane-accent:#d9c7a0; --pane-warn:#d99a63;
+  --pane:#121a20; --pane-panel:#1b242b; --pane-rule:#303b43;
+  --pane-ink:#d1d6d9; --pane-muted:#8e999f; --pane-accent:#389394; --pane-warn:#ffb547;
 
   /* Two families and no sans at all — a serif for headings AND body, a mono for
      every label, chip and plate. That pairing is most of what makes the page
@@ -102,7 +117,7 @@ p code,li code,td code,dd code,figcaption code{background:var(--raise);border:1p
 .mast{
   display:flex;align-items:center;justify-content:space-between;gap:1.5rem;
   flex-wrap:wrap;margin:1.6rem 0 0;padding:.7rem 1.1rem;
-  border:1px solid var(--rule);border-radius:3px;background:var(--paper);
+  border:1px solid var(--rule);border-radius:3px;background:var(--panel);
 }
 .wordmark{font-family:var(--mono);font-size:.8rem;letter-spacing:.3em;text-transform:uppercase;margin:0;font-weight:500}
 .wordmark a{color:inherit;text-decoration:none}
@@ -124,7 +139,7 @@ p code,li code,td code,dd code,figcaption code{background:var(--raise);border:1p
 
 .rail{
   position:sticky;top:1.6rem;max-height:calc(100vh - 3.2rem);overflow-y:auto;
-  border:1px solid var(--rule);border-radius:3px;background:var(--paper);
+  border:1px solid var(--rule);border-radius:3px;background:var(--panel);
   padding:.85rem 1rem 1.1rem;font-size:.9rem;
 }
 .rail-h{
@@ -157,7 +172,7 @@ h1{
 .docmeta{
   font-family:var(--mono);font-size:.7rem;letter-spacing:.05em;color:var(--faint);
   display:flex;flex-wrap:wrap;gap:.35rem 1.4rem;margin:1.2rem 0 0;
-  border:1px solid var(--rule);border-radius:3px;background:var(--paper);padding:.6rem .9rem;
+  border:1px solid var(--rule);border-radius:3px;background:var(--panel);padding:.6rem .9rem;
   max-width:var(--measure);
 }
 .docmeta a{color:var(--muted)}
