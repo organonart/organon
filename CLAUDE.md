@@ -69,6 +69,7 @@ already.
 | **`doc/guide/`** | **the user documentation** — installing into a DAW, the generator/surface/material model, playing it from clips and controllers, presets, output. Narrative and hand-written; describes *mechanisms*, never counts | update when a user-visible behaviour changes |
 | **`doc/reference/`** | every generator / surface / material / parameter / recipe. **GENERATED** by `organon docs` from the prose in `agent.rs` + `recipe.rs`; never hand-edit — a test (`generated_reference_is_current`) fails the build on drift | regenerate in the **same commit** as any description change |
 | **`doc/research/`** | the **deep-research evals** — briefs (the questions), reports (raw model output, kept as evidence) and `FINDINGS.md` (claims adjudicated against the tree). ⚠️ A report is the **least** trustworthy document here; cite `FINDINGS.md`, never a report | file a report per round; adjudicate before citing anything from it |
+| **`doc/shipping-windows.md`** | **what a target machine must already have** — the measured import table of `organon-console.exe`, the Visual C++ floor and *why it is where it is*, the runtime GPU dependency `dumpbin` cannot see, and a ledger separating what was run from what was reasoned. Read before handing a binary to anyone | re-measure whenever a shipped binary gains a feature that links C++ |
 | **`CONTRIBUTING.md`** | **the process**: how to scope work, the tier pattern, the review cycle, the verification bar | read before scoping feature work |
 | **`SECURITY.md`** | how to report privately, and what the real attack surface is — including which parts are by design | update when you change a trust boundary |
 | **`LICENSING.md`** | why the licence is split across crates, and what that constrains | read before touching a `license` field |
@@ -470,6 +471,16 @@ them before editing. Three things differ from macOS:
   host's `set_scale_factor`) both learn the scale for free; the standalone had nobody to
   ask and rendered at 1×. `standalone.rs` now queries Windows and injects `--dpi-scale`,
   clamped so the window still fits. Pass `--dpi-scale N` to override.
+
+⚠️ **`deploy.ps1` is developer deploy, not an install.** It assumes a checkout, `cargo`,
+and a box already configured by having built Organon — which is exactly what a stranger's
+machine is not. Before handing any binary to anyone, read
+**[`doc/shipping-windows.md`](doc/shipping-windows.md)**: it carries the measured import
+table, the Visual C++ floor (14.0, and the symbol whose absence puts it there), and the
+two failure classes — a missing C runtime kills the process *before* `main()` with no
+window and no log line, while a missing GPU adapter fails after it, where the product can
+still say so. Only the first can be covered by a prerequisite check, and neither
+substitutes for the other.
 
 ---
 
