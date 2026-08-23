@@ -2,7 +2,7 @@
 
 - **`console setting <producer> <key> <value>`** — `/setting moonlight host studio-pc` in the
   composer — writes one setting into an approved module's own settings file, so a typed word can
-  reach a hosted module that is **already running**. `CONSOLE_ARCHITECTURE.md` §1.22 owns the
+  reach a hosted module that is **already running**. `CONSOLE_ARCHITECTURE.md` §1.23 owns the
   mechanism.
 - **`[[settings]]` in `organon-module.toml`.** A module declares the keys it answers to; the
   console records them at approval and refuses every other key by name. 🚨 It never learns what a

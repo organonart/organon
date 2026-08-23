@@ -3030,7 +3030,7 @@ impl Default for Shared {
 /// non-empty ASCII alphanumerics / `-` / `_`. Anything else (a path separator, `..`,
 /// a shell metacharacter, whitespace) is rejected and we fall back to the edition's
 /// own namespace — an env var must not be able to redirect our mmaps out of `$TMPDIR`.
-fn sanitize_ns(raw: &str) -> Option<String> {
+pub fn sanitize_ns(raw: &str) -> Option<String> {
     let t = raw.trim();
     if t.is_empty() || t.len() > 64 {
         return None;
@@ -3057,13 +3057,33 @@ pub fn namespace() -> &'static str {
 /// Compose a namespaced `$TMPDIR` path from an explicit namespace. Split out from
 /// [`ns_file`] so the namespace fork is unit-testable for **both** editions from a
 /// default (feature-off) build.
-fn ns_file_in(ns: &str, suffix: &str) -> PathBuf {
+pub fn ns_file_in(ns: &str, suffix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{ns}-{suffix}"))
 }
 
 /// `$TMPDIR/<namespace>-<suffix>` — the one place every IPC filename is built.
 pub fn ns_file(suffix: &str) -> PathBuf {
     ns_file_in(namespace(), suffix)
+}
+
+/// Compose a path in a namespace **named by a caller**, refusing anything
+/// [`sanitize_ns`] would refuse (#191 T1 — "two runtimes, two rings").
+///
+/// Everything above resolves the namespace from this *process* — `$ORGANON_IPC_NS` or
+/// the edition — which is right while a process talks to its own peers, and is the whole
+/// reason an Organon session and a Mind session coexist. It is not enough the moment
+/// **one** process wants to look at **another** namespace's channel: two model runtimes
+/// each write their own activation ring, and whatever compares them has to *name* the
+/// ring it means rather than open whichever one its own namespace resolved to.
+///
+/// `None` — not a silent fallback — is the point of the return type. [`namespace`] falls
+/// back to the edition when `$ORGANON_IPC_NS` is junk, because a spawned visual must come
+/// up on *something*; a caller that typed a name has made a mistake it wants to hear
+/// about, and quietly handing it the local ring would answer a question it did not ask.
+/// Same sanitizer either way, so a caller can never reach a `$TMPDIR` path the env var
+/// could not.
+pub fn ns_file_checked(ns: &str, suffix: &str) -> Option<PathBuf> {
+    sanitize_ns(ns).map(|ns| ns_file_in(&ns, suffix))
 }
 
 pub fn ipc_path() -> PathBuf {
@@ -3117,9 +3137,15 @@ pub fn model_sidecar_path() -> PathBuf {
 ///
 /// 📌 A sidecar rather than a `Shared` field for the same reason every other path
 /// here is one: `Shared` is append-only and offset-sensitive across a process
-/// boundary, and a path is not a control-rate value. **Nothing writes it yet** — the
-/// picker that will is #147's later tier; until then the lens says so out loud
-/// rather than substituting something else.
+/// boundary, and a path is not a control-rate value.
+///
+/// ✏️ **#147 T3½: `organon mind adapter <PATH>` writes it** (`cli::select_adapter`,
+/// `MIND_ARCHITECTURE.md` §2.8.1) — this doc said *"nothing writes it yet"* until
+/// then. ⚠️ **The writer must check the directory before writing**, because the
+/// reader's failure arm clears the cache key that would suppress a re-read, so an
+/// unreadable path here is re-refused on every frame in the visual. With the file
+/// empty or absent the lens still says so out loud rather than substituting
+/// something else.
 pub fn adapter_sidecar_path() -> PathBuf {
     ns_file("adapter.txt")
 }
@@ -3608,6 +3634,17 @@ pub fn mind_ring_path() -> PathBuf {
     ns_file("mind.bin")
 }
 
+/// The activation ring of a **named** namespace (#191 T1). `mind_ring_path()` is this
+/// with the process's own namespace, and the two are pinned equal by a test.
+///
+/// This is what lets a base model and its fine-tune run at once: each runtime is started
+/// with its own `$ORGANON_IPC_NS` and writes `$TMPDIR/<ns>-mind.bin`, and a reader names
+/// the one it wants. `None` for a namespace [`sanitize_ns`] rejects — see
+/// [`ns_file_checked`] for why that is not a fallback.
+pub fn mind_ring_path_in(ns: &str) -> Option<PathBuf> {
+    ns_file_checked(ns, "mind.bin")
+}
+
 /// The #430 audio-sample ring mmap: a SEPARATE channel from `Shared`, carrying the
 /// plugin's live post-synth stereo output to the visual's in-app recorder. Off `Shared`
 /// (a continuous high-rate stream, not a control-rate snapshot); see `audio_ring.rs`.
@@ -3852,6 +3889,47 @@ mod ns_tests {
             ns_file_in(crate::edition::Edition::Full.ipc_namespace(), "adapter.txt"),
             ns_file_in(crate::edition::Edition::Mind.ipc_namespace(), "adapter.txt"),
         );
+    }
+
+    /// #191 T1 — the two-runtime property, stated at the path layer where it starts.
+    ///
+    /// Base and fine-tune are two processes, each with its own `$ORGANON_IPC_NS`, so
+    /// "two rings" is nothing more exotic than two namespaces resolving to two files.
+    /// If they ever collided the second runtime would silently overwrite the first's
+    /// frames and the diff would be a model against itself — a picture with no error.
+    #[test]
+    fn two_namespaces_are_two_rings() {
+        let base = mind_ring_path_in("mind-base").expect("legal namespace");
+        let tuned = mind_ring_path_in("mind-tuned").expect("legal namespace");
+        assert_ne!(base, tuned, "two runtimes must not share one ring file");
+        assert_eq!(base, std::env::temp_dir().join("mind-base-mind.bin"));
+        assert_eq!(tuned, std::env::temp_dir().join("mind-tuned-mind.bin"));
+    }
+
+    /// Naming this process's own namespace yields the path the unnamed call already
+    /// produces — so `mind_ring_path_in` GENERALIZES `mind_ring_path` rather than being
+    /// a second convention that could drift from it.
+    #[test]
+    fn naming_your_own_namespace_is_the_path_you_already_had() {
+        assert_eq!(mind_ring_path_in(namespace()).as_deref(), Some(mind_ring_path().as_path()));
+    }
+
+    /// A caller-supplied namespace must not reach a `$TMPDIR` path the env var could
+    /// not — one sanitizer, both doors. And it REFUSES rather than falling back:
+    /// handing a typo the local ring would answer a question nobody asked.
+    #[test]
+    fn a_named_namespace_is_sanitized_and_refused_not_defaulted() {
+        for bad in ["", "   ", "../evil", "a/b", "a\\b", "a b", "a;rm -rf", "a\nb", "naïve"] {
+            assert_eq!(
+                sanitize_ns(bad).is_none(),
+                ns_file_checked(bad, "mind.bin").is_none(),
+                "{bad:?}: the named door and the env-var door must agree"
+            );
+            assert!(mind_ring_path_in(bad).is_none(), "{bad:?} should be refused");
+        }
+        assert!(mind_ring_path_in(&"x".repeat(65)).is_none());
+        // Refused, specifically — not quietly redirected to whichever ring is local.
+        assert_ne!(mind_ring_path_in("../evil"), Some(mind_ring_path()));
     }
 
     /// The mindview saved-layout sidecar is namespaced like every other one, so an

@@ -1,3 +1,12 @@
+// 🚨 **The console is a GUI and now says so, which is what stops a black console window
+// appearing behind the workspace every time a shim launches it.** ⚠️ It is HALF a change:
+// a process with no console has nowhere to write, and the other half — `redirect_std_to_log`
+// below, over `organon_console::log_file` — must land with it. This workstation has already
+// paid for the half version once, in a lighting renderer that ran unobservable for six hours
+// with every indicator green. `cfg_attr` because the attribute means nothing off Windows and
+// warns if it is stated there anyway.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 //! The Organon Console binary (Console #10 T1 + #14 T1): a terminal, with the
 //! engine underneath it.
 //!
@@ -7227,6 +7236,28 @@ impl Console {
                     // tab has neither because it has no transcript of terminal lines to claim
                     // a rectangle in.
                     let mut draw_active_pane = |ui: &mut egui::Ui| {
+                      // 🚨 **THE POSTURE'S MARGIN, CLAIMED HERE AND NOWHERE ELSE.** This is
+                      // the one place both front-ends pass through, and it is inside the
+                      // region walk's closure — so a divided pane insets each region and an
+                      // undivided one insets the whole thing, with one spelling.
+                      //
+                      // ⚠️ **It used to be claimed three layers in, and that was the bug.**
+                      // `Form::margin` reached only the transcript's element walk inside
+                      // `conversation_view::scrollback`, so `organon console posture desktop`
+                      // answered `{"accepted": …}` and then moved the text while leaving the
+                      // composer, the command panel, the status strip — and the whole of a
+                      // *terminal* tab, which never enters that function — flush to the pane's
+                      // edge. What James asked the axis for is a window that stops looking
+                      // like a terminal; a token that insets one element of one front-end
+                      // cannot deliver that however carefully it lerps.
+                      //
+                      // ⚠️ **`term_view` needed no argument for this and must not be given
+                      // one.** It sizes itself from `ui.available_rect_before_wrap()`, so an
+                      // inset `Ui` narrows the glyph grid with nothing to plumb — which is
+                      // also why the margin belongs to the *container* rather than to the two
+                      // front-ends: a token every draw site has to remember to read is a token
+                      // that will be forgotten by the third one.
+                      let mut body = |ui: &mut egui::Ui| {
                         match (sessions.get_mut(active), pane_looks.get_mut(active)) {
                             (Some(Pane::Term(session)), Some(pane)) => {
                                 // `&mut pane.anchor` and `&mut pane.blocks` are disjoint fields of
@@ -7323,6 +7354,25 @@ impl Console {
                                 });
                             }
                         }
+                      };
+                      // 🚨 **`None` at terminal posture, and it draws into the `Ui` it was
+                      // handed** — no wrapping `Frame`, no allocation, nothing that can move a
+                      // row by a point. That is the same guarantee invariant #4 makes for the
+                      // undivided layout, one level down: a console nobody has typed a posture
+                      // at runs the code it ran before this axis existed, by construction
+                      // rather than by a zero that ought to be equivalent.
+                      match form.pane_margin(ui.available_width()) {
+                          // A `Frame` with no fill and no stroke is nothing but its margin,
+                          // which is exactly what is wanted: the pane is inset by the same
+                          // amount on both sides — so it is centred — and everything that
+                          // follows from the narrower width (wrapping, the scroll extent, the
+                          // glyph grid's column count, a surface's laid-out rect) follows
+                          // without a single call site knowing about it.
+                          Some(margin) => {
+                              egui::Frame::new().inner_margin(margin).show(ui, body);
+                          }
+                          None => body(ui),
+                      }
                     };
                     // 🚨 **The single-region fast path, and it is the whole of invariant #4.**
                     // A console that has had no `/viewport` typed does not merely *look* like
@@ -7742,6 +7792,11 @@ fn help_text() -> String {
              -h, --help       print this and exit\n    \
              -V, --version    print the version and exit\n\
          \n\
+         This is a GUI: it opens no console of its own, so once it is running everything\n\
+         it would have said goes to a file instead. THIS is where to look when it will\n\
+         not start, or starts wrong:\n    \
+             {log}\n\
+         \n\
          Environment:\n    \
              ORGANON_SHELL_BACKDROP=<src> behind the glyphs: 0/unset off, 1 the world,\n                                 \
              {substrate} the lit substrate plane\n    \
@@ -7796,6 +7851,14 @@ fn help_text() -> String {
             .collect::<Vec<_>>()
             .join("|"),
         themes = Theme::NAMES.join("|"),
+        // 🚨 **Resolved, not described.** `%LOCALAPPDATA%\\organon\\console\\console.log` is what a
+        // person would type here, and it is a second copy of a path this process already
+        // knows — one that is simply wrong off Windows. Asking `log_file` means `--help`
+        // names the file that would actually be opened.
+        log = organon_console::log_file::path().map_or_else(
+            || "(this platform has no local data directory)".to_string(),
+            |p| p.display().to_string(),
+        ),
         postures = organon_console::posture::POSTURE_WORDS.join("|"),
         screens = organon_console::screen::SCREEN_WORDS.join("|"),
         // Both quoted from `region`'s own tables, on the `backgrounds` rule below: `--help`
@@ -7816,6 +7879,71 @@ fn help_text() -> String {
     )
 }
 
+/// **Send this process's own words to a file, because nothing else is listening.**
+///
+/// ⚠️ **Answers nothing, deliberately.** The path is in the log's own header and was
+/// announced on the outgoing stderr a line before the swap, so a return value would be a
+/// third copy of it with nothing reading any of them. Anything that later wants to *show*
+/// the path — a status line, a `--where` — asks `log_file::path()`, which is the same
+/// function this used, so the two cannot disagree about which file was opened.
+///
+/// 🚨 **The standard HANDLES are moved, not a logger installed.** There are hundreds of
+/// `eprintln!` call sites in this binary and none of them is edited by this: Rust's Windows
+/// stdio resolves `STD_ERROR_HANDLE` per write rather than caching it, so moving the handle
+/// before anything has spoken redirects every one of them — **and the default panic hook**,
+/// which writes to `io::stderr()`. Measured on this toolchain rather than assumed: a probe
+/// that set both handles then ran `eprintln!`, `println!` and a panic printed nothing to the
+/// terminal and all three to the file.
+///
+/// ⚠️ **The `File` is deliberately leaked.** Dropping it closes the handle, and the process
+/// would then be writing every subsequent line into a closed handle for the rest of its life —
+/// silently, which is the failure this whole change exists to close. One handle, held for the
+/// process's lifetime, released by exit like every other.
+///
+/// ⚠️ **The path is announced on the OLD stderr first**, before the swap, so a person who ran
+/// the console from a terminal and expected to see it talk is told where it went instead of
+/// watching it go quiet. That line is the only thing standing between this and the
+/// six-hours-unobservable failure repeating in a different costume.
+///
+/// ⚠️ **Every failure here is swallowed on purpose.** A console that will not start because it
+/// could not open its log is strictly worse than one whose log is missing, and there is
+/// nowhere to complain to anyway. `None` means today's behaviour, unchanged.
+#[cfg(windows)]
+fn redirect_std_to_log() {
+    use std::io::Write;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+
+    let Some(path) = organon_console::log_file::path() else { return };
+    let Ok(mut file) = organon_console::log_file::open(&path) else { return };
+    let t = organon_console::status_log::LogTime::now();
+    let stamp = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        t.year, t.month, t.day, t.hour, t.minute, t.second
+    );
+    let _ = file.write_all(organon_console::log_file::header(&path, &stamp).as_bytes());
+    let _ = file.flush();
+
+    eprintln!("{PRODUCT_NAME}: output goes to {}", path.display());
+
+    let handle = file.as_raw_handle() as *mut core::ffi::c_void;
+    // SAFETY: `handle` is a live file handle owned by `file`, which is leaked below and so
+    // outlives every write the process will make through it. `SetStdHandle` only records the
+    // value; it neither duplicates nor closes anything.
+    unsafe {
+        SetStdHandle(STD_ERROR_HANDLE, handle);
+        SetStdHandle(STD_OUTPUT_HANDLE, handle);
+    }
+    std::mem::forget(file);
+}
+
+/// Off Windows there is no console to hide, so there is nothing to redirect: a GUI launched
+/// from a terminal keeps writing to it, and one launched from a desktop entry has its output
+/// collected by the session's own journal. Adding a private log file here would take those
+/// lines *out* of the place the platform already puts them.
+#[cfg(not(windows))]
+fn redirect_std_to_log() {}
+
 fn main() {
     match invocation(&std::env::args().collect::<Vec<_>>()) {
         Invocation::Help => {
@@ -7828,6 +7956,15 @@ fn main() {
         }
         Invocation::Run => {}
     }
+
+    // 🚨 **The other half of `#![windows_subsystem = "windows"]`, and it runs on the `Run`
+    // path ONLY.** `--help` and `--version` returned above, still writing to whatever the
+    // caller gave them — which is a real terminal in every case somebody types them, because
+    // a GUI-subsystem process still *inherits* standard handles even though Windows declines
+    // to allocate it a console (measured on this toolchain: a `windows_subsystem = "windows"`
+    // binary run from a shell printed to that shell, and `> file` captured it). Redirecting
+    // those two would answer a question by writing the answer somewhere else.
+    redirect_std_to_log();
 
     eprintln!("{PRODUCT_NAME}");
     let event_loop = EventLoop::new().expect("event loop");
@@ -7890,6 +8027,33 @@ mod cli_tests {
         // usable rather than merely present.
         assert!(h.contains("light"), "help does not say whose floor {} is",
             organon_console::term_view::SCRIM_FLOOR_LIGHT);
+    }
+
+    /// CONTRACT: **`--help` says where the output went.**
+    ///
+    /// 🚨 **This is the other half of `#![windows_subsystem = "windows"]` and it is the half
+    /// that is easy to drop.** Hiding the console window sends every `eprintln!` in this binary
+    /// to a file; a person whose console will not start then has to be *told* which file, and
+    /// the only surface that reaches them before the window exists is `--help`. The lighting
+    /// renderer on this workstation ran unobservable for six hours because that sentence was
+    /// never written anywhere.
+    ///
+    /// ⚠️ **The path is quoted from `log_file`, never restated.** A hand-typed
+    /// `%LOCALAPPDATA%\organon\console\console.log` is a second copy of a decision made in
+    /// another crate, and it is simply wrong off Windows — so this asserts the *resolved*
+    /// path appears, which fails if either side moves without the other.
+    #[test]
+    fn the_help_says_where_the_output_goes() {
+        let h = help_text();
+        let path = organon_console::log_file::path().expect("this platform has a local data dir");
+        assert!(
+            h.contains(&path.display().to_string()),
+            "--help never names the log ({}): {h}",
+            path.display()
+        );
+        // …and says enough for the line to be actionable rather than decorative: a reader has
+        // to know it is where to look when the console misbehaves, not merely that it exists.
+        assert!(h.contains("no console of its own"), "the log line does not say why: {h}");
     }
 
     /// CONTRACT: **`--help` offers every palette and posture the console can actually
@@ -8859,7 +9023,7 @@ mod cli_tests {
             // nudged.
             // ✏️ `setting` sits after `module` and before `block` because `console_specs`
             // declares it there — beside the verb it shares a noun with, though deliberately
-            // not the verb itself (§1.22). The order here is the table's, read out.
+            // not the verb itself (§1.23). The order here is the table's, read out.
             "[background] | rig | theme | posture | screen | viewport | stack | layout | \
              preset | module | setting | block | patch | portal | camera | camera.read | \
              layout.list | preset.list | surface | help | trace | media | organon"
@@ -8901,7 +9065,7 @@ mod cli_tests {
         // hidden count below already records once. Read out of the merged row: the twenty-two
         // words are 147 characters (`background` in brackets counts 12) and the twenty-one
         // separators 63, so 147 + 63 = 210.
-        // ✏️ **220 with `setting`** (§1.22) — the twenty-third verb and the tenth change to
+        // ✏️ **220 with `setting`** (§1.23) — the twenty-third verb and the tenth change to
         // this line. **Re-derived, not nudged**, on the paragraph above's rule: the twenty-three
         // words are 154 characters (`background` in brackets counts 12) and the twenty-two
         // separators 66, so 154 + 66 = 220. The new word is 7 and it brings one separator, which
@@ -9050,7 +9214,7 @@ mod cli_tests {
                 //
                 // 🚨 **That is the same thing as saying autorun may fire it**, which is right
                 // for a completion narrowed to exactly one machine name and would be wrong for
-                // anything that grants trust — and is why §1.22 made it a verb of its own
+                // anything that grants trust — and is why §1.23 made it a verb of its own
                 // rather than a sixth `console module` action. A shared verb would have had to
                 // share this answer.
                 ("setting", true),

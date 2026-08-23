@@ -993,7 +993,7 @@ once by refusing `world`, once by absorbing a producer it was never told about.
 >
 > 🚨 **The console still never learns what a key MEANS**, which is §4.6 read from the
 > configuration side and is the whole reason this is a file and a declared vocabulary rather than
-> a fifth input verb. `CONSOLE_ARCHITECTURE.md` §1.22 is the living description; the first module
+> a fifth input verb. `CONSOLE_ARCHITECTURE.md` §1.23 is the living description; the first module
 > to use it is `organonart/organon-modules-moonlight`, which declares `host` and `app`.
 
 - **The protocol's wire format.** Types, framing, versioning. A tier, not a paragraph, and it

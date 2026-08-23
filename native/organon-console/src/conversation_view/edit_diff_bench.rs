@@ -496,10 +496,12 @@ pub(super) fn frame(
     let out = ctx.run(input, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             // 🚨 **The TERMINAL form, for the reason `rewrap_bench` gives and one of its
-            // own.** A desktop `Form` would inset the column through `content_margin`, so
-            // every card would wrap at a width nothing here names — and posture is not what
-            // this bench varies. Holding it equal to the other bench's also keeps the two
-            // documents' figures on one footing.
+            // own.** ✏️ **The margin is no longer among those reasons** — since it moved to
+            // the pane a desktop `Form` cannot inset anything from in here, because this
+            // harness builds no pane. What a desktop `Form` still changes is every card's
+            // padding, corner and line height, which would move the figures without moving
+            // the thing the bench varies. Holding it equal to the other bench's also keeps
+            // the two documents' figures on one footing.
             let _ = scrollback(ui, pane, images, &Default::default(), theme, &Form::TERMINAL);
         });
     });

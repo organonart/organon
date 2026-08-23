@@ -52,13 +52,67 @@ fn synth_topk(t: f32) -> (Vec<(f32, usize)>, f32, f32) {
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let n_layers = args
+    // `--ns <name>` before anything else touches `ipc` (#191 T1). It is not a second
+    // mechanism: it sets `$ORGANON_IPC_NS`, which `ipc::namespace()` resolves ONCE per
+    // process into a `OnceLock`, so it has to happen before the first path is composed.
+    //
+    // It exists because the env var alone is a foot-gun for the case this tier is about.
+    // Launching a base runtime and then a fine-tune runtime from the SAME shell means
+    // setting one variable twice, and a PowerShell `$env:` assignment persists for the
+    // session — forget the second one and both runtimes write the same ring, the newer
+    // frames overwrite the older, and the "difference" between two models is a model
+    // against itself with nothing to report the collision. A flag is per-launch, and it
+    // shows up in the command line you can scroll back to.
+    //
+    // Unlike the env var it REFUSES a bad name instead of falling back. `$ORGANON_IPC_NS`
+    // falls back on purpose — a visual spawned with a junk namespace must still come up.
+    // A name typed on a command line is a mistake worth stopping for.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut positional: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--ns" | "-n" => {
+                let Some(raw) = argv.get(i + 1) else {
+                    eprintln!("mind-writer: --ns wants a namespace, e.g. --ns mind-base");
+                    std::process::exit(2);
+                };
+                match organic_math_native::ipc::sanitize_ns(raw) {
+                    Some(ns) => std::env::set_var("ORGANON_IPC_NS", &ns),
+                    None => {
+                        eprintln!(
+                            "mind-writer: '{raw}' is not a usable IPC namespace — ASCII \
+                             letters, digits, '-' and '_', 1..=64 characters."
+                        );
+                        std::process::exit(2);
+                    }
+                }
+                i += 2;
+            }
+            "-h" | "--help" => {
+                println!(
+                    "usage: organic-math-mind-writer [--ns <namespace>] [n_layers] [n_heads]\n\
+                     \n\
+                     Streams synthetic activation frames into $TMPDIR/<namespace>-mind.bin.\n\
+                     --ns forks the IPC namespace so a second writer (or runtime) can run\n\
+                     beside this one on its own ring; it sets $ORGANON_IPC_NS for this\n\
+                     process only. Defaults: 24 layers, 16 heads."
+                );
+                return;
+            }
+            other => {
+                positional.push(other);
+                i += 1;
+            }
+        }
+    }
+    let mut positional = positional.into_iter();
+    let n_layers = positional
         .next()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(24)
         .clamp(1, MR_MAX_LAYERS as u32);
-    let n_heads = args
+    let n_heads = positional
         .next()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(16)
@@ -72,6 +126,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Say the namespace out loud. Two writers are otherwise indistinguishable in two
+    // terminals, and the failure they hide — both on one ring — looks like a working
+    // demo right up until the two traces are identical.
+    println!(
+        "mind-writer: namespace '{}' — read it with MindRingReader::open_ns(\"{}\")",
+        organic_math_native::ipc::namespace(),
+        organic_math_native::ipc::namespace()
+    );
     println!(
         "mind-writer: streaming {n_layers} layers × {n_heads} heads into {} (Ctrl-C to stop)",
         path.display()

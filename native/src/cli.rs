@@ -181,6 +181,363 @@ pub use organon_core::eyes::{eyes_reply_line, find_eyes_reply, EyesReq};
 // path in the tree resolving exactly as before — same shape as `crate::agent`'s
 // re-export of `organon_agent` (T4c-i).
 pub use organon_core::console_ops::*;
+
+// ---------------------------------------------------------------------------
+// #147 Tier 3½ — the Delta lens's adapter: the producer for a reader that
+// already exists.
+// ---------------------------------------------------------------------------
+//
+// `world.rs`'s `build_mind_graph` has read `ipc::adapter_sidecar_path()` since
+// #147 T3 and **nothing has ever written it**, so selecting the Delta lens has
+// only ever printed "no adapter selected" and cleared the graph. This section is
+// the missing half: check a directory, then write its absolute path there.
+//
+// 🚨 **The check happens HERE because the other end has no one reading it.** The
+// visual is a different process, usually on a second display, and its failure
+// path is `eprintln!` + `*delta = None` + `return None` — which, because the cache
+// key it just cleared is what suppresses a re-read, means a bad path is re-read
+// and re-refused **on every frame**, into a terminal nobody is watching. The CLI
+// is the one place a person is looking at the output, so a directory that cannot
+// be read must be refused before a byte is written.
+//
+// ⚠️ **The sidecar is namespaced, and that is the trap this verb is most likely
+// to be bitten by.** `ipc::adapter_sidecar_path()` resolves through
+// `ipc::namespace()`, which is `$ORGANON_IPC_NS` or else the *compiled edition's*
+// namespace — `organic-math` for Organon, `organon-mind` for Organon Mind,
+// `organon-shell` for the Console. So an `organon` built for one edition writes a
+// file another edition never reads, and the symptom is exactly the symptom of not
+// having run the command at all. Nothing here can decide that for the caller, so
+// both the write and the read **print the path they used**, and `--help` names
+// the variable. The namespacing itself is pinned by
+// `ipc::adapter_sidecar_is_namespaced_and_distinct_from_the_model`; it is not
+// restated here.
+
+use std::path::{Path, PathBuf};
+
+/// Why a directory is not a LoRA adapter Organon can light the specimen with.
+///
+/// Every variant is a refusal **before** the sidecar is written, and each one names
+/// the thing that is wrong with *this* directory rather than reporting that
+/// something, somewhere, failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterRefusal {
+    /// Nothing exists at this path.
+    Missing { path: PathBuf, why: String },
+    /// Something is there and it is not a directory — a `.safetensors` file
+    /// picked instead of the folder holding it is the overwhelmingly likely case,
+    /// so the sentence says so.
+    NotADirectory { path: PathBuf },
+    /// A required member is absent, so this directory is not a PEFT adapter.
+    NoMember { dir: PathBuf, name: &'static str },
+    /// A required member is there and will not open — permissions, a dangling
+    /// symlink, a half-finished download.
+    Unreadable { path: PathBuf, why: String },
+    /// A required member opened and is not what it claims to be. Carries
+    /// `lora`'s own message, because this is `lora`'s own parser saying so —
+    /// a second opinion here could disagree with the reader, which is worse
+    /// than no opinion.
+    NotAnAdapter { path: PathBuf, why: String },
+    /// The path will not resolve to an absolute one.
+    Unresolvable { path: PathBuf, why: String },
+    /// The resolved path is not valid UTF-8, so it cannot ride a plain-text
+    /// sidecar. Refused rather than written lossily: a lossy path names a
+    /// *different* directory, and would fail in the visual as though the adapter
+    /// were bad.
+    NotUtf8 { path: PathBuf },
+}
+
+impl AdapterRefusal {
+    /// One line, in the second person, naming the rule that was broken.
+    pub fn sentence(&self) -> String {
+        match self {
+            AdapterRefusal::Missing { path, why } => {
+                format!("nothing at {} ({why})", path.display())
+            }
+            AdapterRefusal::NotADirectory { path } => format!(
+                "{} is not a directory — a LoRA adapter is the FOLDER holding \
+                 `{ADAPTER_CONFIG}` and `{ADAPTER_WEIGHTS}`, not either file",
+                path.display()
+            ),
+            AdapterRefusal::NoMember { dir, name } => format!(
+                "{} has no `{name}`, so it is not a PEFT LoRA adapter directory",
+                dir.display()
+            ),
+            AdapterRefusal::Unreadable { path, why } => {
+                format!("{} cannot be read ({why})", path.display())
+            }
+            AdapterRefusal::NotAnAdapter { path, why } => {
+                format!("{} is not readable as a LoRA adapter: {why}", path.display())
+            }
+            AdapterRefusal::Unresolvable { path, why } => format!(
+                "{} will not resolve to an absolute path ({why}) — and it must, \
+                 because the visual is a different process with a different working \
+                 directory",
+                path.display()
+            ),
+            AdapterRefusal::NotUtf8 { path } => format!(
+                "{} is not valid UTF-8, and the adapter sidecar is a plain UTF-8 file",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for AdapterRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.sentence())
+    }
+}
+
+// The two members `lora::read_adapter_dir` opens, named from `lora` itself so this
+// check and that reader can never come to disagree about what an adapter is.
+use organon_core::lora::{ADAPTER_CONFIG, ADAPTER_WEIGHTS};
+
+/// Windows' `canonicalize` returns a **verbatim** path (`\\?\C:\…`). It opens
+/// perfectly — Rust's own `File::open` adds that prefix itself for long paths — but
+/// it is what a person then has to read back off `--show` and out of a sidecar, so
+/// it is stripped for the ordinary two shapes and left alone for anything else.
+///
+/// Pure, and deliberately over `&str` rather than `Path`: it must be testable on
+/// Linux CI, where no path is ever verbatim and the two arms below would otherwise
+/// never run.
+/// 🚨 **A UNC share is deliberately left verbatim.** `\\?\UNC\server\share` shortens
+/// to `\\server\share`, and the tempting `strip_prefix` yields `server\share` — a
+/// **relative** path, which is the single failure this whole function sits next to.
+/// Leaving it alone keeps a path that opens; shortening it wrongly would produce one
+/// that resolves against the visual's working directory.
+pub fn de_verbatim(s: &str) -> &str {
+    if s.starts_with(r"\\?\UNC\") {
+        return s;
+    }
+    match s.strip_prefix(r"\\?\") {
+        // Only a drive-letter path is safe to shorten: `\\?\C:\a` is `C:\a`.
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest,
+        _ => s,
+    }
+}
+
+/// Check that `dir` is a LoRA adapter directory the Delta lens can read, and resolve
+/// it to an absolute path.
+///
+/// This runs **everything `lora::read_adapter_dir` does except the arithmetic**: both
+/// members are opened, `adapter_config.json` is parsed by `lora`'s own parser (which
+/// is what refuses DoRA by name), and the safetensors *header* is parsed — bounded by
+/// `lora::MAX_HEADER_BYTES`, so it is cheap. What it does **not** do is stream the
+/// `lora_A`/`lora_B` payloads, because that is the part whose cost scales with the
+/// adapter and the CLI is not where a person should wait for it.
+///
+/// ⚠️ So a refusal here is conclusive and an acceptance is not: an adapter can still
+/// fail in the visual on a tensor pair, an unsupported dtype or a DoRA magnitude
+/// vector that the config did not declare. Closing that gap costs the full read.
+///
+/// 📌 The header check is worth its bytes for one common real failure: a HuggingFace
+/// clone made without git-lfs leaves a ~130-byte **text pointer** named
+/// `adapter_model.safetensors`. It exists, it opens, and it is not an adapter.
+pub fn check_adapter_dir(dir: &Path) -> Result<PathBuf, AdapterRefusal> {
+    let meta = std::fs::metadata(dir).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AdapterRefusal::Missing { path: dir.to_path_buf(), why: e.to_string() }
+        } else {
+            AdapterRefusal::Unreadable { path: dir.to_path_buf(), why: e.to_string() }
+        }
+    })?;
+    if !meta.is_dir() {
+        return Err(AdapterRefusal::NotADirectory { path: dir.to_path_buf() });
+    }
+
+    // `adapter_config.json` — present, readable, and `lora`'s own parser's to judge.
+    let cfg_path = dir.join(ADAPTER_CONFIG);
+    if !cfg_path.exists() {
+        return Err(AdapterRefusal::NoMember {
+            dir: dir.to_path_buf(),
+            name: ADAPTER_CONFIG,
+        });
+    }
+    let text = std::fs::read_to_string(&cfg_path)
+        .map_err(|e| AdapterRefusal::Unreadable { path: cfg_path.clone(), why: e.to_string() })?;
+    organon_core::lora::parse_adapter_config(&text, &cfg_path).map_err(|e| {
+        AdapterRefusal::NotAnAdapter { path: cfg_path.clone(), why: e.to_string() }
+    })?;
+
+    // `adapter_model.safetensors` — present, readable, and a real safetensors header.
+    let w_path = dir.join(ADAPTER_WEIGHTS);
+    if !w_path.exists() {
+        return Err(AdapterRefusal::NoMember {
+            dir: dir.to_path_buf(),
+            name: ADAPTER_WEIGHTS,
+        });
+    }
+    let file = std::fs::File::open(&w_path)
+        .map_err(|e| AdapterRefusal::Unreadable { path: w_path.clone(), why: e.to_string() })?;
+    organon_core::lora::parse_safetensors_index(file).map_err(|e| {
+        AdapterRefusal::NotAnAdapter { path: w_path.clone(), why: e.to_string() }
+    })?;
+
+    // Absolute, or the visual resolves it against its own working directory and
+    // reads a different place — or nowhere.
+    let abs = std::fs::canonicalize(dir)
+        .map_err(|e| AdapterRefusal::Unresolvable { path: dir.to_path_buf(), why: e.to_string() })?;
+    let text = abs
+        .to_str()
+        .ok_or_else(|| AdapterRefusal::NotUtf8 { path: abs.clone() })?;
+    Ok(PathBuf::from(de_verbatim(text)))
+}
+
+/// What a selected adapter directory says about itself, for the one line the CLI
+/// prints back. Every field is **measured** — read straight out of
+/// `adapter_config.json` — and none of it is interpreted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdapterBlurb {
+    /// `r` as the file declares it. `None` when the file does not say; the
+    /// per-module rank the reader actually uses comes from the tensor shapes.
+    pub declared_r: Option<usize>,
+    /// `lora_alpha`.
+    pub alpha: f64,
+    /// `use_rslora` — the flag that changes the scale's denominator to `sqrt(r)`.
+    pub rslora: bool,
+    /// How many names `target_modules` holds.
+    pub target_modules: usize,
+    /// `base_model_name_or_path`, verbatim.
+    pub base: Option<String>,
+}
+
+impl AdapterBlurb {
+    /// One line: what the adapter's own config states.
+    pub fn line(&self) -> String {
+        let r = match self.declared_r {
+            Some(r) => format!("rank {r}"),
+            None => "rank unstated".to_string(),
+        };
+        let scale = if self.rslora { "alpha/sqrt(r) (rsLoRA)" } else { "alpha/r" };
+        let base = match &self.base {
+            Some(b) => format!(", base as the adapter states it: {b}"),
+            None => String::new(),
+        };
+        format!(
+            "{r}, alpha {}, {} target module name(s), scale {scale}{base}",
+            self.alpha, self.target_modules
+        )
+    }
+}
+
+/// Read the blurb from a directory already accepted by [`check_adapter_dir`].
+///
+/// Returns `None` rather than an error: this is the *decoration* on a successful
+/// selection, so a config that has become unreadable between the check and here
+/// must not turn a working selection into a failure.
+pub fn adapter_blurb(dir: &Path) -> Option<AdapterBlurb> {
+    let cfg_path = dir.join(ADAPTER_CONFIG);
+    let text = std::fs::read_to_string(&cfg_path).ok()?;
+    let cfg = organon_core::lora::parse_adapter_config(&text, &cfg_path).ok()?;
+    Some(AdapterBlurb {
+        declared_r: cfg.declared_r,
+        alpha: cfg.lora_alpha,
+        rslora: cfg.use_rslora,
+        target_modules: cfg.target_modules.len(),
+        base: cfg.base_model_name_or_path,
+    })
+}
+
+/// The body written to the sidecar to **select** `dir`.
+///
+/// ⚠️ Split out from the write so the wire form is testable without touching a real
+/// sidecar — a test that wrote `ipc::adapter_sidecar_path()` would clobber a live
+/// selection on the machine running `cargo test`.
+///
+/// The trailing newline is for whoever `cat`s the file; `world.rs` trims.
+pub fn adapter_select_body(dir: &Path) -> String {
+    format!("{}\n", dir.display())
+}
+
+/// The body written to the sidecar to select **nothing** — the lens's honest
+/// "no adapter selected" state.
+///
+/// Empty rather than deleted: `world.rs` treats missing and empty identically, and
+/// truncating leaves a file whose emptiness is visible to anyone who looks, where a
+/// deletion looks the same as never having run the command.
+pub fn adapter_clear_body() -> String {
+    String::new()
+}
+
+/// Read a sidecar body the way `world.rs` reads it: trim, and treat empty as
+/// nothing selected.
+///
+/// ⚠️ **This duplicates `build_mind_graph`'s rule** — that reader is in
+/// `organon-world`, which this crate does not depend on, so the rule cannot be
+/// imported. It is three tokens wide and it is pinned by test against the bodies
+/// this module writes, which is what keeps `--show` from reporting a selection the
+/// lens does not have.
+pub fn adapter_selection(body: &str) -> Option<&str> {
+    let t = body.trim();
+    (!t.is_empty()).then_some(t)
+}
+
+/// Write a sidecar body. The path is a parameter rather than resolved here so a
+/// test can point it somewhere harmless; `bin/ctl.rs` passes
+/// `ipc::adapter_sidecar_path()` and nothing else does.
+fn write_adapter_sidecar(path: &Path, body: &str) -> std::io::Result<()> {
+    std::fs::write(path, body)
+}
+
+/// Why a selection did not happen: the directory was refused, or the sidecar itself
+/// would not take the write.
+///
+/// Two arms because they are two different exit codes and two different things to do
+/// about them — a refused directory is the caller's to fix, a sidecar that will not
+/// open is the machine's.
+#[derive(Debug)]
+pub enum AdapterSelectError {
+    /// The directory is not an adapter this build can read. **Nothing was written.**
+    Refused(AdapterRefusal),
+    /// The directory checked out and the sidecar would not take it.
+    Sidecar { path: PathBuf, why: std::io::Error },
+}
+
+impl AdapterSelectError {
+    /// One line, in the second person.
+    pub fn sentence(&self) -> String {
+        match self {
+            AdapterSelectError::Refused(r) => r.sentence(),
+            AdapterSelectError::Sidecar { path, why } => {
+                format!("cannot write {} ({why})", path.display())
+            }
+        }
+    }
+}
+
+/// Check `dir`, and write it to `sidecar` **only if it checks out**. Returns the
+/// absolute path that was written.
+///
+/// 🚨 **The check and the write are one function so that "refused ⇒ nothing written"
+/// is a property of one place**, rather than of every caller remembering to do them in
+/// that order. A caller that got the order wrong would leave the Delta lens pointed at
+/// a directory it cannot read, re-refusing it every frame in another process — which is
+/// the exact failure this verb exists to prevent, so it must not be reachable by
+/// forgetting something.
+pub fn select_adapter(sidecar: &Path, dir: &Path) -> Result<PathBuf, AdapterSelectError> {
+    let abs = check_adapter_dir(dir).map_err(AdapterSelectError::Refused)?;
+    write_adapter_sidecar(sidecar, &adapter_select_body(&abs)).map_err(|why| {
+        AdapterSelectError::Sidecar { path: sidecar.to_path_buf(), why }
+    })?;
+    Ok(abs)
+}
+
+/// Empty the sidecar, returning the lens to "no adapter selected".
+pub fn clear_adapter(sidecar: &Path) -> Result<(), AdapterSelectError> {
+    write_adapter_sidecar(sidecar, &adapter_clear_body()).map_err(|why| {
+        AdapterSelectError::Sidecar { path: sidecar.to_path_buf(), why }
+    })
+}
+
+/// What the sidecar currently names, read the way `world.rs` reads it.
+///
+/// A missing sidecar and an empty one are the same answer — nothing selected — which
+/// is `build_mind_graph`'s own rule.
+pub fn read_adapter_sidecar(sidecar: &Path) -> Option<String> {
+    let body = std::fs::read_to_string(sidecar).ok()?;
+    adapter_selection(&body).map(str::to_string)
+}
+
 // ---------------------------------------------------------------------------
 // Formatting (read side)
 // ---------------------------------------------------------------------------
@@ -1253,4 +1610,338 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // #147 Tier 3½ — the Delta lens's adapter.
+    //
+    // ⚠️ **No test here touches `ipc::adapter_sidecar_path()`**, and that is
+    // deliberate rather than incidental: it is a real file in `$TMPDIR` that a
+    // running Organon Mind reads, so a test writing it would clear whichever
+    // adapter the person running `cargo test` had selected. Every sidecar in this
+    // module is a file inside the test's own scratch directory, which is what
+    // `select_adapter` / `clear_adapter` taking the path as a parameter buys.
+    // -----------------------------------------------------------------------
+
+    /// A scratch directory under `target/` — gitignored, and **not** in `$TMPDIR`,
+    /// where the real sidecar lives.
+    ///
+    /// Returns `(relative, absolute)`. The relative half is what makes
+    /// `a_relative_directory_is_written_absolute` possible without
+    /// `set_current_dir`, which is process-global and would race every other test
+    /// in this binary.
+    fn scratch(name: &str) -> (PathBuf, PathBuf) {
+        let rel = PathBuf::from("target").join("adapter-fixtures").join(name);
+        let _ = std::fs::remove_dir_all(&rel);
+        std::fs::create_dir_all(&rel).expect("scratch directory");
+        let abs = std::fs::canonicalize(&rel).expect("canonicalize scratch");
+        (rel, PathBuf::from(de_verbatim(abs.to_str().unwrap())))
+    }
+
+    /// The smallest thing that is genuinely a safetensors file: an 8-byte LE header
+    /// length, that many bytes of JSON, then the payload the offsets promise. One
+    /// `lora_A`/`lora_B` pair of 2×2 `F32`, so `lora::read_adapter_dir` accepts it
+    /// too — pinned by `the_fixture_is_an_adapter_lora_itself_accepts`.
+    fn safetensors_pair() -> Vec<u8> {
+        let stem = "base_model.model.model.layers.0.self_attn.q_proj";
+        let header = format!(
+            "{{\"{stem}.lora_A.weight\":{{\"dtype\":\"F32\",\"shape\":[2,2],\
+             \"data_offsets\":[0,16]}},\"{stem}.lora_B.weight\":{{\"dtype\":\"F32\",\
+             \"shape\":[2,2],\"data_offsets\":[16,32]}}}}"
+        );
+        let mut out = (header.len() as u64).to_le_bytes().to_vec();
+        out.extend_from_slice(header.as_bytes());
+        for _ in 0..8 {
+            out.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        out
+    }
+
+    const GOOD_CONFIG: &str = r#"{"peft_type":"LORA","r":2,"lora_alpha":4,
+        "target_modules":["q_proj","v_proj"],
+        "base_model_name_or_path":"unsloth/tiny-fixture"}"#;
+
+    /// Lay a complete, readable adapter down in `dir`.
+    fn write_adapter(dir: &Path) {
+        std::fs::write(dir.join(ADAPTER_CONFIG), GOOD_CONFIG).unwrap();
+        std::fs::write(dir.join(ADAPTER_WEIGHTS), safetensors_pair()).unwrap();
+    }
+
+    /// **A Windows `canonicalize` returns a verbatim path, and only a drive-letter
+    /// one may be shortened.**
+    ///
+    /// Pure and over `&str` on purpose: no path on Linux CI is ever verbatim, so a
+    /// `Path`-shaped version of this would compile there and never execute either
+    /// arm — the shape of "green on the machine that cannot run it" this repo keeps
+    /// paying for.
+    ///
+    /// ⚠️ **Mutation-tested.** Replacing the UNC guard with the tempting
+    /// `strip_prefix(r"\\?\UNC\")` fails here at the share case: `\\server\share`
+    /// becomes `server\share`, a **relative** path, which is the single failure the
+    /// whole absolutising step exists to prevent.
+    #[test]
+    fn de_verbatim_shortens_a_drive_path_and_leaves_everything_else_alone() {
+        assert_eq!(de_verbatim(r"\\?\C:\models\lora-r16"), r"C:\models\lora-r16");
+        assert_eq!(de_verbatim(r"\\?\c:\x"), r"c:\x");
+        // A UNC share: shortening it correctly means `\\server\share`, and the
+        // obvious `strip_prefix` yields a relative path instead. Left alone.
+        assert_eq!(de_verbatim(r"\\?\UNC\server\share\lora"), r"\\?\UNC\server\share\lora");
+        // A volume GUID has no `:` in second position — not a drive path, left alone.
+        assert_eq!(
+            de_verbatim(r"\\?\Volume{b75e2c83}\lora"),
+            r"\\?\Volume{b75e2c83}\lora"
+        );
+        // Everything Linux and macOS ever produce.
+        assert_eq!(de_verbatim("/home/james/lora"), "/home/james/lora");
+        assert_eq!(de_verbatim(""), "");
+    }
+
+    /// 🚨 **A relative directory comes back absolute.** The visual is a different
+    /// process with a different working directory, so a relative path in the sidecar
+    /// resolves somewhere else or nowhere — and the failure is a lens that clears
+    /// the graph while the file looks perfectly reasonable to whoever wrote it.
+    ///
+    /// ⚠️ **Mutation-tested.** Returning `dir.to_path_buf()` from
+    /// `check_adapter_dir` instead of the canonicalized path fails here at
+    /// *"the written path must be absolute"*.
+    #[test]
+    fn a_relative_directory_is_written_absolute() {
+        let (rel, abs) = scratch("relative");
+        write_adapter(&rel);
+        assert!(!rel.is_absolute(), "the fixture must be handed over relative");
+        let got = check_adapter_dir(&rel).expect("a complete adapter directory");
+        assert!(got.is_absolute(), "the written path must be absolute: {}", got.display());
+        assert_eq!(got, abs);
+    }
+
+    /// The fixture is an adapter `lora` itself reads, so "this check accepts it" and
+    /// "the lens can use it" are the same sentence for at least one directory.
+    #[test]
+    fn the_fixture_is_an_adapter_lora_itself_accepts() {
+        let (rel, _) = scratch("lora-accepts");
+        write_adapter(&rel);
+        let summary = organon_core::lora::read_adapter_dir(&rel)
+            .expect("`lora::read_adapter_dir` must accept the fixture");
+        assert_eq!(summary.modules.len(), 1);
+    }
+
+    /// Each refusal names what is wrong with **this** directory. The four structural
+    /// ones, one fixture each.
+    ///
+    /// ⚠️ **Mutation-tested.** Dropping the `meta.is_dir()` arm makes the file case
+    /// fall through to `NoMember`, failing here at *"a file is not a directory"*.
+    #[test]
+    fn each_structural_refusal_names_what_is_wrong_with_this_directory() {
+        let (root, _) = scratch("refusals");
+
+        // Missing.
+        let gone = root.join("not-here");
+        match check_adapter_dir(&gone) {
+            Err(AdapterRefusal::Missing { .. }) => {}
+            other => panic!("a missing path must be Missing, got {other:?}"),
+        }
+
+        // A file, not a directory — picking `adapter_model.safetensors` itself is
+        // the likely mistake, so the sentence has to say which of the two it wanted.
+        let as_file = root.join("a-file");
+        std::fs::write(&as_file, b"not a directory").unwrap();
+        match check_adapter_dir(&as_file) {
+            Err(e @ AdapterRefusal::NotADirectory { .. }) => {
+                assert!(e.sentence().contains(ADAPTER_CONFIG), "{}", e.sentence());
+            }
+            other => panic!("a file is not a directory, got {other:?}"),
+        }
+
+        // No config.
+        let no_cfg = root.join("no-config");
+        std::fs::create_dir_all(&no_cfg).unwrap();
+        std::fs::write(no_cfg.join(ADAPTER_WEIGHTS), safetensors_pair()).unwrap();
+        match check_adapter_dir(&no_cfg) {
+            Err(AdapterRefusal::NoMember { name, .. }) => assert_eq!(name, ADAPTER_CONFIG),
+            other => panic!("a directory with no config must name it, got {other:?}"),
+        }
+
+        // No weights.
+        let no_w = root.join("no-weights");
+        std::fs::create_dir_all(&no_w).unwrap();
+        std::fs::write(no_w.join(ADAPTER_CONFIG), GOOD_CONFIG).unwrap();
+        match check_adapter_dir(&no_w) {
+            Err(AdapterRefusal::NoMember { name, .. }) => assert_eq!(name, ADAPTER_WEIGHTS),
+            other => panic!("a directory with no weights must name it, got {other:?}"),
+        }
+    }
+
+    /// 🚨 **Both members are opened and judged by `lora`'s own parsers**, so the CLI
+    /// cannot come to a different verdict from the reader it is feeding.
+    ///
+    /// The two cases are the ones a person actually hits. **DoRA** is refused by name
+    /// — its update is not `(alpha/r)·B·A`, so reading it as LoRA yields plausible
+    /// numbers rather than an error. And a **git-lfs pointer** is what a `git clone`
+    /// of a HuggingFace repo leaves behind when lfs is not installed: a ~130-byte
+    /// text file with the right name, which exists and opens and is not an adapter.
+    ///
+    /// ⚠️ **Mutation-tested.** Deleting the `parse_safetensors_index` call fails here
+    /// at *"an lfs pointer is not a safetensors file"*; deleting the
+    /// `parse_adapter_config` call fails it at the DoRA case.
+    #[test]
+    fn a_member_that_is_not_what_it_claims_is_refused_by_loras_own_parser() {
+        let (root, _) = scratch("not-an-adapter");
+
+        let dora = root.join("dora");
+        std::fs::create_dir_all(&dora).unwrap();
+        std::fs::write(
+            dora.join(ADAPTER_CONFIG),
+            r#"{"peft_type":"LORA","r":2,"lora_alpha":4,"use_dora":true}"#,
+        )
+        .unwrap();
+        std::fs::write(dora.join(ADAPTER_WEIGHTS), safetensors_pair()).unwrap();
+        match check_adapter_dir(&dora) {
+            Err(e @ AdapterRefusal::NotAnAdapter { .. }) => {
+                assert!(e.sentence().contains("DoRA"), "{}", e.sentence());
+            }
+            other => panic!("DoRA must be refused by name, got {other:?}"),
+        }
+
+        let lfs = root.join("lfs-pointer");
+        std::fs::create_dir_all(&lfs).unwrap();
+        std::fs::write(lfs.join(ADAPTER_CONFIG), GOOD_CONFIG).unwrap();
+        std::fs::write(
+            lfs.join(ADAPTER_WEIGHTS),
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:deadbeef\nsize 1234\n",
+        )
+        .unwrap();
+        match check_adapter_dir(&lfs) {
+            Err(AdapterRefusal::NotAnAdapter { path, .. }) => {
+                assert!(path.ends_with(ADAPTER_WEIGHTS), "{}", path.display());
+            }
+            other => panic!("an lfs pointer is not a safetensors file, got {other:?}"),
+        }
+
+        // And a config that is not JSON at all.
+        let junk = root.join("junk-config");
+        std::fs::create_dir_all(&junk).unwrap();
+        std::fs::write(junk.join(ADAPTER_CONFIG), b"<html>404</html>").unwrap();
+        std::fs::write(junk.join(ADAPTER_WEIGHTS), safetensors_pair()).unwrap();
+        assert!(matches!(
+            check_adapter_dir(&junk),
+            Err(AdapterRefusal::NotAnAdapter { .. })
+        ));
+    }
+
+    /// 🚨 **The whole point of the tier: a refused directory writes NOTHING.**
+    ///
+    /// A bad path in the sidecar is re-read and re-refused by `build_mind_graph` on
+    /// **every frame** — it clears `delta`, which is the cache key that would
+    /// otherwise suppress the re-read — into a terminal on a machine nobody is
+    /// watching. So the refusal has to happen before the write, and it has to keep
+    /// happening: this asserts the sidecar is not created by a refusal, and that an
+    /// existing good selection is not destroyed by one.
+    ///
+    /// ⚠️ **Mutation-tested.** Reordering `select_adapter` to write first and check
+    /// second fails here twice: *"a refusal must not create the sidecar"* and then
+    /// *"a refusal must not disturb a selection that was already there"*.
+    #[test]
+    fn a_refused_directory_writes_nothing_to_the_sidecar() {
+        let (root, root_abs) = scratch("no-write-on-refusal");
+        let sidecar = root.join("adapter.txt");
+        let bad = root.join("not-here");
+
+        match select_adapter(&sidecar, &bad) {
+            Err(AdapterSelectError::Refused(_)) => {}
+            other => panic!("a missing directory must be Refused, got {other:?}"),
+        }
+        assert!(
+            !sidecar.exists(),
+            "a refusal must not create the sidecar — an unreadable path there is \
+             re-refused every frame in the visual"
+        );
+
+        // Now with a good selection already standing.
+        let good = root.join("good");
+        std::fs::create_dir_all(&good).unwrap();
+        write_adapter(&good);
+        let abs = select_adapter(&sidecar, &good).expect("a complete adapter directory");
+        assert_eq!(abs, root_abs.join("good"));
+        let before = std::fs::read_to_string(&sidecar).unwrap();
+
+        assert!(select_adapter(&sidecar, &bad).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&sidecar).unwrap(),
+            before,
+            "a refusal must not disturb a selection that was already there"
+        );
+    }
+
+    /// **Select, then clear, read back through the reader's own rule.**
+    ///
+    /// `adapter_selection` is `build_mind_graph`'s rule restated — trim, and treat
+    /// empty as nothing selected — because `organon-world` is not a dependency of
+    /// this crate and it cannot be imported. Pinning the bodies this module writes
+    /// against it is what keeps `--show` from reporting a selection the lens does
+    /// not have.
+    ///
+    /// ⚠️ **Mutation-tested.** Making `adapter_clear_body` return `"\n"` still
+    /// passes (the reader trims, which is the point); making it return `"none"`
+    /// fails at *"cleared must read back as nothing selected"*.
+    #[test]
+    fn select_then_clear_round_trips_through_the_readers_own_rule() {
+        let (root, root_abs) = scratch("round-trip");
+        let sidecar = root.join("adapter.txt");
+        let good = root.join("good");
+        std::fs::create_dir_all(&good).unwrap();
+        write_adapter(&good);
+
+        select_adapter(&sidecar, &good).unwrap();
+        assert_eq!(
+            read_adapter_sidecar(&sidecar).as_deref(),
+            Some(root_abs.join("good").to_str().unwrap()),
+            "the selection must read back as the absolute directory"
+        );
+
+        clear_adapter(&sidecar).unwrap();
+        assert_eq!(
+            read_adapter_sidecar(&sidecar),
+            None,
+            "cleared must read back as nothing selected"
+        );
+
+        // And the reader's rule itself, at the two edges `world.rs` cares about.
+        assert_eq!(adapter_selection("  /a/b \r\n "), Some("/a/b"));
+        assert_eq!(adapter_selection("   \n"), None);
+        assert_eq!(adapter_selection(""), None);
+        // A sidecar that was never written reads the same as an empty one.
+        assert_eq!(read_adapter_sidecar(&root.join("never-written.txt")), None);
+    }
+
+    /// The blurb is **measured** — every field is read straight out of
+    /// `adapter_config.json` and none of it is interpreted. It exists so the person
+    /// selecting an adapter can tell at a glance that they picked the one they meant.
+    #[test]
+    fn the_blurb_reports_what_the_config_states_and_nothing_more() {
+        let (rel, _) = scratch("blurb");
+        write_adapter(&rel);
+        let b = adapter_blurb(&rel).expect("a readable config");
+        assert_eq!(b.declared_r, Some(2));
+        assert_eq!(b.alpha, 4.0);
+        assert!(!b.rslora);
+        assert_eq!(b.target_modules, 2);
+        assert_eq!(b.base.as_deref(), Some("unsloth/tiny-fixture"));
+        let line = b.line();
+        assert!(line.contains("rank 2"), "{line}");
+        assert!(line.contains("alpha/r"), "{line}");
+        assert!(line.contains("unsloth/tiny-fixture"), "{line}");
+
+        // rsLoRA changes the denominator, and reading it the naive way understates
+        // every norm by sqrt(r) with nothing erroring — so the line has to say so.
+        let (rs, _) = scratch("blurb-rslora");
+        std::fs::write(
+            rs.join(ADAPTER_CONFIG),
+            r#"{"peft_type":"LORA","r":4,"lora_alpha":8,"use_rslora":true}"#,
+        )
+        .unwrap();
+        std::fs::write(rs.join(ADAPTER_WEIGHTS), safetensors_pair()).unwrap();
+        let line = adapter_blurb(&rs).expect("a readable config").line();
+        assert!(line.contains("rsLoRA"), "{line}");
+
+        // A directory with no readable config decorates nothing rather than failing.
+        assert_eq!(adapter_blurb(&rs.join("nowhere")), None);
+    }
 }

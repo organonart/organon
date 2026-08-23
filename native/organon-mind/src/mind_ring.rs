@@ -319,6 +319,24 @@ impl MindRingWriter {
         Ok(MindRingWriter { map, seq: 0 })
     }
 
+    /// Create the ring of a **named** namespace (#191 T1) — the writer's half of
+    /// [`MindRingReader::open_ns`].
+    ///
+    /// A real runtime uses [`create`](Self::create) and lets its own `$ORGANON_IPC_NS`
+    /// decide, which is what makes two runtimes two rings without either knowing about
+    /// the other. This exists for a harness standing up both rings inside **one**
+    /// process, where the process-global namespace can only ever name one of them.
+    /// Same sanitizer, same refusal: `Err` on a namespace `$ORGANON_IPC_NS` would reject.
+    pub fn create_ns(ns: &str) -> io::Result<MindRingWriter> {
+        let path = organon_core::ipc::mind_ring_path_in(ns).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("'{ns}' is not a usable IPC namespace"),
+            )
+        })?;
+        Self::create_at(&path)
+    }
+
     /// Create the ring at an explicit path (used by tests for isolation).
     pub fn create_at(path: &std::path::Path) -> io::Result<MindRingWriter> {
         let file = OpenOptions::new()
@@ -362,6 +380,34 @@ impl MindRingReader {
     /// file exists and is at least `MR_SIZE` bytes.
     pub fn open() -> MindRingReader {
         Self::open_at(&mind_ring_path())
+    }
+
+    /// Open the ring of a **named** namespace (#191 T1 — "two runtimes, two rings").
+    ///
+    /// [`open`] resolves this *process's* namespace, so a reader gets whichever ring is
+    /// local to it. That is right for the visual watching its own runtime and wrong for
+    /// anything comparing two models: a base model and its fine-tune run as two
+    /// processes with two `$ORGANON_IPC_NS` values, and the comparison has to say which
+    /// ring it means. `open_ns("mind-base")` reads `$TMPDIR/mind-base-mind.bin`
+    /// regardless of what this process's own namespace resolved to.
+    ///
+    /// The two failures are deliberately different types, because they need different
+    /// responses and one of them never resolves itself:
+    ///
+    /// - `Err` — the namespace is not a legal `$TMPDIR` filename component. A typo, and
+    ///   no amount of waiting fixes it. Loud, rather than falling back to the local ring
+    ///   the way `$ORGANON_IPC_NS` does (a spawned visual must come up on *something*; a
+    ///   caller that typed a name must not be silently answered about a different one).
+    /// - `Ok` with `is_open() == false` — a legal name whose writer has not started.
+    ///   The ordinary case at startup, and it fixes itself the moment the runtime runs.
+    pub fn open_ns(ns: &str) -> Result<MindRingReader, String> {
+        let path = organon_core::ipc::mind_ring_path_in(ns).ok_or_else(|| {
+            format!(
+                "'{ns}' is not a usable IPC namespace — ASCII letters, digits, '-' and \
+                 '_', 1..=64 characters (the same rule $ORGANON_IPC_NS obeys)"
+            )
+        })?;
+        Ok(Self::open_at(&path))
     }
 
     /// Open at an explicit path (used by tests for isolation).
@@ -768,5 +814,117 @@ mod tests {
         std::fs::write(&path, bytemuck::bytes_of(&ring)).unwrap();
         assert!(MindRingReader::open_at(&path).latest().is_none());
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── #191 T1 — two runtimes, two rings ────────────────────────────────────
+    //
+    // The whole tier in four tests. The mechanism is not new: `$ORGANON_IPC_NS` already
+    // forks every `$TMPDIR` path, which is what lets an Organon session and a Mind
+    // session coexist. What was missing is the reader's side — a process could only ever
+    // open the ring its OWN namespace resolved to, so "compare base against fine-tune"
+    // had nowhere to stand. These pin that a reader NAMES its ring.
+
+    /// A namespace unique to this test binary run, so two of these can be in flight
+    /// without stepping on each other or on a real runtime's `organic-math-mind.bin`.
+    fn tmp_ns(tag: &str) -> String {
+        format!("t191-{}-{}", std::process::id(), tag)
+    }
+
+    /// Two writers, two namespaces, two rings — and each reader sees only its own.
+    ///
+    /// This is the tier's claim. It fails loudly if `open_ns` ever ignores its argument
+    /// (both readers would report the same model), and it fails if the two namespaces
+    /// ever resolve to one file (the second runtime would overwrite the first's frames
+    /// and a diff would be a model against itself, with nothing to report the collision).
+    #[test]
+    fn two_runtimes_write_two_rings_and_a_reader_names_the_one_it_wants() {
+        let base = tmp_ns("base");
+        let tuned = tmp_ns("tuned");
+        for ns in [&base, &tuned] {
+            let _ = std::fs::remove_file(organon_core::ipc::mind_ring_path_in(ns).unwrap());
+        }
+        {
+            // Two "runtimes". Different layer counts stand in for two different models —
+            // in the real thing they are identical, which is the point of #191, so the
+            // token index is what actually distinguishes the traces.
+            let mut wb = MindRingWriter::create_ns(&base).unwrap();
+            let mut wt = MindRingWriter::create_ns(&tuned).unwrap();
+            wb.write_frame(&frame(7, 4, 3));
+            wt.write_frame(&frame(99, 6, 2));
+            // Interleaved, because two runtimes are not synchronised.
+            wb.write_frame(&frame(8, 4, 3));
+        }
+
+        let rb = MindRingReader::open_ns(&base).expect("legal namespace");
+        let rt = MindRingReader::open_ns(&tuned).expect("legal namespace");
+        let fb = rb.latest().expect("base ring has frames");
+        let ft = rt.latest().expect("tuned ring has frames");
+
+        assert_eq!(fb.token_index, 8, "base reader must see the BASE ring");
+        assert_eq!(ft.token_index, 99, "tuned reader must see the TUNED ring");
+        assert_eq!((fb.n_layers, fb.n_heads), (4, 3));
+        assert_eq!((ft.n_layers, ft.n_heads), (6, 2));
+        // Independent write sequences: neither runtime advances the other's ring.
+        assert_eq!(fb.seq, 2);
+        assert_eq!(ft.seq, 1);
+
+        for ns in [&base, &tuned] {
+            let _ = std::fs::remove_file(organon_core::ipc::mind_ring_path_in(ns).unwrap());
+        }
+    }
+
+    /// Provenance is per ring, so "both taps report MEASURED" is a checkable statement
+    /// rather than an assumption. A base runtime whose tensor capture worked and a
+    /// fine-tune whose did not must not look alike — that is exactly the case where a
+    /// difference lens would render a proxy against a measurement and call it a result.
+    #[test]
+    fn each_ring_carries_its_own_provenance() {
+        let measured = tmp_ns("meas");
+        let proxy = tmp_ns("proxy");
+        {
+            let mut wm = MindRingWriter::create_ns(&measured).unwrap();
+            let mut wp = MindRingWriter::create_ns(&proxy).unwrap();
+            let mut fm = frame(1, 4, 2);
+            fm.flags = FLAG_RESID_MEASURED | FLAG_MLP_MEASURED;
+            wm.write_frame(&fm);
+            wp.write_frame(&frame(1, 4, 2)); // flags 0 — the proxy fallback
+        }
+        let fm = MindRingReader::open_ns(&measured).unwrap().latest().unwrap();
+        let fp = MindRingReader::open_ns(&proxy).unwrap().latest().unwrap();
+        assert_ne!(fm.flags & FLAG_RESID_MEASURED, 0);
+        assert_ne!(fm.flags & FLAG_MLP_MEASURED, 0);
+        assert_eq!(fp.flags & (FLAG_RESID_MEASURED | FLAG_MLP_MEASURED), 0);
+        for ns in [&measured, &proxy] {
+            let _ = std::fs::remove_file(organon_core::ipc::mind_ring_path_in(ns).unwrap());
+        }
+    }
+
+    /// A legal name whose runtime has not started yet is `Ok` and SILENT — not an error.
+    /// This is the ordinary case while you are still typing the second launch command,
+    /// and it resolves itself; conflating it with a typo would send someone hunting a
+    /// spelling mistake that is not there.
+    #[test]
+    fn a_ring_nobody_writes_yet_is_open_and_silent_not_an_error() {
+        let ns = tmp_ns("absent");
+        let _ = std::fs::remove_file(organon_core::ipc::mind_ring_path_in(&ns).unwrap());
+        let r = MindRingReader::open_ns(&ns).expect("a legal name is not an error");
+        assert!(!r.is_open(), "no writer yet");
+        assert!(r.latest().is_none());
+    }
+
+    /// A namespace the sanitizer rejects is an ERROR, never a quiet fall back to this
+    /// process's own ring. The env var falls back on purpose (a spawned visual has to
+    /// come up on something); a caller that typed a name has made a mistake, and being
+    /// handed the local model's trace labelled as the other one is the worst outcome
+    /// available — it is wrong and it looks right.
+    #[test]
+    fn an_illegal_namespace_is_refused_not_answered_with_the_local_ring() {
+        for bad in ["", "..", "../evil", "a/b", "a b", "mind base"] {
+            let e = MindRingReader::open_ns(bad).err().unwrap_or_else(|| {
+                panic!("{bad:?} should be refused");
+            });
+            assert!(e.contains("not a usable IPC namespace"), "message was: {e}");
+        }
+        assert!(MindRingWriter::create_ns("../evil").is_err());
     }
 }
