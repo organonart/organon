@@ -421,7 +421,6 @@ pub fn check_producer_name(name: &str) -> Result<(), ModuleFault> {
     Ok(())
 }
 
-/// The longest run of somebody else's text a sentence will render before it stops.
 /// May `key` name a setting?
 ///
 /// 🚨 **The rules are `check_producer_name`'s, minus the ones about being a directory and plus
@@ -456,6 +455,7 @@ pub fn check_setting_key(key: &str) -> Result<(), ModuleFault> {
     Ok(())
 }
 
+/// The longest run of somebody else's text a sentence will render before it stops.
 const MAX_UNTRUSTED: usize = 120;
 
 /// Render a string **out of a manifest** — or out of a hand-edited `modules.json` — as data.
