@@ -348,6 +348,12 @@ enum Cmd {
         #[command(subcommand)]
         action: ConsoleAction,
     },
+    /// Choose what Organon Mind's lenses read — currently the LoRA adapter the Delta
+    /// lens measures. e.g. `organon mind adapter ./out/lora-r16`
+    Mind {
+        #[command(subcommand)]
+        action: MindAction,
+    },
     /// Print a shell completion script (bash / zsh / fish / …)
     #[command(after_help = "install:\n  zsh:  organon completions zsh > \
                             /usr/local/share/zsh/site-functions/_organon  (then restart zsh)\n  \
@@ -386,6 +392,45 @@ enum RecordAction {
     },
     /// Stop the active recording and finalize the file
     Stop,
+}
+
+/// `organon mind …` — what Organon Mind's lenses read, kept in a namespace of its own
+/// for `ConsoleAction`'s reason: these verbs do not address the world Organon renders,
+/// they address the *inputs* one of Mind's lenses is pointed at.
+///
+/// 🚨 **This lane is a plain file, not the `CliOp` queue and not the console sidecar.**
+/// `world.rs`'s `build_mind_graph` re-reads `ipc::adapter_sidecar_path()` whenever the
+/// string in it changes, so writing the file **is** the whole trigger — there is no
+/// counter to bump, no `Shared` field, and nothing to drain. That is also why these
+/// verbs never become a `CtlCmd`.
+#[derive(Subcommand)]
+enum MindAction {
+    /// Point the Delta lens at a LoRA adapter directory (the folder holding
+    /// `adapter_config.json` + `adapter_model.safetensors`), or clear it, or say what
+    /// is currently selected.
+    #[command(group = clap::ArgGroup::new("adapter_what").required(true).multiple(false))]
+    #[command(after_help = "The lens reads the selection when Mind's view is set to \
+                            Delta; a change takes effect on the next frame.\n\n\
+                            The sidecar is NAMESPACED. `organon` resolves it through \
+                            $ORGANON_IPC_NS, falling back to the namespace of the \
+                            edition it was built as — so an `organon` built for one \
+                            edition writes a file another edition never reads, and the \
+                            symptom is indistinguishable from not having run this at \
+                            all. Every form above prints the path it used; set \
+                            ORGANON_IPC_NS to address a different session.")]
+    Adapter {
+        /// The adapter directory. Relative is fine — it is resolved to an absolute
+        /// path before it is written, because the visual is a different process with a
+        /// different working directory.
+        #[arg(value_name = "PATH", group = "adapter_what")]
+        path: Option<std::path::PathBuf>,
+        /// Select nothing, returning the lens to "no adapter selected"
+        #[arg(long, group = "adapter_what")]
+        clear: bool,
+        /// Print what is currently selected (and where that answer came from)
+        #[arg(long, group = "adapter_what")]
+        show: bool,
+    },
 }
 
 /// `organon console …` — the console's chrome, kept in a namespace of its own rather than
@@ -808,7 +853,11 @@ fn to_ctl(cmd: Cmd) -> Result<cli::CtlCmd, String> {
         | Cmd::Snap { .. }
         | Cmd::Record { .. }
         | Cmd::Docs { .. }
-        | Cmd::Console { .. } => {
+        | Cmd::Console { .. }
+        // `Mind` sits here for `Console`'s reason: its destination is the adapter
+        // sidecar, which the visual re-reads when its contents change, not the
+        // `cli.txt` queue the World drains.
+        | Cmd::Mind { .. } => {
             unreachable!("handled before mapping")
         }
     })
@@ -1153,6 +1202,107 @@ fn run_console(action: ConsoleAction) -> ! {
     std::process::exit(0);
 }
 
+/// `organon mind …` (#147 Tier 3½) — check a LoRA adapter directory, then write the
+/// sidecar the Delta lens reads.
+///
+/// Exits, like [`run_console`]: **0** ok · **1** the sidecar cannot be written ·
+/// **2** the directory was refused.
+///
+/// 🚨 **Nothing is written until the directory has been checked**, and that is this
+/// verb's entire reason to exist. The reader is `world.rs`'s `build_mind_graph`, in the
+/// *visual* — a different process, usually on a second display — and its failure path
+/// clears the cache key that would otherwise suppress a re-read, so a bad path is
+/// re-read and re-refused **every frame**, into a terminal nobody is watching. Here the
+/// person is looking at the output, so here is where the refusal belongs.
+/// `cli::check_adapter_dir` owns the rules and what they do and do not cover.
+///
+/// 📌 **No "no live Organon" warning, unlike the `CliOp` lane, and the difference is
+/// real rather than an omission.** A queued op is dropped if the visual starts later
+/// (the seed rule); this sidecar is a *file*, and `build_mind_graph` reads it the first
+/// time the Delta lens is selected whether that is now or tomorrow. Choosing an adapter
+/// with nothing running is a supported thing to do, so warning about it would be false.
+fn run_mind(action: MindAction) -> ! {
+    // 📌 The namespace is resolved by `ipc`, never spelled here — `$ORGANON_IPC_NS`
+    // and the compiled edition are what let a Mind session and an Organon session hold
+    // separate selections, and a hand-built `$TMPDIR` path would silently join them.
+    // `ipc::adapter_sidecar_is_namespaced_and_distinct_from_the_model` pins it.
+    let sidecar = ipc::adapter_sidecar_path();
+    let ns = ipc::namespace();
+
+    let MindAction::Adapter { path, clear, show } = action;
+
+    if show {
+        match cli::read_adapter_sidecar(&sidecar) {
+            Some(dir) => {
+                println!("adapter: {dir}");
+                // ⚠️ The file can be right and the world can have moved — an adapter
+                // gets deleted, a drive gets unmounted. Saying "selected" while the
+                // lens is about to clear the graph would be the same lie the visual's
+                // silence already tells; re-checking costs a `stat` and two headers.
+                match cli::check_adapter_dir(std::path::Path::new(&dir)) {
+                    Ok(abs) => {
+                        if let Some(b) = cli::adapter_blurb(&abs) {
+                            println!("  {}", b.line());
+                        }
+                    }
+                    Err(e) => eprintln!(
+                        "organon: warning — the selection no longer checks out, so the \
+                         Delta lens will clear the graph: {}",
+                        e.sentence()
+                    ),
+                }
+            }
+            None => println!(
+                "adapter: none selected — the Delta lens clears the graph and says so"
+            ),
+        }
+        println!("  from {} (namespace {ns:?})", sidecar.display());
+        std::process::exit(0);
+    }
+
+    // ⚠️ The two write paths go through `cli::select_adapter` / `cli::clear_adapter`
+    // rather than checking here and writing there: keeping "refused ⇒ nothing written"
+    // inside one function is what stops a future caller reaching the write with the
+    // check skipped.
+    let outcome = if clear {
+        cli::clear_adapter(&sidecar).map(|()| None)
+    } else {
+        let Some(path) = path else {
+            // clap's `required(true)` group makes this unreachable through the CLI;
+            // refusing rather than defaulting is the `console portal` rule — there is
+            // no adapter a bare `mind adapter` silently means.
+            eprintln!("organon: `mind adapter` needs a directory, --clear, or --show");
+            std::process::exit(2);
+        };
+        cli::select_adapter(&sidecar, &path).map(Some)
+    };
+
+    match outcome {
+        Ok(Some(abs)) => {
+            println!("selected: {}", abs.display());
+            if let Some(b) = cli::adapter_blurb(&abs) {
+                println!("  {}", b.line());
+            }
+            // Only on a selection. After `--clear` the same sentence would read as an
+            // instruction to go and look at something, when what it means is that the
+            // lens will now clear the graph — which the line above has already said.
+            println!("  the Delta lens reads it when Mind's view is set to Delta.");
+        }
+        Ok(None) => println!("cleared: no adapter selected"),
+        Err(e) => {
+            eprintln!("organon: {}", e.sentence());
+            // 2 for a refused directory (the caller's to fix), 1 for a sidecar that
+            // would not take the write (the machine's) — `run_console`'s split.
+            std::process::exit(match e {
+                cli::AdapterSelectError::Refused(_) => 2,
+                cli::AdapterSelectError::Sidecar { .. } => 1,
+            });
+        }
+    }
+    println!("  wrote {} (namespace {ns:?})", sidecar.display());
+    std::process::exit(0);
+}
+
 fn main() {
     let parsed = Cli::parse(); // --help/-V/usage errors exit here (code 2)
 
@@ -1173,6 +1323,14 @@ fn main() {
     // conventional.
     if let Cmd::Console { action } = parsed.cmd {
         run_console(action);
+    }
+
+    // #147 Tier 3½: the Mind lane. It branches here for the console lane's reason and
+    // one more — its destination is a *sidecar the reader re-reads on change*, not a
+    // queue anything drains, so a `CtlCmd` for it would be a variant `ops_for` must
+    // remember to answer `None` for.
+    if let Cmd::Mind { action } = parsed.cmd {
+        run_mind(action);
     }
 
     // #452 Tier 3 ("the eyes"): snap/record ride a request+reply channel (the visual does
@@ -2267,5 +2425,73 @@ mod tests {
         assert!(script.contains("#compdef organon"));
         // Param ids ride the completion script as possible values.
         assert!(script.contains("metallic"));
+    }
+
+    /// 🚨 **`mind adapter` takes exactly one of a path, `--clear` or `--show`, and
+    /// "none of them" is an error rather than a default** (#147 Tier 3½).
+    ///
+    /// The bare case is the one worth pinning, and it is `console portal`'s rule: there
+    /// is no adapter `organon mind adapter` silently means, and a default here would be
+    /// a command that either selected something nobody named or cleared a selection
+    /// somebody did. clap's `ArgGroup` is what says it, because it is the only thing
+    /// that can — a required *group* is not expressible as a required argument.
+    ///
+    /// ⚠️ **Mutation-tested.** Dropping `.required(true)` from the group fails this at
+    /// *"a bare `mind adapter` has no meaning"*; dropping `.multiple(false)` fails it at
+    /// the `--clear --show` case.
+    #[test]
+    fn mind_adapter_takes_exactly_one_of_a_path_a_clear_or_a_show() {
+        match parse(&["mind", "adapter", "./out/lora-r16"]).expect("a path is a form").cmd {
+            Cmd::Mind { action: MindAction::Adapter { path, clear, show } } => {
+                assert_eq!(path.as_deref(), Some(std::path::Path::new("./out/lora-r16")));
+                assert!(!clear && !show);
+            }
+            _ => panic!("`mind adapter <PATH>` parsed as something else"),
+        }
+        match parse(&["mind", "adapter", "--clear"]).expect("--clear is a form").cmd {
+            Cmd::Mind { action: MindAction::Adapter { path, clear, show } } => {
+                assert!(path.is_none() && clear && !show);
+            }
+            _ => panic!("`mind adapter --clear` parsed as something else"),
+        }
+        match parse(&["mind", "adapter", "--show"]).expect("--show is a form").cmd {
+            Cmd::Mind { action: MindAction::Adapter { path, clear, show } } => {
+                assert!(path.is_none() && !clear && show);
+            }
+            _ => panic!("`mind adapter --show` parsed as something else"),
+        }
+
+        assert!(
+            parse(&["mind", "adapter"]).is_err(),
+            "a bare `mind adapter` has no meaning — there is no adapter it could mean, \
+             and no default that would not be a surprise"
+        );
+        assert!(parse(&["mind", "adapter", "--clear", "--show"]).is_err());
+        assert!(parse(&["mind", "adapter", "./x", "--clear"]).is_err());
+        assert!(parse(&["mind", "adapter", "./x", "--show"]).is_err());
+        // And the namespace warning has to be in `--help`, since it is the one way this
+        // verb fails while looking like it worked.
+        let help = match parse(&["mind", "adapter", "--help"]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("`--help` exits through clap's error channel"),
+        };
+        assert!(help.contains("ORGANON_IPC_NS"), "{help}");
+        // `mind` on its own is a namespace, not a verb.
+        assert!(parse(&["mind"]).is_err());
+    }
+
+    /// The Mind lane must not leak into the World's, `the console lane`'s test one module
+    /// over and for its reason: `mind adapter` branches in `main` before the mapping, so
+    /// reaching `to_ctl` at all is the `unreachable!`.
+    ///
+    /// ⚠️ It is a **different** destination again — not `cli.txt` and not the console
+    /// sidecar, but `ipc::adapter_sidecar_path()`, which the visual re-reads when its
+    /// contents change rather than draining.
+    #[test]
+    #[should_panic(expected = "handled before mapping")]
+    fn a_mind_verb_never_becomes_a_world_command() {
+        let _ = to_ctl(Cmd::Mind {
+            action: MindAction::Adapter { path: None, clear: true, show: false },
+        });
     }
 }

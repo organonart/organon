@@ -751,10 +751,11 @@ it. #147 names that cliff and this tier stops short of it deliberately.
 📌 **No `Shared` change, no `LAYOUT_VERSION` movement, no renderer, no network.** T3
 (below) is what turns these numbers into a lens; T1 (§2.9) is the connection over which
 adapters will be *discovered*. This module knows about neither. ⚠️ T1 landed with
-`/api/health` and nothing else, so `/api/models/loras` still has no caller — the adapter
-path still has to be handed to `lora.rs` by something, and nothing does.
+`/api/health` and nothing else, so **`/api/models/loras` still has no caller** — what
+changed in T3½ is only the *local* half: `organon mind adapter <PATH>` hands `lora.rs` a
+directory a person typed (§2.8.1). Discovery over the API is still unwritten.
 
-### 2.8 The Delta lens (#147 Tier 3) — *landed; nothing has ever selected it on a machine*
+### 2.8 The Delta lens (#147 Tier 3) — *landed and selectable; no GPU has drawn it*
 
 `math.rs`'s `delta_sites` / `delta_into_scalars` / `delta_lens_graph`, behind
 **`Shared.mind[2] == 2`**. The specimen, shaped and lit by how far each site actually
@@ -896,16 +897,75 @@ reports the real extremes so a readout can print what was actually measured.
 | a generic leaf never outvotes its parent | **measured** (offline) | mutation-tested both ways: re-admitting `dense` fails with *"BERT's FFN up-proj must not be drawn on the attention ring — left: Attn, right: Unclassified"*, re-admitting `wo` with the T5 equivalent, and deleting the container fallback fails the Falcon and Meta-llama guards, so those two are not passing by accident |
 | OPT's inline `fc1`/`fc2` and T5's `DenseReluDense` reach the MLP node | **measured** (offline) | the leaf and the container are mutation-tested one at a time: dropping `fc1`/`fc2` fails with *"left: Unclassified, right: Mlp"* on `model.decoder.layers.3.fc1`, dropping `densereludense` fails two tests, one of them *"T5's FFN down-proj belongs on the MLP node, not the attention ring — left: Unclassified, right: Mlp"*. The names behind both were read out of an installed transformers 5.5.0, not recalled |
 | no container pattern is unmatchable | **measured** (offline) | `an_unmatchable_table_entry_is_dead_weight` requires every entry in `MLP_CONTAINERS` to be reachable by a name in circulation. Adding the dead `densegatedactdense` fails only that test — with it skipped, all **654** others pass, which is the measurement of how invisible a dead entry is |
-| **anything on a screen** | 🚨 **never run** | no adapter has been read on any machine, nothing has ever written the adapter sidecar, and no GPU has drawn this. Every claim above is arithmetic and geometry, checked offline |
+| **anything on a screen** | 🚨 **never run** | the sidecar now has a writer (§2.8.1) and a synthetic adapter round-trips through it offline, but **no real adapter has been read on any machine and no GPU has drawn this**. Every claim above is arithmetic and geometry, checked offline |
 
 📌 **No `Shared` change and no `LAYOUT_VERSION` movement.** The view rides the `mind[2]`
 slot that already exists (`0` specimen, `1` galaxy, `2` Delta), and the adapter
 *directory* rides a new sidecar, `ipc::adapter_sidecar_path()` →
-`$TMPDIR/<ns>-adapter.txt`, because a path is not a control-rate value. ⚠️ **Nothing
-writes that sidecar yet** — the picker is a later tier — so selecting the view today
-clears the graph and prints *"no adapter selected"*. That is the honest failure, on the
-same rule the galaxy follows: substituting the specimen would show the user a different
-thing than the one they asked for.
+`$TMPDIR/<ns>-adapter.txt`, because a path is not a control-rate value. With nothing in
+it the lens clears the graph and prints *"no adapter selected"* — the honest failure, on
+the same rule the galaxy follows: substituting the specimen would show the user a
+different thing than the one they asked for.
+
+#### 2.8.1 What writes the sidecar (#147 Tier 3½) — `organon mind adapter`
+
+`bin/ctl.rs`'s `run_mind`, over `cli.rs`'s `check_adapter_dir` / `select_adapter` /
+`clear_adapter` / `read_adapter_sidecar`. Three forms, and the CLI is the whole producer
+for now — there is no file picker, and none is proposed here.
+
+```
+organon mind adapter <PATH>     # check it, then write it
+organon mind adapter --clear    # empty the sidecar: "no adapter selected"
+organon mind adapter --show     # what is selected, and where that answer came from
+```
+
+🚨 **The check is the tier.** `build_mind_graph`'s failure arm sets `*delta = None`, and
+that field *is* the cache key which would otherwise suppress a re-read — so a bad path in
+the sidecar is re-read and re-refused **on every frame**, in the visual, into a terminal
+nobody is watching. The CLI is the one place a person is reading the output, so a
+directory that cannot be read is refused before a byte is written: missing, not a
+directory, no `adapter_config.json`, no `adapter_model.safetensors`, unreadable, or a
+member that is not what it claims. `select_adapter` does the check and the write in **one
+function** so "refused ⇒ nothing written" is a property of one place rather than of a
+caller remembering the order; it is mutation-tested by reversing them.
+
+📌 **The check runs everything `lora::read_adapter_dir` does except the arithmetic** —
+`lora`'s own `parse_adapter_config` (which is what refuses DoRA by name) and its own
+`parse_safetensors_index`, bounded by `MAX_HEADER_BYTES`. It does **not** stream the
+`lora_A`/`lora_B` payloads, so a refusal here is conclusive and an acceptance is not: an
+adapter can still fail in the visual on a tensor pair or an unsupported dtype. The header
+check earns its bytes on one common real failure — a HuggingFace clone made without
+git-lfs leaves a ~130-byte **text pointer** named `adapter_model.safetensors`, which
+exists, opens, and is not an adapter.
+
+⚠️ **The path is written absolute**, canonicalized from whatever was typed, because the
+visual is a different process with a different working directory. On Windows
+`canonicalize` returns a **verbatim** path (`\\?\C:\…`); `cli::de_verbatim` shortens the
+drive-letter form and deliberately leaves a UNC share alone, since the obvious
+`strip_prefix` there yields `server\share` — a *relative* path, the one failure the
+absolutising exists to prevent.
+
+🚨 **The sidecar is namespaced, and that is how this verb fails while looking like it
+worked.** `ipc::adapter_sidecar_path()` resolves through `ipc::namespace()`, i.e.
+`$ORGANON_IPC_NS` or else the namespace of the edition the binary was *compiled* as —
+`organic-math`, `organon-mind`, `organon-shell`. So an `organon` built for one edition
+writes a file another edition never reads, and the symptom is identical to not having run
+the command. Nothing in this process can decide that for the caller, so every form prints
+the path and the namespace it used, and `--help` names the variable.
+
+📌 **Unlike the `CliOp` lane there is no "no live Organon" warning, and the difference is
+real.** A queued op is dropped if the visual starts later; this is a *file*, and
+`build_mind_graph` reads it the first time the Delta lens is selected, now or tomorrow.
+Choosing an adapter with nothing running is supported, so warning about it would be false.
+
+| | State | Evidence |
+|---|---|---|
+| a refused directory writes nothing, and does not disturb a standing selection | **measured** (offline) | mutation-tested: writing before checking fails with *"a refusal must not create the sidecar"* |
+| a relative directory is written absolute | **measured** (offline) | mutation-tested: returning the input path fails with *"the written path must be absolute: target\\adapter-fixtures\\relative"* |
+| DoRA and a git-lfs pointer are refused, by `lora`'s own parsers | **measured** (offline) | mutation-tested one at a time; dropping the header parse *accepts* the lfs-pointer directory |
+| select → clear round-trips through `build_mind_graph`'s own read rule | **measured** (offline) | ⚠️ that rule (trim; empty ⇒ nothing) is **restated** in `cli::adapter_selection` because `organon-world` is not a dependency of this crate. Three tokens wide, and pinned against the bodies this module writes |
+| exactly one of a path / `--clear` / `--show`, never none | **measured** (offline) | clap `ArgGroup`; mutation-tested in both directions |
+| **a real adapter, and anything on a screen** | 🚨 **never run** | the fixture is synthetic (a 2×2 `F32` pair built by the test). No Studio has been spoken to, no real adapter parsed, no frame drawn |
 
 ⚠️ **The write clamp and the read decoder must move together.** `lib.rs` clamps
 `mind_topo` to the highest view that exists and `math::mind_view_mode` decodes it; a
@@ -1222,7 +1282,7 @@ capability to the seam it plugs into.
 | **The one-process viewport** (#593) | `editor_probe.rs` — the custom `Editor` that owns a wgpu surface on the host's parent view (§2.4). Tier 1 extracts `lib.rs`'s editor body so both hosts call it (*done*, #602); Tier 3 replaced `FrameTarget::ui_window` with the `egui_platform::EguiPlatform` seam + its winit arm (*done*; the baseview arm is Tier 2's, since the window is what produces the events); Tier 2 grows the probe's `on_frame` into `World::render_into` + egui; Tier 4 **gates** `frame_ring`/`Mirror` out of the Mind edition — it cannot *delete* them, because full Organon's editor still draws from them (§2.5) |
 | **Packaging** | #483 Tier 4: an `.app` around `organon-mind`, embedding the visual, its own name/icon/namespace |
 | ~~**The Delta lens** (#147 T3)~~ | **landed** — §2.8. ⚠️ Note what changed on the way: the per-site scalar is *not* `per_layer_fro()`, because a raw Frobenius norm grows with matrix size and would light the MLP brightest on every model before any training happened. It is RMS-per-weight (`‖ΔW‖_F / sqrt(out·in)`), which pools exactly and is shape-free |
-| **The checkpoint scrub** (#147 T3's extension) | the same builder, one `DeltaSites` per checkpoint on a slider — `CheckpointInfo{path, loss}` from `/api/models/checkpoints` is already the index. Needs T1 (the API client) and the adapter picker that writes `ipc::adapter_sidecar_path()`, which nothing does yet |
+| **The checkpoint scrub** (#147 T3's extension) | the same builder, one `DeltaSites` per checkpoint on a slider — `CheckpointInfo{path, loss}` from `/api/models/checkpoints` is already the index. The sidecar has a writer now (§2.8.1), so what is left is T1 growing a `/api/models/checkpoints` caller and something driving one selection per slider notch — `organon mind adapter` is one directory at a time, by hand |
 | ~~**The Studio connection** (#147 T1)~~ | **landed** — §2.9. `organon-core/src/unsloth.rs`: endpoint, bearer token, `/api/health`, and the three refusals. ⚠️ It has never spoken to a running Studio, and the probe **cannot** detect a bad key because that route is unauthenticated — do not render a green probe as "connected" |
 | ~~**The training strip and the run shelf** (#147 T4)~~ | **landed** — §2.10. `organon-core/src/train.rs` is the thinking (SSE + chunked framing, the fold, the state machine), `organon-mind/src/mind_train.rs` is the drawing, `lib.rs::mind_training_ui` is the call site. ⚠️ Two things to inherit rather than re-derive: it **never probes health**, because a green probe cannot mean "connected" and building the readout is where that stops being theoretical; and a streaming HTTP body is **chunked**, so an SSE parser fed raw socket bytes silently eats its own events at every chunk boundary |
 | ~~**Two runtimes, two rings** (#191 T1)~~ | **landed** — §2.11. `ipc::mind_ring_path_in` / `MindRingReader::open_ns` are the seam: a reader NAMES the ring it means instead of opening whichever its own namespace resolved to. 🚨 **Do not widen `MindFrame` with a "which model" field** — the namespace answers it, and the ring is transient where a layout commitment is not |

@@ -3137,9 +3137,15 @@ pub fn model_sidecar_path() -> PathBuf {
 ///
 /// 📌 A sidecar rather than a `Shared` field for the same reason every other path
 /// here is one: `Shared` is append-only and offset-sensitive across a process
-/// boundary, and a path is not a control-rate value. **Nothing writes it yet** — the
-/// picker that will is #147's later tier; until then the lens says so out loud
-/// rather than substituting something else.
+/// boundary, and a path is not a control-rate value.
+///
+/// ✏️ **#147 T3½: `organon mind adapter <PATH>` writes it** (`cli::select_adapter`,
+/// `MIND_ARCHITECTURE.md` §2.8.1) — this doc said *"nothing writes it yet"* until
+/// then. ⚠️ **The writer must check the directory before writing**, because the
+/// reader's failure arm clears the cache key that would suppress a re-read, so an
+/// unreadable path here is re-refused on every frame in the visual. With the file
+/// empty or absent the lens still says so out loud rather than substituting
+/// something else.
 pub fn adapter_sidecar_path() -> PathBuf {
     ns_file("adapter.txt")
 }

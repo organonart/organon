@@ -110,6 +110,12 @@ already follows: substituting the specimen would show the user a different thing
 one they asked for. The picker is a later tier, as is the checkpoint scrub the same
 builder gives for free.
 
+> ✏️ **Superseded inside this same release** — `organon mind adapter <PATH>` writes it now
+> (T3½, its own entry below). The paragraph is left standing because it is what was true
+> when the lens landed, and because the *reason* it gives for the empty state is unchanged:
+> with no adapter selected the lens still says so rather than substituting the specimen.
+> What is no longer true is only "nothing writes it".
+
 🚨 **And nothing here has been seen.** No adapter has been read on any machine, no GPU has
 drawn this, and every claim is arithmetic and geometry checked offline against synthetic
 fixtures. Green and ready to try, not verified working.
