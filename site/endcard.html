@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Organon — video end card (source)</title>
+
+<!-- ⚠️ THIS PAGE IS THE SOURCE OF site/endcard.png, NOT A PAGE ANYONE IS MEANT
+     TO VISIT, and NOT a page the site serves. It is the still frame a video
+     cuts to before it fades out: the claim, the address, and the invitation,
+     held on screen for a few seconds over music.
+
+     It is a SIBLING of og.html, not an extension of it. Same motifs, three
+     differences that follow from the medium:
+       * 16:9 (1920×1080), because a video frame is, and og:image is not;
+       * the address is set LARGE and in bone rather than titanium — on the
+         card it is a footnote, on a screen somebody is watching it is the
+         call to action;
+       * it carries the repository and an invitation, which the link card has
+         no room for and no reason to.
+
+     Re-render it with headless Chrome — there is no image toolchain in this
+     repository and none is wanted:
+
+       chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 \
+              --window-size=1920,1080 --screenshot=site/endcard.png \
+              site/endcard.html
+
+     The 2× scale factor is why the PNG is 3840×2160 — deliberate headroom, so
+     the frame can be pushed into or cropped in an editor without softening.
+     Render at 1× for a plain 1920×1080.
+
+     🚨 Every colour below is duplicated from index.html's token block, for the
+     same reason og.html duplicates it: a rendered frame is a flat file and
+     cannot read a custom property at playback time. index.html OWNS these
+     values; this file and og.html each hold a copy and each re-render on their
+     own schedule. If the palette moves, re-render both — neither follows on its
+     own, and neither will tell you it has gone stale.
+
+     ⚠️ Type is system-only, as everywhere else on this site: there are no
+     @font-face blocks and both stacks lead with faces this repository does not
+     ship. A machine without Source Serif 4 and Commit Mono still renders a
+     correct frame, one step down the stack — but it is a DIFFERENT frame, so
+     render every version of a given video on the same machine. -->
+
+<style>
+  :root{
+    --paper:#192228; --ink:#d1d6d9; --muted:#8e999f;
+    --rule:#3a464f; --dot:#1f2830; --teal:#389394;
+    --serif:"Source Serif 4","Source Serif Pro","Iowan Old Style",Charter,"Sitka Text",Constantia,"Palatino Linotype",Palatino,Georgia,serif;
+    --mono:"Commit Mono",ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:1920px;height:1080px;overflow:hidden}
+  body{
+    background-color:var(--paper); color:var(--ink); font-family:var(--serif);
+    /* The dot grid is the site's, scaled 1.6× with the frame (26px → 42px) so
+       it reads as the same texture rather than a finer one. It should be felt
+       at full size and gone in a thumbnail. */
+    background-image:radial-gradient(circle at 1px 1px,var(--dot) 1.6px,transparent 0);
+    background-size:42px 42px;
+    display:flex; flex-direction:column; justify-content:space-between;
+    padding:96px 104px 88px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .top{display:flex;align-items:center;gap:29px}
+  .mark{width:64px;height:auto;color:var(--ink);display:block}
+  .wordmark{font-family:var(--mono);font-size:30px;letter-spacing:.34em;text-transform:uppercase;font-weight:500}
+
+  /* The headline is the whole frame, exactly as it is the whole card. Italic
+     serif, one measure, and a cursor block closing the line — the claim is
+     "starts as a blinking cursor", so the frame ends on one rather than
+     illustrating it somewhere else.
+
+     ⚠️ The cursor does NOT blink. It is a still frame; an animated caret would
+     be a different asset and a different decision. */
+  .claim{font-style:italic;font-size:106px;line-height:1.14;letter-spacing:-.012em;max-width:1690px}
+  /* ⚠️ The cursor must not wrap onto a line of its own — it is punctuation on
+     the last word, not a mark beneath the sentence. Keeping the closing word
+     and the block in one nowrap span is what pins that. */
+  .tail{white-space:nowrap}
+  /* 🚨 The one saturated pixel in the frame. Chroma is rationed here — the
+     theme's rule is that "strong chroma belongs to data, selection, and
+     status, and every saturated pixel spent on chrome devalues the data".
+     Colouring anything else teal breaks the frame's resemblance to the
+     application it is advertising. */
+  .cursor{
+    display:inline-block;width:40px;height:87px;background:var(--teal);
+    vertical-align:-13px;margin-left:19px;
+  }
+
+  .foot{
+    display:flex;align-items:flex-end;justify-content:space-between;gap:48px;
+    border-top:1px solid var(--rule); padding-top:36px;
+  }
+  /* The address is the largest thing in the frame after the claim. On the link
+     card this line is titanium and small; here somebody is meant to type it.
+
+     ⚠️ Nothing in this foot is set below 19px, and that floor is the medium
+     talking rather than taste. A video frame is re-encoded before anybody
+     sees it: at 720p every length here is multiplied by 0.67, and tracked
+     uppercase at 16px came back out of that mushy. The link card can afford
+     15px because it is served as pixels; this cannot. */
+  .foot .l{font-family:var(--mono);font-size:38px;color:var(--ink);letter-spacing:.01em}
+  .foot .r{font-family:var(--mono);text-align:right;color:var(--muted)}
+  .foot .r .repo{font-size:26px;letter-spacing:.02em;display:block}
+  .foot .r .come{font-size:19px;letter-spacing:.11em;text-transform:uppercase;display:block;margin-top:14px}
+</style>
+</head>
+<body>
+
+  <div class="top">
+    <svg class="mark" viewBox="0 0 120 88" aria-hidden="true">
+      <g fill="none" stroke="currentColor" stroke-width="7">
+        <rect x="3.5" y="3.5" width="113" height="81"/>
+        <line x1="45" y1="3.5" x2="45" y2="84.5"/>
+        <line x1="45" y1="44" x2="116.5" y2="44"/>
+      </g>
+    </svg>
+    <span class="wordmark">Organon</span>
+  </div>
+
+  <p class="claim">An extensible ecosystem<br>that starts as a blinking <span class="tail">cursor.<span class="cursor"></span></span></p>
+
+  <div class="foot">
+    <span class="l">organon.art</span>
+    <span class="r">
+      <span class="repo">github.com/organonart/organon</span>
+      <!-- The colophon's own words. It is the site's standing invitation, so
+           the frame borrows it rather than inventing a call to action. -->
+      <span class="come">Come to the bench — contributions welcome</span>
+    </span>
+  </div>
+
+</body>
+</html>
