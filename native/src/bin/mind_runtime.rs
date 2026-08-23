@@ -76,6 +76,30 @@
 //! dashboard's top-k bars and the entropy/confidence heartbeat, so those two widgets are
 //! honest even before the `cb_eval` per-layer tap lands (that only upgrades the layer /
 //! head heat, which stays a proxy until then).
+//!
+//! ## Two runtimes at once (#191 Tier 1 — the base model beside its fine-tune)
+//!
+//! Nothing here needed building: `$ORGANON_IPC_NS` already forks every `$TMPDIR` mmap
+//! and sidecar through `ipc::ns_file`, which is the same mechanism that lets an Organon
+//! session and an Organon Mind session coexist. Give each runtime its own namespace and
+//! each writes its own `<ns>-mind.bin`; a reader names the ring it means with
+//! `MindRingReader::open_ns("mind-base")` rather than opening whichever one its own
+//! process resolved to.
+//!
+//! ```text
+//! ORGANON_IPC_NS=mind-base  ORGANIC_MATH_LLM_PORT=1234 organic-math-mind-runtime
+//! ORGANON_IPC_NS=mind-tuned ORGANIC_MATH_LLM_PORT=1235 organic-math-mind-runtime
+//! ```
+//!
+//! ⚠️ **The HTTP port is NOT namespaced and must be set per runtime.** It is a TCP
+//! listener, not a `$TMPDIR` path, so the fork cannot reach it: the second runtime finds
+//! 1234 taken, prints `could not bind …` and comes up with its OpenAI-compatible server
+//! **off**. The ring still fills — the Mind-card prompt path is unaffected — so a
+//! fan-out over HTTP would quietly reach one model twice. Set the port explicitly.
+//!
+//! ⚠️ **Two runtimes cost two models of VRAM.** `gemma-4-12B-it-QAT-Q4_0` twice is
+//! ~13-17 GB with context, and on organon-one the local TTS reclaims ~21 GB the moment
+//! Vera speaks. That is an operating constraint on the demo, not a design flaw.
 
 // The default build (no `embedded-llm`) skips this whole target via
 // `required-features`, so this arm is only reached by an explicit no-feature `rustc`
@@ -389,6 +413,22 @@ mod runtime {
                 std::process::exit(1);
             }
         };
+
+        // #191 T1 — say which ring this runtime owns, and say it on the happy path.
+        //
+        // Two runtimes — a base model and its own fine-tune — are two processes with two
+        // `$ORGANON_IPC_NS` values writing two rings, which is the whole of "two
+        // runtimes, two rings": the namespace fork already carries it, nothing new is
+        // invented. What the fork does NOT do is make the two processes distinguishable
+        // in two terminals, and the failure that hides is the expensive one — both
+        // runtimes on one namespace overwrite each other's frames in a single ring, and
+        // a difference lens then reads a model against itself. There is no error for
+        // that; it looks like a working demo whose two traces agree perfectly.
+        println!(
+            "mind-runtime: namespace '{}' -> ring {}",
+            ipc::namespace(),
+            ipc::mind_ring_path().display()
+        );
 
         let reader = ipc::Reader::open();
 
