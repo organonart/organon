@@ -169,8 +169,15 @@ impl Default for Posture {
 /// interpolated in eight steps would stutter where a float does not.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Form {
-    /// The empty column down **each** side of the conversation, in points. The same number
-    /// left and right, so the transcript sits centred in the pane.
+    /// The empty column down **each** side of the pane, in points. The same number left and
+    /// right, so what the pane holds sits centred in it.
+    ///
+    /// 🚨 **The pane, not the conversation — corrected 2026-08-22 after it was found doing
+    /// neither.** This was written as the transcript's margin and applied by the scrollback
+    /// alone, which made `posture desktop` a no-op for a terminal tab and a partial one for a
+    /// conversation: the composer and the strips below it stayed flush while the text moved.
+    /// [`Form::pane_margin`] is now the only way it is spelled and the pane is the only place
+    /// it is claimed.
     ///
     /// 🚨 **Symmetric, and the left-only version it replaces was a misreading rather than a
     /// design.** The token began as a `gutter` applied on the left alone, from a written
@@ -189,8 +196,8 @@ pub struct Form {
     ///
     /// ⚠️ **The margin, not its contents.** Tier D fills the left one with turn ordinals; this
     /// tier only claims the width, so at desktop posture there is 90 points of nothing on each
-    /// side. That is deliberate — the reflow is the part that can be wrong, and it is worth
-    /// seeing on its own before anything is drawn into it.
+    /// side of the pane. That is deliberate — the reflow is the part that can be wrong, and it
+    /// is worth seeing on its own before anything is drawn into it.
     pub margin: f32,
     /// A card's corner radius: the human bubble, a tool card, an approval, an artifact.
     pub card_radius: f32,
@@ -342,25 +349,48 @@ impl Form {
         Margin::symmetric(round_i8(self.human_pad_x), round_i8(self.human_pad_y))
     }
 
-    /// The conversation's margin — **the same on the left and the right**, which is what
-    /// centres the content — or `None` when there is not one.
+    /// The **pane's** margin — the same on the left and the right, which is what centres
+    /// everything the pane holds — or `None` when there is not one.
     ///
-    /// Horizontal only: nothing about posture wants the scrollback pushed down from the top
-    /// of its own scroll area, and the flow's vertical rhythm is [`Form::card_gap`]'s job.
+    /// 🚨 **It insets the WHOLE pane, not the transcript inside it, and that difference is
+    /// the defect this method was moved to close.** Until 2026-08-22 the token's only call
+    /// site was the scrollback's element walk, three layers in — so `organon console posture
+    /// desktop` inset the transcript and left the composer, the status strip, the command
+    /// panel and, the one actually on screen at the time, an entire **terminal** pane flush
+    /// to the window's edge. The verb answered `{"accepted": …}` and the console still read
+    /// as a terminal, because a token named for the pane was reaching one element of it.
+    /// One margin, claimed once, by whoever draws the pane; everything laid out inside
+    /// inherits it and no draw site has to know.
+    ///
+    /// Horizontal only: a desktop document is a centred *column*, and nothing about posture
+    /// wants the pane pushed down from the top of the window. The flow's vertical rhythm is
+    /// [`Form::card_gap`]'s job, and how far the composer sits off the bottom is the
+    /// bottom-up column's.
+    ///
+    /// ⚠️ **`available_width` is a bound, not a hint, and it is new with the move.** Against
+    /// a whole window 90 points a side is a margin; against a region of a `/viewport` split
+    /// it can be most of the region, and the transcript never had to care because it was
+    /// never the thing being divided. Each side is capped at a quarter of what the pane was
+    /// given, so the content keeps at least half its width at every posture and every
+    /// division. ⚠️ A width that is **not a number** — a pane egui has not laid out yet —
+    /// leaves the token alone rather than collapsing it, because `f32::min` answers the
+    /// operand that is not NaN; a negative width (`Rect::NOTHING`) yields `None`, which is
+    /// the right answer for a pane with no room in it.
     ///
     /// ⚠️ **`None` is not an optimisation, it is the no-change guarantee.** At terminal
-    /// posture the scrollback's walk runs directly in the scroll area's own `Ui`, exactly as
-    /// it did before this tier — no wrapping frame, no extra allocation, nothing that could
+    /// posture the pane is drawn straight into the `Ui` it was handed, exactly as it was
+    /// before this axis existed — no wrapping frame, no extra allocation, nothing that could
     /// shift a row by a point. A zero-width margin would *probably* be identical; `None` is
     /// identical by construction.
-    pub fn content_margin(&self) -> Option<Margin> {
-        (self.margin >= 0.5).then(|| Margin::symmetric(round_i8(self.margin), 0))
+    pub fn pane_margin(&self, available_width: f32) -> Option<Margin> {
+        let m = self.margin.min(available_width * 0.25);
+        (m >= 0.5).then(|| Margin::symmetric(round_i8(m), 0))
     }
 
     /// An explicit line height in points for body text whose font rows are `row` points
     /// tall, or `None` to leave it to the font.
     ///
-    /// Same guarantee as [`Form::content_margin`]: at `1.0` the console passes `None` and
+    /// Same guarantee as [`Form::pane_margin`]: at `1.0` the console passes `None` and
     /// egui lays the text out exactly as it always has, rather than being handed a number
     /// that ought to be the same one.
     pub fn body_line_height(&self, row: f32) -> Option<f32> {
@@ -594,13 +624,13 @@ mod tests {
     #[test]
     fn nothing_is_wrapped_or_overridden_at_the_terminal_end() {
         let t = Form::at(0.0);
-        assert!(t.content_margin().is_none(), "no wrapping frame around the walk");
+        assert!(t.pane_margin(WIDE).is_none(), "no wrapping frame around the pane");
         assert!(t.body_line_height(17.0).is_none(), "no explicit line height");
         assert!(t.left_rule_color(Color32::GREEN).is_none(), "no left rule");
         assert!(t.tick_color(Color32::GREEN).is_none(), "no registration ticks");
 
         let d = Form::at(1.0);
-        assert_eq!(d.content_margin(), Some(Margin { left: 90, right: 90, top: 0, bottom: 0 }));
+        assert_eq!(d.pane_margin(WIDE), Some(Margin { left: 90, right: 90, top: 0, bottom: 0 }));
         assert_eq!(d.left_rule_color(Color32::GREEN), Some(Color32::GREEN));
         assert_eq!(d.tick_color(Color32::GREEN), Some(Color32::GREEN));
     }
@@ -616,7 +646,7 @@ mod tests {
         for step in 0..=10 {
             let t = step as f32 / 10.0;
             let f = Form::at(t);
-            match f.content_margin() {
+            match f.pane_margin(WIDE) {
                 // Only the bottom of the range: 90 · t clears the half-point threshold from
                 // t ≈ 0.0056 upward, so every step above zero has a margin.
                 None => assert_eq!(step, 0, "a margin went missing at t={t}"),
@@ -630,9 +660,61 @@ mod tests {
         // The three postures the tests above pin as scalars, spelled as the egui value the
         // draw site actually receives — ends and midpoint, so a `content_margin` that ignored
         // `t` cannot pass either.
-        assert_eq!(Form::at(0.0).content_margin(), None);
-        assert_eq!(Form::at(0.5).content_margin(), Some(Margin::symmetric(45, 0)));
-        assert_eq!(Form::at(1.0).content_margin(), Some(Margin::symmetric(90, 0)));
+        assert_eq!(Form::at(0.0).pane_margin(WIDE), None);
+        assert_eq!(Form::at(0.5).pane_margin(WIDE), Some(Margin::symmetric(45, 0)));
+        assert_eq!(Form::at(1.0).pane_margin(WIDE), Some(Margin::symmetric(90, 0)));
+    }
+
+    /// A pane wide enough that the quarter-of-the-width cap never binds — `90 · 4`, plus
+    /// room. Every test above wants the *token*, so they all pass this and the cap is
+    /// exercised only by the tests written for it.
+    const WIDE: f32 = 4000.0;
+
+    /// 🚨 **The cap is what makes a pane-level margin safe to divide.** Against a window
+    /// 90 points a side is a margin; against a third of one it is most of the region, and
+    /// the transcript this token used to inset was never the thing being divided — so the
+    /// bound arrived with the move and has no earlier version to be compatible with.
+    /// The property is *content keeps at least half its width*, asserted as that rather than
+    /// as the arithmetic, so a different cap that still holds the promise passes.
+    #[test]
+    fn the_pane_margin_never_takes_more_than_half_the_width() {
+        let d = Form::at(1.0);
+        for width in [0.0f32, 1.0, 40.0, 120.0, 200.0, 359.0, 360.0, 361.0, 4000.0] {
+            let each = d.pane_margin(width).map_or(0.0, |m| f32::from(m.left));
+            assert_eq!(
+                d.pane_margin(width).map_or(0, |m| m.right),
+                d.pane_margin(width).map_or(0, |m| m.left),
+                "asymmetric at width {width}"
+            );
+            assert!(
+                each * 2.0 <= width / 2.0 + 0.5,
+                "at width {width} the margins take {} of it, leaving under half",
+                each * 2.0
+            );
+            assert!(each <= 90.0, "at width {width} the cap exceeded the token: {each}");
+        }
+        // …and above the point where the cap stops binding it is exactly the token, so the
+        // clamp cannot be silently shrinking an ordinary window's margin.
+        assert_eq!(d.pane_margin(4000.0), Some(Margin::symmetric(90, 0)));
+        assert_eq!(d.pane_margin(400.0), Some(Margin::symmetric(90, 0)));
+        // A quarter of 200 is 50, which is under the token, so the cap is what answers.
+        assert_eq!(d.pane_margin(200.0), Some(Margin::symmetric(50, 0)));
+    }
+
+    /// ⚠️ **The two widths that are not measurements**, both of which reach this in practice:
+    /// a pane egui has not laid out yet, and `Rect::NOTHING`, whose width is `-inf`.
+    #[test]
+    fn a_width_that_is_not_a_measurement_does_not_invent_a_margin() {
+        let d = Form::at(1.0);
+        // NaN is "no information", and `f32::min` answers the operand that is not NaN — so
+        // the token stands rather than collapsing to nothing under a cap it cannot compute.
+        assert_eq!(d.pane_margin(f32::NAN), Some(Margin::symmetric(90, 0)));
+        // A pane with no room gets no margin, at either sign of infinity's arithmetic.
+        assert_eq!(d.pane_margin(f32::NEG_INFINITY), None);
+        assert_eq!(d.pane_margin(0.0), None);
+        assert_eq!(d.pane_margin(-10.0), None);
+        // An unbounded width is not a division; the token stands.
+        assert_eq!(d.pane_margin(f32::INFINITY), Some(Margin::symmetric(90, 0)));
     }
 
     /// The border and the rule are **one shared lerp** — the sum of their presences is 1 at

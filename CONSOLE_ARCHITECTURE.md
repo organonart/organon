@@ -2882,7 +2882,7 @@ draws.
 
 | Token | terminal | desktop | terminal value read from |
 |---|---|---|---|
-| `margin` | `0` | `90` **each side** | there is no margin today |
+| `margin` | `0` | `90` **each side of the PANE** | there is no margin today |
 | `card_radius` | `6` | `8` | `CornerRadius::same(6)` at all five card frames |
 | `nested_radius` | `4` | `6` | `CornerRadius::same(4)` — `surface_element`'s waiting plate |
 | `card_pad_x` / `card_pad_y` | `8` / `8` | `18` / `18` | `Margin::same(8)`; `block_panel::PAD` is `8.0` |
@@ -2921,10 +2921,55 @@ written to prompt an image generator into restyling a screenshot** — it was de
 picture, not specifying a layout, and nobody noticed the difference because nobody had drawn
 it. Rendered, it reads as a window shoved off its own left edge rather than as a centred
 document. What was actually wanted is Claude Desktop's shape: content centred, ~90 points
-clear on both sides. The token is now `margin` and `Form::content_margin` answers
+clear on both sides. The token is now `margin` and `Form::pane_margin` answers
 `Margin::symmetric(margin, 0)`. ⚠️ **Renaming it was not cosmetic**: a field called `gutter`
 that produces a symmetric inset is a lie a reader has no way to catch, and the *next* person
 to add a token would have copied its shape.
+
+🚨 **And the margin was reaching almost nothing — corrected 2026-08-22, and it is a second
+instance of the same class as the left-only bug above.** `Form::content_margin` had exactly one
+call site: the element walk inside `conversation_view::scrollback`, three layers into one of the
+console's two front-ends. So `organon console posture desktop` answered `{"accepted": …}` and
+then moved the **transcript** while leaving the composer, the command panel and the status strip
+flush to the pane's edge — and a **terminal** tab, which never enters that function at all,
+entirely untouched. James's report was that the verb *"changes almost nothing"*, and at a
+terminal tab that was literally true.
+
+The method is now `Form::pane_margin(available_width)` and it is claimed **once**, by
+`console_main.rs`'s `draw_active_pane` — the one place both front-ends pass through, and inside
+the region walk's closure, so an undivided pane insets as a whole and a `/viewport` split insets
+each region. ⚠️ **`term_view` was given no new argument and must not be**: it sizes itself from
+`ui.available_rect_before_wrap()`, so an inset `Ui` narrows the glyph grid with nothing to
+plumb. That is the argument for putting the margin on the *container* rather than on the two
+front-ends — a token every draw site has to remember to read is a token the third draw site
+will not read.
+
+⚠️ **The `None` guarantee moved with it and got stronger.** At `t = 0` `pane_margin` answers
+`None` and `draw_active_pane` calls the body directly, with no wrapping `Frame` at all — the
+same by-construction no-change promise §1.6 already made for the scrollback, now made one level
+up where it also covers the terminal.
+
+⚠️ **`available_width` is new, and it is a bound rather than a hint.** Against a whole window
+90 points a side is a margin; against a third of one it is most of the region, and the
+transcript this token used to inset was never the thing being divided — so the cap arrives with
+the move and has no earlier behaviour to stay compatible with. Each side is capped at a quarter
+of the width, so content keeps at least half the pane at every posture and every division;
+`the_pane_margin_never_takes_more_than_half_the_width` asserts that **property** rather than the
+arithmetic, and `a_width_that_is_not_a_measurement_does_not_invent_a_margin` pins the two widths
+that are not measurements (a pane egui has not laid out, whose width is `NaN`, leaves the token
+alone because `f32::min` answers the operand that is not NaN; `Rect::NOTHING`'s `-inf` yields
+`None`).
+
+📌 **This is a down payment on the measure-cap design below, not a substitute for it.**
+That paragraph's honest formulation needs `content_margin` to take the available width, which it
+now does — so the remaining piece is `t` on `Form`, and the reason to wait is unchanged:
+somebody should look at the desktop posture on a wide window first.
+
+⚠️ **Note what the tests did not catch, again.** Every posture test passed throughout. They all
+asserted what `Form` *computes*; not one asserted that anybody **reads** it, which is where a
+token with a single unreachable call site hides. `grep -c "form\." native/src/console_main.rs`
+answering `0` was the finding, and no test could have produced it — a coverage question about
+call sites is not a question a unit test asks.
 
 ⚠️ **Note what the tests did not catch, because it generalises.** Every posture test passed
 the whole time. They all asserted the **scalar** — `f.gutter == 90.0` — and not one of them
@@ -2955,8 +3000,9 @@ three reasons, the third of which is the one worth recording:
   terminal end but does not cap anything. The honest formulation is
   `inset = t · max(margin, (available − measure) / 2)`, which needs `t` itself — so it needs
   either a fourth presence token redundant with `margin`, or `t` stored on `Form`, plus
-  `content_margin` taking the available width. That is a real design, and it is a bigger one
-  than it looks. **It should be taken when somebody has looked at the desktop posture on a
+  `content_margin` taking the available width. ✓ **That last piece landed on 2026-08-22** —
+  `pane_margin(available_width)` takes it, for the region-division reason above — so what is
+  left of this design is `t` on `Form`. It is still a bigger change than it looks. **It should be taken when somebody has looked at the desktop posture on a
   wide window**, which nobody yet has.
 
 🚨 **The card-edge decision: posture owns the scalar, the PALETTE owns whether the edge is
@@ -7702,6 +7748,91 @@ right on a screen*. Its flags (`--refuse-after`, `--stop-after`, `--depart-after
 of `(x, y, frame_index)` — chosen so a tear and a stride mistake are *visible*, not chosen to
 look like anything. The real module is `organonart/ascent`.
 
+### 1.22 The log file — where the console's own words go once it has no console
+
+**`organon-console` is a GUI and, since 2026-08-22, says so.** `console_main.rs` opens with
+`#![cfg_attr(windows, windows_subsystem = "windows")]`, which is what stops a black console
+window appearing behind the workspace every time a shim or a `start ""` launches it.
+
+🚨 **That attribute is HALF a change, and the other half is not optional.** A process with
+no console has nowhere to write, so every `eprintln!` in the binary — the refusals, the device
+negotiation, the panic hook — goes into nothing. This is a failure the workstation this runs on
+has already paid for: its lighting renderer ran **unobservable for six hours** because it was
+started in a way that sent stdout nowhere, and every indicator stayed green throughout, because
+*"nobody is reading the output"* and *"there is no output"* look identical from outside. The
+attribute and `organon-console/src/log_file.rs` land together and neither is independently
+correct.
+
+**Where it goes**, and it is the same place this workstation's other headless processes keep
+theirs, so a person hunting for a log looks in one directory for all of them:
+
+```
+%LOCALAPPDATA%\organon\console\console.log      (+ console.log.old, one generation)
+```
+
+🚨 **`dirs::data_local_dir`, never `data_dir`.** On Windows the second is `%APPDATA%`,
+which roams — a log is machine-local noise and roaming it copies it to every other machine on
+the account. And never a hand-rolled `$HOME`: `organon-mind/Cargo.toml` records what that did
+here once (the store landed in `%TEMP%`), which is why `dirs` is a dependency of this crate.
+
+**The standard HANDLES are moved; no logger is installed.** There are hundreds of `eprintln!`
+call sites in this binary, written over months, and a logging framework would capture none of
+them without an edit to every one. `redirect_std_to_log` points `STD_ERROR_HANDLE` and
+`STD_OUTPUT_HANDLE` at the file with `SetStdHandle`, before anything has spoken. Rust's Windows
+stdio resolves those handles **per write** rather than caching them, so every existing call site
+lands in the file with no edit — **including the default panic hook**, which writes to
+`io::stderr()`.
+
+📌 **Measured on this toolchain rather than assumed.** A probe that set both handles and
+then ran `eprintln!`, `println!` and a panic printed *nothing* to the terminal and all three to
+the file. That check was worth its two minutes: had Rust cached the handle, the log would have
+been empty and the change would have shipped the exact silence it exists to close.
+
+⚠️ **The redirect runs on the `Run` path only.** `--help` and `--version` return before it,
+still writing to whatever the caller gave them — which is a real terminal in every case somebody
+types them, because a GUI-subsystem process still **inherits** standard handles even though
+Windows declines to allocate it a console. Measured the same way: a `windows_subsystem =
+"windows"` binary run from a shell printed to that shell, and `> file` captured it. Redirecting
+those two would answer a question by writing the answer somewhere else.
+
+⚠️ **The `File` is deliberately leaked** (`std::mem::forget`). Dropping it closes the handle,
+and the process would then write every subsequent line into a closed handle for the rest of its
+life — silently, which is the failure this section exists to close. One handle, held for the
+process's lifetime, released by exit like every other.
+
+⚠️ **Every failure in the redirect is swallowed on purpose.** A console that will not start
+because it could not open its log is strictly worse than one whose log is missing, and there is
+nowhere to complain to anyway. The path is announced on the **outgoing** stderr one line before
+the swap, so somebody who ran the console from a terminal is told where it went instead of
+watching it go quiet.
+
+**`--help` names the resolved path**, and that is the surface that reaches a person whose window
+never appeared. `the_help_says_where_the_output_goes` quotes it from `log_file::path()` rather
+than restating `%LOCALAPPDATA%\...`, so the two cannot drift and the line is not simply wrong
+off Windows.
+
+⚠️ **A cap, not a rotation policy.** `MAX_BYTES` (4 MB) is checked at open; over it, the log
+is renamed to `console.log.old` and one generation is kept, so the pair is bounded at twice the
+cap with no scheduler, no dated names and no cleanup pass. `.log.old` rather than the obvious
+`with_extension("old")`, which answers `console.old` — a name that sorts away from its live
+sibling and stops looking like a log at a glance.
+
+⚠️ **This is NOT §1.16's status log**, and the two are easy to confuse by name. That one is
+a *surface*: the console's remarks about the session, shown in the pane, held in memory, read by
+somebody looking at the window. This one is the process's stderr on disk, read by somebody
+looking at a console that will not start.
+
+⚠️ **Off Windows this does nothing, deliberately.** A GUI launched from a terminal keeps
+writing to it, and one launched from a desktop entry has its output collected by the session's
+journal; a private log file would take those lines *out* of the place the platform already puts
+them.
+
+⚠️ **Not looked at.** Nobody has yet launched a build carrying the attribute and confirmed
+that no window appears, that the log fills, or that a panic reaches it — the mechanisms are
+measured in isolation and the whole is compiled and unit-tested. `log_file`'s six tests cover the
+path, the roll, the single generation, the append and the header; none of them can start a
+process.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
@@ -8534,6 +8665,20 @@ path silently breaks the three-products-simultaneously guarantee that
     one width falsified one claim and left the rest of the paragraph standing. "Has been seen"
     is not a boolean, and an entry that flips wholesale on the first screenshot is being
     written too coarsely.
+  - 🚨 **UPDATED AGAIN 2026-08-22 — and the second look falsified more than the first.**
+    James put a running console at desktop posture and reported that the verb *"changes almost
+    nothing"*. It was not a rendering problem: `Form::margin` had one call site, inside the
+    transcript's element walk, so the composer and the strips below it never moved and a
+    terminal tab never moved at all. §1.6 records the fix (`Form::pane_margin`, claimed once by
+    `draw_active_pane`). **What this entry now claims:** the margin reaches the whole pane in
+    both front-ends, compiled and pinned by unit tests, and **not looked at** — the cap, the
+    divided-pane case, the terminal tab at desktop posture, and whether 90 points is still the
+    right number now that it insets a glyph grid as well as a transcript, are all unseen.
+    ⚠️ **The generalisable half:** the earlier entry above said the axis was *"specified and
+    compiled, not seen"*, and that was true and insufficient — the tests all asserted what
+    `Form` computes and none asserted that anything reads it. A token can be fully specified,
+    fully compiled, fully tested and **wired to one draw site out of five**, and no test in this
+    tree would have said so. What said so was `grep -c` over the call sites.
 - ⚠️ **`Theme::card_left_rule` has never drawn a pixel, though two palettes now ask it to.**
   `light` sets `#c9ced6` and `dark` sets `#363b43`, while `organon` and `chocolate` set it
   fully transparent — and in both of those that is the palette's *answer*, not a placeholder:
