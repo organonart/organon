@@ -643,7 +643,13 @@ jobs:
         working-directory: native
         run: |
           $failed = $false
-          foreach ($f in @('bundle.ps1', 'deploy.ps1')) {
+          # ⚠️ THIS LIST IS HARDCODED, so a new .ps1 anywhere under native/ is
+          # UNCHECKED until its name is added here — and the failure it would have
+          # caught is invisible in CI by construction (pwsh reads UTF-8, the 5.1 that
+          # ships in the box reads CP1252). Add the file, do not "generalise" this to
+          # a glob: a glob would also sweep up scripts that are deliberately not
+          # 5.1-parseable, and the resulting red would teach people to ignore it.
+          foreach ($f in @('bundle.ps1', 'deploy.ps1', 'installer/build.ps1')) {
             $bytes = [IO.File]::ReadAllBytes((Resolve-Path $f))
             $hasBom = $bytes.Length -ge 3 -and
                       $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF

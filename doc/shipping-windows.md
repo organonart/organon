@@ -252,6 +252,18 @@ to ask before adding a runner, so this document records the gap rather than clos
   directory, and not in System32
 - the on-disk sizes of the runtime, `cublas64_13.dll` and `cublasLt64_13.dll`
 
+**Measured on organon-one, 2026-08-22 (the installer, `native/installer/`):**
+
+- it compiles, installs silently, and exits 0; the install tree holds exactly the
+  expected files plus Inno's uninstaller
+- installing over an existing `%APPDATA%\OrganicMath` left all 21 gallery files
+  untouched — `onlyifdoesntexist` behaves as intended
+- uninstall exits 0 and the install directory is **removed**, so `dirifempty` is not
+  defeated; galleries, the models folder and `OrganonShell` are left behind, and no
+  uninstall entry remains
+- four of `build.ps1`'s five refusals were provoked and observed to fire; the
+  Inno-Setup-absent one was not
+
 **Reasoned, not run:**
 
 - that the UCRT needs no redistributable on Windows 10+
