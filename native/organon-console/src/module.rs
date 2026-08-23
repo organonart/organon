@@ -520,19 +520,6 @@ pub fn is_commit_hash(s: &str) -> bool {
 // The manifest — data written by someone else
 // ---------------------------------------------------------------------------------------
 
-/// What a module's repo declares about itself: `organon-module.toml` at its root.
-///
-/// 🚨 **Everything here is a request or a declaration of identity. Nothing here takes
-/// effect.** The field that looks most like power — [`ModuleManifest::requests`] — is a
-/// [`Requested`], which no approval record can hold.
-///
-/// **Unknown fields are tolerated and dropped**, and unlike [`crate::layout::SavedLayout`]
-/// that is the *correct* posture rather than a shortcut: Organon only ever **reads** this
-/// file, exactly as it only ever reads `harnesses.json`, so there is no rewrite that could
-/// strip a newer console's fields. Not keeping them is also what makes "a manifest cannot
-/// grant itself" true by construction — there is no bag of unparsed keys for a grant to hide
-/// in. A manifest written for a newer Organon therefore loads in an older one rather than
-/// failing, which is [`crate::harness`]'s forward-compat discipline.
 /// One setting a module **declares** it understands.
 ///
 /// 🚨 **A declaration, never a value and never a default.** §3.1's two-file rule read from the
@@ -556,6 +543,19 @@ pub struct SettingSpec {
     pub doc: String,
 }
 
+/// What a module's repo declares about itself: `organon-module.toml` at its root.
+///
+/// 🚨 **Everything here is a request or a declaration of identity. Nothing here takes
+/// effect.** The field that looks most like power — [`ModuleManifest::requests`] — is a
+/// [`Requested`], which no approval record can hold.
+///
+/// **Unknown fields are tolerated and dropped**, and unlike [`crate::layout::SavedLayout`]
+/// that is the *correct* posture rather than a shortcut: Organon only ever **reads** this
+/// file, exactly as it only ever reads `harnesses.json`, so there is no rewrite that could
+/// strip a newer console's fields. Not keeping them is also what makes "a manifest cannot
+/// grant itself" true by construction — there is no bag of unparsed keys for a grant to hide
+/// in. A manifest written for a newer Organon therefore loads in an older one rather than
+/// failing, which is [`crate::harness`]'s forward-compat discipline.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModuleManifest {

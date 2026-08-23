@@ -1286,7 +1286,7 @@ mod tests {
             );
             assert_eq!(parse_console_op("setting moonlight host"), None, "no value is not a command");
             assert_eq!(parse_console_op("setting moonlight"), None);
-                        assert_eq!(parse_console_op("set metallic 0.9"), None);
+            assert_eq!(parse_console_op("set metallic 0.9"), None);
             assert_eq!(parse_console_op("gen 3"), None);
         }
 
