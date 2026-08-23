@@ -695,6 +695,43 @@ enum ConsoleAction {
         #[arg(long)]
         grant: Option<String>,
     },
+    /// Set one of an approved module's own settings — what it is for is the module's to say
+    #[command(after_help = "\
+        A module declares the settings it answers to in its own `organon-module.toml`, and this \
+        writes one of them into a small JSON file under the console's store root, beside \
+        `modules.json`. The module is told that file's path when the console launches it, and \
+        watches it — so a setting typed here reaches a viewport that is ALREADY RUNNING.\n\n\
+        🚨 THIS IS WHY THE VERB EXISTS. The hosted-module protocol carries four input verbs — \
+        key down, key up, pointer, release-all — and deliberately refuses a generic message, \
+        because a generic message makes every future verb free and therefore ungranted for \
+        ever. That refusal is right, and it leaves no way to type a host name at a module. A \
+        file both ends already agree on is the answer that costs the protocol nothing.\n\n\
+        🚨 THE CONSOLE DOES NOT KNOW WHAT A KEY MEANS, and must not. It checks two things: that \
+        the producer is approved, and that the key is one the APPROVED COMMIT's manifest \
+        declared. The value is a string it stores and never interprets. So a module that adds a \
+        setting does not gain it here until that commit is approved — the unit is a commit, \
+        applied to configuration.\n\n\
+        THE VALUE IS THE REST OF THE LINE ON THIS DOOR, so a machine called `attic nas` \
+        survives. Every other word on this lane is one word, and the console's own composer is \
+        one word per argument too — `/setting moonlight host attic nas` is refused there while \
+        this is not. A multi-word value goes through this command or through the file itself.\n\n\
+        Nothing is restarted and nothing needs to be running. Setting a key for a producer no \
+        region is showing is how you choose what a viewport will show before you open one.")]
+    Setting {
+        /// Which module — the producer name a viewport asks for
+        producer: String,
+        /// Which setting — one of the keys that module's manifest declared
+        key: String,
+        /// What to set it to. Everything after the key, so a value may contain spaces
+        ///
+        /// ⚠️ **`required = true` is load-bearing on a `Vec` positional**: without it clap treats
+        /// an empty collection as a perfectly good parse, so `console setting m host` would
+        /// succeed and write an empty value — and what an empty setting means is the module's to
+        /// decide, not this lane's to invent. `num_args = 1..` bounds each *occurrence* and does
+        /// not make the argument itself mandatory.
+        #[arg(trailing_var_arg = true, num_args = 1.., required = true)]
+        value: Vec<String>,
+    },
     /// Reserve a run of blank rows in the transcript — a hole that scrolls with the text
     #[command(after_help = "The rows are opened in the ACTIVE tab, just below the cursor, and \
                             the next prompt lands underneath them. They are ordinary \
@@ -1082,6 +1119,31 @@ fn run_console(action: ConsoleAction) -> ! {
                     std::process::exit(2);
                 }
             }
+        }
+        // 🚨 **Both names refused HERE as well as at the console, for `Module`'s reason.** The
+        // producer becomes a file name; the key is the second word of a line whose third field
+        // is *everything after it*, so whitespace in the key would silently take a word of
+        // itself into the value. `check_producer_name` and `check_setting_key` are the single
+        // rules, and this is where a human reads them — before a byte is written and while they
+        // can still see the output.
+        //
+        // ⚠️ **Whether the module DECLARES this key is deliberately not asked here.** That is a
+        // fact about `modules.json` at the moment the op is drained, and the console is the end
+        // that has it; asking here would be a second answer that can disagree with the first.
+        ConsoleAction::Setting { producer, key, value } => {
+            if let Err(e) = organon_console::module::check_producer_name(&producer) {
+                eprintln!("organon: {}", e.sentence());
+                std::process::exit(2);
+            }
+            if let Err(e) = organon_console::module::check_setting_key(&key) {
+                eprintln!("organon: {}", e.sentence());
+                std::process::exit(2);
+            }
+            // Re-joined with single spaces: clap has already split the words, and the lane
+            // carries the value as the remainder of one line. A value whose internal spacing
+            // mattered could not survive this lane at all, which is a property of the lane and
+            // is why the CLI does not pretend otherwise.
+            cli::ConsoleOp::Setting { producer, key, value: value.join(" ") }
         }
         ConsoleAction::Block { rows } => cli::ConsoleOp::Block(rows),
         // clap has already restricted `kind` to `kind::KIND_WORDS`, so `from_word` cannot miss
@@ -2108,6 +2170,65 @@ mod tests {
                 _ => panic!("parsed as something else"),
             }
         }
+    }
+
+    /// **`console setting` takes three words, and the third is the rest of the line.**
+    ///
+    /// 🚨 **The multi-word value is the property worth pinning, and it is why this arm exists at
+    /// all.** Every other word on this lane is one word; a machine called `attic nas` is an
+    /// ordinary machine name that a single-word value would truncate to `attic` — silently, and
+    /// with the resulting viewport pointed at a host that does not exist.
+    ///
+    /// ⚠️ **And both names are refused HERE as well as at the console**, for `console module`'s
+    /// reason: the producer becomes a file name, and a key with whitespace in it would take a
+    /// word of itself into the value.
+    #[test]
+    fn console_setting_takes_three_words_and_the_value_may_have_spaces_in_it() {
+        let c = parse(&["console", "setting", "moonlight", "host", "attic", "nas"]).unwrap();
+        match c.cmd {
+            Cmd::Console { action: ConsoleAction::Setting { producer, key, value } } => {
+                assert_eq!(producer, "moonlight");
+                assert_eq!(key, "host");
+                assert_eq!(value, ["attic", "nas"], "clap keeps the words; the op joins them");
+                let op = cli::ConsoleOp::Setting {
+                    producer,
+                    key,
+                    value: value.join(" "),
+                };
+                assert_eq!(
+                    cli::parse_console_op(&cli::console_op_to_line(&op)),
+                    Some(op),
+                    "a value with a space must survive the sidecar round trip whole"
+                );
+            }
+            _ => panic!("parsed as something else"),
+        }
+
+        // Each word is required; none of them has a default.
+        assert!(parse(&["console", "setting"]).is_err());
+        assert!(parse(&["console", "setting", "moonlight"]).is_err(), "no key");
+        assert!(parse(&["console", "setting", "moonlight", "host"]).is_err(), "no value");
+
+        // 🚨 Clap has no table to refuse either name against, so the rules are the ones this
+        // binary applies before it writes a byte. Both halves are pinned: clap accepts the
+        // string, and the rule rejects it.
+        for bad in ["..", "a/b", "organon"] {
+            let c = parse(&["console", "setting", bad, "host", "x"]).unwrap();
+            match c.cmd {
+                Cmd::Console { action: ConsoleAction::Setting { producer, .. } } => {
+                    assert_eq!(producer, bad);
+                    assert!(
+                        organon_console::module::check_producer_name(&producer).is_err(),
+                        "`{bad}` must not reach a file name"
+                    );
+                }
+                _ => panic!("parsed as something else"),
+            }
+        }
+        assert!(
+            organon_console::module::check_setting_key("two words").is_err(),
+            "a key with whitespace would eat a word of the value"
+        );
     }
 
     /// **`console camera` takes any subset of four flags and round-trips through the sidecar.**

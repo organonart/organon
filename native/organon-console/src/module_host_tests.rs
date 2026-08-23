@@ -161,6 +161,7 @@ fn approved(producer: &str) -> ApprovedModule {
         reference: None,
         granted: crate::module::Granted::none(),
         built: None,
+        settings: Vec::new(),
         extra: Default::default(),
     };
     m.built = Some(crate::module::BuildRecord {

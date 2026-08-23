@@ -465,6 +465,28 @@ const CMD_PRESET_LIST: &str = "console.preset.list";
 /// [`organon_console::module_work::MODULE_ACTIONS`]; the work behind them is that module, off
 /// the frame thread; the record it writes is `modules.json`.
 const CMD_MODULE: &str = "console.module";
+/// **`/setting <producer> <key> <value>`** — write one setting into an approved module's own
+/// settings file.
+///
+/// 🚨 **A verb rather than a sixth `console module` action, because the arguments are three
+/// REQUIRED words.** `registry::VERB_SETTING` carries the argument, and
+/// `organon_console::module::SETTING_VERB` is the terminal spelling of the same command.
+///
+/// 📌 **This is how a typed command reaches a module that is already running.**
+/// `organon-module`'s input ring carries four verbs and refuses a generic message on purpose, so
+/// the console writes a file the module already watches and the protocol gains nothing.
+const CMD_SETTING: &str = organon_console::registry::VERB_SETTING;
+/// [`CMD_SETTING`]'s second slot — which of the keys the module declared.
+const CMD_KEY: &str = organon_console::registry::SETTING_KEY_ARG;
+/// [`CMD_SETTING`]'s third slot — what to set it to. ⚠️ **Free text with no ring and no check**:
+/// the value space belongs to the module, and a console with an opinion about it is a console
+/// that has to be updated when a module gains a machine.
+///
+/// ⚠️ **One word in the composer, the rest of the line everywhere else.** `parse_args` fills each
+/// required argument from one word — §1.8's grammar, which `/preset` records the same limitation
+/// against — so a value with a space in it goes through `organon console setting …` or through
+/// the file. The wire arm and the CLI both carry it whole; only the typed door cannot.
+const CMD_VALUE: &str = organon_console::registry::SETTING_VALUE_ARG;
 /// [`CMD_MODULE`]'s repository. Optional: absent on `build`, `diff` and `revoke`, and on a
 /// re-approval of something already in `modules.json`, where the recorded URL is what it means.
 const CMD_FROM: &str = "from";
@@ -990,6 +1012,39 @@ fn console_specs() -> Vec<CommandSpec> {
             // way round: the practical effect is that autorun can never fire any of them.
             reversal: Reversal::Permanent,
         },
+        // 🚨 **Three required slots, and that shape is the whole reason this is not a sixth
+        // `console module` action.** The grammar fills required arguments positionally and
+        // optional ones by keyword, so folded in it would have read
+        // `module set moonlight key host value studio-pc`.
+        //
+        // ⚠️ **The producer and the key carry rings; the value deliberately does not.** What a
+        // module answers to is a fact the console holds — `modules.json` records the keys the
+        // approved commit's manifest declared — and what any of them *means* is a fact it must
+        // never learn (`doc/organon_module_viewport.md` §4.6). So the first two slots are
+        // narrowed by `registry::setting_options` and the third is `Text` that nothing checks.
+        //
+        // 📌 **`ArgKind::Text` on the producer for `console.module`'s reason as well**: the ring
+        // is `modules.json`'s, which is neither closed nor knowable when this table is built.
+        CommandSpec {
+            name: CMD_SETTING.into(),
+            doc: "Set one of an approved module's own settings — what it is for is the module's \
+                  to say"
+                .into(),
+            target: TargetKind::Viewport,
+            args: vec![
+                ArgSpec { name: CMD_PRODUCER.into(), kind: ArgKind::Text, required: true },
+                ArgSpec { name: CMD_KEY.into(), kind: ArgKind::Text, required: true },
+                ArgSpec { name: CMD_VALUE.into(), kind: ArgKind::Text, required: true },
+            ],
+            // 🚨 **Recoverable, and it is the one verb near `console module` that earns it.**
+            // Setting a key writes one string into a small JSON file the module owns; the
+            // opposite is the same verb with the previous value, and nothing is fetched,
+            // compiled or granted. ⚠️ That does mean autorun can fire it — which is the right
+            // answer for a completion that has narrowed to exactly one machine name, and the
+            // wrong one for anything that spends trust, which is why `console module` keeps
+            // `Permanent` and this does not share its verb.
+            reversal: Reversal::Recoverable,
+        },
         // ⚠️ `ArgKind::Int` is unbounded — `check_kind` only asks `as_i64`, so the schema
         // cannot express `1..=MAX_BLOCK_ROWS` the way a `Choice` expresses a table. The bound
         // therefore lives in TWO places that are both real gates rather than one that is
@@ -1184,6 +1239,7 @@ fn spec_name(op: &cli::ConsoleOp) -> &'static str {
         cli::ConsoleOp::Layout { .. } => CMD_LAYOUT,
         cli::ConsoleOp::Preset { .. } => CMD_PRESET,
         cli::ConsoleOp::Module { .. } => CMD_MODULE,
+        cli::ConsoleOp::Setting { .. } => CMD_SETTING,
         cli::ConsoleOp::Block(_) => CMD_BLOCK,
         cli::ConsoleOp::Patch { .. } => CMD_PATCH,
         cli::ConsoleOp::Portal(_) => CMD_PORTAL,
@@ -1378,6 +1434,33 @@ fn op_from(name: &str, args: &Value) -> Result<cli::ConsoleOp, String> {
                 grant: optional(CMD_GRANT),
             })
         }
+        // 🚨 **Shape only, and the shape is all this end CAN check.** The producer name must be
+        // usable and the key must be able to travel on the console's own channel; whether the
+        // producer is *approved* and whether it declares *this key* are facts about
+        // `modules.json` at the moment the op is drained, and this runs at dispatch.
+        // [`Console::set_setting`] is the one gate, and it refuses by name — the split every
+        // other arm here makes.
+        //
+        // ⚠️ **An empty value is refused rather than treated as "clear it".** What clearing a
+        // setting means is the module's to decide; a console that invented a delete verb out of
+        // an absent word would be deciding what a key means, which is the one thing §4.6 says it
+        // must never do. `parse_console_op` refuses the same line for the same reason.
+        CMD_SETTING => {
+            let p = word(CMD_PRODUCER)?;
+            let k = word(CMD_KEY)?;
+            let v = word(CMD_VALUE)?;
+            organon_console::module::check_producer_name(&p)
+                .map_err(|e| format!("{name}: {}", e.sentence()))?;
+            organon_console::module::check_setting_key(&k)
+                .map_err(|e| format!("{name}: {}", e.sentence()))?;
+            if v.trim().is_empty() {
+                return Err(format!(
+                    "{name}: `{CMD_VALUE}` is empty — what an empty setting means is the \
+                     module's to decide, so this lane will not invent it"
+                ));
+            }
+            Ok(cli::ConsoleOp::Setting { producer: p, key: k, value: v })
+        }
         CMD_BLOCK => {
             let n = args
                 .get(CMD_ROWS)
@@ -1540,6 +1623,15 @@ fn op_args(op: &cli::ConsoleOp) -> Value {
             CMD_FROM: url,
             CMD_AT: reference,
             CMD_GRANT: grant,
+        }),
+        // Three slots, none optional — the simplest arm on this lane. ⚠️ The value goes into
+        // `events.jsonl` verbatim, which is right: this record is *what was set*, and a value
+        // elided or truncated there would make the audit line unable to answer the one question
+        // anybody asks it.
+        cli::ConsoleOp::Setting { producer, key, value } => json!({
+            CMD_PRODUCER: producer,
+            CMD_KEY: key,
+            CMD_VALUE: value,
         }),
         // `null` for an axis nobody named, which `validate_args` reads as absent for an
         // optional argument and `op_from` maps straight back to `None`. Omitting the key
@@ -1828,7 +1920,13 @@ fn console_step(
         // lane. It fetches a repository, writes `modules.json` and may run a compiler; it
         // paints nothing, so banding the transcript here would mark a look change at a moment
         // no pixel moved.
-        | cli::ConsoleOp::Module { .. } => return None,
+        | cli::ConsoleOp::Module { .. }
+        // **And a module's own setting is not a look either, for the arm above's reason one step
+        // further out.** It writes one string into a file another process reads. What that
+        // process then draws in its own rectangle may well change — but the console's dressing,
+        // which is what this ledger records, does not, and banding the transcript here would
+        // mark a look change at a moment nothing behind the glyphs moved.
+        | cli::ConsoleOp::Setting { .. } => return None,
     }
     Some((source, look))
 }
@@ -4242,6 +4340,14 @@ impl Console {
             );
             return;
         }
+        // Above the ledger with `Module`, and for a stronger version of its reason: this writes
+        // one string into one small JSON file. It runs no program, fetches nothing and grants
+        // nothing — and what it changes on screen changes in *another process's* rectangle,
+        // which the console's own look ledger does not describe.
+        if let cli::ConsoleOp::Setting { producer, key, value } = op {
+            self.set_setting(producer, key, value);
+            return;
+        }
         let Some((source, look)) = console_step(self.backdrop_source, &self.console_look, op)
         else {
             eprintln!(
@@ -4934,6 +5040,88 @@ impl Console {
     /// ⚠️ **The registry is re-read per command rather than held in memory** —
     /// [`Console::set_layout`]'s rule and its reason: it is a small file and it is the truth,
     /// and a copy cached at startup would fight a hand-edited `modules.json` and win silently.
+    /// **`console setting <producer> <key> <value>`** — write one setting into an approved
+    /// module's own settings file.
+    ///
+    /// 🚨 **This is how a typed command reaches a module that is already running.**
+    /// `organon-module`'s input ring carries four verbs — key down, key up, pointer,
+    /// release-all — and its own header refuses a generic message as *"the one addition that
+    /// would make every future verb free, which is to say ungranted for ever."* That refusal is
+    /// right, and it leaves a real gap: a viewport onto another machine has to be told which
+    /// machine, and no arrangement of key presses is a way to type a host name. So the console
+    /// writes a small JSON file the module was told the path of at launch
+    /// (`module::SETTINGS_ENV`) and already watches, and the protocol gains nothing.
+    ///
+    /// 🚨 **Two gates, and only two.** The producer must be approved, and the key must be one
+    /// **that approved commit's manifest declared**. Nothing here knows or asks what a key
+    /// means — `doc/organon_module_viewport.md` §4.6's *"never: what the module is"*, read from
+    /// the configuration side. `host`, `app`, `bitrate` are words belonging to whoever wrote the
+    /// module; a console that validated them would be a console that has to be updated when a
+    /// module gains a setting.
+    ///
+    /// ⚠️ **It does not restart anything, and it does not need a module to be running.** The
+    /// file is the state; a module reads it when it starts and notices when it changes. Setting
+    /// a key for a producer no region is showing is a perfectly ordinary thing to do — it is how
+    /// a person chooses what a viewport will show *before* opening one — so it is not reported
+    /// as a mistake.
+    fn set_setting(&mut self, producer: &str, key: &str, value: &str) {
+        use organon_console::module::{ModuleFault, ModuleRegistry};
+        use organon_console::module_work::WorkFault;
+
+        // Checked again at this end because a line written straight onto the sidecar by hand
+        // never met `op_from` — and this string becomes a file name.
+        if let Err(e) = organon_console::module::check_producer_name(producer) {
+            eprintln!("organon-console: {}", e.sentence());
+            return;
+        }
+        if let Err(e) = organon_console::module::check_setting_key(key) {
+            eprintln!("organon-console: {}", e.sentence());
+            return;
+        }
+        let Some(root) = ModuleRegistry::store_root() else {
+            eprintln!("organon-console: {}", WorkFault::NoStore.sentence());
+            return;
+        };
+        let load = ModuleRegistry::load(&root);
+        for fault in &load.refused {
+            eprintln!("organon-console: {MODULES_FILE_NOTE} {}", fault.sentence());
+        }
+        let Some(module) = load.registry.get(producer) else {
+            eprintln!(
+                "organon-console: {}",
+                WorkFault::NotApproved {
+                    producer: producer.to_string(),
+                    known: load.registry.producers().iter().map(|s| s.to_string()).collect(),
+                }
+                .sentence()
+            );
+            return;
+        };
+        // 🚨 The one thing the console checks about the key, and the refusal names what would
+        // have worked — the difference between a typo costing a second and a person reading a
+        // module's source to find out what it answers to.
+        if !module.declares(key) {
+            eprintln!(
+                "organon-console: {}",
+                ModuleFault::UndeclaredSetting {
+                    producer: producer.to_string(),
+                    key: key.to_string(),
+                    declared: module.setting_keys(),
+                }
+                .sentence()
+            );
+            return;
+        }
+        match ModuleRegistry::write_setting(&root, producer, key, value) {
+            Ok(path) => eprintln!(
+                "organon-console: {producer}'s `{key}` is now {} — written to {}",
+                organon_console::module::quoted_untrusted(value),
+                path.display()
+            ),
+            Err(e) => eprintln!("organon-console: {}", e.sentence()),
+        }
+    }
+
     fn set_module(
         &mut self,
         action_word: &str,
@@ -8359,6 +8547,20 @@ mod cli_tests {
                     CMD_AT: null,
                     CMD_GRANT: null,
                 }),
+                // 🚨 **A value with a SPACE in it, which is the property this verb's sidecar
+                // arm exists for** — `ConsoleOp::Setting` takes the rest of the line rather
+                // than the next word, because a machine called `attic nas` is an ordinary
+                // machine name. `CMD_PRESET`'s reason exactly, one verb over: a single-word
+                // value here would pass whether or not that arm was ever written.
+                //
+                // 📌 Nothing is written by this: `line` builds the sidecar text and parses it
+                // back. The gates that would touch a store — is the producer approved, does it
+                // declare this key — are `Console::set_setting`'s, at drain time.
+                CMD_SETTING => json!({
+                    CMD_PRODUCER: "moonlight",
+                    CMD_KEY: "host",
+                    CMD_VALUE: "attic nas",
+                }),
                 other => panic!("{other}: this test has no arguments for a new verb"),
             };
             let written = line(&spec.name, args).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
@@ -8456,6 +8658,40 @@ mod cli_tests {
             // nothing is refused by design — so it is typed with the axis a human would.
             if spec.name == CMD_CAMERA {
                 typed = format!("/{verb} distance 40");
+            }
+            // 🚨 **`console.setting` cannot be typed MECHANICALLY, and the reason is a
+            // property of the verb rather than a gap in it.** Both of its required arguments
+            // are narrowed by `registry::setting_options`, whose rings are read from
+            // `modules.json` at the console's store root — so which words resolve depends on
+            // what the machine running this test has approved. A made-up `x` is refused where
+            // nothing is approved (`Ring::Empty` names the verb that fixes it) and refused
+            // again where something is (`x` is not one of them), and neither refusal is a
+            // defect: `/viewport … producer <typo>` is refused in exactly the same way, on
+            // §4.2's rule that a typo must never silently reach the wrong producer.
+            //
+            // So the loop's *first* link — a word chosen without asking the machine — is the
+            // one thing this verb cannot supply. Everything after it is asserted directly
+            // below, and the rings themselves are covered purely in `registry.rs`
+            // (`the_setting_producer_ring_is_the_approved_modules_and_never_organon` and
+            // friends), over a registry those tests own.
+            if spec.name == CMD_SETTING {
+                assert!(
+                    registry.entry(&verb).is_some(),
+                    "`/{verb}` must still be a typeable verb even though its rings are the store's"
+                );
+                let args = json!({
+                    CMD_PRODUCER: "moonlight",
+                    CMD_KEY: "host",
+                    CMD_VALUE: "attic nas",
+                });
+                let op = op_from(&spec.name, &args).expect("the shape gates pass");
+                let written = cli::console_op_to_line(&op);
+                assert_eq!(
+                    cli::parse_console_op(&written),
+                    Some(op),
+                    "`{written}` must survive the drain whole, spaces and all"
+                );
+                continue;
             }
             let Resolved::Run { lane, name, args } = registry.resolve(&typed) else {
                 panic!("`{typed}` must resolve for `{}`", spec.name);
@@ -8621,9 +8857,12 @@ mod cli_tests {
             // verb in it. Reading the merged `console_specs()` out is the only way this line
             // is right — which is the same reason the counts below are re-derived rather than
             // nudged.
+            // ✏️ `setting` sits after `module` and before `block` because `console_specs`
+            // declares it there — beside the verb it shares a noun with, though deliberately
+            // not the verb itself (§1.22). The order here is the table's, read out.
             "[background] | rig | theme | posture | screen | viewport | stack | layout | \
-             preset | module | block | patch | portal | camera | camera.read | layout.list | \
-             preset.list | surface | help | trace | media | organon"
+             preset | module | setting | block | patch | portal | camera | camera.read | \
+             layout.list | preset.list | surface | help | trace | media | organon"
         );
         // 120 columns, so it fits a full-width pane at any sane text size — and narrows to a
         // count rather than an ellipsis when it does not.
@@ -8662,7 +8901,13 @@ mod cli_tests {
         // hidden count below already records once. Read out of the merged row: the twenty-two
         // words are 147 characters (`background` in brackets counts 12) and the twenty-one
         // separators 63, so 147 + 63 = 210.
-        assert_eq!(compact_line(&all, 0, 240).chars().count(), 210);
+        // ✏️ **220 with `setting`** (§1.22) — the twenty-third verb and the tenth change to
+        // this line. **Re-derived, not nudged**, on the paragraph above's rule: the twenty-three
+        // words are 154 characters (`background` in brackets counts 12) and the twenty-two
+        // separators 66, so 154 + 66 = 220. The new word is 7 and it brings one separator, which
+        // is 210 + 3 + 7 = 220 the other way round — the arithmetic and the number agree by
+        // construction rather than by my having added ten.
+        assert_eq!(compact_line(&all, 0, 240).chars().count(), 220);
         // 🚨 **This line is why the test is a witness rather than a specification, and it very
         // nearly merged wrong.** `screen` and `organon` landed on separate branches, and BOTH
         // changed this from `+9` to `+10` — identically, so git auto-merged it with no conflict
@@ -8709,7 +8954,13 @@ mod cli_tests {
         // `view_entries()` five, and two are shown at this width, so twenty are hidden. The
         // width arithmetic is why two is still the answer and not three:
         // `[background] | rig | +20` is 24 characters against 30, and a third word makes it 32.
-        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +20");
+        // ✏️ **Twenty-three verbs now, so `+21`** — re-derived rather than incremented, which
+        // the paragraph above is the reason for: `mcp_specs()` yields eighteen (fifteen on the
+        // sidecar plus three reads) and `view_entries()` five, and two are shown at this width,
+        // so twenty-one are hidden. The width arithmetic is why two is still the answer and not
+        // three: `[background] | rig | +21` is 24 characters against 30, and a third word makes
+        // it 32.
+        assert_eq!(compact_line(&all, 0, 30), "[background] | rig | +21");
 
         // The value ring of the verb James found offering nothing: `/portal` completes to
         // `/portal ` on its own (one candidate), and that is what opens this.
@@ -8790,6 +9041,19 @@ mod cli_tests {
                 // the right way round — the practical effect of this `false` is that autorun
                 // can never fire any of the four.
                 ("module", false),
+                // ✏️ **`setting` sits with the settings at the top and NOT with `module` right
+                // above it**, which is the classification worth stating precisely because the
+                // two verbs share a noun and look alike. `module` fetches a repository, writes
+                // an approval and may run a compiler; this writes one string into one small
+                // JSON file, and the opposite is the same verb with the previous value. Nothing
+                // is spent, so nothing has to be got back.
+                //
+                // 🚨 **That is the same thing as saying autorun may fire it**, which is right
+                // for a completion narrowed to exactly one machine name and would be wrong for
+                // anything that grants trust — and is why §1.22 made it a verb of its own
+                // rather than a sixth `console module` action. A shared verb would have had to
+                // share this answer.
+                ("setting", true),
                 // Rows in the transcript, and a rectangle claimed in somebody else's output.
                 ("block", false),
                 ("patch", false),

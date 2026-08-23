@@ -1530,6 +1530,7 @@ mod tests {
             reference: Some("main".into()),
             granted: Default::default(),
             built: None,
+            settings: Vec::new(),
             extra: BTreeMap::new(),
         }
     }
