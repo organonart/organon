@@ -17,9 +17,11 @@
 
 | | |
 |---|---|
-| Artifact | `native/target/release/organon-console.exe`, 29,370,368 bytes |
-| Built from | `dc7196c`, `cargo build --release --features console-edition --bin organon-console` |
-| Toolchain | MSVC 14.44.35207 (x64), `dumpbin` 14.44.35228.0 |
+| Console artifact | `native/target/release/organon-console.exe`, 29,370,368 bytes |
+| Console built from | `dc7196c`, `cargo build --release --features console-edition --bin organon-console` |
+| Runtime artifact | `native/target/release/organic-math-mind-runtime.exe`, 173,302,784 bytes |
+| Runtime built from | `7217414`, `cargo build --release --features embedded-llm --bin organic-math-mind-runtime` |
+| Toolchain | MSVC 14.44.35207 (x64), `dumpbin` 14.44.35228.0, CUDA 13.3, cmake 4.4.2 |
 | Host | organon-one, Windows 11 Pro 10.0.26200 |
 | Date | 2026-08-22 |
 
@@ -64,8 +66,9 @@ years, and the whole value of stage 1 is that it is derived.
 build carrying that feature will link the C++ standard library, and the floor moves
 from VC++ 2015 to VS 2019 16.0+ (14.20) — plausibly further. That is a real,
 measurable cost of bundling the LLM runtime, and it is measurable *before* deciding:
-build the runtime and run `dumpbin /dependents` over it. Nobody has yet, so the
-sentence above is **reasoned, not measured**.
+build the runtime and run `dumpbin /dependents` over it. **That has now been done** —
+the prediction holds, and it was the small half of the answer. See
+[the `embedded-llm` section](#measured-the-embedded-llm-runtime-is-a-different-animal).
 
 ### The Universal CRT is not a prerequisite
 
@@ -136,6 +139,77 @@ merely unlikely. Use that as the guarantee and `--version` as the version pair.
 
 ---
 
+## Measured: the `embedded-llm` runtime is a different animal
+
+`organic-math-mind-runtime.exe`, built at `7217414` with
+`cargo build --release --features embedded-llm --bin organic-math-mind-runtime`
+(25 minutes — llama.cpp compiles from source and needs cmake), is **173,302,784 bytes**,
+roughly six times the Console, and imports four things the Console does not:
+
+| Import | What it is | Effect on the floor |
+|---|---|---|
+| `MSVCP140.dll` | the C++ standard library | none by itself |
+| `VCRUNTIME140_1.dll` | `__CxxFrameHandler4` — the VS 2019 exception path | **14.0 → 14.20** |
+| `VCOMP140.DLL` | the OpenMP runtime (`_vcomp_*`, `omp_get_thread_num`) | none — same redistributable |
+| `cublas64_13.dll` | **NVIDIA cuBLAS** | not a redistributable question at all |
+
+The Visual C++ prediction holds exactly, and by the mechanism that was named rather than
+by coincidence: `VCRUNTIME140_1.dll`'s single imported symbol is `__CxxFrameHandler4`.
+
+### 🚨 The Windows LLM runtime hard-links CUDA
+
+`cublas64_13.dll` is a **static import** with real calls — `cublasSgemm_v2`,
+`cublasGemmEx`, `cublasStrsmBatched`, `cublasSetMathMode`. It is not a Windows component
+and it is in no Visual C++ redistributable. On this machine it exists in exactly one
+place, `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\x64\`, put there by
+the CUDA toolkit and reachable only because that installer added its `bin` to PATH.
+
+This is deliberate and `native/Cargo.toml` says so: the Windows target block adds `"cuda"`
+to `llama-cpp-4` "so a `.gguf` on the RTX 5090 runs on the GPU instead of the CPU". That
+is the right call for the workstation. What nothing had evaluated is what it means for an
+artifact that leaves it:
+
+- **A machine with no NVIDIA GPU cannot run this binary at all**, and it fails at *loader*
+  time — `0xC0000142`, before `main()`, no window, no log line, nothing to read. It is the
+  left-hand column of the two-classes table above in its purest form, and only a
+  prerequisite check can cover it.
+- 📌 **The artifact's requirements depend on the machine that built it.** A build host with
+  no CUDA toolkit produces a CPU-only binary carrying no `cublas` import whatsoever. Same
+  command, same commit, two different products — this document's governing idea arriving
+  in its most literal available form.
+
+⚠️ **organon-two is the machine named for receiving an installer, and it has an RTX 2080 Ti
+on a 2021 driver.** Whether a driver of that vintage can load a CUDA 13 cuBLAS is
+**unverified here** and is the first thing to establish before treating that box as a
+target for anything carrying this runtime. Do not assume the GPU being NVIDIA is
+sufficient; the driver is a separate gate from the card.
+
+### What shipping it would cost
+
+Redistributing cuBLAS is permitted under NVIDIA's CUDA EULA redistributable list, so this
+is a size question rather than a licensing one. The size is not small, because cuBLAS
+itself depends on cuBLASLt:
+
+| | |
+|---|---|
+| `organic-math-mind-runtime.exe` | 173,302,784 bytes |
+| `cublas64_13.dll` | 52,697,712 bytes |
+| `cublasLt64_13.dll` (required by cuBLAS) | 463,655,536 bytes |
+| **total, before any model** | **~690 MB** |
+
+⚠️ **A `.gguf` is not in that figure and cannot be.** The runtime loads a model an installer
+cannot carry, so it becomes a download-or-locate decision — and anything downloaded rather
+than installed has no `[Files]` entry, so it must be named explicitly in
+`[UninstallDelete]` or gigabytes stay behind that nobody can account for.
+
+📌 **Separately from all of this: the Organon Console has no route to launch the runtime.**
+`mind_runtime_path()` has one caller, inside `editor_ui` — the plugin and standalone
+editor. `console_main.rs` and `organon-console/src/` contain no reference to it. Bundling
+the runtime with a Console installer today would install ~690 MB that nothing on the
+machine can start.
+
+---
+
 ## Who produces the artifact — nobody, on Windows
 
 Nothing in CI builds this binary on the platform it ships to. `.github/workflows/ci.yml`
@@ -168,15 +242,31 @@ to ask before adding a runner, so this document records the gap rather than clos
 - the absence of any `windows_subsystem` attribute
 - `--version` output and its exit code
 
+**Measured on organon-one, 2026-08-22, at `7217414` (the `embedded-llm` runtime):**
+
+- the import table of `organic-math-mind-runtime.exe`, and that it adds `MSVCP140.dll`,
+  `VCRUNTIME140_1.dll`, `VCOMP140.DLL` and `cublas64_13.dll`
+- that `VCRUNTIME140_1.dll`'s only imported symbol is `__CxxFrameHandler4` — so the floor
+  moves to 14.20 by exactly the mechanism predicted, not by coincidence
+- that `cublas64_13.dll` exists on this machine only inside the CUDA 13.3 toolkit
+  directory, and not in System32
+- the on-disk sizes of the runtime, `cublas64_13.dll` and `cublasLt64_13.dll`
+
 **Reasoned, not run:**
 
-- that `embedded-llm` raises the floor to 14.20 — no such build has been inspected
 - that the UCRT needs no redistributable on Windows 10+
+- that a build host without a CUDA toolkit yields a CPU-only runtime with no `cublas`
+  import — it follows from `llama-cpp-sys-4`'s build.rs turning every backend off unless
+  its feature is on, but no such build has been produced here to confirm it
 - SmartScreen behaviour on an unsigned artifact; there is no code-signing certificate
   and nobody in this fleet has observed the warning
 
 **Not done at all:**
 
+- 🚨 **Whether organon-two's 2021 driver can load a CUDA 13 cuBLAS.** That box is the
+  named installer target and has an RTX 2080 Ti; the card being NVIDIA is not the
+  question, the driver is, and nobody has checked. Anything carrying the LLM runtime is
+  blocked on this.
 - 🚨 **No organon binary has ever been handed to a machine that did not build it.**
   Everything here is a property of the artifact, not of a successful install. The
   second machine is the deliverable that closes this section, and until it runs, the
