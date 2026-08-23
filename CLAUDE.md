@@ -482,6 +482,24 @@ window and no log line, while a missing GPU adapter fails after it, where the pr
 still say so. Only the first can be covered by a prerequisite check, and neither
 substitutes for the other.
 
+**The installer is `native\installer\` — a sibling of those scripts, never an extension
+of them.** `build.ps1` builds Organon Console, interrogates the artifact it produced, and
+refuses to package a wrong one; `organon.iss` wraps it. It ships the Console alone: no
+plugin, no visual, no CLI, no LLM runtime — which is what lets it be a **per-user install
+needing no admin**, since a plugin would have to land where hosts scan.
+
+```powershell
+native\installer\build.ps1          # → native\target\installer\organon-console-<ver>-x64-setup.exe
+```
+
+⚠️ **Do not add installer concerns to `bundle.ps1` or `deploy.ps1`.** They are the inner
+loop of every native change here; the installer *consumes* their world. And ⚠️ **a new
+`.ps1` under `native\` is unchecked until its name is added to the hardcoded list in
+CI's "Validate the PowerShell deploy scripts" step** — the failure that gate catches
+cannot appear in CI on its own, because `pwsh` reads UTF-8 and the PowerShell 5.1 that
+ships in the box reads CP1252. `native\installer\README.md` owns the rest, including
+which of its five refusals has never been seen to fire.
+
 ---
 
 ## What can and can't be verified where
