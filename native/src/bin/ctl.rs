@@ -416,7 +416,7 @@ enum MindAction {
                             edition it was built as — so an `organon` built for one \
                             edition writes a file another edition never reads, and the \
                             symptom is indistinguishable from not having run this at \
-                            all. Every form below prints the path it used; set \
+                            all. Every form above prints the path it used; set \
                             ORGANON_IPC_NS to address a different session.")]
     Adapter {
         /// The adapter directory. Relative is fine — it is resolved to an absolute
@@ -1283,6 +1283,10 @@ fn run_mind(action: MindAction) -> ! {
             if let Some(b) = cli::adapter_blurb(&abs) {
                 println!("  {}", b.line());
             }
+            // Only on a selection. After `--clear` the same sentence would read as an
+            // instruction to go and look at something, when what it means is that the
+            // lens will now clear the graph — which the line above has already said.
+            println!("  the Delta lens reads it when Mind's view is set to Delta.");
         }
         Ok(None) => println!("cleared: no adapter selected"),
         Err(e) => {
@@ -1296,7 +1300,6 @@ fn run_mind(action: MindAction) -> ! {
         }
     }
     println!("  wrote {} (namespace {ns:?})", sidecar.display());
-    println!("  the Delta lens reads it when Mind's view is set to Delta.");
     std::process::exit(0);
 }
 
