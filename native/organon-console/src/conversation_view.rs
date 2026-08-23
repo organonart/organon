@@ -2342,16 +2342,15 @@ fn scrollback(
             // surface's visibility is decided against this one rect, so two surfaces cannot
             // come to disagree about where the viewport is.
             //
-            // ⚠️ Read from the scroll area's own `Ui`, i.e. **before** the margins are
-            // claimed below. That is deliberate: a surface is visible or not according to
-            // where the *viewport* is, and the margins narrow the content, not the window.
+            // ⚠️ Read from the scroll area's own `Ui`, which is the right rect however the
+            // pane was inset: a surface is visible or not according to where the *viewport*
+            // is, and a pane-level margin narrows the viewport along with everything else, so
+            // this stays the question being asked rather than a stale copy of the window.
             let viewport = ui.clip_rect();
-            // 🚨 **The walk is a closure so the margins can wrap it or not.** At terminal
-            // posture `content_margin` is `None` and the body runs directly in the scroll
-            // area's `Ui`, exactly as it did before this tier — no wrapping `Frame`, nothing
-            // that could move a row by a point. Tier D fills the left column; this tier only
-            // opens both, so at desktop posture there is 90 points of nothing on each side
-            // and that is the whole visible change.
+            // ✏️ **Still a closure, though nothing wraps it here any more.** The margin moved
+            // to the pane (see below), and the two callers that remain are this one and the
+            // grouped-row branch inside the walk itself. Kept as a closure rather than
+            // inlined because the alternative is a second copy of the body.
             let mut walk = |ui: &mut egui::Ui| {
                 ui.add_space(6.0);
                 // The console's own remarks about this session, above the first message —
@@ -2552,17 +2551,16 @@ fn scrollback(
                     }
                 }
             };
-            match form.content_margin() {
-                // A `Frame` with no fill and no stroke is nothing but its margin, which is
-                // exactly what this is: the content is inset by the same amount on both
-                // sides — so it is centred — and everything below it — wrapping, the scroll
-                // extent, a surface's laid-out rect — follows from the narrower width without
-                // a single call site knowing about it.
-                Some(margin) => {
-                    Frame::new().inner_margin(margin).show(ui, walk);
-                }
-                None => walk(ui),
-            }
+            // 🚨 **No margin is claimed here, and its absence is the fix rather than a
+            // regression.** This walk used to wrap itself in a `Frame` carrying the posture's
+            // margin, which inset the transcript and *only* the transcript: the composer, the
+            // command panel and the status strip below it stayed flush to the pane's edge, and
+            // a terminal tab — which never reaches this function at all — was untouched by
+            // `posture desktop` entirely. The margin now belongs to whoever draws the pane
+            // (`console_main.rs`'s `draw_active_pane`), so this `Ui` arrives already inset and
+            // everything the pane lays out moves together. Claiming it a second time here
+            // would inset the transcript twice and centre it inside an already-centred column.
+            walk(ui);
         });
     *pinned = pinned_after_scroll(out.state.offset.y, out.content_size.y, out.inner_rect.height());
     // A hand's answer, recorded as the hand's — nothing automatic ever undoes it, which is

@@ -395,8 +395,15 @@ llama-cpp-4 = { version = "0.4.2", optional = true, default-features = false, fe
 # HiDPI fix: `SetProcessDpiAwarenessContext` + `GetDpiForSystem` to learn the display's
 # scale factor, and `SystemParametersInfoW(SPI_GETWORKAREA)` to clamp it to a window that
 # still fits. See that file's header for why the app has to answer this itself.
+#
+# `Win32_System_Console` was added for `console_main.rs`'s `redirect_std_to_log`: with
+# `#![windows_subsystem = "windows"]` the console has no console to write to, so
+# `SetStdHandle` points `STD_ERROR_HANDLE` and `STD_OUTPUT_HANDLE` at a log file before
+# anything speaks. Two constants and one function — the same "raw externs, not the wrapped
+# API" argument as everything above it.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",

@@ -303,11 +303,12 @@ fn frame(
             let size = egui::vec2(width, ui.available_height());
             ui.allocate_ui(size, |ui| {
                 ui.set_width(width);
-                // 🚨 **The TERMINAL form, and it must be.** This harness imposes the inset
-                // itself, by narrowing the column above — so a desktop `Form` would apply it a
-                // second time through `content_margin` and every measurement would be taken at
-                // a width neither the caller nor the table names. Posture is not what this
-                // bench varies; width is.
+                // 🚨 **The TERMINAL form, and it must be.** ✏️ **Not for the double-inset
+                // reason it was written for** — the margin moved to the pane, and this harness
+                // builds no pane, so a desktop `Form` can no longer narrow the column a second
+                // time. It would still change every card's padding and line height, which
+                // moves the wrapped height at a width the table does name. Posture is not what
+                // this bench varies; width is.
                 let _ = scrollback(ui, pane, images, &Default::default(), theme, &Form::TERMINAL);
             });
         });

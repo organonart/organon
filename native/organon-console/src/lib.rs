@@ -121,6 +121,7 @@ pub mod conversation;
 pub mod conversation_view;
 pub mod harness;
 pub mod layout;
+pub mod log_file;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mock_agent;
