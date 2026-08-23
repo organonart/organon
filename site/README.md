@@ -11,7 +11,7 @@ index.html    the landing page — what Organon is
 docs.html     /docs — how to build it, run it and operate it
 og.html       SOURCE of the link-preview card — not a page anyone visits
 og.png        the card itself, 2400x1260, referenced by og:image
-endcard.html  SOURCE of the video end card — not a page, and not served
+endcard.html  SOURCE of the video end card — not a page anyone visits
 endcard.png   the frame itself, 3840x2160, for the end of a video
 favicon.svg   the mark
 vercel.json   cleanUrls, which is what serves docs.html at /docs
@@ -58,9 +58,18 @@ correct if the primary domain is ever flipped.
 ## The video end card
 
 `endcard.png` is the still a video cuts to before it fades out — the claim, the
-address and an invitation, held over music for a few seconds. It is **not served
-by the site** and nothing links to it; it lives here because it is made of this
-site's motifs, and the place to keep it correct is next to them.
+address and an invitation, held over music for a few seconds. **Nothing links to
+it and nobody is meant to visit it** — the same standing as `og.html`. It lives
+here because it is made of this site's motifs, and the place to keep it correct
+is next to them.
+
+⚠️ **"Nobody is meant to visit it" is not the same as "it is not served",** and
+the first draft of this section said the second. Every file in this directory is
+deployed: `vercel.json` carries no rewrites and no excludes, `cleanUrls` puts the
+page at `/endcard`, and the frame at `/endcard.png` — which is the same mechanism
+that serves `og.png` to every scraper. So it is a **public URL that is simply
+unadvertised**, and anything written on it is published whether or not a link
+points at it.
 
 It is a **sibling of `og.html`, not an extension of it** — same ground, same dot
 grid, same italic serif claim, same single teal cursor. Three things differ, and

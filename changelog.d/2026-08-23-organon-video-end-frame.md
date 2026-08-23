@@ -34,3 +34,10 @@ serif, not Source Serif 4 — because type here is system-only and this reposito
 face. A machine with them installed produces a *better* frame and a *different* one. So: render
 every cut of a given video on the same machine, or the end card changes between takes for a reason
 nobody will look for.
+
+⚠️ **And the first draft of the README section said the frame was "not served by the site".** It is
+— `vercel.json` carries no rewrites and no excludes, so `cleanUrls` puts the page at `/endcard` and
+the render at `/endcard.png`, by the same mechanism that serves `og.png` to every scraper. What is
+true is the weaker thing: *nothing links to it and nobody is meant to visit it*, which is exactly
+`og.html`'s standing and should have been borrowed rather than restated. **Unadvertised is not
+unpublished**, and the two are easy to conflate when a file is obviously "not a page".
