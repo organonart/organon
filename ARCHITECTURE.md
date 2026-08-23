@@ -233,6 +233,18 @@ inference runtime needs the same: `ORGANON_IPC_NS=organon-mind ./organic-math-mi
 Under full Organon the namespace is `organic-math`, i.e. **every path is exactly what
 it has always been** — pinned by a unit test.
 
+**Naming a namespace you are not in (#191 T1).** Everything above resolves *this
+process's* namespace, which is right while a process talks to its own peers and not
+enough the moment one process wants to read **another** namespace's channel — two model
+runtimes, base and fine-tune, each writing its own activation ring. `ns_file_checked(ns,
+suffix)` composes a path in a caller-named namespace and `mind_ring_path_in(ns)` is the
+ring form of it; `mind_ring_path_in(namespace())` equals `mind_ring_path()`, pinned by
+test, so the named form generalizes the unnamed one rather than being a second
+convention. 🚨 **It returns `None` where the env var falls back**, on purpose: a spawned
+visual with a junk namespace must still come up, while a caller that typed a name has
+made a mistake and must not be quietly answered about a different ring. One sanitizer
+serves both doors.
+
 **Not edition-dependent, ever:** the **VST3 class ID / CLAP ID** (Organon Mind is
 standalone-only and needs no plugin identity at all), the `Shared` layout, and the
 preset store — a look saved in Organon is a look Organon Mind can pick.
@@ -1929,7 +1941,7 @@ guard fails the run outright rather than shipping the broken manifest.
 | `math.rs` | pure algorithm + all generators (incl. Penrose tilings, #121) + lowering/lofting (+ tests) |
 | `params.rs` | nih-plug params + enums + `to_shared` |
 | `param_table.rs` | `param_block!` SSoT packing + layout goldens |
-| `ipc.rs` | `Shared` Pod + mmap Writer/Reader + Feedback channel + mind-ring path + the **edition-namespaced** `$TMPDIR` path builders (`namespace`/`ns_file`, §4.1) |
+| `ipc.rs` | `Shared` Pod + mmap Writer/Reader + Feedback channel + mind-ring path + the **edition-namespaced** `$TMPDIR` path builders (`namespace`/`ns_file`, plus the caller-named `ns_file_checked`/`mind_ring_path_in`, §4.1) |
 | `organon-core/src/edition.rs` | #483 Tier 1 — build-time product editions: `Edition` (`Full`/`Mind`) + `EDITION`, driving product name / IPC namespace / visible `UiTab`s. Pure + unit-tested for both editions from a default build (§4.1). **#626 T3: moved to `organon-core`**; re-exported as `crate::edition` |
 | `organon-core/src/tabs.rs` | #626 T3 — the editor's **tab taxonomy**: `UiTab` (the tab bar) + `EditorTab` (the 7-way preset partition). Lifted out of `preset.rs`, which keeps its nih-plug `ParamSetter` logic. Re-exported as `crate::preset::{UiTab, EditorTab}` (§19.0) |
 | `organon-core/src/kind.rs` | #48 T1 — the console's **kind** vocabulary: `Kind` (`scene`/`panel`), `KIND_WORDS`, and `resolve`, whose refusal carries the known list. Here because the two front-ends that had a copy each are in *different* crates (`cli.rs`, `organon-console/conversation.rs`) and this is the only one both can see; a closed set of words needs no host, GPU or UI. ⚠️ No `Default` — the "a kindless `patch` line means `scene`" rule is that lane's and lives in `cli::PATCH_DEFAULT_KIND` |

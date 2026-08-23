@@ -1052,6 +1052,86 @@ exactly as §5 routes one. ⚠️ `TrainingLink` holds its receiver in a `Mutex`
 state to be `Sync` — a bare receiver in `PresetUi` fails at the *host* boundary with an error
 naming a private type, so a test in core pins it where the fix belongs.
 
+### 2.11 Two runtimes, two rings (#191 Tier 1) — *landed; the two-ring property has run, on one machine, with the synthetic writer*
+
+The live half of #147 starts here: a base model and its own fine-tune generating at the
+same time, each writing its own `MindFrame` ring, so a later tier can subtract one from
+the other on a skeleton they share exactly.
+
+📌 **Almost nothing was built, and that is the finding.** `$ORGANON_IPC_NS` already forks
+every `$TMPDIR` mmap and sidecar through `ipc::ns_file` — the mechanism that lets an
+Organon session and a Mind session coexist (§2.1). Two runtimes are two processes with
+two namespaces; two rings follow with no new machinery, **no `MindFrame` field saying
+which model wrote it**, and no `LAYOUT_VERSION` movement. A "which model" field would
+have been a permanent offset-sensitive commitment answering a question the namespace
+already answers, for a ring that is transient and recreated each run.
+
+**What was actually missing was the reader's half.** Every path function resolves *this
+process's* namespace, which is right while a process talks to its own peers and useless
+the moment one process wants to look at another namespace's channel. A comparison has to
+**name** the ring it means:
+
+| | |
+|---|---|
+| `ipc::ns_file_checked(ns, suffix)` | compose a path in a caller-named namespace, `None` if `sanitize_ns` refuses it |
+| `ipc::mind_ring_path_in(ns)` | the activation ring of a named namespace; `mind_ring_path()` is this with the process's own, pinned equal by test |
+| `MindRingReader::open_ns(ns)` | attach to a named ring |
+| `MindRingWriter::create_ns(ns)` | the writer's half, for a harness standing up **both** rings in one process. A real runtime uses `create()` and lets its own `$ORGANON_IPC_NS` decide |
+
+🚨 **A named namespace is refused, where the env var falls back — and the asymmetry is
+deliberate.** `$ORGANON_IPC_NS` falls back to the edition when it is junk because a
+spawned visual must come up on *something*. A namespace typed by a caller is a mistake,
+and quietly handing it the local ring would answer a question nobody asked: the reader
+would report *this* model's trace under the *other* model's name, which is wrong and
+looks right. Same sanitizer both ways, so a named ring can never reach a `$TMPDIR` path
+the env var could not.
+
+⚠️ **The two failures are different types because they need different responses.** `Err`
+is an illegal name and never resolves itself; `Ok` with `is_open() == false` is a legal
+name whose runtime has not started, which is the ordinary case while you are still typing
+the second launch command. Conflating them sends someone hunting a spelling mistake that
+is not there.
+
+**Ergonomics, and the foot-gun they close.** `organic-math-mind-writer` takes `--ns
+<name>` (it sets `$ORGANON_IPC_NS` before the first path is composed — the same
+mechanism, a per-launch door onto it), and **both** the synthetic writer and
+`mind_runtime` now announce their namespace on the happy path. Two runtimes are otherwise
+indistinguishable in two terminals, and the failure that hides is the expensive one: both
+on one namespace overwrite each other's frames in a single ring, and a difference lens
+then reads a model against itself. There is no error for that. It looks like a working
+demo whose two traces agree perfectly.
+
+⚠️ **The HTTP port is not namespaced.** `mind_runtime`'s OpenAI-compatible listener is a
+TCP port (`ORGANIC_MATH_LLM_PORT`, default 1234), not a `$TMPDIR` path, so the fork cannot
+reach it. The second runtime finds the port taken, says so, and comes up with its server
+**off** — the ring still fills, so a fan-out over HTTP would quietly reach one model
+twice. Set the port explicitly per runtime. This is Tier 2's problem and is recorded here
+because Tier 2 is where it bites.
+
+**The procedure**, on one machine:
+
+```text
+ORGANON_IPC_NS=mind-base  ORGANIC_MATH_LLM_PORT=1234 organic-math-mind-runtime
+ORGANON_IPC_NS=mind-tuned ORGANIC_MATH_LLM_PORT=1235 organic-math-mind-runtime
+# or, with zero inference:
+organic-math-mind-writer --ns mind-base  8 4
+organic-math-mind-writer --ns mind-tuned 12 6
+```
+
+Each announces its namespace and ring path; a reader attaches with
+`MindRingReader::open_ns("mind-base")`.
+
+🚨 **What has and has not been seen.** Two synthetic writers have run side by side on
+organon-one, producing `$TMPDIR/mind-base-mind.bin` and `$TMPDIR/mind-tuned-mind.bin` —
+both stamped `MIND`, both at `write_seq` 61 after three seconds, byte-different, and the
+default `organic-math-mind.bin` **not created**, which is what proves `--ns` diverted
+rather than merely printed. **No GPU drew any of it and no model was loaded**: the
+synthetic writer sets no provenance flags, so *"two runtimes, both reporting `activation
+tap MEASURED`"* is **not** demonstrated here. What is pinned instead is that provenance is
+**per ring** (`each_ring_carries_its_own_provenance`), so a measured base beside a
+proxy-fallback fine-tune is distinguishable rather than silently averaged — which is the
+property a difference lens actually depends on.
+
 ## 3. The honesty ledger
 
 What the product currently claims, and how true it is. Keep this honest — it is the
@@ -1145,4 +1225,6 @@ capability to the seam it plugs into.
 | **The checkpoint scrub** (#147 T3's extension) | the same builder, one `DeltaSites` per checkpoint on a slider — `CheckpointInfo{path, loss}` from `/api/models/checkpoints` is already the index. Needs T1 (the API client) and the adapter picker that writes `ipc::adapter_sidecar_path()`, which nothing does yet |
 | ~~**The Studio connection** (#147 T1)~~ | **landed** — §2.9. `organon-core/src/unsloth.rs`: endpoint, bearer token, `/api/health`, and the three refusals. ⚠️ It has never spoken to a running Studio, and the probe **cannot** detect a bad key because that route is unauthenticated — do not render a green probe as "connected" |
 | ~~**The training strip and the run shelf** (#147 T4)~~ | **landed** — §2.10. `organon-core/src/train.rs` is the thinking (SSE + chunked framing, the fold, the state machine), `organon-mind/src/mind_train.rs` is the drawing, `lib.rs::mind_training_ui` is the call site. ⚠️ Two things to inherit rather than re-derive: it **never probes health**, because a green probe cannot mean "connected" and building the readout is where that stops being theoretical; and a streaming HTTP body is **chunked**, so an SSE parser fed raw socket bytes silently eats its own events at every chunk boundary |
+| ~~**Two runtimes, two rings** (#191 T1)~~ | **landed** — §2.11. `ipc::mind_ring_path_in` / `MindRingReader::open_ns` are the seam: a reader NAMES the ring it means instead of opening whichever its own namespace resolved to. 🚨 **Do not widen `MindFrame` with a "which model" field** — the namespace answers it, and the ring is transient where a layout commitment is not |
+| **Teacher-forced fan-out** (#191 T2) | the two rings from §2.11, plus one prompt driven through *both* runtimes on the same token sequence. 🚨 Teacher-forcing is the correctness condition, not an optimisation: two models that chose different tokens fork, and every subsequent layer state differs for a trivial reason. ⚠️ Inherit two things from T1 — the HTTP port is **not** namespaced (§2.11), and `llama-cpp-4`'s support for forcing a fixed token sequence through the safe API is unchecked |
 | **Anything else that talks to Unsloth Studio** (#147 T5) | `StudioClient::get` is the seam — it already refuses without a credential and maps `401`/`403` to `Unauthorized`. An SSE reader is the same hand-rolled `TcpStream` shape with the connection held open. 🚨 **Not `Shared`** — step-rate telemetry from someone else's process must not buy a permanent offset-sensitive layout commitment |
