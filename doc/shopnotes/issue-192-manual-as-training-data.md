@@ -41,9 +41,11 @@ The tempting answer is to feed in the whole repository: the architecture notes, 
 
 The problem is churn. The point of the exercise is to see a difference: change a description, retrain, and observe that the model changed in a way you can attribute to what you wrote. A body of text that changes twice a week smears that difference into noise.
 
-So the scope was chosen by counting rather than by taste. The issue quotes six months of the project's history, from before this repository was public: the reference pages were touched by **2 commits out of 527**, the guide by 3, the architecture notes by 141, and the per change notes by 155. I re-measured against the log that ships in this repository, which is only three days and 186 commits old, and the shape is identical: **reference once, guide twice, one architecture document 42 times, and the per change notes 123 times.**
+So the scope was chosen by counting rather than by taste. The issue counts six months of the project's history from before this repository was public: the reference pages were touched by **2 commits out of 527**, the guide by 3, the architecture notes by 141, and the running notes on each change by 155.
 
-That is a spread of two orders of magnitude between the calmest text in the repository and the busiest. Start with the calm end.
+This repository has a log of its own, 542 commits since it opened on the ninth of August, and counting again there gives the same answer: **reference twice, guide three times, the main architecture document 27 times, the second one 100 times, and the notes on each change 168 times.** The two totals landing within fifteen commits of each other is a coincidence rather than a sign they are the same log, since one covers half a year and the other a fortnight.
+
+That is a spread of nearly two orders of magnitude between the calmest text in the repository and the busiest, and both counts agree about which end is which. Start with the calm end.
 
 ## The five steps
 

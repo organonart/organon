@@ -14,11 +14,25 @@ half that makes the first half reviewable.
 ⚠️ **Two of the note's claims are worth repeating here, because they are measurements
 rather than plan.** The catalog is 27 generators, 10 surfaces, 8 materials, 48 parameters
 and 7 recipes, and `doc/reference/` plus `doc/guide/` come to about 10,600 words — the
-whole corpus the issue proposes to train on. And the scope argument re-measures: on this
-repository's own log (186 commits, three days) the reference pages were touched once and
-the guide twice, against 42 for one architecture document and 123 for the changelog
-fragments. That is the two-orders-of-magnitude spread the issue's six-month figures found,
-reproduced on public history.
+whole corpus the issue proposes to train on. And the scope argument re-measures: across
+this repository's 542 commits, `doc/reference/` was touched **2** times and `doc/guide/`
+**3**, against **27** for `ARCHITECTURE.md`, **100** for `CONSOLE_ARCHITECTURE.md` and
+**168** for `changelog.d/`. That is the same near-two-orders-of-magnitude spread the
+issue's six-month figures found, on a different fortnight of history.
+
+🚨 **The first version of those numbers was wrong, and the way it was wrong is worth
+keeping.** It claimed 186 commits over three days. `git log --oneline | wc -l` really did
+print 186 in the session that wrote it — in a **shallow clone**, which is what an agent
+session gets by default. A truncated history answers every `git log` question confidently
+and quietly, with no marker on the output saying the log stops early. `git rev-parse
+--is-shallow-repository` is the one-word check, and `git fetch --unshallow` is the fix;
+the corrected figures above come from the full log. ⚠️ Note which half of the claim
+survived: the *shape* (reference and guide barely touched, architecture and changelog
+churning) was right in both counts, so nothing about the argument looked wrong from the
+inside. That is the failure mode of a measurement whose instrument is misconfigured rather
+than whose reasoning is bad, and it landed in a note whose own rule is to say whether a
+number was measured or estimated. Caught by the automated review on #193, which re-ran the
+commands against the same commit.
 
 🚨 **The note says the corpus builder belongs beside `organon docs` in the binary, not in
 `native/tools/`**, and the reason is the one this repo already applies to `doc/reference/`:
