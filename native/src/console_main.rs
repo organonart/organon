@@ -2724,6 +2724,18 @@ struct Console {
     /// the channel file off the disk. A `HashMap` on the stack would leave a fleet of orphans
     /// holding GPUs every time the window closed.
     module_hosts: organon_console::module_host::ModuleHosts,
+    /// 🚨 **Which hosted producer is being FLOWN** — `organon_console::module_input`.
+    ///
+    /// A rectangle showing a picture and a rectangle taking your keyboard are different states,
+    /// and this is the whole of the difference. A click inside a hosted region takes it;
+    /// `Escape` gives it back — which is safe to spend because `organon_module::RESERVED`
+    /// publishes `Escape` as a key the module is TOLD it will never receive, so a game that
+    /// swallows it and a console that needs it cannot collide.
+    ///
+    /// ⚠️ **At most one, by name.** Two hosted regions cannot both be flying, so this is an
+    /// `Option` rather than a set, and moving it hands back the displaced producer so its held
+    /// keys can be released.
+    module_latch: organon_console::module_input::Latch,
     /// One destination texture per hosted producer, preallocated and reused. See
     /// [`HostedTexture`].
     module_textures: HashMap<String, HostedTexture>,
@@ -3112,6 +3124,22 @@ fn draw_regions(
                 // Collected out of the closure for `RegionPanels::ran`'s reason: applying it
                 // needs `&mut self`, and `self` is split into disjoint field borrows here.
                 hosted.rects.push((name.clone(), content_rect));
+                // 🚨 **A click inside takes the latch.** Registered before the paint so the
+                // rectangle is a click target at all; `Sense::click` only, because a drag inside a
+                // flown module is the module's business and egui must not start interpreting it.
+                //
+                // ⚠️ **Collected out of the closure, not applied here.** Taking the latch can
+                // displace another producer, and telling that one to release needs `&mut
+                // self.module_hosts` — which is split into disjoint field borrows for the whole of
+                // this closure. `RegionPanels::ran`'s arrangement, for its reason.
+                let r = child.interact(
+                    content_rect,
+                    egui::Id::new(("organon-module-latch", name.as_str())),
+                    egui::Sense::click(),
+                );
+                if r.clicked() {
+                    *hosted.latch_wanted = Some(name.clone());
+                }
                 paint_module(
                     &mut child,
                     content_rect,
@@ -3200,6 +3228,10 @@ struct RegionHosted<'a> {
     /// reason: applying it needs `&mut self`, which is split into disjoint field borrows for the
     /// whole closure.
     rects: &'a mut Vec<(String, egui::Rect)>,
+    /// A producer whose rectangle was clicked this frame — out for the same reason, and it is
+    /// stronger here: taking the latch may DISPLACE another producer, and telling that one to
+    /// release its held keys needs `&mut` on the host map.
+    latch_wanted: &'a mut Option<String>,
 }
 
 /// What the `3d` region draws this frame — the live viewport's three inputs, bundled so the
@@ -3751,6 +3783,7 @@ impl Console {
             module_tx,
             module_inflight: HashSet::new(),
             module_hosts: Default::default(),
+            module_latch: organon_console::module_input::Latch::new(),
             module_textures: HashMap::new(),
             module_points: HashMap::new(),
             surface_pane: 0,
@@ -4515,6 +4548,21 @@ impl Console {
                 "organon-console: painted the change, but could not store {outcome} ({e}) — it \
                  will be gone at exit"
             ),
+        }
+    }
+
+    /// **Tell a producer that everything it was holding is up.**
+    ///
+    /// The one cure for the hazard the latch creates: a key that went down inside a flight and
+    /// whose `Up` the module will never see, because the flight ended between the two. Every
+    /// exit routes here, and `Latch`'s methods are `#[must_use]` so an exit that forgot would
+    /// not compile.
+    ///
+    /// A producer that has already gone is not an error — there is nobody left to have a stuck
+    /// key.
+    fn release_module_keys(&mut self, producer: &str) {
+        if let Some(host) = self.module_hosts.get_mut(producer) {
+            host.send_input(organon_module::InputEvent::ReleaseAll);
         }
     }
 
@@ -6918,6 +6966,8 @@ impl Console {
             self.service_module_hosts(&layout_now, &registry)
         };
         let mut module_rects: Vec<(String, egui::Rect)> = Vec::new();
+        // A hosted rectangle a click asked to fly this frame.
+        let mut module_latch_wanted: Option<String> = None;
         // Which presentation that was, so the paint sites can tell "I have the frame" from "the
         // other one does". Read after the render, from the same function the render asked, so
         // the picture and the notice cannot disagree about who owns the world this frame.
@@ -7065,6 +7115,63 @@ impl Console {
         // frame with no region lines at all — because that is what hands the keys back to the
         // composer when the last line goes away. See `region_line::Lines::begin`.
         self.region_lines.begin();
+        // 🚨 **The flown module's keys, TAKEN before anything else reads them.** This sits
+        // beside `region_lines.begin()` because it is the same question one layer out: when a
+        // rectangle is being flown, `W` is thrust and not a character, and the composer must
+        // never see it. Consuming from the raw event list is `composer_keys`' own idiom — the
+        // arbitration has to happen before a widget reads, or both act on one keystroke.
+        //
+        // ⚠️ **`Escape` is taken and never forwarded.** It releases the latch, which is what
+        // §5.3's reserved key was reserved FOR. `translate` would drop it and `input::push`
+        // would refuse it, so this is the third of three guards and the only one that gives a
+        // person their keyboard back.
+        //
+        // ⚠️ **Focus loss releases too**, and it is checked here rather than at the paint site
+        // because a console that lost focus may not be drawing that region at all.
+        let mut seen: Vec<organon_console::module_input::Seen> = Vec::new();
+        let mut latch_release = false;
+        if self.module_latch.held().is_some() {
+            let focused = self.egui_ctx.input(|i| i.focused);
+            if !focused {
+                latch_release = true;
+            } else {
+                self.egui_ctx.input_mut(|i| {
+                    let mut keep = Vec::with_capacity(i.events.len());
+                    for ev in i.events.drain(..) {
+                        match &ev {
+                            egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                                latch_release = true;
+                            }
+                            egui::Event::Key { key, pressed, .. } => {
+                                seen.push(organon_console::module_input::Seen::Key {
+                                    key: organon_console::module_input::key_of(*key),
+                                    down: *pressed,
+                                });
+                            }
+                            egui::Event::PointerButton { button, pressed, .. } => {
+                                if let Some(b) = organon_console::module_input::button_of(*button) {
+                                    seen.push(organon_console::module_input::Seen::Mouse {
+                                        button: b,
+                                        down: *pressed,
+                                    });
+                                }
+                            }
+                            // ⚠️ **The DELTA, never the position.** `input::push` carries
+                            // `Pointer { dx, dy }` and nothing else, because a producer that could
+                            // place the cursor could place it over a confirmation button in some
+                            // other window. `PointerMoved` carries an absolute point and is
+                            // therefore dropped here rather than converted.
+                            _ => keep.push(ev),
+                        }
+                    }
+                    i.events = keep;
+                    let d = i.pointer.delta();
+                    if d != egui::Vec2::ZERO {
+                        seen.push(organon_console::module_input::Seen::Motion { dx: d.x, dy: d.y });
+                    }
+                });
+            }
+        }
         let composer_owns_keys = self.region_lines.composer_owns_keys();
         let region_lines = &mut self.region_lines;
         let registry_for_lines = &self.line_registry;
@@ -7435,6 +7542,7 @@ impl Console {
                             &mut RegionHosted {
                                 frames: &module_frames,
                                 rects: &mut module_rects,
+                                latch_wanted: &mut module_latch_wanted,
                             },
                             &mut draw_active_pane,
                         );
@@ -7557,6 +7665,47 @@ impl Console {
         // larger means the smaller rectangle scales a good picture *down*. Last-one-wins would
         // make the size depend on `Region::ALL` order — a picture that is soft in one rectangle
         // and sharp in the other, for a reason nothing on screen explains.
+        // 🚨 **The latch, moved once per frame, with every exit emitting `ReleaseAll`.**
+        // Three things can end a flight — `Escape`, focus loss, and a click on a DIFFERENT
+        // hosted rectangle — and all three funnel through `Latch::release`/`latch`, whose
+        // `#[must_use]` return is the producer to tell. That is the whole reason those two
+        // methods answer a name instead of nothing: a key that went down inside the latch and
+        // whose `Up` never arrives leaves a module thrusting forever with nobody at the
+        // keyboard, and the only cure is an event the console cannot forget to send.
+        if latch_release {
+            if let Some(gone) = self.module_latch.release() {
+                self.release_module_keys(&gone);
+            }
+        }
+        if let Some(want) = module_latch_wanted {
+            if let Some(displaced) = self.module_latch.latch(&want) {
+                self.release_module_keys(&displaced);
+            }
+        }
+        // ⚠️ **A latch on a producer no longer on screen is released**, which is the third exit
+        // and the one with no gesture behind it: `/viewport` can take the region away, or the
+        // process can die, while keys are held. Checked against the rects this frame actually
+        // drew rather than against the layout, so "its rectangle is gone" and "it is not being
+        // drawn" are the same answer.
+        if let Some(held) = self.module_latch.held().map(str::to_string) {
+            if !module_rects.iter().any(|(n, _)| *n == held) {
+                if let Some(gone) = self.module_latch.release() {
+                    self.release_module_keys(&gone);
+                }
+            }
+        }
+        // ⚠️ **Sent AFTER the latch has settled**, so a frame that both released and re-latched
+        // cannot deliver this frame's keystrokes to the producer that just lost the latch.
+        if let Some(held) = self.module_latch.held().map(str::to_string) {
+            if !seen.is_empty() {
+                let evs = organon_console::module_input::translate(&seen);
+                if let Some(host) = self.module_hosts.get_mut(&held) {
+                    for ev in evs {
+                        host.send_input(ev);
+                    }
+                }
+            }
+        }
         self.module_points.clear();
         for (name, rect) in module_rects {
             let e = self.module_points.entry(name).or_insert((0.0, 0.0));

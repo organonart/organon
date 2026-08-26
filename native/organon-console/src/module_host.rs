@@ -293,6 +293,26 @@ impl ModuleHost {
         }
     }
 
+    /// **Put one input event on this producer's wire.**
+    ///
+    /// Answers whether it landed. `false` covers both refusals and a full ring, and the caller
+    /// wants neither: input is a stream of transitions, so the recovery from losing one is
+    /// [`organon_module::InputEvent::ReleaseAll`], which the latch already sends on every exit.
+    ///
+    /// 🚨 **A reserved key cannot get through here even if the console asks.**
+    /// `ModuleChannel::send` is `input::push`, which tests `is_deliverable` before it touches
+    /// the ring — so this method is safe to call with anything, and §5.3's promise does not
+    /// depend on the call site remembering. `module_input::translate` drops them too; that is
+    /// the cheap guard, this is the structural one.
+    ///
+    /// ⚠️ **Silent on refusal, deliberately.** A module being flown generates events at the
+    /// frame rate, so an `eprintln!` per refusal — the pattern [`ModuleHost::ask_size`] uses for
+    /// a once-per-resize event — would be a log line per frame per held key. The console's own
+    /// counters are where a persistent refusal shows up.
+    pub fn send_input(&mut self, ev: organon_module::InputEvent) -> bool {
+        self.channel.send(ev).is_ok()
+    }
+
     /// **One console frame.** Bump the console's own liveness counter, ask the process handle,
     /// then ask the channel.
     ///
