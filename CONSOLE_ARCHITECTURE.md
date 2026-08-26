@@ -839,6 +839,42 @@ looking for it goes.
 
 Three things in these two bands are not the obvious spelling, and each cost real time.
 
+##### The keyboard comes back to the composer
+
+🚨 **`want_focus` existed from the palette onward and was set in exactly TWO places** —
+dismissing the palette, and leaving the theme editor. Both are `Escape`, and both repair the same
+egui behaviour: the focus manager reads `Escape` out of the raw input in `Focus::begin_pass`,
+before any console code runs, and drops the focused widget. **Every other control that took the
+keyboard simply kept it**, so choosing a panel or pressing any button in the flow left the
+composer dead until it was clicked again — which is what James reported on 2026-08-26 as *"I lose
+focus all the time when I'm talking with the agent … focus should always come back to the
+agent."*
+
+📌 **The repair is now on the STATE rather than on each cause**, which is this document's
+recurring move applied to focus: a list of every widget that might steal the keyboard is wrong
+the moment somebody adds a control, exactly as a hand-maintained table is. `should_recover_focus`
+asks one question instead — *is the conversation live, and does nothing at all hold the
+keyboard?* That is precisely the state a momentary control leaves behind, because egui's `Button`
+is not focusable by click: pressing one blurs the composer and focuses nothing.
+
+⚠️ **`focused.is_none()` is the whole condition, and it is what stops this fighting.**
+Anything that legitimately wants the keyboard — a region line, the theme editor's fields, an open
+combo — *has* focus, so the repair declines. The composer is asked back only into a vacuum.
+Getting this backwards would make every other text box in the window untypeable, which is why the
+inverse is pinned by test (`the composer stole the keyboard`).
+
+⚠️ **Never while a pointer button is held**, the one case `None` alone gets wrong: a drag
+across the transcript to select text is a live gesture with nothing focused, and taking the
+keyboard mid-drag is the same interruption from the other side. The repair lands on release.
+
+⚠️ **It sets `want_focus` rather than calling `request_focus`**, because it runs after the
+column has drawn and there is no `Response` left to ask. One path to the keyboard, landing next
+frame — which is what the two `Escape` repairs already did, so this generalises the mechanism
+rather than adding a second one.
+
+⚠️ **Not looked at.** The rule is unit-tested and mutation-tested in both directions; whether
+focus *feels* right when a panel type is chosen needs a build.
+
 🚨 **egui's modifier matching is SHIFT-PERMISSIVE, so the obvious composer eats
 Shift+Enter.** `Modifiers::matches_logically` returns true for a press *with* shift when
 the pattern does not ask for shift. `TextEdit`'s default `return_key` therefore cannot tell

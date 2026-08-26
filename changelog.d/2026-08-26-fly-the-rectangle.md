@@ -65,3 +65,32 @@ verb; the console owns the child process, so the OS mixer is the place for it.
 translation and the key map are unit-tested and mutation-tested; what is unverified is whether
 Ascent reads these as flight, whether the pointer delta is the right scale, and whether
 click-to-latch is the gesture that feels right in a divided pane.
+
+---
+
+### The composer takes the keyboard back
+
+⚠️ **`want_focus` had existed since the palette landed and was set in exactly two places** —
+dismissing the palette, and leaving the theme editor. Both are Escape; both repair the same egui
+behaviour. **Every other control that took focus simply kept it**, so choosing a panel or
+pressing a button in the flow left the composer dead until it was clicked again. James,
+2026-08-26: *"I lose focus all the time when I'm talking with the agent. For instance, when I set
+a panel type, I have to click back in. Focus should always come back to the agent."*
+
+📌 **The rule is inverted: repair the STATE, not each cause.** Hunting every widget that might
+steal focus is a list that is wrong the moment somebody adds a control — the same shape as the
+hand-maintained tables this tree keeps replacing with derivations. The state worth repairing is
+*the conversation is live and nothing at all has the keyboard*, which is exactly what a momentary
+control leaves behind: egui's `Button` is not focusable by click, so pressing one blurs the
+composer and focuses nothing.
+
+⚠️ **`None` is the whole condition, and it is what keeps this from fighting.** Anything that
+legitimately wants the keyboard — a region line, the theme editor's fields, an open combo — *has*
+focus, so the repair declines. The composer is asked back only into a vacuum.
+
+⚠️ **Never while a pointer button is held**, which is the one case `None` alone gets wrong: a
+drag across the transcript to select text is a live gesture with nothing focused, and grabbing the
+keyboard mid-drag is the same interruption from the other side. The repair lands on release.
+
+Both guards are mutation-tested: dropping the `focused.is_none()` test fails with *"the composer
+stole the keyboard"*, dropping the pointer test fails with *"a text selection was interrupted"*.
