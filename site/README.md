@@ -11,6 +11,8 @@ index.html    the landing page — what Organon is
 docs.html     /docs — how to build it, run it and operate it
 og.html       SOURCE of the link-preview card — not a page anyone visits
 og.png        the card itself, 2400x1260, referenced by og:image
+endcard.html  SOURCE of the video end card — not a page anyone visits
+endcard.png   the frame itself, 3840x2160, for the end of a video
 favicon.svg   the mark
 vercel.json   cleanUrls, which is what serves docs.html at /docs
 ```
@@ -32,10 +34,15 @@ There is no image toolchain in this repository and none is wanted — headless
 Chrome is already on any machine that can look at the site, and it renders with
 real fonts, which an SVG converter would not.
 
-⚠️ **`og.html` duplicates the palette rather than sharing it, and it is the only
-real duplication on the site.** An `og:image` is a flat file: it cannot read a
-custom property at paste time. **If the palette moves, re-render — the card will
-not follow on its own and nothing will tell you.**
+⚠️ **`og.html` duplicates the palette rather than sharing it.** An `og:image` is a
+flat file: it cannot read a custom property at paste time. **If the palette moves,
+re-render — the card will not follow on its own and nothing will tell you.**
+
+📌 **It is not the only rendered file that copies the palette** — `endcard.html`
+does too, for the same reason, and `docs.html` copies the token block itself (see
+**`/docs`**). The claim worth remembering is narrower than a count: *anything the
+site renders to a flat file has its own copy of these colours, and re-renders on
+its own schedule.* When the theme moves, re-render every one of them.
 
 ⚠️ **Three things about the tags that fail silently if you get them wrong.** The
 URL must be **absolute** (a relative path is ignored by most scrapers); the image
@@ -47,6 +54,55 @@ which is what makes it render wide rather than as a thumbnail.
 📌 A paste of `organon.art` is served after a redirect to `www.organon.art`. Every
 major scraper follows it, so the tags name the apex — which is also what stays
 correct if the primary domain is ever flipped.
+
+## The video end card
+
+`endcard.png` is the still a video cuts to before it fades out — the claim, the
+address and an invitation, held over music for a few seconds. **Nothing links to
+it and nobody is meant to visit it** — the same standing as `og.html`. It lives
+here because it is made of this site's motifs, and the place to keep it correct
+is next to them.
+
+⚠️ **"Nobody is meant to visit it" is not the same as "it is not served",** and
+the first draft of this section said the second. Every file in this directory is
+deployed: `vercel.json` carries no rewrites and no excludes, `cleanUrls` puts the
+page at `/endcard`, and the frame at `/endcard.png` — which is the same mechanism
+that serves `og.png` to every scraper. So it is a **public URL that is simply
+unadvertised**, and anything written on it is published whether or not a link
+points at it.
+
+It is a **sibling of `og.html`, not an extension of it** — same ground, same dot
+grid, same italic serif claim, same single teal cursor. Three things differ, and
+each follows from the medium rather than from taste:
+
+- **16:9**, because a video frame is and an `og:image` is not.
+- **The address is set large and in bone**, where the card sets it small and in
+  titanium. On a link card `organon.art` is a footnote; on a screen somebody is
+  watching, it is the thing they are meant to type.
+- **It carries the repository and an invitation** — `github.com/organonart/organon`
+  and the colophon's own *come to the bench* — which the card has no room for.
+
+Rendered the same way, at 2× for headroom:
+
+```
+chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 \
+       --window-size=1920,1080 --screenshot=site/endcard.png site/endcard.html
+```
+
+⚠️ **Nothing in the foot is set below 19px, and that floor is not taste.** A
+video frame is re-encoded before anybody sees it; at 720p every length is
+multiplied by 0.67, and tracked uppercase at 16px did not survive that. The link
+card can afford 15px because it is served as pixels and never re-encoded.
+
+🚨 **This is the site's SECOND copy of the palette**, on exactly the same terms as
+`og.html`'s: a rendered frame is a flat file and cannot read a custom property at
+playback time. If the palette moves, re-render both — neither follows on its own
+and nothing will tell you.
+
+⚠️ **Type is system-only here too**, so the committed `endcard.png` was rendered
+one step down both stacks — Bitstream Charter for the serif, not Source Serif 4.
+A machine with the named faces installed produces a *better* frame and a
+*different* one, so render every cut of a given video on the same machine.
 
 ## What it is for
 
