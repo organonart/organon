@@ -228,8 +228,21 @@ impl ModuleHost {
         // the console's cwd would make that work only when the console happened to be launched
         // from the right place.
         let cwd = crate::module_work::checkout_dir(store_root, &producer)?;
+        // 🚨 **The second handoff, and it is the one that makes a typed command reach a running
+        // module.** `organon-module`'s input ring carries four verbs and refuses a generic
+        // message on purpose, so `console setting` writes a file instead — and a module can only
+        // watch a file it has been told the path of. Derived here, like the channel path and the
+        // binary, and never read from anything a module wrote.
+        //
+        // ⚠️ The file need not exist. "Nothing has been set" is the arrival state, and a module
+        // that treated an absent file as a fault would refuse to draw before anybody had chosen
+        // anything.
+        let settings = crate::module::ModuleRegistry::settings_path(store_root, &producer)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         let env = [
             (CHANNEL_ENV, channel_path.display().to_string()),
+            (crate::module::SETTINGS_ENV, settings.clone()),
             // 📌 The same injection `term.rs` already makes into every child the console spawns,
             // for the same reason: a module process coexisting with an Organon session must not
             // address the default namespace. Following the existing convention rather than

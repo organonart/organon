@@ -273,6 +273,29 @@ pub enum ConsoleOp {
         reference: Option<String>,
         grant: Option<String>,
     },
+    /// **Write one setting into an approved module's own settings file** — the producer, the
+    /// key it declared, and the value.
+    ///
+    /// 🚨 **This is how a typed command reaches a module that is already running, and it is a
+    /// FILE rather than a message on purpose.** `organon-module`'s input ring carries four verbs
+    /// — key down, key up, pointer, release-all — and its own header refuses a generic message
+    /// as *"the one addition that would make every future verb free, which is to say ungranted
+    /// for ever."* That refusal is right and it leaves a real gap: a viewport onto another
+    /// machine has to be told *which machine*, and no arrangement of key presses is a way to
+    /// type a host name. So the console writes a small JSON file the module already watches, and
+    /// the protocol gains nothing.
+    ///
+    /// ⚠️ **The console never learns what a key MEANS**, which is `doc/organon_module_viewport.md`
+    /// §4.6's *"never: what the module is"* read from the configuration side. It checks that the
+    /// producer is approved and that the key is one that producer's manifest **declared**; the
+    /// value is a string it stores and does not interpret. `host`, `app`, `bitrate` are words
+    /// belonging to whoever wrote the module, and a console that validated them would be a
+    /// console that has to be updated when a module adds a setting.
+    ///
+    /// 📌 **The value is everything after the key**, on [`ConsoleOp::Preset`]'s rule and for
+    /// exactly its reason: this lane splits on whitespace, and a machine called `attic nas` is a
+    /// perfectly ordinary machine name that `it.next()` would truncate to `attic`.
+    Setting { producer: String, key: String, value: String },
     /// Reserve a run of blank rows in the console's transcript (Console Spike Tier 5) —
     /// a hole that stays put as the transcript scrolls, for a GPU-rendered panel to be
     /// painted into later. The payload is the row count, validated against
@@ -534,6 +557,13 @@ pub fn console_op_to_line(op: &ConsoleOp) -> String {
         ConsoleOp::Preset { action, name } => format!("preset {action} {name}"),
         // Each optional word only when it is set, on the `Stack` arm's rule — so a `revoke`
         // line, which can never carry any of them, is three words and stays three words.
+        // The value is written last and unquoted, because it is read back as the remainder of
+        // the line. ⚠️ That is what makes `check_setting_key`'s no-whitespace rule load-bearing
+        // rather than tidy: a key with a space in it would put a word of the key into the value
+        // and there would be nothing to notice it with.
+        ConsoleOp::Setting { producer, key, value } => {
+            format!("setting {producer} {key} {value}")
+        }
         ConsoleOp::Module { action, producer, url, reference, grant } => {
             let mut line = format!("module {action} {producer}");
             if let Some(url) = url {
@@ -670,6 +700,23 @@ pub fn parse_console_op(line: &str) -> Option<ConsoleOp> {
                 *slot = Some(it.next()?.to_string());
             }
             Some(ConsoleOp::Module { action, producer, url, reference, grant })
+        }
+        // Two required words and then **everything else**, on the `preset` arm's rule: a value
+        // may contain spaces, so `it.next()` would take the first word of a machine name and
+        // silently drop the rest. An empty remainder is malformed, which is the answer a missing
+        // word gets everywhere else here.
+        //
+        // ⚠️ **An empty value is not "clear the setting".** Clearing is a value a module decides
+        // the meaning of, exactly as every other value is; a lane that invented a delete verb out
+        // of an absent word would be the console deciding what a key means.
+        "setting" => {
+            let producer = it.next()?.to_string();
+            let key = it.next()?.to_string();
+            let value = it.collect::<Vec<&str>>().join(" ");
+            if value.is_empty() {
+                return None;
+            }
+            Some(ConsoleOp::Setting { producer, key, value })
         }
         // A row count that does not parse — or does not fit — is a malformed line, and a
         // malformed line is skipped exactly like an unknown verb. The `Background`/`Rig`/
@@ -883,6 +930,20 @@ mod tests {
                         "0123456789abcdef0123456789abcdef01234567".into(),
                     ),
                     grant: Some("audio,input".into()),
+                },
+                // 🚨 **A value with a space in it, because that is the case the arm's
+                // "everything after the key" rule exists for.** A machine called `attic nas` is
+                // an ordinary machine name, and a lane that truncated it to `attic` would point
+                // a viewport at a host that does not exist while looking like it worked.
+                ConsoleOp::Setting {
+                    producer: "moonlight".into(),
+                    key: "host".into(),
+                    value: "attic nas".into(),
+                },
+                ConsoleOp::Setting {
+                    producer: "moonlight".into(),
+                    key: "host".into(),
+                    value: "STUDIO-PC".into(),
                 },
                 ConsoleOp::Module {
                     action: "build".into(),
@@ -1212,6 +1273,19 @@ mod tests {
             );
             // `CliOp`'s vocabulary is a DIFFERENT lane's — a `cli.txt` line landing here (a
             // mis-wired drain) must be skipped rather than half-understood.
+            // A setting keeps everything after the key, on `preset`'s rule — and a line with no
+            // value at all is malformed rather than a clear-this-setting command, because what
+            // clearing means is the module's to decide and not the wire's to invent.
+            assert_eq!(
+                parse_console_op("setting moonlight host attic nas"),
+                Some(ConsoleOp::Setting {
+                    producer: "moonlight".into(),
+                    key: "host".into(),
+                    value: "attic nas".into(),
+                })
+            );
+            assert_eq!(parse_console_op("setting moonlight host"), None, "no value is not a command");
+            assert_eq!(parse_console_op("setting moonlight"), None);
             assert_eq!(parse_console_op("set metallic 0.9"), None);
             assert_eq!(parse_console_op("gen 3"), None);
         }

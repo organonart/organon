@@ -977,6 +977,25 @@ once by refusing `world`, once by absorbing a producer it was never told about.
 
 ## 8. What this does not decide
 
+> ✏️ **One item has been struck from this list and answered, and the answer is worth reading
+> before the list.** *"How does a person configure a module?"* was never in it — the design did not
+> notice it was a question — and §5.3's input latch is where it surfaced: the protocol carries four
+> input verbs and **refuses a generic message on purpose**, so nothing in it can carry the string
+> `studio-pc` to a viewport that has to be told which machine to show. That refusal is right, and
+> the gap it leaves is real.
+>
+> **`console setting <producer> <key> <value>` closes it without touching the protocol.** A module
+> declares the keys it answers to in its `organon-module.toml`; the console records them at
+> approval, refuses every other key by name, and writes into
+> `<store>/module-settings/<producer>.json` — a path handed to the module at launch in
+> `ORGANON_MODULE_SETTINGS`, derived exactly as the channel path and the binary are. The module
+> watches it however it likes.
+>
+> 🚨 **The console still never learns what a key MEANS**, which is §4.6 read from the
+> configuration side and is the whole reason this is a file and a declared vocabulary rather than
+> a fifth input verb. `CONSOLE_ARCHITECTURE.md` §1.23 is the living description; the first module
+> to use it is `organonart/organon-modules-moonlight`, which declares `host` and `app`.
+
 - **The protocol's wire format.** Types, framing, versioning. A tier, not a paragraph, and it
   should be written against §4.4's measurement rather than before it.
 - **Whether a module may produce anything other than a picture.** A module contributing a *panel*,

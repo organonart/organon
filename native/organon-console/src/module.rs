@@ -212,6 +212,47 @@ pub const REVOKE_VERB: &str = "console module revoke";
 /// it meant.
 pub const RESTART_VERB: &str = "console module restart";
 
+/// **`console setting <producer> <key> <value>`** — write one setting into an approved module's
+/// own settings file.
+///
+/// 🚨 **A verb of its own rather than a sixth `console module` action, and the split is the
+/// argument shape.** Every `console module` action is *(action, producer)* with three optional
+/// keyword slots; this one is three **required** words. Folding it in would have made the key
+/// and the value optional-by-keyword — `console module set moonlight key host value studio-pc` —
+/// because §1.8's grammar fills optional arguments by name at all four doors. That is a worse
+/// line for the verb a person types most often, and the same argument `console.stack` and
+/// `console.screen` already won against being folded into `console.viewport`.
+pub const SETTING_VERB: &str = "console setting";
+
+/// **The directory a module's settings live in**, under the store beside `modules.json`.
+///
+/// ⚠️ Deliberately NOT inside the checkout. A checkout is a git working tree the console fetches
+/// into; a settings file written there would be an untracked file in somebody's repository, and
+/// `console module build` would carry it across every re-approval.
+pub const SETTINGS_DIR: &str = "module-settings";
+
+/// The environment variable a launched module is told its settings file's path in.
+///
+/// 🚨 **The console owns the path, exactly as it owns the channel path**, and for the same
+/// reason: it created the thing and the module only opens it. A module that guessed would be a
+/// module the console cannot point somewhere else — at a second instance, at a test fixture, at
+/// a per-user store.
+///
+/// 📌 Spelled in `organon_module::CHANNEL_ENV`'s family (`ORGANON_MODULE_…`) because it is the
+/// same handoff to the same party; a second convention for one launcher's two variables is how
+/// one of them gets forgotten.
+pub const SETTINGS_ENV: &str = "ORGANON_MODULE_SETTINGS";
+
+/// How many settings one manifest may declare.
+///
+/// A bound rather than none, because this list becomes a completion ring a person scrolls. It is
+/// generous on purpose: the number that matters is "not unbounded", and a module with thirty
+/// settings is badly designed rather than dangerous.
+pub const MAX_SETTINGS: usize = 32;
+
+/// The longest a setting key may be. [`MAX_PRODUCER`]'s reason and its number.
+pub const MAX_SETTING_KEY: usize = 64;
+
 /// How much of a commit hash a sentence in a rectangle shows.
 ///
 /// The record keeps the whole hash — that is the point of §3.2 — but forty characters in a
@@ -380,6 +421,40 @@ pub fn check_producer_name(name: &str) -> Result<(), ModuleFault> {
     Ok(())
 }
 
+/// May `key` name a setting?
+///
+/// 🚨 **The rules are `check_producer_name`'s, minus the ones about being a directory and plus
+/// one about being the second word of a line.** A setting line crosses the console's own channel
+/// as `setting <producer> <key> <value…>` and the value is *everything after the key* — so a key
+/// containing whitespace would take a word of itself into the value, silently, with nothing on
+/// either end able to notice.
+///
+/// ⚠️ **What is deliberately NOT checked is whether the key MEANS anything.** `host`, `app`,
+/// `bitrate` are words belonging to whoever wrote the module. The console checks that the key is
+/// one that module's manifest **declared** — a different question, asked in
+/// [`ApprovedModule::declares`] — and never what it is for.
+pub fn check_setting_key(key: &str) -> Result<(), ModuleFault> {
+    let bad = |why: &'static str| {
+        Err(ModuleFault::BadSettingKey { key: key.to_string(), why })
+    };
+    if key.is_empty() {
+        return bad("a setting needs a name to be set by");
+    }
+    if key.chars().count() > MAX_SETTING_KEY {
+        return bad("it is longer than 64 characters");
+    }
+    if key.chars().any(char::is_whitespace) {
+        return bad(
+            "it contains whitespace, and a setting line carries the VALUE as everything after \
+             the key — so a word of the key would arrive as part of the value",
+        );
+    }
+    if key.chars().any(char::is_control) {
+        return bad("it contains a control character, which would corrupt the line it travels on");
+    }
+    Ok(())
+}
+
 /// The longest run of somebody else's text a sentence will render before it stops.
 const MAX_UNTRUSTED: usize = 120;
 
@@ -445,6 +520,29 @@ pub fn is_commit_hash(s: &str) -> bool {
 // The manifest — data written by someone else
 // ---------------------------------------------------------------------------------------
 
+/// One setting a module **declares** it understands.
+///
+/// 🚨 **A declaration, never a value and never a default.** §3.1's two-file rule read from the
+/// configuration side: a manifest says *"I answer to a key called `host`"*, and what any key is
+/// actually set to lives in a file the console writes. A manifest that could ship a value would
+/// be a repository configuring somebody's machine on approval.
+///
+/// ⚠️ **And never a type.** The console stores a string and does not interpret it. A `kind` field
+/// here would be the console validating a vocabulary that is not its own — and the first module
+/// wanting something the enum lacks would be a change to Organon, which is exactly the coupling
+/// the module contract exists to avoid.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SettingSpec {
+    /// The word a person types. [`check_setting_key`]'s rules.
+    pub key: String,
+    /// What it is, in the module author's own words, shown in the completion ring.
+    ///
+    /// 📌 Untrusted text from somebody else's repository — quote it with [`quoted_untrusted`]
+    /// anywhere it reaches a rectangle.
+    pub doc: String,
+}
+
 /// What a module's repo declares about itself: `organon-module.toml` at its root.
 ///
 /// 🚨 **Everything here is a request or a declaration of identity. Nothing here takes
@@ -470,6 +568,11 @@ pub struct ModuleManifest {
     pub kind: String,
     /// What the module asks to be allowed to do. **A request, never a grant.**
     pub requests: Requested,
+    /// The settings it answers to — `[[settings]]` tables in the manifest. See [`SettingSpec`].
+    ///
+    /// 📌 A module that declares none simply cannot be configured from the console, which is the
+    /// arrival state and not a fault. `organonart/ascent` declares none and needs none.
+    pub settings: Vec<SettingSpec>,
 }
 
 impl ModuleManifest {
@@ -496,6 +599,31 @@ impl ModuleManifest {
         }
         if manifest.name.is_empty() {
             manifest.name = manifest.producer.clone();
+        }
+        // 🚨 Checked HERE, at the boundary where somebody else's data arrives, so that nothing
+        // downstream has to wonder whether it did — the rule this function already applies to
+        // the producer name and the kind. A declared key that cannot travel on the console's own
+        // channel is a manifest fault, not a surprise at the moment somebody types it.
+        if manifest.settings.len() > MAX_SETTINGS {
+            return Err(ModuleFault::TooManySettings {
+                producer: manifest.producer,
+                declared: manifest.settings.len(),
+            });
+        }
+        for spec in &manifest.settings {
+            check_setting_key(&spec.key)?;
+        }
+        // ⚠️ A duplicate key is refused rather than deduplicated: two `[[settings]]` tables with
+        // one key means the author disagreed with themselves about what it is, and keeping
+        // either one's `doc` would put a sentence in the completion ring that the other half of
+        // the manifest contradicts.
+        for (i, spec) in manifest.settings.iter().enumerate() {
+            if manifest.settings[..i].iter().any(|other| other.key == spec.key) {
+                return Err(ModuleFault::DuplicateSetting {
+                    producer: manifest.producer.clone(),
+                    key: spec.key.clone(),
+                });
+            }
         }
         Ok(manifest)
     }
@@ -583,6 +711,20 @@ pub struct ApprovedModule {
     /// What was built, if anything has been. `None` is the whole of today: nothing in this
     /// tier builds.
     pub built: Option<BuildRecord>,
+    /// **The settings the approved commit's manifest declared.** Copied at approval, exactly as
+    /// [`ApprovedModule::name`] is, so that the completion ring and the refusal can both be
+    /// answered from `modules.json` without a checkout on disk.
+    ///
+    /// 🚨 **A record of what was approved, and it does not follow the repository.** A module that
+    /// adds a setting in a later commit does not gain it here until that commit is approved —
+    /// §3.2's *"the unit is a commit"* applied to configuration. That is a real cost and it is
+    /// the right one: the alternative is a repository that can widen what a console will write
+    /// on its behalf without anybody approving anything.
+    ///
+    /// ⚠️ Which also means a module approved by a console older than this field has none, and
+    /// `console setting` will refuse every key until it is approved again. The refusal says the
+    /// module declares no settings, which is exactly what the record says.
+    pub settings: Vec<SettingSpec>,
     /// Every field this build does not know, kept so a rewrite does not delete it.
     ///
     /// 🚨 [`crate::layout::SavedLayout::extra`]'s reason exactly: `harnesses.json` can
@@ -657,6 +799,9 @@ impl ApprovedModule {
             // argument is a list of names and not a `Granted` — see the doc above.
             granted: manifest.requests.grant(grant)?,
             built: None,
+            // Copied from **this** manifest, like the name and unlike the grants: identity and
+            // vocabulary are the things a manifest genuinely supplies.
+            settings: manifest.settings.clone(),
             extra: BTreeMap::new(),
         })
     }
@@ -669,6 +814,20 @@ impl ApprovedModule {
     pub fn short_commit(&self) -> &str {
         let n = self.commit.len().min(SHORT_COMMIT);
         self.commit.get(..n).unwrap_or(&self.commit)
+    }
+
+    /// Does this module answer to `key`?
+    ///
+    /// 🚨 **The console's whole check on a setting, and deliberately the only one.** It knows
+    /// which keys the approved manifest declared; it never knows, and must never learn, what any
+    /// of them means — `doc/organon_module_viewport.md` §4.6's *"never: what the module is"*.
+    pub fn declares(&self, key: &str) -> bool {
+        self.settings.iter().any(|s| s.key == key)
+    }
+
+    /// The declared keys, in manifest order, for a ring and for a refusal.
+    pub fn setting_keys(&self) -> Vec<String> {
+        self.settings.iter().map(|s| s.key.clone()).collect()
     }
 
     /// Is there a build that names the bytes this record approved? See
@@ -735,6 +894,18 @@ pub enum ModuleFault {
     /// A whole file that could not be read as what it claims to be. `what` names the file so
     /// the sentence says which of the two it was.
     Unreadable { what: &'static str, why: String },
+    /// A setting key nothing can type. `why` comes from [`check_setting_key`].
+    BadSettingKey { key: String, why: &'static str },
+    /// A manifest declaring more settings than [`MAX_SETTINGS`].
+    TooManySettings { producer: String, declared: usize },
+    /// One manifest declaring one key twice.
+    DuplicateSetting { producer: String, key: String },
+    /// A key this module never declared. **The console's whole check on a setting**, and
+    /// deliberately the only one: it knows which keys a module answers to and never what any of
+    /// them means.
+    UndeclaredSetting { producer: String, key: String, declared: Vec<String> },
+    /// The settings file could not be written.
+    SettingsUnwritable { producer: String, why: String },
 }
 
 impl ModuleFault {
@@ -765,6 +936,33 @@ impl ModuleFault {
             }
             ModuleFault::NoUrl { producer } => {
                 format!("{producer} names no URL, so there is nowhere to fetch it from")
+            }
+            ModuleFault::BadSettingKey { key, why } => {
+                format!("`{key}` cannot be a setting name: {why}")
+            }
+            ModuleFault::TooManySettings { producer, declared } => format!(
+                "{producer}'s manifest declares {declared} settings — {MAX_SETTINGS} is the most \
+                 one module may, because the list becomes a ring a person scrolls"
+            ),
+            ModuleFault::DuplicateSetting { producer, key } => format!(
+                "{producer}'s manifest declares `{key}` twice — one key with two descriptions is \
+                 a manifest that disagrees with itself, and neither can be shown"
+            ),
+            // 🚨 The refusal names what WOULD have worked, which is the difference between a
+            // typo taking a second to fix and a person reading a module's source to find out
+            // what it answers to.
+            ModuleFault::UndeclaredSetting { producer, key, declared } if declared.is_empty() => {
+                format!(
+                    "{producer} declares no settings, so there is no `{key}` to set — a module \
+                     says what it answers to in its own organon-module.toml"
+                )
+            }
+            ModuleFault::UndeclaredSetting { producer, key, declared } => format!(
+                "{producer} has no setting called `{key}` — it declares {}",
+                declared.join(", ")
+            ),
+            ModuleFault::SettingsUnwritable { producer, why } => {
+                format!("{producer}'s settings could not be written — {why}")
             }
             ModuleFault::DuplicateProducer { producer } => format!(
                 "{producer} is named twice — the first was kept, because a viewport asking \
@@ -909,6 +1107,75 @@ impl ModuleRegistry {
     /// that *can* disagree eventually do.
     pub fn store_root() -> Option<PathBuf> {
         SessionLog::store_root()
+    }
+
+    /// `<store_root>/module-settings/<producer>.json` — the file a module is told to read.
+    ///
+    /// 🚨 **One file per producer**, not one file with a section per producer. Two modules must
+    /// not be able to make each other's settings unreadable by being written at the same
+    /// instant, and a module reading its own whole file is a module that never parses somebody
+    /// else's keys.
+    ///
+    /// ⚠️ The producer name becomes a **file name**, which is why [`check_producer_name`] refuses
+    /// path separators, `.` and `..` — and why this asks for it again rather than trusting a
+    /// caller. That check is the only thing between a name in a JSON file and a write outside
+    /// the store.
+    pub fn settings_path(store_root: &Path, producer: &str) -> Result<PathBuf, ModuleFault> {
+        check_producer_name(producer)?;
+        Ok(store_root.join(SETTINGS_DIR).join(format!("{producer}.json")))
+    }
+
+    /// Read one module's settings. **A missing or unreadable file is an empty map**, never an
+    /// error: the file is the module's to own, a person may delete it, and "nothing has been set"
+    /// is the arrival state rather than a fault.
+    pub fn read_settings(store_root: &Path, producer: &str) -> serde_json::Map<String, Value> {
+        let Ok(path) = ModuleRegistry::settings_path(store_root, producer) else {
+            return serde_json::Map::new();
+        };
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Write one key into one module's settings, keeping every other key.
+    ///
+    /// 🚨 **Read, modify, write — never truncate to one key.** The module owns this file: it may
+    /// hold a list of machines somebody typed, arguments they tuned, whatever its author decided.
+    /// A console that rewrote it with only the key it was given would silently delete a person's
+    /// work every time they changed one word.
+    ///
+    /// 🚨 **Through a temporary file and a rename.** The reader is another process polling a
+    /// stamp; a plain truncate-and-write has a window in which the file is zero bytes long and
+    /// parses as nothing, and the reader would see the stamp move, read an empty file and report
+    /// a fault for a write that was fine a millisecond later.
+    ///
+    /// ⚠️ **The value is stored as a STRING and is not interpreted.** A module that wants a
+    /// number parses it; the console holding a JSON type for it would be the console holding an
+    /// opinion about a vocabulary that is not its own.
+    pub fn write_setting(
+        store_root: &Path,
+        producer: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<PathBuf, ModuleFault> {
+        let path = ModuleRegistry::settings_path(store_root, producer)?;
+        let fault = |why: String| ModuleFault::SettingsUnwritable {
+            producer: producer.to_string(),
+            why,
+        };
+        let mut object = ModuleRegistry::read_settings(store_root, producer);
+        object.insert(key.to_string(), Value::String(value.to_string()));
+        let text = serde_json::to_string_pretty(&Value::Object(object))
+            .map_err(|e| fault(e.to_string()))?;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|e| fault(e.to_string()))?;
+        }
+        let temp = path.with_extension("json.tmp");
+        fs::write(&temp, text.as_bytes()).map_err(|e| fault(e.to_string()))?;
+        fs::rename(&temp, &path).map_err(|e| fault(e.to_string()))?;
+        Ok(path)
     }
 
     /// Read `<store_root>/modules.json`.
@@ -1238,6 +1505,7 @@ mod tests {
             name: "Ascent".into(),
             kind: VIEWPORT_KIND.into(),
             requests: Requested::of(&["audio"]),
+            settings: Vec::new(),
         }
     }
 
@@ -1910,4 +2178,179 @@ mod tests {
         assert!(registry.get("Ascent").is_none(), "case is not folded");
         assert!(registry.get("ascen").is_none());
     }
+
+    // -----------------------------------------------------------------------------------
+    // Settings — the vocabulary a manifest declares, and the file the console writes
+    // -----------------------------------------------------------------------------------
+
+    /// A manifest declaring settings parses them, and one declaring none is not a fault — which
+    /// is the state `organonart/ascent` is in and must stay able to be in.
+    #[test]
+    fn settings_are_declared_by_the_manifest_and_declaring_none_is_ordinary() {
+        let m = ModuleManifest::parse(
+            r#"
+                producer = "moonlight"
+                kind = "viewport"
+                [[settings]]
+                key = "host"
+                doc = "which machine to watch"
+                [[settings]]
+                key = "app"
+                doc = "which app to launch on it"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(m.settings.len(), 2);
+        assert_eq!(m.settings[0].key, "host");
+        assert_eq!(m.settings[0].doc, "which machine to watch");
+
+        let bare = ModuleManifest::parse("producer = \"ascent\"\nkind = \"viewport\"\n").unwrap();
+        assert!(bare.settings.is_empty(), "declaring none is the arrival state");
+    }
+
+    /// 🚨 The rule that makes the console's own channel work: a value is everything after the
+    /// key, so a key with whitespace in it would eat a word of itself.
+    #[test]
+    fn a_setting_key_that_cannot_travel_on_the_line_is_refused_at_the_manifest() {
+        let fault = ModuleManifest::parse(
+            "producer = \"m\"\nkind = \"viewport\"\n[[settings]]\nkey = \"two words\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(fault, ModuleFault::BadSettingKey { .. }), "{fault:?}");
+        assert!(fault.sentence().contains("everything after"), "{}", fault.sentence());
+
+        assert!(check_setting_key("host").is_ok());
+        assert!(check_setting_key("").is_err());
+        assert!(check_setting_key(&"k".repeat(MAX_SETTING_KEY + 1)).is_err());
+        assert!(check_setting_key("a\u{7}b").is_err());
+    }
+
+    /// ⚠️ Refused rather than deduplicated — see the parser's comment.
+    #[test]
+    fn one_key_declared_twice_is_a_manifest_that_disagrees_with_itself() {
+        let fault = ModuleManifest::parse(
+            "producer = \"m\"\nkind = \"viewport\"\n[[settings]]\nkey = \"host\"\ndoc = \"a\"\n\
+             [[settings]]\nkey = \"host\"\ndoc = \"b\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(fault, ModuleFault::DuplicateSetting { .. }), "{fault:?}");
+    }
+
+    #[test]
+    fn a_manifest_may_not_declare_more_settings_than_a_person_can_scroll() {
+        let mut text = String::from("producer = \"m\"\nkind = \"viewport\"\n");
+        for i in 0..=MAX_SETTINGS {
+            text.push_str(&format!("[[settings]]\nkey = \"k{i}\"\n"));
+        }
+        assert!(matches!(
+            ModuleManifest::parse(&text).unwrap_err(),
+            ModuleFault::TooManySettings { .. }
+        ));
+    }
+
+    /// 🚨 The vocabulary travels with the approval, so the ring and the refusal can be answered
+    /// from `modules.json` with no checkout on disk.
+    #[test]
+    fn approving_records_the_declared_settings_and_declares_answers_from_the_record() {
+        let mut m = manifest("moonlight");
+        m.settings = vec![SettingSpec { key: "host".into(), doc: "which machine".into() }];
+        let approved = ApprovedModule::approve(&m, source(), &[]).unwrap();
+        assert_eq!(approved.setting_keys(), ["host"]);
+        assert!(approved.declares("host"));
+        assert!(!approved.declares("Host"), "exact, like every other name in this file");
+        assert!(!approved.declares("bitrate"));
+    }
+
+    /// The refusal names what would have worked — the difference between a typo costing a second
+    /// and a person reading a module's source to find out what it answers to.
+    #[test]
+    fn an_undeclared_key_is_refused_by_name_and_an_empty_vocabulary_says_so_differently() {
+        let some = ModuleFault::UndeclaredSetting {
+            producer: "moonlight".into(),
+            key: "bitrate".into(),
+            declared: vec!["host".into(), "app".into()],
+        };
+        assert!(some.sentence().contains("host, app"), "{}", some.sentence());
+        let none = ModuleFault::UndeclaredSetting {
+            producer: "ascent".into(),
+            key: "host".into(),
+            declared: Vec::new(),
+        };
+        assert!(none.sentence().contains("declares no settings"), "{}", none.sentence());
+    }
+
+    /// ⚠️ The producer name becomes a FILE NAME, and this is the only thing between a name in a
+    /// JSON file and a write outside the store.
+    #[test]
+    fn a_settings_path_is_one_file_under_the_store_and_a_traversing_name_is_refused() {
+        let root = Path::new("/store");
+        let p = ModuleRegistry::settings_path(root, "moonlight").unwrap();
+        assert_eq!(p, root.join(SETTINGS_DIR).join("moonlight.json"));
+        for bad in ["..", ".", "../../etc/passwd", "a/b", "a\\b"] {
+            assert!(
+                ModuleRegistry::settings_path(root, bad).is_err(),
+                "`{bad}` must never become a file name"
+            );
+        }
+    }
+
+    /// 🚨 Read, modify, write. A console that truncated the file to the one key it was given
+    /// would delete a person's other settings every time they changed one word.
+    #[test]
+    fn writing_one_setting_keeps_every_other_key_in_the_file() {
+        let root = std::env::temp_dir().join(format!(
+            "organon-settings-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(ModuleRegistry::read_settings(&root, "moonlight").is_empty(), "nothing set yet");
+
+        ModuleRegistry::write_setting(&root, "moonlight", "host", "STUDIO-PC").unwrap();
+        ModuleRegistry::write_setting(&root, "moonlight", "app", "Desktop").unwrap();
+        let read = ModuleRegistry::read_settings(&root, "moonlight");
+        assert_eq!(read.get("host").and_then(Value::as_str), Some("STUDIO-PC"));
+        assert_eq!(read.get("app").and_then(Value::as_str), Some("Desktop"));
+
+        // A value with spaces in it survives, because a machine name may have one.
+        ModuleRegistry::write_setting(&root, "moonlight", "host", "attic nas").unwrap();
+        let read = ModuleRegistry::read_settings(&root, "moonlight");
+        assert_eq!(read.get("host").and_then(Value::as_str), Some("attic nas"));
+        assert_eq!(read.get("app").and_then(Value::as_str), Some("Desktop"), "the other key stands");
+
+        // ⚠️ And a module's own keys — ones the console has never heard of — are untouched.
+        let path = ModuleRegistry::settings_path(&root, "moonlight").unwrap();
+        let mut object = ModuleRegistry::read_settings(&root, "moonlight");
+        object.insert("machines".into(), serde_json::json!([{ "name": "attic" }]));
+        fs::write(&path, serde_json::to_string(&Value::Object(object)).unwrap()).unwrap();
+        ModuleRegistry::write_setting(&root, "moonlight", "host", "attic").unwrap();
+        let read = ModuleRegistry::read_settings(&root, "moonlight");
+        assert!(read.get("machines").is_some_and(Value::is_array), "the module's own key stands");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A file somebody broke by hand reads as "nothing set" rather than taking the console down
+    /// — `modules.json`'s own posture, applied to a file that is even more hand-edited.
+    #[test]
+    fn a_settings_file_that_will_not_parse_reads_as_nothing_set() {
+        let root = std::env::temp_dir().join(format!(
+            "organon-settings-bad-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = ModuleRegistry::settings_path(&root, "moonlight").unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"{ not json").unwrap();
+        assert!(ModuleRegistry::read_settings(&root, "moonlight").is_empty());
+        // …and writing over it still works, so a person is never stuck.
+        ModuleRegistry::write_setting(&root, "moonlight", "host", "a").unwrap();
+        assert_eq!(
+            ModuleRegistry::read_settings(&root, "moonlight").get("host").and_then(Value::as_str),
+            Some("a")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
 }

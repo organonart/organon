@@ -7833,6 +7833,98 @@ measured in isolation and the whole is compiled and unit-tested. `log_file`'s si
 path, the roll, the single generation, the append and the header; none of them can start a
 process.
 
+### 1.23 `console setting` — how a typed word reaches a module that is already running
+
+The gap this closes is one §1.20 created on purpose and named at the time. The frame boundary
+carries **four input verbs** — key down, key up, pointer, release-all — and `organon-module`'s own
+header refuses a generic message in these words: *"the one addition that would make every future
+verb free, which is to say ungranted for ever."* That refusal is right and it costs something
+real. A viewport onto another machine has to be told **which machine**, and no arrangement of key
+presses is a way to type a host name.
+
+🚨 **So the console and the module agree on a FILE, and the protocol gains nothing.**
+`<store>/module-settings/<producer>.json` — beside `modules.json`, never inside the checkout,
+which is a git working tree the console fetches into. The path is handed to the module at launch
+in `ORGANON_MODULE_SETTINGS` (`module.rs`), derived exactly as the channel path and the binary
+are, and the module watches it however it likes. Organon's end is one write; the polling, the
+reloading and the meaning are all on the other side of the boundary.
+
+| Piece | Owns |
+|---|---|
+| `module::SettingSpec` | one key a manifest **declares**: a word and a line of prose. Never a value, never a default, never a type |
+| `ApprovedModule::settings` | the keys the **approved commit's** manifest declared, copied at approval |
+| `ModuleRegistry::write_setting` | read-modify-write through a temp file and a rename |
+| `registry::setting_options` | two rings — the approved modules, then *that* module's keys |
+| `Console::set_setting` | the two gates, and the sentence |
+
+#### 🚨 The console checks two things and learns nothing
+
+**Is the producer approved**, and **is the key one that module declared**. That is all. The value
+is a string it stores and never interprets — `host`, `app`, `bitrate` are words belonging to
+whoever wrote the module, and a console that validated them would be a console that has to be
+updated when a module gains a setting. This is `doc/organon_module_viewport.md` §4.6's *"never:
+what the module is"* read from the configuration side, and it is the reason `SettingSpec` has no
+`kind` field: the first module wanting something an enum lacked would be a change to Organon.
+
+⚠️ **The vocabulary travels with the approval, not with the repository.** A module that adds a
+setting in a later commit does not gain it until that commit is approved — §3.2's *"the unit is a
+commit"*, applied to configuration. That is a real cost and it is the right one: the alternative
+is a repository that can widen what a console will write on its behalf without anybody approving
+anything. It also means a module approved by an older console declares nothing here, and every
+key is refused until it is approved again; the refusal says *"declares no settings"*, which is
+exactly what the record says.
+
+#### A verb of its own, and the argument that decided it
+
+`console.setting` is **not** a sixth `console module` action, and the reason is the argument
+shape rather than taste. Every `console module` action is *(action, producer)* with three
+optional keyword slots; this one is three **required** words. §1.8's grammar fills required
+arguments positionally and optional ones by keyword — so folded in, it would have had to be
+spelled `/module set moonlight key host value studio-pc`, which is a worse line for the verb a
+person types most often. `console.stack` and `console.screen` won the identical argument against
+being folded into `console.viewport`.
+
+📌 **It is `Reversal::Recoverable`, and it is the one verb near `console module` that earns it.**
+Setting a key writes one string into a small JSON file; the opposite is the same verb with the
+previous value, and nothing is fetched, compiled or granted. That does mean **autorun can fire
+it** — right for a completion narrowed to exactly one machine name, wrong for anything that
+spends trust, which is precisely why `console module` keeps `Permanent` and this does not share
+its verb.
+
+#### The value is the rest of the line
+
+The lane splits on whitespace, so `parse_console_op`'s `setting` arm takes **everything after the
+key** — `ConsoleOp::Preset`'s rule, for its reason. A machine called `attic nas` is an ordinary
+machine name that `it.next()` would truncate to `attic`, silently, with nothing on either end able
+to notice. ⚠️ That is what makes `check_setting_key`'s no-whitespace rule load-bearing rather than
+tidy: a key with a space in it would take a word of itself into the value.
+
+⚠️ **An empty value is malformed, not "clear the setting".** What clearing means is the module's
+to decide, exactly as every other value's meaning is; a lane that invented a delete verb out of an
+absent word would be the console deciding what a key means. Refused at the clap boundary, at
+`op_from`, and on the wire.
+
+⚠️ **…on three of the four doors. The composer takes one word per argument, and this verb does not
+change that.** `parse_args` fills each required argument from one word and refuses the rest with
+*"got more words than it takes"*, so `/setting moonlight host attic nas` is refused **in the
+composer** while `organon console setting moonlight host attic nas` is not. That is not a defect
+of this verb — it is §1.8's grammar, and `/preset` records the same limitation from the other
+side, having answered it with substring matching because preset names are *usually* multi-word.
+Machine names usually are not, so the honest answer here is the CLI door and a hand edit, not a
+second grammar for one verb.
+
+#### What it does not do
+
+It does not restart anything and it does not need a module to be running. The file **is** the
+state: a module reads it when it starts and notices when it changes. Setting a key for a producer
+no region is showing is a perfectly ordinary thing to do — it is how a person chooses what a
+viewport will show *before* opening one — so it is not reported as a mistake.
+
+📌 The first module to use it is `organonart/organon-modules-moonlight`, whose manifest declares
+`host` and `app`, and whose own test pins those two keys to the field names in its settings
+struct. The console cannot make that check for it: a key Organon accepts and the module never
+reads is a command that completes, reports success, and changes nothing.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |

@@ -193,6 +193,31 @@ pub const VERB_VIEWPORT: &str = "console.viewport";
 /// design document's shorter form would have needed a second grammar for one verb.
 pub const VIEWPORT_PRODUCER_ARG: &str = "producer";
 
+/// **`/setting <producer> <key> <value>`** — write one setting into an approved module's own
+/// settings file. `organon_console::module::SETTING_VERB` is the terminal spelling of the same
+/// command.
+///
+/// 🚨 **A verb of its own rather than a sixth `console module` action**, and the reason is the
+/// argument shape rather than taste. Every `console module` action is *(action, producer)* with
+/// optional keyword slots after it; this one is three **required** words, and the grammar fills
+/// required arguments positionally. Folded in, the key and the value would have had to be
+/// optional-by-keyword — `/module set moonlight key host value studio-pc` — which is a worse
+/// line for the verb a person types most often. `console.stack` and `console.screen` won the
+/// same argument against being folded into `console.viewport`.
+pub const VERB_SETTING: &str = "console.setting";
+/// `console.setting`'s first argument: which approved module.
+///
+/// ⚠️ **Its own constant rather than [`VIEWPORT_PRODUCER_ARG`] shared**, even though the word is
+/// identical — `options_for` is keyed by verb *and* argument name, and the two rings differ in
+/// exactly the way that matters: `console.viewport`'s offers `organon`, which is the one name a
+/// module may never be called. Sharing the string would read as sharing the meaning.
+pub const SETTING_PRODUCER_ARG: &str = "producer";
+/// `console.setting`'s second argument: which of the keys that module declared.
+pub const SETTING_KEY_ARG: &str = "key";
+/// `console.setting`'s third argument: what to set it to. No ring — the value space belongs to
+/// the module, and the console does not hold an opinion about it.
+pub const SETTING_VALUE_ARG: &str = "value";
+
 /// `/media` — show a file from disk in this conversation.
 ///
 /// 🚨 **A view-lane verb, and it must stay one.** The console lane writes a sidecar line, and a
@@ -797,8 +822,102 @@ fn console_narrow(name: &str) -> Option<NarrowFn> {
     match name {
         VERB_LAYOUT => Some(layout_options),
         VERB_VIEWPORT => Some(viewport_options),
+        VERB_SETTING => Some(setting_options),
         _ => None,
     }
+}
+
+/// `/setting ` — the approved modules, and then the keys the chosen one declared.
+///
+/// 🚨 **Two rings from one hook, and the second reads the first's answer** — `viewport_options`'
+/// shape, for its reason: a key only means anything inside a producer, so the ring for
+/// `/setting moonlight ` is *moonlight's* vocabulary and nobody else's. A hook that offered the
+/// union of every module's keys would complete a word the chosen module refuses.
+///
+/// ⚠️ **`organon` is deliberately NOT offered here, and that is the difference from
+/// [`viewport_options`].** Organon's own World is the producer a `3d` region means with nothing
+/// named; it is not an approved module, it has no manifest, and it declares no settings. Offering
+/// it would complete to a name `check_producer_name` refuses outright.
+///
+/// ⚠️ **A module that declares nothing answers [`Ring::Empty`] with the reason**, not `None`.
+/// `None` would leave the declared `ArgKind::Text` to accept any word, and a key silently
+/// accepted for a module that has no such setting is a line somebody typed that nothing acted on
+/// — `viewport_options`' argument for the `agent` case, one surface over.
+///
+/// ⚠️ **No data directory answers `None`**, on `layout_options`' rule: an empty answer would tell
+/// somebody whose modules are merely unreachable that they have approved nothing.
+fn setting_options(arg: &str, positional: &[&str]) -> Option<Ring> {
+    let root = ModuleRegistry::store_root()?;
+    let registry = ModuleRegistry::for_completion(&root);
+    match arg {
+        SETTING_PRODUCER_ARG => Some(approved_ring(&registry)),
+        SETTING_KEY_ARG => Some(key_ring(&registry, positional.first().copied()?)),
+        // The value. No ring: the value space is the module's, and a console with an opinion
+        // about it is a console that has to be updated when a module gains a machine.
+        _ => None,
+    }
+}
+
+/// The approved modules, and only those — **pure**, so every property is a test rather than a
+/// claim about a store the suite must not write to.
+fn approved_ring(registry: &ModuleRegistry) -> Ring {
+    if registry.modules.is_empty() {
+        return Ring::Empty(format!(
+            "no module is approved — `{}` approves one",
+            crate::module::APPROVE_VERB
+        ));
+    }
+    Ring::Options(
+        registry
+            .modules
+            .iter()
+            .map(|m| {
+                let n = m.settings.len();
+                (
+                    m.producer.clone(),
+                    match n {
+                        0 => format!("{} — declares no settings", m.name),
+                        1 => format!("{} — 1 setting", m.name),
+                        n => format!("{} — {n} settings", m.name),
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The keys one module declared, with the module author's own description beside each.
+///
+/// 📌 The doc text comes from somebody else's repository, so it is quoted with
+/// [`crate::module::quoted_untrusted`] rather than pasted — the rule every other place this
+/// crate shows a manifest's words already follows.
+fn key_ring(registry: &ModuleRegistry, producer: &str) -> Ring {
+    let Some(module) = registry.modules.iter().find(|m| m.producer == producer) else {
+        return Ring::Empty(format!(
+            "`{producer}` is not an approved module — `{}` approves one",
+            crate::module::APPROVE_VERB
+        ));
+    };
+    if module.settings.is_empty() {
+        return Ring::Empty(format!(
+            "{} declares no settings — a module says what it answers to in its own manifest",
+            module.name
+        ));
+    }
+    Ring::Options(
+        module
+            .settings
+            .iter()
+            .map(|spec| {
+                let doc = if spec.doc.is_empty() {
+                    format!("a setting {} understands", module.name)
+                } else {
+                    crate::module::quoted_untrusted(&spec.doc)
+                };
+                (spec.key.clone(), doc)
+            })
+            .collect(),
+    )
 }
 
 /// `/viewport <region> 3d producer ` — the modules that are actually approved, plus `organon`.
@@ -2988,4 +3107,117 @@ mod tests {
         assert_eq!(slot.kind, ArgKind::Text);
         assert!(!slot.required, "an omitted producer means Organon — it cannot be required");
     }
+
+    // -----------------------------------------------------------------------------------
+    // `/setting` — the two rings, both pure
+    // -----------------------------------------------------------------------------------
+
+    fn with_settings(producer: &str, keys: &[(&str, &str)]) -> module::ApprovedModule {
+        module::ApprovedModule {
+            producer: producer.to_string(),
+            name: format!("{producer} the module"),
+            url: format!("https://example.invalid/{producer}.git"),
+            commit: "0".repeat(40),
+            settings: keys
+                .iter()
+                .map(|(k, d)| module::SettingSpec { key: (*k).to_string(), doc: (*d).to_string() })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// 🚨 CONTRACT: **`organon` is NOT in this ring**, which is the one way it differs from
+    /// `/viewport`'s. Organon's own World has no manifest and declares no settings, and
+    /// `check_producer_name` refuses the name to a module — so offering it would complete to a
+    /// word every downstream check rejects.
+    #[test]
+    fn the_setting_producer_ring_is_the_approved_modules_and_never_organon() {
+        let registry = registry_of(&["ascent", "moonlight"]);
+        let Ring::Options(options) = approved_ring(&registry) else {
+            panic!("two approved modules is a list");
+        };
+        let names: Vec<&str> = options.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["ascent", "moonlight"]);
+        assert!(
+            !names.contains(&module::DEFAULT_PRODUCER),
+            "`organon` is not a module and cannot be configured as one"
+        );
+    }
+
+    /// ⚠️ Empty **with a reason**, unlike the viewport ring — there really is nothing to
+    /// configure when nothing is approved, and the sentence names the verb that changes that.
+    #[test]
+    fn nothing_approved_is_an_empty_ring_that_names_the_verb_that_fixes_it() {
+        let Ring::Empty(why) = approved_ring(&ModuleRegistry::default()) else {
+            panic!("nothing approved has nothing to offer");
+        };
+        assert!(why.contains(module::APPROVE_VERB), "{why}");
+    }
+
+    /// 🚨 CONTRACT: the key ring is **one module's** vocabulary, never the union.
+    #[test]
+    fn the_key_ring_is_the_chosen_modules_own_vocabulary() {
+        let registry = ModuleRegistry {
+            modules: vec![
+                with_settings("moonlight", &[("host", "which machine"), ("app", "which app")]),
+                with_settings("other", &[("frobnicate", "not moonlight's")]),
+            ],
+            extra: Default::default(),
+        };
+        let Ring::Options(options) = key_ring(&registry, "moonlight") else {
+            panic!("moonlight declares two settings");
+        };
+        let keys: Vec<&str> = options.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["host", "app"], "manifest order, and no other module's keys");
+        assert!(options[0].1.contains("which machine"), "the author's own words: {:?}", options[0]);
+        assert!(!keys.contains(&"frobnicate"));
+    }
+
+    /// The two empty cases are different sentences, because they are fixed differently: approve
+    /// the module, or wait for its author to declare something.
+    #[test]
+    fn a_module_that_is_unknown_and_one_that_declares_nothing_say_different_things() {
+        let registry = ModuleRegistry {
+            modules: vec![with_settings("ascent", &[])],
+            extra: Default::default(),
+        };
+        let Ring::Empty(unknown) = key_ring(&registry, "nope") else {
+            panic!("an unapproved module has no keys");
+        };
+        assert!(unknown.contains(module::APPROVE_VERB), "{unknown}");
+        let Ring::Empty(none) = key_ring(&registry, "ascent") else {
+            panic!("a module that declares nothing has no keys");
+        };
+        assert!(none.contains("declares no settings"), "{none}");
+    }
+
+    /// 📌 The doc text comes from somebody else's repository, so it is quoted rather than pasted
+    /// — `quoted_untrusted`'s rule, which every other place this crate shows a manifest's words
+    /// already follows.
+    #[test]
+    fn a_manifests_description_reaches_the_ring_quoted() {
+        let registry = ModuleRegistry {
+            modules: vec![with_settings("m", &[("k", "a line\nwith a newline in it")])],
+            extra: Default::default(),
+        };
+        let Ring::Options(options) = key_ring(&registry, "m") else { panic!("one setting") };
+        assert!(options[0].1.starts_with('"'), "{:?}", options[0]);
+        assert!(!options[0].1.contains('\n'), "a raw newline would break the band: {:?}", options[0]);
+    }
+
+    /// The value has no ring, and that absence is the console declining to hold an opinion about
+    /// a vocabulary that is not its own.
+    #[test]
+    fn the_value_has_no_ring_and_an_unknown_argument_name_has_none_either() {
+        let registry = ModuleRegistry {
+            modules: vec![with_settings("m", &[("k", "d")])],
+            extra: Default::default(),
+        };
+        // `setting_options` reaches the store, which the suite must not; the two pure halves are
+        // what the hook is made of and they are what is asserted. This pins the third arm.
+        assert!(matches!(key_ring(&registry, "m"), Ring::Options(_)));
+        assert_eq!(SETTING_VALUE_ARG, "value");
+        assert_ne!(SETTING_KEY_ARG, SETTING_VALUE_ARG);
+    }
+
 }
