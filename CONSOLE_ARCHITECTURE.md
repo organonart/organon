@@ -7925,6 +7925,76 @@ viewport will show *before* opening one — so it is not reported as a mistake.
 struct. The console cannot make that check for it: a key Organon accepts and the module never
 reads is a command that completes, reports success, and changes nothing.
 
+### 1.23 Flying a hosted module — the console's half of the input grant
+
+**`organon_module::input` has carried the input protocol since T5b's contract landed, and until
+2026-08-26 nothing on the console side ever spoke it.** A hosted producer could draw a picture
+and had no way to be driven — the grant existed, fully specified and fully tested, wired to
+nobody. `organon-console/src/module_input.rs` is the missing side.
+
+🚨 **The way out was decided before the way in was built**, as §5.3 requires. **`Escape`
+leaves**, and it is safe to spend because it is already in `organon_module::RESERVED` — enforced
+at the *encode* site so a console that forgot could not leak it, and published in the mapped
+header so a module that does not link the crate is still **told**. A game that swallows Escape
+and a console that needs Escape never collide, because the module never receives it.
+
+**The latch is one `Option<String>`, not a set.** A rectangle showing a picture and a rectangle
+taking your keyboard are different states; a click inside takes it. Two hosted regions cannot
+both be flying, and moving the latch **hands back the displaced producer** so its held keys can
+be released.
+
+🚨 **Every exit emits `ReleaseAll`, and that is structural rather than remembered.**
+`Latch::latch` and `Latch::release` are both `#[must_use]` and answer *who* must be told, so an
+exit that forgot would not compile. There are four exits and each was a real hazard: `Escape`,
+window focus loss, a click on a different hosted rectangle, and **the producer's rectangle no
+longer being drawn** — the last has no gesture behind it at all (`/viewport` can take the region
+away, or the process can die, while keys are held). The failure they prevent is one shape: a key
+that went down inside a flight and whose `Up` the module will never see, leaving it thrusting
+forever with nobody at the keyboard.
+
+⚠️ **Keys are taken from the frame's `RawInput` before `Context::run` ever sees it.** While a
+rectangle is flown, `W` is thrust and not a character, and the composer must never see it.
+
+🚨 **`RawInput`, never `Context::input_mut` — and the first cut got this wrong, which is why
+`module_input::take_from_raw` exists as a named function over an event list rather than as a
+block in the frame loop.** `Context::run(raw, …)` calls `InputState::begin_pass`, which builds
+the frame's state with `events: new.events.clone()` and `focused: new.focused` **straight from
+the incoming `RawInput`** (egui 0.33.3, `input_state/mod.rs:571`). Anything done to the context's
+input beforehand is discarded wholesale, so the original wiring stole keys from the *previous*
+frame's leftovers: the composer went on receiving every keystroke it was supposed to be shielded
+from, and the module was fed events one frame stale. Caught in review on PR #207. A function over
+`&mut Vec<egui::Event>` can be tested against a hostile frame; a block reaching into a live
+`Context` can only be tested by running one.
+
+⚠️ **Buttons are SHARED — copied, not stolen — and that is load-bearing rather than lax.**
+Consuming them would make two documented things impossible at once: clicking a *different* hosted
+rectangle, which is one of the four exits and would become an unreachable exit pretending to be a
+design; and reaching the console's own chrome while something is flying. So the module gets them
+and egui keeps them.
+
+⚠️ **Motion is coalesced into one event and ordered after every button transition.** A module
+cares about the frame's displacement, not egui's sampling of it; and a click-then-drag must
+arrive as *down, then moved*, or a drag begins before the button it belongs to. A frame in which
+nothing moved sends nothing.
+
+⚠️ **The delta, never the position — and the fix made this stronger rather than weaker.**
+Motion is taken from egui's `MouseMoved`, which is *already* a delta, so there is no conversion
+step in which an absolute position could leak. `PointerMoved` carries an absolute point, is never
+sent, and is **left in the event list** because egui needs it for its own hover state. The
+refusal table's reason is unchanged: a producer that could place the cursor could place it over a
+confirmation button in some other window.
+
+📌 **Three guards on the reserved keys, and only one of them is the guarantee.**
+`input::push` refuses them (structural); `translate` drops them (so a flown module does not cost
+a ring slot for an event that cannot be delivered); and the frame loop takes `Escape` without
+forwarding it (which is what gives a person their keyboard back). Never rely on the second or
+third alone.
+
+⚠️ **Not looked at.** Nobody has flown anything. The latch, the translation and the key map
+are unit-tested and mutation-tested; what is unverified is whether Ascent reads these events as
+flight, whether the pointer delta is the right scale, and whether a click-to-latch is the
+gesture that feels right in a divided pane.
+
 ## 2. Seams the next tiers consume
 
 | Coming | Builds on | Issue |
