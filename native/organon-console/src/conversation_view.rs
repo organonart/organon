@@ -2186,11 +2186,52 @@ pub fn draw(
     // `out = scrollback(…)` replaces the struct, so anything written onto `out` inside the
     // column is discarded three lines later, every frame, in silence.
     out.panel = pane.panel_wanted.take();
+    // 🚨 **Ask the keyboard back if nothing has it.** See [`should_recover_focus`]: this is
+    // the general repair that replaces two per-site ones, and it is read AFTER the column has
+    // drawn so `focused` is this frame's settled answer rather than last frame's.
+    //
+    // ⚠️ Sets `want_focus` rather than calling `request_focus` here, because the composer is
+    // already drawn by this point — there is no `Response` left to ask. One path to the
+    // keyboard, landing next frame, which is what the two Escape repairs already do.
+    let pointer_down = ui.input(|i| i.pointer.any_down());
+    if should_recover_focus(pane.failure.is_none(), ui.memory(|m| m.focused()), pointer_down) {
+        pane.want_focus = true;
+    }
     // Last, so nothing the flow draws can cover them — the same call-order enforcement the
     // patch paints rely on, one layer up. At terminal posture this returns without touching
     // the painter.
     registration_ticks(ui, area, theme, form);
     out
+}
+
+/// **Should the composer take the keyboard back?**
+///
+/// 🚨 **The repair was per-site and there were only two sites.** `want_focus` has existed
+/// since the palette landed, and it was set in exactly two places — dismissing the palette, and
+/// leaving the theme editor — both of them Escape, both of them repairing the *same* egui
+/// behaviour. Everything else that takes focus simply kept it: choosing a panel, pressing any
+/// button in the flow, picking from a combo. James, 2026-08-26: *"I lose focus all the time when
+/// I'm talking with the agent. For instance, when I set a panel type, I have to click back in.
+/// Focus should always come back to the agent."*
+///
+/// 📌 **So the rule is inverted: repair the STATE, not each cause.** Hunting every widget
+/// that might steal focus is a list that is wrong the moment somebody adds a control — the same
+/// shape as a hand-maintained table this tree keeps replacing with a derivation. The state worth
+/// repairing is *"the conversation is live and nothing at all has the keyboard"*, which is
+/// exactly what a momentary control leaves behind: egui's `Button` is not focusable by click, so
+/// pressing one blurs the composer and focuses nothing.
+///
+/// ⚠️ **`None` is the whole condition, and it is what keeps this from fighting.** Anything
+/// that legitimately wants the keyboard — a region line, the theme editor's fields, a combo's
+/// open popup — *has* focus, so `focused` is `Some` and this answers `false`. The composer is
+/// asked back only into a vacuum.
+///
+/// ⚠️ **Never while a pointer button is held**, which is the one case `None` alone gets
+/// wrong: a drag across the transcript to select text is a live gesture with nothing focused, and
+/// grabbing the keyboard in the middle of it would be the same interruption from the other side.
+/// The repair lands on release.
+pub fn should_recover_focus(live: bool, focused: Option<egui::Id>, pointer_down: bool) -> bool {
+    live && focused.is_none() && !pointer_down
 }
 
 /// **The four corner marks that say where the page is** — a printer's registration mark, and
@@ -11142,6 +11183,38 @@ mod tests {
             retyped > 0.0,
             "retyping a line that was once dismissed must not stay poisoned: {retyped}"
         );
+    }
+
+    /// 🚨 **The general focus repair.** `want_focus` used to be set at two sites, both of
+    /// them Escape, and every other control that took the keyboard kept it — so choosing a panel
+    /// or pressing a button in the flow left the composer dead until it was clicked again.
+    #[test]
+    fn the_composer_asks_the_keyboard_back_when_nothing_holds_it() {
+        assert!(should_recover_focus(true, None, false), "a live pane with no focus stays dead");
+    }
+
+    /// ⚠️ **It must not fight anything that legitimately holds the keyboard** — a region line,
+    /// the theme editor's fields, an open combo. `Some` is the whole of that guard, and getting
+    /// it backwards would make every other text box in the window untypeable.
+    #[test]
+    fn a_widget_that_holds_focus_keeps_it() {
+        let other = egui::Id::new("a-region-line");
+        assert!(!should_recover_focus(true, Some(other), false), "the composer stole the keyboard");
+    }
+
+    /// ⚠️ **Never mid-drag.** A drag across the transcript to select text is a live gesture with
+    /// nothing focused; grabbing the keyboard during it is the same interruption from the other
+    /// side. The repair lands on release.
+    #[test]
+    fn a_drag_in_progress_is_not_interrupted() {
+        assert!(!should_recover_focus(true, None, true), "a text selection was interrupted");
+    }
+
+    /// A dead pane is not asked to type — the box is disabled, and `request_focus` on a disabled
+    /// widget is a frame spent on nothing.
+    #[test]
+    fn a_dead_pane_is_not_given_the_keyboard() {
+        assert!(!should_recover_focus(false, None, false));
     }
 
     /// 🚨 **Auto-execute, through real frames: what fires, and the two shapes that must not.**
