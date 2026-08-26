@@ -7952,20 +7952,37 @@ away, or the process can die, while keys are held). The failure they prevent is 
 that went down inside a flight and whose `Up` the module will never see, leaving it thrusting
 forever with nobody at the keyboard.
 
-⚠️ **Keys are taken from the raw event list before any widget reads them**, beside
-`region_lines.begin()`. That is the same arbitration one layer out: while a rectangle is flown,
-`W` is thrust and not a character, and the composer must never see it. Consuming from raw input
-is `composer_keys`' own idiom — the arbitration has to happen before a widget reads, or both act
-on one keystroke.
+⚠️ **Keys are taken from the frame's `RawInput` before `Context::run` ever sees it.** While a
+rectangle is flown, `W` is thrust and not a character, and the composer must never see it.
+
+🚨 **`RawInput`, never `Context::input_mut` — and the first cut got this wrong, which is why
+`module_input::take_from_raw` exists as a named function over an event list rather than as a
+block in the frame loop.** `Context::run(raw, …)` calls `InputState::begin_pass`, which builds
+the frame's state with `events: new.events.clone()` and `focused: new.focused` **straight from
+the incoming `RawInput`** (egui 0.33.3, `input_state/mod.rs:571`). Anything done to the context's
+input beforehand is discarded wholesale, so the original wiring stole keys from the *previous*
+frame's leftovers: the composer went on receiving every keystroke it was supposed to be shielded
+from, and the module was fed events one frame stale. Caught in review on PR #207. A function over
+`&mut Vec<egui::Event>` can be tested against a hostile frame; a block reaching into a live
+`Context` can only be tested by running one.
+
+⚠️ **Buttons are SHARED — copied, not stolen — and that is load-bearing rather than lax.**
+Consuming them would make two documented things impossible at once: clicking a *different* hosted
+rectangle, which is one of the four exits and would become an unreachable exit pretending to be a
+design; and reaching the console's own chrome while something is flying. So the module gets them
+and egui keeps them.
 
 ⚠️ **Motion is coalesced into one event and ordered after every button transition.** A module
 cares about the frame's displacement, not egui's sampling of it; and a click-then-drag must
 arrive as *down, then moved*, or a drag begins before the button it belongs to. A frame in which
 nothing moved sends nothing.
 
-⚠️ **The delta, never the position.** `PointerMoved` carries an absolute point and is dropped
-rather than converted — the refusal table's reason, unchanged: a producer that could place the
-cursor could place it over a confirmation button in some other window.
+⚠️ **The delta, never the position — and the fix made this stronger rather than weaker.**
+Motion is taken from egui's `MouseMoved`, which is *already* a delta, so there is no conversion
+step in which an absolute position could leak. `PointerMoved` carries an absolute point, is never
+sent, and is **left in the event list** because egui needs it for its own hover state. The
+refusal table's reason is unchanged: a producer that could place the cursor could place it over a
+confirmation button in some other window.
 
 📌 **Three guards on the reserved keys, and only one of them is the guarantee.**
 `input::push` refuses them (structural); `translate` drops them (so a flown module does not cost

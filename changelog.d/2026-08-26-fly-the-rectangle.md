@@ -23,19 +23,33 @@ click on a different hosted rectangle, and **the producer's rectangle no longer 
 one failure: a key that went down inside a flight whose `Up` the module never sees, leaving it
 thrusting forever with nobody at the keyboard.
 
-⚠️ **Keys are taken from the raw event list before any widget reads them.** While a rectangle is
-flown, `W` is thrust and not a character, and the composer must never see it. That is
-`composer_keys`' own idiom — arbitration has to happen before a widget reads, or both act on one
-keystroke.
+⚠️ **Keys are taken from the frame's `RawInput` before `Context::run` sees it.** While a
+rectangle is flown, `W` is thrust and not a character, and the composer must never see it.
+
+🚨 **The first cut did this against `Context::input_mut` and it did nothing at all.**
+`Context::run(raw, …)` calls `InputState::begin_pass`, which rebuilds the frame's state with
+`events: new.events.clone()` and `focused: new.focused` **straight from the incoming `RawInput`**
+(egui 0.33.3, `input_state/mod.rs:571`) — so the steal was applied to the previous frame's
+leftovers and discarded. The composer went on receiving every key, and the module was fed events
+one frame stale. **Found by the automated review, verified at egui's source rather than taken on
+trust, and the fix is not a move but an extraction**: `take_from_raw` is now a function over
+`&mut Vec<egui::Event>`, which can be tested against a hostile frame. Six tests came with it,
+including one that fails against the exact original bug.
+
+⚠️ **Buttons are SHARED rather than stolen**, which the fix forced and which is load-bearing:
+consuming them would make clicking a *different* hosted rectangle impossible — one of the four
+exits, which would have become an unreachable exit pretending to be a design — and would lock
+the console's own chrome while something was flying.
 
 ⚠️ **Motion is coalesced into one event and ordered after every button transition.** A module
 cares about the frame's displacement, not egui's sampling of it; and a click-then-drag must
 arrive as *down, then moved*, or a drag begins before the button it belongs to. A still frame
 sends nothing at all.
 
-⚠️ **The delta, never the position** — `PointerMoved` is dropped rather than converted, on the
-refusal table's own reason: a producer that could place the cursor could place it over a
-confirmation button in some other window.
+⚠️ **The delta, never the position**, and the fix made this stronger: motion now comes from
+egui's `MouseMoved`, which is *already* a delta, so no conversion exists in which an absolute
+position could leak. `PointerMoved` is never sent and is left in the list, because egui needs it
+for its own hover state.
 
 📌 **Three guards on the reserved keys, and only one is the guarantee.** `input::push` refuses
 them; `translate` drops them so a flown module cannot even cost a ring slot for an undeliverable

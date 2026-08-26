@@ -219,6 +219,78 @@ pub fn button_of(b: egui::PointerButton) -> Option<MouseButton> {
     })
 }
 
+/// What one frame's raw input yielded to a flown module, and whether the flight ended.
+#[derive(Debug, Default, PartialEq)]
+pub struct Taken {
+    /// What to hand [`translate`].
+    pub seen: Vec<Seen>,
+    /// The latch must be released — `Escape`, or the window losing focus.
+    pub release: bool,
+}
+
+/// **Take a flown module's input out of the frame's RAW input, in place.**
+///
+/// 🚨 **`RawInput`, never `Context::input_mut`, and the difference is not stylistic — it is the
+/// bug this function exists as a named, testable unit because of.** `Context::run(raw, …)` calls
+/// `InputState::begin_pass`, which builds the frame's state with `events: new.events.clone()`
+/// and `focused: new.focused` **straight from the incoming `RawInput`** (egui 0.33.3,
+/// `input_state/mod.rs:571`). So anything done to `Context`'s input *before* `run` is discarded
+/// wholesale: the first cut of this stole keys from last frame's leftovers, the composer went on
+/// receiving every keystroke it was supposed to be shielded from, and the module was fed events
+/// one frame stale. Caught in review on PR #207.
+///
+/// 📌 **Which is why this takes `&mut Vec<egui::Event>` rather than a `Context`.** A function
+/// over the event list can be tested against a hostile frame; a function that reaches into a
+/// live `Context` can only be tested by running one.
+///
+/// # What is taken, what is shared, what is never sent
+///
+/// * **Keys are TAKEN.** While a rectangle is flown, `W` is thrust and not a character, and the
+///   composer must never see it. This is the whole reason the arbitration happens before any
+///   widget reads.
+/// * ⚠️ **Buttons are SHARED — copied, not stolen — and that is load-bearing.** Consuming them
+///   would make two documented things impossible at once: clicking a *different* hosted
+///   rectangle (one of the four exits, which would become an unreachable exit pretending to be a
+///   design), and reaching the console's own chrome while a module is flying. So the module gets
+///   them and egui keeps them.
+/// * ⚠️ **Motion comes from `MouseMoved`, which is already a delta.** `PointerMoved` carries an
+///   absolute position, is never sent, and is **left in the list** because egui needs it for its
+///   own hover state. That is the refusal table's rule getting easier rather than harder: there
+///   is no conversion step in which an absolute position could leak.
+/// * 🚨 **`Escape` is taken and never forwarded.** It ends the flight. `translate` would drop it
+///   and `input::push` would refuse it; this is the guard that gives a person their keyboard
+///   back.
+pub fn take_from_raw(events: &mut Vec<egui::Event>, focused: bool) -> Taken {
+    let mut out = Taken::default();
+    if !focused {
+        out.release = true;
+        return out;
+    }
+    let mut keep = Vec::with_capacity(events.len());
+    for ev in events.drain(..) {
+        match &ev {
+            egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                out.release = true;
+            }
+            egui::Event::Key { key, pressed, .. } => {
+                out.seen.push(Seen::Key { key: key_of(*key), down: *pressed });
+            }
+            egui::Event::PointerButton { button, pressed, .. } => {
+                if let Some(b) = button_of(*button) {
+                    out.seen.push(Seen::Mouse { button: b, down: *pressed });
+                }
+                keep.push(ev);
+            }
+            egui::Event::MouseMoved(d) => {
+                out.seen.push(Seen::Motion { dx: d.x, dy: d.y });
+            }
+            _ => keep.push(ev),
+        }
+    }
+    *events = keep;
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +434,109 @@ mod tests {
             }
         }
         assert!(seen.len() > 40, "the map got smaller than a keyboard: {}", seen.len());
+    }
+
+    fn key(k: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn click(b: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: egui::pos2(0.0, 0.0),
+            button: b,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// 🚨 **The regression this function was extracted for.** A flown module must take the keys
+    /// OUT of the frame's event list, or the composer receives them too — `W` typing into the
+    /// prompt while it is also thrust. The first cut mutated `Context::input_mut` before
+    /// `Context::run`, which egui discards (`begin_pass` rebuilds from the incoming `RawInput`),
+    /// so this held for the module and not for the composer.
+    #[test]
+    fn a_flown_module_takes_the_keys_out_of_the_frame() {
+        let mut evs = vec![key(egui::Key::W, true), key(egui::Key::W, false)];
+        let t = take_from_raw(&mut evs, true);
+        assert!(evs.is_empty(), "the composer would still see: {evs:?}");
+        assert_eq!(
+            t.seen,
+            vec![
+                Seen::Key { key: Some(Key::W), down: true },
+                Seen::Key { key: Some(Key::W), down: false },
+            ]
+        );
+        assert!(!t.release);
+    }
+
+    /// ⚠️ **Buttons are SHARED, not stolen**, and this is the test that keeps two documented
+    /// behaviours reachable: clicking a *different* hosted rectangle is one of the four exits,
+    /// and the console's chrome has to stay clickable while something is flying. Consuming them
+    /// would turn a documented exit into an unreachable one.
+    #[test]
+    fn buttons_reach_the_module_and_stay_in_the_frame() {
+        let mut evs = vec![click(egui::PointerButton::Primary, true)];
+        let t = take_from_raw(&mut evs, true);
+        assert_eq!(evs.len(), 1, "egui lost the click, so nothing else can be clicked");
+        assert_eq!(t.seen, vec![Seen::Mouse { button: MouseButton::Left, down: true }]);
+    }
+
+    /// 🚨 **Escape ends the flight and is never forwarded**, which is the whole leave gesture.
+    #[test]
+    fn escape_releases_and_is_not_sent() {
+        let mut evs = vec![key(egui::Key::Escape, true)];
+        let t = take_from_raw(&mut evs, true);
+        assert!(t.release, "Escape did not end the flight");
+        assert!(t.seen.is_empty(), "Escape was queued for the wire: {:?}", t.seen);
+        assert!(evs.is_empty(), "Escape was left for the composer");
+    }
+
+    /// Losing focus ends the flight, and takes nothing — there is no frame to take it from.
+    #[test]
+    fn losing_focus_releases_and_takes_nothing() {
+        let mut evs = vec![key(egui::Key::W, true)];
+        let t = take_from_raw(&mut evs, false);
+        assert!(t.release);
+        assert!(t.seen.is_empty());
+        assert_eq!(evs.len(), 1, "an unfocused frame should not be stripped");
+    }
+
+    /// 🚨 **Motion comes from `MouseMoved` (a delta) and `PointerMoved` (absolute) is never
+    /// sent** — and is left in the list, because egui needs it for its own hover state. The
+    /// refusal table forbids an absolute position crossing; taking the delta directly means
+    /// there is no conversion in which one could leak.
+    #[test]
+    fn motion_is_the_delta_and_the_absolute_position_never_crosses() {
+        let mut evs = vec![
+            egui::Event::PointerMoved(egui::pos2(400.0, 300.0)),
+            egui::Event::MouseMoved(egui::vec2(3.0, -2.0)),
+        ];
+        let t = take_from_raw(&mut evs, true);
+        assert_eq!(t.seen, vec![Seen::Motion { dx: 3.0, dy: -2.0 }]);
+        assert_eq!(evs.len(), 1, "PointerMoved must stay for egui's hover state");
+        assert!(matches!(evs[0], egui::Event::PointerMoved(_)));
+        // …and nothing in what crosses can carry the position it was taken beside.
+        for s in &t.seen {
+            if let Seen::Motion { dx, dy } = s {
+                assert!(*dx != 400.0 && *dy != 300.0, "an absolute position crossed");
+            }
+        }
+    }
+
+    /// Text is refused by the protocol and must not even be gathered — it is left for egui,
+    /// which is where a paste into the composer belongs.
+    #[test]
+    fn text_is_never_gathered() {
+        let mut evs = vec![egui::Event::Text("hello".into())];
+        let t = take_from_raw(&mut evs, true);
+        assert!(t.seen.is_empty(), "text was gathered for a module: {:?}", t.seen);
+        assert_eq!(evs.len(), 1, "text was stolen from the composer");
     }
 
     /// Every mouse button egui can report has a spelling — there are five on each side and a

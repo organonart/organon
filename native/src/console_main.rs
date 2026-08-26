@@ -6985,7 +6985,27 @@ impl Console {
         let Some(queue) = self.world.queue().cloned() else { return };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let raw = state.take_egui_input(window);
+        let mut raw = state.take_egui_input(window);
+        // 🚨 **The flown module's input, taken out of the RAW frame — before `run` sees it.**
+        //
+        // ⚠️ **This must operate on `raw` and not on `self.egui_ctx`, and the first cut got it
+        // wrong.** `Context::run(raw, ..)` calls `InputState::begin_pass`, which builds the
+        // frame's state with `events: new.events.clone()` and `focused: new.focused` straight
+        // from this value (egui 0.33.3, `input_state/mod.rs:571`). Anything done to the context's
+        // input beforehand is discarded wholesale — so the composer went on receiving every key a
+        // flown module was supposed to be shielded from, and the module was fed the *previous*
+        // frame's leftovers. Caught in review on PR #207; the arbitration now happens on the only
+        // value that reaches the frame.
+        //
+        // The decision of what is taken, shared or never sent is
+        // `module_input::take_from_raw`'s, which is a function over an event list precisely so it
+        // can be tested against a hostile frame rather than by running one.
+        let mut taken = organon_console::module_input::Taken::default();
+        if self.module_latch.held().is_some() {
+            taken = organon_console::module_input::take_from_raw(&mut raw.events, raw.focused);
+        }
+        let seen = taken.seen;
+        let latch_release = taken.release;
         // Every tab pumps every frame — a background agent keeps streaming into
         // its grid; only the active one draws.
         //
@@ -7115,63 +7135,6 @@ impl Console {
         // frame with no region lines at all — because that is what hands the keys back to the
         // composer when the last line goes away. See `region_line::Lines::begin`.
         self.region_lines.begin();
-        // 🚨 **The flown module's keys, TAKEN before anything else reads them.** This sits
-        // beside `region_lines.begin()` because it is the same question one layer out: when a
-        // rectangle is being flown, `W` is thrust and not a character, and the composer must
-        // never see it. Consuming from the raw event list is `composer_keys`' own idiom — the
-        // arbitration has to happen before a widget reads, or both act on one keystroke.
-        //
-        // ⚠️ **`Escape` is taken and never forwarded.** It releases the latch, which is what
-        // §5.3's reserved key was reserved FOR. `translate` would drop it and `input::push`
-        // would refuse it, so this is the third of three guards and the only one that gives a
-        // person their keyboard back.
-        //
-        // ⚠️ **Focus loss releases too**, and it is checked here rather than at the paint site
-        // because a console that lost focus may not be drawing that region at all.
-        let mut seen: Vec<organon_console::module_input::Seen> = Vec::new();
-        let mut latch_release = false;
-        if self.module_latch.held().is_some() {
-            let focused = self.egui_ctx.input(|i| i.focused);
-            if !focused {
-                latch_release = true;
-            } else {
-                self.egui_ctx.input_mut(|i| {
-                    let mut keep = Vec::with_capacity(i.events.len());
-                    for ev in i.events.drain(..) {
-                        match &ev {
-                            egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
-                                latch_release = true;
-                            }
-                            egui::Event::Key { key, pressed, .. } => {
-                                seen.push(organon_console::module_input::Seen::Key {
-                                    key: organon_console::module_input::key_of(*key),
-                                    down: *pressed,
-                                });
-                            }
-                            egui::Event::PointerButton { button, pressed, .. } => {
-                                if let Some(b) = organon_console::module_input::button_of(*button) {
-                                    seen.push(organon_console::module_input::Seen::Mouse {
-                                        button: b,
-                                        down: *pressed,
-                                    });
-                                }
-                            }
-                            // ⚠️ **The DELTA, never the position.** `input::push` carries
-                            // `Pointer { dx, dy }` and nothing else, because a producer that could
-                            // place the cursor could place it over a confirmation button in some
-                            // other window. `PointerMoved` carries an absolute point and is
-                            // therefore dropped here rather than converted.
-                            _ => keep.push(ev),
-                        }
-                    }
-                    i.events = keep;
-                    let d = i.pointer.delta();
-                    if d != egui::Vec2::ZERO {
-                        seen.push(organon_console::module_input::Seen::Motion { dx: d.x, dy: d.y });
-                    }
-                });
-            }
-        }
         let composer_owns_keys = self.region_lines.composer_owns_keys();
         let region_lines = &mut self.region_lines;
         let registry_for_lines = &self.line_registry;
