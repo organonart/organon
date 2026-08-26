@@ -1060,6 +1060,49 @@ fn layout_ring(library: &Library) -> Ring {
 /// is not redundancy for its own sake: this is the only gate with a human in front of it, so
 /// it is the only one whose message can name the alternatives *while the words are still in
 /// the composer to be edited*. By the time `validate_args` sees them the line has been sent.
+/// **May this verb's last argument be given without naming it?**
+///
+/// 🚨 **The default is no, and this is the narrow exception.** Optional arguments in this
+/// catalog are *keyword* arguments — `console camera orbit 12 dolly 3` — because a verb with
+/// several of them has no other way to say which is which, and guessing by position is how a
+/// dolly becomes an orbit. That rule is right for `console.camera` and wrong for exactly the
+/// shape `console.viewport` has: one trailing optional, whose name a person must type in full
+/// before they may say the only thing they came to say.
+///
+/// James, 2026-08-26, on `/viewport <region> <content>`: *"our completion automatically adds
+/// `producer`, and so I have to backspace delete it … we should add it after the name of the
+/// viewport. Then when we tab complete, it means we probably want to add a producer."*
+///
+/// 📌 **Two conditions, and each removes an ambiguity rather than a nuisance.**
+///
+/// * **Exactly one optional.** With two, a bare word cannot say which it fills, and the
+///   error a wrong guess produces is a silently different command.
+/// * **Its value space is open — `Text`.** This is the condition that arrived from a failing
+///   test rather than from the argument, and it is the more important of the two.
+///   `console.stack` *also* has exactly one optional, `region`, and the first cut made it
+///   positional too — which broke `the_supplied_region_keyword_is_never_offered`, and rightly:
+///   a region line edits **this** column and supplies that word itself, so offering the region
+///   vocabulary in its ring invites a second, contradicting one. The general shape is that a
+///   **closed** vocabulary is exactly the kind of word another surface may already be
+///   supplying, while an open `Text` value cannot be mistaken for a keyword — the keyword names
+///   are known and are checked first.
+///
+/// ⚠️ **The keyword form keeps working, and that is not a courtesy — it is what makes this
+/// change safe.** Both `parse_args` and `Registry::candidates` check the argument's *name*
+/// first, so `/viewport tl 3d producer ascent` parses exactly as it always did, every stored
+/// layout and every MCP caller is untouched, and this only adds a shorter spelling beside it.
+///
+/// ⚠️ **A producer actually named `producer` resolves as the keyword**, because the name
+/// check wins. That is the one input this rule reads differently from a person's intent, it is
+/// unreachable today (no approved module is called that), and the escape hatch is the keyword
+/// form it already collides with.
+fn positional_tail<'a>(optional: &[&'a ArgSpec]) -> Option<&'a ArgSpec> {
+    match optional {
+        [only] if matches!(only.kind, ArgKind::Text) => Some(only),
+        _ => None,
+    }
+}
+
 fn parse_args<'a>(entry: &Entry, words: impl Iterator<Item = &'a str>) -> Result<Value, String> {
     let words: Vec<&str> = words.collect();
     let mut out = Map::new();
@@ -1094,13 +1137,24 @@ fn parse_args<'a>(entry: &Entry, words: impl Iterator<Item = &'a str>) -> Result
                 format!("`{}` got more words than it takes — usage: {}", entry.usage_head(), entry.usage())
             });
         }
-        let Some(arg) = optional.iter().find(|a| a.name == word) else {
+        // The NAME first, always — see `positional_tail` on why that ordering is what keeps
+        // the keyword form working and every existing caller untouched.
+        let named = optional.iter().copied().find(|a| a.name == word);
+        let Some(arg) = named.or_else(|| positional_tail(&optional)) else {
             return Err(format!(
                 "`{}` has no `{word}` — usage: {}",
                 entry.usage_head(),
                 entry.usage()
             ));
         };
+        // A positional tail takes THIS word as its value; a keyword takes the next one.
+        if named.is_none() {
+            if out.contains_key(&arg.name) {
+                return Err(format!("`{}`: `{}` was given twice", entry.usage_head(), arg.name));
+            }
+            out.insert(arg.name.clone(), coerce(entry, arg, word, &positional)?);
+            continue;
+        }
         if out.contains_key(&arg.name) {
             // Last-wins would be a guess between "a caller building a line badly" and "two
             // intents concatenated", and the console's own sidecar parser refuses a repeated
@@ -1597,6 +1651,14 @@ impl Registry {
             let (candidates, empty_ring) =
                 self.value_candidates(entry, arg, &positional, typed, stem, more);
             (Slot::Value { verb, arg: arg.clone() }, candidates, empty_ring)
+        } else if let Some(arg) = positional_tail(&optional).filter(|a| !used.contains(&a.name.as_str())) {
+            // 🚨 **Its VALUES, not its name.** This is the half a person actually sees: the ring
+            // after `/viewport tl 3d` is the approved producers, and accepting one finishes the
+            // line — where it used to be the single word `producer`, which had to be typed and
+            // then followed by the thing you meant. See `positional_tail`.
+            let (candidates, empty_ring) =
+                self.value_candidates(entry, arg, &positional, typed, stem, false);
+            (Slot::Value { verb, arg: arg.clone() }, candidates, empty_ring)
         } else {
             let candidates = optional
                 .iter()
@@ -1816,6 +1878,152 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::new(&console())
+    }
+
+    /// A verb shaped exactly like `console.viewport`: two required words and **one trailing
+    /// optional whose value space is open**. Its own registry rather than a row in [`console`],
+    /// for `aliased`'s reason — every assertion about the fixture's verb list would move.
+    fn tailed() -> Registry {
+        Registry::new(&[CommandSpec {
+            name: "console.viewport".into(),
+            doc: "Divide the pane".into(),
+            target: TargetKind::Viewport,
+            reversal: Reversal::Recoverable,
+            args: vec![
+                ArgSpec {
+                    name: "region".into(),
+                    kind: ArgKind::Choice(vec!["left".into(), "right".into()]),
+                    required: true,
+                },
+                ArgSpec {
+                    name: "content".into(),
+                    kind: ArgKind::Choice(vec!["3d".into(), "agent".into()]),
+                    required: true,
+                },
+                ArgSpec { name: "producer".into(), kind: ArgKind::Text, required: false },
+            ],
+        }])
+    }
+
+    /// 🚨 **The word you came to say, without first saying `producer`.** James, 2026-08-26: the
+    /// completer inserted the argument's NAME, so the only legal line was
+    /// `/viewport left 3d producer ascent` and the word had to be backspaced out to type
+    /// anything else.
+    #[test]
+    fn a_trailing_open_optional_is_given_without_naming_it() {
+        let reg = tailed();
+        match reg.resolve("/viewport left 3d ascent") {
+            Resolved::Run { args, .. } => {
+                assert_eq!(args.get("producer").and_then(|v| v.as_str()), Some("ascent"));
+                assert_eq!(args.get("region").and_then(|v| v.as_str()), Some("left"));
+            }
+            other => panic!("did not run: {other:?}"),
+        }
+    }
+
+    /// ⚠️ **And the keyword form still parses**, which is what makes the change safe rather than
+    /// a migration: every stored layout and every MCP caller keeps working.
+    #[test]
+    fn the_keyword_form_still_parses() {
+        let reg = tailed();
+        match reg.resolve("/viewport left 3d producer ascent") {
+            Resolved::Run { args, .. } => {
+                assert_eq!(args.get("producer").and_then(|v| v.as_str()), Some("ascent"));
+            }
+            other => panic!("the old spelling stopped working: {other:?}"),
+        }
+    }
+
+    /// 🚨 **The ring after the required words offers PRODUCERS, not the word `producer`.** This
+    /// is the half a person sees, and the half that was inserting the text being deleted.
+    #[test]
+    fn the_tail_ring_offers_values_not_the_argument_name() {
+        let reg = tailed();
+        let p = reg.candidates("/viewport left 3d ").expect("a ring");
+        assert!(
+            !p.candidates.iter().any(|c| c.label == "producer"),
+            "the argument's own name is still offered: {:?}",
+            p.candidates.iter().map(|c| &c.label).collect::<Vec<_>>()
+        );
+        assert!(
+            matches!(p.slot, Slot::Value { .. }),
+            "the tail is still a keyword slot: {:?}",
+            p.slot
+        );
+    }
+
+    /// ⚠️ **A CLOSED vocabulary is left alone, and this condition came from a failing test rather
+    /// than from the argument.** `console.stack` also has exactly one optional — `region` — and
+    /// making it positional broke `region_line`'s `the_supplied_region_keyword_is_never_offered`:
+    /// a region line edits *this* column and supplies that word itself, so offering the region
+    /// vocabulary invites a second, contradicting one.
+    #[test]
+    fn a_closed_vocabulary_tail_stays_a_keyword() {
+        let reg = Registry::new(&[CommandSpec {
+            name: "console.stack".into(),
+            doc: "A column".into(),
+            target: TargetKind::Viewport,
+            reversal: Reversal::Recoverable,
+            args: vec![
+                ArgSpec { name: "panel".into(), kind: ArgKind::Text, required: true },
+                ArgSpec {
+                    name: "region".into(),
+                    kind: ArgKind::Choice(vec!["left".into(), "right".into()]),
+                    required: false,
+                },
+            ],
+        }]);
+        let p = reg.candidates("/stack surface ").expect("a ring");
+        assert!(
+            p.candidates.iter().any(|c| c.label == "region"),
+            "a closed-vocabulary tail stopped being a keyword: {:?}",
+            p.candidates.iter().map(|c| &c.label).collect::<Vec<_>>()
+        );
+        // …and a bare word is still refused rather than silently filling it.
+        assert!(
+            matches!(reg.resolve("/stack surface left"), Resolved::Refused(_)),
+            "a closed-vocabulary tail was filled positionally"
+        );
+    }
+
+    /// ⚠️ **Two optionals stay keywords**, because a bare word cannot say which it fills and the
+    /// cost of guessing wrong is a silently different command.
+    #[test]
+    fn more_than_one_optional_stays_keyworded() {
+        let reg = Registry::new(&[CommandSpec {
+            name: "console.module".into(),
+            doc: "Approve".into(),
+            target: TargetKind::Viewport,
+            reversal: Reversal::Recoverable,
+            args: vec![
+                ArgSpec { name: "producer".into(), kind: ArgKind::Text, required: true },
+                ArgSpec { name: "from".into(), kind: ArgKind::Text, required: false },
+                ArgSpec { name: "at".into(), kind: ArgKind::Text, required: false },
+            ],
+        }]);
+        let p = reg.candidates("/module ascent ").expect("a ring");
+        assert!(matches!(p.slot, Slot::Keyword { .. }), "two optionals went positional");
+        assert!(
+            matches!(reg.resolve("/module ascent somewhere"), Resolved::Refused(_)),
+            "an ambiguous bare word was accepted"
+        );
+    }
+
+    /// ⚠️ **Given twice is still refused** — by the positional route as well as the keyword one.
+    #[test]
+    fn a_tail_given_twice_is_refused() {
+        let reg = tailed();
+        assert!(
+            matches!(reg.resolve("/viewport left 3d ascent descent"), Resolved::Refused(_)),
+            "two producers were accepted"
+        );
+        assert!(
+            matches!(
+                reg.resolve("/viewport left 3d producer ascent descent"),
+                Resolved::Refused(_)
+            ),
+            "the keyword form accepted a second producer"
+        );
     }
 
     /// A one-verb catalog whose only argument has **declared short forms** — the shape
@@ -2931,6 +3139,7 @@ mod tests {
             name: VERB_VIEWPORT.into(),
             doc: "Divide the pane into regions and say what each one holds".into(),
             target: TargetKind::Viewport,
+            reversal: Reversal::Recoverable,
             args: vec![
                 ArgSpec {
                     name: "region".into(),
@@ -2952,7 +3161,6 @@ mod tests {
                     required: false,
                 },
             ],
-            reversal: Reversal::Recoverable,
         }]
     }
 

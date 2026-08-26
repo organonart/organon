@@ -3290,6 +3290,45 @@ built from the **same word tables** (`substrate_materials::MATERIAL_NAMES`, `cli
 cannot drift and the *verb list* still can. Generating clap from `CommandSpec` is the remaining
 quarter of "one vocabulary" and is not done.
 
+#### A trailing open argument is given without naming it
+
+🚨 **Optional arguments in this catalog are KEYWORD arguments**, and that is right for a
+verb with several of them: `console camera orbit 12 dolly 3` has no other way to say which value
+is which, and guessing by position is how a dolly becomes an orbit. It is wrong for exactly the
+shape `console.viewport` has — one trailing optional, whose *name* a person had to type in full
+before they could say the only thing they came to say.
+
+James, 2026-08-26: *"when I type `/viewport [location]`, our completion automatically adds
+`producer`, and so I have to backspace delete it … we should add it after the name of the
+viewport. Then when we tab complete, it means we probably want to add a producer."*
+
+`registry::positional_tail` is the exception, and it is deliberately narrow — **two conditions,
+and the second arrived from a failing test rather than from the argument**:
+
+* **Exactly one optional.** With two, a bare word cannot say which it fills, and the cost of
+  guessing wrong is a silently different command.
+* **Its value space is open (`ArgKind::Text`).** ⚠️ `console.stack` *also* has exactly one
+  optional — `region` — and the first cut made it positional too, which broke
+  `region_line`'s `the_supplied_region_keyword_is_never_offered`. That failure is correct: a
+  region line edits **this** column and supplies that word itself, so offering the region
+  vocabulary in its ring invites a second, contradicting one. The general shape is that a
+  **closed** vocabulary is exactly the kind of word another surface may already be supplying,
+  while an open `Text` value cannot be mistaken for a keyword — the keyword names are known and
+  are checked first.
+
+⚠️ **The keyword form keeps working, and that is what makes the change safe rather than a
+migration.** Both `parse_args` and `Registry::candidates` check the argument's *name* first, so
+`/viewport tl 3d producer ascent` parses exactly as it did, every stored layout and every MCP
+caller is untouched, and this only adds a shorter spelling beside it.
+
+📌 **The visible half is the ring**: after `/viewport left 3d ` the candidates are the
+approved **producers**, not the single word `producer`. That is the text that was being inserted
+and deleted.
+
+⚠️ **A producer actually named `producer` resolves as the keyword**, because the name check
+wins. It is the one input this rule reads differently from a person's intent, it is unreachable
+today, and the escape hatch is the keyword form it already collides with.
+
 ### 1.9 The command panel — see your choices while you type, and see what happened after
 
 **The precedent is NeoVim's `which-key`**: press a prefix, a panel shows every valid
