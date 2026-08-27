@@ -403,8 +403,15 @@ struct SpawnedProcess {
 
 impl ModuleProcess for SpawnedProcess {
     fn pid(&self) -> Option<u32> {
-        // `None` once it has ended: the id is reusable the moment the process is reaped, so
-        // handing it out afterwards is handing out somebody else's process.
+        // 📌 **What actually prevents this being somebody else's process is the open HANDLE, not
+        // this check** — corrected in review on PR #212, where the first version of this comment
+        // credited the wrong mechanism. `SpawnedProcess` owns the `Child` until the host is torn
+        // down, and Windows does not reuse a pid while any handle to that process is open. So
+        // the id is unambiguous for as long as this struct exists, whether or not it has exited.
+        //
+        // ⚠️ The `None` is still worth having, for a different reason: it stops the console
+        // naming a *dead* process to the mixer every three seconds for the rest of the session —
+        // a no-op that would also be a lie about what is being held quiet.
         self.ended.is_none().then(|| self.child.id())
     }
 

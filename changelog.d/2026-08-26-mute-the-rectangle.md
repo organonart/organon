@@ -37,3 +37,19 @@ nothing called `forget`, which is the "declared but unwired" defect this tree ke
 
 ⚠️ **The COM path has no test at all** — it needs a real endpoint, a real session and a real
 producer making a sound. Nobody has muted anything.
+
+---
+
+🚨 **Review follow-up, and the one line at issue went wrong three times.** (1) `forget` was
+written with a test beside it and *nothing calling it*. (2) The wiring added in response was a
+bare `for` in `service_module_hosts` that **no test could reach** — raised in review on PR #212.
+(3) Replacing that loop with `Muted::retain` left `forget` reachable only from its own test, so it
+was **deleted**: an unreachable verb is an untested grant pretending to be a design, and that
+applies to a method as much as to an enum. Departure now has exactly one spelling, and it is the
+third `retain` on that line beside `ModuleHosts::retain` and `module_points.retain`.
+
+📌 **The pid comment credited the wrong mechanism**, also caught in review. What keeps a pid from
+being somebody else's process is the **open handle** — `SpawnedProcess` owns the `Child`, and
+Windows does not reuse a pid while a handle to that process is open. The `None` earns its place
+for a different reason: it stops the console naming a dead process to the mixer every three
+seconds for the rest of the session.

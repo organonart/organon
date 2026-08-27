@@ -60,15 +60,26 @@ impl Muted {
         }
     }
 
-    /// Stop tracking a producer that is no longer hosted.
+    /// **Keep only the producers still being hosted**, forgetting the rest.
     ///
-    /// ⚠️ **Called when a host goes away, and it is not housekeeping.** A producer that was
-    /// muted, removed, and then started again would otherwise come back silent — and nothing on
-    /// screen would say why, because the control is only drawn on a rectangle that is *showing*
-    /// something. A silence with no visible cause is the one failure this whole module is
-    /// written against.
-    pub fn forget(&mut self, producer: &str) {
-        self.0.remove(producer);
+    /// 🚨 **This exists as a method rather than as a loop at the call site because the loop
+    /// had no test, and the same class had bitten this change twice already.** A `forget(one)`
+    /// was written with a test beside it and *nothing calling it* — caught by grepping for the
+    /// call site, not by the suite. The wiring added in response was a bare `for` in
+    /// `service_module_hosts` that no test could reach — raised in review on PR #212. And
+    /// replacing that loop with this method left `forget` itself reachable only from its own
+    /// test, so it is **gone**: `region.rs`'s rule is that an unreachable verb is an untested
+    /// grant pretending to be a design, and it applies to a method as much as to an enum.
+    ///
+    /// ⚠️ **So departure has exactly one spelling.** A method here can be unit-tested; a loop
+    /// three files away cannot; and a second entry point that only tests use is how the first
+    /// two versions of this went wrong.
+    ///
+    /// 📌 It is also the third `retain` on that line — beside `ModuleHosts::retain` and
+    /// `module_points.retain` — so departure is now spelled one way for all three things a
+    /// producer leaves behind.
+    pub fn retain(&mut self, wanted: &[&str]) {
+        self.0.retain(|held| wanted.contains(&held.as_str()));
     }
 
     /// Every producer currently held quiet, for the caller that has to apply it.
@@ -143,16 +154,39 @@ mod tests {
         assert!(m.is("ascent") && m.is("descent"));
     }
 
-    /// 🚨 **A producer that goes away is forgotten**, or it comes back silent with nothing on
-    /// screen to say why. The control is only drawn on a rectangle that is showing something, so
-    /// a remembered mute on a producer that was removed and restarted is a silence with no
-    /// visible cause.
+    /// 🚨 **Departure, as the console actually spells it.** `service_module_hosts` keeps only
+    /// the producers a layout still names, and the mute has to go with them — see
+    /// [`Muted::retain`] for why this is a method with a test rather than a loop without one.
     #[test]
-    fn a_departed_producer_does_not_come_back_silent() {
+    fn a_producer_no_longer_hosted_is_forgotten() {
         let mut m = Muted::new();
         m.toggle("ascent");
-        m.forget("ascent");
-        assert!(!m.is("ascent"), "it would restart muted");
+        m.toggle("descent");
+        m.retain(&["ascent"]);
+        assert!(m.is("ascent"), "a producer still on screen lost its mute");
+        assert!(!m.is("descent"), "a departed producer would come back silent");
+    }
+
+    /// ⚠️ **An empty layout forgets everything**, which is the case a `retain` written as a
+    /// filter over the *wanted* list would get right and one written as a diff would not.
+    #[test]
+    fn an_empty_layout_forgets_every_mute() {
+        let mut m = Muted::new();
+        m.toggle("ascent");
+        m.retain(&[]);
+        assert_eq!(m.iter().count(), 0, "a mute outlived every rectangle");
+    }
+
+    /// ⚠️ **Retaining what is already there changes nothing**, so the ordinary frame — which
+    /// runs this every time — cannot quietly drop a mute.
+    #[test]
+    fn retaining_the_same_set_is_a_no_op() {
+        let mut m = Muted::new();
+        m.toggle("ascent");
+        for _ in 0..3 {
+            m.retain(&["ascent", "descent"]);
+        }
+        assert!(m.is("ascent"));
     }
 
     /// 🚨 **Hidden while playing and unattended; shown whenever it is muted.** The second half is

@@ -6770,11 +6770,7 @@ impl Console {
         //
         // ⚠️ Unmuting the live session first would be wrong as well as pointless: the process
         // is going away, and a mute lifted on a dying pid can land on a *reused* one.
-        for name in self.module_muted.iter().map(str::to_string).collect::<Vec<_>>() {
-            if !wanted.contains(&name) {
-                self.module_muted.forget(&name);
-            }
-        }
+        self.module_muted.retain(&wanted_refs);
         if wanted.is_empty() {
             return HashMap::new();
         }
