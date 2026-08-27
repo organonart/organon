@@ -2766,6 +2766,15 @@ struct Console {
     /// behind, and points rather than pixels because it is the *ratio* to the window that
     /// survives a scale nobody has measured yet.
     module_points: HashMap<String, (f32, f32)>,
+    /// **Every region's rectangle, as the last frame drew them** — what `Alt+direction`
+    /// resolves against (#210).
+    ///
+    /// 🚨 **One frame behind, and it has to be**: a rect is an output of the layout that
+    /// produced it, so navigation asks the same question `module_points` and `Lines::owner`
+    /// already ask a frame late, for the same reason and with the same bound. The cost is
+    /// that a direction pressed on the very frame a layout changed answers the old layout;
+    /// the alternative is laying the pane out twice per frame to serve a keystroke.
+    region_slots: Vec<organon_console::region::Placed>,
     /// **The viewport's render target — ONE texture serving both presentations.**
     ///
     /// 🚨 **One, not one each, and that is [`engine_plan`]'s guarantee spent rather than a
@@ -3014,6 +3023,8 @@ fn draw_regions(
         });
         return None;
     };
+    hosted.slots.clear();
+    hosted.slots.extend(placed.iter().cloned());
     let mut viewport_rect = None;
     let mut live_tab_taken = false;
     // 🚨 **The panel column's control band, reserved from the region's rectangle before anything
@@ -3278,6 +3289,11 @@ struct RegionHosted<'a> {
     /// A producer whose mute control was pressed this frame — out, because applying it reaches
     /// the OS mixer and wants `&mut self`.
     mute_toggled: &'a mut Option<String>,
+    /// **Every placed region this frame** — collected here rather than returned for the
+    /// reason the other two are: the walk runs inside a closure holding disjoint borrows of
+    /// `self`. Keyboard navigation needs the rectangles of regions it is *not* drawing into,
+    /// which is the one thing `rects` cannot answer.
+    slots: &'a mut Vec<organon_console::region::Placed>,
 }
 
 /// What the `3d` region draws this frame — the live viewport's three inputs, bundled so the
@@ -3888,6 +3904,7 @@ impl Console {
             module_muted_at: std::time::Instant::now(),
             module_textures: HashMap::new(),
             module_points: HashMap::new(),
+            region_slots: Vec::new(),
             surface_pane: 0,
             surface_clock: 0,
             // Closed, and not seeded from the environment. `ORGANON_SHELL_BACKDROP` exists and
@@ -7084,6 +7101,8 @@ impl Console {
         let mut module_mute_toggled: Option<String> = None;
         // The muted set, split out of `self` as a shared borrow exactly as the palette is.
         let self_muted = self.module_muted.clone();
+        // Every region this frame placed, for the next frame's `Alt+direction`.
+        let mut region_slots_now: Vec<organon_console::region::Placed> = Vec::new();
         // Which presentation that was, so the paint sites can tell "I have the frame" from "the
         // other one does". Read after the render, from the same function the render asked, so
         // the picture and the notice cannot disagree about who owns the world this frame.
@@ -7122,6 +7141,68 @@ impl Console {
         }
         let seen = taken.seen;
         let latch_release = taken.release;
+        // 🚨 **`Alt + H/J/K/L` moves between regions — #210 Phase 1.**
+        //
+        // `Super + H/J/K/L` is how Hyprland moves between WINDOWS, so this is the same
+        // gesture one level in and the motion does not break at the window boundary.
+        //
+        // ⚠️ **Only while nothing is flying, and that is what makes this need nothing from
+        // the wire.** `take_from_raw` above runs only when the latch is held, so with no
+        // module latched every key is the console's already. Crossing from one flown
+        // rectangle to another would mean `Alt` reaching a module that was never told it
+        // could not have it — that needs `RESERVED` to grow and the header version to move,
+        // which is Phase 2. `Escape` is the way out today and it is already reserved.
+        //
+        // ⚠️ **Taken out of `raw.events`, not read from the context**, for exactly the reason
+        // PR #207 records above: `Context::run` clones this list wholesale, so anything done
+        // to the context afterwards is discarded and the composer would receive the chord as
+        // a literal `h`.
+        if self.module_latch.held().is_none() && !self.region_slots.is_empty() {
+            let mut want: Option<organon_console::region_nav::Dir> = None;
+            raw.events.retain(|event| {
+                let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
+                    return true;
+                };
+                match organon_console::region_nav::direction(*key, *modifiers) {
+                    Some(d) => {
+                        want = Some(d);
+                        false
+                    }
+                    None => true,
+                }
+            });
+            if let Some(dir) = want {
+                use organon_console::region::{Content, Producer};
+                // Standing in the agent's rectangle: with no latch held, that is where the
+                // keyboard is. A region line owning it is Phase 1b — the console would have
+                // to *assert* focus, which `region_line`'s header argues against at length.
+                let from = self.region_slots.iter().find_map(|p| {
+                    matches!(p.content, Some(Content::Agent)).then_some(p.rect)
+                });
+                // Only hosted rectangles are reachable this way today, so a direction that
+                // would land on a panel or on vacancy is a no-op rather than a focus change
+                // nothing can be seen to have made.
+                let candidates: Vec<_> = self
+                    .region_slots
+                    .iter()
+                    .filter(|p| matches!(p.content, Some(Content::ThreeD(Producer::Hosted(_)))))
+                    .map(|p| (p.region, p.rect))
+                    .collect();
+                if let Some(from) = from {
+                    if let Some(region) = organon_console::region_nav::target(from, dir, &candidates)
+                    {
+                        if let Some(name) = self.region_slots.iter().find_map(|p| match &p.content {
+                            Some(Content::ThreeD(Producer::Hosted(n))) if p.region == region => {
+                                Some(n.clone())
+                            }
+                            _ => None,
+                        }) {
+                            module_latch_wanted = Some(name);
+                        }
+                    }
+                }
+            }
+        }
         // Every tab pumps every frame — a background agent keeps streaming into
         // its grid; only the active one draws.
         //
@@ -7624,6 +7705,7 @@ impl Console {
                                 latch_wanted: &mut module_latch_wanted,
                                 muted: &self_muted,
                                 mute_toggled: &mut module_mute_toggled,
+                                slots: &mut region_slots_now,
                             },
                             &mut draw_active_pane,
                         );
@@ -7807,6 +7889,10 @@ impl Console {
                     console_audio::set_process_muted(pid, true);
                 }
             }
+        }
+        // Kept for the NEXT frame's `Alt+direction` — see `region_slots`.
+        if !region_slots_now.is_empty() {
+            self.region_slots = region_slots_now;
         }
         self.module_points.clear();
         for (name, rect) in module_rects {
