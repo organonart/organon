@@ -3290,6 +3290,42 @@ built from the **same word tables** (`substrate_materials::MATERIAL_NAMES`, `cli
 cannot drift and the *verb list* still can. Generating clap from `CommandSpec` is the remaining
 quarter of "one vocabulary" and is not done.
 
+#### A short form narrows the ring it abbreviates
+
+🚨 **`tl` resolved to `topleft` from the day `ChoiceAliased` landed, and the completer never
+knew.** `narrows` is prefix-only and nothing in the ring read the alias table, so typing
+`/viewport tl` ran perfectly while the panel under it went **empty as you typed** — which reads
+as a dead control rather than as a working abbreviation, and is the worst of both: the
+abbreviation exists, and using it looks like a mistake.
+
+The alias now narrows, and **accepting still writes the long word**: the line you end up with is
+the one you could have typed and the one a receipt echoes. The short form keeps its place in the
+doc slot as well, because that is how a person *learns* it — beside `topleft`, in the band they
+were already reading.
+
+⚠️ **The alias is its own field rather than a re-read of the doc.** A doc is not something the
+filter may search: a `NarrowFn`'s docs are arbitrary prose (*"surface — 3 settings"*), so
+narrowing on them selects a candidate by a word out of its own description. 📌 **That is
+measured rather than argued** — mutating the filter to read `doc` fails the pre-existing
+`a_lone_panel_completes_the_whole_command`, whose ring comes from a `NarrowFn`.
+
+#### An empty region is a surface, not a caption
+
+⚠️ **`paint_region_notice` no longer draws the region's word**, and this reverses a decision
+recorded here on purpose. §1.9's `Ring::Empty` argument still holds at the scale of a sixth of a
+window — a region that draws *nothing at all* is indistinguishable from one that is broken — but
+that argument is satisfied by the **panel fill**, which paints the rectangle as a surface the
+console owns. It never needed the name on top.
+
+James, 2026-08-26: *"when we make viewports, do not put text in them like top, bottom left,
+bottom right."* The label answered a question nobody asks — you know which quarter you are
+looking at because you are looking at it — and it answered it *inside the picture*, which is the
+one place a viewport must stay clean.
+
+📌 **The producer sentences are untouched.** A hosted rectangle with no picture still says
+why (*"ascent — not running"*): that is a fact a person cannot get any other way, which is
+exactly what the region's own name was not.
+
 #### A trailing open argument is given without naming it
 
 🚨 **Optional arguments in this catalog are KEYWORD arguments**, and that is right for a
