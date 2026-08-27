@@ -130,6 +130,7 @@ pub mod module_work;
 pub mod module_audio;
 pub mod module_host;
 pub mod module_input;
+pub mod region_nav;
 pub mod panel_stack;
 pub mod platform;
 pub mod portal;
