@@ -59,6 +59,11 @@
 //! window, the tab strip, the command lane and the backdrop are shared; only what a tab
 //! *is* differs. `SHELL_ARCHITECTURE.md` owns the shape.
 
+// The console's own Windows-only audio reach — a hosted producer's OS mixer session. Declared
+// here rather than in `lib.rs` because it is the BINARY's, not the plugin's: `lib.rs` compiles
+// into the cdylib, and a VST3 has no business enumerating audio sessions.
+mod console_audio;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -2736,6 +2741,20 @@ struct Console {
     /// `Option` rather than a set, and moving it hands back the displaced producer so its held
     /// keys can be released.
     module_latch: organon_console::module_input::Latch,
+    /// 🚨 **Which hosted producers the console is holding quiet** —
+    /// `organon_console::module_audio`. Not a protocol verb and deliberately not one: the input
+    /// contract carries no audio in either direction, so a `Mute` would be the console *asking*
+    /// a producer to be silent. The console owns the child process instead, and turns it down in
+    /// the OS mixer where the answer does not depend on the module's cooperation.
+    module_muted: organon_console::module_audio::Muted,
+    /// When the muted set was last re-asserted against the mixer.
+    ///
+    /// ⚠️ **Re-assertion, not change detection**, and it is the same lesson the lighting
+    /// renderer on this workstation already paid for: a process that has not yet played anything
+    /// has **no audio session to mute** — Windows creates one lazily, on first sound — so a mute
+    /// issued before the first note legitimately finds nothing and would stay unapplied for ever.
+    /// A state that is asserted once and never repeated is a state that is silently wrong.
+    module_muted_at: std::time::Instant,
     /// One destination texture per hosted producer, preallocated and reused. See
     /// [`HostedTexture`].
     module_textures: HashMap<String, HostedTexture>,
@@ -3149,6 +3168,27 @@ fn draw_regions(
                     shown.and_then(|f| f.notice.as_deref()),
                     theme,
                 );
+                // 🚨 **The mute control, over the picture and AFTER it.** Within one layer
+                // painter order is draw order, so this lands on top with no z-order machinery —
+                // `paint_viewport`'s arrangement, one rectangle in.
+                //
+                // ⚠️ **Hidden while a module is playing and nobody is pointing at it**, and shown
+                // whenever it is muted: silence is indistinguishable from a module with nothing
+                // to say, so the control is the only thing on screen that can attribute the quiet
+                // to a hand. `module_audio::show_mute` owns that rule and is tested on it.
+                let muted = hosted.muted.is(name.as_str());
+                if organon_console::module_audio::show_mute(content_rect, r.hovered(), muted) {
+                    let mr = organon_console::module_audio::mute_rect(content_rect);
+                    let mresp = child.interact(
+                        mr,
+                        egui::Id::new(("organon-module-mute", name.as_str())),
+                        egui::Sense::click(),
+                    );
+                    paint_mute(&child, mr, muted, mresp.hovered(), theme);
+                    if mresp.clicked() {
+                        *hosted.mute_toggled = Some(name.clone());
+                    }
+                }
             }
             // 🚨 **Vacant is a name, never a blank.** §1.9's `Ring::Empty` argument at the scale
             // of a sixth of a window: a region that draws nothing at all is indistinguishable
@@ -3233,6 +3273,11 @@ struct RegionHosted<'a> {
     /// stronger here: taking the latch may DISPLACE another producer, and telling that one to
     /// release its held keys needs `&mut` on the host map.
     latch_wanted: &'a mut Option<String>,
+    /// Which producers are held quiet, read while drawing so the control shows its own state.
+    muted: &'a organon_console::module_audio::Muted,
+    /// A producer whose mute control was pressed this frame — out, because applying it reaches
+    /// the OS mixer and wants `&mut self`.
+    mute_toggled: &'a mut Option<String>,
 }
 
 /// What the `3d` region draws this frame — the live viewport's three inputs, bundled so the
@@ -3452,6 +3497,54 @@ fn paint_region_edges(
 
 /// The inset a region's notice text sits at, in points. The patch panel's `PAD`, so a notice
 /// and a panel in adjacent regions line up rather than each having their own idea of a margin.
+/// How often the muted set is re-asserted against the OS mixer.
+///
+/// ⚠️ **A period, not a debounce.** A producer with no audio session yet cannot be muted, and
+/// nothing tells the console when one appears — so the only way a mute issued before the first
+/// sound ever takes effect is to keep saying it. Three seconds is the lighting renderer's
+/// `REASSERT` on this workstation, chosen there for the identical failure and reused rather than
+/// re-argued.
+const MUTE_REASSERT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// **The mute control** — a speaker, struck through when it is quiet.
+///
+/// ⚠️ **Drawn, not a glyph.** A character from the font would depend on which font the palette
+/// resolved and on whether it carries that codepoint at all — and a control that renders as a
+/// tofu box is worse than no control. Four lines and a triangle render the same everywhere.
+fn paint_mute(ui: &egui::Ui, rect: egui::Rect, muted: bool, hovered: bool, theme: &Theme) {
+    let p = ui.painter();
+    // A plate behind it, so the control reads against a picture of any brightness — the one
+    // thing a viewport overlay cannot assume is the colour underneath it.
+    p.rect_filled(rect, 3.0, theme.panel_fill.gamma_multiply(0.85));
+    let ink = if muted {
+        // `bad` is the palette's "this is not the ordinary state" role, which is exactly what a
+        // struck-through speaker is saying. A colour of its own would be one more thing every
+        // future palette has to answer for, to say something the palette already says.
+        theme.bad
+    } else if hovered {
+        theme.panel_title
+    } else {
+        theme.dim
+    };
+    let s = egui::Stroke::new(1.4_f32, ink);
+    let c = rect.center();
+    let h = rect.height() * 0.22;
+    // The cone: a small square body and a triangle opening to the right.
+    let body = egui::Rect::from_center_size(
+        c - egui::vec2(h * 0.9, 0.0),
+        egui::vec2(h * 0.8, h * 0.9),
+    );
+    p.rect_stroke(body, 0.0, s, egui::StrokeKind::Middle);
+    p.line_segment([body.right_top(), c + egui::vec2(h * 0.5, -h)], s);
+    p.line_segment([body.right_bottom(), c + egui::vec2(h * 0.5, h)], s);
+    p.line_segment([c + egui::vec2(h * 0.5, -h), c + egui::vec2(h * 0.5, h)], s);
+    if muted {
+        // The strike, corner to corner — the one mark every mute control in the world uses, so
+        // it needs no legend.
+        p.line_segment([rect.left_top() + egui::vec2(4.0, 4.0), rect.right_bottom() - egui::vec2(4.0, 4.0)], s);
+    }
+}
+
 const REGION_NOTICE_PAD: f32 = 8.0;
 
 /// **What one hosted producer's rectangle shows this frame** — a picture, or a sentence.
@@ -3791,6 +3884,8 @@ impl Console {
             module_inflight: HashSet::new(),
             module_hosts: Default::default(),
             module_latch: organon_console::module_input::Latch::new(),
+            module_muted: organon_console::module_audio::Muted::new(),
+            module_muted_at: std::time::Instant::now(),
             module_textures: HashMap::new(),
             module_points: HashMap::new(),
             surface_pane: 0,
@@ -6667,6 +6762,15 @@ impl Console {
             self.free_module_texture(&name, "no region is asking for it");
         }
         self.module_points.retain(|k, _| wanted.contains(k));
+        // 🚨 **The mute goes with the host, and forgetting it is not housekeeping.** A
+        // producer that was muted, dropped, and then started again would otherwise come back
+        // **silent** — and nothing on screen would say why, because the control is only drawn on
+        // a rectangle that is showing something. A silence with no visible cause is the one
+        // failure `module_audio` is written against, and this is the line that prevents it.
+        //
+        // ⚠️ Unmuting the live session first would be wrong as well as pointless: the process
+        // is going away, and a mute lifted on a dying pid can land on a *reused* one.
+        self.module_muted.retain(&wanted_refs);
         if wanted.is_empty() {
             return HashMap::new();
         }
@@ -6975,6 +7079,11 @@ impl Console {
         let mut module_rects: Vec<(String, egui::Rect)> = Vec::new();
         // A hosted rectangle a click asked to fly this frame.
         let mut module_latch_wanted: Option<String> = None;
+        // …and one whose mute control was pressed. Applying it reaches the OS mixer, which needs
+        // `&mut self`, so it is collected out exactly as the latch is.
+        let mut module_mute_toggled: Option<String> = None;
+        // The muted set, split out of `self` as a shared borrow exactly as the palette is.
+        let self_muted = self.module_muted.clone();
         // Which presentation that was, so the paint sites can tell "I have the frame" from "the
         // other one does". Read after the render, from the same function the render asked, so
         // the picture and the notice cannot disagree about who owns the world this frame.
@@ -7513,6 +7622,8 @@ impl Console {
                                 frames: &module_frames,
                                 rects: &mut module_rects,
                                 latch_wanted: &mut module_latch_wanted,
+                                muted: &self_muted,
+                                mute_toggled: &mut module_mute_toggled,
                             },
                             &mut draw_active_pane,
                         );
@@ -7673,6 +7784,27 @@ impl Console {
                     for ev in evs {
                         host.send_input(ev);
                     }
+                }
+            }
+        }
+        // 🚨 **The mute, applied once per frame and then RE-ASSERTED.** A producer that has
+        // not yet made a sound has no audio session at all — Windows creates one lazily — so a
+        // mute issued before the first note finds nothing and would stay unapplied for ever if
+        // this were change-detection. The lighting renderer on this workstation learned the same
+        // lesson from the other end: anything ambient and long-lived needs re-assertion.
+        if let Some(name) = module_mute_toggled {
+            let now = self.module_muted.toggle(&name);
+            if let Some(pid) = self.module_hosts.get_mut(&name).and_then(|h| h.pid()) {
+                console_audio::set_process_muted(pid, now);
+            }
+            self.module_muted_at = std::time::Instant::now();
+        }
+        if self.module_muted_at.elapsed() >= MUTE_REASSERT {
+            self.module_muted_at = std::time::Instant::now();
+            let held: Vec<String> = self.module_muted.iter().map(str::to_string).collect();
+            for name in held {
+                if let Some(pid) = self.module_hosts.get_mut(&name).and_then(|h| h.pid()) {
+                    console_audio::set_process_muted(pid, true);
                 }
             }
         }

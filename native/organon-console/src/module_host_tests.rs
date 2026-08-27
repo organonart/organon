@@ -133,6 +133,12 @@ struct BenchProcess {
 }
 
 impl ModuleProcess for BenchProcess {
+    // No real process behind the rig, so no id to name one by. `None` is the honest answer and
+    // it is also the one that keeps the audio path out of a test that is about frames.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+
     fn exited(&mut self) -> Option<Option<i32>> {
         self.ended.load(Ordering::Relaxed).then_some(Some(self.status))
     }

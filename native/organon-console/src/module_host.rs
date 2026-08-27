@@ -293,6 +293,13 @@ impl ModuleHost {
         }
     }
 
+    /// The OS id of the process behind this host, or `None` once it has ended.
+    ///
+    /// See [`crate::module_work::ModuleProcess::pid`] for what it may and may not be used for.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.pid()
+    }
+
     /// **Put one input event on this producer's wire.**
     ///
     /// Answers whether it landed. `false` covers both refusals and a full ring, and the caller
