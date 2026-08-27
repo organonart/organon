@@ -8036,6 +8036,60 @@ viewport will show *before* opening one — so it is not reported as a mistake.
 struct. The console cannot make that check for it: a key Organon accepts and the module never
 reads is a command that completes, reports success, and changes nothing.
 
+### 1.23a Quieting a hosted module — from outside, because there is no way in
+
+🚨 **The console does not ask a module to be quiet; it turns the module down.** That is
+forced rather than chosen. `organon_module::input`'s refusal table has **no audio in either
+direction**, and says out loud that the absence is *promised, not enforced* — a separate process
+can open WASAPI itself, and Ascent does. A `Mute` verb on that protocol would be the console
+**asking**, so a producer that ignored it could not be silenced: a control that works only while
+nobody minds. Naming the child process to Windows' own mixer needs no grant, cannot be declined,
+and adds no verb to a contract whose entire point is that it grants narrowly.
+
+📌 **So the music needed nothing at all** — Ascent's sound already plays. Only the *quieting*
+needed building.
+
+**The split is this tree's usual one.** `organon-console/src/module_audio.rs` holds what is
+neither unsafe nor platform-specific — which producers are muted, where the control sits, when it
+is visible — and is unit-tested on all three. The COM lives in the binary
+(`src/console_audio.rs`), beside the other Windows calls, because `lib.rs` compiles into the
+**cdylib** and a VST3 has no business enumerating audio sessions.
+
+⚠️ **`ModuleProcess::pid` is new, and its doc restricts it.** The only legitimate shape is
+*naming* a process to an OS facility that already governs it from outside; nothing may use it to
+open, read or reach inside one, and `OpenProcess` appears nowhere. It answers `None` once the
+process has ended, because a pid is reusable the moment a process is reaped — handing it out
+afterwards is handing out somebody else's process.
+
+⚠️ **`windows`, not `windows-sys`, and the manifest's own argument decides it.** That note
+chose `windows-sys` because *"two functions do not justify the larger crate"*. This is not two
+functions — it is a COM subsystem five interfaces deep. 📌 And it costs nothing to fetch:
+`windows 0.62` is already in `Cargo.lock` via wgpu's own Windows tail, the same test `windows-sys`
+was admitted under.
+
+🚨 **The mute is RE-ASSERTED every three seconds, not set once.** A process that has not yet
+played anything **has no audio session to mute** — Windows creates one lazily, on first sound — so
+a mute issued before the first note legitimately finds nothing and would stay unapplied for ever
+under change-detection. That is the lighting renderer's lesson on this workstation, reached from
+the other end and reusing its period: *anything ambient and long-lived needs re-assertion*. It is
+also why `set_process_muted` answering `false` is **not** an error.
+
+⚠️ **The control is hidden while a module is playing and nobody is pointing at it, and shown
+whenever it is muted.** Both halves matter: a viewport is the one place that must stay clean
+(§1.9's caption argument, one rectangle in), and *silence is indistinguishable from a module with
+nothing to say* — so the control is the only thing on screen that can attribute the quiet to a
+hand. Hiding it exactly when it is load-bearing would make mute a trap. A rectangle too small
+gets none: a button occupying a quarter of a region is an obstruction.
+
+⚠️ **A departed producer is forgotten**, and that is not housekeeping either: one that was
+muted, dropped and restarted would come back **silent**, with nothing on screen to say why,
+because the control is only drawn on a rectangle that is showing something.
+
+⚠️ **Not looked at, and this one has an unusual amount that cannot be.** The state, the
+geometry and the visibility rule are unit- and mutation-tested; the COM path has **no test at
+all** — it needs a real audio endpoint, a real session and a real producer making a sound. Nobody
+has muted anything.
+
 ### 1.23 Flying a hosted module — the console's half of the input grant
 
 **`organon_module::input` has carried the input protocol since T5b's contract landed, and until

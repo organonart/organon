@@ -288,6 +288,20 @@ pub trait ModuleProcess: Send {
     /// ⚠️ **Non-blocking, and it must stay that way**: this is called once per console frame.
     fn exited(&mut self) -> Option<Option<i32>>;
 
+    /// **The operating system's id for this process**, or `None` once it has ended.
+    ///
+    /// 🚨 **Only for addressing the process in facilities the protocol deliberately does not
+    /// carry** — today, its audio session (`crate::module_audio`). `organon_module::input`'s
+    /// refusal table has no sound in either direction and must not grow one: a `Mute` verb would
+    /// be the console *asking* a producer to be quiet, so a producer that ignored it could not be
+    /// silenced. A pid lets the console turn the process down in the OS mixer instead, where the
+    /// answer does not depend on the module's cooperation.
+    ///
+    /// ⚠️ **Not a handle, and not a way in.** Nothing here may use this to open, inject into, or
+    /// otherwise reach inside the process; the one legitimate shape is *naming* it to an OS
+    /// facility that already governs it from outside.
+    fn pid(&self) -> Option<u32>;
+
     /// End it. Called when the console stops hosting this producer — the region was cleared,
     /// the approval was revoked, a restart was asked for, or the console is going away.
     ///
@@ -388,6 +402,12 @@ struct SpawnedProcess {
 }
 
 impl ModuleProcess for SpawnedProcess {
+    fn pid(&self) -> Option<u32> {
+        // `None` once it has ended: the id is reusable the moment the process is reaped, so
+        // handing it out afterwards is handing out somebody else's process.
+        self.ended.is_none().then(|| self.child.id())
+    }
+
     fn exited(&mut self) -> Option<Option<i32>> {
         if self.ended.is_none() {
             // An error from `try_wait` means the handle itself is unusable, which is not a
