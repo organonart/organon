@@ -3032,8 +3032,9 @@ fn draw_regions(
             // somebody assigned it for.
             //
             // ✏️ **The empty-column notice used to have a second arm for this case**, naming the
-            // CLI because the control was not drawn. It has no sentence to vary now
-            // ([`paint_region_notice`]), so a region too short for a line simply draws its name.
+            // CLI because the control was not drawn. It has no sentence to vary now, and since
+            // 2026-08-26 no word either ([`paint_region_notice`]) — a region too short for a
+            // line is simply the surface, with no caption to shorten.
             (slot.rect, None)
         };
         // A child `Ui` per region, salted by the region's own word so two regions cannot share
@@ -3299,19 +3300,24 @@ fn paint_region_notice(
     region: organon_console::region::Region,
     theme: &Theme,
 ) {
-    let word = region.as_word();
+    // 🚨 **The FILL is the notice now, and the word is gone.** §1.9's `Ring::Empty`
+    // argument still holds at the scale of a sixth of a window — a region that draws *nothing at
+    // all* is indistinguishable from one that is broken — but that argument is satisfied by the
+    // panel fill, which paints the rectangle as a surface the console owns. It never needed the
+    // region's own name on top.
+    //
+    // ⚠️ **James, 2026-08-26: "when we make viewports, do not put text in them like top,
+    // bottom left, bottom right."** The label answered a question nobody asks — you know which
+    // quarter you are looking at because you are looking at it — and it answered it *inside the
+    // picture*, which is the one place a viewport must stay clean. So this reverses a recorded
+    // decision on purpose: the vacancy is still visible, and it is now visible as a shape rather
+    // than as a caption.
+    //
+    // ⚠️ `region` is still taken, and deliberately — dropping the parameter would make the
+    // next person who wants a per-region treatment (a hover, a drop target, a differing tint)
+    // re-thread it through two call sites.
+    let _ = region;
     ui.painter().rect_filled(rect, 0.0, theme.panel_fill);
-    // The inset is the notice's own, not the region's: the rectangle a region owns is exact
-    // (`region_rect` reserves no gutter), so the breathing room is drawn inside it.
-    let inner = rect.shrink(REGION_NOTICE_PAD);
-    let mut text = ui.new_child(
-        egui::UiBuilder::new()
-            .id_salt(("organon-viewport-notice", word))
-            .max_rect(inner)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    text.set_clip_rect(inner.intersect(ui.clip_rect()));
-    text.label(egui::RichText::new(word).monospace().strong().color(theme.panel_title));
 }
 
 /// What a region holding a **hosted producer** says instead of a picture — T4.
@@ -3343,8 +3349,9 @@ fn paint_region_notice(
 /// one string rather than two that happen to match.
 ///
 /// `None` from `vacancy` is the working case (§1.17), and there is nothing to draw for it yet:
-/// no protocol, no process, no picture. It falls back to the region's own name, which is what
-/// every other rectangle with nothing to show already draws.
+/// no protocol, no process, no picture. It falls back to [`paint_region_notice`] — which since
+/// 2026-08-26 is the panel fill and nothing else, the same thing every other rectangle with
+/// nothing to show draws.
 fn paint_module(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -3388,9 +3395,9 @@ fn paint_module(
     let Some(sentence) = sentence else {
         // 🚨 **No picture and nothing to say.** The frames of a cold start before the device
         // exists, and the frame between a region being asked for and `service_modules` having
-        // run. Falls back to the region's own name, which is what every other rectangle with
-        // nothing to show already draws — never a blank, on §1.9's argument at the scale of a
-        // sixth of a window.
+        // run. Falls back to the plain surface, which is what every other rectangle with nothing
+        // to show draws — never a *blank*, on §1.9's argument at the scale of a sixth of a
+        // window, but no longer a caption either.
         paint_region_notice(ui, rect, region, theme);
         return;
     };

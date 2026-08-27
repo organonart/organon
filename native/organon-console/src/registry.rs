@@ -1750,14 +1750,26 @@ impl Registry {
         // The entry's own hook first, and its `Some` wins outright — including `Ring::Empty`,
         // which is the true answer for a tab with no panels and must not fall through to the
         // declared union. See [`NarrowFn`].
-        let (options, empty_ring): (Vec<(String, String)>, Option<String>) =
+        // 🚨 **Three fields, and the third is the whole of the alias fix.** The short form
+        // used to ride in the DOC slot alone, and a doc is not something the filter may read: a
+        // `NarrowFn`'s docs are arbitrary prose (*"surface — 3 settings"*), so narrowing on them
+        // would match a candidate by a word out of its own description. The alias is therefore
+        // its own field, `Some` for exactly one `ArgKind`, and the filter reads only that.
+        //
+        // 📌 **That hazard is not hypothetical and it is pinned by an existing test.**
+        // Mutating the filter to read `doc` fails `a_lone_panel_completes_the_whole_command`,
+        // whose ring comes from a `NarrowFn` — measured 2026-08-26, and it is why this is three
+        // fields rather than a second look at the second one.
+        let (options, empty_ring): (Vec<(String, String, Option<String>)>, Option<String>) =
             match entry.narrow.and_then(|f| f(&arg.name, positional)) {
-                Some(Ring::Options(narrowed)) => (narrowed, None),
+                Some(Ring::Options(narrowed)) => {
+                    (narrowed.into_iter().map(|(o, d)| (o, d, None)).collect(), None)
+                }
                 Some(Ring::Empty(why)) => (Vec::new(), Some(why)),
                 None => (
                     match &arg.kind {
                         ArgKind::Choice(options) => {
-                            options.iter().map(|o| (o.clone(), String::new())).collect()
+                            options.iter().map(|o| (o.clone(), String::new(), None)).collect()
                         }
                         // 🚨 **The short form rides in the DOC slot, not as a candidate.** The
                         // ring stays twelve words long — a person is choosing between twelve
@@ -1769,16 +1781,19 @@ impl Registry {
                         ArgKind::ChoiceAliased { words, aliases } => words
                             .iter()
                             .map(|w| {
-                                let doc = aliases
+                                let short = aliases
                                     .iter()
                                     .find(|(full, _)| full == w)
-                                    .map_or(String::new(), |(_, short)| short.clone());
-                                (w.clone(), doc)
+                                    .map(|(_, short)| short.clone());
+                                // The doc still carries it, because that is how a person
+                                // *learns* `tl` — by reading it beside `topleft` in the band
+                                // they were already looking at.
+                                (w.clone(), short.clone().unwrap_or_default(), short)
                             })
                             .collect(),
                         ArgKind::Bool => vec![
-                            ("true".to_string(), String::new()),
-                            ("false".to_string(), String::new()),
+                            ("true".to_string(), String::new(), None),
+                            ("false".to_string(), String::new(), None),
                         ],
                         ArgKind::Float { .. } | ArgKind::Int | ArgKind::Text => Vec::new(),
                     },
@@ -1787,8 +1802,11 @@ impl Registry {
             };
         let candidates = options
             .into_iter()
-            .filter(|(option, _)| narrows(option, typed))
-            .map(|(option, doc)| {
+            .filter(|(option, _, short)| {
+                narrows(option, typed)
+                    || short.as_deref().is_some_and(|a| narrows(a, typed))
+            })
+            .map(|(option, doc, _)| {
                 let completion = format!("{stem}{option}{}", if more { " " } else { "" });
                 let (completes, fires) = self.settled(&completion);
                 Candidate {
@@ -1878,6 +1896,64 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::new(&console())
+    }
+
+    /// 🚨 **Typing a short form narrows the ring to the word it abbreviates.** `tl` has
+    /// resolved to `topleft` since `ChoiceAliased` landed, and the completer never knew:
+    /// `narrows` is prefix-only and nothing read the alias table, so `/viewport tl` ran perfectly
+    /// while the panel under it went **empty** as you typed — which reads as a dead control, not
+    /// as a working abbreviation.
+    #[test]
+    fn a_short_form_narrows_to_the_word_it_abbreviates() {
+        let reg = aliased();
+        let p = reg.candidates("/viewport tl").expect("a ring");
+        let labels: Vec<&str> = p.candidates.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["topleft"], "the short form matched nothing");
+    }
+
+    /// ⚠️ **Accepting it inserts the FULL word, never the abbreviation.** The line a person
+    /// ends up with has to be the one they could have typed and the one a receipt echoes — and
+    /// the completion is built from the option, so this is a property to pin rather than to add.
+    #[test]
+    fn accepting_a_short_form_writes_the_long_one() {
+        let reg = aliased();
+        let p = reg.candidates("/viewport tl").expect("a ring");
+        let c = p.candidates.first().expect("a candidate");
+        assert!(
+            c.completion.contains("topleft") && !c.completion.contains(" tl"),
+            "the abbreviation was written into the line: {:?}",
+            c.completion
+        );
+    }
+
+    /// A word that is neither a label nor an alias matches nothing.
+    ///
+    /// ⚠️ **This does NOT prove the doc is unsearched**, and saying so would be the
+    /// overclaim this file keeps warning about — in the `aliased` fixture every doc *is* an
+    /// alias, so the two cannot be told apart here. The property that a **doc** must not narrow
+    /// the ring is what made the alias its own field rather than a re-read of the doc slot, and
+    /// what actually pins it is `a_lone_panel_completes_the_whole_command`: found by mutation,
+    /// 2026-08-26 — changing the filter to read `doc` fails that test, because a `NarrowFn`'s
+    /// docs are arbitrary prose (*"surface — 3 settings"*) and narrowing on them selects a
+    /// candidate by a word out of its own description.
+    #[test]
+    fn a_word_that_is_neither_label_nor_alias_matches_nothing() {
+        let reg = aliased();
+        let p = reg.candidates("/viewport zzz").expect("a ring");
+        assert!(p.candidates.is_empty(), "a non-word matched: {:?}", p.candidates.len());
+    }
+
+    /// The long form still narrows exactly as it always did — the alias is an addition, not a
+    /// replacement.
+    #[test]
+    fn the_long_form_still_narrows() {
+        let reg = aliased();
+        let p = reg.candidates("/viewport top").expect("a ring");
+        assert!(
+            p.candidates.iter().any(|c| c.label == "topleft"),
+            "the long form stopped matching: {:?}",
+            p.candidates.iter().map(|c| &c.label).collect::<Vec<_>>()
+        );
     }
 
     /// A verb shaped exactly like `console.viewport`: two required words and **one trailing
