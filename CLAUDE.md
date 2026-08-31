@@ -361,11 +361,19 @@ site/         organon.art — ONE hand-authored HTML file, no build step and no
               than re-authoring them, and its dark plates quote the real command
               vocabulary — so a vocabulary change makes the page wrong.
                                                     → site/README.md
+tools/        studio tools that are NOT part of any product and are compiled by
+              nothing — stdlib Python, run by hand, in their own directory
+              precisely so they never read as engine code. `suno/` generates a
+              track from a style prompt against a Suno subscription.
+                                                    → tools/suno/README.md
 ```
 
-That is all of it. This repository is Rust, its documentation, and one static page —
-no npm, no TypeScript, no build step outside cargo. (`native/tools/*.py` are repo tools run by
-hand, not a build step: stdlib only, nothing imports them, nothing compiles them.)
+That is all of it. This repository is Rust, its documentation, one static page and a
+couple of hand-run scripts — no npm, no TypeScript, no build step outside cargo. Both
+`native/tools/*.py` and `tools/**/*.py` are repo tools run by hand, not a build step:
+stdlib only, nothing imports them, nothing compiles them. The split between the two is
+audience, not language — `native/tools/` serves the build and the docs (changelog,
+churn, research briefs), `tools/` is for work that merely happens *here*.
 
 For anything more specific — which file owns a subsystem, the `Shared` layout, the
 generator/surface/material tables, the render passes — read `ARCHITECTURE.md` (§19 is a
