@@ -35,8 +35,12 @@ token out of DevTools and pass `--captcha-token`. Wanting this unattended is the
 signal to stop self-hosting and pay a relay, and the README says so plainly instead of
 implying an automation that does not exist.
 
-Stdlib-only Python, one file, no npm and no Docker — the point is that when it breaks you
-can read all of it. Unit-tested for cookie parsing, header and auth-flow assembly, and
-multi-take output naming; **not run end to end**, because the sandbox it was written in has
-no egress to `suno.com` and was never given a cookie. The README's status section says that
-in those words rather than implying a green run.
+Stdlib-only Python, no npm and no Docker — the point is that when it breaks you can read
+all of it. `tools/suno/test_suno_track.py` covers the part that is pure: cookie parsing
+including both rejection paths, header and Clerk-query assembly, `Set-Cookie` absorption,
+multi-take output naming, and the remedy text on each mapped HTTP status. **Not one network
+hop is covered and no run has ever reached Suno** — the sandbox this was written in has no
+egress to `suno.com` and was never given a cookie, so the endpoints and payload shapes are
+reasoned from a client known to work rather than observed. The README's status section says
+that in those words rather than implying a green run, which is the same posture Mind takes
+toward every quantity it displays: an unlabelled number is worse than a missing one.

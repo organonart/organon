@@ -108,10 +108,21 @@ discovery endpoint, so they are guesses that were right when this was written:
   that mismatch is intentional upstream — it was measured to draw fewer
   CAPTCHAs.
 
-## Status
+## Status, and what the tests do and do not cover
 
-Written against the endpoints as documented above and unit-tested for its
-parsing, auth-flow assembly, and output naming. **It has not been run end to end**
-— this was built in a sandbox with no egress to `suno.com`, and no cookie was
-ever handed to it. The first real run is `doctor`, and it is designed to tell you
-precisely where it stands.
+```bash
+python3 tools/suno/test_suno_track.py
+```
+
+`test_suno_track.py` is stdlib `unittest`, no dependencies, 26 cases. It covers
+the part that is pure: cookie parsing (full header, bare JWT, and both rejection
+paths), header and Clerk-query assembly, `Set-Cookie` absorption, slugging,
+multi-take output naming, and the remedy text on each mapped HTTP status —
+because `doctor`'s whole value is that a failure names its own cause.
+
+⚠️ **It does not cover a single network hop, and no run has ever reached Suno.**
+This was built in a sandbox with no egress to `suno.com`, and no cookie was ever
+handed to it. So the endpoints, the payload shapes and the auth handshake are
+written from the documented behaviour of a client known to work — reasoned, not
+observed. The first real run is `doctor`, and it is built to tell you precisely
+where it stands.
