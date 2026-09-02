@@ -19,6 +19,13 @@
 > structure) are assumed. `CONSOLE_ARCHITECTURE.md` §1.14's producer seam is the model for §6's
 > channel. Nothing here contradicts invariant #2 — no `Shared` field is added — and §6 explains
 > why not.
+>
+> ⚠️ **Corrected 2026-09-02, same day, before any code.** The first version assumed `ttfx` might
+> be a rename of the Python package and recommended tapping it through a PTY. James settled it:
+> **`ttfx` is a Rust port of terminaltexteffects, written by DHH by having an agent port the
+> Python** (`omacom/ttfx`, forked to `organonart/ttfx`). That inverts §2, retires §7's biggest
+> risk, and — once its output was actually run — turned out to falsify half of §8. Every section
+> that changed says so in place; §12 carries the new measurements.
 
 ---
 
@@ -50,15 +57,45 @@ one's `CharacterVisual` — **a symbol, a foreground colour, a background colour
 into a cell of a rectangular buffer. That buffer is the interchange format, and it sits below every
 effect rather than beside them.
 
-Two ways to tap it:
+**And the thing Omarchy actually runs is not Python.** `ttfx` (James, 2026-09-02: DHH's Rust
+port of TTE, agent-written from the Python) is a **Cargo crate with a library target**, not a
+binary-only tool. **Measured** against `organonart/ttfx @ 7203e35` (v0.3.2):
+
+| | |
+|---|---|
+| Licence | **MIT** — `LICENSE` carries both copyrights (37signals / omacom-io; ChrisBuilds for TTE), `NOTICE` says every effect and the engine are TTE's design |
+| Shape | `src/lib.rs` exports `cli`, `effects`, `engine`, `utils`; `main.rs` is a thin driver over them. Three deps: `clap`, `clap_complete`, `terminal_size` |
+| Cell model | `engine::animation::CharacterVisual` — `symbol: String`, eight SGR bools, `colors: Option<ColorPair>`, fg/bg codes — mirrors Python's field for field. `Terminal::update_terminal_state` is the same painter's walk (`(layer, character_id)` max per cell) |
+| Coordinate | `utils::geometry::Coord { column: i64, row: i64 }` — integer, same as Python; §7 |
+| Frame loop | `Effect::next_frame(&mut EngineCtx) -> Option<String>` — one ANSI string per tick, **you own the tick**; `Clock::Virtual` advances a fixed `dt` per frame with no sleeping |
+| Determinism | `--seed` / `Rng::seeded` — deterministic within ttfx (not bit-identical to Python's Mersenne Twister, by design) |
+| Distribution | **not on crates.io** (`cargo search ttfx` finds only an unrelated `ttfx-rs`); a **git dependency** with a pinned `rev`, which is how this workspace already takes `nih_plug` and `baseview` |
+| Platform | README says Linux and macOS; `plan.md` says Linux only. `cargo check` and `cargo build --release` **pass on Windows** (measured here), and `--parity-dump` ran every effect headless on Windows. The Unix-only part is the signal plumbing in `lib.rs`, which a library caller never invokes |
+
+So the two routes are now:
 
 | | How | Cost | What it buys |
 |---|---|---|---|
-| **PTY tap** *(preferred)* | Run `ttfx` under a pseudo-terminal and read the cell grid out of `alacritty_terminal`'s `Term` | Almost nothing — `organon-console/src/term.rs` already does exactly this, PTY and all | Zero changes to TTE. Every future effect arrives for free. |
-| **Binary writer** | Patch TTE with an alternate `Terminal` writer emitting packed cells instead of ANSI | ~200 lines, and it forks a dependency | Higher fidelity: layer, visibility, and the *unquantized* position (see §7) |
+| **Link it** *(preferred)* | `ttfx = { git = …, rev = … }`; build an `EffectCommand`, tick `next_frame`, read the grid out of `ctx.terminal` | A small producer crate. No PTY, no ANSI encode, no reparse of output we generated a microsecond earlier | Everything the buffer knows and the terminal forgets: **which character** is in a cell (`character_id`), its `layer`, whether a path is active (`motion.active_path`, the teleport-vs-slide signal §7 needs), `previous_coord`, and a tick we control |
+| **PTY tap** | Run `ttfx` under a pseudo-terminal and read cells out of `alacritty_terminal` | Almost nothing — `organon-console/src/term.rs` already does this | Zero coupling to ttfx's internals. Keep it as the **process-boundary fallback** if the licence question ever changes, and as the route to the Console's own terminal, which is a real PTY anyway |
 
-🚨 **Start with the PTY tap.** It costs a day and it is honest about where the value is: not in the
-effects, which someone else wrote well, but in what we do with their output.
+⚠️ **The grid is readable without patching ttfx, but not through the obvious field.**
+`Terminal.terminal_state: Vec<String>` is public and is the *formatted* rows — colour already
+folded into ANSI bytes. `render_cells` and `visible_characters` are private. What is public is
+`arena: Vec<EffectCharacter>` with `is_visible`, `layer`, `character_id`,
+`motion.current_coord` and `animation.current_character_visual` — enough to rebuild the painter's
+walk in ~15 lines on our side. A `pub fn` exposing `render_cells` upstream is a one-line PR and
+worth sending, but the producer must not wait on it.
+
+📌 **What the library route does *not* buy is colour precision.** The first draft of this
+correction assumed the PTY round-trip was quantizing colours; it is not. `Color` stores
+`rgb: [u8; 3]` and gradients resolve to 8-bit at the source, so a truecolor PTY carries them
+losslessly. The only quantization is `--xterm-colors`, which Omarchy's *provisioning splash*
+passes (the framebuffer console crushes 24-bit codes — the "muddy lavender" comment in
+`bin/omarchy-provision-owner`) and its **screensaver does not** (`bin/omarchy-screensaver`). §4's
+`srgb_to_linear` decode applies identically on either route.
+
+🚨 **Link it, from a crate that is not in the render process.** §6 says where.
 
 ---
 
@@ -211,27 +248,69 @@ is the same shape and the same argument.
 🚨 **It must go through `ns_file`.** A hard-coded `$TMPDIR` path silently breaks the one
 cross-product invariant: that a Mind session and an Organon session can run simultaneously.
 
-**Decouple the rates.** TTE ticks at its own speed; the renderer runs at 120 and interpolates.
-Otherwise the whole thing is capped at Python's frame rate.
+**Decouple the rates.** The effect ticks at its own cadence; the renderer runs at 120 and
+interpolates. With ttfx linked (§2) the cadence is ours — `Clock::Virtual` steps a fixed `dt` per
+`next_frame` and never sleeps — so "capped at the effect's frame rate" stops being a constraint
+and becomes a dial.
+
+### 6.1 The ring survives the library route — and the producer is its own crate
+
+Linking ttfx does not mean ticking it on the render thread. The ring stays, for the three
+reasons it existed: the producer and the renderer run at different rates; a screensaver process
+must be killable without the renderer noticing anything but silence; and the Console's terminal
+(a real PTY, §1) will feed the *same* ring from a different producer, which is the whole point of
+building this once.
+
+📌 **So the producer is a new, small, `MIT OR Apache-2.0` workspace member** — working name
+`organon-glyphs` — depending on `organon-core` (for `ns_file`) and on `ttfx` by git `rev`, and on
+nothing else. `doc/arch/topology.md`'s rule is that any leaf may grow an edge to `organon-core`,
+and this one grows no other. It is the `organic-math-mind-writer` shape — a binary that fills a
+ring the visual reads — and the Ascent producer shape one repo over. The ttfx dependency then
+touches **no existing crate**: not the GPL root, not `organon-render`, not the Console.
+
+⚠️ **Per-cell, the ring should carry more than a terminal would.** Symbol, fg, bg and SGR flags
+are the terminal's atom; the library also knows `character_id`, `layer`, and whether
+`motion.active_path` is set. Reserve a per-cell sub-cell offset pair (§7) even before anything
+fills it — a ring layout is the kind of thing that is cheap to widen on day one and expensive on
+day thirty. The producer is the one place the effect's *identity* model meets the renderer's
+*cell* model, and the ring is where that meeting is recorded.
 
 ---
 
 ## 7. Motion is quantized, and only 3-D reveals it
 
-**Measured.** `geometry.Coord` is `column: int, row: int`. `Path.step()` computes a float distance
-factor, calls `find_coord_on_line` / `find_coord_on_bezier_curve`, and the sub-cell remainder is
-discarded.
+**Measured, in both trees.** Python: `geometry.Coord` is `column: int, row: int`; `Path.step()`
+computes a float distance factor, calls `find_coord_on_line` / `find_coord_on_bezier_curve`, and
+the sub-cell remainder is discarded. ttfx: `Coord { column: i64, row: i64 }`; `EngineCtx::path_step`
+(`ctx.rs`) computes the same float `t` and the rounding happens inside
+`geometry::find_coord_on_line` — `round_half_even` on both axes, banker's rounding to match Python.
+The pre-rounded point exists for exactly one expression and is gone.
 
 In a terminal this is invisible — the cell *is* the atom. Rendered as tiles under a camera it reads
-as stepping. Two fixes, and they are not equivalent:
+as stepping. Three fixes now, ranked cheapest first, and they compose:
 
-- **Patch TTE** to expose the pre-rounded coordinate (this is the §2 "binary writer" route earning
-  its keep).
-- **Interpolate cell-to-cell on the Organon side** — cheap, but a character that *teleports* (and
-  several effects do) will interpolate wrongly, sliding where it should cut.
+- **Interpolate on the Organon side, gated by the library's own signal.** The terminal cannot tell
+  a slide from a cut; the library can. `Motion.active_path` is `Some` while a character is on a
+  path and `None` when an effect calls `set_coordinate` to teleport it, and `previous_coord` is
+  public. Interpolate `previous → current` only while a path is active, and the "slides where it
+  should cut" failure of the first draft goes away without touching ttfx. **Tier 1 does this.**
+- **Carry the pre-rounded point.** `geometry.rs` already has a private `FloatPoint` for
+  De Casteljau intermediates. A `Motion.current_point: (f64, f64)` written beside `current_coord`
+  is an *additive* field — the rounded output is unchanged, so ttfx's byte-for-byte parity suite
+  against Python is untouched, which is what makes this an upstream PR rather than a fork.
+  Exact, small, and worth sending.
+- **Fork.** Not needed on any evidence so far.
 
-⚠️ This is the one place the project **changes** the original rather than adding to it, and it is
-the one the effects were authored against. Treat it as the highest-risk unknown.
+⚠️ **Two things the effects were authored against that a tile grid must not break.** First, the
+integer step is also what the effects' *timing* is authored against — `max_steps =
+round(total_distance / speed)` — so sub-cell smoothing changes where a character is between
+ticks, never when it arrives. Second, **TTE's cell is 2:1**: `find_length_of_line` doubles the row
+delta and `find_coords_on_circle` doubles the x offset, so every circle, ring and spiral in the
+effect set is authored for a cell twice as tall as it is wide. Render the grid at square tiles
+and every ring becomes an ellipse. Keep the cell aspect, and put it in the ring header where the
+renderer cannot guess it.
+
+📌 This was "the highest-risk unknown". It is now a Tier 1 gate plus an optional upstream patch.
 
 ---
 
@@ -241,9 +320,29 @@ the one the effects were authored against. Treat it as the highest-risk unknown.
 change to the settings that decide what the buffer holds. It does **not** restart on geometry
 change, and the surrounding comment says a moving field would smear the average.
 
-**Reasoned.** Every TTE effect animates, resolves to its `final_gradient`, and holds; Omarchy's
-loop then restarts `ttfx`. So each cycle is `motion → settle → hold → restart`, and a screensaver
-has the one thing an interactive app never has: **time, with nobody waiting.**
+**Measured 2026-09-02, and half of the original sentence was wrong.** The first draft reasoned
+that every effect "animates, resolves to its `final_gradient`, and holds". All 37 ttfx effects were
+run headless (`--parity-dump --seed 1`, Omarchy's `logo.txt`, 100×30) and their last frame compared
+to the input:
+
+| | |
+|---|---|
+| Effects whose final frame **is** the input text | **37 / 37** |
+| Frames per effect | 54 (`overflow`) – 1430 (`swarm`); at Omarchy's `--frame-rate 120`, 0.45 – 11.9 s |
+| Trailing frames with the text already settled | 1 – 655; **eleven effects settle 3 frames or fewer before exiting** (≤ 25 ms) |
+| Trailing frames **byte-identical** (colour settled too) | 1 – 66; median 5 |
+
+So **every effect settles, and almost none of them hold.** The colour keeps moving through the
+final gradient until the last frame, the process exits within a few frames of the text landing,
+and `bin/omarchy-screensaver`'s `while true` restarts `ttfx` immediately. The terminal screensaver
+has no dwell at all — which is fine for a terminal, where the last frame *is* the picture.
+
+📌 **The hold is ours to add, and on the library route it is trivial.** The producer (§6.1) owns
+the loop: run `next_frame` until it returns `None`, then keep the final grid on the ring for a
+dwell of N seconds, then pick the next effect. A PTY tap could not have done this without
+patching Omarchy's loop, which is one more reason §2 inverted. So each cycle is
+`motion → settle → dwell → next`, and a screensaver has the one thing an interactive app never
+has: **time, with nobody waiting** — because we give it some.
 
 🚨 **So: raster during motion, path-trace during the hold.** The screensaver *resolves into a
 photograph* — ten seconds of animation that comes to rest and then visibly sharpens, over two or
@@ -350,14 +449,28 @@ frame-mirror precedent in `ipc.rs`; the TLAS bindings in the five `rt_*` modules
 of every workspace member and Omarchy's MIT `LICENSE`; Omarchy's migration `1786355450.sh` replacing
 `python-terminaltexteffects` with `ttfx`.
 
+**Measured 2026-09-02, later the same day, against `organonart/ttfx @ 7203e35` (v0.3.2) and
+`terminaltexteffects @ 7a91dd9` (v0.15.0):** ttfx's `LICENSE` (MIT, both copyrights) and `NOTICE`;
+`Cargo.toml` (`license = "MIT"`, three deps, `src/lib.rs` present); `CharacterVisual`'s fields
+against Python's; `Coord`'s type; `path_step`'s rounding site; `Motion.active_path` /
+`previous_coord` / `set_coordinate` being public; `Terminal`'s public and private fields;
+`Clock::Virtual`; `EffectCommand` being a public clap `Subcommand` with `build_effect`; `cargo
+search ttfx` (absent); `cargo check` and `cargo build --release` on Windows; the 37-effect
+settle/hold table in §8 (dumps in the session scratchpad, reproducible from the command given
+there); `bin/omarchy-screensaver`'s invocation (`--frame-rate 120`, no `--xterm-colors`, `while
+true`); the 2:1 cell aspect in `geometry.rs` (`double_row_diff`, the doubled x on circles).
+
+**Attributed, not measured:** that `ttfx` is DHH's Rust port of TTE, written by having an agent
+port the Python — **James, 2026-09-02.** ttfx's own `LICENSE` names 37signals / omacom-io and
+its `NOTICE` names the original as ChrisBuilds' design; neither names an individual author.
+
 **Reasoned, unverified** — and each is a place this document could be wrong:
 
-- **`ttfx` is assumed to be TTE's lineage** because the CLI surface matches (`-i`, `--anchor-text`,
-  `--reuse-canvas`, `--random-effect`, `--xterm-colors`, effect subcommands). Whether it is a
-  rename or a native rewrite was **not** established, and it decides whether the §2 "binary writer"
-  route is even available. ⚠️ **Settle this first.**
-- **Every TTE effect settles and holds.** Inferred from the shared `final_gradient_*` config
-  surface, not from running them. §8's whole behaviour rests on it.
+- ~~**`ttfx` is assumed to be TTE's lineage.**~~ Settled above; a port, and a library.
+- ~~**Every TTE effect settles and holds.**~~ Measured in §8: settles 37/37, holds almost never.
+- **The library route has not been driven.** Every claim in §2's table is read from the source;
+  no crate has yet built an effect through `EffectCommand`, ticked it under `Clock::Virtual` and
+  walked `arena`. Tier 1's first commit is that program.
 - **Cell counts and instance-path performance.** ~14–16k cells at 18 pt fullscreen is an estimate;
   no draw was timed.
 - **The visual on Linux/Wayland.** `organon-visual` is winit + wgpu and already opens
@@ -372,6 +485,16 @@ of every workspace member and Omarchy's MIT `LICENSE`; Omarchy's migration `1786
 ⚠️ **Licensing.** Omarchy is MIT (`LICENSE`, DHH). `organon-visual` is GPL-3.0-or-later — inherited
 by depending *upward* on the root crate, per `native/Cargo.toml`'s licence note. Exec'ing a separate
 GPL binary is fine; vendoring it into an MIT tree is not.
+
+📌 **ttfx is MIT, so linking it is clean in every direction** — into the permissive producer crate
+(§6.1) and, if it ever came to that, into the GPL root. Had it been GPL, the PTY tap would have
+come back as a *process boundary doing licence work*, which is why §2 keeps that route named. Two
+obligations come with the dependency and both are cheap: keep ttfx's `LICENSE` and `NOTICE` text
+with any distributed binary, and credit both lineages where the screensaver credits anything —
+**terminaltexteffects** is ChrisBuilds' design (Chris, `741258@pm.me` in `pyproject.toml`, MIT),
+**ttfx** is DHH's Rust port of it (per James; the file says 37signals / omacom-io). Pin the git
+`rev`; a floating branch dependency in a workspace that already pins `baseview` by rev would be
+the odd one out.
 
 ⚠️ **The screensaver path is also the lock-screen path.** `bin/omarchy-system-lock` stops `ttfx`
 before closing its terminal. A GPU app crashing on a lock screen is a materially worse failure than
@@ -395,10 +518,13 @@ reads standalone, so Organon is the *authoring* tool rather than a runtime depen
 
 Each is independently shippable and each defaults to inert per invariant #4.
 
-- **T1 — cell ring + block glyphs.** PTY tap → glyph ring → instanced beveled boxes with
-  per-instance emission and a PBR backplane. Renders the entire Omarchy logo and most effect
+- **T1 — cell ring + block glyphs.** A producer crate linking `ttfx` (§2, §6.1) → glyph ring →
+  instanced beveled boxes with per-instance emission and a PBR backplane. Slide-vs-cut gated on
+  `active_path` (§7); the dwell after settle (§8). Renders the entire Omarchy logo and most effect
   symbols. This alone is the demo.
-- **T2 — the legibility harness.** §9. Before the exotic presets, not after.
+- **T2 — the legibility harness.** §9. Before the exotic presets, not after. Its fixture grid can
+  come from the same producer under `Clock::Virtual` and a fixed seed, which is what makes it
+  deterministic end to end rather than only from the grid onward.
 - **T3 — look controls + preset.** Extrusion, bevel, face crown, emission gain, backplane material,
   camera tilt, light rig, CRT post. Saved as a preset.
 - **T4 — screensaver mode.** Borderless-fullscreen per monitor, reads a preset, exits on input.
