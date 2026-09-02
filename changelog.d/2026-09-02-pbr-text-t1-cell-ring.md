@@ -46,8 +46,12 @@ draw a frozen grid forever.
 tint — and `cube.wgsl`'s emissive term gains `+ emit.rgb * emit.w`, bypassing albedo. 🚨
 **Inert by construction (invariant #4):** every existing draw binds an all-zero emission
 buffer (wgpu zero-initialises a fresh buffer; nothing writes it until a glyph frame does, and
-the range a glyph frame lit is zeroed back the frame after), so the added term is exactly
-`vec3(0.0)` and the expression reduces to the one it replaced. No `Shared` change. ⚠️ A
+everything a glyph frame lit is zeroed back — to a **high-water mark**, not the previous frame's
+length: an effect's live-cell count shrinks as it animates, and the review caught the first
+version leaving `[50, 100)` lit after a 100-then-50 pair for an 80-instance generator draw to
+read; `emit_upload_plan` is pure and its tests pin that the lit set is always exactly the last
+upload), so the added term is exactly `vec3(0.0)` and the expression reduces to the one it
+replaced. No `Shared` change. ⚠️ A
 fourth layout in a pipeline means a fourth buffer at **every** draw against it or wgpu fails
 validation at draw time, and no leg of the bar has a GPU — so all 27 slot-2 binds gained a
 slot-3 twin in one mechanical pass, the depth prepass takes the same four buffers and ignores

@@ -1915,17 +1915,20 @@ pub struct Renderer {
     inst_buf: wgpu::Buffer,
     tint_buf: wgpu::Buffer,
     // organon#217 T1 — the FOURTH instance buffer: per-instance emission (loc 8),
-    // parallel to `tint_buf` and grown with it. `emit_len` = instances whose emission
-    // was last uploaded non-zero, so a frame that hands no `emits` can zero exactly
-    // that range back (a stale glyph frame's emission must not light whatever
-    // generator draws next). `zero_emit` is the all-zero buffer bound wherever a draw
+    // parallel to `tint_buf` and grown with it. `emit_hi` = the HIGH-WATER mark: one
+    // past the highest instance whose emission may be non-zero since the buffer was
+    // last fully clear. Every upload zeroes `[its own length, emit_hi)` and lowers the
+    // mark to its length (`emit_upload_plan`), so a stale glyph frame's emission can
+    // never survive a shrink to light whatever draws next — not the previous frame's
+    // length, which a 100-then-50-then-80 sequence defeats (review on #224).
+    // `zero_emit` is the all-zero buffer bound wherever a draw
     // binds a tint buffer that is not `tint_buf` — `white_tint`, the scenery's, the
     // plexus overlay's — and it is kept at least as long as the largest instance
     // count any of them draws, because a fourth layout in the pipeline means a
     // fourth buffer at EVERY draw or wgpu fails validation at draw time (no leg of
     // the bar has a GPU, so this comment is the guard).
     emit_buf: wgpu::Buffer,
-    emit_len: usize,
+    emit_hi: usize,
     zero_emit: wgpu::Buffer,
     inst_cap: usize,
     // Consecutive frames the field has been ≤ ¼ of `inst_cap` (#174 T2 shrink).
@@ -2735,7 +2738,7 @@ impl Renderer {
             inst_buf,
             tint_buf,
             emit_buf,
-            emit_len: 0,
+            emit_hi: 0,
             zero_emit,
             inst_cap,
             inst_lowwater: 0,
@@ -3478,7 +3481,7 @@ impl Renderer {
             });
             // Grown with `tint_buf`, and fresh = zero (see `make_emit_buf`).
             self.emit_buf = make_emit_buf(device, "emits", self.inst_cap);
-            self.emit_len = 0;
+            self.emit_hi = 0;
             self.ensure_zero_emit(device, self.inst_cap);
         }
         // Upload only when a GPU path actually consumes the instance buffers this
@@ -3496,18 +3499,26 @@ impl Renderer {
             // organon#217 T1 — emission rides beside the tints. Uploaded only when the
             // caller handed a slice exactly `up_inst.len()` long (the glyph frame); any
             // other length — including the empty slice every other frame passes — means
-            // "no emission", and the range the LAST upload lit is zeroed back so a
-            // generator drawn after a glyph frame does not inherit its phosphor. A fresh
-            // buffer is already zero (wgpu zero-initialises), so the common case writes
-            // nothing at all.
-            if emits.len() == up_inst.len() && !emits.is_empty() {
+            // "no emission". Whatever this upload does NOT cover, up to the HIGH-WATER
+            // mark of everything lit since the last full clear, is zeroed back —
+            // `emit_upload_plan` decides the range, and its tests pin the property that
+            // no index ever lit survives a shrink. (The first version zeroed only the
+            // previous frame's length: a glyph frame of 100 followed by one of 50 left
+            // 50..100 lit, and a later 80-instance generator draw read it — review on
+            // #224.) A fresh buffer is already zero (wgpu zero-initialises), so the
+            // common case writes nothing at all.
+            let lit = if emits.len() == up_inst.len() && !emits.is_empty() { emits.len() } else { 0 };
+            let (zero, high) = emit_upload_plan(self.emit_hi, lit);
+            if lit > 0 {
                 queue.write_buffer(&self.emit_buf, 0, bytemuck::cast_slice(emits));
-                self.emit_len = emits.len();
-            } else if self.emit_len > 0 {
-                let zeros = vec![Vec4::ZERO; self.emit_len.min(self.inst_cap)];
-                queue.write_buffer(&self.emit_buf, 0, bytemuck::cast_slice(&zeros));
-                self.emit_len = 0;
             }
+            let zero = zero.start.min(self.inst_cap)..zero.end.min(self.inst_cap);
+            if !zero.is_empty() {
+                let zeros = vec![Vec4::ZERO; zero.len()];
+                let off = (zero.start * std::mem::size_of::<Vec4>()) as u64;
+                queue.write_buffer(&self.emit_buf, off, bytemuck::cast_slice(&zeros));
+            }
+            self.emit_hi = high;
         }
 
         // Scenery layer (#187 pivot): grow-and-upload its instance/tint pair.
@@ -6188,6 +6199,82 @@ fn make_emit_buf(device: &wgpu::Device, label: &str, cap: usize) -> wgpu::Buffer
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+/// organon#217 T1 — what an emission upload must zero, and the new high-water mark.
+///
+/// `high` is one past the highest instance whose emission may be non-zero; `lit` is
+/// how many instances this frame uploads non-zero emission for (`0` = none). The
+/// upload itself rewrites `[0, lit)`; this returns the range **beyond** it that is
+/// still dirty — `[lit, high)` — and the mark after the frame, which is `lit`, because
+/// once that range is zeroed nothing above `lit` can be non-zero.
+///
+/// Pure, so the property is pinned without a GPU: after any sequence of frames the
+/// set of possibly-non-zero instances is exactly `[0, last lit)`. The first version
+/// tracked the previous frame's length instead of the mark, and a 100 → 50 → 80
+/// sequence read frame one's phosphor on frame three.
+fn emit_upload_plan(high: usize, lit: usize) -> (std::ops::Range<usize>, usize) {
+    (lit..high.max(lit), lit)
+}
+
+#[cfg(test)]
+mod emit_plan_tests {
+    use super::emit_upload_plan;
+
+    /// A model of the buffer: which instances hold non-zero emission. Apply the plan
+    /// exactly as `render` does — write `[0, lit)`, zero the returned range — and the
+    /// lit set must be `[0, lit)` after EVERY frame, whatever came before.
+    fn run(seq: &[usize]) -> Vec<Vec<bool>> {
+        let mut buf = vec![false; 256];
+        let mut high = 0;
+        let mut out = Vec::new();
+        for &lit in seq {
+            let (zero, next) = emit_upload_plan(high, lit);
+            for b in &mut buf[..lit] {
+                *b = true;
+            }
+            for b in &mut buf[zero] {
+                *b = false;
+            }
+            high = next;
+            out.push(buf.clone());
+        }
+        out
+    }
+
+    fn lit_set(b: &[bool]) -> Vec<usize> {
+        b.iter().enumerate().filter(|(_, &v)| v).map(|(i, _)| i).collect()
+    }
+
+    /// The review's sequence: 100 lit, then 50, then a generator frame of 80 with no
+    /// emission. Frame three must read zero everywhere — `[50, 100)` included.
+    #[test]
+    fn a_shrink_never_leaves_stale_emission_above_the_new_length() {
+        let frames = run(&[100, 50, 0]);
+        assert_eq!(lit_set(&frames[0]), (0..100).collect::<Vec<_>>());
+        assert_eq!(lit_set(&frames[1]), (0..50).collect::<Vec<_>>(), "50..100 must be zeroed on the shrink");
+        assert!(lit_set(&frames[2]).is_empty(), "an 80-instance generator draw would read {:?}", lit_set(&frames[2]));
+    }
+
+    /// Growth, shrink, growth, silence, growth again — the mark follows the last
+    /// upload exactly and the dirty range never escapes it.
+    #[test]
+    fn the_lit_set_is_exactly_the_last_upload_after_any_sequence() {
+        let seq = [10, 200, 30, 30, 120, 0, 0, 7, 0];
+        for (i, f) in run(&seq).iter().enumerate() {
+            assert_eq!(lit_set(f), (0..seq[i]).collect::<Vec<_>>(), "after frame {i}");
+        }
+    }
+
+    /// The common case — no ring, ever — plans no write at all.
+    #[test]
+    fn no_emission_and_no_history_writes_nothing() {
+        let (zero, high) = emit_upload_plan(0, 0);
+        assert!(zero.is_empty());
+        assert_eq!(high, 0);
+        let (zero, _) = emit_upload_plan(40, 60);
+        assert!(zero.is_empty(), "growing rewrites everything the mark covered");
+    }
 }
 
 fn make_cube_pipeline(

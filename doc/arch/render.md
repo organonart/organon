@@ -885,16 +885,31 @@ beside `tint_buf` (sliced at the same sub-batch byte offsets), and `zero_emit` b
 whenever any of those could draw more instances than it covers. Grep the two counts and
 they must agree.
 
+⚠️ **The zeroing is a high-water mark, not the previous frame's length.** Glyph frames
+shrink as an effect animates (fewer live cells), so a 100-instance frame followed by a
+50-instance one leaves `[50, 100)` lit unless the shrink itself zeroes it; the review on
+#224 caught the first version trusting the last length, which a later 80-instance
+generator draw would have read. `emit_upload_plan(high, lit)` — pure, tested without a
+GPU — returns the dirty range beyond this upload, `[lit, high)`, and the new mark, so
+after any sequence of frames the possibly-non-zero set is exactly `[0, last lit)`.
+
 📌 **What does NOT see the emission yet:** the hardware-RT and path-trace passes take
 `inst_buf`/`tint_buf` as storage and shade the hit from the tint, so a ray-traced
 reflection of the glyph grid is a reflection of dark faceplates. Carrying `emit_buf` into
 the hit shading is the same shape of change one layer down, and it is named rather than
-done in T1.
+done in T1. This is the **cube pipeline's** emission only: the capsule impostors have
+their own per-instance emission in `particles.wgsl` (the `ArmInstance` colour), which is
+what T6's coaxial glass capsule shows through its shell (the "Shaders" entry below) — the
+`bottled` / `cathode` presets will ride that path, not this attribute.
 
 The producer of the only non-empty `emits` today is `world.rs`'s `glyph_grid_geometry`
 (the glyph ring, `organon-core/src/glyph_ring.rs::lower_grid` — see `ARCHITECTURE.md`'s
 `$TMPDIR` channel list). Its look — tile depth, gap, gain, faceplate, backplane — is
-`GlyphLook::DEFAULT`, one `const` in core that **T3 lifts onto the param chain**.
+`GlyphLook::DEFAULT`, one `const` in core that **T3 lifts onto the param chain**. Whether
+a look still *reads* is T2's question, not this section's: the legibility harness (its own
+section below) takes the same cell grid this ring carries as its fixture and scores the
+render against it, which is what makes "is this preset still readable" a number rather
+than a matter of taste.
 
 ### Hardware ray tracing (#195 — the `rt_*` modules + shaders)
 
