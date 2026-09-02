@@ -315,7 +315,7 @@ Decomposed, it is five ingredients, and **measured**, the tree already has four:
 | Ingredient | Status |
 |---|---|
 | Stochastic dielectric BTDF — Fresnel split, refract on entry + exit, TIR, Beer–Lambert | `rt_pathtrace.rs` `pt_dielectric` / `pt_absorb` |
-| Spectral dispersion with a real Abbe number (per-λ Cauchy) | `params.rs:7336` |
+| Spectral dispersion with a real Abbe number (per-λ Cauchy) | `params.rs` — `spectral_enable` + `spectral_abbe` |
 | Cheap RGB-split dispersion for the raster path | `cube.wgsl:1200` `glass_dispersion()` |
 | Photon-mapped caustics | `rt_caustic.rs` |
 | Analytic capsule/tube impostors — sphere-traced SDF, per-instance endpoints + radius + colour + emissive, writes depth, joins the FX prepass | `particles.wgsl:825` |
