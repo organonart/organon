@@ -114,7 +114,7 @@ discovery endpoint, so they are guesses that were right when this was written:
 python3 tools/suno/test_suno_track.py
 ```
 
-`test_suno_track.py` is stdlib `unittest`, no dependencies, 26 cases. It covers
+`test_suno_track.py` is stdlib `unittest`, no dependencies, 29 cases. It covers
 the part that is pure: cookie parsing (full header, bare JWT, and both rejection
 paths), header and Clerk-query assembly, `Set-Cookie` absorption, slugging,
 multi-take output naming, and the remedy text on each mapped HTTP status —

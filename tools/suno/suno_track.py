@@ -310,9 +310,13 @@ class Suno:
                     f"Suno accepted the request but returned no clips: {response}"
                 )
             return clips
+        # The LAST refusal is carried into the message, not dropped: the walk only
+        # continues on a 400, and a 400 that is not about `mv` says so in its body —
+        # which is the difference between "the codes are stale" and "the payload was
+        # wrong all along". Reporting only the list would hide the second case.
         raise SunoError(
             f"Every model code was refused: {', '.join(candidates)}. The codes in "
-            "MODELS are stale.",
+            f"MODELS are stale, or the last refusal says otherwise: {last_error}",
             "Watch the /api/generate/v2/ request in DevTools while generating on "
             "suno.com and copy the `mv` value, then pass it with --model.",
         )

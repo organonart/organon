@@ -8,7 +8,7 @@ between what is covered here and what is not is the point of the file: every
 network hop is out of reach from CI (and was out of reach from the sandbox this
 was written in), so what is tested is the part that is pure — parsing the
 cookie, assembling the headers and the Clerk query, absorbing `Set-Cookie`,
-naming the output files. The remedy text on each failure is covered too, since
+walking the model list, naming the output files. The remedy text on each failure is covered too, since
 `doctor`'s whole value is that a failure names its own cause.
 """
 
@@ -158,6 +158,51 @@ class OutputNaming(unittest.TestCase):
         names = self._names(None, 2)
         self.assertEqual(names, ["my-take-0bcdef12.mp3", "my-take-1bcdef12.mp3"])
         self.assertEqual(len(set(names)), 2)
+
+
+class ModelWalk(unittest.TestCase):
+    """generate() walks MODELS on a 400; the last refusal must survive the walk."""
+
+    def _client(self, raiser):
+        client = st.Suno({"__client": "a"}, clerk_js="5.0.0")
+        client.refresh_token = lambda: None
+        client._request = raiser
+        return client
+
+    def test_exhausting_the_list_reports_the_last_refusal(self):
+        # The bug this guards: last_error was assigned and never read, so a 400
+        # that was not about `mv` vanished from the diagnostic.
+        def always_400(method, url, **kwargs):
+            raise st.SunoError(f"POST {url} -> HTTP 400. Body: mv 'x' not allowed")
+
+        with self.assertRaises(st.SunoError) as caught:
+            self._client(always_400).generate(style="anything")
+        message = str(caught.exception)
+        self.assertIn("Every model code was refused", message)
+        self.assertIn("mv 'x' not allowed", message)
+
+    def test_a_non_400_stops_the_walk_immediately(self):
+        calls = []
+
+        def unauthorized(method, url, **kwargs):
+            calls.append(url)
+            raise st.SunoError("POST -> HTTP 401. Body: nope")
+
+        with self.assertRaises(st.SunoError) as caught:
+            self._client(unauthorized).generate(style="anything")
+        self.assertIn("HTTP 401", str(caught.exception))
+        self.assertEqual(len(calls), 1, "a real failure must not burn the model list")
+
+    def test_an_explicit_model_is_not_walked_past(self):
+        calls = []
+
+        def refuse(method, url, **kwargs):
+            calls.append(url)
+            raise st.SunoError("POST -> HTTP 400. Body: no")
+
+        with self.assertRaises(st.SunoError):
+            self._client(refuse).generate(style="x", model="chirp-v5")
+        self.assertEqual(len(calls), 1, "--model names one code and means it")
 
 
 class Cli(unittest.TestCase):
