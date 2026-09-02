@@ -1,0 +1,32 @@
+# A small fixture with NO symmetry, for orientation and edge tests.
+#
+# The Omarchy logo is nearly mirror-symmetric, so a harness that flipped rows or
+# columns would score it almost perfectly — a flip is invisible there. This one is an
+# "L" with a stroke off its top, a lone shade block, and a colour gradient that runs
+# a different way on every row, so a vertical flip, a horizontal flip and a transpose
+# each produce a different cell array. Every glyph family the metric models is here:
+# full block, both half blocks, and a shade block.
+#
+# `order top-down` means the FIRST fenced line is the TOP of the picture — the way a
+# person reads it. `order bottom-up` is TTE's native row order (row 1 at the bottom),
+# so a producer dumping a ttfx grid can write rows in the order it walks them and say
+# so, instead of remembering to flip. Format: native/organon-render/src/legibility.rs.
+grid v1
+cols 5
+rows 3
+aspect 2
+order top-down
+default #ffffff
+colour r #ff3000
+colour o #ff9000
+colour y #ffe000
+colour g #40ff60
+colour b #4090ff
+glyphs
+|█▀   |
+|█  ▒ |
+|█▄▄█ |
+colours
+|ro   |
+|y  b |
+|gobr |
