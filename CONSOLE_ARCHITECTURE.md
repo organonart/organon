@@ -3365,6 +3365,23 @@ and deleted.
 wins. It is the one input this rule reads differently from a person's intent, it is unreachable
 today, and the escape hatch is the keyword form it already collides with.
 
+🚨 **The tests for this shape read the real module store for a week, and `main`'s gate was red
+for it on every clean runner** (2026-08-31 → 2026-09-02). `registry::tests::tailed()` names its
+one verb `console.viewport`, and that name is a *key*: `Entry::from_spec` attaches the
+dependent-ring hook by catalog name (§1.8's `console_narrow`), so the fixture got the shipped
+`viewport_options`, which reads `<store root>/modules.json` — and `coerce` asks that ring before
+it looks at the declared `Text`. `dirs::data_dir()` answers on every platform, so the *"no data
+directory"* `None` branch never ran either. The result was a test whose verdict was a fact about
+one roaming profile: the workstation that had approved `ascent` passed
+`a_trailing_open_optional_is_given_without_naming_it` and `the_keyword_form_still_parses`, and
+every runner without that file refused the word with *"`ascent` is not one of organon"*. The
+fixture now installs `approved_ascent_hook` — the same swap the other two dependent-ring tests
+already made, hoisted into one helper — so the vocabulary is the fixture's rather than the
+machine's. **Rule: a test that resolves a verb with a dependent ring must install its own
+hook.** The name-keyed wiring is the feature (it is what reaches the pane's own registry); a
+read of the store from under `cargo test` is deterministic only for the person who wrote the
+test, which is why nobody saw it locally.
+
 ### 1.9 The command panel — see your choices while you type, and see what happened after
 
 **The precedent is NeoVim's `which-key`**: press a prefix, a panel shows every valid
