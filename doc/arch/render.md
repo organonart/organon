@@ -911,6 +911,54 @@ section below) takes the same cell grid this ring carries as its fixture and sco
 render against it, which is what makes "is this preset still readable" a number rather
 than a matter of taste.
 
+#### Converge on hold (organon#217 T5)
+
+The path tracer restarts its progressive accumulation on a camera move, a buffer resize, or
+a change to the settings that decide what the buffer holds — the **content key**,
+`world.rs::pt_content_key` — and deliberately **not** on geometry change: the TLAS rebuilds
+every frame, so "the geometry moved" is true of nearly every frame, and a moving field would
+smear the average. T5 adds one geometry counter to that key, and it is the exception that
+proves the rule: the glyph ring's `GlyphFrame.generation` is bumped by the *producer* only
+when the cell payload differs from its last publish, and a dwell heartbeat republish keeps
+it. So keying on it restarts accumulation exactly when the glyphs move and accumulates
+exactly while they are held (`doc/pbr_text_engine.md` §8). ⚠️ Keying on the frame's `seq` or
+`tick` instead would restart every 250 ms heartbeat and never converge. The key carries a
+`live` bit beside the generation, so "no ring" and "ring at generation 0" cannot collide,
+and a producer going silent (the world hands the frame back to the generator after 3 s) is
+itself a content change.
+
+**The handover is one pure predicate**, `world.rs::pathtrace_active(preset_pt, glyph)`:
+
+> the preset's own toggle (`pathtrace_on` — the editor checkbox or the 'P' key),
+> **OR** a glyph frame is drawing this frame **AND** it carries `FRAME_SETTLED`.
+
+A preset that already path-traces is untouched (the OR is already true). A preset that
+rasters rasters through every frame of an effect's motion — it is `GlyphPtState.live &&
+!settled` — and hands the frame to the tracer for the dwell, where it sharpens over the
+hold into a converged still and drops back to raster the instant the next effect's first
+payload arrives (generation bumps → key changes → count to 0; `settled` clears → tracer
+off). A session with no ring reduces to the toggle alone and is byte-identical to before
+T5. Every other gate the tracer already had — `hide_generator`, a boids creature, the
+render path being `Instanced` with instances, ray-query support — still applies on top.
+The restart itself (`pathtrace_restarts`) is keyed on that live answer rather than the
+toggle, so during motion the count is held at 0 and the dwell's first traced frame starts
+from a clean buffer. **Silence is not settle**: a ring whose producer exited may still carry
+`FRAME_SETTLED` on its last frame, but `live` is false once the world stops drawing it, so
+a stale grid is never traced as though it were held. All of it is pinned in
+`organon-world`'s tests (`the_dwell_converges_and_the_next_effect_restarts_it` walks one
+whole motion → settle → dwell → next cycle).
+
+⚠️ **Two things this does not do, on purpose.** It does not touch TAA: the jitter is the
+preset's `Shared.temporal[0]`, not a glyph setting, and §8's warning (`temporal.rs`
+reprojects by camera only; teleporting glyphs ghost) is T3's to act on when it lifts the
+look onto the param chain. And it does not still the camera: `pt_moved` compares the
+unjittered view-proj, so a preset whose auto-orbit is running restarts accumulation every
+frame and the dwell never converges — a ring session needs a held camera (Demo's
+`static_cam` is the existing shape), which is a preset / screensaver-mode matter (T3 / T4),
+not a renderer one. 🚨 Nothing here has been looked at on a GPU: what a GPU session must
+see is the frame visibly sharpening over the dwell after an effect settles, and restarting
+cleanly — no after-image of the held text — when the next effect begins.
+
 ### Hardware ray tracing (#195 — the `rt_*` modules + shaders)
 
 The plumbing every later RT effect (shadows / reflections / AO / GI) will trace
@@ -1278,7 +1326,9 @@ vs the TLAS + NEE + emissive + sky, MRT into the accumulation + HDR scene buffer
 adds an opt-in **dielectric BTDF** (`Shared.ptglass` enable): Glass/Refractive shade as a
 stochastic two-interface dielectric — exact-Fresnel reflect/transmit split, `refract` on entry
 AND exit, TIR, Beer–Lambert body absorption over the traversed segment — and Chrome as a perfect
-mirror; enable off → diffuse-only, byte-identical),
+mirror; enable off → diffuse-only, byte-identical; organon#217 T5 — the accumulation
+restart and the raster → path-trace handover for a glyph ring's dwell are decided in
+`world.rs`, see "Converge on hold" under the per-instance emission section),
 `rt_shadow.wgsl` (#195 Tier 1 RT shadow mask — per-pixel any-hit rays at the key/fill),
 `rt_denoise.wgsl` (#200 Tier 4½ p2 edge-aware à-trous over the RT reflection/GI buffers),
 `rt_temporal.wgsl` (#200 Tier 4½ p3/p4 beat-aware temporal accumulator for the RT
