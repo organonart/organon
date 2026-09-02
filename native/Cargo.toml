@@ -18,6 +18,10 @@ members = [
     "organon-visual",
     "organon-console",
     "organon-module",
+    # organon#217 T1 — the glyph-ring producer (links `ttfx`). Its own package so the
+    # ttfx dependency touches no existing crate: cargo features unify across a package,
+    # and a `[[bin]]` here would hand the plugin cdylib a text-effects engine.
+    "organon-glyphs",
 ]
 
 [package]

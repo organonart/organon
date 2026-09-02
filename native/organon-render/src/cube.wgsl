@@ -562,6 +562,14 @@ struct VsIn {
     @location(5) m2: vec4<f32>,
     @location(6) m3: vec4<f32>,
     @location(7) tint: vec4<f32>, // per-instance colour (×albedo); white = no change
+    // organon#217 T1 — per-instance EMISSION, bypassing albedo: `rgb` is linear
+    // radiance, `w` its gain. Added into `emissive` in `fs_main` as `emit.rgb * emit.w`,
+    // so an all-zero buffer (every draw today) contributes exactly 0.0 and the frame is
+    // byte-identical to before this attribute existed. A terminal cell's colour is
+    // display-referred — a phosphor, not a reflectance — and `tint` cannot carry it
+    // (it multiplies albedo, so a near-black faceplate would multiply it to nothing;
+    // `doc/pbr_text_engine.md` §4).
+    @location(8) emit: vec4<f32>,
 };
 
 struct VsOut {
@@ -588,6 +596,9 @@ struct VsOut {
     // instance, so it interpolates exactly; the fragment normalizes it and builds
     // the tangent frame. Only read when anisotropy is active.
     @location(7) brush: vec3<f32>,
+    // organon#217 T1 — the per-instance emission, passed through. Constant per
+    // instance, so plain interpolation is exact.
+    @location(8) emit: vec4<f32>,
 };
 
 // #472 Tier 5 — height→vertex displacement. Offsets the world vertex along its
@@ -680,6 +691,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.color = select(in.color * in.tint.rgb, in.tint.rgb, use_tint);
     // Brush direction for anisotropy: the instance's local +Z basis in world.
     out.brush = in.m2.xyz;
+    out.emit = in.emit;
     return out;
 }
 
@@ -1541,8 +1553,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Material **Emissive** (HDR): the resolved albedo emitted in its OWN colour,
     // pushed past 1 so the surface blooms in its hue instead of washing to white.
     // 0 → glow-only, byte-identical.
+    // organon#217 T1 — `+ in.emit.rgb * in.emit.w`: per-instance emission that BYPASSES
+    // albedo (§4 — a phosphor behind a near-black faceplate must not be multiplied by
+    // the faceplate). With `emit == vec4(0)` the added term is exactly `vec3(0.0)` and
+    // the expression reduces to the one above it, so every existing draw — which binds
+    // an all-zero emit buffer — is byte-identical. Invariant #4.
     var emissive = albedo * (glow + u.env_tint.w) + ripple_emission(in.world_pos, albedo)
-        + base_col * (rd_d * rd.params.x);
+        + base_col * (rd_d * rd.params.x)
+        + in.emit.rgb * in.emit.w;
     // Spectral emission (#214 T5 pt 1), woven in here so it applies on every material.
     // Fluorescence: the surface absorbs the environment's short-wavelength (blue)
     // light and re-emits it at a chosen hue — bright under a blue/UV-ish env

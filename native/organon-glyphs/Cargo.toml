@@ -1,0 +1,43 @@
+# organon-glyphs — the glyph-ring PRODUCER (organon#217 T1, `doc/pbr_text_engine.md` §6.1).
+#
+# A small permissive workspace member that links `ttfx` (DHH's Rust port of
+# terminaltexteffects, MIT), ticks an effect under its virtual clock, walks the cell
+# grid out of the engine, and publishes it into the glyph ring (`organon_core::
+# glyph_ring`) for the world to render as lit tiles. It is the `organic-math-mind-writer`
+# shape — a binary that fills a ring the visual reads — and it is its OWN package on
+# purpose: cargo features unify across a package, so a `[[bin]]` in the root crate would
+# hand the plugin cdylib a text-effects engine, and a module in `organon-render` would put
+# ttfx in the renderer's process. Here it touches no existing crate.
+#
+# ⚠️ **Three direct dependencies, not the two the design named, and the third is forced.**
+# §6.1 says "organon-core, ttfx, and nothing else". Building an effect by name needs
+# `clap`: ttfx's effect configs are clap `Args` structs whose defaults live only in
+# `#[arg(default_value…)]` attributes (none implements `Default`), `EffectCommand` is a
+# clap `Subcommand`, and ttfx does not re-export clap — so `<Cli as clap::Parser>::
+# try_parse_from(["ttfx", name])`, which is exactly how ttfx's own `main.rs` builds
+# `--random-effect`, cannot be written without naming the crate. `clap 4` is already in
+# this workspace's graph (the root crate's CLI), so the resolved crate set does not grow;
+# only this manifest's depth-1 list does. A one-line upstream `EffectCommand::from_name`
+# would remove it, and is worth sending, but the producer must not wait on it.
+#
+# ttfx is a GIT dependency pinned by `rev` — it is not on crates.io (`cargo search ttfx`
+# finds an unrelated `ttfx-rs`) — the way this workspace already takes `nih_plug` and
+# `baseview`. Bump the rev deliberately, never float a branch. Its `LICENSE` and `NOTICE`
+# obligations are recorded in `NOTICE` beside this file.
+
+[package]
+name = "organon-glyphs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Organon's glyph-ring producer: runs a ttfx text effect headless and publishes its cell grid for the world to render as lit tiles."
+repository = "https://github.com/organonart/organon"
+
+[[bin]]
+name = "organon-glyphs"
+path = "src/main.rs"
+
+[dependencies]
+organon-core = { path = "../organon-core" }
+ttfx = { git = "https://github.com/organonart/ttfx.git", rev = "7203e35" }
+clap = { version = "4", features = ["derive"] }

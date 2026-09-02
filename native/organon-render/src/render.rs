@@ -1445,6 +1445,14 @@ pub struct Surface<'a> {
     // Instanced payload
     pub instances: &'a [Mat4],
     pub tints: &'a [Vec4],
+    /// organon#217 T1 — per-instance **emission**, parallel to `instances` (linear RGB
+    /// radiance in `xyz`, gain in `w`; `cube.wgsl` adds `rgb * w` to `emissive`,
+    /// bypassing albedo). **Empty = inert**: the renderer binds an all-zero buffer and
+    /// the shader's added term is exactly zero, so every frame that passes `&[]` here
+    /// — which is every frame not driven by the glyph ring — is byte-identical to
+    /// before the attribute existed. A non-empty slice must be `instances.len()` long;
+    /// any other length is treated as empty (zero), never as a partial upload.
+    pub emits: &'a [Vec4],
     /// RT / path-tracer geometry override. When non-empty, the ray tracer's hit-
     /// shading instance buffers use THESE instead of `instances` (which the raster
     /// draws). In Contiguous Swept Tubes the raster draws the welded mesh and
@@ -1906,6 +1914,19 @@ pub struct Renderer {
     creature_meshes: Vec<(wgpu::Buffer, wgpu::Buffer, u32)>,
     inst_buf: wgpu::Buffer,
     tint_buf: wgpu::Buffer,
+    // organon#217 T1 — the FOURTH instance buffer: per-instance emission (loc 8),
+    // parallel to `tint_buf` and grown with it. `emit_len` = instances whose emission
+    // was last uploaded non-zero, so a frame that hands no `emits` can zero exactly
+    // that range back (a stale glyph frame's emission must not light whatever
+    // generator draws next). `zero_emit` is the all-zero buffer bound wherever a draw
+    // binds a tint buffer that is not `tint_buf` — `white_tint`, the scenery's, the
+    // plexus overlay's — and it is kept at least as long as the largest instance
+    // count any of them draws, because a fourth layout in the pipeline means a
+    // fourth buffer at EVERY draw or wgpu fails validation at draw time (no leg of
+    // the bar has a GPU, so this comment is the guard).
+    emit_buf: wgpu::Buffer,
+    emit_len: usize,
+    zero_emit: wgpu::Buffer,
     inst_cap: usize,
     // Consecutive frames the field has been ≤ ¼ of `inst_cap` (#174 T2 shrink).
     inst_lowwater: u32,
@@ -2635,6 +2656,14 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        // organon#217 T1 — per-instance emission, parallel to `tint_buf`. wgpu zero-
+        // initialises a fresh buffer, so until a frame uploads emission every instance
+        // reads `vec4(0)` and the shader's added term is exactly zero (invariant #4).
+        let emit_buf = make_emit_buf(device, "emits", inst_cap);
+        // The all-zero emission bound beside every tint buffer that is not `tint_buf`.
+        // Sized to the instance capacity here; `ensure_zero_emit` regrows it whenever a
+        // scenery / plexus-overlay upload would draw more instances than it covers.
+        let zero_emit = make_emit_buf(device, "zero-emits", inst_cap);
 
         // Plexus overlay instance/tint buffers (grow on demand; overlay-only path).
         let plexus_ov_inst_cap = 256usize;
@@ -2705,6 +2734,9 @@ impl Renderer {
             creature_meshes,
             inst_buf,
             tint_buf,
+            emit_buf,
+            emit_len: 0,
+            zero_emit,
             inst_cap,
             inst_lowwater: 0,
             mem_vbuf,
@@ -3078,6 +3110,7 @@ impl Renderer {
             rp.set_vertex_buffer(0, self.soma_vbuf.slice(..));
             rp.set_vertex_buffer(1, self.inst_buf.slice(..));
             rp.set_vertex_buffer(2, self.tint_buf.slice(..));
+            rp.set_vertex_buffer(3, self.emit_buf.slice(..));
             rp.set_index_buffer(self.soma_ibuf.slice(..), wgpu::IndexFormat::Uint16);
             rp.draw_indexed(0..self.soma_index_count, 0, 0..nb.soma_count);
         }
@@ -3086,6 +3119,7 @@ impl Renderer {
             rp.set_vertex_buffer(0, self.capsule_vbuf.slice(..));
             rp.set_vertex_buffer(1, self.inst_buf.slice(soma * m4..));
             rp.set_vertex_buffer(2, self.tint_buf.slice(soma * v4..));
+            rp.set_vertex_buffer(3, self.emit_buf.slice(soma * v4..));
             rp.set_index_buffer(self.capsule_ibuf.slice(..), wgpu::IndexFormat::Uint16);
             rp.draw_indexed(0..self.capsule_index_count, 0, 0..nb.capsule_count);
         }
@@ -3095,6 +3129,7 @@ impl Renderer {
             rp.set_vertex_buffer(0, self.soma_vbuf.slice(..));
             rp.set_vertex_buffer(1, self.inst_buf.slice(off * m4..));
             rp.set_vertex_buffer(2, self.tint_buf.slice(off * v4..));
+            rp.set_vertex_buffer(3, self.emit_buf.slice(off * v4..));
             rp.set_index_buffer(self.soma_ibuf.slice(..), wgpu::IndexFormat::Uint16);
             rp.draw_indexed(0..self.soma_index_count, 0, 0..nb.bouton_count);
         }
@@ -3106,18 +3141,33 @@ impl Renderer {
     /// same trick as `draw_neural_batches`). Meshes were uploaded this frame. u32
     /// indices (the morph meshes are `TubeMesh`).
     fn draw_plexus_batches<'a>(&'a self, rp: &mut wgpu::RenderPass<'a>, pb: &PlexusBatches) {
-        self.draw_plexus_batches_from(rp, pb, &self.inst_buf, &self.tint_buf);
+        self.draw_plexus_batches_from(rp, pb, &self.inst_buf, &self.tint_buf, &self.emit_buf);
+    }
+
+    /// organon#217 T1 — keep `zero_emit` at least `n` instances long. The buffer is
+    /// bound at slot 3 beside every tint buffer that is not `tint_buf`, and wgpu
+    /// validates at draw time that an instance-stepped buffer covers the instance
+    /// range, so the all-zero buffer has to be as long as the longest such draw. A
+    /// fresh buffer is zero (wgpu zero-initialises), which is the whole content.
+    fn ensure_zero_emit(&mut self, device: &wgpu::Device, n: usize) {
+        let want = (n.max(1) * std::mem::size_of::<Vec4>()) as u64;
+        if self.zero_emit.size() < want {
+            self.zero_emit = make_emit_buf(device, "zero-emits", n.max(1));
+        }
     }
 
     /// Draw the plexus markers+struts sub-batches over an explicit instance/tint pair.
     /// The standalone surface passes the main buffers; the overlay passes its own so
     /// the web layers on top of the base surface instead of replacing it.
+    /// `emit_buf` is the slot-3 emission beside them — the main buffer for the
+    /// surface, `zero_emit` for the overlay.
     fn draw_plexus_batches_from<'a>(
         &'a self,
         rp: &mut wgpu::RenderPass<'a>,
         pb: &PlexusBatches,
         inst_buf: &'a wgpu::Buffer,
         tint_buf: &'a wgpu::Buffer,
+        emit_buf: &'a wgpu::Buffer,
     ) {
         let m4 = std::mem::size_of::<Mat4>() as u64;
         let v4 = std::mem::size_of::<Vec4>() as u64;
@@ -3125,6 +3175,7 @@ impl Renderer {
             rp.set_vertex_buffer(0, self.plexus_node_vbuf.slice(..));
             rp.set_vertex_buffer(1, inst_buf.slice(..));
             rp.set_vertex_buffer(2, tint_buf.slice(..));
+            rp.set_vertex_buffer(3, emit_buf.slice(..));
             rp.set_index_buffer(self.plexus_node_ibuf.slice(..), wgpu::IndexFormat::Uint32);
             rp.draw_indexed(0..self.plexus_node_icount, 0, 0..pb.markers);
         }
@@ -3133,6 +3184,7 @@ impl Renderer {
             rp.set_vertex_buffer(0, self.plexus_edge_vbuf.slice(..));
             rp.set_vertex_buffer(1, inst_buf.slice(off * m4..));
             rp.set_vertex_buffer(2, tint_buf.slice(off * v4..));
+            rp.set_vertex_buffer(3, emit_buf.slice(off * v4..));
             rp.set_index_buffer(self.plexus_edge_ibuf.slice(..), wgpu::IndexFormat::Uint32);
             rp.draw_indexed(0..self.plexus_edge_icount, 0, 0..pb.struts);
         }
@@ -3170,6 +3222,7 @@ impl Renderer {
                 rp.set_vertex_buffer(0, vbuf.slice(..));
                 rp.set_vertex_buffer(1, self.inst_buf.slice(off * m4..));
                 rp.set_vertex_buffer(2, self.tint_buf.slice(off * v4..));
+                rp.set_vertex_buffer(3, self.emit_buf.slice(off * v4..));
                 rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
                 rp.draw_indexed(0..icount, 0, 0..bt.count);
             }
@@ -3199,6 +3252,7 @@ impl Renderer {
             rp.set_vertex_buffer(0, vbuf.slice(..));
             rp.set_vertex_buffer(1, self.inst_buf.slice(off * m4..));
             rp.set_vertex_buffer(2, self.tint_buf.slice(off * v4..));
+            rp.set_vertex_buffer(3, self.emit_buf.slice(off * v4..));
             rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
             rp.draw_indexed(0..icount, 0, 0..bt.count);
             off += bt.count as u64;
@@ -3240,6 +3294,7 @@ impl Renderer {
             path,
             instances,
             tints,
+            emits,
             rt_instances,
             rt_tints,
             tube,
@@ -3421,6 +3476,10 @@ impl Renderer {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
+            // Grown with `tint_buf`, and fresh = zero (see `make_emit_buf`).
+            self.emit_buf = make_emit_buf(device, "emits", self.inst_cap);
+            self.emit_len = 0;
+            self.ensure_zero_emit(device, self.inst_cap);
         }
         // Upload only when a GPU path actually consumes the instance buffers this
         // frame (#174 T2): the raymarch/bake modes (metaball / volume / voxel /
@@ -3434,6 +3493,21 @@ impl Renderer {
             queue.write_buffer(&self.inst_buf, 0, bytemuck::cast_slice(up_inst));
             // `up_tint` is built parallel to `up_inst` (same length).
             queue.write_buffer(&self.tint_buf, 0, bytemuck::cast_slice(up_tint));
+            // organon#217 T1 — emission rides beside the tints. Uploaded only when the
+            // caller handed a slice exactly `up_inst.len()` long (the glyph frame); any
+            // other length — including the empty slice every other frame passes — means
+            // "no emission", and the range the LAST upload lit is zeroed back so a
+            // generator drawn after a glyph frame does not inherit its phosphor. A fresh
+            // buffer is already zero (wgpu zero-initialises), so the common case writes
+            // nothing at all.
+            if emits.len() == up_inst.len() && !emits.is_empty() {
+                queue.write_buffer(&self.emit_buf, 0, bytemuck::cast_slice(emits));
+                self.emit_len = emits.len();
+            } else if self.emit_len > 0 {
+                let zeros = vec![Vec4::ZERO; self.emit_len.min(self.inst_cap)];
+                queue.write_buffer(&self.emit_buf, 0, bytemuck::cast_slice(&zeros));
+                self.emit_len = 0;
+            }
         }
 
         // Scenery layer (#187 pivot): grow-and-upload its instance/tint pair.
@@ -3453,6 +3527,8 @@ impl Renderer {
                         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     });
+                    // The scenery draws bind `zero_emit` at slot 3; it must cover them.
+                    self.ensure_zero_emit(device, self.scenery_cap);
                 }
                 queue.write_buffer(&self.scenery_inst_buf, 0, bytemuck::cast_slice(sc.instances));
                 queue.write_buffer(&self.scenery_tint_buf, 0, bytemuck::cast_slice(sc.tints));
@@ -3589,6 +3665,8 @@ impl Renderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                // The overlay draws bind `zero_emit` at slot 3; it must cover them.
+                self.ensure_zero_emit(device, self.plexus_ov_inst_cap);
             }
             queue.write_buffer(&self.plexus_ov_inst_buf, 0, bytemuck::cast_slice(plexus_ov_insts));
             queue.write_buffer(&self.plexus_ov_tint_buf, 0, bytemuck::cast_slice(plexus_ov_tints));
@@ -4541,6 +4619,7 @@ impl Renderer {
                         rp.set_vertex_buffer(0, vbuf.slice(..));
                         rp.set_vertex_buffer(1, self.inst_buf.slice(..));
                         rp.set_vertex_buffer(2, self.tint_buf.slice(..));
+                        rp.set_vertex_buffer(3, self.emit_buf.slice(..));
                         rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
                         rp.draw_indexed(0..index_count, 0, 0..instances.len() as u32);
                     }
@@ -4548,6 +4627,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, self.mem_vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                     rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                    rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                     rp.set_index_buffer(self.mem_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     rp.draw_indexed(0..mem_icount as u32, 0, 0..1);
                 } else if draw_swept {
@@ -4558,6 +4638,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, self.swept_vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                     rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                    rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                     rp.set_index_buffer(self.swept_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     rp.draw_indexed(0..swept_idx.len() as u32, 0, 0..1);
                 } else if demo_live {
@@ -4575,6 +4656,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.inst_buf.slice(..));
                     rp.set_vertex_buffer(2, self.tint_buf.slice(..));
+                    rp.set_vertex_buffer(3, self.emit_buf.slice(..));
                     rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
                     rp.draw_indexed(0..index_count, 0, 0..instances.len() as u32);
                 }
@@ -4585,7 +4667,7 @@ impl Renderer {
                 if let Some(pb) = &plexus_overlay_batches {
                     rp.set_bind_group(0, &self.plexus_ov_bind, &[]);
                     self.draw_plexus_batches_from(
-                        &mut rp, pb, &self.plexus_ov_inst_buf, &self.plexus_ov_tint_buf,
+                        &mut rp, pb, &self.plexus_ov_inst_buf, &self.plexus_ov_tint_buf, &self.zero_emit,
                     );
                 }
                 // Splat mode: the cube instances aren't drawn in the scene pass, so they
@@ -4614,6 +4696,7 @@ impl Renderer {
                             rp.set_vertex_buffer(0, self.scenery_mem_vbuf.slice(..));
                             rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                             rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                            rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                             rp.set_index_buffer(self.scenery_mem_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                             rp.draw_indexed(0..scenery_mem_icount as u32, 0, 0..1);
                         }
@@ -4626,6 +4709,7 @@ impl Renderer {
                             rp.set_vertex_buffer(0, svb.slice(..));
                             rp.set_vertex_buffer(1, self.scenery_inst_buf.slice(..));
                             rp.set_vertex_buffer(2, self.scenery_tint_buf.slice(..));
+                            rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                             rp.set_index_buffer(sib.slice(..), wgpu::IndexFormat::Uint16);
                             rp.draw_indexed(0..sic, 0, 0..scenery_count as u32);
                         }
@@ -4641,6 +4725,7 @@ impl Renderer {
                         rp.set_vertex_buffer(0, self.water_mem_vbuf.slice(..));
                         rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                         rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                        rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                         rp.set_index_buffer(self.water_mem_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                         rp.draw_indexed(0..water_mem_icount as u32, 0, 0..1);
                     }
@@ -4840,6 +4925,7 @@ impl Renderer {
                 rp.set_vertex_buffer(0, mesh_vbuf.slice(..));
                 rp.set_vertex_buffer(1, self.inst_buf.slice(..));
                 rp.set_vertex_buffer(2, self.tint_buf.slice(..));
+                rp.set_vertex_buffer(3, self.emit_buf.slice(..));
                 rp.set_index_buffer(mesh_ibuf.slice(..), wgpu::IndexFormat::Uint16);
                 rp.draw_indexed(0..mesh_index_count, 0, 0..instances.len() as u32);
             }
@@ -4914,6 +5000,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, mesh_vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.inst_buf.slice(..));
                     rp.set_vertex_buffer(2, self.tint_buf.slice(..));
+                    rp.set_vertex_buffer(3, self.emit_buf.slice(..));
                     rp.set_index_buffer(mesh_ibuf.slice(..), wgpu::IndexFormat::Uint16);
                     rp.draw_indexed(0..mesh_index_count, 0, 0..instances.len() as u32);
                 }
@@ -4923,6 +5010,7 @@ impl Renderer {
                 rp.set_vertex_buffer(0, self.swept_vbuf.slice(..));
                 rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                 rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                 rp.set_index_buffer(self.swept_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 rp.draw_indexed(0..swept_idx.len() as u32, 0, 0..1);
             }
@@ -4930,7 +5018,7 @@ impl Renderer {
             // surface is (instanced, welded, or otherwise), matching standalone Tier-1.
             if let Some(pb) = &plexus_overlay_batches {
                 self.draw_plexus_batches_from(
-                    &mut rp, pb, &self.plexus_ov_inst_buf, &self.plexus_ov_tint_buf,
+                    &mut rp, pb, &self.plexus_ov_inst_buf, &self.plexus_ov_tint_buf, &self.zero_emit,
                 );
             }
             // Scenery layer (#187 pivot): the corridor casts shadows too —
@@ -4946,6 +5034,7 @@ impl Renderer {
                         rp.set_vertex_buffer(0, self.scenery_mem_vbuf.slice(..));
                         rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                         rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                        rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                         rp.set_index_buffer(self.scenery_mem_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                         rp.draw_indexed(0..scenery_mem_icount as u32, 0, 0..1);
                     }
@@ -4958,6 +5047,7 @@ impl Renderer {
                         rp.set_vertex_buffer(0, svb.slice(..));
                         rp.set_vertex_buffer(1, self.scenery_inst_buf.slice(..));
                         rp.set_vertex_buffer(2, self.scenery_tint_buf.slice(..));
+                        rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                         rp.set_index_buffer(sib.slice(..), wgpu::IndexFormat::Uint16);
                         rp.draw_indexed(0..sic, 0, 0..scenery_count as u32);
                     }
@@ -5125,6 +5215,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.inst_buf.slice(..));
                     rp.set_vertex_buffer(2, self.tint_buf.slice(..));
+                    rp.set_vertex_buffer(3, self.emit_buf.slice(..));
                     rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
                     rp.draw_indexed(0..index_count, 0, 0..instances.len() as u32);
                 }
@@ -5135,6 +5226,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, self.mem_vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                     rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                    rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                     rp.set_index_buffer(self.mem_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     rp.draw_indexed(0..mem_icount as u32, 0, 0..1);
                 } else if membrane_arms && draw_swept {
@@ -5145,6 +5237,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, self.swept_vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                     rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                    rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                     rp.set_index_buffer(self.swept_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     rp.draw_indexed(0..swept_idx.len() as u32, 0, 0..1);
                 }
@@ -5177,6 +5270,7 @@ impl Renderer {
                 rp.set_vertex_buffer(0, self.swept_vbuf.slice(..));
                 rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                 rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                 rp.set_index_buffer(self.swept_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 rp.draw_indexed(0..swept_idx.len() as u32, 0, 0..1);
             } else if draw_instances {
@@ -5204,6 +5298,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, mesh_vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.inst_buf.slice(..));
                     rp.set_vertex_buffer(2, self.tint_buf.slice(..));
+                    rp.set_vertex_buffer(3, self.emit_buf.slice(..));
                     rp.set_index_buffer(mesh_ibuf.slice(..), wgpu::IndexFormat::Uint16);
                     rp.draw_indexed(0..mesh_index_count, 0, 0..instances.len() as u32);
                 }
@@ -5239,6 +5334,7 @@ impl Renderer {
                         rp.set_vertex_buffer(0, self.scenery_mem_vbuf.slice(..));
                         rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                         rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                        rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                         rp.set_index_buffer(self.scenery_mem_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                         rp.draw_indexed(0..scenery_mem_icount as u32, 0, 0..1);
                     }
@@ -5261,6 +5357,7 @@ impl Renderer {
                         rp.set_vertex_buffer(0, svb.slice(..));
                         rp.set_vertex_buffer(1, self.scenery_inst_buf.slice(..));
                         rp.set_vertex_buffer(2, self.scenery_tint_buf.slice(..));
+                        rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                         rp.set_index_buffer(sib.slice(..), wgpu::IndexFormat::Uint16);
                         rp.draw_indexed(0..sic, 0, 0..scenery_count as u32);
                     }
@@ -5285,6 +5382,7 @@ impl Renderer {
                     rp.set_vertex_buffer(0, self.water_mem_vbuf.slice(..));
                     rp.set_vertex_buffer(1, self.identity_inst.slice(..));
                     rp.set_vertex_buffer(2, self.white_tint.slice(..));
+                    rp.set_vertex_buffer(3, self.zero_emit.slice(..));
                     rp.set_index_buffer(self.water_mem_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     rp.draw_indexed(0..water_mem_icount as u32, 0, 0..1);
                 }
@@ -5339,7 +5437,7 @@ impl Renderer {
                 rp.set_bind_group(4, self.shadow.bind(), &[]);
                 rp.set_bind_group(5, &self.material.bind, &[]); // #472 material set
                 self.draw_plexus_batches_from(
-                    &mut rp, pb, &self.plexus_ov_inst_buf, &self.plexus_ov_tint_buf,
+                    &mut rp, pb, &self.plexus_ov_inst_buf, &self.plexus_ov_tint_buf, &self.zero_emit,
                 );
             }
             // Plexus Tier 2 impostors: node spheres + edge tubes, opaque + IBL-shaded,
@@ -5925,6 +6023,11 @@ fn make_depth_prepass_pipeline(
         step_mode: wgpu::VertexStepMode::Instance,
         attributes: &wgpu::vertex_attr_array![7 => Float32x4],
     };
+    // organon#217 T1 — the emission layout (loc 8). `vs_depth` never reads it, but a
+    // pipeline's buffer list is what every draw against it must bind, and the scene
+    // pass and the prepasses share draw code — so the prepass takes the same four
+    // buffers and simply ignores the fourth.
+    let emit_layout = emit_vertex_layout();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("depth-prepass"),
         layout: Some(&pl),
@@ -5936,7 +6039,7 @@ fn make_depth_prepass_pipeline(
             // mirrors the position math and is @invariant, so the scene pass's
             // Equal test still matches.
             entry_point: Some("vs_depth"),
-            buffers: &[Some(vertex_layout), Some(instance_layout), Some(tint_layout)],
+            buffers: &[Some(vertex_layout), Some(instance_layout), Some(tint_layout), Some(emit_layout)],
             compilation_options: wgpu::PipelineCompilationOptions {
                 constants: &spec,
                 ..Default::default()
@@ -6063,6 +6166,30 @@ fn cube_specialisation(material_maps: bool) -> [(&'static str, f64); 1] {
     [("material_maps", if material_maps { 1.0 } else { 0.0 })]
 }
 
+/// organon#217 T1 — the fourth instance layout: per-instance emission at location 8,
+/// one `Vec4` per instance, parallel to the tints. Built in one place so the scene
+/// pipeline and the depth prepass cannot disagree about it.
+fn emit_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Vec4>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &wgpu::vertex_attr_array![8 => Float32x4],
+    }
+}
+
+/// An emission buffer of `cap` instances. **Fresh = zero**: wgpu zero-initialises
+/// every buffer it creates, so a buffer nothing has written reads `vec4(0)` per
+/// instance and `cube.wgsl`'s emission term contributes exactly nothing. That is the
+/// inert default of invariant #4, and it holds without a single upload.
+fn make_emit_buf(device: &wgpu::Device, label: &str, cap: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: (cap.max(1) * std::mem::size_of::<Vec4>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 fn make_cube_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -6090,13 +6217,15 @@ fn make_cube_pipeline(
         step_mode: wgpu::VertexStepMode::Instance,
         attributes: &wgpu::vertex_attr_array![7 => Float32x4],
     };
+    // organon#217 T1 — per-instance emission (location 8), parallel to the tints.
+    let emit_layout = emit_vertex_layout();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("cube-pipeline"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            buffers: &[Some(vertex_layout), Some(instance_layout), Some(tint_layout)],
+            buffers: &[Some(vertex_layout), Some(instance_layout), Some(tint_layout), Some(emit_layout)],
             compilation_options: wgpu::PipelineCompilationOptions {
                 constants: &spec,
                 ..Default::default()
