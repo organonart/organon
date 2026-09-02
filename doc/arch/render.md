@@ -854,6 +854,63 @@ pass two). The ~600-line body is unchanged — it derives the old local bools fr
   allocate lazily on first use; the GI/many-light uniforms and the RD sim skip
   their work entirely while off.
 
+### Per-instance emission — the glyph ring's phosphor (organon#217 T1)
+
+The instanced cube/tube pipeline carries **four** per-instance buffers, not three: the
+model matrix (loc 3–6), the tint (loc 7), and since organon#217 T1 an **emission**
+`vec4` at **loc 8** — linear RGB radiance in `xyz`, gain in `w`. `cube.wgsl`'s emissive
+term is `albedo * (glow + env_tint.w) + ripple + rd + emit.rgb * emit.w`: the new term
+**bypasses albedo**, because a terminal cell's colour is display-referred — a phosphor
+behind a near-black faceplate, not a reflectance — and the existing `tint` path would
+multiply it to nothing (`doc/pbr_text_engine.md` §4).
+
+🚨 **Inert by construction (invariant #4).** `Surface.emits` is `&[]` on every frame the
+glyph ring is not driving, and the renderer then binds an all-zero buffer: `make_emit_buf`
+creates it and wgpu zero-initialises a fresh buffer, nothing writes it until a glyph frame
+does, and the range a glyph frame lit is zeroed back the frame after (`emit_len`). With
+`emit == vec4(0)` the added term is exactly `vec3(0.0)` and the expression reduces to the
+one it replaced — so the frame is byte-identical, with no `Shared` field and no
+`LAYOUT_VERSION` move. A non-empty `emits` is honoured only when it is exactly
+`instances.len()` long; any other length is treated as "no emission", never as a partial
+upload.
+
+⚠️ **A fourth layout in a pipeline is a fourth buffer at every draw against it**, or wgpu
+fails validation at draw time — and no leg of the bar has a GPU. So: `emit_vertex_layout()`
+is built in one place and listed by both `make_cube_pipeline` and
+`make_depth_prepass_pipeline` (the prepass's `vs_depth` never reads loc 8, but the scene
+pass and the prepasses share draw code, so it takes the same four buffers and ignores the
+fourth); every `set_vertex_buffer(2, …)` has a `set_vertex_buffer(3, …)` twin — `emit_buf`
+beside `tint_buf` (sliced at the same sub-batch byte offsets), and `zero_emit` beside
+`white_tint`, the scenery's and the plexus overlay's tints, regrown by `ensure_zero_emit`
+whenever any of those could draw more instances than it covers. Grep the two counts and
+they must agree.
+
+⚠️ **The zeroing is a high-water mark, not the previous frame's length.** Glyph frames
+shrink as an effect animates (fewer live cells), so a 100-instance frame followed by a
+50-instance one leaves `[50, 100)` lit unless the shrink itself zeroes it; the review on
+#224 caught the first version trusting the last length, which a later 80-instance
+generator draw would have read. `emit_upload_plan(high, lit)` — pure, tested without a
+GPU — returns the dirty range beyond this upload, `[lit, high)`, and the new mark, so
+after any sequence of frames the possibly-non-zero set is exactly `[0, last lit)`.
+
+📌 **What does NOT see the emission yet:** the hardware-RT and path-trace passes take
+`inst_buf`/`tint_buf` as storage and shade the hit from the tint, so a ray-traced
+reflection of the glyph grid is a reflection of dark faceplates. Carrying `emit_buf` into
+the hit shading is the same shape of change one layer down, and it is named rather than
+done in T1. This is the **cube pipeline's** emission only: the capsule impostors have
+their own per-instance emission in `particles.wgsl` (the `ArmInstance` colour), which is
+what T6's coaxial glass capsule shows through its shell (the "Shaders" entry below) — the
+`bottled` / `cathode` presets will ride that path, not this attribute.
+
+The producer of the only non-empty `emits` today is `world.rs`'s `glyph_grid_geometry`
+(the glyph ring, `organon-core/src/glyph_ring.rs::lower_grid` — see `ARCHITECTURE.md`'s
+`$TMPDIR` channel list). Its look — tile depth, gap, gain, faceplate, backplane — is
+`GlyphLook::DEFAULT`, one `const` in core that **T3 lifts onto the param chain**. Whether
+a look still *reads* is T2's question, not this section's: the legibility harness (its own
+section below) takes the same cell grid this ring carries as its fixture and scores the
+render against it, which is what makes "is this preset still readable" a number rather
+than a matter of taste.
+
 ### Hardware ray tracing (#195 — the `rt_*` modules + shaders)
 
 The plumbing every later RT effect (shadows / reflections / AO / GI) will trace

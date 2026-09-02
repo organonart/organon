@@ -98,6 +98,12 @@ pub mod exhibit;
 pub mod eyes;
 pub mod gguf;
 pub mod ipc;
+// organon#217 T1 — the glyph ring: the cell-grid channel between the `organon-glyphs`
+// producer and the world. Here, not in organon-mind or organon-world, because BOTH the
+// writer (a leaf crate that links ttfx) and the reader (the world) must see one
+// definition, and core is the only crate both already depend on. Host-free: memmap2 +
+// bytemuck, which core carries already.
+pub mod glyph_ring;
 pub mod gguf_data;
 pub mod kind;
 /// #147 Tier 2 — the LoRA adapter reader. `‖ΔW‖_F` and the effective rank of the update

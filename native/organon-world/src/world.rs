@@ -174,6 +174,8 @@ use organon_agent::ChatClient; // bring the trait into scope for client.complete
 use organon_core::math;
 use organon_mind::mind_log;
 use organon_mind::mind_ring;
+// organon#217 T1 — the glyph ring: a text-effect cell grid rendered as lit tiles.
+use organon_core::glyph_ring;
 // #554 Tier 4 — the routing verdict for every pointer event (see `ui_layer`).
 use organon_mind::mind_shell::PointerTarget;
 // #621 — the camera's backend-neutral input. In the library it is `crate::scene_input`; in
@@ -865,6 +867,12 @@ struct CmdChannel {
 struct Geometry {
     instances: Vec<Mat4>,
     tints: Vec<Vec4>, // per-instance colour tint (Swept-Tubes HSV sweep; else white)
+    // organon#217 T1 — per-instance EMISSION, parallel to `instances` when the glyph
+    // ring drives the frame and EMPTY otherwise. Cleared every frame beside
+    // `rt_instances`; only `glyph_grid_geometry` fills it. The renderer treats any
+    // length other than `instances.len()` as "no emission" (all zero), so a generator
+    // that never heard of this field is byte-identical to before it existed.
+    emits: Vec<Vec4>,
     // RT / path-tracer geometry for Contiguous Swept Tubes: the raster draws the
     // welded `swept_mesh` with `instances` empty, so the ray tracer has nothing to
     // trace. These carry the per-segment cylinder instances (the same `lower_strands`
@@ -988,6 +996,89 @@ impl Geometry {
             // `World` until #648 T1 moved it here.)
             math::lower_strands(&self.gen_strands, fa, &mut self.instances, &mut self.tints)
         }
+    }
+}
+
+/// organon#217 T1 — how long the world keeps drawing the last grid after the producer
+/// stops publishing, in seconds. A live producer never goes quiet this long (it
+/// heartbeats every 250 ms through the dwell), so this is only ever crossed by a
+/// producer that has exited — or by yesterday's ring file, still in `$TMPDIR`, which
+/// would otherwise draw a frozen grid at every launch forever.
+const GLYPH_SILENCE_S: f32 = 3.0;
+
+/// organon#217 T1 — the glyph-ring consumer. Lives on `World` (not `Geometry`)
+/// because it owns the reader and the two grids beside `mind_ring`, and is called
+/// once per frame from the geometry build.
+impl World {
+    /// If the glyph ring is live, lower its latest grid into `geom.instances` /
+    /// `geom.tints` / `geom.emits` (replacing the generator's) and return the tiles'
+    /// bounds. `None` — the ordinary case — leaves the frame exactly as the generator
+    /// built it.
+    fn glyph_grid_geometry(&mut self) -> Option<math::Bounds> {
+        // Lazily re-open, throttled: a missing ring is the normal state.
+        if !self.glyph_ring.is_open() {
+            let now = Instant::now();
+            if now < self.glyph_reopen_at {
+                return None;
+            }
+            self.glyph_reopen_at = now + std::time::Duration::from_millis(500);
+            self.glyph_ring = glyph_ring::GlyphRingReader::open();
+            if !self.glyph_ring.is_open() {
+                return None;
+            }
+        }
+        // `seq()` is `None` for a ring the reader refuses (wrong layout) and `0` for
+        // one nobody has written yet; both mean "nothing to draw" and neither is an
+        // error the world should shout about.
+        let seq = self.glyph_ring.seq().unwrap_or(0);
+        if seq == 0 {
+            return None;
+        }
+        if seq != self.glyph_seen_seq {
+            // A new frame: what was current becomes previous — unless the copy tears on
+            // every retry, in which case keep drawing the frame we already had.
+            std::mem::swap(&mut self.glyph_prev, &mut self.glyph_grid);
+            if self.glyph_ring.latest_into(&mut self.glyph_grid) {
+                self.glyph_seen_seq = seq;
+                self.glyph_seen_at = Instant::now();
+            } else {
+                std::mem::swap(&mut self.glyph_prev, &mut self.glyph_grid);
+            }
+        }
+        if self.glyph_seen_seq == 0 {
+            return None;
+        }
+        let since = self.glyph_seen_at.elapsed().as_secs_f32();
+        if since > GLYPH_SILENCE_S {
+            return None;
+        }
+        // The §7 blend: how far through the producer's tick this frame is. A new epoch
+        // is a new effect — a cut by definition — so it never slides from the old one.
+        let tick_hz = if self.glyph_grid.tick_hz > 0.0 { self.glyph_grid.tick_hz } else { 60.0 };
+        let blend = if self.glyph_grid.frame.epoch != self.glyph_prev.frame.epoch
+            || self.glyph_prev.frame.seq == 0
+        {
+            1.0
+        } else {
+            (since * tick_hz).clamp(0.0, 1.0)
+        };
+        self.geom.instances.clear();
+        self.geom.tints.clear();
+        self.geom.emits.clear();
+        let prev = (self.glyph_prev.frame.seq != 0).then_some(&self.glyph_prev);
+        // ⚠️ T3 lifts the look onto the param chain; until then it is `GlyphLook::DEFAULT`.
+        let bounds = glyph_ring::lower_grid(
+            &self.glyph_grid,
+            prev,
+            blend,
+            &glyph_ring::GlyphLook::DEFAULT,
+            glyph_ring::TileOut {
+                instances: &mut self.geom.instances,
+                tints: &mut self.geom.tints,
+                emits: &mut self.geom.emits,
+            },
+        );
+        Some(bounds)
     }
 }
 
@@ -1292,6 +1383,20 @@ pub struct World {
     // `mind[2] == 1.0` now means **Galaxy**, and the galaxy deliberately does *not* take
     // this seam (see the `mind_view_mode(...) == 0` gate at the `topo == 5` site).
     mind_ring: mind_ring::MindRingReader,
+    // organon#217 T1 — the glyph-ring reader and the two grids it hands the lowering:
+    // `glyph_grid` is the latest frame, `glyph_prev` the one before it (the §7 slide
+    // interpolates between them, gated per cell on `SGR_ACTIVE_PATH`). `glyph_seen_seq`
+    // is the ring `seq` the current grid came from (0 = none yet) and `glyph_seen_at`
+    // when it arrived — the blend clock, and the silence detector that hands the frame
+    // back to the generator once a producer has stopped. Like `mind_ring`, opened
+    // lazily; unlike it, re-open attempts are throttled (`glyph_reopen_at`), because a
+    // missing ring is this reader's NORMAL state and a stat per frame is not free.
+    glyph_ring: glyph_ring::GlyphRingReader,
+    glyph_grid: glyph_ring::GlyphGrid,
+    glyph_prev: glyph_ring::GlyphGrid,
+    glyph_seen_seq: u32,
+    glyph_seen_at: Instant,
+    glyph_reopen_at: Instant,
     // Ingested MLP (#226 Tier 4): trained weights loaded from the same sidecar
     // (auto-detected by format); its live forward pass builds the graph each frame.
     neural_mlp: Option<math::NeuralMlp>,
@@ -1674,6 +1779,7 @@ impl World {
                 gen_strands: math::Strands::new(),
                 swept_mesh: math::TubeMesh::default(),
                 tube_profile: 1.0,
+                emits: Vec::new(),
             },
             plexus: PlexusScratch {
                 nodes: Vec::new(),
@@ -1714,6 +1820,12 @@ impl World {
             neural_key: (u32::MAX, usize::MAX, 0, 0, u32::MAX),
             neural_loaded: None,
             mind_ring: mind_ring::MindRingReader::open(),
+            glyph_ring: glyph_ring::GlyphRingReader::open(),
+            glyph_grid: glyph_ring::GlyphGrid::default(),
+            glyph_prev: glyph_ring::GlyphGrid::default(),
+            glyph_seen_seq: 0,
+            glyph_seen_at: Instant::now(),
+            glyph_reopen_at: Instant::now(),
             neural_mlp: None,
             neural_attn_data: None,
             brain_cache: None,
@@ -2801,6 +2913,10 @@ impl World {
         // and non-Streamlines generators leave it empty (RT then uses `self.geom.instances`).
         self.geom.rt_instances.clear();
         self.geom.rt_tints.clear();
+        // organon#217 T1: emission is a glyph-frame thing; every other frame passes
+        // the renderer an empty slice (= zero) — cleared here so a generator drawn
+        // after the ring goes quiet cannot be handed a stale grid's phosphor.
+        self.geom.emits.clear();
         // Welded node anchors for the node-driven systems (cleared every frame;
         // `emit_strands` refills only when `need_weld_nodes` AND welded). A node system
         // is live when the Particle Aura tier ≥ 1, the Fluid Ink is on, or the liquid
@@ -4861,6 +4977,24 @@ impl World {
             }
         };
         let mut bounds = bounds;
+
+        // organon#217 T1 — the glyph ring drives the grid. When a producer is
+        // publishing, the tiles REPLACE whatever the generator just emitted into
+        // `instances`/`tints` (and fill `emits`), the way Plexus below replaces the node
+        // cloud: the generator still ran (its node set may feed the particle stir
+        // field), but the raster draws the text. With no ring — the default, and every
+        // frame today — this is a `None` and nothing after it can tell the branch
+        // exists. Sub-batches a Demo/Neural arm filled describe geometry that is no
+        // longer in the buffer, so they are cleared exactly as Plexus clears them.
+        if let Some(b) = self.glyph_grid_geometry() {
+            bounds = b;
+            self.demo_batches.clear();
+            self.demo_lights.clear();
+            self.neural_batches = None;
+            self.geom.swept_mesh.clear();
+            self.geom.rt_instances.clear();
+            self.geom.rt_tints.clear();
+        }
 
         // --- Plexus surface (#8, generator-agnostic) -----------------------
         // Whatever node cloud the active generator just emitted into `self.geom.instances`
@@ -8703,6 +8837,8 @@ impl World {
                 path,
                 instances: &self.geom.instances,
                 tints: &self.geom.tints,
+                // organon#217 T1: empty on every frame the glyph ring is not driving.
+                emits: &self.geom.emits,
                 // Welded Swept Tubes: the RT/PT shade the per-segment cylinders while
                 // the raster draws the welded mesh. Empty otherwise (RT uses instances).
                 rt_instances: &self.geom.rt_instances,
