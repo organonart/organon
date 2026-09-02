@@ -38,7 +38,9 @@ implying an automation that does not exist.
 Stdlib-only Python, no npm and no Docker — the point is that when it breaks you can read
 all of it. `tools/suno/test_suno_track.py` covers the part that is pure: cookie parsing
 including both rejection paths, header and Clerk-query assembly, `Set-Cookie` absorption,
-multi-take output naming, and the remedy text on each mapped HTTP status. **Not one network
+the model walk (a stale code costs a retry, a real failure does not burn the list, and
+the last refusal survives into the message), multi-take output naming, and the remedy
+text on each mapped HTTP status. **Not one network
 hop is covered and no run has ever reached Suno** — the sandbox this was written in has no
 egress to `suno.com` and was never given a cookie, so the endpoints and payload shapes are
 reasoned from a client known to work rather than observed. The README's status section says
