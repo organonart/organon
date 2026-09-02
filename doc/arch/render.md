@@ -1179,7 +1179,28 @@ card ported from `cube.wgsl`, voxel AO folded into the indirect term + soft-shad
 into the key light; a second `fs_ray_depth` entry marches depth-only into the
 screen-space-FX prepass so **SSR + SSGI** gather off the voxel faces — the neural-field
 pattern; hardware RT stays out, the DDA grid has no BLAS triangles)`/`voxelize.wgsl`/`voxgi.wgsl`,
-`mandelbulb.wgsl`, `creature.wgsl`, `creature_overlay.wgsl`, `minimal.wgsl`, `lens.wgsl`, `kifs.wgsl`, `terrain.wgsl`, `stars.wgsl`, `particles.wgsl`,
+`mandelbulb.wgsl`, `creature.wgsl`, `creature_overlay.wgsl`, `minimal.wgsl`, `lens.wgsl`, `kifs.wgsl`, `terrain.wgsl`, `stars.wgsl`,
+`particles.wgsl` (the Particle Aura sparks, the #298 shaded **bead** impostors, and the
+**capsule** impostors — Skin-Arms segments and the plexus Tier 2 nodes/edges, one billboard
+per instance, sphere-traced in the fragment against `sd_capsule`, depth-written, with
+`fs_capsule_depth` joining the FX prepass so the screen-space FX see the same surface.
+⚠️ Impostors are analytic, not triangles: no BLAS, so hardware RT never sees them.
+**PBR text T6 (#217), the coaxial glass capsule** — a Glass/Refractive capsule can show
+an **emissive core through its shell** instead of the refracted environment:
+`DrawU.capsule.x` is the core fraction (inner radius ÷ outer; **0 = off, and
+`fs_capsule` then calls `shade_bead` exactly as before — pixel-identical**),
+`DrawU.capsule.y` the Beer–Lambert density per outer radius. With the core on the view
+ray is refracted at the outer hit, the inner hit and the outer exit are solved
+**analytically** (`capsule_interval` — a capsule is a convex union of a finite cylinder
+and two spheres, so its ray interval is min-of-entries/max-of-exits; no extra march),
+the transmitted term is the instance emission (hit) or the refracted environment (miss)
+attenuated in the instance colour with optical depth clamped at 6 so a near-black tint
+reads dark rather than zero (`capsule_transmittance`), and `shade_capsule_glass`
+Fresnel-composes it with today's environment reflection. `capsule_trace` — and so the
+depth written — is unchanged either way. Air→glass entry cannot TIR (η ≤ 1); the
+zero-vector guard is defensive. Knob: `ParticleSystem::set_capsule_core`, seeded by
+`ORGANON_CAPSULE_CORE="<frac>[,<density>]"` until T3 wires a control; no param-chain
+entry. CPU twin + tests: `particles.rs::capsule_core`),
 `splat.wgsl` (Gaussian Splatting surface — `vs_splat` billboard + `fs_splat_add` additive/unlit and
 `fs_splat_lit` IBL-lit 2DGS anisotropic Gaussians),
 `fluid.wgsl`, `fluidvis.wgsl` (#182 dye blit + ink march + bilateral upsample),
