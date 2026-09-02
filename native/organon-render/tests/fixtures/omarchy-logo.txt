@@ -1,0 +1,29 @@
+# Omarchy's logo as an Organon legibility fixture.
+#
+# Source: organonart/omarchy `logo.txt` (MIT), read 2026-09-02. The source is ragged —
+# row widths 20, 80, 81, 81, 81, 81, 81, 81, 80, 47 — so every row here is padded to the
+# widest (81) with blanks; the `|` fences make the padding visible. Doc §3's census
+# (337 `█`, 312 spaces, 32 `▀`, 32 `▄`) counts only the EXPLICIT spaces of the source;
+# on the padded grid the blank count is 409 (312 explicit + 97 implicit). Lit cells: 401.
+#
+# Single colour, deliberately: it is the shape census the spec measured, and it is
+# nearly symmetric — which is why `asymmetric.txt` exists beside it. The colour is
+# Omarchy's Tokyo Night foreground, chosen only so the fixture is not pure white.
+# Format: native/organon-render/src/legibility.rs, `Fixture::parse`.
+grid v1
+cols 81
+rows 10
+aspect 2
+order top-down
+default #c0caf5
+glyphs
+|                 ▄▄▄                                                             |
+| ▄█████▄    ▄███████████▄    ▄███████   ▄███████   ▄███████   ▄█   █▄    ▄█   █▄ |
+|███   ███  ███   ███   ███  ███   ███  ███   ███  ███   ███  ███   ███  ███   ███|
+|███   ███  ███   ███   ███  ███   ███  ███   ███  ███   █▀   ███   ███  ███   ███|
+|███   ███  ███   ███   ███ ▄███▄▄▄███ ▄███▄▄▄██▀  ███       ▄███▄▄▄███▄ ███▄▄▄███|
+|███   ███  ███   ███   ███ ▀███▀▀▀███ ▀███▀▀▀▀    ███      ▀▀███▀▀▀███  ▀▀▀▀▀▀███|
+|███   ███  ███   ███   ███  ███   ███ ██████████  ███   █▄   ███   ███  ▄██   ███|
+|███   ███  ███   ███   ███  ███   ███  ███   ███  ███   ███  ███   ███  ███   ███|
+| ▀█████▀    ▀█   ███   █▀   ███   █▀   ███   ███  ███████▀   ███   █▀    ▀█████▀ |
+|                                       ███   █▀                                  |
