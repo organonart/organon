@@ -1220,18 +1220,24 @@ mod tests {
 
     #[test]
     fn parse_errors_name_the_line() {
+        // ⚠️ Byte-level edits below, so the source must be LF whatever the checkout did.
+        // `.gitattributes` pins the fixture to LF, and this normalises anyway: on a
+        // `core.autocrlf=true` checkout `include_str!` handed back CRLF, `"…\n"` matched
+        // nothing, the "broken" fixture parsed fine, and `unwrap_err` panicked — a test
+        // that failed on exactly one machine (the coordinator's gate, 2026-09-02).
+        let asym: String = ASYM.replace("\r\n", "\n");
         let e = |s: String| Fixture::parse(&s).unwrap_err();
-        let msg = e(ASYM.replace("order top-down\n", ""));
+        let msg = e(asym.replace("order top-down\n", ""));
         assert!(msg.msg.contains("missing `order`"), "{msg}");
-        let msg = e(ASYM.replace("|█  ▒ |", "|█  ▒|"));
+        let msg = e(asym.replace("|█  ▒ |", "|█  ▒|"));
         assert!(msg.msg.contains("4 symbols") && msg.line > 0, "{msg}");
-        let msg = e(ASYM.replace("|gobr |", "|gobz |"));
+        let msg = e(asym.replace("|gobr |", "|gobz |"));
         assert!(msg.msg.contains("`z` is not declared"), "{msg}");
-        let msg = e(ASYM.replace("aspect 2", "aspect -1"));
+        let msg = e(asym.replace("aspect 2", "aspect -1"));
         assert!(msg.msg.contains("aspect"), "{msg}");
-        let msg = e(ASYM.replace("grid v1", "grid v2"));
+        let msg = e(asym.replace("grid v1", "grid v2"));
         assert!(msg.msg.contains("grid v1") && msg.line == 14, "{msg}");
-        let msg = e(ASYM.replace("rows 3", "rows 4"));
+        let msg = e(asym.replace("rows 3", "rows 4"));
         assert!(msg.msg.contains("3 fenced rows, `rows` says 4"), "{msg}");
     }
 
