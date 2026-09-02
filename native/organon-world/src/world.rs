@@ -1006,6 +1006,115 @@ impl Geometry {
 /// would otherwise draw a frozen grid at every launch forever.
 const GLYPH_SILENCE_S: f32 = 3.0;
 
+/// organon#217 T5 — what this frame's glyph ring contributes to the path tracer.
+/// Captured once per frame where `glyph_grid_geometry` decides whether the ring is
+/// drawing, and read where the tracer's gate and its accumulation restart are decided
+/// (`pathtrace_active`, `pt_content_key`). `Default` is "no ring": `live == false`,
+/// `generation == 0`, `settled == false` — a constant, so a session with no ring
+/// produces exactly the key and the gate it produced before T5 (invariant #4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct GlyphPtState {
+    /// A glyph frame is drawing THIS frame: ring open, layout accepted, written at
+    /// least once, and not silent (`GLYPH_SILENCE_S`). ⚠️ Silence is not settle: a
+    /// producer that exited leaves its last frame on the ring with `FRAME_SETTLED`
+    /// possibly still set, and `glyph_grid_geometry` hands that frame back to the
+    /// generator after 3 s — `live` goes false with it, so a stale grid is never
+    /// path-traced as though it were held.
+    live: bool,
+    /// `GlyphFrame.generation` — bumps only when the cell PAYLOAD changes (the writer
+    /// compares against its last publish), so the dwell's 250 ms heartbeat republish
+    /// keeps it. Keying accumulation on `seq` or `tick` instead would restart it every
+    /// heartbeat and it would never converge. `0` when not live.
+    generation: u32,
+    /// `FRAME_SETTLED`: the effect returned `None` and this grid is the held text.
+    settled: bool,
+}
+
+/// The path-trace "content key" (#258 T5 / #256 T0 / organon#217 T5): every setting that
+/// changes what the accumulation buffer HOLDS, plus the glyph ring's `(live, generation)`.
+/// A change between frames restarts the progressive sample count; equality accumulates.
+/// Spelled once so the field, its reset value and the key builder cannot disagree.
+/// ⚠️ A struct, not one flat tuple: Rust derives `PartialEq` / `Debug` for tuples of at
+/// most 12 elements, and the tracer's own settings already fill 11.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct PtContent {
+    /// The tracer's own settings (#258 T2/T4/T5, #256 T0), exactly the pre-T5 tuple.
+    tracer: (bool, u32, bool, bool, u32, u32, bool, u32, u32, u32, u32),
+    /// The glyph ring's `(live, generation)` (organon#217 T5).
+    glyph: (bool, u32),
+}
+
+/// `pt_prev_content` before any frame: no dielectric, Replace composite, no spectral, no
+/// caustics, no cache, no ring.
+const PT_CONTENT_NONE: PtContent = PtContent {
+    tracer: (false, 0, false, false, 0, 0, false, 0, 0, 0, 0),
+    glyph: (false, 0),
+};
+
+/// Pure: the content key for a frame. `s` supplies the tracer's own settings; `glyph`
+/// supplies the ring's `(live, generation)` tail.
+///
+/// ⚠️ **Why a geometry counter belongs here when geometry in general does not.** The
+/// tracer deliberately does NOT restart on geometry change — a moving field would smear
+/// the average, and the TLAS rebuilds every frame, so "the geometry changed" is true of
+/// nearly every frame and keying on it would mean never accumulating. The glyph ring's
+/// `generation` is different in kind: it is a counter the *producer* bumps only when the
+/// cell payload differs from its last publish, and holds through the dwell's heartbeat.
+/// So it restarts accumulation exactly when the glyphs moved and accumulates exactly
+/// while they are held — which is what makes restarting on it safe here and unsafe as a
+/// general rule. The `live` bit beside it means "no ring" and "ring at generation 0"
+/// cannot collide, and that ring → silence → generator is itself a content change.
+fn pt_content_key(s: &ipc::Shared, glyph: GlyphPtState) -> PtContent {
+    PtContent {
+        tracer: (
+            s.ptglass[0] > 0.5,
+            s.ptglass[2].round().clamp(0.0, 2.0) as u32,
+            s.spectral[0] > 0.5,
+            s.ptcaustic[0] > 0.5,
+            s.ptcaustic[2].to_bits(),
+            s.ptcaustic[3].to_bits(),
+            // #256 T0: the radiance cache changes what the tracer's early-terminated
+            // paths hold — toggling it, or changing the query's confidence / terminate
+            // bounce, or the cache identity (seed / frequency, which rebuilds the
+            // network), must restart accumulation so cache and full-trace samples
+            // don't blend into a frozen after-image.
+            s.nrc[0] > 0.5,
+            s.nrc[1].to_bits(),
+            s.nrc[4].round().clamp(0.0, 8.0) as u32,
+            (s.nrc[6].max(1.0)) as u32,
+            s.nrc[3].clamp(0.1, 32.0).to_bits(),
+        ),
+        // organon#217 T5: the glyph ring — see the doc comment above.
+        glyph: (glyph.live, glyph.generation),
+    }
+}
+
+/// Pure: does the path tracer run this frame? **The raster → path-trace handover
+/// (organon#217 T5, `doc/pbr_text_engine.md` §8).** The exact condition:
+///
+/// > the preset's own toggle (`pathtrace_on` — the editor checkbox or the 'P' key),
+/// > OR a glyph frame is drawing this frame AND it carries `FRAME_SETTLED`.
+///
+/// So a preset that already path-traces is untouched (the OR is already true, and the
+/// ring's phase changes nothing), a preset that rasters rasters through every frame of
+/// an effect's motion and hands the frame to the tracer for the dwell, and a session
+/// with no ring reduces to `preset_pt` alone — byte-identical to before T5. The tracer's
+/// other gates (`hide_generator`, a boids creature, the render path being `Instanced`
+/// with instances, ray-query support) still apply on top, unchanged: this decides only
+/// what `pathtrace_on` used to decide alone.
+fn pathtrace_active(preset_pt: bool, glyph: GlyphPtState) -> bool {
+    preset_pt || (glyph.live && glyph.settled)
+}
+
+/// Pure: does the progressive sample count restart this frame? `active` is
+/// [`pathtrace_active`]'s answer, not the preset toggle — while the tracer is off for
+/// any reason (including the glyph ring's motion phase) the count is held at 0, so the
+/// dwell's first traced frame starts from a clean buffer, never from the previous
+/// effect's hold.
+fn pathtrace_restarts(moved: bool, resized: bool, content_changed: bool, active: bool) -> bool {
+    moved || resized || content_changed || !active
+}
+
 /// organon#217 T1 — the glyph-ring consumer. Lives on `World` (not `Geometry`)
 /// because it owns the reader and the two grids beside `mind_ring`, and is called
 /// once per frame from the geometry build.
@@ -1397,6 +1506,10 @@ pub struct World {
     glyph_seen_seq: u32,
     glyph_seen_at: Instant,
     glyph_reopen_at: Instant,
+    // organon#217 T5 — this frame's answer to "is the ring drawing, at which
+    // generation, and is it held": written beside `glyph_grid_geometry`'s call, read
+    // by the path tracer's gate and its accumulation restart. `Default` = no ring.
+    glyph_pt: GlyphPtState,
     // Ingested MLP (#226 Tier 4): trained weights loaded from the same sidecar
     // (auto-detected by format); its live forward pass builds the graph each frame.
     neural_mlp: Option<math::NeuralMlp>,
@@ -1635,7 +1748,9 @@ pub struct World {
     // composite mode — GI-add accumulates indirect-only vs the others' full radiance).
     // Changing one while the tracer runs would blend new samples against stale
     // old-mode history (a frozen "after image"), so a change restarts the count.
-    pt_prev_content: (bool, u32, bool, bool, u32, u32, bool, u32, u32, u32, u32),
+    // organon#217 T5 appends the glyph ring's `(live, generation)`; `pt_content_key`
+    // builds it and says why a geometry counter is admissible there.
+    pt_prev_content: PtContent,
     // Neural radiance cache (#256 Tier 0): the live cache the visual owns + trains
     // and uploads to the path tracer's early-termination query. `None` until first
     // enabled; rebuilt when the seed/omega change. `nrc_key` = the (seed, omega)
@@ -1826,6 +1941,7 @@ impl World {
             glyph_seen_seq: 0,
             glyph_seen_at: Instant::now(),
             glyph_reopen_at: Instant::now(),
+            glyph_pt: GlyphPtState::default(),
             neural_mlp: None,
             neural_attn_data: None,
             brain_cache: None,
@@ -1978,7 +2094,7 @@ impl World {
             pathtrace_spp: 0,
             pt_prev_vp: Mat4::IDENTITY.to_cols_array_2d(),
             pt_prev_size: (0, 0),
-            pt_prev_content: (false, 0, false, false, 0, 0, false, 0, 0, 0, 0),
+            pt_prev_content: PT_CONTENT_NONE,
             nrc_cache: None,
             nrc_key: (0, 0),
             nrc_loss: 0.0,
@@ -4986,8 +5102,17 @@ impl World {
         // frame today — this is a `None` and nothing after it can tell the branch
         // exists. Sub-batches a Demo/Neural arm filled describe geometry that is no
         // longer in the buffer, so they are cleared exactly as Plexus clears them.
+        // organon#217 T5: the same decision tells the path tracer whether the grid is
+        // drawing, at which payload generation, and whether it is held — captured here,
+        // once, so the tracer's gate and its restart cannot disagree with the geometry.
+        self.glyph_pt = GlyphPtState::default();
         if let Some(b) = self.glyph_grid_geometry() {
             bounds = b;
+            self.glyph_pt = GlyphPtState {
+                live: true,
+                generation: self.glyph_grid.frame.generation,
+                settled: self.glyph_grid.settled(),
+            };
             self.demo_batches.clear();
             self.demo_lights.clear();
             self.neural_batches = None;
@@ -8390,7 +8515,10 @@ impl World {
         // conditions as `rt_on` (instanced geometry with a BLAS), independent of
         // the editor's RT card. `gfx.rt.is_some()` (ray-query support) is checked
         // where the frame is built below.
-        let pt_want = self.pathtrace_on
+        // organon#217 T5: `pathtrace_active` is the raster → path-trace handover — the
+        // preset's toggle OR a live, settled glyph frame. With no ring it IS the toggle.
+        let pt_active = pathtrace_active(self.pathtrace_on, self.glyph_pt);
+        let pt_want = pt_active
             && !hide_generator
             && boids_creature < 0
             && (
@@ -8570,26 +8698,16 @@ impl World {
         // flips (else the old-mode samples ghost as a frozen "after image").
         // (#258 T5: the caustic Look dials change what the accumulation holds too —
         // the photon BUDGET doesn't, it only trades per-frame variance, so it's out.)
-        let pt_content = (
-            s.ptglass[0] > 0.5,
-            s.ptglass[2].round().clamp(0.0, 2.0) as u32,
-            s.spectral[0] > 0.5,
-            s.ptcaustic[0] > 0.5,
-            s.ptcaustic[2].to_bits(),
-            s.ptcaustic[3].to_bits(),
-            // #256 T0: the radiance cache changes what the tracer's early-terminated
-            // paths hold — toggling it, or changing the query's confidence / terminate
-            // bounce, or the cache identity (seed / frequency, which rebuilds the
-            // network), must restart accumulation so cache and full-trace samples
-            // don't blend into a frozen after-image.
-            s.nrc[0] > 0.5,
-            s.nrc[1].to_bits(),
-            s.nrc[4].round().clamp(0.0, 8.0) as u32,
-            (s.nrc[6].max(1.0)) as u32,
-            s.nrc[3].clamp(0.1, 32.0).to_bits(),
-        );
+        // organon#217 T5: the key also carries the glyph ring's `(live, generation)` —
+        // the one geometry counter that is safe to restart on, because the producer
+        // bumps it only when the cell payload changes and holds it through the dwell's
+        // heartbeat; `pt_content_key`'s doc says why that is the exception to "a moving
+        // field would smear the average". And the restart is keyed on `pt_active`, not
+        // the preset toggle: while the ring is in motion the tracer is off and the count
+        // is held at 0, so the dwell's first traced frame starts clean.
+        let pt_content = pt_content_key(&s, self.glyph_pt);
         let pt_content_changed = pt_content != self.pt_prev_content;
-        if pt_moved || pt_resized || pt_content_changed || !self.pathtrace_on {
+        if pathtrace_restarts(pt_moved, pt_resized, pt_content_changed, pt_active) {
             self.pathtrace_spp = 0;
         }
         self.pt_prev_vp = unjittered_vp;
@@ -9772,7 +9890,9 @@ impl World {
                 metal_island_available: gfx.island.available as u32,
                 tensor_gflops: gfx.island.tensor_gflops,
                 // Path tracer (#200 Tier 4): ground-truth active + accumulated spp.
-                pathtrace_active: (self.pathtrace_on && gfx.rt.is_some()) as u32,
+                // organon#217 T5: the live state, so the editor's "path tracer: ON — N spp"
+                // line reads true during a glyph dwell too; with no ring it is the toggle.
+                pathtrace_active: (pt_active && gfx.rt.is_some()) as u32,
                 pathtrace_spp: self.pathtrace_spp,
                 // Workload telemetry (#277 Tier 2): drawn instance count + the
                 // smoothed CPU encode cost, for the status bar's headroom meters.
@@ -12643,6 +12763,138 @@ fn append_agent_apply_line(line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- organon#217 T5: converge on hold ---------------------------------
+    //
+    // The raster → path-trace handover and the accumulation restart are pure functions
+    // of (the preset's toggle, the ring's live / generation / settled), so the decision
+    // is pinned here without a GPU. Each assertion names the mutation it guards: dropping
+    // `generation` from the key, keying on a per-tick value, path-tracing a silent ring,
+    // or touching a preset that already traces.
+
+    fn ring(live: bool, generation: u32, settled: bool) -> GlyphPtState {
+        GlyphPtState { live, generation, settled }
+    }
+
+    #[test]
+    fn no_ring_is_the_pre_t5_gate() {
+        let none = GlyphPtState::default();
+        assert!(!none.live && none.generation == 0 && !none.settled);
+        assert!(!pathtrace_active(false, none), "no ring, preset rasters → raster");
+        assert!(pathtrace_active(true, none), "no ring, preset traces → trace");
+        let s = ipc::Shared::default();
+        assert_eq!(pt_content_key(&s, none), pt_content_key(&s, none));
+    }
+
+    #[test]
+    fn a_glyph_frame_that_changed_restarts_and_a_held_one_accumulates() {
+        let s = ipc::Shared::default();
+        assert_ne!(
+            pt_content_key(&s, ring(true, 7, false)),
+            pt_content_key(&s, ring(true, 8, false)),
+            "generation 7 → 8 (the glyphs moved) must change the content key, or accumulation never restarts on motion"
+        );
+        // The dwell: the producer republishes the held grid every heartbeat with the SAME
+        // generation (it bumps on payload change, not per tick).
+        let held = ring(true, 8, true);
+        assert_eq!(
+            pt_content_key(&s, held),
+            pt_content_key(&s, held),
+            "a heartbeat republish keeps the key, so the dwell accumulates"
+        );
+        assert_ne!(
+            pt_content_key(&s, held),
+            pt_content_key(&s, GlyphPtState::default()),
+            "ring → silence → generator is a content change"
+        );
+        // Settling is a flag on the same payload, not a new payload: the key ignores it.
+        assert_eq!(pt_content_key(&s, ring(true, 3, false)), pt_content_key(&s, ring(true, 3, true)));
+        // And the tracer's own settings still key it (the pre-T5 half is intact).
+        let mut glass = ipc::Shared::default();
+        glass.ptglass[0] = 1.0;
+        assert_ne!(pt_content_key(&s, held), pt_content_key(&glass, held));
+    }
+
+    #[test]
+    fn the_tracer_runs_on_a_held_frame_and_never_on_motion_or_silence() {
+        assert!(pathtrace_active(false, ring(true, 5, true)), "a live, settled ring hands the frame to the tracer");
+        assert!(!pathtrace_active(false, ring(true, 5, false)), "motion rasters");
+        assert!(
+            !pathtrace_active(false, ring(false, 5, true)),
+            "a settled flag on a ring that is not drawing (silence) must not be path-traced"
+        );
+        assert!(!pathtrace_active(false, ring(false, 0, false)));
+    }
+
+    #[test]
+    fn a_preset_that_already_traces_is_untouched_by_the_ring() {
+        for live in [false, true] {
+            for settled in [false, true] {
+                for g in [0, 1, 99] {
+                    assert!(pathtrace_active(true, ring(live, g, settled)), "live={live} g={g} settled={settled}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_restart_holds_the_count_at_zero_while_the_tracer_is_off() {
+        assert!(pathtrace_restarts(false, false, false, false), "tracer off (raster during motion) → count held at 0");
+        assert!(!pathtrace_restarts(false, false, false, true), "tracer on, nothing moved → accumulate");
+        assert!(pathtrace_restarts(true, false, false, true), "camera moved");
+        assert!(pathtrace_restarts(false, true, false, true), "buffers resized");
+        assert!(pathtrace_restarts(false, false, true, true), "content changed");
+    }
+
+    #[test]
+    fn the_dwell_converges_and_the_next_effect_restarts_it() {
+        // One cycle as the world sees it, frame by frame, with the camera still and the
+        // preset rastering: motion (generation climbing, not settled) → settle → dwell
+        // (heartbeats at one generation) → the next effect. Mirrors `frame_body`'s order:
+        // restart decided first, this frame's sample index is `spp`, then the count
+        // advances iff a trace was issued.
+        let s = ipc::Shared::default();
+        let frames = [
+            ring(true, 1, false),
+            ring(true, 2, false),
+            ring(true, 3, false),
+            ring(true, 3, true),
+            ring(true, 3, true),
+            ring(true, 3, true),
+            ring(true, 4, false),
+            ring(true, 5, false),
+            GlyphPtState::default(), // the producer went silent: back to the generator
+        ];
+        let mut prev = PT_CONTENT_NONE;
+        let mut spp = 0u32;
+        let mut trace = Vec::new();
+        for f in frames {
+            let key = pt_content_key(&s, f);
+            let active = pathtrace_active(false, f);
+            if pathtrace_restarts(false, false, key != prev, active) {
+                spp = 0;
+            }
+            prev = key;
+            trace.push((active, spp));
+            if active {
+                spp += 1;
+            }
+        }
+        assert_eq!(
+            trace,
+            vec![
+                (false, 0),
+                (false, 0),
+                (false, 0),
+                (true, 0), // first traced frame of the dwell starts from a clean buffer
+                (true, 1),
+                (true, 2), // converging: 3 spp accumulated by the end of the hold
+                (false, 0), // the next effect: raster again, count dropped
+                (false, 0),
+                (false, 0),
+            ]
+        );
+    }
 
     // ---- #541 S2 T3: the world/window seam -------------------------------
     //
