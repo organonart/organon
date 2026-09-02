@@ -1959,8 +1959,18 @@ mod tests {
     /// A verb shaped exactly like `console.viewport`: two required words and **one trailing
     /// optional whose value space is open**. Its own registry rather than a row in [`console`],
     /// for `aliased`'s reason — every assertion about the fixture's verb list would move.
+    ///
+    /// 🚨 **The verb is named `console.viewport`, and that name is a KEY.** [`Entry::from_spec`]
+    /// attaches the dependent-ring hook by catalog name, so this fixture gets the shipped
+    /// [`viewport_options`] — which reads `%APPDATA%\OrganonShell\modules.json` — and
+    /// [`coerce`] asks that ring before it looks at the declared `Text`. Left alone, every
+    /// resolve of `… 3d ascent` was a question about a file in one person's roaming profile:
+    /// green on the workstation that approved `ascent`, and red on every clean CI runner from
+    /// 2026-08-31 with *"`ascent` is not one of organon"*. The hook is replaced with
+    /// [`approved_ascent_hook`], the same swap the other two dependent-ring tests make, so the
+    /// vocabulary is the fixture's rather than the machine's.
     fn tailed() -> Registry {
-        Registry::new(&[CommandSpec {
+        let mut reg = Registry::new(&[CommandSpec {
             name: "console.viewport".into(),
             doc: "Divide the pane".into(),
             target: TargetKind::Viewport,
@@ -1978,7 +1988,29 @@ mod tests {
                 },
                 ArgSpec { name: "producer".into(), kind: ArgKind::Text, required: false },
             ],
-        }])
+        }]);
+        reg.entries[0].narrow = Some(approved_ascent_hook);
+        reg
+    }
+
+    /// [`viewport_options`]' shape with the file read swapped for a registry the suite owns:
+    /// `ascent` is the one approved module, so the ring for a `3d` region is
+    /// `organon | ascent` on every machine that runs this.
+    ///
+    /// 📌 **Every test that resolves `console.viewport` through [`Registry::resolve`] or
+    /// [`Registry::candidates`] must install this**, because the real hook is wired in by the
+    /// catalog name and reads the real store. The store is what the suite must never write to
+    /// — and, it turns out, must never *read* either: a read is deterministic only for the
+    /// person whose machine approved the module the test names, which is the person who wrote
+    /// the test.
+    fn approved_ascent_hook(arg: &str, positional: &[&str]) -> Option<Ring> {
+        if arg != VIEWPORT_PRODUCER_ARG {
+            return None;
+        }
+        match ContentCmd::resolve(positional.get(1).copied()?).ok()? {
+            ContentCmd::Hold(Content::ThreeD(_)) => Some(producer_ring(&registry_of(&["ascent"]))),
+            other => Some(Ring::Empty(format!("`{}` has no producer", other.as_word()))),
+        }
     }
 
     /// 🚨 **The word you came to say, without first saying `producer`.** James, 2026-08-26: the
@@ -2086,20 +2118,24 @@ mod tests {
     }
 
     /// ⚠️ **Given twice is still refused** — by the positional route as well as the keyword one.
+    ///
+    /// 🚨 **The refusal has to SAY it was the second word.** A bare `Refused(_)` passed on
+    /// every clean runner while the two tests above failed — because the ring was refusing
+    /// `ascent` itself as *"not one of organon"*, one word before the duplicate check could
+    /// run. A test that accepts any refusal cannot tell the check it names from a fixture that
+    /// refuses everything.
     #[test]
     fn a_tail_given_twice_is_refused() {
         let reg = tailed();
-        assert!(
-            matches!(reg.resolve("/viewport left 3d ascent descent"), Resolved::Refused(_)),
-            "two producers were accepted"
-        );
-        assert!(
-            matches!(
-                reg.resolve("/viewport left 3d producer ascent descent"),
-                Resolved::Refused(_)
-            ),
-            "the keyword form accepted a second producer"
-        );
+        let Resolved::Refused(message) = reg.resolve("/viewport left 3d ascent descent") else {
+            panic!("two producers were accepted")
+        };
+        assert!(message.contains("given twice"), "refused for another reason: {message}");
+        let Resolved::Refused(message) = reg.resolve("/viewport left 3d producer ascent descent")
+        else {
+            panic!("the keyword form accepted a second producer")
+        };
+        assert!(message.contains("given twice"), "refused for another reason: {message}");
     }
 
     /// A one-verb catalog whose only argument has **declared short forms** — the shape
@@ -3325,19 +3361,8 @@ mod tests {
             "a word that is not a content command at all is the declared kind's to refuse"
         );
 
-        fn hook(arg: &str, positional: &[&str]) -> Option<Ring> {
-            if arg != VIEWPORT_PRODUCER_ARG {
-                return None;
-            }
-            match ContentCmd::resolve(positional.get(1).copied()?).ok()? {
-                ContentCmd::Hold(Content::ThreeD(_)) => {
-                    Some(producer_ring(&registry_of(&["ascent"])))
-                }
-                other => Some(Ring::Empty(format!("`{}` has no producer", other.as_word()))),
-            }
-        }
         let mut reg = Registry::new(&viewport_spec());
-        reg.entries[0].narrow = Some(hook);
+        reg.entries[0].narrow = Some(approved_ascent_hook);
 
         let names = |line: &str| -> Vec<String> {
             reg.candidates(line)
