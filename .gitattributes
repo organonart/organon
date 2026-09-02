@@ -212,3 +212,7 @@ native/organon-render/src/BSC5 binary
 # 📌 `changelog.d/**` needs no attribute of its own, and that is the point rather than an
 # omission: one branch owns one fragment file, so there is no hunk for a driver to resolve.
 CHANGELOG.md merge=union
+# The legibility fixtures are byte-pinned test inputs: a test edits them by exact
+# substring and a Windows checkout with core.autocrlf=true turned `…\n` into `…\r\n`,
+# so the edit silently did nothing and the test failed only on that machine.
+native/organon-render/tests/fixtures/*.txt text eol=lf
