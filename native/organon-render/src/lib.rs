@@ -64,3 +64,9 @@ pub mod chamber;
 /// its own 36 `#[path]` submodules (env, post, metaball, the `rt_*` family, …).
 #[path = "render.rs"]
 pub mod render;
+
+/// The legibility harness (PBR text T2, organon#217): `doc/pbr_text_engine.md` §9's two
+/// laws as a number. Pure CPU — fixture grid, box-filter downsample in linear light,
+/// Pearson against the fixture's luma, inter-cell bleed — plus a synthetic painter so the
+/// metric is tested without an adapter. `tests/legibility.rs` runs the chain.
+pub mod legibility;

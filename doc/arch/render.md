@@ -854,6 +854,63 @@ pass two). The ~600-line body is unchanged — it derives the old local bools fr
   allocate lazily on first use; the GI/many-light uniforms and the RD sim skip
   their work entirely while off.
 
+### Per-instance emission — the glyph ring's phosphor (organon#217 T1)
+
+The instanced cube/tube pipeline carries **four** per-instance buffers, not three: the
+model matrix (loc 3–6), the tint (loc 7), and since organon#217 T1 an **emission**
+`vec4` at **loc 8** — linear RGB radiance in `xyz`, gain in `w`. `cube.wgsl`'s emissive
+term is `albedo * (glow + env_tint.w) + ripple + rd + emit.rgb * emit.w`: the new term
+**bypasses albedo**, because a terminal cell's colour is display-referred — a phosphor
+behind a near-black faceplate, not a reflectance — and the existing `tint` path would
+multiply it to nothing (`doc/pbr_text_engine.md` §4).
+
+🚨 **Inert by construction (invariant #4).** `Surface.emits` is `&[]` on every frame the
+glyph ring is not driving, and the renderer then binds an all-zero buffer: `make_emit_buf`
+creates it and wgpu zero-initialises a fresh buffer, nothing writes it until a glyph frame
+does, and the range a glyph frame lit is zeroed back the frame after (`emit_len`). With
+`emit == vec4(0)` the added term is exactly `vec3(0.0)` and the expression reduces to the
+one it replaced — so the frame is byte-identical, with no `Shared` field and no
+`LAYOUT_VERSION` move. A non-empty `emits` is honoured only when it is exactly
+`instances.len()` long; any other length is treated as "no emission", never as a partial
+upload.
+
+⚠️ **A fourth layout in a pipeline is a fourth buffer at every draw against it**, or wgpu
+fails validation at draw time — and no leg of the bar has a GPU. So: `emit_vertex_layout()`
+is built in one place and listed by both `make_cube_pipeline` and
+`make_depth_prepass_pipeline` (the prepass's `vs_depth` never reads loc 8, but the scene
+pass and the prepasses share draw code, so it takes the same four buffers and ignores the
+fourth); every `set_vertex_buffer(2, …)` has a `set_vertex_buffer(3, …)` twin — `emit_buf`
+beside `tint_buf` (sliced at the same sub-batch byte offsets), and `zero_emit` beside
+`white_tint`, the scenery's and the plexus overlay's tints, regrown by `ensure_zero_emit`
+whenever any of those could draw more instances than it covers. Grep the two counts and
+they must agree.
+
+⚠️ **The zeroing is a high-water mark, not the previous frame's length.** Glyph frames
+shrink as an effect animates (fewer live cells), so a 100-instance frame followed by a
+50-instance one leaves `[50, 100)` lit unless the shrink itself zeroes it; the review on
+#224 caught the first version trusting the last length, which a later 80-instance
+generator draw would have read. `emit_upload_plan(high, lit)` — pure, tested without a
+GPU — returns the dirty range beyond this upload, `[lit, high)`, and the new mark, so
+after any sequence of frames the possibly-non-zero set is exactly `[0, last lit)`.
+
+📌 **What does NOT see the emission yet:** the hardware-RT and path-trace passes take
+`inst_buf`/`tint_buf` as storage and shade the hit from the tint, so a ray-traced
+reflection of the glyph grid is a reflection of dark faceplates. Carrying `emit_buf` into
+the hit shading is the same shape of change one layer down, and it is named rather than
+done in T1. This is the **cube pipeline's** emission only: the capsule impostors have
+their own per-instance emission in `particles.wgsl` (the `ArmInstance` colour), which is
+what T6's coaxial glass capsule shows through its shell (the "Shaders" entry below) — the
+`bottled` / `cathode` presets will ride that path, not this attribute.
+
+The producer of the only non-empty `emits` today is `world.rs`'s `glyph_grid_geometry`
+(the glyph ring, `organon-core/src/glyph_ring.rs::lower_grid` — see `ARCHITECTURE.md`'s
+`$TMPDIR` channel list). Its look — tile depth, gap, gain, faceplate, backplane — is
+`GlyphLook::DEFAULT`, one `const` in core that **T3 lifts onto the param chain**. Whether
+a look still *reads* is T2's question, not this section's: the legibility harness (its own
+section below) takes the same cell grid this ring carries as its fixture and scores the
+render against it, which is what makes "is this preset still readable" a number rather
+than a matter of taste.
+
 ### Hardware ray tracing (#195 — the `rt_*` modules + shaders)
 
 The plumbing every later RT effect (shadows / reflections / AO / GI) will trace
@@ -1179,7 +1236,28 @@ card ported from `cube.wgsl`, voxel AO folded into the indirect term + soft-shad
 into the key light; a second `fs_ray_depth` entry marches depth-only into the
 screen-space-FX prepass so **SSR + SSGI** gather off the voxel faces — the neural-field
 pattern; hardware RT stays out, the DDA grid has no BLAS triangles)`/`voxelize.wgsl`/`voxgi.wgsl`,
-`mandelbulb.wgsl`, `creature.wgsl`, `creature_overlay.wgsl`, `minimal.wgsl`, `lens.wgsl`, `kifs.wgsl`, `terrain.wgsl`, `stars.wgsl`, `particles.wgsl`,
+`mandelbulb.wgsl`, `creature.wgsl`, `creature_overlay.wgsl`, `minimal.wgsl`, `lens.wgsl`, `kifs.wgsl`, `terrain.wgsl`, `stars.wgsl`,
+`particles.wgsl` (the Particle Aura sparks, the #298 shaded **bead** impostors, and the
+**capsule** impostors — Skin-Arms segments and the plexus Tier 2 nodes/edges, one billboard
+per instance, sphere-traced in the fragment against `sd_capsule`, depth-written, with
+`fs_capsule_depth` joining the FX prepass so the screen-space FX see the same surface.
+⚠️ Impostors are analytic, not triangles: no BLAS, so hardware RT never sees them.
+**PBR text T6 (#217), the coaxial glass capsule** — a Glass/Refractive capsule can show
+an **emissive core through its shell** instead of the refracted environment:
+`DrawU.capsule.x` is the core fraction (inner radius ÷ outer; **0 = off, and
+`fs_capsule` then calls `shade_bead` exactly as before — pixel-identical**),
+`DrawU.capsule.y` the Beer–Lambert density per outer radius. With the core on the view
+ray is refracted at the outer hit, the inner hit and the outer exit are solved
+**analytically** (`capsule_interval` — a capsule is a convex union of a finite cylinder
+and two spheres, so its ray interval is min-of-entries/max-of-exits; no extra march),
+the transmitted term is the instance emission (hit) or the refracted environment (miss)
+attenuated in the instance colour with optical depth clamped at 6 so a near-black tint
+reads dark rather than zero (`capsule_transmittance`), and `shade_capsule_glass`
+Fresnel-composes it with today's environment reflection. `capsule_trace` — and so the
+depth written — is unchanged either way. Air→glass entry cannot TIR (η ≤ 1); the
+zero-vector guard is defensive. Knob: `ParticleSystem::set_capsule_core`, seeded by
+`ORGANON_CAPSULE_CORE="<frac>[,<density>]"` until T3 wires a control; no param-chain
+entry. CPU twin + tests: `particles.rs::capsule_core`),
 `splat.wgsl` (Gaussian Splatting surface — `vs_splat` billboard + `fs_splat_add` additive/unlit and
 `fs_splat_lit` IBL-lit 2DGS anisotropic Gaussians),
 `fluid.wgsl`, `fluidvis.wgsl` (#182 dye blit + ink march + bilateral upsample),
@@ -1220,3 +1298,78 @@ depth-only into the screen-space-FX prepass so **SSR + SSGI** gather off the neu
 — hardware RT stays out, the isosurface has no BLAS triangles. Loaded/validated concatenated
 with `mlp.wgsl`).
 (`metaball.wgsl` also carries the #152 `fs_volume` emissive-volume entry.)
+
+### The legibility harness (`legibility.rs`, PBR text T2 — organon#217)
+
+`doc/pbr_text_engine.md` §9 states the two laws that let a glyph-grid preset go as far as
+it likes — *the cell's energy stays in the cell*, and *the cell's apparent brightness tracks
+the effect's value* — and says both are measurable. `native/organon-render/src/legibility.rs`
+is that measurement, and it is the one module in this crate with **no wgpu in it**: pure,
+deterministic CPU code, which is what lets §9's claim — real automated visual regression
+rather than the usual `cargo test` ceiling — be true from the first commit rather than
+after the first GPU render.
+
+**The pieces.** A `Fixture` is the source of truth: a cell grid with a symbol and an sRGB
+foreground per cell, parsed from a hand-readable text file whose rows are `|`-fenced
+(`organon-render/tests/fixtures/omarchy-logo.txt` reproduces §3's census — 337 `█`, 32 `▀`,
+32 `▄` — on the padded 81×10 grid; `asymmetric.txt` is a small "L" with a colour gradient,
+because the logo is too symmetric to notice a flip). An `Image` is the render under test in
+linear light, whatever it arrived as (`from_rgba8_srgb` decodes per pixel *before* anything
+is averaged; `from_rgba_f32` / `from_rgba16f` take the HDR buffer). A `GridGeom` says where
+cell `(0, 0)` is and how big a cell is, the 2:1 aspect carried from the fixture rather than
+assumed; row 0 is the top of the picture, which is a wgpu readback's row 0, so nothing is
+flipped. `downsample` box-filters the image to the grid, area-weighted at fractional pixel
+boundaries, luma per Rec. 709. `assess` turns that into a `Report`:
+
+| number | what it is | law |
+|---|---|---|
+| `correlation` | Pearson between measured and expected luma over **every cell, blanks included** | 2 |
+| `correlation_lit` | the same over lit cells only — did the gradient's *shape* survive; `None` when every lit cell expects the same luma | 2 |
+| `bleed_max` | for each blank cell with a lit 8-neighbour, its luma over the mean of those neighbours; the max | 1, local |
+| `stray_fraction` | energy in blank cells ÷ energy in the grid | 1, global |
+
+Expected luma is `luma709(srgb_to_linear(fg))` **times the glyph's coverage** — `▀` is half
+a cell and a renderer drawing a half-height tile emits half the light, so a perfect render of
+the logo (64 half blocks) could not otherwise score 1. Pass/fail is against a `Thresholds`
+that is a **parameter**; the defaults (`0.90 / 0.25 / 0.10`) are what the self-test brackets
+and are a starting point for T3, where they belong beside the gate's goldens in
+`native/verify/`, never in the param chain.
+
+**Verified without a GPU.** `synth` is a CPU painter — flat rectangles at the cell aspect,
+on black — with four controllable degradations, each mapped to a law: **blur** of σ cells
+(bleed), **scramble** (the value channel, same energy budget), **noise** (a little of both),
+and **gain** (§4's phosphor at 6× paper white, which must move *nothing* — Pearson and both
+law-1 numbers are ratios). `tests/legibility.rs` runs the chain against known answers, and
+every invariant was mutation-tested: flip the downsample's rows and the upside-down
+asymmetric render scores `corr 1.0000 · PASS` and the test fails saying so; drop the sRGB
+decode and the byte-path scores move; force the aspect square and the fit disagrees with the
+painter; drop Pearson's centring and the affine-fog test fails. The calibration the sweep
+prints, on the logo at 6 px cells:
+
+```text
+σ (cells)  bleed_max  stray    corr     corr_lit
+    0.05     0.0338   0.0053   0.9999   0.9988  pass
+    0.10     0.1047   0.0264   0.9988   0.9898  pass
+    0.20     0.2291   0.0618   0.9934   0.9457  pass
+    0.25     0.2888   0.0781   0.9891   0.9124  FAIL   ← max_bleed 0.25 ≈ σ 0.21 cells
+    0.50     0.5871   0.1576   0.9508   0.6940  FAIL
+    1.00     0.9376   0.2879   0.8464   0.4343  FAIL   ← min_correlation 0.90 trips only here
+```
+
+⚠️ **Three things the numbers taught, each of which a reader of §9 would not expect.**
+Pearson is invariant to an *affine* map, not just a gain — so a uniform fog over the whole
+frame (every dark pixel raised by the same amount, inside half blocks too) scores **exactly
+1.0** on correlation and is caught only by `stray`/`bleed`; `pass()` needs all three for that
+reason. A gamma-wrong render — emission taken as `fg/255` instead of decoded — still clears
+the 0.90 correlation default (0.9145 on a gradient); `correlation_lit` sees it clearly and
+has no threshold yet. And an **8-bit readback clips a gain above 1**, which on a gradient
+destroys the very shape `correlation_lit` measures (0.178 at 6× through bytes, 1.000 through
+`f32`) — so the gate wants the HDR buffer, not the swapchain.
+
+**What it does not do.** `GridGeom` is axis-aligned, so a tilted-camera preset (§11's
+`bottled`) needs a front-on gate render or a homography this module does not have; a
+one-cell `spill_fraction` exists for the spec's literal phrasing of bleed ("the fraction of a
+lit cell's energy outside its footprint"), which a multi-cell image cannot answer because a
+pixel does not say which cell lit it; and **no real render has been scored** — the entry
+points `assess` and `assess_readback_rgba8` are wired nowhere, on purpose, until T3 decides
+where the gate lives.

@@ -224,6 +224,13 @@ struct DrawU {
     bead2: vec4<f32>,       // #298 Tier 2: x=material, y=shape, z=ior, w=shape amount
     bead_hsv: vec4<f32>,    // #305 Tier 1: x=effective hue, y=saturation, z=value, w reserved
     skyrefl: vec4<f32>,     // #305 Tier 2: x=enable, y=cover, z=drift phase, w=strength
+    // PBR text T6 (#217) — the coaxial glass capsule. x = CORE FRACTION: the inner
+    // emissive capsule's radius as a fraction of the outer radius; 0 = OFF, and the
+    // capsule Glass/Refractive path is then exactly today's `shade_bead`. y =
+    // absorption density (Beer–Lambert σ scale per outer radius; 0 = a clear shell).
+    // z/w reserved. Read only by `fs_capsule`; the bead and spark paths ignore it.
+    // Appended at the TAIL so every earlier offset is untouched.
+    capsule: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> D: DrawU;
@@ -480,8 +487,10 @@ fn fs_particle(in: VsOut) -> @location(0) vec4<f32> {
 // DRAW differs. Sphere uses a cheap analytic impostor (Tier 1); the other shapes
 // sphere-trace a per-mote SDF inside the billboard, oriented by the mote's
 // velocity (teardrops streak along the flow). Depth-write on so droplets occlude
-// each other + the scene; Glass/Refractive reflect+refract the ENVIRONMENT only
-// (the scene-behind refraction is the Tier-4 RT job).
+// each other + the scene. For BEADS, Glass/Refractive reflect+refract the
+// ENVIRONMENT only (the scene-behind refraction is the Tier-4 RT job). CAPSULE
+// impostors can instead show a coaxial emissive CORE through the shell when
+// `D.capsule.x > 0` — `shade_capsule_glass` below (PBR text T6, #217).
 // ===========================================================================
 
 // ---- signed distance fields (local unit space, long axis = +z) ----
@@ -845,6 +854,133 @@ fn sd_capsule(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, r: f32) -> f32 {
     return length(pa - ba * h) - r;
 }
 
+// ---------------------------------------------------------------------------
+// PBR text T6 (#217) — the COAXIAL GLASS CAPSULE (doc/pbr_text_engine.md §11,
+// route 1). A Glass/Refractive capsule used to refract the ENVIRONMENT: a glass
+// tube showing you the sky. With `D.capsule.x > 0` it shows the glowing wire
+// inside it instead: trace to the outer capsule as before (UNCHANGED — the depth
+// it writes is the depth the FX prepass sees), refract the view ray at that
+// surface, solve the refracted ray against an INNER capsule (same endpoints,
+// radius = outer × core fraction) carrying the instance's emission, attenuate
+// by Beer–Lambert over the glass path in the instance's colour, and Fresnel-
+// compose with the environment reflection.
+//
+// Cost: NO extra march. The inner hit and the outer exit are analytic — a
+// capsule is a convex union of a finite cylinder and two spheres, so its ray
+// interval is [min of the pieces' entries, max of their exits]: three quadratics
+// each, no loop. Beside the 96-step sphere trace that found the outer surface
+// this is noise, and it runs only for Glass/Refractive fragments with the core on.
+//
+// 🚨 Inert by default: `D.capsule.x == 0` never reaches this code — `fs_capsule`
+// calls today's `shade_bead` exactly as before, so the frame is pixel-identical.
+// The Rust twin (`particles.rs::capsule_core`) pins the arithmetic.
+// ---------------------------------------------------------------------------
+
+// Ray interval through a capsule (segment a→b, radius r): (t_in, t_out) along
+// `rd` from `ro`, or t_in > t_out when the ray misses. Correct for a ray that
+// starts INSIDE (t_in ≤ 0 < t_out) — that is how the outer exit is found.
+fn capsule_interval(ro: vec3<f32>, rd: vec3<f32>, a: vec3<f32>, b: vec3<f32>, r: f32) -> vec2<f32> {
+    let big = 1e30;
+    var t_in = big;
+    var t_out = -big;
+    // Piece 1: the finite cylinder between the endpoint planes.
+    let ba = b - a;
+    let oa = ro - a;
+    let baba = dot(ba, ba);
+    let bard = dot(ba, rd);
+    let baoa = dot(ba, oa);
+    let rdoa = dot(rd, oa);
+    let oaoa = dot(oa, oa);
+    let qa = baba - bard * bard;
+    let qb = baba * rdoa - baoa * bard;
+    let qc = baba * oaoa - baoa * baoa - r * r * baba;
+    let qh = qb * qb - qa * qc;
+    // qa → 0 when the ray runs along the axis, or the capsule is a degenerate
+    // A≈B node sphere: the wall test then yields nothing and the caps decide.
+    if (qa > 1e-8 && qh >= 0.0) {
+        let sq = sqrt(qh);
+        let t1 = (-qb - sq) / qa;
+        let t2 = (-qb + sq) / qa;
+        let y1 = baoa + t1 * bard;
+        let y2 = baoa + t2 * bard;
+        if (y1 >= 0.0 && y1 <= baba) { t_in = min(t_in, t1); }
+        if (y2 >= 0.0 && y2 <= baba) { t_out = max(t_out, t2); }
+    }
+    // Pieces 2 and 3: the end spheres. A ray crossing an endpoint disc is inside
+    // that sphere, so the sphere's roots cover the disc crossing.
+    for (var k = 0; k < 2; k = k + 1) {
+        let oc = select(oa, ro - b, k == 1);
+        let sb = dot(rd, oc);
+        let sc = dot(oc, oc) - r * r;
+        let sh = sb * sb - sc;
+        if (sh >= 0.0) {
+            let sq = sqrt(sh);
+            t_in = min(t_in, -sb - sq);
+            t_out = max(t_out, -sb + sq);
+        }
+    }
+    return vec2<f32>(t_in, t_out);
+}
+
+// Beer–Lambert through the shell: absorb the complement of the instance colour
+// (a red tube passes red), at `density` per OUTER radius so the look survives a
+// scale change. ⚠️ Optical depth is clamped at 6 per channel (exp(-6) ≈ 0.25 %):
+// a near-black tint over a long chord otherwise underflows to exactly zero and
+// reads as a black tube rather than a dark one.
+fn capsule_transmittance(albedo: vec3<f32>, path: f32, r_outer: f32, density: f32) -> vec3<f32> {
+    let sigma = (vec3<f32>(1.0) - clamp(albedo, vec3<f32>(0.0), vec3<f32>(1.0)))
+              * (max(density, 0.0) / max(r_outer, 1e-6));
+    let od = min(sigma * max(path, 0.0), vec3<f32>(6.0));
+    return exp(-od);
+}
+
+// The Glass/Refractive capsule with a visible core. Mirrors `shade_bead`'s Glass
+// branch term for term — same Fresnel, same reflection, same murk, same roughness
+// — and differs in exactly one place: what the transmitted ray SEES. Only called
+// when `D.capsule.x > 0` and the material is Glass/Refractive. With the core on,
+// the instance's self-emission (`emissive`) moves INSIDE the glass: a lit tube is
+// a tube around a lit thing, not a glowing tube around a glowing thing.
+fn shade_capsule_glass(in: CapOut, n: vec3<f32>, surf: vec3<f32>,
+                       albedo: vec3<f32>, emissive: vec3<f32>) -> vec3<f32> {
+    let v = normalize(D.cam_pos.xyz - surf);
+    let n_dot_v = max(dot(n, v), 1e-4);
+    let env_rot = D.env.z;
+    let env_scale = D.env.y * D.env.w * D.env_tint.rgb;
+    let roughness = clamp(D.bead.z, 0.02, 1.0);
+    let ior = max(D.bead2.z, 1.0);
+    let refl = sample_prefiltered(rotate_y(reflect(-v, n), env_rot), roughness);
+    let f0s = (ior - 1.0) / (ior + 1.0);
+    let f0g = f0s * f0s;
+    let fr = f0g + (1.0 - f0g) * pow(1.0 - n_dot_v, 5.0);
+    let murk = select(mix(vec3<f32>(1.0), albedo, 0.35),
+                      mix(vec3<f32>(1.0), albedo, 0.7), D.bead2.x >= 2.5);
+    let rdir = refract(-v, n, 1.0 / ior);
+    // WGSL refract() returns vec3(0) on total internal reflection. Air→glass
+    // (η = 1/ior ≤ 1) cannot TIR, so this guards against a bad normal rather than
+    // a physical branch — but a zero direction solved against a capsule would be
+    // silent garbage, so it falls back to today's reflection-only expression.
+    if (dot(rdir, rdir) < 1e-6) {
+        return mix(refl * murk, refl, fr) * env_scale + emissive;
+    }
+    // The glass path: from the outer surface along the refracted ray to the core
+    // (hit) or out the far wall of the shell (miss). The origin is nudged inward
+    // so the outer exit is the far wall, never the wall we are standing on.
+    let ro = surf + rdir * (in.r * 1e-3);
+    let outer = capsule_interval(ro, rdir, in.a, in.b, in.r);
+    let core = capsule_interval(ro, rdir, in.a, in.b, in.r * clamp(D.capsule.x, 0.0, 1.0));
+    let chord = max(outer.y, 0.0);
+    let hit = core.x <= core.y && core.y > 0.0;
+    let path = select(chord, min(max(core.x, 0.0), chord), hit);
+    let trans = capsule_transmittance(albedo, path, in.r, D.capsule.y);
+    var thru: vec3<f32>;
+    if (hit) {
+        thru = emissive * trans;
+    } else {
+        thru = sample_prefiltered(rotate_y(rdir, env_rot), roughness) * murk * trans * env_scale;
+    }
+    return refl * env_scale * fr + thru * (1.0 - fr);
+}
+
 struct CapIn {
     @builtin(vertex_index) vi: u32,
     @location(0) a_r: vec4<f32>,   // A.xyz, radius
@@ -949,8 +1085,18 @@ fn fs_capsule(in: CapOut) -> BeadFrag {
     let alb = apply_hsv(in.color, D.bead_hsv);
     let emissive = alb * D.params.y;
     let clip = D.view_proj * vec4<f32>(h.surf, 1.0);
+    // PBR text T6 (#217): a Glass/Refractive capsule with the core on shows the
+    // wire through the shell; otherwise — and always when `D.capsule.x == 0` —
+    // exactly today's shading. `capsule_trace`, and so the depth written, is the
+    // same either way.
+    var rgb: vec3<f32>;
+    if (D.capsule.x > 0.0 && D.bead2.x >= 1.5) {
+        rgb = shade_capsule_glass(in, h.n, h.surf, alb, emissive);
+    } else {
+        rgb = shade_bead(h.n, h.surf, alb, emissive);
+    }
     var out: BeadFrag;
-    out.color = vec4<f32>(max(shade_bead(h.n, h.surf, alb, emissive), vec3<f32>(0.0)), 1.0);
+    out.color = vec4<f32>(max(rgb, vec3<f32>(0.0)), 1.0);
     out.depth = clip.z / max(clip.w, 1e-6);
     return out;
 }

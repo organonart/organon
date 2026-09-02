@@ -1,0 +1,14 @@
+organon-glyphs links two lineages of terminal text effects, and a distributed binary
+carries both obligations (doc/pbr_text_engine.md §13):
+
+  * terminaltexteffects — the design of every effect and of the engine.
+    Copyright (c) Chris (ChrisBuilds). MIT.
+    https://github.com/ChrisBuilds/terminaltexteffects
+
+  * ttfx — the Rust port of terminaltexteffects this crate links, pinned by git rev
+    in Cargo.toml (organonart/ttfx, a fork of omacom/ttfx).
+    Copyright (c) 37signals / omacom-io. MIT. Its LICENSE carries both copyrights and
+    its NOTICE says every effect and the engine are terminaltexteffects' design.
+
+Keep ttfx's LICENSE and NOTICE text with any binary that ships this crate, and credit
+both lineages wherever the screensaver credits anything.

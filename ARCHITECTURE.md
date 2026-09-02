@@ -511,6 +511,27 @@ The heart of the two-process design.
   visual's recorder (`AudioRingReader`) `reset_to_now()`s at record start and `drain`s new frames each
   frame, muxing them into the recording. Overrun-safe (skips the lost gap if the reader ever falls a
   full lap behind). Always-on while the plugin processes audio; inert if no plugin is loaded.
+- `$TMPDIR/organic-math-glyphs.bin` (organon#217 T1 — `organon-core/src/glyph_ring.rs`,
+  `ipc::glyph_ring_path` / `glyph_ring_path_in`) is the **glyph ring**: a terminal-shaped cell
+  grid from a text-effect producer to the world, which renders every non-empty cell as an
+  instanced, bevelled, **emissive** tile (`doc/pbr_text_engine.md`). A SEPARATE mmap channel on
+  the two precedents above — up to a megabyte at the effect's own cadence is neither control-rate
+  nor small — so **no `Shared` field and no `LAYOUT_VERSION` move**. Writer: the `organon-glyphs`
+  member (links `ttfx`, ticks an effect under a virtual clock, walks `arena` into cells,
+  publishes; holds the settled text for a dwell, then the next effect). Reader: `world.rs`'s
+  `glyph_grid_geometry`, which replaces the generator's instances with the grid's tiles while
+  the ring is live and hands the frame back three seconds after a producer goes quiet. **Double
+  buffer with a lap guard**, not a slot ring: two slots, the writer fills the one the reader is
+  not on, the reader re-reads `write_seq` after its copy and retries if it advanced by two. Per
+  cell: symbol, fg/bg (sRGB8 — decoded to linear only at the consumer, §4), SGR bits, `layer`,
+  `character_id`, an `active_path` bit (the slide-vs-cut signal — `lower_grid` interpolates
+  `previous → current` only when it is set), and a **reserved** sub-cell offset pair. Header:
+  layout version + cell stride (the reader refuses a disagreeing writer — the `mind_ring`
+  `frame_bytes` lesson), the **cell aspect** (ttfx is 2:1; square tiles make ellipses of every
+  ring the effects draw), and the producer's tick rate (the interpolation window). ⚠️ **Rows are
+  stored top-down**; ttfx numbers them from the bottom, the producer flips once, and the flip is
+  pinned on an asymmetric fixture. `generation` bumps only when the cell payload changes (a dwell
+  heartbeat keeps it), which is the counter T5 will add to `pt_content`.
 
 ### Append-only layout discipline (critical)
 
@@ -1772,12 +1793,13 @@ used to state a number here went stale twice:
 |---|---|---|---|
 | **`organon-core`** | `native/organon-core` | `memmap2`, `half`, `glam`, `bytemuck`, `serde`, `serde_json` | the **host-free spine**: `math`, `ipc`, `params`, `gguf`, `gguf_data`, `edition`, `tabs` |
 | **`organon-mind`** | `native/organon-mind` | `organon-core`, `egui`, `bytemuck`, `memmap2` — **and nothing else** | **T4** — the interpretability instrument: the activation ring, Mind UI, model shell. **No nih-plug.** |
-| **`organon-render`** | `native/organon-render` | `organon-core`, `wgpu`, `glam`, `bytemuck`, `image`, `half` | **T4** — the renderer: `render` + its 36 surface submodules, plus `axes`/`chamber`, and **50 shaders**. **No nih-plug, no egui, no winit.** |
+| **`organon-render`** | `native/organon-render` | `organon-core`, `wgpu`, `glam`, `bytemuck`, `image`, `half` | **T4** — the renderer: `render` + its 36 surface submodules, plus `axes`/`chamber`, **`legibility`** (PBR text T2 — the CPU harness, no wgpu in it) and **50 shaders**. **No nih-plug, no egui, no winit.** |
 | **`organon-scene`** | `native/organon-scene` | `organon-core`, `glam`, `bytemuck` | **organon#49 T3** — the **substrate**: `substrate_scene` / `substrate_materials` / `substrate_camera` / `substrate_epochs` + `overlay_meta`. Scene *state*, not drawing. **No nih-plug, no wgpu, no egui, no winit.** |
 | **`organon-agent`** | `native/organon-agent` | `organon-core`, `serde`, `serde_json` — **and nothing else** | **organon#49 T4c-i** — the **AI Performer**: action set, override lane, actuation vocabulary, tool-call protocol, localhost chat client. **No nih-plug.** ⚠️ `core_catalog` and `scene_features` did *not* come — they read `param_table` / `preset`, so `src/agent.rs` is a host adapter over this crate |
 | **`organon-world`** | `native/organon-world` | `organon-core`, `organon-mind`, `egui`, `memmap2`, `bytemuck` — **plus, behind the `world` feature**, `organon-render`, `organon-scene`, `organon-agent`, `wgpu`, `winit`, `glam`, `half`, `image`, `dirs`, `serde_json`, `rfd`, `ab_glyph`, `egui-wgpu`, `egui-winit` | **organon#49 T4b + T4c-ii** — the **window layer and the world**. T4b: `scene_input` / `egui_platform` / `frame_ring` / `audio_ring`, always compiled. T4c-ii: **`world`** (13.5k lines) and its nine `#[path]` submodules (`capture`, `overlay`, `rt`, `metal_island`, `gpu_timer`, `recorder`, `snap`, `ui_layer`, `winit_platform`) behind the **default-off `world` feature** — which is what keeps the +490 KB out of the shipping cdylib now that this crate is an *unconditional* dependency of the plugin crate. The one bar it holds is **no nih-plug**, and it holds it *with* `world` on |
 | **`organon-visual`** | `native/organon-visual` | `organon-world` (`world` on), `organon-core`, **`organic-math-native`**, `wgpu`, `winit`, `pollster` | **organon#49 T4c-ii** — one package for one binary: **`[[bin]] organic-math-visual`** plus `hdr_macos` / `hdr_windows` / `launch_macos`. ⚠️ **The only crate here that depends UPWARD on the plugin**, and deliberately: the visual runs the AI Performer's worker, so it needs `agent::core_catalog()`, which reads `param_table`. It exists because the binary could go neither down (loses the catalog) nor stay (cargo features unify across a package's targets, so it would hand the cdylib the `world` feature). **GPL-3.0-or-later**, inherited from that dependency — harmless, since Console never launches the visual |
 | **`organon-console`** | `native/organon-console` | `organon-core`, `egui`, `serde`, `serde_json`, `dirs`, `portable-pty`, `alacritty_terminal` | Console #3 T1 — the **compositor UI** for Organon Console. **No nih-plug, permanently** — it is the one crate whose bar is a lifetime commitment rather than a boundary |
+| **`organon-glyphs`** | `native/organon-glyphs` | `organon-core`, **`ttfx`** (git, pinned by rev — not on crates.io), `clap` | **organon#217 T1** — the **glyph-ring producer**: `[[bin]] organon-glyphs` runs a `ttfx` text effect headless under its virtual clock, walks the cell grid out of the engine each tick and publishes it into `glyph_ring` (`doc/pbr_text_engine.md` §6.1). The `organic-math-mind-writer` shape, as its own package **so the ttfx dependency touches no existing crate** (features unify across a package). ⚠️ `clap` is the third dependency §6.1 did not name, and it is forced: ttfx's effect configs are clap `Args` with attribute-only defaults and ttfx does not re-export clap, so an effect cannot be built by name without it. **No nih-plug, no wgpu, no egui.** `MIT OR Apache-2.0`; `NOTICE` carries both lineages' credits |
 | `organic-math-native` | `native/` | every sibling above **except `organon-visual`**, which depends on *it* | everything else — the plugin, the standalone, the editor, the `organon` CLI. ⚠️ **No longer the visual, and no longer `world.rs`** (organon#49 T4c-ii) |
 
 **⚠️ `organon-render` is `world::render`. `world.rs` is NOT part of it — it went to `organon-world` in organon#49 T4c-ii, not here.**
@@ -1941,7 +1963,8 @@ guard fails the run outright rather than shipping the broken manifest.
 | `math.rs` | pure algorithm + all generators (incl. Penrose tilings, #121) + lowering/lofting (+ tests) |
 | `params.rs` | nih-plug params + enums + `to_shared` |
 | `param_table.rs` | `param_block!` SSoT packing + layout goldens |
-| `ipc.rs` | `Shared` Pod + mmap Writer/Reader + Feedback channel + mind-ring path + the **edition-namespaced** `$TMPDIR` path builders (`namespace`/`ns_file`, plus the caller-named `ns_file_checked`/`mind_ring_path_in`, §4.1) |
+| `ipc.rs` | `Shared` Pod + mmap Writer/Reader + Feedback channel + mind-ring path + glyph-ring path (`glyph_ring_path` / `_in`, organon#217 T1) + the **edition-namespaced** `$TMPDIR` path builders (`namespace`/`ns_file`, plus the caller-named `ns_file_checked`/`mind_ring_path_in`, §4.1) |
+| `organon-core/src/glyph_ring.rs` | organon#217 T1 — the **glyph ring**: `GlyphCell` (32 B, offsets pinned by test) / `GlyphFrame` / `GlyphRingHeader` + `GlyphRingWriter`/`GlyphRingReader` (double buffer with a lap guard; layout-version + cell-stride refusal), the symbol→tile table `tile_for` (block/shade glyphs → sub-cell extent + extrusion depth; unknown → full block at reduced emission), `srgb8_to_linear`, and `lower_grid` — grid → instances/tints/**emits** + backplane, sliding `active_path` cells between `previous → current` (+ tests). In core because the writer (`organon-glyphs`) and the reader (`world.rs`) must share ONE definition and core is the only crate both see |
 | `organon-core/src/edition.rs` | #483 Tier 1 — build-time product editions: `Edition` (`Full`/`Mind`) + `EDITION`, driving product name / IPC namespace / visible `UiTab`s. Pure + unit-tested for both editions from a default build (§4.1). **#626 T3: moved to `organon-core`**; re-exported as `crate::edition` |
 | `organon-core/src/tabs.rs` | #626 T3 — the editor's **tab taxonomy**: `UiTab` (the tab bar) + `EditorTab` (the 7-way preset partition). Lifted out of `preset.rs`, which keeps its nih-plug `ParamSetter` logic. Re-exported as `crate::preset::{UiTab, EditorTab}` (§19.0) |
 | `organon-core/src/kind.rs` | #48 T1 — the console's **kind** vocabulary: `Kind` (`scene`/`panel`), `KIND_WORDS`, and `resolve`, whose refusal carries the known list. Here because the two front-ends that had a copy each are in *different* crates (`cli.rs`, `organon-console/conversation.rs`) and this is the only one both can see; a closed set of words needs no host, GPU or UI. ⚠️ No `Default` — the "a kindless `patch` line means `scene`" rule is that lane's and lives in `cli::PATCH_DEFAULT_KIND` |
@@ -2030,4 +2053,5 @@ guard fails the run outright rather than shipping the broken manifest.
 | `overlay.rs` | #135 P2 overlay renderer: ab_glyph atlas + formula textures + text/quad pass (+ pure tests) |
 | `axes.rs` | #135 P5 capture decoration: axes tubes+cones (surface) + box back-wall grids + their pipelines (+ pure tests) |
 | `overlay_meta.rs` | #135 P2 per-generator overlay metadata + live-value `eval` (pure, shared, unit-tested) |
+| `organon-render/src/legibility.rs` | **PBR text T2 (organon#217)** — the **legibility harness**: `doc/pbr_text_engine.md` §9's two laws as a number. A hand-readable **fixture** format (`organon-render/tests/fixtures/*.txt` — the Omarchy logo, and an asymmetric one that proves orientation), a box-filter **downsample to the cell grid in linear light** (Rec. 709 luma, area-weighted at fractional pixels, the 2:1 cell aspect taken from the fixture), **Pearson** against the fixture's per-cell luma (blanks in the population, deliberately — plus a lit-only coefficient for the gradient's shape), **bleed** (a dark cell's luma over its lit neighbours' mean) and **stray** (energy in blank cells), judged against a `Thresholds` that is a parameter. Plus `synth`, a CPU painter with blur / noise / gain / scramble so the metric is tested without an adapter. Entry points `assess` / `assess_readback_rgba8` for T3's preset gate; **wired nowhere yet**. Pure CPU, deterministic — `tests/legibility.rs` runs the whole chain, every invariant mutation-tested. ⚠️ Pearson cannot see an affine map, so a uniform fog scores 1.0 on correlation and is caught by stray/bleed alone; `pass()` needs all three. → `doc/arch/render.md` "The legibility harness" |
 | `*.wgsl` | shaders (naga-validated by `tests/wgsl.rs`) |

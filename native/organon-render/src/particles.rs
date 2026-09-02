@@ -58,6 +58,9 @@ struct DrawU {
     bead2: [f32; 4],      // #298 Tier 2: material, shape, ior, shape_param
     bead_hsv: [f32; 4],   // #305 Tier 1: effective hue, saturation, value, _
     skyrefl: [f32; 4],    // #305 Tier 2: enable, cover, drift phase, strength
+    // PBR text T6 (#217): coaxial glass capsule — core fraction (0 = off), Beer–
+    // Lambert density, reserved, reserved. Tail-appended; `fs_capsule` alone reads it.
+    capsule: [f32; 4],
 }
 
 /// The scene's PBR/IBL shading context handed to the bead draw each frame (built in
@@ -210,6 +213,12 @@ pub struct ParticleSystem {
     count: u32,
     drew_this_frame: bool,
     beads: bool,
+    // PBR text T6 (#217): the coaxial-glass knob for every capsule draw (arms + both
+    // plexus batches) — [core fraction, absorption density]. Defaults [0, 0] = inert.
+    // Not a param-chain value (look controls are T3): `set_capsule_core` is the
+    // render-side API, and `ORGANON_CAPSULE_CORE` seeds it so a GPU session can
+    // look before any control exists.
+    capsule_core: [f32; 2],
 }
 
 impl ParticleSystem {
@@ -384,7 +393,22 @@ impl ParticleSystem {
             count: 0,
             drew_this_frame: false,
             beads: false,
+            capsule_core: capsule_core::from_env(),
         }
+    }
+
+    /// PBR text T6 (#217): set the coaxial-glass core for every capsule impostor draw.
+    /// `core_frac` is the inner emissive capsule's radius as a fraction of the outer
+    /// (clamped to [0, 1]; **0 = off, pixel-identical to the pre-T6 frame**), `absorb`
+    /// the Beer–Lambert density per outer radius (≥ 0; 0 = a clear shell). Only
+    /// Glass/Refractive capsules read it. Takes effect at the next `set_arms` /
+    /// `set_plexus` upload.
+    pub fn set_capsule_core(&mut self, core_frac: f32, absorb: f32) {
+        self.capsule_core = capsule_core::lanes(core_frac, absorb);
+    }
+
+    fn capsule_lanes(&self) -> [f32; 4] {
+        [self.capsule_core[0], self.capsule_core[1], 0.0, 0.0]
     }
 
     /// Rebuild the additive draw pipeline for a new MSAA sample count (the motes
@@ -514,6 +538,7 @@ impl ParticleSystem {
             bead2: [f.bead_material as f32, f.bead_shape as f32, f.bead_ior, f.bead_shape_param],
             bead_hsv: [f.bead_hue, f.bead_sat, f.bead_val, f.bead_emissive],
             skyrefl: shade.skyrefl.to_array(),
+            capsule: [0.0; 4], // beads/sparks never read it
         };
         queue.write_buffer(&self.draw_ub, 0, bytemuck::bytes_of(&draw));
         self.beads = f.beads;
@@ -620,6 +645,7 @@ impl ParticleSystem {
             bead2: [material, 0.0, ior, 0.0],
             bead_hsv: hsv.to_array(),
             skyrefl: shade.skyrefl.to_array(),
+            capsule: self.capsule_lanes(),
         };
         queue.write_buffer(&self.arm_draw_ub, 0, bytemuck::bytes_of(&draw));
 
@@ -683,7 +709,11 @@ impl ParticleSystem {
         if !self.plex_drew {
             return;
         }
+        // Read the knob before the closure: `mk` must not borrow `self`, which the
+        // buffer-growth arms below mutate while `mk` is still alive.
+        let capsule = self.capsule_lanes();
         let mk = |m: &PlexMat| DrawU {
+            capsule,
             view_proj: view_proj.to_cols_array_2d(),
             cam_right: [cam_right.x, cam_right.y, cam_right.z, 0.0],
             cam_up: [cam_up.x, cam_up.y, cam_up.z, 0.0],
@@ -1054,4 +1084,248 @@ fn make_bead_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// PBR text T6 (#217) — the CPU twin of `particles.wgsl`'s coaxial-glass arithmetic,
+/// kept the way this tree keeps a Rust mirror beside a shader so the invariants can
+/// be pinned without a GPU: the ray–capsule interval (`capsule_interval`), the
+/// clamped Beer–Lambert transmittance (`capsule_transmittance`), the gate that makes
+/// core fraction 0 inert, WGSL `refract()`'s zero-on-TIR contract, and the
+/// `ORGANON_CAPSULE_CORE` seed. ⚠️ Mirror, not import: the WGSL is the shipped code,
+/// and a test here proves the *arithmetic*, not the picture. Runs under
+/// `cargo test -p organon-render`. The mirrors are reached only from the tests
+/// (production reads the knob, the GPU does the arithmetic), hence the allow.
+#[cfg_attr(not(test), allow(dead_code))]
+mod capsule_core {
+    /// The uniform lanes for a requested knob: core fraction clamped to [0, 1] (a
+    /// core wider than the shell is not a core), density clamped to ≥ 0.
+    pub fn lanes(core_frac: f32, absorb: f32) -> [f32; 2] {
+        let c = if core_frac.is_finite() { core_frac.clamp(0.0, 1.0) } else { 0.0 };
+        let a = if absorb.is_finite() { absorb.max(0.0) } else { 0.0 };
+        [c, a]
+    }
+
+    /// `ORGANON_CAPSULE_CORE="<core_frac>[,<absorb>]"` — the only way to see the
+    /// core before T3 wires a control. Unset, empty or unparsable → `[0, 0]` (inert).
+    pub fn from_env() -> [f32; 2] {
+        std::env::var("ORGANON_CAPSULE_CORE")
+            .ok()
+            .and_then(|s| parse(&s))
+            .unwrap_or([0.0, 0.0])
+    }
+
+    pub fn parse(s: &str) -> Option<[f32; 2]> {
+        let mut it = s.split(',').map(str::trim);
+        let core: f32 = it.next()?.parse().ok()?;
+        let absorb: f32 = match it.next() {
+            Some(a) if !a.is_empty() => a.parse().ok()?,
+            _ => 0.0,
+        };
+        Some(lanes(core, absorb))
+    }
+
+    /// Mirrors `fs_capsule`'s gate: the coaxial path runs only for a Glass (2) /
+    /// Refractive (3) material with a non-zero core fraction.
+    pub fn active(material: f32, core_frac: f32) -> bool {
+        core_frac > 0.0 && material >= 1.5
+    }
+
+    type V3 = [f32; 3];
+    fn dot(a: V3, b: V3) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    fn sub(a: V3, b: V3) -> V3 {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+
+    /// Mirrors `capsule_interval`: (t_in, t_out) along `rd` from `ro` through the
+    /// capsule a→b of radius r; t_in > t_out is a miss. Convex union of a finite
+    /// cylinder and two spheres → min of entries, max of exits.
+    pub fn capsule_interval(ro: V3, rd: V3, a: V3, b: V3, r: f32) -> (f32, f32) {
+        let big = 1e30f32;
+        let mut t_in = big;
+        let mut t_out = -big;
+        let ba = sub(b, a);
+        let oa = sub(ro, a);
+        let baba = dot(ba, ba);
+        let bard = dot(ba, rd);
+        let baoa = dot(ba, oa);
+        let rdoa = dot(rd, oa);
+        let oaoa = dot(oa, oa);
+        let qa = baba - bard * bard;
+        let qb = baba * rdoa - baoa * bard;
+        let qc = baba * oaoa - baoa * baoa - r * r * baba;
+        let qh = qb * qb - qa * qc;
+        if qa > 1e-8 && qh >= 0.0 {
+            let sq = qh.sqrt();
+            let t1 = (-qb - sq) / qa;
+            let t2 = (-qb + sq) / qa;
+            let y1 = baoa + t1 * bard;
+            let y2 = baoa + t2 * bard;
+            if (0.0..=baba).contains(&y1) {
+                t_in = t_in.min(t1);
+            }
+            if (0.0..=baba).contains(&y2) {
+                t_out = t_out.max(t2);
+            }
+        }
+        for k in 0..2 {
+            let oc = if k == 1 { sub(ro, b) } else { oa };
+            let sb = dot(rd, oc);
+            let sc = dot(oc, oc) - r * r;
+            let sh = sb * sb - sc;
+            if sh >= 0.0 {
+                let sq = sh.sqrt();
+                t_in = t_in.min(-sb - sq);
+                t_out = t_out.max(-sb + sq);
+            }
+        }
+        (t_in, t_out)
+    }
+
+    /// Mirrors `capsule_transmittance`: Beer–Lambert in the complement of the
+    /// albedo, density per outer radius, optical depth clamped at `OD_MAX`.
+    pub const OD_MAX: f32 = 6.0;
+    pub fn capsule_transmittance(albedo: V3, path: f32, r_outer: f32, density: f32) -> V3 {
+        let k = density.max(0.0) / r_outer.max(1e-6);
+        let mut out = [0.0f32; 3];
+        for c in 0..3 {
+            let sigma = (1.0 - albedo[c].clamp(0.0, 1.0)) * k;
+            let od = (sigma * path.max(0.0)).min(OD_MAX);
+            out[c] = (-od).exp();
+        }
+        out
+    }
+
+    /// Mirrors WGSL `refract(i, n, eta)`: the refracted direction, or the ZERO
+    /// vector when `k < 0` (total internal reflection) — the contract the shader's
+    /// `dot(rdir, rdir) < 1e-6` guard is written against.
+    pub fn refract(i: V3, n: V3, eta: f32) -> V3 {
+        let ni = dot(n, i);
+        let k = 1.0 - eta * eta * (1.0 - ni * ni);
+        if k < 0.0 {
+            return [0.0; 3];
+        }
+        let s = eta * ni + k.sqrt();
+        [eta * i[0] - s * n[0], eta * i[1] - s * n[1], eta * i[2] - s * n[2]]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const A: V3 = [0.0, 0.0, 0.0];
+        const B: V3 = [4.0, 0.0, 0.0];
+        const R: f32 = 1.0;
+
+        fn near(x: f32, y: f32) -> bool {
+            (x - y).abs() < 1e-4
+        }
+
+        #[test]
+        fn a_degenerate_capsule_is_the_analytic_sphere() {
+            // A≈B is how plexus NODES are drawn: the interval must be the sphere's.
+            let (t_in, t_out) = capsule_interval([0.0, 0.0, -5.0], [0.0, 0.0, 1.0], A, A, R);
+            assert!(near(t_in, 4.0) && near(t_out, 6.0), "got ({t_in}, {t_out})");
+        }
+
+        #[test]
+        fn a_side_on_ray_enters_and_leaves_through_the_wall() {
+            let (t_in, t_out) = capsule_interval([2.0, 0.0, -5.0], [0.0, 0.0, 1.0], A, B, R);
+            assert!(near(t_in, 4.0) && near(t_out, 6.0), "got ({t_in}, {t_out})");
+        }
+
+        #[test]
+        fn a_ray_beside_the_capsule_misses() {
+            let (t_in, t_out) = capsule_interval([2.0, 3.0, -5.0], [0.0, 0.0, 1.0], A, B, R);
+            assert!(t_in > t_out, "a miss must read t_in > t_out, got ({t_in}, {t_out})");
+        }
+
+        #[test]
+        fn from_inside_the_exit_is_the_far_wall() {
+            // This is how the outer chord is found: origin on the axis, t_in ≤ 0 < t_out.
+            let (t_in, t_out) = capsule_interval([2.0, 0.0, 0.0], [0.0, 0.0, 1.0], A, B, R);
+            assert!(t_in <= 0.0 && near(t_out, 1.0), "got ({t_in}, {t_out})");
+        }
+
+        #[test]
+        fn a_ray_along_the_axis_exits_through_the_cap() {
+            // qa == 0 here: the wall test yields nothing and the end sphere decides.
+            let (t_in, t_out) = capsule_interval(A, [1.0, 0.0, 0.0], A, B, R);
+            assert!(near(t_in, -1.0) && near(t_out, 5.0), "got ({t_in}, {t_out})");
+        }
+
+        #[test]
+        fn an_oblique_exit_near_the_end_is_the_cap_not_the_infinite_wall() {
+            // From just inside the B end, heading out at 45°: the infinite cylinder's
+            // far root lands beyond B (y out of range) and must be REJECTED, leaving
+            // the B sphere's exit — 0.0707 + √0.995 — as the chord end.
+            let s = std::f32::consts::FRAC_1_SQRT_2;
+            let (_, t_out) = capsule_interval([3.9, 0.0, 0.0], [s, 0.0, s], A, B, R);
+            assert!(near(t_out, 1.068208), "got t_out {t_out}");
+        }
+
+        #[test]
+        fn a_slanted_ray_enters_through_the_end_cap_not_the_disc() {
+            // Parallel to the axis, offset 0.5 r, starting 2 r before A: the entry
+            // is the sphere at A (t = 2 − √(1 − 0.25)), which the disc-crossing of
+            // the cylinder piece must not shadow.
+            let (t_in, _) = capsule_interval([-2.0, 0.5, 0.0], [1.0, 0.0, 0.0], A, B, R);
+            assert!(near(t_in, 2.0 - 0.75f32.sqrt()), "got t_in {t_in}");
+        }
+
+        #[test]
+        fn core_fraction_zero_is_inert_for_every_material() {
+            for m in [0.0, 1.0, 2.0, 3.0] {
+                assert!(!active(m, 0.0), "material {m} must be inert at core 0");
+            }
+            assert!(active(2.0, 0.3), "Glass with a core must take the coaxial path");
+            assert!(active(3.0, 0.3), "Refractive with a core must take the coaxial path");
+            assert!(!active(0.0, 0.3) && !active(1.0, 0.3), "opaque materials never do");
+            assert_eq!(lanes(0.0, 5.0), [0.0, 5.0]);
+            assert_eq!(lanes(1.7, -1.0), [1.0, 0.0], "core clamps to [0,1], density to >= 0");
+            assert_eq!(lanes(f32::NAN, f32::INFINITY), [0.0, 0.0]);
+        }
+
+        #[test]
+        fn a_black_tint_over_a_long_chord_is_dark_not_zero() {
+            let t = capsule_transmittance([0.0, 0.0, 0.0], 1e9, R, 1e3);
+            let floor = (-OD_MAX).exp();
+            for c in t {
+                assert!(near(c, floor) && c > 0.0, "channel {c} must sit at the clamp {floor}");
+            }
+            assert_eq!(capsule_transmittance([0.0; 3], 3.0, R, 0.0), [1.0; 3], "density 0 = clear");
+            assert_eq!(capsule_transmittance([1.0; 3], 3.0, R, 9.0), [1.0; 3], "white passes white");
+            // A red tube passes red and eats the rest.
+            let t = capsule_transmittance([1.0, 0.0, 0.0], 1.0, R, 1.0);
+            assert!(near(t[0], 1.0) && near(t[1], (-1.0f32).exp()) && near(t[2], (-1.0f32).exp()));
+        }
+
+        #[test]
+        fn entry_refraction_cannot_tir_but_the_guard_branch_is_real() {
+            // Air -> glass (eta = 1/ior <= 1): k >= 1 - eta^2 >= 0 for every incidence.
+            let n = [0.0, 0.0, 1.0];
+            for deg in 0..90 {
+                let th = (deg as f32).to_radians();
+                let i = [th.sin(), 0.0, -th.cos()];
+                let r = refract(i, n, 1.0 / 1.5);
+                assert!(dot(r, r) > 1e-6, "TIR at {deg} deg on entry is impossible");
+            }
+            // Glass -> air at grazing does TIR, and the contract is the ZERO vector —
+            // which is what the shader's `dot(rdir, rdir) < 1e-6` guard detects.
+            let i = [0.9, 0.0, -(1.0f32 - 0.81).sqrt()];
+            assert_eq!(refract(i, n, 1.5), [0.0; 3]);
+        }
+
+        #[test]
+        fn the_env_seed_parses_or_stays_inert() {
+            assert_eq!(parse("0.4"), Some([0.4, 0.0]));
+            assert_eq!(parse("0.4, 1.5"), Some([0.4, 1.5]));
+            assert_eq!(parse("0.4,"), Some([0.4, 0.0]));
+            assert_eq!(parse("1.7,-2"), Some([1.0, 0.0]));
+            assert_eq!(parse(""), None);
+            assert_eq!(parse("core"), None);
+            assert_eq!(parse("0.4,abc"), None);
+        }
+    }
 }

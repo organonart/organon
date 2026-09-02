@@ -3652,6 +3652,22 @@ pub fn audio_ring_path() -> PathBuf {
     ns_file("audio.bin")
 }
 
+/// The **glyph ring** mmap (organon#217 T1, `doc/pbr_text_engine.md` §6): a terminal-
+/// shaped cell grid carried from a text-effect producer (`organon-glyphs`, linking
+/// `ttfx`) to the world, which renders each cell as a lit tile. A SEPARATE channel from
+/// `Shared` for the `mind_ring` / `audio_ring` reason — up to a megabyte at the effect's
+/// own cadence is neither control-rate nor small, and `Shared`'s offsets are load-bearing
+/// across every saved set. See `glyph_ring.rs` for the layout and the orientation rule.
+pub fn glyph_ring_path() -> PathBuf {
+    ns_file("glyphs.bin")
+}
+
+/// The glyph ring of a **named** namespace — the `mind_ring_path_in` twin, same
+/// sanitizer, same refusal (`None`, never a fallback to the local ring).
+pub fn glyph_ring_path_in(ns: &str) -> Option<PathBuf> {
+    ns_file_checked(ns, "glyphs.bin")
+}
+
 /// #554 Tier 1 — the **frame mirror** mmap: the visual's rendered frames, carried to the
 /// editor so it can draw a live viewport in its own window. A SEPARATE channel from `Shared`
 /// for the `mind_ring` / `audio_ring` reason — ~0.9 MB at ~15 Hz is neither control-rate nor
@@ -3912,6 +3928,28 @@ mod ns_tests {
     #[test]
     fn naming_your_own_namespace_is_the_path_you_already_had() {
         assert_eq!(mind_ring_path_in(namespace()).as_deref(), Some(mind_ring_path().as_path()));
+    }
+
+    /// organon#217 T1 — the glyph ring is namespaced like the mind ring, is a file of its
+    /// own (a Mind session and an Organon session must never share one), and its named
+    /// form generalizes the unnamed one rather than being a second convention.
+    #[test]
+    fn glyph_ring_is_namespaced_distinct_and_its_named_form_generalizes() {
+        let ns = namespace();
+        assert_eq!(glyph_ring_path(), ns_file_in(ns, "glyphs.bin"));
+        assert_ne!(glyph_ring_path(), mind_ring_path());
+        assert_ne!(glyph_ring_path(), audio_ring_path());
+        assert_eq!(glyph_ring_path_in(ns).as_deref(), Some(glyph_ring_path().as_path()));
+        assert_ne!(
+            ns_file_in(crate::edition::Edition::Full.ipc_namespace(), "glyphs.bin"),
+            ns_file_in(crate::edition::Edition::Mind.ipc_namespace(), "glyphs.bin"),
+        );
+        let a = glyph_ring_path_in("glyph-a").expect("legal namespace");
+        let b = glyph_ring_path_in("glyph-b").expect("legal namespace");
+        assert_ne!(a, b);
+        for bad in ["", "../evil", "a/b", "a b"] {
+            assert!(glyph_ring_path_in(bad).is_none(), "{bad:?} should be refused");
+        }
     }
 
     /// A caller-supplied namespace must not reach a `$TMPDIR` path the env var could
