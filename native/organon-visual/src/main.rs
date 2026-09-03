@@ -53,6 +53,11 @@ mod hdr_windows;
 // `hdr_macos.rs`: it belongs to the window owner, so it lives with the binary that owns one.
 mod launch_macos;
 
+// Which swapchain format to configure, decided from the surface's *current* capabilities
+// (organon#237). Pure and unit-tested; `WindowSurface::configure` is its only caller and the
+// only place the swapchain is configured.
+mod surface_format;
+
 use organon_core::ipc;
 // organon#49 T4c-ii — the `use organon_core::math` shim that stood here is GONE, and the
 // reason it existed is what retired it. `render.rs` and four of its submodules say
@@ -98,18 +103,28 @@ struct WindowSurface {
     /// Unused on the macOS path, which measures headroom off the `CAMetalLayer` instead.
     adapter: wgpu::Adapter,
     config: wgpu::SurfaceConfiguration,
-    // The two swapchain formats the HDR toggle switches between: an sRGB 8-bit surface (SDR,
-    // default) and an `Rgba16Float` surface (HDR/EDR). The HDR one is `None` if the surface
-    // can't provide it.
-    sdr_format: wgpu::TextureFormat,
-    hdr_format: Option<wgpu::TextureFormat>,
-    /// The colour space the HDR swapchain is configured with, resolved once from the surface's
-    /// capabilities and applied alongside `hdr_format` (#658 T4). `Auto` off Windows — exactly
-    /// what this config has always carried, because the Mac's EDR is negotiated on the metal
-    /// layer by `hdr_macos.rs` and its swapchain must not change. Always consistent with
-    /// `hdr_format`: both come out of the same lookup in `resumed`, so `hdr_format.is_some()`
-    /// implies this colour space is one the surface actually offers.
-    hdr_color_space: wgpu::SurfaceColorSpace,
+    /// Whether the swapchain is **actually** the fp16 extended-linear HDR surface right now —
+    /// the grant, as opposed to `hdr_applied`'s request (organon#237). Set by every
+    /// successful `configure` from the format it chose and **cleared by a failed one**
+    /// (`surface_format::Grant::after_configure`), and it is what gates the headroom read,
+    /// the layer tag and the `HDR output: ON` line: a request that the surface could not
+    /// honour leaves this `false`, `hdr_max` at `1.0` and the composite in its SDR arm.
+    ///
+    /// This replaces the `sdr_format` / `hdr_format` / `hdr_color_space` triple that was
+    /// resolved **once** in `resumed`. That single read is what killed the visual twice on
+    /// the workstation: on Vulkan the format list is a live answer about the display the
+    /// window is on, and `Rgba16Float` leaves it when the display leaves HDR mode — so a
+    /// reconfigure that re-issued the startup format was a validation error, and a
+    /// validation error in `Surface::configure` is a panic. `surface_format.rs` has the
+    /// full account.
+    hdr_active: bool,
+    /// Whether the last `configure` succeeded. A swapchain whose configure failed must not be
+    /// acquired from — wgpu treats an acquire on an unconfigured surface as fatal — so the
+    /// frame loop skips until a configure succeeds, rather than the process dying.
+    configured: bool,
+    /// The last configure error reported, so a persistent failure logs once rather than at
+    /// every frame the loop retries in.
+    last_configure_error: Option<String>,
     /// The HDR state currently *applied* to the swapchain + layer, so a change in the world's
     /// `hdr_request()` can be edge-detected. The world owns the intent (**H**, the editor
     /// checkbox); this is what actually got granted.
@@ -128,6 +143,109 @@ struct WindowSurface {
     /// than the request, so the composite's `hdr_vivid` never expands Rec.709 into a Rec.2020
     /// container the display never agreed to.
     wide_granted: bool,
+}
+
+/// What one [`WindowSurface::configure`] produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Configure {
+    /// The swapchain is usable. `changed`: the format or the HDR grant differ from before
+    /// the call — the caller re-reports the HDR state on it.
+    Ok { changed: bool },
+    /// `Surface::configure` raised an error. Already logged, never a panic; the swapchain
+    /// must not be acquired from until a later configure succeeds.
+    Failed,
+}
+
+impl WindowSurface {
+    /// **The one place the swapchain is configured** (organon#237). First light, the HDR
+    /// toggle, a resize and a lost/outdated acquire all arrive here, and the format is
+    /// chosen from the capabilities read *at this call* — `surface_format.rs` owns the
+    /// order and the reason `Rgb10a2Unorm` is not in it.
+    ///
+    /// `want_hdr` is the world's intent. The grant is what `hdr_active` says afterwards:
+    /// fp16 is asked for only when the surface offers it **and** will present it in an
+    /// extended-linear colour space (`hdr_output_color_space` — on Windows `Auto` on fp16
+    /// can quietly resolve to plain sRGB, which would clamp the picture while every HDR
+    /// control reported on). Anything less falls back to the sRGB surface the SDR path has
+    /// always drawn into, and says so once (`fallback_line`) when the outcome moved or
+    /// `announce` asks — the toggle announces; a resize that changes nothing is silent.
+    ///
+    /// The configure itself runs inside error scopes, because a validation error in
+    /// `Surface::configure` is otherwise routed to the device's uncaptured-error handler,
+    /// whose default is a panic — the exact death this fixes. A caught error is logged once
+    /// (not per retried frame), `configured` goes false, and `render` skips frames until a
+    /// configure succeeds; the process stays alive, which on a lock screen is the whole
+    /// point.
+    fn configure(&mut self, device: &wgpu::Device, want_hdr: bool, announce: bool) -> Configure {
+        use wgpu::TextureFormat as F;
+        let caps = self.surface.get_capabilities(&self.adapter);
+        let fp16_offered = caps.formats.contains(&F::Rgba16Float);
+        let hdr_space = if fp16_offered {
+            hdr_output_color_space(caps.color_spaces(F::Rgba16Float))
+        } else {
+            None
+        };
+        let (format, hdr) =
+            surface_format::pick_surface_format(want_hdr && hdr_space.is_some(), &caps.formats);
+        let before = (self.config.format, self.hdr_active);
+        self.config.format = format;
+        // The colour space travels with the format (#658 T4). Off Windows both arms are
+        // `Auto`, so the config there is bit-identical to what it was before the tier.
+        self.config.color_space = match (hdr, hdr_space) {
+            (true, Some(cs)) => cs,
+            _ => wgpu::SurfaceColorSpace::Auto,
+        };
+        // The alpha mode was read at first light; a surface that has moved to another
+        // adapter may not offer it any more, and an unsupported one is a validation error.
+        if !caps.alpha_modes.contains(&self.config.alpha_mode) {
+            self.config.alpha_mode = caps
+                .alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto);
+        }
+        // Three scopes, one per filter, popped in reverse: a configure error is a
+        // validation error today, and the other two cost nothing to also catch.
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        self.surface.configure(device, &self.config);
+        let e_internal = pollster::block_on(internal.pop());
+        let e_oom = pollster::block_on(oom.pop());
+        let e_validation = pollster::block_on(validation.pop());
+        let err = e_internal.or(e_oom).or(e_validation);
+        // The grant is a function of (what was asked for, whether the configure raised),
+        // on BOTH paths: a failed configure clears `hdr_active` as well as `configured`, so
+        // nothing downstream — `apply_hdr_output` through `sync_hdr`'s wide-gamut-only
+        // branch, say — can read a stale grant and drive the platform HDR API over a
+        // swapchain that no longer exists. Pure and tested in `surface_format.rs`.
+        let grant = surface_format::Grant::after_configure(hdr, err.is_some());
+        self.configured = grant.configured;
+        self.hdr_active = grant.hdr_active;
+        if let Some(err) = err {
+            let msg = err.to_string();
+            if self.last_configure_error.as_deref() != Some(msg.as_str()) {
+                eprintln!(
+                    "surface: configure failed for {format:?} {}x{} — drawing nothing until \
+                     it succeeds. Offered: {:?}. {}",
+                    self.config.width,
+                    self.config.height,
+                    caps.formats,
+                    msg.trim(),
+                );
+                self.last_configure_error = Some(msg);
+            }
+            return Configure::Failed;
+        }
+        if self.last_configure_error.take().is_some() {
+            eprintln!("surface: configure recovered ({format:?}).");
+        }
+        let changed = before != (format, hdr);
+        if want_hdr && !hdr && (announce || changed) {
+            eprintln!("{}", surface_format::fallback_line(&caps.formats, format, fp16_offered));
+        }
+        Configure::Ok { changed }
+    }
 }
 
 /// The platform's HDR-output plumbing, chosen at compile time (organon#658 Tier 4).
@@ -203,68 +321,112 @@ impl VisualApp {
     /// reconfigure or colorspace change — and it must follow `surface.configure`, which can
     /// reset the metal layer (macOS) and moves the swapchain to a new colour space (Windows).
     ///
+    /// `on` is the **grant** — the request *and* an fp16 extended-linear swapchain actually
+    /// configured (organon#237). Asking the layer for EDR, or reading a display's headroom,
+    /// over an sRGB 8-bit swapchain would report a headroom the composite then re-expands
+    /// highlights into, on a surface that clamps at 1.0.
+    ///
     /// Was `apply_edr` until #658 Tier 4; "EDR" is macOS's word for it and this is no longer a
     /// macOS-only call.
     fn apply_hdr_output(&mut self) {
         let Some(g) = self.gfx.as_mut() else { return };
-        let (on, wide) = self.world.hdr_request();
+        let (want, wide) = self.world.hdr_request();
+        let on = want && g.hdr_active;
         let (headroom, wide_granted) =
             set_hdr_output(&g.window, &g.surface, &g.adapter, on, wide);
         g.hdr_max = if on { headroom } else { 1.0 };
         g.wide_granted = on && wide && wide_granted;
-        g.hdr_applied = (on, wide);
+    }
+
+    /// **Every `Surface::configure` in this binary goes through here** (organon#237): first
+    /// light, the HDR toggle, a resize, and a lost/outdated acquire. The format is chosen
+    /// from the capabilities read *now* (`WindowSurface::configure`), the headroom / layer
+    /// state is refreshed to match what was actually granted, and the `HDR output:` lines
+    /// are printed when the outcome moved or the caller asks (`announce`, the toggle).
+    ///
+    /// Returns whether the swapchain is usable. `false` means the configure raised an error
+    /// — already logged, never a panic — and the frame loop must not acquire until a later
+    /// call succeeds.
+    ///
+    /// The renderer's composite/FX/temporal pipelines are deliberately *not* rebuilt here: the
+    /// frame already rebuilds them whenever its target format differs from the last one
+    /// (`world.rs`, `set_surface_format`), which is exactly what a format change here produces
+    /// on the very next frame — and the same edge-detect is what lets a **mid-run** loss of
+    /// fp16 land as a fallback rather than a pipeline/target mismatch: the target format
+    /// reaches the frame from `config.format`, so the frame after a fallback configure draws
+    /// with pipelines built for the fallback.
+    fn configure_surface(&mut self, announce: bool) -> bool {
+        let want = self.world.hdr_request();
+        let (was_active, changed) = {
+            let Some(dev) = self.world.device() else { return false };
+            let Some(g) = self.gfx.as_mut() else { return false };
+            let was_active = g.hdr_active;
+            match g.configure(dev, want.0, announce) {
+                Configure::Failed => return false,
+                Configure::Ok { changed } => (was_active, changed),
+            }
+        };
+        // Layer tag / headroom must follow `configure()`. Only when HDR is or was in force:
+        // an SDR-only session never touches the metal layer, exactly as it never did.
+        if was_active || self.gfx.as_ref().is_some_and(|g| g.hdr_active) {
+            self.apply_hdr_output();
+        }
+        if announce || changed {
+            self.report_hdr_output(want);
+        }
+        true
+    }
+
+    /// The `HDR output:` state lines, printed from the **grant** rather than the request, so
+    /// they cannot claim EDR headroom while the fallback surface is in force. The fallback
+    /// itself is announced by `WindowSurface::configure`, which is the only place that knows
+    /// what the surface offered.
+    fn report_hdr_output(&self, want: (bool, bool)) {
+        let Some(g) = self.gfx.as_ref() else { return };
+        if want.0 && g.hdr_active {
+            eprintln!(
+                "HDR output: ON — EDR headroom {:.2}× SDR white{}. \
+                 (Needs a HDR display + OS HDR enabled to show extra range.)",
+                g.hdr_max,
+                if g.wide_granted { ", Rec.2020 wide gamut" } else { "" },
+            );
+            // Asked for the wide container and didn't get it. Say so once per toggle
+            // rather than leaving the checkbox looking effective — on Windows this is
+            // permanent for now (`hdr_windows::WIDE_GAMUT_GRANTED`).
+            if want.1 && !g.wide_granted {
+                eprintln!(
+                    "HDR output: Rec.2020 wide gamut unavailable on this platform — \
+                     output stays Rec.709 and hdr_vivid is inert."
+                );
+            }
+        } else if !want.0 {
+            eprintln!("HDR output: OFF (SDR / ACES).");
+        }
+        // `want.0 && !g.hdr_active`: the fallback line has just been printed by `configure`.
     }
 
     /// Swap the swapchain between the SDR sRGB surface and the `Rgba16Float` HDR one when the
     /// world's intent changes (**H**, or the editor's Renderer checkbox via IPC).
     ///
-    /// The renderer's composite/FX/temporal pipelines are deliberately *not* rebuilt here: the
-    /// frame already rebuilds them whenever its target format differs from the last one, which
-    /// is exactly what this produces on the very next frame.
+    /// A change of the *wide-gamut* bit alone re-tags the layer without touching the
+    /// swapchain (the tag lives on the layer on macOS, and is refused outright on Windows);
+    /// a change of the HDR bit reconfigures, through the one path every configure takes.
     fn sync_hdr(&mut self) {
         let want = self.world.hdr_request();
-        let Some(g) = self.gfx.as_mut() else { return };
+        let Some(g) = self.gfx.as_ref() else { return };
         if g.hdr_applied == want {
             return;
         }
-        let (on, _wide) = want;
-        if on && g.hdr_format.is_none() {
-            eprintln!("HDR output: unavailable — surface has no Rgba16Float format.");
-            g.hdr_applied = want; // don't retry every frame
-            return;
+        if g.hdr_applied.0 == want.0 {
+            self.apply_hdr_output();
+            self.report_hdr_output(want);
+        } else {
+            // A failed configure is already logged; `render` retries it every frame, with
+            // whatever the request is by then, so nothing is lost by recording the intent.
+            let _ = self.configure_surface(true);
         }
-        let format_changed = g.hdr_applied.0 != on;
-        if format_changed {
-            g.config.format = if on { g.hdr_format.unwrap() } else { g.sdr_format };
-            // The colour space travels with the format (#658 T4). Off Windows both sides of
-            // this are `Auto`, so the config is bit-identical to what it was before the tier.
-            g.config.color_space = if on { g.hdr_color_space } else { wgpu::SurfaceColorSpace::Auto };
-            // Reconfigure through a split borrow: `device` lives in the world's `Gfx`.
-            if let Some(dev) = self.world.device() {
-                g.surface.configure(dev, &g.config);
-            }
-        }
-        self.apply_hdr_output(); // layer config / headroom read must follow configure()
-        if let Some(g) = self.gfx.as_ref() {
-            if on {
-                eprintln!(
-                    "HDR output: ON — EDR headroom {:.2}× SDR white{}. \
-                     (Needs a HDR display + OS HDR enabled to show extra range.)",
-                    g.hdr_max,
-                    if g.wide_granted { ", Rec.2020 wide gamut" } else { "" },
-                );
-                // Asked for the wide container and didn't get it. Say so once per toggle
-                // rather than leaving the checkbox looking effective — on Windows this is
-                // permanent for now (`hdr_windows::WIDE_GAMUT_GRANTED`).
-                if want.1 && !g.wide_granted {
-                    eprintln!(
-                        "HDR output: Rec.2020 wide gamut unavailable on this platform — \
-                         output stays Rec.709 and hdr_vivid is inert."
-                    );
-                }
-            } else if format_changed {
-                eprintln!("HDR output: OFF (SDR / ACES).");
-            }
+        if let Some(g) = self.gfx.as_mut() {
+            g.hdr_applied = want;
         }
     }
 
@@ -274,19 +436,27 @@ impl VisualApp {
     /// `Occluded`/`Lost` handling in particular is a *surface* concern and now reads as one.
     fn render(&mut self) {
         self.sync_hdr();
+        // A swapchain whose last configure failed is not acquired from — wgpu treats that as
+        // fatal. Retry the configure (the surface may have come back) and skip the frame if
+        // it still refuses; a lock-screen process that draws nothing beats one that dies.
+        let configured = self.gfx.as_ref().is_some_and(|g| g.configured);
+        if !configured && !self.configure_surface(false) {
+            return;
+        }
         let Some(g) = self.gfx.as_ref() else { return };
-        let Some(dev) = self.world.device() else { return };
         let frame = match g.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             // wgpu 30: a hidden/covered window acquires as `Occluded` (29 blocked inside
             // nextDrawable instead). Reconfiguring won't un-occlude it — skip quietly.
             wgpu::CurrentSurfaceTexture::Occluded => return,
+            // `Outdated` / `Lost` / `Timeout` / `Validation`: the surface moved under us — a
+            // display change is the usual cause, and on Vulkan a display leaving HDR mode
+            // arrives exactly here, with `Rgba16Float` gone from the format list. So this
+            // reconfigure re-picks from the live capabilities rather than re-issuing the
+            // format that was valid at startup (#237).
             _ => {
-                g.surface.configure(dev, &g.config);
-                if self.world.hdr_request().0 {
-                    self.apply_hdr_output();
-                }
+                let _ = self.configure_surface(false);
                 return;
             }
         };
@@ -537,77 +707,65 @@ impl ApplicationHandler for VisualApp {
             );
         }
 
+        // The swapchain format is NOT chosen here (organon#237). `WindowSurface::configure`
+        // chooses it from the capabilities it reads at each configure — this first one
+        // included — because on Vulkan the list is a live property of the display the
+        // window is on, and a choice made once at startup was what the visual died re-issuing.
+        // `caps` is read here only for the alpha mode, which does not move.
         let caps = surface.get_capabilities(&adapter);
-        // SDR (default) format: an sRGB 8-bit surface, gamma-encoded by hardware.
-        let sdr_format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(caps.formats[0]);
-        // HDR format: an `Rgba16Float` surface, fed extended-linear radiance for
-        // EDR output. Only offered if the surface actually exposes it — *and*, since
-        // #658 T4, only if it will present that format in an extended-range linear
-        // colour space. The two are resolved together so they cannot disagree: a
-        // `Some` format always comes with a colour space the surface accepts for it.
-        let (hdr_format, hdr_color_space) = match caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| *f == wgpu::TextureFormat::Rgba16Float)
-            .and_then(|f| hdr_output_color_space(caps.color_spaces(f)).map(|cs| (f, cs)))
-        {
-            Some((f, cs)) => (Some(f), cs),
-            None => (None, wgpu::SurfaceColorSpace::Auto),
-        };
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: sdr_format,
+            // Placeholder, overwritten by the configure below before it reaches wgpu.
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode: caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
             // wgpu 30: Auto reproduces 29's historical behavior exactly
             // (ExtendedSrgbLinear for Rgba16Float — the EDR path hdr_macos.rs
-            // re-tags — else sRGB). Correct here regardless: the surface starts
-            // SDR and `sync_hdr` swaps in `hdr_color_space` with the HDR format.
+            // re-tags — else sRGB). `configure` swaps in the extended-linear space
+            // alongside the fp16 format when HDR is granted, and `Auto` otherwise.
             // Native colour-space selection is how Windows does HDR as of #658
             // T4 (`hdr_windows.rs`); replacing hdr_macos.rs with it on the Mac is
             // a separate change that needs Mac verification, per #658's scope.
             color_space: Default::default(),
         };
-        surface.configure(&device, &config);
-
+        let mut ws = WindowSurface {
+            window: window.clone(),
+            surface,
+            adapter,
+            config,
+            hdr_active: false,
+            configured: false,
+            last_configure_error: None,
+            hdr_applied: (false, false),
+            hdr_max: 1.0,
+            wide_granted: false,
+        };
+        // First light is SDR, as it always was: `sync_hdr` flips to the HDR surface on the
+        // first frame if the world already wants it. A failure here is logged by `configure`
+        // and retried by `render` — not a panic.
+        let _ = ws.configure(&device, false, false);
+        let format = ws.config.format;
 
         // #554 Tier 4 / #593 Tier 3 — the UI layer, built by the *host* because only the host
         // knows its platform backend. This one is winit's; route C's editor builds the same
         // layer over baseview. Built for the surface's current format; an HDR swap rebuilds the
         // pipeline per frame via `set_format`.
-        let ui = world::winit_platform::ui_layer(&device, window.clone(), sdr_format);
+        let ui = world::winit_platform::ui_layer(&device, window.clone(), format);
         self.world.attach_gpu(
             device,
             queue,
-            sdr_format,
+            format,
             Some(ui),
             coopmat_available,
             f16_available,
         );
         self.world.set_fullscreen_state(fullscreen);
-        self.gfx = Some(WindowSurface {
-            window,
-            surface,
-            adapter,
-            config,
-            sdr_format,
-            hdr_format,
-            hdr_color_space,
-            hdr_applied: (false, false),
-            hdr_max: 1.0,
-            wide_granted: false,
-        });
+        self.gfx = Some(ws);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -631,20 +789,20 @@ impl ApplicationHandler for VisualApp {
         // re-asserted afterwards. Read straight off the window rather than the event, so a
         // coalesced burst still lands on the final size.
         let inner = window.inner_size();
-        if let Some(g) = self.gfx.as_mut() {
-            if inner.width > 0
+        let resized = self.gfx.as_mut().is_some_and(|g| {
+            let moved = inner.width > 0
                 && inner.height > 0
-                && (g.config.width != inner.width || g.config.height != inner.height)
-            {
+                && (g.config.width != inner.width || g.config.height != inner.height);
+            if moved {
                 g.config.width = inner.width;
                 g.config.height = inner.height;
-                if let Some(dev) = self.world.device() {
-                    g.surface.configure(dev, &g.config);
-                }
-                if self.world.hdr_request().0 {
-                    self.apply_hdr_output();
-                }
             }
+            moved
+        });
+        if resized {
+            // Through the one configure path (#237): a resize is also how a window arriving
+            // on the other display, with other capabilities, first announces itself.
+            let _ = self.configure_surface(false);
         }
     }
 

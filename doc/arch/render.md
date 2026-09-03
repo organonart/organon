@@ -277,6 +277,40 @@ Three things about that table are load-bearing:
   swapchain is HDR10/**PQ**, and our composite writes linear. Reaching it means a PQ encode in
   `composite.wgsl`, which is exactly the shared-composite change #658 T4 promised not to make.
   So `bin/visual.rs` reports the *granted* gamut to the frame and `hdr_vivid` stays inert there.
+- **The swapchain format is chosen per `configure`, never once (organon#237).** The visual
+  died twice on the workstation, mid-run, in `Surface::configure` — *"Requested format
+  Rgba16Float is not in list of supported formats: [Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm,
+  Rgba8UnormSrgb, Rgb10a2Unorm]"* — because the format list had been read at first light and
+  `Rgba16Float` was in it then. On **Vulkan** that list is `vkGetPhysicalDeviceSurfaceFormatsKHR`,
+  a live answer about the display the window is on: NVIDIA advertises fp16 + extended-linear
+  only while that output is in HDR mode, so a monitor waking in SDR, the Windows HDR toggle, or
+  the window landing on the other display makes the swapchain `Outdated`, and the reconfigure
+  re-issued a format the surface no longer had. A validation error in `configure` goes to the
+  uncaptured-error handler, whose default is a panic. (DX12 cannot do this: its list is fixed,
+  fp16 always present, and the display leaving HDR shows up only as a `1.0` headroom.) Now
+  **every** configure in `organon-visual/src/main.rs` — first light, the **H** toggle, a
+  resize, a lost/outdated acquire — goes through `WindowSurface::configure`, which re-reads the
+  capabilities and picks with `surface_format::pick_surface_format`: `Rgba16Float` when HDR is
+  wanted *and* offered *and* presentable extended-linear; else the first **sRGB** format (the
+  SDR path's own choice, so HDR-off is byte-identical); else the first offered. The grant, not
+  the wish, is what reaches the frame — `hdr_active` gates the headroom read and the layer tag,
+  so `hdr_max` is `1.0` and the composite is in its SDR arm whenever the fallback is in force,
+  and the stderr line says so: `HDR output: surface offers no Rgba16Float — falling back to
+  Bgra8UnormSrgb; EDR is off (SDR / ACES). Offered: […]` (or *"offers Rgba16Float but no
+  extended-linear colour space for it"*, the Windows `Auto`-would-have-clamped case). The
+  `HDR output: ON — EDR headroom …` line is printed only from the grant. A **mid-run loss** of
+  fp16 therefore lands as a fallback, not a mismatch: the target format reaches the frame from
+  `config.format`, and the frame's existing edge-detect (`set_surface_format`, above) rebuilds
+  the composite/FX/temporal pipelines for it on the very next frame; the next reconfigure —
+  the display coming back, a resize — re-picks fp16 when it is offered again. The configure
+  itself runs inside error scopes: a failure is logged once, the frame loop draws nothing until
+  a configure succeeds, and the process stays alive — `doc/pbr_text_engine.md` §13's lock-screen
+  case is why that matters more than the picture.
+  ⚠️ **`Rgb10a2Unorm` is deliberately not in the ladder.** `composite.wgsl`'s SDR arm writes
+  linear and relies on the surface's sRGB OETF; there is no `Rgb10a2UnormSrgb`, so a 10-bit
+  swapchain would display the linear picture as if it were encoded — crushed, not banded.
+  Reaching 10-bit needs an sRGB encode in the composite for non-sRGB targets, which is a change
+  to the shared shader. Pinned by `surface_format.rs`'s tests, including the panic's exact list.
 
 The Mac route is untouched by all of this; unifying it onto the same wgpu API is a separate
 change that needs Mac verification (#658 says so explicitly).
