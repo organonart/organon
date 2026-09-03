@@ -59,6 +59,24 @@ The editor exposes far more than this — every control on every card is a host 
 | `cam_speed` | num | `0` … `1` | Auto-orbit speed — 0.1–0.3 is a slow, musical drift; 1 is a fast spin. |
 | `cam_kick` | num | `0` … `1` | How hard each beat kicks the orbit's angular velocity — the momentum 'pump' that makes the camera lurch on the beat, then coast. |
 | `cam_damping` | num | `0.01` … `0.99` | How quickly the beat-kick decays — low = a long coasting glide, high = a snappy settle back to the base speed. |
+| `glyph_cell_w` | num | `0.1` … `10` | World units per text column — the one world-unit anchor of the glyph look; every other text dimension is a multiple of it. Raise to make the whole grid larger in the room. |
+| `glyph_depth` | num | `0` … `2` | How far each glyph tile extrudes from the backplane, in column widths. 0 = a flat printed face; higher = chunky keycaps that cast their own shadows. |
+| `glyph_gap` | num | `0` … `1` | Gap between a tile's back and the backplane, in column widths — the contact-shadow well. A little gives the tiles lift; 0 seats them flush. |
+| `glyph_gain` | num | `0` … `12` | Emission gain of the lit cells in SDR-white units — 1 = the terminal's own brightness; above ~2 the phosphor crosses the bloom threshold on its own and starts to glow. |
+| `glyph_faceplate` | num | `0` … `1` | Grey level of every tile's faceplate — the near-black dielectric the glyph is lit through. Keep it low (~0.03) so dark cells read as dark; raise for a lighter, plastic-looking key. |
+| `glyph_back_r` | num | `0` … `1` | Backplane tint, red channel (0..1). With G and B it sets the colour of the plate the tiles sit on. |
+| `glyph_back_g` | num | `0` … `1` | Backplane tint, green channel (0..1). |
+| `glyph_back_b` | num | `0` … `1` | Backplane tint, blue channel (0..1). Slightly above R and G gives the plate a cool cast. |
+| `glyph_margin` | num | `0` … `10` | How far the backplane extends beyond the text grid, in column widths — the bezel around the text. |
+| `glyph_back_depth` | num | `0` … `2` | Thickness of the backplane slab, in column widths — matters when the camera tilts and its edge shows. |
+| `glyph_default_fg` | num | `0` … `1` | Grey used for a cell that has a symbol but no foreground colour of its own (the terminal default) — the brightness of plain, uncoloured text. |
+| `glyph_bevel` | num | `0` … `1` | The tiles' own rounded-box bevel — 0 = a sharp-edged tile, 1 = an ellipsoid. Separate from the cube field's `bevel`; a little (~0.1) is where light starts to catch the edges. |
+| `glyph_crown` | num | `0` … `1` | Face crown — a dome across each tile face so light moves across the flat of a key as the camera or lights move. 0 = flat. Normal-only: no geometry changes. |
+| `glyph_cam_hold` | flag | `0` … `1` | 1 = while a glyph ring is live, hold the camera on a rig fitted to the text grid (auto-orbit, drag and follow bypassed) so the frame is identical frame to frame and the path tracer can converge. 0 = the ring inherits the orbit camera. |
+| `glyph_cam_tilt` | num | `-60` … `60` | Camera pitch over the held text grid, in degrees — 0 = straight on; a few degrees is the letterpress look. Needs glyph_cam_hold = 1. |
+| `glyph_cam_zoom` | num | `0.25` … `4` | Multiplier on the fitted camera distance — 1 = the text grid fills the frame; below 1 moves in, above 1 pulls back. Needs glyph_cam_hold = 1. |
+| `capsule_core` | num | `0` … `1` | Inner emissive core radius as a fraction of the outer radius, for every Glass / Refractive capsule impostor (arms, plexus edges). 0 = off. A lit wire inside a glass tube. |
+| `capsule_absorb` | num | `0` … `8` | Beer–Lambert density per outer radius through a capsule's glass, in the instance's own colour — 0 = a clear shell; higher = a tinted, murkier tube. |
 | `scale_amp` | num | `0` … `0.5` | How much each node grows with its index — 0 = uniform cubes, higher tapers the field larger toward its far corners. (Original generator only.) |
 | `mat_hue` | num | `0` … `1` | Master material hue tint around the colour wheel (~0 red, ~0.33 green, ~0.6 blue) — the quickest way to recolour the whole look. |
 | `bell_physical` | num | `0` … `1` | Spherical-harmonics generator only: morphs the pulsing sphere into a soft-body JELLYFISH bell. 1 = a full jellyfish. |

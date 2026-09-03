@@ -8,7 +8,7 @@
 //!
 //! | Here | Reads |
 //! |---|---|
-//! | [`core_catalog`] | `param_table::pack_*::catalog` — 9 references |
+//! | [`core_catalog`] | `param_table::pack_*::catalog` — 12 references |
 //! | [`scene_features`] | `preset::{PresetValues, PresetScope, EditorTab}` — 4 |
 //!
 //! plus the three private helpers (`cam_speed_word`, `hue_word`, `enum_name`) that
@@ -55,6 +55,13 @@ pub fn core_catalog() -> Vec<CatSlot> {
     crate::param_table::pack_pbr::catalog(&mut out);
     crate::param_table::pack_surface_fx::catalog(&mut out);
     crate::param_table::pack_camera::catalog(&mut out);
+    // organon#217 T3 — the PBR text look, its held camera and the capsule core. Look
+    // and camera blocks, so they belong in the curated core; the tiles draw nothing
+    // without a producer, but the ids must be settable before one is (a screensaver
+    // launcher dresses the look first and starts the producer second).
+    crate::param_table::pack_glyph::catalog(&mut out);
+    crate::param_table::pack_glyph_cam::catalog(&mut out);
+    crate::param_table::pack_capsule::catalog(&mut out);
     out
 }
 
@@ -261,6 +268,67 @@ mod tests {
     /// direction (every listed id has a range and a read route, and none repeat) stays in
     /// the crate, where both `ACTUATABLE_IDS` and `id_range` live. Two assertions, two
     /// reasons to fail, two homes — the same split T3 made for `substrate_materials`.
+    /// organon#217 T3: the hand-written slot indices in `organon-agent`'s `current` /
+    /// `actuate` name the same slots as `param_table.rs`'s `pack_glyph` / `pack_glyph_cam`
+    /// / `pack_capsule` lists. The preset packers are the slot lists made executable, so a
+    /// `PresetValues` with a distinct marker in every T3 field, packed, must read back
+    /// field-for-field through the agent's routes — a swapped index would hand `organon
+    /// set glyph_gap` to the gain, silently. (The crate below cannot see the lists, so its
+    /// own test checks only that the routes are injective.)
+    #[test]
+    fn t3_routes_agree_with_the_param_table_slot_lists() {
+        use crate::ipc::Shared;
+        use crate::params::OrganicMathParams;
+        use crate::preset::PresetValues;
+        let mut pv = PresetValues::capture_params_only(&OrganicMathParams::default());
+        pv.glyph_cell_w = 0.11;
+        pv.glyph_depth = 0.12;
+        pv.glyph_gap = 0.13;
+        pv.glyph_gain = 0.14;
+        pv.glyph_faceplate = 0.15;
+        pv.glyph_back_r = 0.16;
+        pv.glyph_back_g = 0.17;
+        pv.glyph_back_b = 0.18;
+        pv.glyph_margin = 0.19;
+        pv.glyph_back_depth = 0.21;
+        pv.glyph_default_fg = 0.22;
+        pv.glyph_bevel = 0.23;
+        pv.glyph_crown = 0.24;
+        pv.glyph_cam_hold = true;
+        pv.glyph_cam_tilt = 0.26;
+        pv.glyph_cam_zoom = 0.27;
+        pv.capsule_core = 0.28;
+        pv.capsule_absorb = 0.29;
+
+        let mut s = Shared::default();
+        s.glyph = crate::param_table::pack_glyph_preset(&pv);
+        s.glyph_cam = crate::param_table::pack_glyph_cam_preset(&pv);
+        s.capsule = crate::param_table::pack_capsule_preset(&pv);
+
+        let want: [(&str, f32); 18] = [
+            ("glyph_cell_w", 0.11), ("glyph_depth", 0.12), ("glyph_gap", 0.13),
+            ("glyph_gain", 0.14), ("glyph_faceplate", 0.15), ("glyph_back_r", 0.16),
+            ("glyph_back_g", 0.17), ("glyph_back_b", 0.18), ("glyph_margin", 0.19),
+            ("glyph_back_depth", 0.21), ("glyph_default_fg", 0.22), ("glyph_bevel", 0.23),
+            ("glyph_crown", 0.24), ("glyph_cam_hold", 1.0), ("glyph_cam_tilt", 0.26),
+            ("glyph_cam_zoom", 0.27), ("capsule_core", 0.28), ("capsule_absorb", 0.29),
+        ];
+        for (id, v) in want {
+            assert_eq!(
+                current(&s, id),
+                Some(v),
+                "{id}: the agent's read route names a different slot than param_table packs"
+            );
+            let mut w = Shared::default();
+            assert!(actuate(&mut w, id, v), "{id} has no write route");
+            assert_eq!(
+                current(&w, id),
+                Some(v),
+                "{id}: write and read routes disagree"
+            );
+        }
+    }
+
     #[test]
     fn catalog_ids_with_a_range_are_all_actuatable() {
         for c in core_catalog() {

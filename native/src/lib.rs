@@ -7390,6 +7390,26 @@ fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &age
                 "cam_path" => set!(&params.cam_path, HostCamPath::from_index(v as usize)),
                 "mat_hue" => set!(&params.mat_hue, v),
                 "bell_physical" => set!(&params.bell_physical, v > 0.5),
+                // organon#217 T3: the PBR text look, its held camera (a bool from 0/1)
+                // and the capsule core — field name == agent id, as above.
+                "glyph_cell_w" => set!(&params.glyph_cell_w, v),
+                "glyph_depth" => set!(&params.glyph_depth, v),
+                "glyph_gap" => set!(&params.glyph_gap, v),
+                "glyph_gain" => set!(&params.glyph_gain, v),
+                "glyph_faceplate" => set!(&params.glyph_faceplate, v),
+                "glyph_back_r" => set!(&params.glyph_back_r, v),
+                "glyph_back_g" => set!(&params.glyph_back_g, v),
+                "glyph_back_b" => set!(&params.glyph_back_b, v),
+                "glyph_margin" => set!(&params.glyph_margin, v),
+                "glyph_back_depth" => set!(&params.glyph_back_depth, v),
+                "glyph_default_fg" => set!(&params.glyph_default_fg, v),
+                "glyph_bevel" => set!(&params.glyph_bevel, v),
+                "glyph_crown" => set!(&params.glyph_crown, v),
+                "glyph_cam_hold" => set!(&params.glyph_cam_hold, v > 0.5),
+                "glyph_cam_tilt" => set!(&params.glyph_cam_tilt, v),
+                "glyph_cam_zoom" => set!(&params.glyph_cam_zoom, v),
+                "capsule_core" => set!(&params.capsule_core, v),
+                "capsule_absorb" => set!(&params.capsule_absorb, v),
                 _ => {}
             }
         }
