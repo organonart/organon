@@ -84,6 +84,11 @@ in the editor) sets the whole first rung at once, and these are how you tune it 
 organon set glyph_cam_hold 1 glyph_bevel 0.12 glyph_crown 0.35 glyph_gain 3
 ```
 
+Whether a text look is still *readable* is a number, not a look: `native/verify.sh
+--legibility-only` renders `faceplate` over the Omarchy logo and gates it
+(`doc/pbr_text_engine.md` §9), and `legibility-gate <frame.png> <fixture.txt>` scores any
+snap by hand.
+
 `organon console …` is a **separate namespace, and it drives the console itself** —
 the lit surface behind the terminal text and the shape of the transcript, not the
 world in front of it:

@@ -45,6 +45,16 @@ image = { version = "0.25", default-features = false, features = ["hdr", "png"] 
 # compiler reports five. Trust the compiler.
 half = { version = "2", features = ["bytemuck"] }
 
+# PBR text T13 (organon#217): the legibility gate as a command — what `verify.sh
+# --legibility` runs over a snapped frame, and what a person runs over any PNG. A `[[bin]]`
+# rather than an example so `tests/legibility_gate.rs` can drive the built artifact through
+# `CARGO_BIN_EXE_legibility-gate` and pin its exit codes. No new dependency: it hand-parses
+# eight options, and everything it needs (`image`, `organon-core`'s ring reader) is
+# already above.
+[[bin]]
+name = "legibility-gate"
+path = "src/bin/legibility_gate.rs"
+
 [dev-dependencies]
 # `tests/wgsl.rs` validates this crate's 50 shaders offline. The RT MSL probe stays
 # upstream in `native/examples/` — it spans both crates (`rt_debug.wgsl` belongs to
