@@ -55,8 +55,8 @@ the frame draws — has **60 public fields**, and they are a *union of every spe
 `arm_caps`, `plexus_node_caps`/`plexus_edge_caps`/`plexus_batches`/four plexus buffers,
 `neural_batches`/`neural_capsule`, `creature`. Each producer added its own fields rather than
 becoming an instance of a general one, because there is no general one. `World::frame_body`
-is **7,471 lines of linear dispatch on one `GeneratorMode`** in a 14,062-line `world.rs`,
-and the stateful generators (Boids, FDTD, the bell) keep their state as fields on `World`.
+is **7,471 lines of linear dispatch on one `GeneratorMode`** in a 14,062-line `world.rs`
+(`native/organon-world`, its own crate since organon#49 T4c-ii), and the stateful generators (Boids, FDTD, the bell) keep their state as fields on `World`.
 None of that is a defect in the visualizer. It is what "one form, infinitely parameterized"
 looks like when it is honest, and it is precisely why it cannot be the foundation for
 "anything you could imagine that could be visualized."
@@ -374,10 +374,19 @@ plugin identity — this is a crate under the standalone products, never a VST3.
 - **The reconciler** needs `wgpu` and so cannot live in the tree crate. It lives in
   `organon-render` (it is the renderer's retained side) or in a crate directly above it; the
   crate graph in `doc/arch/topology.md` decides, and the same-change rule applies to it.
-- **`world.rs` is not the place**, and the reason is measured rather than aesthetic: it is
-  14,062 lines organised as one linear dispatch on one generator, and the reconciler is the
-  opposite shape. The visualizer reaches the framework through T3, not by the framework
-  growing inside it.
+  ⚠️ A crate directly above `organon-render` **already exists**: `native/organon-world`
+  depends on it behind the default-off `world` feature (`organon-world/Cargo.toml`,
+  `world = ["dep:organon-render", …]`; `ARCHITECTURE.md` §19.0). So the honest form of the
+  question is whether the reconciler goes *into* `organon-world`, and the next bullet is
+  the answer.
+- **`organon-world` is not the place**, and the reason is measured rather than aesthetic.
+  `world.rs` lives there (organon#49 T4c-ii), and it is 14,062 lines organised as one linear
+  dispatch on one generator; the crate is the visualizer's *app state* — its clocks, its
+  camera, its generator sims, its agent and CLI lanes — and the reconciler is the opposite
+  shape and a different subject. The visualizer reaches the framework through T3, not by
+  the framework growing inside it. A new crate between `organon-render` and `organon-world`
+  is therefore the likely home; `organon-world` would then depend on it the way it depends
+  on `organon-render` today.
 
 ---
 
@@ -388,8 +397,10 @@ plugin identity — this is a crate under the standalone products, never a VST3.
 **Measured** — read from this tree on 2026-09-03: `Surface<'a>` in
 `native/organon-render/src/render.rs` has 60 `pub` fields, and the field names quoted in §1
 are among them; `organon-render/Cargo.toml`'s dependencies are the six named in §3;
-`World::frame_body` starts at `world.rs:2365` in a 14,062-line file (its 7,471-line length is
-`ARCHITECTURE.md` §9's figure, not re-measured here); `Shared` in
+`World::frame_body` starts at `native/organon-world/src/world.rs:2365` in a 14,062-line file
+(its 7,471-line length is `ARCHITECTURE.md` §9's figure, not re-measured here);
+`organon-world/Cargo.toml` lists `organon-render` as optional and enables it from the
+`world` feature; `Shared` in
 `native/organon-core/src/ipc.rs` declares 177 `[f32; N]` blocks and `LAYOUT_VERSION` is
 `0x0_2_8_5`; the ~1,370 parameter count is `doc/equations_into_light.md`'s; `DemoMesh`,
 `DemoBatch`, `DemoLight` and `demo_scene`'s signature in `math.rs`; `RenderPath`'s variants;
