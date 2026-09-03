@@ -19,6 +19,7 @@
 #   ./verify.sh --strict            # a missing golden is a failure (for CI)
 #   ./verify.sh --legibility        # ALSO run the legibility gate (PBR text T13, below)
 #   ./verify.sh --legibility-only   # just the gate — the one command for a text-look PR
+#   ./verify.sh --legibility-only --text native/assets/text/organon.txt   # the gate on ORGANON
 #       [--effect NAME] [--seed N] [--converge S]   the producer's effect and seed, and
 #                                                    how long the held frame accumulates
 #
@@ -33,10 +34,12 @@
 #   verify/legibility/  THE LEGIBILITY GATE (PBR text T13, organon#217) — not a golden
 #                   and not a diff: doc/pbr_text_engine.md §9's two laws as a number,
 #                   over a frame the real renderer produced. `--legibility` starts the
-#                   text producer (`organon-glyphs`) on the Omarchy logo with a fixed
-#                   effect and seed, drives the `faceplate` look through the CLI
-#                   (`faceplate.scene` — as much of the rung as the vocabulary reaches;
-#                   its header lists the nine fields it cannot), waits for the effect to
+#                   text producer (`organon-glyphs`) on the Omarchy logo — or on
+#                   `--text <file>`, whose fixture is the same basename under
+#                   organon-render/tests/fixtures/ unless `--fixture` says otherwise —
+#                   with a fixed effect and seed, drives the `faceplate` look through
+#                   the CLI (`faceplate.scene` — the whole rung's look, since W19 put
+#                   the dark room's nine fields on the vocabulary), waits for the effect to
 #                   settle and the held frame to accumulate, snaps it TWICE, and runs
 #                   `legibility-gate` over the pair against `thresholds.toml`, with the
 #                   fixture's colours taken from the settled ring. Exit 1 below a
@@ -74,6 +77,15 @@ LEG_SEED=217
 LEG_CONVERGE=6
 LEG_SPREAD_WAIT=2
 LEG_SETTLE_TIMEOUT=90
+# What the gate runs on (W19): the producer's input (`--text`, or LEG_TEXT) and the
+# fixture the frame is judged against (`--fixture`, or LEG_FIXTURE). No text = derive the
+# producer input from the fixture (`legibility-gate --emit-text`), which is the Omarchy
+# default the shape check was written against; a text with no fixture looks for
+# `organon-render/tests/fixtures/<the same basename>`, so `--text …/organon.txt` finds
+# `organon.txt` there. The two must describe the same grid — the gate cross-checks the
+# fixture's shape against the ring cell for cell and refuses to measure otherwise.
+LEG_TEXT="${LEG_TEXT:-}"
+LEG_FIXTURE="${LEG_FIXTURE:-}"
 # macOS still ships bash 3.2, where `"${ARR[@]}"` on an EMPTY array under `set -u` is an
 # unbound-variable error. Hence the parallel counter and the `${ARR[@]+…}` guards below —
 # this script has to survive /bin/bash on the Mac, not just a modern Homebrew bash.
@@ -97,6 +109,8 @@ while [ $# -gt 0 ]; do
     --effect)        shift; LEG_EFFECT="${1:?--effect wants a ttfx effect name}" ;;
     --seed)          shift; LEG_SEED="${1:?--seed wants an integer}" ;;
     --converge)      shift; LEG_CONVERGE="${1:?--converge wants seconds}" ;;
+    --text)          shift; LEG_TEXT="${1:?--text wants a producer input file}" ;;
+    --fixture)       shift; LEG_FIXTURE="${1:?--fixture wants a legibility fixture}" ;;
     # Print the whole header block — from line 2 to the first non-comment line —
     # rather than a hardcoded range, which silently truncates whenever the header grows.
     -h|--help)       awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 0 ;;
@@ -511,16 +525,39 @@ done
 # tonemap — the display frame, not the HDR buffer. The gate's first line says so.
 legibility_step() {
   local name="legibility-faceplate"
-  local fixture="organon-render/tests/fixtures/omarchy-logo.txt"
+  # The fixture: `--fixture`, else the text's own basename under the fixtures dir, else
+  # the Omarchy logo. Resolved before anything runs so a missing one is a named refusal
+  # rather than a gate that "could not measure" ten seconds later.
+  local fixture="$LEG_FIXTURE"
+  if [ -z "$fixture" ]; then
+    if [ -n "$LEG_TEXT" ]; then
+      fixture="organon-render/tests/fixtures/$(basename "$LEG_TEXT")"
+    else
+      fixture="organon-render/tests/fixtures/omarchy-logo.txt"
+    fi
+  fi
+  if [ ! -f "$fixture" ]; then
+    record "$name" FAIL "—" "no legibility fixture at $fixture — pass --fixture, or add one in the T2 format (organon-render/src/legibility.rs)"
+    return
+  fi
+  local subject
+  subject=$(basename "$fixture" .txt)
   local thresholds="verify/legibility/thresholds.toml"
   local look="verify/legibility/faceplate.scene"
   local text="$OUT/legibility-input.txt"
   local cols rows
   cols=$(sed -n 's/^cols[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' "$fixture" | head -1)
   rows=$(sed -n 's/^rows[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' "$fixture" | head -1)
-  echo "── $name — the legibility gate over a real faceplate render (effect $LEG_EFFECT, seed $LEG_SEED, ${cols}x${rows})"
+  echo "── $name — the legibility gate over a real faceplate render of $subject (effect $LEG_EFFECT, seed $LEG_SEED, ${cols}x${rows})"
 
-  if ! "$GATE" --emit-text "$fixture" >"$text"; then
+  # The producer's input: the file named by `--text`, else the text the fixture itself
+  # implies (so there is no second copy of the logo to drift).
+  if [ -n "$LEG_TEXT" ]; then
+    if ! cp "$LEG_TEXT" "$text"; then
+      record "$name" FAIL "—" "could not read the producer input $LEG_TEXT"
+      return
+    fi
+  elif ! "$GATE" --emit-text "$fixture" >"$text"; then
     record "$name" FAIL "—" "could not derive the producer input from $fixture"
     return
   fi
@@ -584,7 +621,7 @@ legibility_step() {
     1) record "$name" FAIL "$summary" "**$verdict** — see $name.txt and diffs/$name-cells.png" ;;
     *) record "$name" FAIL "—" "the gate could not measure (exit $rc): $verdict" ;;
   esac
-  printf '%s\n' "$name|the legibility gate (PBR text T13): \`faceplate\` over the Omarchy logo, effect \`$LEG_EFFECT\` seed $LEG_SEED, two snaps ${LEG_SPREAD_WAIT}s apart after ${LEG_CONVERGE}s of accumulation. Numbers in \`$name.txt\`; the per-cell picture in \`diffs/$name-cells.png\`." >>"$NOTES"
+  printf '%s\n' "$name|the legibility gate (PBR text T13): \`faceplate\` over \`$subject\` (fixture \`$fixture\`), effect \`$LEG_EFFECT\` seed $LEG_SEED, two snaps ${LEG_SPREAD_WAIT}s apart after ${LEG_CONVERGE}s of accumulation. Numbers in \`$name.txt\`; the per-cell picture in \`diffs/$name-cells.png\`." >>"$NOTES"
 
   kill "$GLYPHS_PID" 2>/dev/null || true
   wait "$GLYPHS_PID" 2>/dev/null || true

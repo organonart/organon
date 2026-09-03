@@ -1,26 +1,22 @@
-# The look the legibility gate scores (PBR text T13, organon#217) — `faceplate`, as far
-# as the `organon` CLI can set it, plus the three departures the gate itself needs.
+# The look the legibility gate scores (PBR text T13, organon#217) — `faceplate`, set
+# through the `organon` CLI, plus the three departures the gate itself needs.
 #
 # Read by `verify.sh --legibility` with the same rules as `verify/scenes/*.scene`: one
 # `organon` command per line, `#` comments and blank lines ignored, shell-style quoting.
 # There are no `#!` directives here — this is not a golden scene; the judge is
 # `legibility-gate` against `thresholds.toml`, and the fixture is
-# `organon-render/tests/fixtures/omarchy-logo.txt` with its colours taken from the ring.
+# `organon-render/tests/fixtures/omarchy-logo.txt` (or the one `--text` names) with its
+# colours taken from the ring.
 #
-# ⚠️ THIS IS NOT THE WHOLE PRESET. `preset.rs::builtin_text_presets()` is the authority
-# for `faceplate`; the harness runs the visual with no writer, so a preset cannot be
-# recalled, and only ids on the vocabulary (`organon-agent::ACTUATABLE_IDS`) can be set.
-# Nine of the rung's fields are not on it and stay at the visual's defaults here:
-#   atmos_enabled=false  bg_visible=false      (the dark room — the sky stays behind the grid;
-#                                               it is outside the cells and the gate ignores it)
-#   fx_enabled=true      hal_amount=0.35       (halation — the CRT post pass stays off)
-#   ml_enabled=true      ml_intensity=1.0      ml_radius=2.0  ml_count=64  ml_restir=false
-#                                              (glyphs as lights — the pools on the backplane
-#                                               are not in this frame)
-# So the gate scores the faceplate TILES under the faceplate RIG, without its halation and
-# without its pools. Registering those ids (seven sites, per the CLI-vocab change) or a
-# harness that runs the standalone and recalls the preset would close the gap; until then
-# the README says which half is measured.
+# ⚠️ THIS IS A COPY OF THE PRESET, NOT THE PRESET. `preset.rs::builtin_text_presets()` is
+# the authority for `faceplate`; the harness runs the visual with no writer, so a preset
+# cannot be recalled, and this file restates the rung's look id by id. Until W19 nine of
+# its fields were off the vocabulary (`atmos_enabled`, `bg_visible`, `fx_enabled`,
+# `hal_amount`, `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) and
+# the gate scored the faceplate TILES under the faceplate RIG with the atmosphere sky
+# behind the grid, no halation and no pools; they are on it now, so the gate's own render
+# is the dark room the preset draws. When `faceplate` changes in `preset.rs`, change it
+# here in the same commit — nothing pins the two together.
 #
 # The three departures, deliberate:
 #   glyph_cam_tilt 0   — the preset tilts 6°; the gate's grid geometry is axis-aligned
@@ -42,17 +38,24 @@ set trans_amp_x 0 trans_amp_y 0 trans_amp_z 0
 set scale_amp 0
 set cam_path 0 cam_speed 0 cam_kick 0
 
-# The tiles (T3): bevel and crown, over the near-black dielectric under a thin coat.
+# The tiles (T3): bevel and crown, over the near-black dielectric under a thin coat, and
+# (T9) the phosphor's falloff toward the tile edge with every dark cell a low glass tile.
 set glyph_bevel 0.12 glyph_crown 0.35
+set glyph_profile 0.5 glyph_dark_tiles 1
 set metallic 0 roughness 0.22
 
 # The held, fitted camera — straight on for the gate (the preset says 6).
 set glyph_cam_hold 1 glyph_cam_tilt 0 glyph_cam_zoom 1
 set glyph_margin 0
 
-# The room: the IBL dimmed to a faint sheen (the atmosphere and background toggles are
-# not on the vocabulary — see the header).
-set env_intensity 0.15
+# The room (W19): no atmosphere sky, no backdrop, the IBL dimmed to a faint sheen — a
+# near-black room with the words on it.
+set atmos_enabled 0 bg_visible 0 env_intensity 0.15
+
+# The finishing: halation in the FX pass, and (T10) the glyphs as the brightest-64 point
+# lights, radius two column widths, brightest-N rather than ReSTIR on a held frame.
+set fx_enabled 1 hal_amount 0.35
+set ml_enabled 1 ml_intensity 1 ml_radius 2 ml_count 64 ml_restir 0
 
 # The rig (T10): a key from low on the right, a faint fill.
 set key_intensity 1.6 fill_intensity 0.25 elevation 15 azimuth 70

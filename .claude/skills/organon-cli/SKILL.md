@@ -85,12 +85,21 @@ in the editor) sets the whole first rung at once, and these are how you tune it 
 ```
 organon set glyph_cam_hold 1 glyph_bevel 0.12 glyph_crown 0.35 glyph_gain 3
 organon set glyph_profile 0.5 glyph_dark_tiles 1     # the spec-sheet tile: soft core, dark cells tiled
+organon set atmos_enabled 0 bg_visible 0 env_intensity 0.15   # the dark room: no sky, no backdrop
+organon set fx_enabled 1 hal_amount 0.35 ml_enabled 1 ml_intensity 1 ml_radius 2 ml_count 64 ml_restir 0
 ```
+
+A text demo is a near-black room with the words on it, never glyphs over the generated
+landscape or the atmosphere sky — the second and third lines above are `faceplate`'s dark
+room and its halation and glyph-lights, on the vocabulary since W19 (`atmos_enabled`,
+`bg_visible`, `fx_enabled`, `hal_amount`, `ml_enabled`, `ml_intensity`, `ml_radius`,
+`ml_count`, `ml_restir`). The demo text is `native/assets/text/organon.txt` — it says
+ORGANON — fed to `organon-glyphs --input` with `--cols 82 --rows 9`.
 
 Whether a text look is still *readable* is a number, not a look: `native/verify.sh
 --legibility-only` renders `faceplate` over the Omarchy logo and gates it
-(`doc/pbr_text_engine.md` §9), and `legibility-gate <frame.png> <fixture.txt>` scores any
-snap by hand.
+(`doc/pbr_text_engine.md` §9); `--text native/assets/text/organon.txt` gates ORGANON
+instead, and `legibility-gate <frame.png> <fixture.txt>` scores any snap by hand.
 
 `organon console …` is a **separate namespace, and it drives the console itself** —
 the lit surface behind the terminal text and the shape of the transcript, not the

@@ -216,3 +216,8 @@ CHANGELOG.md merge=union
 # substring and a Windows checkout with core.autocrlf=true turned `…\n` into `…\r\n`,
 # so the edit silently did nothing and the test failed only on that machine.
 native/organon-render/tests/fixtures/*.txt text eol=lf
+# The demo text the producer is fed (W19): the same byte-pinned shape as its fixture —
+# `verify.sh --legibility --text` hands the file to `organon-glyphs` as-is, and the gate
+# then checks the ring against the fixture cell for cell, so a CR on every row would be
+# 82 cells of text plus one of carriage return, and "could not measure".
+native/assets/text/*.txt text eol=lf

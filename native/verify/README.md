@@ -222,14 +222,20 @@ cross-check names the cell), a snap failed. The row is red with that reason and 
   compressed, not clipped and not linear: the ranking of cells survives, the gradient inside
   the text is squashed. The gate's `frame:` line says so on every run. A float snap is
   `snap.rs`'s to add; the thresholds file's comment says the numbers are of this frame.
-- **It is not the whole `faceplate` rung.** The harness runs the visual with no writer, so
-  no preset can be recalled, and only ids on the CLI vocabulary can be set. Nine of the
-  rung's fields are not (`atmos_enabled`, `bg_visible`, `fx_enabled`, `hal_amount`,
-  `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) — no halation, no
-  glyph pools, the sky behind the grid — and the gate render departs from the rung on
-  purpose in three places (`glyph_cam_tilt 0`: the geometry is axis-aligned; `glyph_margin
-  0`: so the grid, not the backplane, fills the frame; the clock frozen).
-  `faceplate.scene`'s header is the authority for the list.
+- **It is a copy of the `faceplate` rung, not the rung.** The harness runs the visual with
+  no writer, so no preset can be recalled: `faceplate.scene` restates the look id by id
+  through the CLI, and nothing pins it to `preset.rs` — change one, change the other. Until
+  W19 nine of the rung's fields were off the vocabulary (`atmos_enabled`, `bg_visible`,
+  `fx_enabled`, `hal_amount`, `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`,
+  `ml_restir`) and the gate scored the tiles with the sky behind the grid, no halation and
+  no glyph pools; they are on it now, so the gate's render is the dark room. The render
+  still departs from the rung on purpose in three places (`glyph_cam_tilt 0`: the geometry
+  is axis-aligned; `glyph_margin 0`: so the grid, not the backplane, fills the frame; the
+  clock frozen). `faceplate.scene`'s header is the authority for the list.
+- **The text is a choice.** `--text <file>` feeds the producer that file instead of the
+  text derived from the logo fixture, judged against `organon-render/tests/fixtures/<same
+  basename>` unless `--fixture` names another; `--text native/assets/text/organon.txt` is
+  the demo text, and its fixture is `organon.txt` beside the logo's.
 - **Determinism is measured, not assumed.** The held frame is path-traced and
   accumulating, so the two snaps are two noise realisations of one picture; `spread` is the
   largest change over the three judged numbers and `max_spread` bounds it. Per-cell

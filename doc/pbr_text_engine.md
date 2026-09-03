@@ -799,14 +799,18 @@ until it lands.
   `verify/legibility/thresholds.toml`, the fixture's colours read from the settled ring. Owns
   `verify.sh`, `verify/legibility/`, `organon-render/src/legibility_gate.rs` and its `[[bin]]`.
   ⚠️ **Not the HDR buffer** — `snap` writes the tonemapped 8-bit display frame and `snap.rs`
-  is the world's file, so the gate scores that and says so (§9). ⚠️ **Not the whole rung** —
-  the harness runs the visual with no writer, so no preset recall; nine `faceplate` fields
-  are off the CLI vocabulary (`atmos_enabled`, `bg_visible`, `fx_enabled`, `hal_amount`,
-  `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) and stay at defaults,
-  and the gate render is straight on (`glyph_cam_tilt 0`, the geometry being axis-aligned)
-  with `glyph_margin 0` so the grid rather than the backplane fills the frame. Registering
-  those ids, or a harness leg that runs the standalone, closes the gap. No GPU touched this;
-  the first real number is the coordinator's to take.
+  is the world's file, so the gate scores that and says so (§9). ⚠️ **Not the whole rung,
+  by two departures** — the harness runs the visual with no writer, so no preset recall:
+  `faceplate.scene` restates the rung id by id, and the gate render is straight on
+  (`glyph_cam_tilt 0`, the geometry being axis-aligned) with `glyph_margin 0` so the grid
+  rather than the backplane fills the frame. The nine fields that were off the CLI
+  vocabulary (`atmos_enabled`, `bg_visible`, `fx_enabled`, `hal_amount`, `ml_enabled`,
+  `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) **are on it since W19**, so the
+  gate's render is the dark room rather than the tiles over the atmosphere sky; the scene
+  file sets all nine. `--text native/assets/text/organon.txt` runs the gate on ORGANON
+  (fixture `organon.txt` beside the logo's). A harness leg that runs the standalone would
+  close the recall departure. No GPU touched this; the first real number is the
+  coordinator's to take.
 - **T14 — the preset ladder. Landed** (`main @ 997cd96` + this change): `nixie`, `foundry`,
   `anodized`, `bottled`, `cathode` as preset data over T3's knobs and T6's core, seeded under
   `seeded_text_v3` beside `faceplate`. §10.1 is the per-rung ledger — what each is built from

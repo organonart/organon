@@ -559,9 +559,32 @@ pub fn catalog_entries() -> Vec<(&'static str, &'static str, Option<(f32, f32)>)
     for c in agent::core_catalog() {
         out.push((c.id, kind_str(c.kind), agent::id_range(c.id)));
     }
-    for id in agent::ACTUATABLE_IDS {
-        if !out.iter().any(|(i, _, _)| i == id) {
-            out.push((id, "num", agent::id_range(id)));
+    // The routes outside the curated blocks — `mat_hue`, `tempo`, `bell_physical`, and
+    // (organon#217 W19) the dark room's `atmos_enabled` / `bg_visible` / `fx_enabled` /
+    // `hal_amount`. Their KIND is read off the slot lists through
+    // `console_catalog::slot_facts`, the same walk the console's control facts use: this
+    // arm hard-coded "num" until W19, which put `bell_physical num 0 .. 1` in `organon
+    // catalog` and in `doc/reference/parameters.md` for a `BoolParam`, and would have
+    // done the same to three of the nine dark-room ids and to `ml_count`, an `IntParam`.
+    // `kinds_match_the_slot_lists` pins both halves. An id the walk does not reach
+    // (there is none today) would still print as "num" rather than vanish.
+    let outside: Vec<&'static str> = agent::ACTUATABLE_IDS
+        .iter()
+        .copied()
+        .filter(|id| !out.iter().any(|(i, _, _)| i == id))
+        .collect();
+    if !outside.is_empty() {
+        use crate::console_catalog::FactKind;
+        let p = crate::params::OrganicMathParams::default();
+        let facts = crate::console_catalog::slot_facts(&p);
+        for id in outside {
+            let kind = match facts.iter().find(|f| f.id == id).map(|f| f.kind) {
+                Some(FactKind::Int) => "int",
+                Some(FactKind::Bool) => "flag",
+                Some(FactKind::Enum) => "enum",
+                Some(FactKind::Float) | None => "num",
+            };
+            out.push((id, kind, agent::id_range(id)));
         }
     }
     out
@@ -1388,9 +1411,15 @@ mod tests {
             glyph_back_r, glyph_back_g, glyph_back_b, glyph_margin, glyph_back_depth,
             glyph_default_fg, glyph_bevel, glyph_crown, glyph_profile, // (T9: profile)
             glyph_cam_tilt, glyph_cam_zoom, capsule_core, capsule_absorb,
+            // organon#217 T13 / #240 — the halation and the glyph-lights.
+            hal_amount, ml_intensity, ml_radius,
         );
-        int!(loop_count_x, loop_count_y, loop_count_z, loop_count_q);
-        boolean!(bell_physical, animate, pulse, glyph_cam_hold, glyph_dark_tiles);
+        int!(loop_count_x, loop_count_y, loop_count_z, loop_count_q, ml_count);
+        boolean!(
+            bell_physical, animate, pulse, glyph_cam_hold, glyph_dark_tiles, //
+            // organon#217 T13 / #240 — the dark room's switches.
+            atmos_enabled, bg_visible, fx_enabled, ml_enabled, ml_restir,
+        );
         choice!(
             cam_path: HostCamPath,
             rot_func: HostFuncName,
