@@ -7145,51 +7145,130 @@ fn text_seed_marker() -> PathBuf {
         .join("OrganicMath");
     let _ = std::fs::create_dir_all(&dir);
     // v2 (organon#217 T9): `faceplate` gained the emission profile and the dark tiles.
-    // A bump replaces the FACTORY-SHAPED rung a v1 store carries; see `seed_text_into`.
-    dir.join("seeded_text_v2")
+    // v3 (organon#217 T14): the other five rungs of §10's ladder — `nixie`, `foundry`,
+    // `anodized`, `bottled`, `cathode`. A bump replaces the FACTORY-SHAPED rungs an
+    // earlier marker wrote and appends the rest; see `seed_text_into` and
+    // `TEXT_RUNGS_SEEDED_BEFORE`.
+    dir.join("seeded_text_v3")
 }
 
-/// The factory PBR-text presets (organon#217 T3 — `doc/pbr_text_engine.md` §10's
-/// ladder). One rung today, **`faceplate`**: the classic done properly — phosphor
-/// emission behind a thin clearcoat, a slight bevel and face crown so light moves
-/// across each tile, halation, a dark room so the grid is not read against fog over
-/// terrain, and the **held camera** so T5's converge-on-hold can converge. Built as
-/// deltas on the factory default capture, exactly as the Rails rides are, so every
-/// look control not named stays at its (T1) default and future params inherit theirs.
+/// The rung names every marker **before** the current one could have written. At a
+/// bump this is the list of names `seed_text_into` may replace in place; a factory
+/// rung not on it has never been seeded, so an entry of that name in a store — whatever
+/// its shape — is the user's and is kept. ⚠️ **Grows at every bump**: when `vN+1`
+/// amends a rung first seeded at `vN`, that name goes here or the amendment never
+/// reaches a store that seeded at `vN`. Today `v3` follows `v1`/`v2`, which wrote
+/// `faceplate` alone.
+const TEXT_RUNGS_SEEDED_BEFORE: &[&str] = &["faceplate"];
+
+/// The factory PBR-text presets — `doc/pbr_text_engine.md` §10's ladder, all six rungs
+/// (organon#217 T3 seeded `faceplate`; T14 the other five). Each is built as deltas on
+/// the factory default capture, exactly as the Rails rides are, so every control not
+/// named stays at its default and future params inherit theirs. Every rung shares the
+/// room `faceplate` measured on the first GPU look — the **held camera** (T5 cannot
+/// converge under the orbit), the orbit path off, the physical atmosphere off and the
+/// background hidden (the default sky reads as fog over terrain), a dimmed IBL so dark
+/// cells still show the room (§4.1), and the FX pass on for halation — and each then
+/// departs in its own direction:
 ///
-/// ⚠️ **What this preset cannot carry, and why.** TAA is `temporal[0]`, a param-only
+/// - **`faceplate`** — the classic done properly: phosphor emission behind a thin
+///   clearcoat, a slight bevel and face crown, every cell a tile, glyphs as lights.
+/// - **`nixie`** — each cell a **Glass** envelope over its phosphor: a deeper, domed
+///   tile whose emission is gathered toward a filament-thin core, with the tile glass
+///   path's RGB-split dispersion and a warm halation. ⚠️ The T6 capsule core is **not**
+///   set here, because it cannot reach a tile: `Shared.capsule` is read only by the
+///   capsule impostor draw (`particles.wgsl::fs_capsule`), and a tile is an instanced
+///   cube. The filament *inside* the envelope is the rung's missing piece — the cube
+///   glass branch adds the emission at the surface, not behind it.
+/// - **`foundry`** — hot metal type: a dark rough metal with the **blackbody**
+///   incandescence lane on at a dull cherry, the effect's own emission at low gain and
+///   gathered to the slug's centre. ⚠️ §10 wants the cell's *value* to drive
+///   temperature; no lane does that — `cube.wgsl`'s `blackbody(u.emit.w) * u.emit.z` is
+///   a per-draw uniform, so the ember floor is the same on every tile and on the
+///   backplane. The per-instance `emit.w` is a gain, not a Kelvin.
+/// - **`anodized`** — thin-film iridescence over a dark metal: a mid-grey metallic
+///   faceplate with the **iridescence** lobe up, a crown so `n·v` rolls across each
+///   tile (the lobe is keyed on it), and the emission held low so the film is what you
+///   see. ⚠️ Not a material type — `MaterialType` has no thin-film variant; and the
+///   *physical* film model (`film_thickness`, Airy) reaches only the Glass/Refractive
+///   branch, so a metal gets the view-angle lobe. Nothing maps value → thickness.
+/// - **`bottled`** — the **Plexus** surface as glass rods: while a ring is live the
+///   tiles are the node cloud (`world.rs` runs the plexus pass after the grid lowers),
+///   so with impostors on every lit cell is a Glass bead and every adjacent pair a
+///   Glass rod, each showing the T6 **coaxial core** through its shell, under a camera
+///   tilted to look along them. Dark tiles off, or every cell is a node and the web is
+///   a lattice.
+/// - **`cathode`** — the same web as circuitry: emissive nodes on thin wires, the
+///   letterform emerging from the wiring.
+///
+/// ⚠️ **What the two plexus rungs cannot do yet, measured in `world.rs`.** The plexus
+/// pass takes the tiles' **tints** — the faceplate grey — and drops their emission, so
+/// the web is monochrome: both rungs raise `glyph_faceplate` to a mid grey so the beads
+/// and rods have an albedo to glow with, and the effect's colours are lost. A hue lane
+/// cannot help (`apply_hsv` on a grey is a grey). Proximity has no glyph identity, so
+/// the wiring is by distance — at 2.05 spacings the four neighbours of a stroke, which
+/// also bridges a one-column gap (the same 2.0 as a vertical neighbour on a 2:1 cell).
+/// The backplane instance is a node too, and above `NODE_CAP` (1400) lit cells the web
+/// keeps an evenly-spread subset. Glyphs-as-lights are off in both: the impostor path
+/// empties `instances`, so there is nothing to lower. And no dispersion reaches a rod —
+/// `glass_dispersion` is the cube path's, and the path tracer's spectral lane traces the
+/// TLAS, which the impostors are not in.
+///
+/// ⚠️ **What no preset can carry, and why.** TAA is `temporal[0]`, a param-only
 /// block that no preset captures (a Settings matter), so §8's "do not use TAA" is met
 /// by TAA's default of OFF rather than by this file — a session that switched TAA on
 /// keeps it on through a recall. MSAA is Settings too. And the path tracer's own
 /// toggle is a session state, not a look; the dwell is traced by T5's handover, not by
-/// this preset asking for it.
+/// a preset asking for it. Nor can a look recolour the effect: the ring supplies each
+/// cell's colour (§4), and a rung reaches it only through `glyph_default_fg` (the grey a
+/// cell with no colour of its own draws in) and `glyph_gain`.
 ///
-/// ⚠️ Named `faceplate` **literally** — the ladder's word, not a namespaced "Text —
-/// faceplate" — so `organon console preset load faceplate` and the editor's list
-/// need no guessing; the seed only appends when no preset of that name exists, so a
-/// user's own `faceplate` is never replaced.
+/// ⚠️ Named **literally** — the ladder's words, not a namespaced "Text — nixie" — so
+/// `organon console preset load nixie` and the editor's list need no guessing.
 ///
-/// ⚠️ **Amending this rung in place reaches a store that has already seeded only through
-/// a marker bump.** The seed is one-shot: a store that carries `faceplate` keeps the
-/// values it was seeded with and the marker keeps the seed from running again — T10
-/// amended the rung (lights, rig) under `seeded_text_v1` and found exactly that. So the
-/// T9 wire bumped it to `seeded_text_v2`, and [`seed_text_into`] at a bump **replaces
-/// the factory-shaped `faceplate`** — the entry with no stated `exposed` set, which is
-/// what [`Preset::unstated`] writes here and what an editor save ([`Preset::capture`])
-/// never does — while a `faceplate` a person has captured over is theirs and stays. That
-/// keeps the promise above (a user's own is never replaced) and still delivers the
-/// amended rung to every store nobody has edited. ⚠️ The rails precedent
-/// (`seed_rails_presets` at `v2`) replaces by *name*, which would have taken a user's
-/// `faceplate` with it; the `exposed` discriminator is what this one adds. The next
-/// amendment bumps to `v3` the same way — the marker name is the only line to touch.
+/// ⚠️ **Amending a rung in place reaches a store that has already seeded only through
+/// a marker bump.** The seed is one-shot: a store that carries a rung keeps the values
+/// it was seeded with and the marker keeps the seed from running again — T10 amended
+/// `faceplate` (lights, rig) under `seeded_text_v1` and found exactly that. So T9 bumped
+/// to `seeded_text_v2`, T14 to `v3`, and [`seed_text_into`] at a bump **replaces a
+/// factory-shaped rung** — an entry with no stated `exposed` set, which is what
+/// [`Preset::unstated`] writes here and what an editor save ([`Preset::capture`]) never
+/// does — while one a person has captured over is theirs and stays. ⚠️ The `exposed`
+/// discriminator alone is not enough for a name that has **never been seeded**: a
+/// preset saved before organon#124 has no `exposed` set either, so a user's own `nixie`
+/// from that era is indistinguishable from a factory one by shape. It is distinguishable
+/// by history — no marker before `v3` ever wrote `nixie` — which is what
+/// [`TEXT_RUNGS_SEEDED_BEFORE`] records: only a name an earlier marker wrote is ever
+/// replaced. The rails precedent (`seed_rails_presets` at `v2`) replaces by *name*,
+/// which would have taken a user's `faceplate` with it. The next amendment bumps to
+/// `v4`, adds every name `v3` wrote to that list, and touches nothing else.
 pub fn builtin_text_presets() -> Vec<Preset> {
     let base = PresetValues::capture(&OrganicMathParams::default());
+    // The room every rung shares — what the first GPU look settled (§15.2): a held,
+    // fitted camera (a Motion control: T5 cannot converge under the orbit), the orbit
+    // path off so the preset is still even with no ring live, the physical atmosphere
+    // off and the background hidden (the default sky behind the grid reads as fog over
+    // terrain), the IBL dimmed to a faint sheen so dark cells still show the room
+    // (§4.1) without lighting the backplane, and the FX pass on because halation lives
+    // there. A rung that wants more room (glass, a film) raises `env_intensity` from
+    // here; none goes back to the default.
+    let room = |v: &mut PresetValues| {
+        v.glyph_cam_hold = true;
+        v.glyph_cam_tilt = 6.0;
+        v.glyph_cam_zoom = 1.0;
+        v.cam_path = crate::params::CamPath::Off.to_u32();
+        v.atmos_enabled = false;
+        v.bg_visible = false;
+        v.env_intensity = 0.15;
+        v.fx_enabled = true;
+    };
     let mk = |name: &str, f: &dyn Fn(&mut PresetValues)| -> Preset {
         let mut v = base.clone();
+        room(&mut v);
         f(&mut v);
         Preset::unstated(name, v)
     };
-    vec![mk("faceplate", &|v| {
+    let faceplate = mk("faceplate", &|v| {
         // The tiles: T1's look with the two T3 additions that give a flat tile a
         // varying normal — a slight bevel (the rim) and a crown (the roll).
         v.glyph_bevel = 0.12;
@@ -7204,21 +7283,9 @@ pub fn builtin_text_presets() -> Vec<Preset> {
         v.mat_type = crate::params::MaterialType::Clearcoat.to_u32();
         v.metallic = 0.0;
         v.roughness = 0.22;
-        // The held, fitted camera, tilted a few degrees (§5.1's letterpress) — and the
-        // auto-orbit path off, so the preset is still even with no ring live.
-        v.glyph_cam_hold = true;
-        v.glyph_cam_tilt = 6.0;
-        v.glyph_cam_zoom = 1.0;
-        v.cam_path = crate::params::CamPath::Off.to_u32();
-        // A dark room: the physical atmosphere off and the background hidden (measured
-        // on the first GPU look: the default sky behind the grid reads as fog over
-        // terrain), the IBL dimmed to a faint sheen so dark cells still show the room
-        // (§4.1) without lighting the backplane.
-        v.atmos_enabled = false;
-        v.bg_visible = false;
-        v.env_intensity = 0.15;
-        // CRT finishing that already exists: halation (`fx.wgsl`), gated by the FX pass.
-        v.fx_enabled = true;
+        // The camera (held, 6° — §5.1's letterpress), the dark room and the FX pass are
+        // `room`'s, shared by every rung; this rung takes them as they are.
+        // CRT finishing that already exists: halation (`fx.wgsl`), in the FX pass.
         v.hal_amount = 0.35;
         // organon#217 T10 — glyphs as lights (§4.1): the brightest-N point lights, fed
         // from the grid's EMISSION while a ring is live (`world.rs`), so the green pools
@@ -7244,7 +7311,221 @@ pub fn builtin_text_presets() -> Vec<Preset> {
         v.fill_intensity = 0.25;
         v.elevation = 15.0;
         v.azimuth = 70.0;
-    })]
+    });
+
+    // organon#217 T14 — the ladder's other five rungs (§10), as data over the knobs
+    // that exist. Three are tile rungs (the cube path: material, emission, the tile's
+    // own shape) and two are Plexus rungs (the tiles as a node cloud, drawn as capsule
+    // impostors — the one draw the T6 core reaches). Each names, in place, the knob it
+    // is missing; the function doc carries the measurements behind those.
+
+    // `nixie` — each cell a glass envelope with a phosphor inside it, a warm glow.
+    let nixie = mk("nixie", &|v| {
+        // The envelope: Glass (the tile shows the room THROUGH itself, Fresnel at the
+        // rim), polished, a common soda-lime index.
+        v.mat_type = crate::params::MaterialType::Glass.to_u32();
+        v.ior = 1.5;
+        v.metallic = 0.0;
+        v.roughness = 0.12;
+        // A bulb, not a slab: deeper than T1's 0.18, a stronger bevel, and a high
+        // crown so the face domes and the rim highlight rolls across it.
+        v.glyph_depth = 0.45;
+        v.glyph_gap = 0.1;
+        v.glyph_bevel = 0.25;
+        v.glyph_crown = 0.7;
+        v.glyph_faceplate = 0.02;
+        // The filament: the phosphor at high gain, gathered hard toward the tile's
+        // centre by the emission profile (0.85: a thin bright core, the envelope's rim
+        // dark glass), and every cell an envelope — an unlit one shows the room.
+        v.glyph_gain = 4.5;
+        v.glyph_profile = 0.85;
+        v.glyph_dark_tiles = true;
+        v.glyph_default_fg = 0.95;
+        // The one dispersion that reaches a tile: the cube glass branch's RGB split of
+        // what it refracts (`cube.wgsl` `glass_dispersion()`). Faint — the room is dark.
+        v.glass_dispersion = 0.12;
+        v.env_intensity = 0.2;
+        // Neon bleeds warm: halation at full warmth, a little bloom.
+        v.hal_amount = 0.5;
+        v.hal_warmth = 1.0;
+        v.bloom_intensity = 0.12;
+        // Glyphs as lights (T10): each tube pools its colour onto the backplane; a
+        // tighter pool than `faceplate`'s, and a low key so the envelopes catch a
+        // highlight without washing the glow.
+        v.ml_enabled = true;
+        v.ml_intensity = 1.0;
+        v.ml_radius = 1.5;
+        v.ml_count = 64;
+        v.ml_restir = false;
+        v.key_intensity = 0.8;
+        v.fill_intensity = 0.15;
+        v.elevation = 20.0;
+        v.azimuth = 60.0;
+        // ⚠️ `capsule_core` / `capsule_absorb` deliberately NOT set: read only by the
+        // capsule impostor draw, never by a tile. See the function doc.
+    });
+
+    // `foundry` — cooling hot metal type: dark rough iron with an ember in it.
+    let foundry = mk("foundry", &|v| {
+        // The slug: a dark, rough metal. Faceplate 0.22 is the metal's F0 (a metal's
+        // albedo IS its reflectance), so it reads as iron rather than a black mirror.
+        v.mat_type = crate::params::MaterialType::Standard.to_u32();
+        v.metallic = 1.0;
+        v.roughness = 0.55;
+        v.glyph_faceplate = 0.22;
+        v.glyph_depth = 0.3;
+        v.glyph_bevel = 0.3;
+        v.glyph_crown = 0.2;
+        // The heat: the blackbody incandescence lane at a dull cherry (1600 K), low
+        // amount — an ember floor under everything the draw shades. ⚠️ Per-draw: the
+        // same on every tile and on the backplane; the cell's VALUE cannot drive it.
+        v.incandescence = 0.12;
+        v.temperature = 1600.0;
+        // The effect's own emission at low gain, gathered to the slug's centre (0.9:
+        // the rim has cooled, the middle has not), and every cell a slug — a dark one
+        // is cold type.
+        v.glyph_gain = 1.4;
+        v.glyph_profile = 0.9;
+        v.glyph_dark_tiles = true;
+        v.glyph_default_fg = 0.8;
+        v.env_intensity = 0.1;
+        // Heat haze: warm halation, a little bloom.
+        v.hal_amount = 0.6;
+        v.hal_warmth = 1.0;
+        v.bloom_intensity = 0.15;
+        // Glyphs as lights, a wider pool (hot metal warms what is near it), a low
+        // raking key so the rough slugs show their grain.
+        v.ml_enabled = true;
+        v.ml_intensity = 1.0;
+        v.ml_radius = 2.5;
+        v.ml_count = 64;
+        v.ml_restir = false;
+        v.key_intensity = 1.2;
+        v.fill_intensity = 0.2;
+        v.elevation = 12.0;
+        v.azimuth = 70.0;
+    });
+
+    // `anodized` — thin-film iridescence over dark metal; colour from the film.
+    let anodized = mk("anodized", &|v| {
+        // The metal: mid-grey F0 (anodised aluminium is a bright metal under a
+        // coloured oxide; 0.4 keeps it dark), smooth enough that the film's bands
+        // stay sharp.
+        v.mat_type = crate::params::MaterialType::Standard.to_u32();
+        v.metallic = 1.0;
+        v.roughness = 0.28;
+        v.glyph_faceplate = 0.4;
+        // The film: the iridescence lobe at full amount, a tight band scale, the hue
+        // shifted off the default. ⚠️ The view-angle lobe (`u.irid`), not the physical
+        // Airy model — that reaches only Glass/Refractive. The crown is what paints
+        // it: the lobe is keyed on n·v, and a crown rolls n·v across each tile.
+        v.iridescence = 1.0;
+        v.irid_scale = 3.5;
+        v.irid_shift = 0.2;
+        v.glyph_bevel = 0.2;
+        v.glyph_crown = 0.45;
+        // Emission held LOW so the film is what you see, not the phosphor; a soft
+        // profile; every cell a tile (the film is on the dark cells too).
+        v.glyph_gain = 0.9;
+        v.glyph_profile = 0.4;
+        v.glyph_dark_tiles = true;
+        v.glyph_default_fg = 0.85;
+        // A film needs a room to reflect (`irid_tint` multiplies the IBL specular);
+        // still a dark room, but the brightest of the six.
+        v.env_intensity = 0.4;
+        v.hal_amount = 0.15;
+        // The rig: a strong key from one side (the film's colour is in the
+        // highlight), the pools small.
+        v.ml_enabled = true;
+        v.ml_intensity = 0.8;
+        v.ml_radius = 2.0;
+        v.ml_count = 64;
+        v.ml_restir = false;
+        v.key_intensity = 1.8;
+        v.fill_intensity = 0.3;
+        v.elevation = 25.0;
+        v.azimuth = 60.0;
+    });
+
+    // The Plexus web, shared by `bottled` and `cathode`: the tiles as a node cloud,
+    // impostors on (nodes as sphere impostors, edges as capsules — the T6 draw),
+    // wired to the four neighbours of a stroke. Link radius 2.05 spacings: a
+    // horizontal neighbour is 1.0 cell widths away, a vertical one 2.0 (a 2:1 cell),
+    // a diagonal 2.24; four links, nearest first. Dark tiles OFF — a node per cell
+    // would be a lattice — and glyphs-as-lights off: the impostor path empties
+    // `instances`, so there is nothing to lower. The faceplate raised to a mid grey
+    // because the plexus reads the tiles' TINT, not their emission: it is the only
+    // colour the beads and rods have.
+    let web = |v: &mut PresetValues| {
+        v.surface_mode = crate::params::SurfaceMode::Plexus.to_u32();
+        v.plexus_impostor = true;
+        v.plexus_edges = true;
+        v.plexus_radius = 2.05;
+        v.plexus_links = 4.0;
+        v.plexus_signal = false;
+        v.glyph_dark_tiles = false;
+        v.glyph_profile = 0.0;
+        v.glyph_faceplate = 0.55;
+        v.ml_enabled = false;
+    };
+
+    // `bottled` — glass rods with emissive cores, seen down their length.
+    let bottled = mk("bottled", &|v| {
+        web(v);
+        // Glass beads on Glass rods, both showing the T6 coaxial core: the values the
+        // T6 worker looked at — a core 0.4 of the radius, absorption 1.5 in the
+        // instance's colour over the shell.
+        v.plexus_node_type = crate::params::MaterialType::Glass.to_u32();
+        v.plexus_edge_type = crate::params::MaterialType::Glass.to_u32();
+        v.plexus_node_ior = 1.5;
+        v.plexus_edge_ior = 1.5;
+        v.plexus_node_rough = 0.1;
+        v.plexus_edge_rough = 0.08;
+        v.plexus_node_metallic = 0.0;
+        v.plexus_edge_metallic = 0.0;
+        v.capsule_core = 0.4;
+        v.capsule_absorb = 1.5;
+        // Fat rods (0.16 spacings) so there is a shell to look through; the core is
+        // the impostor's emission (`albedo × emissive`), so the emissive is what
+        // lights it.
+        v.plexus_node_radius = 0.32;
+        v.plexus_edge_radius = 0.16;
+        v.plexus_node_emissive = 6.0;
+        v.plexus_edge_emissive = 6.0;
+        v.plexus_node_val = 1.0;
+        v.plexus_edge_val = 1.0;
+        // The camera tilted steeply (§11: "so you see down them") — the rods lie in
+        // the grid plane, so a 55° pitch looks along them; the param clamps at 60,
+        // the rig at `PITCH_LIMIT` (86°).
+        v.glyph_cam_tilt = 55.0;
+        // Glass wants a room to refract and reflect.
+        v.env_intensity = 0.3;
+        v.hal_amount = 0.3;
+    });
+
+    // `cathode` — cells as plexus nodes; the letterform emerges from the wiring.
+    let cathode = mk("cathode", &|v| {
+        web(v);
+        // Emissive nodes (a warm-ish satin, lit from within) on thin dark-metal wires
+        // that carry a little of the glow along them.
+        v.plexus_node_type = crate::params::MaterialType::Standard.to_u32();
+        v.plexus_edge_type = crate::params::MaterialType::Standard.to_u32();
+        v.plexus_node_metallic = 0.2;
+        v.plexus_node_rough = 0.35;
+        v.plexus_node_emissive = 5.0;
+        v.plexus_node_val = 1.0;
+        v.plexus_node_radius = 0.28;
+        v.plexus_edge_metallic = 0.6;
+        v.plexus_edge_rough = 0.4;
+        v.plexus_edge_emissive = 1.2;
+        v.plexus_edge_val = 0.8;
+        v.plexus_edge_radius = 0.07;
+        // A slight tilt so the wires read as wires, not lines.
+        v.glyph_cam_tilt = 12.0;
+        v.hal_amount = 0.4;
+    });
+
+    vec![faceplate, nixie, foundry, anodized, bottled, cathode]
 }
 
 /// One-shot seeding of the factory PBR-text presets — the `seed_rails_presets` shape:
@@ -7263,15 +7544,18 @@ fn seed_text_presets(presets: &mut Vec<Preset>) -> bool {
 /// The text seed with the marker read out of it, so a test can drive it: for each
 /// factory rung, a **factory-shaped** entry of that name (no stated `exposed` set — the
 /// shape `Preset::unstated` writes and an editor capture never does) that differs from
-/// the current rung is replaced in place; an entry a person captured over is theirs and
-/// is left alone; a missing rung is appended. Returns whether the store changed — and
-/// `false` on a store already carrying the current rungs, so the marker drops without a
-/// save.
+/// the current rung is replaced in place **if an earlier marker could have written that
+/// name** ([`TEXT_RUNGS_SEEDED_BEFORE`]); an entry a person captured over is theirs and
+/// is left alone, and so is any entry under a name no seed has written before — a
+/// pre-organon#124 save has no `exposed` set either, and history is the only thing that
+/// tells it from a factory rung; a missing rung is appended. Returns whether the store
+/// changed — and `false` on a store already carrying the current rungs, so the marker
+/// drops without a save.
 fn seed_text_into(presets: &mut Vec<Preset>) -> bool {
     let mut changed = false;
     for p in builtin_text_presets() {
         match presets.iter().position(|e| e.name == p.name) {
-            Some(i) if presets[i].exposed.is_none() => {
+            Some(i) if presets[i].exposed.is_none() && TEXT_RUNGS_SEEDED_BEFORE.contains(&p.name.as_str()) => {
                 if presets[i].values != p.values {
                     presets[i] = p;
                     changed = true;
@@ -7821,6 +8105,99 @@ mod preset_io_tests {
         assert_eq!(s.manylight, [1.0, v.ml_intensity, v.ml_radius, v.ml_count as f32]);
     }
 
+    /// organon#217 T14 — the ladder's six rungs, each pinned by the ONE value that
+    /// makes it that rung and not its neighbour, in `Shared` (the wire a recall
+    /// drives), so a swap of two rungs' data is a named failure. `faceplate` is a
+    /// Clearcoat with no core; `nixie` is Glass on the tiles; `foundry` is a metal
+    /// with the blackbody lane on; `anodized` is a metal with the iridescence lobe
+    /// on; `bottled` is the Plexus web on Glass impostors with the T6 core; `cathode`
+    /// is the Plexus web on emissive Standard impostors with no core. Mutation:
+    /// swap `nixie`'s `mat_type` for `foundry`'s and the Glass line fails by name.
+    #[test]
+    fn each_rung_is_pinned_by_the_value_that_makes_it() {
+        use crate::params::{MaterialType, SurfaceMode};
+        let b = builtin_text_presets();
+        let names: Vec<&str> = b.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["faceplate", "nixie", "foundry", "anodized", "bottled", "cathode"], "§10's ladder, in order");
+        let find = |n: &str| &b.iter().find(|p| p.name == n).unwrap().values;
+        let glass = MaterialType::Glass.to_u32();
+        let plexus = SurfaceMode::Plexus.to_u32();
+
+        // faceplate — a Clearcoat faceplate, tiles, no core.
+        let v = find("faceplate");
+        assert_eq!(v.mat_type, MaterialType::Clearcoat.to_u32(), "faceplate is the Clearcoat rung");
+        assert_ne!(v.surface_mode, plexus);
+        assert_eq!(v.capsule_core, 0.0);
+
+        // nixie — Glass on the TILES (the cube path), the emission gathered to a filament.
+        let v = find("nixie");
+        assert_eq!(v.mat_type, glass, "nixie is the Glass-tile rung");
+        assert_ne!(v.surface_mode, plexus, "nixie is a tile rung, not a web");
+        assert!(v.glyph_profile >= 0.8, "the filament: emission gathered hard to the core ({})", v.glyph_profile);
+        assert!(v.glyph_dark_tiles, "an unlit envelope still shows the room");
+        assert!(v.glass_dispersion > 0.0, "the tile glass path's dispersion is the one that reaches a tile");
+        assert_eq!(v.capsule_core, 0.0, "the capsule core cannot reach a tile, so nixie must not claim it");
+        assert_eq!(v.to_shared().lighting[7], glass as f32, "the material rides `Shared.lighting[7]`");
+
+        // foundry — a metal with the blackbody lane on; the effect's emission low.
+        let v = find("foundry");
+        assert!(v.incandescence > 0.0, "foundry is the blackbody rung");
+        assert!(v.temperature < 2500.0, "a dull cherry, not white-hot ({} K)", v.temperature);
+        assert_eq!(v.metallic, 1.0, "hot metal type is a metal");
+        assert!(v.roughness > find("faceplate").roughness, "rougher than the faceplate — cast, not polished");
+        assert!(v.glyph_gain < find("faceplate").glyph_gain, "the effect's emission at low gain");
+        assert_eq!(v.iridescence, 0.0);
+        let s = v.to_shared();
+        assert_eq!(s.emit[2], v.incandescence, "incandescence rides `Shared.emit[2]`");
+        assert_eq!(s.emit[3], v.temperature, "temperature rides `Shared.emit[3]`");
+
+        // anodized — a metal with the iridescence lobe on; the phosphor held low.
+        let v = find("anodized");
+        assert_eq!(v.iridescence, 1.0, "anodized is the iridescence rung");
+        assert_eq!(v.metallic, 1.0, "a film over METAL");
+        assert!(v.glyph_faceplate > 0.2, "a metal's albedo is its reflectance: near-black would be a black mirror ({})", v.glyph_faceplate);
+        assert!(v.glyph_crown > 0.0, "the lobe is keyed on n·v; the crown rolls it across the tile");
+        assert!(v.glyph_gain < 1.0, "the film is what you see, not the phosphor");
+        assert_eq!(v.incandescence, 0.0);
+        assert_eq!(v.to_shared().surface_fx[3], 1.0, "the amount rides `Shared.surface_fx[3]`");
+
+        // bottled — the Plexus web, impostors on, Glass rods with the T6 core.
+        let v = find("bottled");
+        assert_eq!(v.surface_mode, plexus, "bottled is a web, not tiles");
+        assert!(v.plexus_impostor && v.plexus_edges, "impostors (the T6 draw) with the rods drawn");
+        assert_eq!(v.plexus_edge_type, glass, "Glass rods");
+        assert_eq!(v.plexus_node_type, glass, "Glass beads");
+        assert!(v.capsule_core > 0.0 && v.capsule_absorb > 0.0, "the coaxial core, on ({}, {})", v.capsule_core, v.capsule_absorb);
+        assert!(v.glyph_cam_tilt >= 45.0 && v.glyph_cam_tilt <= 60.0, "steep enough to look down the rods, within the ±60 clamp: {}", v.glyph_cam_tilt);
+        assert!(!v.glyph_dark_tiles, "a node per cell would be a lattice");
+        assert!(!v.ml_enabled, "the impostor path empties `instances`; there is nothing to lower");
+        let s = v.to_shared();
+        assert_eq!(s.capsule[0], v.capsule_core, "the core rides `Shared.capsule[0]`");
+        assert_eq!(s.capsule[1], v.capsule_absorb);
+        assert_eq!(s.plexus2[0], 1.0, "impostors ride `Shared.plexus2[0]`");
+        assert_eq!(s.plexus_edge_mat[0], glass as f32, "the rod material rides `Shared.plexus_edge_mat[0]`");
+
+        // cathode — the same web as circuitry: emissive nodes, wires, no core.
+        let v = find("cathode");
+        assert_eq!(v.surface_mode, plexus, "cathode is a web");
+        assert!(v.plexus_impostor && v.plexus_edges);
+        assert_ne!(v.plexus_node_type, glass, "cathode's nodes are not glass — that is bottled");
+        assert_eq!(v.capsule_core, 0.0, "no core: nothing to see a core through");
+        assert!(v.plexus_node_emissive > v.plexus_edge_emissive, "the nodes are the light, the wires carry a little");
+        assert!(v.plexus_edge_radius < v.plexus_node_radius, "wires, not rods");
+        assert!(!v.glyph_dark_tiles);
+        assert_eq!(v.to_shared().plexus_node_mat[7], v.plexus_node_emissive, "the node emissive rides `Shared.plexus_node_mat[7]`");
+
+        // Both webs: the tiles' tint is the only colour the plexus keeps, so it must
+        // not be the near-black faceplate; and the four-neighbour wiring.
+        for n in ["bottled", "cathode"] {
+            let v = find(n);
+            assert!(v.glyph_faceplate >= 0.4, "{n}: the plexus reads the TINT, not the emission — a near-black web is invisible ({})", v.glyph_faceplate);
+            assert!(v.plexus_radius > 2.0 && v.plexus_radius < 2.2, "{n}: reach a vertical neighbour (2.0 on a 2:1 cell), not a diagonal (2.24): {}", v.plexus_radius);
+            assert_eq!(v.plexus_links, 4.0, "{n}: the four neighbours of a stroke");
+        }
+    }
+
     #[test]
     fn subset_presets_survive_a_save_load_round_trip() {
         let mut v = PresetValues::capture(&OrganicMathParams::default());
@@ -8119,14 +8496,18 @@ mod preset_io_tests {
         assert_eq!(p.exposed_fields(), vec!["ambient"], "so the diff answers");
     }
 
-    /// organon#217 T9 — the `seeded_text_v2` bump. A factory-shaped `faceplate` (no
-    /// stated `exposed` set — what the v1 seed wrote) carrying the pre-T9 rung is
-    /// replaced in place by the amended one; a `faceplate` a person captured over is
-    /// theirs and stays byte for byte; a missing rung is appended; and a store already
-    /// carrying the amended rung reports nothing to persist, so the marker can drop.
+    /// organon#217 T9 — the `seeded_text_v2` bump; T14 — `v3`. A factory-shaped
+    /// `faceplate` (no stated `exposed` set — what the v1 seed wrote) carrying the
+    /// pre-T9 rung is replaced in place by the amended one; a `faceplate` a person
+    /// captured over is theirs and stays byte for byte; a missing rung is appended; and
+    /// a store already carrying the current rungs reports nothing to persist, so the
+    /// marker can drop. At v3 the seed must reach a v2 store — `faceplate` current and
+    /// the five new rungs absent — by appending exactly those five and touching nothing.
     #[test]
-    fn the_v2_text_seed_replaces_a_factory_faceplate_and_keeps_a_captured_one() {
-        let rung = builtin_text_presets().remove(0);
+    fn the_text_seed_replaces_a_factory_faceplate_and_keeps_a_captured_one() {
+        let rungs = builtin_text_presets();
+        let rung = rungs[0].clone();
+        assert_eq!(rung.name, "faceplate");
         assert!(rung.exposed.is_none(), "the factory rung is unstated — that is the discriminator");
         // A v1 store: factory-shaped, with both T9 lanes still off.
         let mut old = rung.values.clone();
@@ -8135,21 +8516,57 @@ mod preset_io_tests {
         assert_ne!(old, rung.values);
         let mut store = vec![Preset::unstated("faceplate", old.clone())];
         assert!(seed_text_into(&mut store), "a stale factory rung must be replaced");
-        assert_eq!(store.len(), 1, "replaced in place, not appended beside");
+        assert_eq!(store.len(), rungs.len(), "faceplate replaced in place, the other rungs appended");
         assert_eq!(store[0].values, rung.values);
         assert!(store[0].values.glyph_dark_tiles && store[0].values.glyph_profile > 0.0);
-        // Idempotent: the amended rung reports nothing to persist.
+        // Idempotent: the current rungs report nothing to persist.
         assert!(!seed_text_into(&mut store), "nothing to do on a current store");
-        // A captured `faceplate` is the user's: kept, both lanes still off.
+        // A captured `faceplate` is the user's: kept, both lanes still off — and the
+        // five new rungs still arrive beside it.
         let mut mine = vec![Preset::capture("faceplate", old.clone())];
-        assert!(!seed_text_into(&mut mine), "a captured faceplate is never replaced");
+        assert!(seed_text_into(&mut mine), "the new rungs are appended beside a captured faceplate");
         assert_eq!(mine[0].values, old);
         assert!(!mine[0].values.glyph_dark_tiles);
-        // No `faceplate` at all: appended.
+        assert_eq!(mine.len(), rungs.len());
+        assert!(mine.iter().skip(1).all(|p| p.exposed.is_none()), "the appended rungs are factory-shaped");
+        // A v2 store — `faceplate` current, nothing else: exactly the five appended,
+        // `faceplate` untouched, in the ladder's order.
+        let mut v2 = vec![rung.clone()];
+        assert!(seed_text_into(&mut v2));
+        assert_eq!(v2.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), rungs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>());
+        // No text presets at all: all six appended.
         let mut empty: Vec<Preset> = Vec::new();
         assert!(seed_text_into(&mut empty));
-        assert_eq!(empty.len(), 1);
+        assert_eq!(empty.len(), rungs.len());
         assert_eq!(empty[0].name, "faceplate");
+    }
+
+    /// organon#217 T14 — a name no earlier marker wrote is never replaced, whatever its
+    /// shape. A preset saved before organon#124 has no `exposed` set, so a user's own
+    /// `nixie` from that era is factory-shaped by every test but history; `v3` is the
+    /// first marker to write `nixie`, so any `nixie` already in the store is theirs.
+    /// `faceplate` — which `v1`/`v2` did write — is still replaced when stale. Mutation:
+    /// drop the `TEXT_RUNGS_SEEDED_BEFORE` guard in `seed_text_into` and the first
+    /// assertion fails.
+    #[test]
+    fn a_rung_never_seeded_before_never_replaces_an_entry_of_its_name() {
+        let rungs = builtin_text_presets();
+        let nixie = rungs.iter().find(|p| p.name == "nixie").expect("nixie is a rung");
+        assert!(!TEXT_RUNGS_SEEDED_BEFORE.contains(&"nixie"), "v3 is the first marker to write nixie");
+        assert!(TEXT_RUNGS_SEEDED_BEFORE.contains(&"faceplate"), "v1/v2 wrote faceplate");
+        // A pre-#124 user preset called `nixie`: unstated, and nothing like the rung.
+        let theirs = PresetValues::capture(&OrganicMathParams::default());
+        assert_ne!(theirs, nixie.values);
+        let mut store = vec![Preset::unstated("nixie", theirs.clone())];
+        assert!(seed_text_into(&mut store));
+        let kept = store.iter().find(|p| p.name == "nixie").unwrap();
+        assert_eq!(kept.values, theirs, "an unstated `nixie` predates every seed that could have written it — it is the user's");
+        assert_eq!(store.iter().filter(|p| p.name == "nixie").count(), 1, "kept in place, not doubled");
+        assert_eq!(store.len(), rungs.len(), "the other five rungs still arrive");
+        // The contrast: an unstated, stale `faceplate` IS replaced — that name has a seed history.
+        let mut stale = vec![Preset::unstated("faceplate", theirs.clone())];
+        assert!(seed_text_into(&mut stale));
+        assert_eq!(stale[0].values, rungs[0].values, "a factory-shaped faceplate is amended in place");
     }
 
     /// 🚨 **The compatibility guarantee, on the wire.** `presets.json` is a real file on real
