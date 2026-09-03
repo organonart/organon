@@ -250,22 +250,32 @@ pub(crate) fn slot_facts(p: &OrganicMathParams) -> Vec<SlotFacts> {
     crate::param_table::pack_glyph::facts(p, &mut out);
     crate::param_table::pack_glyph_cam::facts(p, &mut out);
     crate::param_table::pack_capsule::facts(p, &mut out);
+    // organon#217 T13 / #240 — the glyph-lights, in the core because they bring nothing extra.
+    crate::param_table::pack_manylight::facts(p, &mut out);
+    crate::param_table::pack_restir::facts(p, &mut out);
 
     // --- blocks holding an actuatable id outside the curated core ---------------
     crate::param_table::pack_matcol::facts(p, &mut out); // mat_hue
     crate::param_table::pack_bell::facts(p, &mut out); // bell_physical
+    // organon#217 T13 / #240 — the dark room's switches and the halation, whose blocks the
+    // prompt does not walk (28 route-less ids between them; see `agent::core_catalog`).
+    crate::param_table::pack_atmosphere::facts(p, &mut out); // atmos_enabled
+    crate::param_table::pack_fx::facts(p, &mut out); // fx_enabled
+    crate::param_table::pack_finishing::facts(p, &mut out); // hal_amount
 
     orphan_facts(p, &mut out);
     out
 }
 
-/// 🚨 **The two catalogued ids with no `param_block!` slot list anywhere.**
+/// 🚨 **The three catalogued ids with no `param_block!` slot list anywhere.**
 ///
-/// `scale_amp` (`params.rs:4030`) and `tempo` (`params.rs:5952`) are `ACTUATABLE_IDS`
-/// entries — an agent can set them, the CLI lists them, `doc/reference/parameters.md`
-/// documents them — but neither appears in any `param_block!` in `param_table.rs`. They
-/// still reach `Shared` through the hand-written packing in `params.rs::to_shared`,
-/// because #103's block migration is deliberately incremental and has not reached them.
+/// `scale_amp` (`params.rs:4030`), `tempo` (`params.rs:5952`) and — since organon#217
+/// T13 / #240 — `bg_visible` (a `u32` scalar on `Shared`, `params.rs::to_shared`'s
+/// `bg_visible: self.bg_visible.value() as u32`) are `ACTUATABLE_IDS` entries — an agent
+/// can set them, the CLI lists them, `doc/reference/parameters.md` documents them — but
+/// none appears in any `param_block!` in `param_table.rs`. They still reach `Shared`
+/// through the hand-written packing in `params.rs::to_shared`, because #103's block
+/// migration is deliberately incremental and has not reached them.
 ///
 /// So the generated walk **cannot** see them, and covering them is a two-line join. It is
 /// a join and not a table: both bounds are still read off the real param object by
@@ -281,6 +291,7 @@ pub(crate) fn slot_facts(p: &OrganicMathParams) -> Vec<SlotFacts> {
 fn orphan_facts(p: &OrganicMathParams, out: &mut Vec<SlotFacts>) {
     out.push(float_facts("scale_amp", &p.scale_amp));
     out.push(float_facts("tempo", &p.tempo));
+    out.push(bool_facts("bg_visible", &p.bg_visible));
 }
 
 // ===========================================================================
@@ -568,21 +579,32 @@ mod tests {
         assert!(agent::id_range("cam_path").is_some(), "the premise: cam_path has a range");
         assert_eq!(kind_of("cam_path"), Some(FactKind::Enum));
 
-        // The four ids outside the curated core. `cli::catalog_entries()` hard-codes
-        // "num" for all of them, which is wrong for `bell_physical` — a `BoolParam`.
-        // Reading the kind off the slot list is what fixes it, so pin both halves.
+        // The ids outside the curated core. `cli::catalog_entries()` hard-coded "num" for
+        // all of them until W19 (organon#217), which was wrong for `bell_physical` — a
+        // `BoolParam` — and would have been wrong for three of the dark room's flags and
+        // its `IntParam` count too. It now reads the kind off this same walk, so pin both
+        // halves: the facts, and the catalog agreeing with them.
         assert_eq!(kind_of("bell_physical"), Some(FactKind::Bool));
         assert_eq!(kind_of("mat_hue"), Some(FactKind::Float));
         assert_eq!(kind_of("scale_amp"), Some(FactKind::Float));
         assert_eq!(kind_of("tempo"), Some(FactKind::Float));
-        assert_eq!(
+        assert_eq!(kind_of("atmos_enabled"), Some(FactKind::Bool));
+        assert_eq!(kind_of("bg_visible"), Some(FactKind::Bool), "the orphan scalar is a flag");
+        assert_eq!(kind_of("fx_enabled"), Some(FactKind::Bool));
+        assert_eq!(kind_of("hal_amount"), Some(FactKind::Float));
+        assert_eq!(kind_of("ml_count"), Some(FactKind::Int));
+        let catalog_kind = |id: &str| {
             crate::cli::catalog_entries()
                 .into_iter()
-                .find(|(id, _, _)| *id == "bell_physical")
-                .map(|(_, k, _)| k),
-            Some("num"),
-            "if the catalog stopped calling bell_physical a number, say so here"
-        );
+                .find(|(i, _, _)| *i == id)
+                .map(|(_, k, _)| k)
+        };
+        assert_eq!(catalog_kind("bell_physical"), Some("flag"), "the catalog reads the slot list");
+        assert_eq!(catalog_kind("bg_visible"), Some("flag"));
+        assert_eq!(catalog_kind("atmos_enabled"), Some("flag"));
+        assert_eq!(catalog_kind("ml_count"), Some("int"));
+        assert_eq!(catalog_kind("hal_amount"), Some("num"));
+        assert_eq!(catalog_kind("tempo"), Some("num"));
     }
 
     /// Every joined wire id resolves back to the same parameter — same name, same default.

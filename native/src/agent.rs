@@ -62,6 +62,18 @@ pub fn core_catalog() -> Vec<CatSlot> {
     crate::param_table::pack_glyph::catalog(&mut out);
     crate::param_table::pack_glyph_cam::catalog(&mut out);
     crate::param_table::pack_capsule::catalog(&mut out);
+    // organon#217 T13 / #240 — the glyph-lights: `pack_manylight` is exactly the four ids
+    // `faceplate` sets, and `pack_restir` is `ml_restir` plus three reserved slots, so
+    // neither brings an id the prompt has no route for. ⚠️ The dark room's other four are
+    // NOT walked here on purpose: `atmos_enabled`, `fx_enabled` and `hal_amount` live in
+    // `pack_atmosphere` / `pack_fx` / `pack_finishing`, which would put 28 ids with no
+    // route (`atmos_turbidity`, `fx_dof`, `lf_ghosts`, …) into the Performer's prompt and
+    // `organon catalog` as "not directly settable", and `bg_visible` has no block at all
+    // (a hand-packed scalar, like `tempo`). They reach the catalog through `ACTUATABLE_IDS`
+    // the way `mat_hue` and `bell_physical` do (`cli::catalog_entries`), with their kinds
+    // read off the slot lists in `console_catalog::slot_facts`.
+    crate::param_table::pack_manylight::catalog(&mut out);
+    crate::param_table::pack_restir::catalog(&mut out);
     out
 }
 
@@ -335,6 +347,69 @@ mod tests {
                 Some(v),
                 "{id}: write and read routes disagree"
             );
+        }
+    }
+
+    /// organon#217 T13 / #240 — the same pin for the nine dark-room ids: the agent's
+    /// hand-written routes name the slots `param_table.rs`'s `pack_atmosphere` / `pack_fx`
+    /// / `pack_finishing` / `pack_manylight` / `pack_restir` lists pack, and `bg_visible`
+    /// reads the hand-packed `u32` scalar. A `PresetValues` with a distinct marker in every
+    /// field, packed through the real preset packers, must read back field-for-field —
+    /// a route on `fx[1]` would hand `organon set fx_enabled` to the style selector.
+    #[test]
+    fn dark_room_routes_agree_with_the_param_table_slot_lists() {
+        use crate::ipc::Shared;
+        use crate::params::OrganicMathParams;
+        use crate::preset::PresetValues;
+        let mut pv = PresetValues::capture_params_only(&OrganicMathParams::default());
+        pv.atmos_enabled = true;
+        pv.bg_visible = true;
+        pv.fx_enabled = true;
+        pv.hal_amount = 0.35;
+        pv.ml_enabled = true;
+        pv.ml_intensity = 0.41;
+        pv.ml_radius = 0.52;
+        pv.ml_count = 7;
+        pv.ml_restir = true;
+        // The neighbours of each slot 0 carry their own defaults so a route off by one
+        // reads a real value, not a coincidental zero: turbidity, fx_style, hal_threshold.
+
+        let mut s = Shared::default();
+        s.atmosphere = crate::param_table::pack_atmosphere_preset(&pv);
+        s.fx = crate::param_table::pack_fx_preset(&pv);
+        s.finishing = crate::param_table::pack_finishing_preset(&pv);
+        s.manylight = crate::param_table::pack_manylight_preset(&pv);
+        s.restir = crate::param_table::pack_restir_preset(&pv);
+        // `bg_visible` has no block: `params.rs::to_shared` writes `self.bg_visible.value()
+        // as u32`, and this is that line for a preset.
+        s.bg_visible = pv.bg_visible as u32;
+
+        let want: [(&str, f32); 9] = [
+            ("atmos_enabled", 1.0), ("bg_visible", 1.0), ("fx_enabled", 1.0),
+            ("hal_amount", 0.35), ("ml_enabled", 1.0), ("ml_intensity", 0.41),
+            ("ml_radius", 0.52), ("ml_count", 7.0), ("ml_restir", 1.0),
+        ];
+        assert_eq!(s.manylight, [1.0, 0.41, 0.52, 7.0], "pack_manylight is exactly the four");
+        assert_eq!(s.restir[0], 1.0, "ml_restir packs to restir[0]");
+        for (id, v) in want {
+            assert_eq!(
+                current(&s, id),
+                Some(v),
+                "{id}: the agent's read route names a different slot than param_table packs"
+            );
+            let mut w = Shared::default();
+            assert!(actuate(&mut w, id, v), "{id} has no write route");
+            assert_eq!(current(&w, id), Some(v), "{id}: write and read routes disagree");
+        }
+        // The catalog walks the two blocks that bring nothing extra, and only those.
+        let cat = core_catalog();
+        for id in ["ml_enabled", "ml_intensity", "ml_radius", "ml_count", "ml_restir"] {
+            assert!(cat.iter().any(|c| c.id == id), "{id} is in the curated catalog");
+        }
+        assert!(cat.iter().any(|c| c.id == "ml_restir" && c.kind == SlotKind::Flag));
+        assert!(cat.iter().any(|c| c.id == "ml_count" && c.kind == SlotKind::Int));
+        for id in ["atmos_turbidity", "fx_dof", "lf_ghosts", "hal_width"] {
+            assert!(!cat.iter().any(|c| c.id == id), "{id} must not reach the prompt");
         }
     }
 

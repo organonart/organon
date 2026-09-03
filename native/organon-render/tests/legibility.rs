@@ -83,6 +83,43 @@ fn the_logo_fixture_reproduces_the_spec_census() {
     assert!(f.cells().iter().all(|c| c.fg == [0xc0, 0xca, 0xf5]));
 }
 
+/// organon#217 W19 — the ORGANON fixture IS the demo text the producer is fed, cell for
+/// cell: `verify.sh --legibility --text native/assets/text/organon.txt` hands that file to
+/// `organon-glyphs` and judges the ring against this fixture, so the two must describe one
+/// grid or the gate answers "could not measure". Full blocks and blanks only, so there is
+/// no half-block coverage and no `colours` block to disagree.
+#[test]
+fn the_organon_fixture_is_the_demo_text_cell_for_cell() {
+    const ORGANON: &str = include_str!("fixtures/organon.txt");
+    const ASSET: &str = include_str!("../../assets/text/organon.txt");
+    let f = Fixture::parse(ORGANON).expect("the ORGANON fixture parses");
+    assert_eq!((f.cols, f.rows), (82, 9), "seven glyph rows plus a blank row above and below");
+    assert_eq!(f.aspect, 2.0);
+    let census = f.census();
+    assert_eq!(census[&'█'], 240);
+    assert_eq!(census[&' '], 9 * 82 - 240);
+    assert_eq!(census.len(), 2, "full blocks and blank — nothing else");
+    assert_eq!(f.lit_count(), 240);
+    assert!(f.cells().iter().all(|c| c.fg == [0xc0, 0xca, 0xf5]), "one colour, the logo's");
+
+    // The asset, row by row: 82 cells each, padded (ttfx trims trailing blanks, so the
+    // gate pins `--cols 82`; the file carries the padding anyway so a person sees the grid).
+    let rows: Vec<&str> = ASSET.lines().collect();
+    assert_eq!(rows.len(), 9, "the asset is nine lines");
+    for (r, line) in rows.iter().enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        assert_eq!(chars.len(), 82, "asset row {r} is not 82 cells wide");
+        for (c, ch) in chars.iter().enumerate() {
+            assert_eq!(f.cell(c, r).symbol, *ch, "asset and fixture disagree at ({c}, {r})");
+        }
+    }
+    // And what `--emit-text` would derive from the fixture is the asset minus its padding —
+    // so `--text organon.txt` and the default path feed the producer the same grid.
+    let derived = organon_render::legibility_gate::emit_text(&f);
+    let trimmed: String = rows.iter().map(|l| format!("{}\n", l.trim_end_matches(' '))).collect();
+    assert_eq!(derived, trimmed, "emit_text(fixture) is the asset with trailing blanks trimmed");
+}
+
 #[test]
 fn the_logo_fixture_survives_crlf() {
     // The Omarchy checkout is CRLF on Windows; a fixture written from it may be too.

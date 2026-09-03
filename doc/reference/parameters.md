@@ -79,9 +79,18 @@ The editor exposes far more than this — every control on every card is a host 
 | `glyph_cam_zoom` | num | `0.25` … `4` | Multiplier on the fitted camera distance — 1 = the text grid fills the frame; below 1 moves in, above 1 pulls back. Needs glyph_cam_hold = 1. |
 | `capsule_core` | num | `0` … `1` | Inner emissive core radius as a fraction of the outer radius, for every Glass / Refractive capsule impostor (arms, plexus edges). 0 = off. A lit wire inside a glass tube. |
 | `capsule_absorb` | num | `0` … `8` | Beer–Lambert density per outer radius through a capsule's glass, in the instance's own colour — 0 = a clear shell; higher = a tinted, murkier tube. |
+| `ml_enabled` | flag | `0` … `1` | 1 = the brightest emissive cubes become real point lights ("cubes as lights"); while a glyph ring is live that is the lit strokes pooling onto the backplane. 0 = emission glows but casts nothing. |
+| `ml_intensity` | num | `0` … `8` | Scale on the radiance each cube-light emits — 1 = as bright as its own emission, higher pools further and harder. Needs ml_enabled = 1. |
+| `ml_radius` | num | `0.05` … `2` | Falloff radius of each cube-light as a fraction of the scene diagonal — while a glyph ring is live the world re-denominates it in COLUMN WIDTHS, so 2 is a pool that reaches the next cell and no further. Needs ml_enabled = 1. |
+| `ml_count` | int | `1` … `64` | How many of the brightest cubes are used as lights (1 … 64, an integer). A text look wants all 64 so every lit stroke pools; fewer picks only the brightest. |
+| `ml_restir` | flag | `0` … `1` | 1 = pick the cube-lights by ReSTIR reservoir sampling (a rotating set, better on a moving field); 0 = the brightest-N set. Text holds still, so a text look is 0 — a rotating light set on a held frame is a twinkle the dwell converges into. |
 | `scale_amp` | num | `0` … `0.5` | How much each node grows with its index — 0 = uniform cubes, higher tapers the field larger toward its far corners. (Original generator only.) |
 | `mat_hue` | num | `0` … `1` | Master material hue tint around the colour wheel (~0 red, ~0.33 green, ~0.6 blue) — the quickest way to recolour the whole look. |
-| `bell_physical` | num | `0` … `1` | Spherical-harmonics generator only: morphs the pulsing sphere into a soft-body JELLYFISH bell. 1 = a full jellyfish. |
+| `bell_physical` | flag | `0` … `1` | Spherical-harmonics generator only: morphs the pulsing sphere into a soft-body JELLYFISH bell. 1 = a full jellyfish. |
 | `tempo` | num | `40` … `240` | Manual BPM for the beat-driven motion when NOT locked to a host — the free-running clock speed. |
+| `atmos_enabled` | flag | `0` … `1` | 1 = the physically based atmosphere paints the sky (and its aerial haze); 0 = no sky. A text look wants 0: the words sit in a dark room, not under a sunset. |
+| `bg_visible` | flag | `0` … `1` | 1 = the background (skybox / backdrop) is drawn behind the geometry; 0 = black behind it. The IBL still lights the surfaces either way. A dark room is 0. |
+| `fx_enabled` | flag | `0` … `1` | Master switch for the post-composite FX pass (style, depth of field, grain, grade — and halation, which lives there). 0 = the pass is skipped entirely, so hal_amount does nothing until this is 1. |
+| `hal_amount` | num | `0` … `2` | Halation strength — the soft bloom that bleeds off bright strokes into their surround, the CRT glow. 0 = off; 0.35 is the faceplate rung. Needs fx_enabled = 1. |
 
 A row with no range is **chosen by name rather than set by value** — use the matching selector (`organon generator …`, `organon surface …`, `organon material …`) or recall a preset.

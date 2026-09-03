@@ -1,0 +1,28 @@
+# The word ORGANON as an Organon legibility fixture (PBR text, organon#217).
+#
+# Source: `native/assets/text/organon.txt` — the demo text the producer is fed, generated
+# from a 5×7 pixel font at two cells per pixel (2:1 cell aspect → square pixels), with one
+# blank row above and one below. Every cell is `█` or blank, so there is no half-block
+# coverage and no `colours` block: the fixture is the shape alone, one colour. Census:
+# 7 glyph rows × 82 columns = 574 cells, 9 × 82 = 738 with the two padding rows; lit 240
+# (counted by `the_organon_fixture_is_the_demo_text_cell_for_cell` in tests/legibility.rs).
+#
+# The colour is the same Tokyo Night foreground `omarchy-logo.txt` uses, for the same
+# reason — not pure white — and it is inert in the gate, which reads colours from the ring.
+# Format: native/organon-render/src/legibility.rs, `Fixture::parse`.
+grid v1
+cols 82
+rows 9
+aspect 2
+order top-down
+default #c0caf5
+glyphs
+|                                                                                  |
+|  ██████    ████████      ██████      ██████    ██      ██    ██████    ██      ██|
+|██      ██  ██      ██  ██      ██  ██      ██  ████    ██  ██      ██  ████    ██|
+|██      ██  ██      ██  ██          ██      ██  ██  ██  ██  ██      ██  ██  ██  ██|
+|██      ██  ████████    ██  ██████  ██████████  ██    ████  ██      ██  ██    ████|
+|██      ██  ██  ██      ██      ██  ██      ██  ██      ██  ██      ██  ██      ██|
+|██      ██  ██    ██    ██      ██  ██      ██  ██      ██  ██      ██  ██      ██|
+|  ██████    ██      ██    ████████  ██      ██  ██      ██    ██████    ██      ██|
+|                                                                                  |

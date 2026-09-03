@@ -7417,6 +7417,20 @@ fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &age
                 "glyph_cam_zoom" => set!(&params.glyph_cam_zoom, v),
                 "capsule_core" => set!(&params.capsule_core, v),
                 "capsule_absorb" => set!(&params.capsule_absorb, v),
+                // organon#217 T13 / #240 — `faceplate`'s dark room, halation and glyph-lights:
+                // five flags from 0/1 like the hold, the count an IntParam truncated like
+                // the loop counts. ⚠️ Nothing pins this arm (see #235's fragment) — leave an
+                // id out and `organon set` still moves the picture; only the slider stops
+                // following.
+                "atmos_enabled" => set!(&params.atmos_enabled, v > 0.5),
+                "bg_visible" => set!(&params.bg_visible, v > 0.5),
+                "fx_enabled" => set!(&params.fx_enabled, v > 0.5),
+                "hal_amount" => set!(&params.hal_amount, v),
+                "ml_enabled" => set!(&params.ml_enabled, v > 0.5),
+                "ml_intensity" => set!(&params.ml_intensity, v),
+                "ml_radius" => set!(&params.ml_radius, v),
+                "ml_count" => set!(&params.ml_count, v as i32),
+                "ml_restir" => set!(&params.ml_restir, v > 0.5),
                 _ => {}
             }
         }

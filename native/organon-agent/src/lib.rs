@@ -557,6 +557,50 @@ pub fn param_desc(id: &str) -> Option<&'static str> {
             "Beer–Lambert density per outer radius through a capsule's glass, in the \
              instance's own colour — 0 = a clear shell; higher = a tinted, murkier tube."
         }
+        // ---- The dark room (organon#217 T13, #240) — `faceplate`'s other nine fields. A
+        // text demo is a near-black room with the words on it, never glyphs over the
+        // generated landscape or the atmosphere sky; these are the switches that make it
+        // so, and the finishing the rung wears, from the command line. ----
+        "atmos_enabled" => {
+            "1 = the physically based atmosphere paints the sky (and its aerial haze); 0 = no \
+             sky. A text look wants 0: the words sit in a dark room, not under a sunset."
+        }
+        "bg_visible" => {
+            "1 = the background (skybox / backdrop) is drawn behind the geometry; 0 = black \
+             behind it. The IBL still lights the surfaces either way. A dark room is 0."
+        }
+        "fx_enabled" => {
+            "Master switch for the post-composite FX pass (style, depth of field, grain, \
+             grade — and halation, which lives there). 0 = the pass is skipped entirely, so \
+             hal_amount does nothing until this is 1."
+        }
+        "hal_amount" => {
+            "Halation strength — the soft bloom that bleeds off bright strokes into their \
+             surround, the CRT glow. 0 = off; 0.35 is the faceplate rung. Needs fx_enabled = 1."
+        }
+        "ml_enabled" => {
+            "1 = the brightest emissive cubes become real point lights (\"cubes as lights\"); \
+             while a glyph ring is live that is the lit strokes pooling onto the backplane. \
+             0 = emission glows but casts nothing."
+        }
+        "ml_intensity" => {
+            "Scale on the radiance each cube-light emits — 1 = as bright as its own emission, \
+             higher pools further and harder. Needs ml_enabled = 1."
+        }
+        "ml_radius" => {
+            "Falloff radius of each cube-light as a fraction of the scene diagonal — while a \
+             glyph ring is live the world re-denominates it in COLUMN WIDTHS, so 2 is a pool \
+             that reaches the next cell and no further. Needs ml_enabled = 1."
+        }
+        "ml_count" => {
+            "How many of the brightest cubes are used as lights (1 … 64, an integer). A text \
+             look wants all 64 so every lit stroke pools; fewer picks only the brightest."
+        }
+        "ml_restir" => {
+            "1 = pick the cube-lights by ReSTIR reservoir sampling (a rotating set, better on \
+             a moving field); 0 = the brightest-N set. Text holds still, so a text look is 0 — \
+             a rotating light set on a held frame is a twinkle the dwell converges into."
+        }
         _ => return None,
     })
 }
@@ -710,6 +754,15 @@ pub fn id_range(id: &str) -> Option<(f32, f32)> {
         "glyph_cam_zoom" => (0.25, 4.0),
         "capsule_core" => (0.0, 1.0),
         "capsule_absorb" => (0.0, 8.0),
+        // organon#217 T13 / #240 — `faceplate`'s dark room, halation and glyph-lights. Bounds
+        // are `params.rs`'s (`flin("Halation", …, 0.0, 2.0)`, `flin("Cube Light Intensity",
+        // …, 0.0, 8.0)`, `flin("Cube Light Radius", …, 0.05, 2.0)`, `ilin("Cube Light Count",
+        // 24, 1, 64)`); the five flags are `BoolParam`s spelled 0/1 like `bell_physical`.
+        "atmos_enabled" | "bg_visible" | "fx_enabled" | "ml_enabled" | "ml_restir" => (0.0, 1.0),
+        "hal_amount" => (0.0, 2.0),
+        "ml_intensity" => (0.0, 8.0),
+        "ml_radius" => (0.05, 2.0),
+        "ml_count" => (1.0, 64.0),
         _ => return None,
     };
     Some(r)
@@ -785,6 +838,20 @@ pub fn current(s: &Shared, id: &str) -> Option<f32> {
         "glyph_cam_zoom" => s.glyph_cam[2],
         "capsule_core" => s.capsule[0],
         "capsule_absorb" => s.capsule[1],
+        // organon#217 T13 / #240 — the dark room. Slot 0 of `pack_atmosphere` / `pack_fx` /
+        // `pack_finishing` / `pack_restir`, slots 0..4 of `pack_manylight`; `bg_visible` is
+        // the one SCALAR — a `u32` flag packed by hand in `params.rs::to_shared`, so it is
+        // read as 0/1 rather than as a lane value. The root crate's
+        // `dark_room_routes_agree_with_the_param_table_slot_lists` pins every slot.
+        "atmos_enabled" => s.atmosphere[0],
+        "bg_visible" => (s.bg_visible != 0) as u32 as f32,
+        "fx_enabled" => s.fx[0],
+        "hal_amount" => s.finishing[0],
+        "ml_enabled" => s.manylight[0],
+        "ml_intensity" => s.manylight[1],
+        "ml_radius" => s.manylight[2],
+        "ml_count" => s.manylight[3],
+        "ml_restir" => s.restir[0],
         _ => return None,
     })
 }
@@ -862,6 +929,19 @@ pub fn actuate(s: &mut Shared, id: &str, v: f32) -> bool {
         "glyph_cam_zoom" => s.glyph_cam[2] = v,
         "capsule_core" => s.capsule[0] = v,
         "capsule_absorb" => s.capsule[1] = v,
+        // organon#217 T13 / #240 — same slots as `current`, one per line so a swap is a diff.
+        "atmos_enabled" => s.atmosphere[0] = v,
+        // The scalar: a `u32` flag, so the lane's value is THRESHOLDED the way the editor
+        // mirror thresholds every flag (`v > 0.5`), never truncated — `as u32` would read
+        // `bg_visible 0.7` as off while the editor's checkbox went on.
+        "bg_visible" => s.bg_visible = (v > 0.5) as u32,
+        "fx_enabled" => s.fx[0] = v,
+        "hal_amount" => s.finishing[0] = v,
+        "ml_enabled" => s.manylight[0] = v,
+        "ml_intensity" => s.manylight[1] = v,
+        "ml_radius" => s.manylight[2] = v,
+        "ml_count" => s.manylight[3] = v,
+        "ml_restir" => s.restir[0] = v,
         _ => return false,
     }
     true
@@ -1029,6 +1109,9 @@ pub const ACTUATABLE_IDS: &[&str] = &[
     "glyph_profile", "glyph_dark_tiles", // organon#217 T9 — the tile's two lanes
     "glyph_cam_hold", "glyph_cam_tilt", "glyph_cam_zoom", //
     "capsule_core", "capsule_absorb",
+    // organon#217 T13 / #240 — `faceplate`'s dark room, halation and glyph-lights.
+    "atmos_enabled", "bg_visible", "fx_enabled", "hal_amount", //
+    "ml_enabled", "ml_intensity", "ml_radius", "ml_count", "ml_restir",
 ];
 
 /// #452: the CLI channel's startup seed — the cursor adopts the lines present
@@ -2835,6 +2918,60 @@ mod tests {
             T3.len(),
             "two T3 ids share a Shared slot, or one landed outside its block"
         );
+    }
+
+    /// organon#217 T13 / #240 — the nine `faceplate` fields that make the room dark each
+    /// own one `Shared` slot and no two share one; and `bg_visible`, the one scalar (a
+    /// `u32`), is a flag on the lane — 0/1 in, 0/1 out, and a value between thresholded
+    /// the way the editor mirror thresholds it, never truncated. Which slot each id names
+    /// is pinned against `param_table.rs` in the root crate
+    /// (`dark_room_routes_agree_with_the_param_table_slot_lists`); this half checks the
+    /// routes are injective and in range.
+    #[test]
+    fn dark_room_ids_round_trip_through_distinct_shared_slots() {
+        // Markers inside every range and DIFFERENT from `Shared::default()`'s value for
+        // that slot (these five blocks default to real values — `atmosphere[0]` is 1,
+        // `manylight` is `[0, 1, 0.5, 24]` — so "non-zero after writing" would count the
+        // defaults). The flags in separate blocks may share a value; they cannot share a
+        // slot, and the slot count below is what says so.
+        const DARK: [(&str, f32); 9] = [
+            ("atmos_enabled", 0.0), ("bg_visible", 0.0), ("fx_enabled", 1.0),
+            ("hal_amount", 0.35), ("ml_enabled", 1.0), ("ml_intensity", 0.41),
+            ("ml_radius", 0.52), ("ml_count", 7.0), ("ml_restir", 1.0),
+        ];
+        let d = Shared::default();
+        let mut s = Shared::default();
+        for (id, v) in DARK {
+            assert!(ACTUATABLE_IDS.contains(&id), "{id} is not actuatable");
+            assert!(id_range(id).is_some(), "{id} has no range");
+            assert_ne!(current(&d, id), Some(v), "{id}: the marker must differ from the default");
+            assert!(actuate(&mut s, id, v), "{id} has no Shared write route");
+        }
+        for (id, v) in DARK {
+            assert_eq!(current(&s, id), Some(v), "{id} did not read back its own marker");
+        }
+        // Exactly eight array slots moved off their defaults — one per array-routed id —
+        // and the scalar is the ninth.
+        let moved = s.atmosphere.iter().zip(d.atmosphere.iter())
+            .chain(s.fx.iter().zip(d.fx.iter()))
+            .chain(s.finishing.iter().zip(d.finishing.iter()))
+            .chain(s.manylight.iter().zip(d.manylight.iter()))
+            .chain(s.restir.iter().zip(d.restir.iter()))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(moved, 8, "two dark-room ids share a Shared slot, or one landed outside its block");
+        assert_eq!(s.bg_visible, 0, "bg_visible is the u32 scalar, written as 0 off a default of 1");
+
+        // The scalar's threshold: the lane spells a flag 0/1, and anything in between goes
+        // the way the editor's `v > 0.5` goes (0.7 → on, 0.3 → off), not the way `as u32`
+        // would (0.7 → off).
+        assert!(actuate(&mut s, "bg_visible", 0.7));
+        assert_eq!(current(&s, "bg_visible"), Some(1.0), "0.7 thresholds to on");
+        assert!(actuate(&mut s, "bg_visible", 0.3));
+        assert_eq!(current(&s, "bg_visible"), Some(0.0), "0.3 thresholds to off");
+        // And the count clamps to its `IntParam` range like every other id.
+        assert!(actuate(&mut s, "ml_count", 999.0));
+        assert_eq!(current(&s, "ml_count"), Some(64.0), "ml_count clamps to 64");
     }
 
     #[test]
