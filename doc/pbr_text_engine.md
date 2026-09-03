@@ -597,7 +597,7 @@ already exists, because most of this is wiring:
 | A brushed dark-metal backplane with a warm rim | A flat dark slab | The existing anisotropy lobe (`cube.wgsl` `aniso`, brush along local +Z) on the backplane instance, and a light rig | `world.rs` (rig), T3's backplane params |
 | The path-traced still: caustics, converged, **lit** | 🚨 **The dwell goes dark.** T5 hands the held frame to the tracer, and the tracer shades from `tint` — it has never seen the emit buffer | Every `rt_*` pass and `rt_pathtrace` read the per-instance emission | `rt_pathtrace.{rs,wgsl}`, `rt_*.rs`, their binding sites in `render.rs` |
 | Camera held, framed, slightly tilted; dark environment | Orbiting, far, the atmosphere's fog behind the grid | T3 (in flight): framing from the grid's bounds in cell units, a held camera while a ring is live, `faceplate` with a dark environment and TAA off | T3 |
-| Phosphor persistence | **Not in this document until now** | Producer-side per-cell decay in linear light, published as the cell's colour, with a `persist` flag so the renderer can tell a trail from a lit cell | `organon-glyphs` |
+| Phosphor persistence | **Not in this document until now** | Producer-side per-cell decay in linear light, published as the cell's colour, with a `persist` flag so the renderer can tell a trail from a lit cell — **landed as T11** (`organon-glyphs --persist-ms`, `SGR_PERSIST`; §15.1) | `organon-glyphs` |
 | The scatter phase: motion streaks with dispersion | **Not in this document until now** | A velocity-keyed streak in post, RGB-split; the one row that is new rendering work rather than wiring | `fx.wgsl`, `post.rs` |
 | Six preset rungs (§10) | Only `faceplate` is scoped (T3) | Preset data once T3's knobs exist; `bottled`/`cathode` ride T6's capsule core, already landed | `preset.rs` (data), after T3 |
 
@@ -627,9 +627,39 @@ until it lands.
 - **T10 — glyphs as lights and the backplane rig.** Emission-driven brightest-N selection so the
   green pools onto the backplane; the anisotropic brushed backplane; the warm rim; RT shadow and
   AO in the wells. Owns `world.rs`. **After T3; beside T8/T9.**
-- **T11 — persistence.** Producer-side per-cell decay in linear light; a trail is a cell whose
-  colour is decaying and whose `persist` flag is set. Owns `organon-glyphs` and the reserved cell
-  flags. **After the sub-cell producer work (in flight), which owns the same crate.**
+- **T11 — persistence. Shipped.** `organon-glyphs --persist-ms <τ>` (default **0 = off**, and
+  off is byte-identical to a producer without it — invariant #4, pinned over a whole effect).
+  `organon-glyphs/src/persist.rs` keeps one phosphor per cell **in linear light** and rewrites
+  the walk before it is published; the ring's colour contract does not change (sRGB8 in the
+  cell, decoded by the world) and the header carries nothing new — the colour arrives already
+  decayed, so the world needs no τ. **The rule:** excitation is instant, decay is slow, and a
+  phosphor cannot be un-lit by a new colour — a lit cell publishes `max(source, residual)` per
+  channel (a steadily lit cell is exactly its source; bright→dim fades into the dim; a hue
+  change keeps the old hue's residual under the new; a literal sum would run away on a
+  re-excited constant source, and "source replaces" would cut every bright→dim transition,
+  which is most of what a resolve *is*). A cell whose source went dark publishes the **last lit
+  cell** — its symbol, because the tile shape is what fades, plus attributes, identity and
+  sub-cell offset — with `fg` decayed and re-encoded and the cell flag **`SGR_PERSIST`** (bit
+  11) set, `ACTIVE_PATH` cleared; below a floor of linear `1e-3` (≈ 3/255) it is spent and the
+  cell reverts to its source (~6.9τ from full white). A lit cell with no colour of its own leaves
+  no trail: it draws in the renderer's `default_fg`, a look constant the producer must not bake
+  into the ring. Time is the producer's *published* time, nominal (`1/tick_hz` per motion tick,
+  the heartbeat interval per dwell beat, zero for the settle publish), so a seed reproduces a
+  run and `--tick-hz` below `--fps` slows the effect, not the phosphor; the phosphors outlive an
+  effect, so one effect's settled text fades under the next. **The settle rule: the effect has
+  settled when the *source* has.** `FRAME_SETTLED` is set whatever the phosphors are doing, so
+  a trail can never hold the settle off — but the trails keep decaying through the dwell, so
+  the payload keeps changing, `generation` keeps moving, and T5's accumulation restarts every
+  heartbeat until the last trail crosses the floor. That is the right order: the tracer
+  converges once the picture has stopped changing, and it learns that from the counter it
+  already watches. `lower_grid` never takes a trail as a slide origin (a trail keeps the
+  `character_id` of the character that left it, and that character is live elsewhere in the
+  same grid). No `layout_version` move: a bit in an existing word, and a reader that predates
+  it draws a dimmer tile, which is the right picture. ⚠️ **Measured at this rev over a 24×2
+  fixture: `decrypt` never lets a lit cell go dark** (752 frames, zero trails), and neither do
+  `wipe`, `expand`, `slice` or `middleout` — what persistence does in `decrypt` is the
+  bright→dim fade of each resolving character, not tails. Tails behind moving characters are
+  `rain`, `pour`, `print`, `beams`, `swarm`, `bubbles`, `crumble`. Not yet looked at on a GPU.
 - **T12 — sub-cell rendering.** The ring already carries `sub_x`/`sub_y` (in flight); the
   renderer slides a tile whose character is on a path and cuts one that teleported
   (`ACTIVE_PATH`). Owns the grid lowering only. **After T3 and T9.**

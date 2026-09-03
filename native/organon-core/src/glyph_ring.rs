@@ -51,6 +51,15 @@
 //! filled by the producer once ttfx exposed `Motion.current_pos` (organonart/ttfx PR);
 //! the encoding is on the fields. No `layout_version` move: the bytes were already in
 //! the cell and already zero, and a reader that ignores them sees exactly what it saw.
+//!
+//! **A trail is a cell, flagged** (T11, §15). Phosphor persistence lives in the
+//! producer: when a lit cell's source goes dark it keeps publishing the last lit cell
+//! with its colour decayed — in linear light, re-encoded to sRGB8, because **the ring's
+//! colour contract does not change** — and `SGR_PERSIST` set so the renderer can tell a
+//! trail from a lit cell. The header does not carry the time constant: the colour
+//! arrives already decayed, and the flag is all a reader needs. A bit in an existing
+//! word, so again no `layout_version` move — a reader that predates the bit draws a
+//! dimmer tile, which is the right picture, just without knowing why.
 
 use bytemuck::{Pod, Zeroable};
 use std::fs::OpenOptions;
@@ -95,6 +104,16 @@ pub const SGR_HAS_BG: u32 = 1 << 9;
 /// consumer may interpolate its previous → current cell (§7). Clear = it was placed by
 /// `set_coordinate`, i.e. a teleport, and interpolating would invent motion.
 pub const SGR_ACTIVE_PATH: u32 = 1 << 10;
+/// **This cell is a phosphor trail, not a lit cell** (organon#217 T11, §15). The
+/// producer's persistence pass kept the last lit cell here after its source went dark:
+/// `symbol`, `bg`, the SGR attributes, `layer`, `character_id` and the sub-cell offset
+/// are the last lit cell's, and `fg` is that cell's colour **already decayed** in linear
+/// light and re-encoded to sRGB8 — so a reader that knows nothing of this bit draws a
+/// correctly dimmer tile, and one that does can draw it without a faceplate highlight
+/// (T9). Never set together with `SGR_ACTIVE_PATH`: a trail does not move, and
+/// `lower_grid` never takes a trail as a slide's origin. Cleared on the tick the trail
+/// falls below the producer's floor, when the cell reverts to whatever its source is.
+pub const SGR_PERSIST: u32 = 1 << 11;
 
 // ── `GlyphFrame.flags` bits ─────────────────────────────────────────────────────
 /// The effect has returned `None`: this grid is the settled text, held for the dwell
@@ -254,6 +273,23 @@ pub fn srgb8_to_linear(v: u8) -> f32 {
 pub fn linear_rgb(c: u32) -> [f32; 3] {
     let [r, g, b] = unpack_rgb(c);
     [srgb8_to_linear(r), srgb8_to_linear(g), srgb8_to_linear(b)]
+}
+
+/// Linear → sRGB-encoded 8-bit, the inverse of [`srgb8_to_linear`], rounded to nearest
+/// and clamped. **The ring carries sRGB8, always** — a producer that works in linear
+/// light (T11's persistence decays there, because that is where a phosphor decays) must
+/// come back through this before it publishes. Pinned to round-trip every one of the 256
+/// codes exactly, so a value that passed through linear untouched publishes the byte it
+/// arrived as.
+pub fn linear_to_srgb8(v: f32) -> u8 {
+    let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    let c = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (c * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// Linear RGB → the packed sRGB8 the ring stores.
+pub fn pack_linear_rgb(rgb: [f32; 3]) -> u32 {
+    pack_rgb(linear_to_srgb8(rgb[0]), linear_to_srgb8(rgb[1]), linear_to_srgb8(rgb[2]))
 }
 
 // ── Block-glyph geometry (§3) ───────────────────────────────────────────────────
@@ -710,7 +746,13 @@ pub fn lower_grid(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, look: 
         Some(p) if blend < 1.0 && p.cols() == cols && p.rows() == rows => {
             let mut m = std::collections::HashMap::with_capacity(p.cells.len() / 4 + 1);
             for (i, cell) in p.cells.iter().enumerate() {
-                if cell.symbol != 0 && tile_for(cell.symbol).is_some() {
+                // A trail (T11) keeps the `character_id` of the character that left it,
+                // and that character is usually ALSO live somewhere else in the same
+                // grid. A trail is where the character WAS two or more ticks ago, never
+                // where it was last tick — so it is never a slide's origin. Without this
+                // the later index would win the map and a sliding character would start
+                // each tick from its own trail.
+                if cell.symbol != 0 && cell.sgr & SGR_PERSIST == 0 && tile_for(cell.symbol).is_some() {
                     m.insert(cell.character_id, exact(i % cols, i / cols, cell));
                 }
             }
@@ -900,6 +942,32 @@ mod lower_tests {
         let g = grid_of(0, 0, vec![]);
         let (i, ..) = lower(&g, None, 1.0);
         assert!(i.is_empty());
+    }
+
+    /// T11: a trail keeps the id of the character that left it, and that character is
+    /// live elsewhere in the same grid. The slide must start from where the character
+    /// WAS — its live cell last tick — never from its trail, which is where it was two
+    /// ticks ago. The trail sits at the HIGHER index so that, without the exclusion, it
+    /// is the one the map keeps.
+    #[test]
+    fn a_trail_is_never_a_slide_origin() {
+        let e = GlyphCell::default;
+        // Last tick: id 7 live at cell 0, and its trail (from the tick before) at cell 2.
+        let prev = grid_of(3, 1, vec![c('█', 7, SGR_ACTIVE_PATH), e(), c('█', 7, SGR_PERSIST)]);
+        // This tick: id 7 live at cell 1.
+        let cur = grid_of(3, 1, vec![e(), c('█', 7, SGR_ACTIVE_PATH), e()]);
+        let x_of = |g: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, n: usize| lower(g, prev, blend).0[n].to_scale_rotation_translation().2.x;
+        let x_cell0 = x_of(&grid_of(3, 1, vec![c('█', 7, 0), e(), e()]), None, 1.0, 0);
+        let x_cell2 = x_of(&grid_of(3, 1, vec![e(), e(), c('█', 7, 0)]), None, 1.0, 0);
+        let start = x_of(&cur, Some(&prev), 0.0, 0);
+        assert!((start - x_cell0).abs() < 1e-5 && (start - x_cell2).abs() > 0.5, "the slide starts at the LIVE cell (x={x_cell0}), not the trail (x={x_cell2}): {start}");
+        // And a trail in the current grid is drawn where it is, whatever the previous
+        // grid says about its id: it carries no path bit, so it cannot slide.
+        let trail_now = grid_of(3, 1, vec![e(), c('█', 7, SGR_ACTIVE_PATH), c('█', 7, SGR_PERSIST)]);
+        assert_eq!(x_of(&trail_now, Some(&prev), 0.5, 1), x_cell2, "a trail never moves");
+        // The trail still lowers to a tile, at its (decayed) colour — the renderer does
+        // not need to know the bit to draw the right picture.
+        assert_eq!(lower(&trail_now, None, 1.0).0.len(), 3, "live + trail + backplane");
     }
 }
 
@@ -1115,6 +1183,66 @@ mod tests {
         assert_eq!(frame_name(&f), "rain");
         set_frame_name(&mut f, &"é".repeat(40)); // 80 bytes, 2 per char
         assert_eq!(frame_name(&f).chars().count(), 16);
+    }
+
+    /// T11: the trail bit survives the ring, is its own power of two, and shares no bit
+    /// with the presence / path bits it is read beside. `FRAME_SETTLED` lives in a
+    /// different word (`GlyphFrame.flags`), so a collision there is impossible by
+    /// construction — it is in the list so that the list is the whole flag set.
+    #[test]
+    fn the_persist_flag_round_trips_and_shares_no_bit() {
+        let p = tmp_path("persist");
+        let _ = std::fs::remove_file(&p);
+        let (meta, cells) = grid(2, 1, |c, _| match c {
+            0 => GlyphCell { sgr: SGR_HAS_FG | SGR_PERSIST, ..cell('▀', 4) },
+            _ => cell('█', 5),
+        });
+        {
+            let mut w = GlyphRingWriter::create_at(&p, 2.0, 30.0).unwrap();
+            w.publish(&meta, &cells).unwrap();
+        }
+        let g = GlyphRingReader::open_at(&p).latest().expect("published");
+        assert_eq!(g.at(0, 0).sgr, SGR_HAS_FG | SGR_PERSIST, "the bit is read back exactly");
+        assert_eq!(g.at(1, 0).sgr & SGR_PERSIST, 0, "…and only where it was written");
+        assert_eq!(g.at(0, 0).symbol, '▀' as u32, "a trail keeps its symbol through the ring");
+        let _ = std::fs::remove_file(&p);
+        let sgr_bits = [
+            SGR_BOLD, SGR_DIM, SGR_ITALIC, SGR_UNDERLINE, SGR_BLINK, SGR_REVERSE, SGR_HIDDEN,
+            SGR_STRIKE, SGR_HAS_FG, SGR_HAS_BG, SGR_ACTIVE_PATH, SGR_PERSIST,
+        ];
+        for (i, a) in sgr_bits.iter().enumerate() {
+            assert_eq!(a.count_ones(), 1, "bit {i} is a single bit");
+            for b in &sgr_bits[i + 1..] {
+                assert_eq!(a & b, 0, "SGR bits collide: {a:#x} & {b:#x}");
+            }
+        }
+        assert_eq!(SGR_PERSIST & (SGR_HAS_FG | SGR_HAS_BG | SGR_ACTIVE_PATH), 0);
+        assert_eq!(FRAME_SETTLED.count_ones(), 1);
+    }
+
+    /// T11 decays in linear light and publishes sRGB8: the encoder must be the exact
+    /// inverse of the decoder on every one of the 256 codes, or a colour that merely
+    /// passed through linear would publish a different byte from the one it arrived as.
+    #[test]
+    fn srgb_encode_round_trips_every_code_exactly_and_is_monotone() {
+        for v in 0..=255u8 {
+            assert_eq!(linear_to_srgb8(srgb8_to_linear(v)), v, "code {v}");
+        }
+        assert_eq!(linear_to_srgb8(0.0), 0);
+        assert_eq!(linear_to_srgb8(1.0), 255);
+        assert_eq!(linear_to_srgb8(2.0), 255, "clamped, never wrapped");
+        assert_eq!(linear_to_srgb8(-1.0), 0);
+        assert_eq!(linear_to_srgb8(f32::NAN), 0);
+        let mut last = 0;
+        for i in 0..=1000 {
+            let b = linear_to_srgb8(i as f32 / 1000.0);
+            assert!(b >= last, "monotone: {i}");
+            last = b;
+        }
+        // The classic direction of the gamma bug, from this side: a mid-grey byte fed
+        // to the encoder AS IF it were linear comes out far brighter than it went in.
+        assert!(linear_to_srgb8(128.0 / 255.0) > 180, "{}", linear_to_srgb8(128.0 / 255.0));
+        assert_eq!(pack_linear_rgb([1.0, 0.0, srgb8_to_linear(77)]), pack_rgb(255, 0, 77));
     }
 
     #[test]
