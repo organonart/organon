@@ -69,7 +69,9 @@ struct Uniforms {
                             // 1 Calibrated), y=lut (0 Turbo/1 Viridis/2 Inferno/3 Magma),
                             // z=amount (0..1 blend over the aesthetic albedo), w=cal_t
                             // (the CPU-computed db_to_colour_t coord). mode<0.5 → identity.
-    shape: vec4<f32>,       // x=bevel (0 sharp cube → 1 sphere), y=face crown (organon#217 T3, fs-only normal dome), zw reserved.
+    shape: vec4<f32>,       // x=bevel (0 sharp cube → 1 sphere), y=face crown (organon#217 T3, fs-only normal dome),
+                            // z=emission profile strength (organon#217 T9, fs-only — scales the per-instance
+                            // `emit` term across each face via `tile_profile`; 0 → exactly 1.0), w reserved.
                             // Rounds the (subdivided) cube mesh via a rounded-box morph in
                             // the vertex stages. Set nonzero only on the Original / Flow-
                             // Aligned cube draw (render() gates it). x=0 → sharp cube.
@@ -552,6 +554,56 @@ fn round_local(p: vec3<f32>, bevel: f32) -> Rounded {
     return out;
 }
 
+// organon#217 T3/T9 — the face a mesh-local point of the unit cube sits on: the signed
+// axis whose coordinate dominates (`x` wins a tie with `y`, `y` with `z`). Read off the
+// UN-rounded local position (`VsOut.local_pos` is `VsIn.position`), so the bevel's
+// rounded band still maps to the face it belongs to. Shared by the face crown (T3) and
+// the emission profile (T9) so the two cannot disagree about which face a fragment is on.
+fn face_axis(p: vec3<f32>) -> vec3<f32> {
+    let ap = abs(p);
+    if (ap.x >= ap.y && ap.x >= ap.z) {
+        return vec3<f32>(sign(p.x), 0.0, 0.0);
+    } else if (ap.y >= ap.z) {
+        return vec3<f32>(0.0, sign(p.y), 0.0);
+    }
+    return vec3<f32>(0.0, 0.0, sign(p.z));
+}
+
+// organon#217 T9 — the face UV of a mesh-local point: its two coordinates across the
+// face `face_axis` picks, in [-0.5, 0.5]² — the unit cube's own extent, so a 1×2 glyph
+// tile's face is a square here and a profile drawn on it stretches with the tile. The
+// same dominance rule as `face_axis`, spelled again only because WGSL cannot return two
+// values without a struct; `glyph_tile.rs` pins the two agree. CPU twin: `glyph_tile::face_uv`.
+fn face_uv(p: vec3<f32>) -> vec2<f32> {
+    let ap = abs(p);
+    if (ap.x >= ap.y && ap.x >= ap.z) {
+        return p.yz;
+    } else if (ap.y >= ap.z) {
+        return p.xz;
+    }
+    return p.xy;
+}
+
+// organon#217 T9 — the emission PROFILE across a tile face (`doc/pbr_text_engine.md`
+// §15, T9): the phosphor behind the faceplate is brightest at the centre and falls off
+// softly toward the edges, so a lit cell reads as a core seen through glass rather than
+// a flat painted fill. `uv` is `face_uv`, `k` the strength (`u.shape.z`, 0..1).
+//   s = (2u)⁴ + (2v)⁴   a p=4 squircle radius⁴: 0 at the centre, 1 on the edge midlines,
+//                        clamped to 1 in the corners — a rounded core rather than an
+//                        ellipse, so the edge midlines stay lit longer than the corners
+//   w = (1 − s)²        flat-topped (dw → 0 at the centre), soft-landing (→ 0 at the
+//                        edge), monotone from centre to edge
+//   profile = mix(1, w, k) ∈ [1 − k, 1]
+// k = 0 → exactly 1.0 everywhere, which is T1's flat fill (invariant #4). Pure, so it is
+// mirrored on the CPU in `glyph_tile.rs`, where its invariants — zero strength is
+// exactly 1, symmetry under sign and axis swap, monotone along every ray — are pinned.
+fn tile_profile(uv: vec2<f32>, k: f32) -> f32 {
+    let a = 4.0 * uv * uv;
+    let s = min(a.x * a.x + a.y * a.y, 1.0);
+    let w = (1.0 - s) * (1.0 - s);
+    return mix(1.0, w, clamp(k, 0.0, 1.0));
+}
+
 // ===================== vertex =====================
 struct VsIn {
     @location(0) position: vec3<f32>,
@@ -563,7 +615,8 @@ struct VsIn {
     @location(6) m3: vec4<f32>,
     @location(7) tint: vec4<f32>, // per-instance colour (×albedo); white = no change
     // organon#217 T1 — per-instance EMISSION, bypassing albedo: `rgb` is linear
-    // radiance, `w` its gain. Added into `emissive` in `fs_main` as `emit.rgb * emit.w`,
+    // radiance, `w` its gain. Added into `emissive` in `fs_main` as `emit.rgb * emit.w`
+    // (times the T9 face profile when `u.shape.z > 0`),
     // so an all-zero buffer (every draw today) contributes exactly 0.0 and the frame is
     // byte-identical to before this attribute existed. A terminal cell's colour is
     // display-referred — a phosphor, not a reflectance — and `tint` cannot carry it
@@ -1407,13 +1460,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // world writes it only for a live glyph ring), so the frame is byte-identical.
     if (u.shape.y > 0.0) {
         let p = in.local_pos;
-        let ap = abs(p);
-        var axis = vec3<f32>(0.0, 0.0, sign(p.z));
-        if (ap.x >= ap.y && ap.x >= ap.z) {
-            axis = vec3<f32>(sign(p.x), 0.0, 0.0);
-        } else if (ap.y >= ap.z) {
-            axis = vec3<f32>(0.0, sign(p.y), 0.0);
-        }
+        let axis = face_axis(p);
         let tangential = p - axis * dot(p, axis);
         var n_local = normalize(axis + 2.0 * u.shape.y * tangential);
         let rounded = round_local(p, u.shape.x);
@@ -1591,9 +1638,26 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // the faceplate). With `emit == vec4(0)` the added term is exactly `vec3(0.0)` and
     // the expression reduces to the one above it, so every existing draw — which binds
     // an all-zero emit buffer — is byte-identical. Invariant #4.
+    //
+    // organon#217 T9 — `tile_profile`: the per-instance emission takes the tile's
+    // emission PROFILE across its face, strength `u.shape.z` (the glyph look's profile
+    // lane; 0 on every draw today, and `tile_profile(_, 0)` is exactly 1.0, so the gate
+    // below is a shortcut, not the reason the frame is identical). It scales the
+    // per-instance term ONLY: the albedo-modulated legacy term, the ripple and the RD
+    // glow belong to other generators and do not move. A tile with `emit == 0` — a dark
+    // cell, once `lower_grid` gives every cell a tile — contributes nothing here and
+    // shades as its body: the near-black faceplate tint under whatever lobes the draw's
+    // material carries. With a Clearcoat (the `faceplate` preset) that is `coat_spec`
+    // below — the coat's environment sheen, computed without `emissive` and added after
+    // `base_scale` — so a dark cell still reflects the room (§4.1), and a lit one is seen
+    // THROUGH the coat: its phosphor rides `color * base_scale`, i.e. the coat's (1 − fc).
+    var tile_emit = in.emit.rgb * in.emit.w;
+    if (u.shape.z > 0.0) {
+        tile_emit = tile_emit * tile_profile(face_uv(in.local_pos), u.shape.z);
+    }
     var emissive = albedo * (glow + u.env_tint.w) + ripple_emission(in.world_pos, albedo)
         + base_col * (rd_d * rd.params.x)
-        + in.emit.rgb * in.emit.w;
+        + tile_emit;
     // Spectral emission (#214 T5 pt 1), woven in here so it applies on every material.
     // Fluorescence: the surface absorbs the environment's short-wavelength (blue)
     // light and re-emits it at a chosen hue — bright under a blue/UV-ish env

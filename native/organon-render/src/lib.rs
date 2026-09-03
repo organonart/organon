@@ -70,3 +70,8 @@ pub mod render;
 /// Pearson against the fixture's luma, inter-cell bleed — plus a synthetic painter so the
 /// metric is tested without an adapter. `tests/legibility.rs` runs the chain.
 pub mod legibility;
+
+/// The tile (PBR text T9, organon#217): the CPU twin of `cube.wgsl`'s emission profile
+/// across a glyph tile's face and the face-UV rule it is keyed on. Pure, tests only —
+/// production reads the knob and the GPU does the arithmetic.
+pub mod glyph_tile;
