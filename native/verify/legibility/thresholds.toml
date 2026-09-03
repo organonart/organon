@@ -1,0 +1,36 @@
+# The legibility gate's thresholds (PBR text T13, organon#217) — `doc/pbr_text_engine.md`
+# §9's two laws as pass/fail lines, for `verify.sh --legibility` and `legibility-gate`.
+#
+# A threshold is a test's opinion, not a look, which is why these live beside the goldens
+# and never on the param chain. All four keys are required and an unknown key is an error
+# (`legibility_gate::parse_thresholds`): an opinion that silently fell back to a default is
+# not one.
+#
+# Calibration: `native/organon-render/tests/legibility.rs` prints a blur sweep on the logo
+# at 6 px cells — `max_bleed 0.25` is about sigma = 0.21 cells of halation, and
+# `min_correlation 0.90` trips only near a full cell of blur. These are T2's defaults
+# (`legibility::Thresholds::default()`), carried here so the file is the authority once a
+# real frame has been scored; tighten them from the first GPU run's numbers, and say so in
+# the PR that does.
+#
+# ⚠️ Scored on the frame `organon snap` writes — the display frame after the visual's
+# tonemap, 8-bit sRGB — not the HDR buffer. The gate's first output line says so.
+
+# Law 2 — the cell's brightness tracks what TTE said the cell was: Pearson over every cell,
+# blanks included, must be at least this.
+min_correlation = 0.90
+
+# Law 1, local — a dark cell's luma over the mean of its lit neighbours, the worst case on
+# the grid, must be at most this.
+max_bleed = 0.25
+
+# Law 1, global — the share of the grid's energy that landed in blank cells must be at most
+# this. This is the one that catches a lit backplane or a fog that `bleed` cannot see.
+max_stray = 0.10
+
+# Determinism — two snaps of the same held render, seconds apart while the path tracer
+# accumulates, must agree on every judged number to within this. The per-cell box filter
+# averages hundreds of pixels, so the noise the tracer leaves in the pixels is far below
+# this in the numbers; a spread above it means the picture itself moved (a restarted
+# accumulation, a ring that was not held, a camera that was not).
+max_spread = 0.02

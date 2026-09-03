@@ -17,8 +17,12 @@
 #   ./verify.sh 02-chrome 03-glass  # just these scenes (name or file stem)
 #   ./verify.sh --update-golden     # re-baseline: adopt this run's frames as truth
 #   ./verify.sh --strict            # a missing golden is a failure (for CI)
+#   ./verify.sh --legibility        # ALSO run the legibility gate (PBR text T13, below)
+#   ./verify.sh --legibility-only   # just the gate — the one command for a text-look PR
+#       [--effect NAME] [--seed N] [--converge S]   the producer's effect and seed, and
+#                                                    how long the held frame accumulates
 #
-# Two kinds of check, deliberately kept apart:
+# Three kinds of check, deliberately kept apart:
 #   verify/scenes/  the STANDING suite — permanent, golden-backed. "Did I break
 #                   something that already worked?"
 #   verify/pr/      THIS PR's acceptance checks, written by whoever built the feature.
@@ -26,6 +30,17 @@
 #                   `#!expect same-as / differs-from`, which compares two frames from
 #                   the SAME run — so they need no committed golden and work the very
 #                   first time, on a feature that did not exist yesterday.
+#   verify/legibility/  THE LEGIBILITY GATE (PBR text T13, organon#217) — not a golden
+#                   and not a diff: doc/pbr_text_engine.md §9's two laws as a number,
+#                   over a frame the real renderer produced. `--legibility` starts the
+#                   text producer (`organon-glyphs`) on the Omarchy logo with a fixed
+#                   effect and seed, drives the `faceplate` look through the CLI
+#                   (`faceplate.scene` — as much of the rung as the vocabulary reaches;
+#                   its header lists the nine fields it cannot), waits for the effect to
+#                   settle and the held frame to accumulate, snaps it TWICE, and runs
+#                   `legibility-gate` over the pair against `thresholds.toml`, with the
+#                   fixture's colours taken from the settled ring. Exit 1 below a
+#                   threshold. verify/README.md says what a pass looks like.
 #
 # Artifacts land in target/verify/ — report.md, summary.json, frames/, diffs/.
 # Exit: 0 all checks passed · 1 a check failed · 2 the harness could not run.
@@ -47,6 +62,18 @@ STRICT=0
 BUILD=1
 KEEP_VISUAL=0
 STARTUP_TIMEOUT=40
+# The legibility gate (PBR text T13). `expand` settles in a couple of seconds and never
+# lets a lit cell go dark on the way (measured in T11); the seed is the issue number.
+# CONVERGE is how long the held frame accumulates before the first snap — the settled
+# frame is path-traced (T5's handover), and the second snap SPREAD_WAIT later is what
+# makes "the same render twice" a number rather than a claim.
+LEGIBILITY=0
+LEGIBILITY_ONLY=0
+LEG_EFFECT=expand
+LEG_SEED=217
+LEG_CONVERGE=6
+LEG_SPREAD_WAIT=2
+LEG_SETTLE_TIMEOUT=90
 # macOS still ships bash 3.2, where `"${ARR[@]}"` on an EMPTY array under `set -u` is an
 # unbound-variable error. Hence the parallel counter and the `${ARR[@]+…}` guards below —
 # this script has to survive /bin/bash on the Mac, not just a modern Homebrew bash.
@@ -65,6 +92,11 @@ while [ $# -gt 0 ]; do
     --pr-dir)        shift; PR_DIR="${1:?--pr-dir wants a directory}"; WITH_PR=1 ;;
     --golden)        shift; GOLDEN_DIR="${1:?--golden wants a directory}" ;;
     --timeout)       shift; STARTUP_TIMEOUT="${1:?--timeout wants seconds}" ;;
+    --legibility)    LEGIBILITY=1 ;;
+    --legibility-only) LEGIBILITY=1; LEGIBILITY_ONLY=1 ;;
+    --effect)        shift; LEG_EFFECT="${1:?--effect wants a ttfx effect name}" ;;
+    --seed)          shift; LEG_SEED="${1:?--seed wants an integer}" ;;
+    --converge)      shift; LEG_CONVERGE="${1:?--converge wants seconds}" ;;
     # Print the whole header block — from line 2 to the first non-comment line —
     # rather than a hardcoded range, which silently truncates whenever the header grows.
     -h|--help)       awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 0 ;;
@@ -85,6 +117,17 @@ export ORGANON_VISUAL_DISPLAY=off
 VISUAL=target/release/organic-math-visual
 ORGANON=target/release/organon
 IMGDIFF=target/release/examples/imgdiff
+# The legibility gate's two extra binaries (PBR text T13): the text producer, and the
+# judge. Built and required only with --legibility, so the standing suite's build is
+# exactly what it was.
+GLYPHS=target/release/organon-glyphs
+GATE=target/release/legibility-gate
+
+# Git Bash on Windows: `uname -s` is MINGW64_NT-…; there is a display and no xvfb, and a
+# binary is `foo.exe`. MSYS's `test -x foo` does find `foo.exe`, but say so explicitly
+# rather than lean on it.
+WINDOWS=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WINDOWS=1 ;; esac
 
 if [ "$BUILD" = "1" ]; then
   echo "building (visual + CLI + imgdiff)…"
@@ -92,9 +135,16 @@ if [ "$BUILD" = "1" ]; then
   # in the root package, so this is two invocations now rather than one.
   cargo build --release -p organon-visual --bin organic-math-visual
   cargo build --release --bin organon --example imgdiff
+  if [ "$LEGIBILITY" = "1" ]; then
+    echo "building (organon-glyphs + legibility-gate)…"
+    cargo build --release -p organon-glyphs --bin organon-glyphs
+    cargo build --release -p organon-render --bin legibility-gate
+  fi
 fi
-for bin in "$VISUAL" "$ORGANON" "$IMGDIFF"; do
-  [ -x "$bin" ] || { echo "verify.sh: missing $bin (drop --no-build?)" >&2; exit 2; }
+NEEDED=("$VISUAL" "$ORGANON" "$IMGDIFF")
+if [ "$LEGIBILITY" = "1" ]; then NEEDED+=("$GLYPHS" "$GATE"); fi
+for bin in "${NEEDED[@]}"; do
+  [ -x "$bin" ] || [ -x "$bin.exe" ] || { echo "verify.sh: missing $bin (drop --no-build?)" >&2; exit 2; }
 done
 
 rm -rf "$OUT"
@@ -106,7 +156,9 @@ SCENE_SEARCH=("$SCENE_DIR")
 if [ "$WITH_PR" = "1" ] && [ -d "$PR_DIR" ]; then
   SCENE_SEARCH+=("$PR_DIR")
 fi
-for dir in "${SCENE_SEARCH[@]}"; do
+# --legibility-only runs no scenes at all; the gate is the whole run.
+if [ "$LEGIBILITY_ONLY" = "1" ]; then SCENE_SEARCH=(); fi
+for dir in ${SCENE_SEARCH[@]+"${SCENE_SEARCH[@]}"}; do
   for f in "$dir"/*.scene; do
     [ -e "$f" ] || continue
     name=$(basename "$f" .scene)
@@ -120,14 +172,21 @@ for dir in "${SCENE_SEARCH[@]}"; do
     SCENES+=("$f")
   done
 done
-if [ ${#SCENES[@]} -eq 0 ]; then
+if [ ${#SCENES[@]} -eq 0 ] && [ "$LEGIBILITY_ONLY" = "0" ]; then
   echo "verify.sh: no scenes matched in ${SCENE_SEARCH[*]}" >&2
   exit 2
 fi
 
 # --- launch the visual -------------------------------------------------------------
 VISUAL_PID=""
+# The legibility gate's producer, while one is running (PBR text T13). Always killed:
+# --keep-visual keeps the window, not a producer holding a 600 s dwell on the ring.
+GLYPHS_PID=""
 cleanup() {
+  if [ -n "$GLYPHS_PID" ] && kill -0 "$GLYPHS_PID" 2>/dev/null; then
+    kill "$GLYPHS_PID" 2>/dev/null || true
+    wait "$GLYPHS_PID" 2>/dev/null || true
+  fi
   if [ -n "$VISUAL_PID" ] && [ "$KEEP_VISUAL" = "0" ] && kill -0 "$VISUAL_PID" 2>/dev/null; then
     kill "$VISUAL_PID" 2>/dev/null || true
     wait "$VISUAL_PID" 2>/dev/null || true
@@ -136,7 +195,7 @@ cleanup() {
 trap cleanup EXIT
 
 LAUNCH=("$VISUAL")
-if [ "$(uname)" != "Darwin" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+if [ "$WINDOWS" = "0" ] && [ "$(uname)" != "Darwin" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
   if command -v xvfb-run >/dev/null 2>&1; then
     echo "no display — wrapping in xvfb-run (the GPU still does the rendering)"
     LAUNCH=(xvfb-run -a -s "-screen 0 1280x1024x24" "$VISUAL")
@@ -312,7 +371,7 @@ record() { # scene verdict metric detail
 }
 
 # --- run the scenes ----------------------------------------------------------------
-for scene in "${SCENES[@]}"; do
+for scene in ${SCENES[@]+"${SCENES[@]}"}; do
   name=$(basename "$scene" .scene)
   desc=$(directive "$scene" desc "")
   checks=$(directive "$scene" checks "nonblack,golden")
@@ -426,6 +485,114 @@ for scene in "${SCENES[@]}"; do
 
   printf '%s\n' "$name|$desc" >>"$NOTES"
 done
+
+# --- the legibility gate (PBR text T13, organon#217) --------------------------------
+# doc/pbr_text_engine.md §9's two laws — the cell's energy stays in the cell, and the
+# cell's brightness tracks what TTE said it was — over a frame THIS renderer produced,
+# judged by `legibility-gate` (organon-render/src/legibility_gate.rs) against
+# verify/legibility/thresholds.toml. Not a golden: a golden proves the look did not
+# move, this proves the text is still readable, and a wrong look once baselined would
+# pass a golden forever while failing here.
+#
+# The shape of the step: start the producer on the Omarchy logo (the fixture's own text,
+# derived by the gate so there is no second copy of it) with a fixed effect and seed and
+# a dwell long enough to gate inside; drive the look from faceplate.scene; wait for the
+# producer to say the effect settled; wait LEG_CONVERGE more seconds, because the
+# settled frame is handed to the path tracer (T5) and accumulates; snap; snap again
+# LEG_SPREAD_WAIT later; gate the pair. The second snap is the determinism claim as a
+# number — two noise realisations of one held picture must agree on every judged
+# number to within max_spread — rather than as a sentence in a PR.
+#
+# ⚠️ The fixture's COLOURS come from the ring (`--ring`), because what TTE said a cell
+# was is the effect's own final gradient, which the hand-written one-colour fixture
+# cannot know; the fixture's SHAPE is cross-checked against the ring cell for cell, so a
+# producer that drew the wrong text fails as "could not measure", never as a low score.
+# ⚠️ The frame is what `organon snap` writes: 8-bit sRGB AFTER the visual's Reinhard
+# tonemap — the display frame, not the HDR buffer. The gate's first line says so.
+legibility_step() {
+  local name="legibility-faceplate"
+  local fixture="organon-render/tests/fixtures/omarchy-logo.txt"
+  local thresholds="verify/legibility/thresholds.toml"
+  local look="verify/legibility/faceplate.scene"
+  local text="$OUT/legibility-input.txt"
+  local cols rows
+  cols=$(sed -n 's/^cols[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' "$fixture" | head -1)
+  rows=$(sed -n 's/^rows[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' "$fixture" | head -1)
+  echo "── $name — the legibility gate over a real faceplate render (effect $LEG_EFFECT, seed $LEG_SEED, ${cols}x${rows})"
+
+  if ! "$GATE" --emit-text "$fixture" >"$text"; then
+    record "$name" FAIL "—" "could not derive the producer input from $fixture"
+    return
+  fi
+  # `--once --dwell 600`: one effect, then hold the settled grid for ten minutes (we kill
+  # it long before). `--cols/--rows` pinned to the fixture's, so a ragged input cannot
+  # make the canvas a different size from the grid the gate expects.
+  "$GLYPHS" --input "$text" --effect "$LEG_EFFECT" --seed "$LEG_SEED" \
+    --cols "$cols" --rows "$rows" --once --dwell 600 >"$OUT/glyphs.log" 2>&1 &
+  GLYPHS_PID=$!
+
+  "$ORGANON" release >/dev/null 2>&1 || true
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if ! printf '%s' "$line" | xargs "$ORGANON" >/dev/null; then
+      record "$name" FAIL "—" "look command failed: \`$line\` (is every id on the vocabulary?)"
+      return
+    fi
+  done < <(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$look" || true)
+
+  # The producer logs `… settled after N ticks` when the effect returns None and the
+  # held grid goes on the ring with FRAME_SETTLED. The gate refuses an unsettled ring
+  # anyway; this wait is so the refusal never fires on a merely slow effect.
+  local settled=0
+  for _ in $(seq 1 $((LEG_SETTLE_TIMEOUT * 4))); do
+    if grep -q "settled after" "$OUT/glyphs.log" 2>/dev/null; then settled=1; break; fi
+    if ! kill -0 "$GLYPHS_PID" 2>/dev/null; then break; fi
+    sleep 0.25
+  done
+  if [ "$settled" != "1" ]; then
+    record "$name" FAIL "—" "the producer never settled within ${LEG_SETTLE_TIMEOUT}s — see glyphs.log"
+    tail -5 "$OUT/glyphs.log" >&2 || true
+    return
+  fi
+  echo "   settled — accumulating ${LEG_CONVERGE}s before the first snap"
+  sleep "$LEG_CONVERGE"
+
+  local frame="$OUT/frames/$name.png"
+  local frame_b="$OUT/frames/$name-b.png"
+  raise_visual
+  if ! "$ORGANON" snap -o "$frame" >/dev/null 2>&1; then
+    record "$name" FAIL "—" "snap failed — the visual is wedged or died (see visual.log)"
+    return
+  fi
+  sleep "$LEG_SPREAD_WAIT"
+  raise_visual
+  if ! "$ORGANON" snap -o "$frame_b" >/dev/null 2>&1; then
+    record "$name" FAIL "—" "second snap failed"
+    return
+  fi
+
+  local gate_out="$OUT/$name.txt"
+  local rc=0
+  "$GATE" "$frame" "$fixture" --second "$frame_b" --thresholds "$thresholds" --geom auto \
+    --ring "$ORGANON_IPC_NS" --dump "$OUT/diffs/$name-cells.png" >"$gate_out" 2>&1 || rc=$?
+  cat "$gate_out"
+  local summary verdict
+  summary=$(grep '^legibility [0-9]*x[0-9]*:' "$gate_out" | head -1)
+  verdict=$(tail -1 "$gate_out")
+  case "$rc" in
+    0) record "$name" ok "$summary" "$verdict — full report in $name.txt" ;;
+    1) record "$name" FAIL "$summary" "**$verdict** — see $name.txt and diffs/$name-cells.png" ;;
+    *) record "$name" FAIL "—" "the gate could not measure (exit $rc): $verdict" ;;
+  esac
+  printf '%s\n' "$name|the legibility gate (PBR text T13): \`faceplate\` over the Omarchy logo, effect \`$LEG_EFFECT\` seed $LEG_SEED, two snaps ${LEG_SPREAD_WAIT}s apart after ${LEG_CONVERGE}s of accumulation. Numbers in \`$name.txt\`; the per-cell picture in \`diffs/$name-cells.png\`." >>"$NOTES"
+
+  kill "$GLYPHS_PID" 2>/dev/null || true
+  wait "$GLYPHS_PID" 2>/dev/null || true
+  GLYPHS_PID=""
+}
+if [ "$LEGIBILITY" = "1" ]; then
+  legibility_step
+fi
 
 # --- second pass: `#!expect same-as / differs-from` ---------------------------------
 # A/B assertions between two frames captured in THIS run. They need no committed

@@ -1540,6 +1540,29 @@ destroys the very shape `correlation_lit` measures (0.178 at 6× through bytes, 
 `bottled`) needs a front-on gate render or a homography this module does not have; a
 one-cell `spill_fraction` exists for the spec's literal phrasing of bleed ("the fraction of a
 lit cell's energy outside its footprint"), which a multi-cell image cannot answer because a
-pixel does not say which cell lit it; and **no real render has been scored** — the entry
-points `assess` and `assess_readback_rgba8` are wired nowhere, on purpose, until T3 decides
-where the gate lives.
+pixel does not say which cell lit it.
+
+**The gate (`legibility_gate.rs`, T13).** Where the harness lives is now decided: the
+`legibility-gate` `[[bin]]` (a thin `main` over `legibility_gate.rs`, no clap, no new
+dependency), which `native/verify.sh --legibility` runs over two `organon snap`s of the
+`faceplate` look on the Omarchy logo, against `native/verify/legibility/thresholds.toml`. The
+module carries what `legibility.rs` deliberately does not: the thresholds **file** (all four
+keys required, an unknown key an error — an opinion that fell back to a default is not one);
+**`locate`**, a centred scale sweep then an offset refinement maximising Pearson, because a
+held-camera frame is not quite `fit`'s case (the rig fits the *bounds'* centre plane and the
+tiles' front faces are nearer, so the projected grid is a fraction of a percent larger than
+the fit — up to a fifth of a cell at the edge of an 81-column logo); the **fixture from the
+ring** (`fixture_from_grid` + `shape_agrees` — colours from the settled `GlyphGrid`, since
+what TTE said a cell was is the effect's own final gradient and the one-colour file cannot
+know it; the shape cross-checked cell for cell, so a producer that drew the wrong text is
+"could not measure", never a low score; an unsettled ring refused outright); the **spread**
+between two frames of one held render, the determinism claim as a number; and the exit code
+(0 · 1 · 2, the last never conflated with a failing report). ⚠️ **What it scores is the
+frame `snap.rs` writes** — `Rgba16Float` through `reinhard()` then sRGB8 — so the "wants the
+HDR buffer" line above is still true and still unmet: a gain above 1 is *compressed* rather
+than clipped, a monotone map that keeps the ranking (Pearson on a one-colour fixture barely
+moves) and squashes the gradient inside the text (`correlation_lit` reads low for it). The
+report's first line says so; a float snap is `snap.rs`'s to add. `tests/legibility_gate.rs`
+drives the module and the built binary over the synthetic painter and a ring written to a
+temp file, every failure message named. **No real frame has been scored yet** — that run
+is the coordinator's, on a GPU, and `native/verify/README.md` says what a pass looks like.

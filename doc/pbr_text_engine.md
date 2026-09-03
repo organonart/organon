@@ -419,6 +419,24 @@ runs on any GPU, it is deterministic given a fixed cell grid, and it makes this 
 Organon features that can carry real automated visual regression rather than the usual
 `cargo test --workspace` ceiling. **Build the harness before the exotic presets, not after.**
 
+**Landed, and then run-able (T2, then T13).** The harness is
+`organon-render/src/legibility.rs`; the gate that runs it over a frame *this* renderer
+produced is `native/verify.sh --legibility-only` → `legibility-gate`
+(`organon-render/src/legibility_gate.rs`), thresholds in `native/verify/legibility/thresholds.toml`.
+Three things the number rests on that this section did not say. **The fixture's colours come
+from the ring, not from a file**: "what TTE said that cell was" is the effect's own final
+gradient, so the gate reads the settled grid off the wire, cross-checks its *shape* against
+the hand-written fixture cell for cell, and scores against the wire's colours. **The frame is
+the display frame**: `organon snap` writes the HDR buffer through a Reinhard tonemap to
+8-bit sRGB, so a gain above 1 is compressed rather than linear — the ranking of cells
+survives, the gradient inside the text is squashed, and the report's first line says which
+frame it scored. **"Deterministic given a fixed cell grid" is true of the raster and has to be
+*measured* for the trace**: the settled frame is path-traced (§8) and accumulates, so the
+gate snaps the held frame twice, seconds apart, and reports the spread of the judged
+numbers against `max_spread` — the per-cell box filter averages hundreds of pixels, which is
+why two noise realisations of one picture agree in the numbers while disagreeing in the
+pixels.
+
 ---
 
 ## 10. The preset ladder
@@ -725,6 +743,22 @@ until it lands.
   `Cells`, and "one tick of latency" is read from `world.rs`'s blend clock, not seen.
 - **T13 — the gate on a real render.** T2's harness over a `faceplate` frame read from the HDR
   buffer, in `verify.sh`, with the thresholds beside the goldens. **After T3 and T8.**
+  **Landed, green and ready to try:** `native/verify.sh --legibility-only` (or `--legibility`
+  beside the standing suite) starts `organon-glyphs` on the logo (`--effect expand --seed 217`,
+  the input derived from the fixture by `legibility-gate --emit-text`), drives
+  `verify/legibility/faceplate.scene`, waits for the settle, lets the held frame accumulate,
+  snaps twice and gates the pair with `legibility-gate` against
+  `verify/legibility/thresholds.toml`, the fixture's colours read from the settled ring. Owns
+  `verify.sh`, `verify/legibility/`, `organon-render/src/legibility_gate.rs` and its `[[bin]]`.
+  ⚠️ **Not the HDR buffer** — `snap` writes the tonemapped 8-bit display frame and `snap.rs`
+  is the world's file, so the gate scores that and says so (§9). ⚠️ **Not the whole rung** —
+  the harness runs the visual with no writer, so no preset recall; nine `faceplate` fields
+  are off the CLI vocabulary (`atmos_enabled`, `bg_visible`, `fx_enabled`, `hal_amount`,
+  `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) and stay at defaults,
+  and the gate render is straight on (`glyph_cam_tilt 0`, the geometry being axis-aligned)
+  with `glyph_margin 0` so the grid rather than the backplane fills the frame. Registering
+  those ids, or a harness leg that runs the standalone, closes the gap. No GPU touched this;
+  the first real number is the coordinator's to take.
 - **T14 — the preset ladder.** `nixie`, `foundry`, `anodized`, `bottled`, `cathode` as preset
   data over T3's knobs and T6's core. **After T3; needs a GPU look per rung.**
 - **T15 — the scatter.** Velocity-keyed motion streaks with an RGB split for the raster phase.

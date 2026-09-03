@@ -155,6 +155,92 @@ Pointing the inert check at `01` instead is what made it fail its first real run
 (2026-08-05) with the FX code entirely innocent. See `pr/README.md` for the per-PR
 protocol.
 
+## The legibility gate — `--legibility` (PBR text T13, organon#217)
+
+A third kind of check, and neither of the two above: not "did the look move" and not "does
+the new thing do something", but **"is this text still readable"** —
+`doc/pbr_text_engine.md` §9's two laws (*the cell's energy stays in the cell*; *the cell's
+brightness tracks what TTE said it was*) as a number, over a frame the real renderer
+produced. A golden cannot ask it: a wrong look once baselined passes a golden forever and
+fails this the same day.
+
+```bash
+cd native
+./verify.sh --legibility-only                 # the one command for a text-look PR
+./verify.sh --legibility                      # the standing suite, then the gate
+./verify.sh --legibility-only --effect wipe --seed 7 --converge 10
+```
+
+**What the step does.** Builds two more binaries (`organon-glyphs`, the text producer, and
+`legibility-gate`, the judge — `organon-render/src/legibility_gate.rs`); derives the
+producer's input from the fixture (`legibility-gate --emit-text
+organon-render/tests/fixtures/omarchy-logo.txt` — there is no second copy of the logo);
+starts the producer in the harness's namespace with one effect (`expand`, seed 217, `--once
+--dwell 600`, killed at the end); runs `verify/legibility/faceplate.scene` through the CLI;
+waits for the producer to log that the effect settled; waits `--converge` seconds more,
+because the settled frame is handed to the path tracer (§8, T5) and accumulates; snaps;
+snaps again two seconds later; and runs the gate over the pair:
+
+```
+legibility-gate frames/legibility-faceplate.png organon-render/tests/fixtures/omarchy-logo.txt \
+    --second frames/legibility-faceplate-b.png --thresholds verify/legibility/thresholds.toml \
+    --geom auto --ring organon-verify --dump diffs/legibility-faceplate-cells.png
+```
+
+The gate's whole output is echoed and kept as `target/verify/legibility-faceplate.txt`; the
+report row carries its summary line and its verdict. **A pass looks like this** (synthetic
+numbers — no real frame has been scored yet, and the first real line belongs in the PR
+that scores it):
+
+```text
+fixture: shape from organon-render/tests/fixtures/omarchy-logo.txt · colours from the settled ring (effect `expand`, generation 130, 401 lit cells)
+frame: target/verify/frames/legibility-faceplate.png (1280x720) — 8-bit sRGB as `organon snap` writes it: …
+geometry (auto): origin (12.40, 189.67) px · cell 15.496 x 30.992 px · pin it with --geom 12.40,189.67,15.496
+legibility 81x10: corr 0.9871 (>= 0.90 ok) · lit-only 0.912 · bleed 0.084 at (23,4) (<= 0.25 ok) · stray 0.0312 (<= 0.10 ok) · lit 401/810 mean 0.4120 blank mean 0.00982 · PASS
+second: target/verify/frames/legibility-faceplate-b.png
+legibility 81x10: corr 0.9870 (>= 0.90 ok) · …
+spread: 0.0004 (<= 0.02 ok) — the largest change over corr/bleed/stray between the two frames
+legibility-gate: PASS
+```
+
+and the run exits 0. A **fail** ends `legibility-gate: FAIL — bleed 0.312 > 0.25` (the term
+named; several if several), the row is red, and `diffs/legibility-faceplate-cells.png` is the
+81×10 measured grid as a picture — open it beside the frame, the bright blank cells are
+where the light went. Exit 1. **"Could not measure"** is a third thing and is kept apart
+from a fail: the producer never settled, the ring's text is not the fixture's (the
+cross-check names the cell), a snap failed. The row is red with that reason and no number.
+
+**Four things to know before reading a number.**
+
+- **The fixture's colours come from the ring.** `omarchy-logo.txt` is a *shape* census in
+  one colour; what TTE said each cell was is the effect's own final gradient, which lives on
+  the wire. `--ring` reads the settled grid from the harness's namespace, checks its shape
+  against the file cell for cell, and scores against the wire's colours. An unsettled ring
+  is refused, never scored.
+- **The frame is the display frame.** `organon snap` writes the HDR production texture
+  through a Reinhard tonemap to 8-bit sRGB. A phosphor gain above 1 (`faceplate` is 3) is
+  compressed, not clipped and not linear: the ranking of cells survives, the gradient inside
+  the text is squashed. The gate's `frame:` line says so on every run. A float snap is
+  `snap.rs`'s to add; the thresholds file's comment says the numbers are of this frame.
+- **It is not the whole `faceplate` rung.** The harness runs the visual with no writer, so
+  no preset can be recalled, and only ids on the CLI vocabulary can be set. Nine of the
+  rung's fields are not (`atmos_enabled`, `bg_visible`, `fx_enabled`, `hal_amount`,
+  `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) — no halation, no
+  glyph pools, the sky behind the grid — and the gate render departs from the rung on
+  purpose in three places (`glyph_cam_tilt 0`: the geometry is axis-aligned; `glyph_margin
+  0`: so the grid, not the backplane, fills the frame; the clock frozen).
+  `faceplate.scene`'s header is the authority for the list.
+- **Determinism is measured, not assumed.** The held frame is path-traced and
+  accumulating, so the two snaps are two noise realisations of one picture; `spread` is the
+  largest change over the three judged numbers and `max_spread` bounds it. Per-cell
+  averaging over hundreds of pixels is why the numbers agree while the pixels do not. If
+  `spread` fails, the picture itself moved — a restarted accumulation, a ring that was not
+  held, a camera that was not — and `--converge` is the first thing to raise.
+
+`--geom auto` prints the geometry it found; pin it with `--geom X,Y,W` to take the search
+out of a re-run. `verify/legibility/thresholds.toml` is T2's defaults until a real frame
+tightens it — do that in the PR that quotes the first number.
+
 ## The metrics
 
 `imgdiff` (`examples/imgdiff.rs`) reports three numbers because they fail differently:

@@ -202,8 +202,11 @@ precisely because nothing diffed prose.
 so it catches binding, type and uniformity errors without a GPU — but it cannot see
 pipeline/layout mismatches, runtime GPU behaviour, UI layout, or *the actual look*. A
 green suite means "compiles and the logic tests pass", never "works". If you have a GPU,
-`native/verify.sh` renders frames and diffs them against committed goldens; saying which
-of these you ran is more useful than a confident summary.
+`native/verify.sh` renders frames and diffs them against committed goldens, and
+`native/verify.sh --legibility-only` runs the PBR-text legibility gate — `doc/pbr_text_engine.md`
+§9's two laws as a number over a frame the real renderer produced, judged against
+`native/verify/legibility/thresholds.toml` (a text-look PR runs that one and quotes the line);
+saying which of these you ran is more useful than a confident summary.
 
 ## Documentation is part of the change, not a follow-up
 

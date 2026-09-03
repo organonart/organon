@@ -87,6 +87,11 @@ organon set glyph_cam_hold 1 glyph_bevel 0.12 glyph_crown 0.35 glyph_gain 3
 organon set glyph_profile 0.5 glyph_dark_tiles 1     # the spec-sheet tile: soft core, dark cells tiled
 ```
 
+Whether a text look is still *readable* is a number, not a look: `native/verify.sh
+--legibility-only` renders `faceplate` over the Omarchy logo and gates it
+(`doc/pbr_text_engine.md` §9), and `legibility-gate <frame.png> <fixture.txt>` scores any
+snap by hand.
+
 `organon console …` is a **separate namespace, and it drives the console itself** —
 the lit surface behind the terminal text and the shape of the transcript, not the
 world in front of it:
