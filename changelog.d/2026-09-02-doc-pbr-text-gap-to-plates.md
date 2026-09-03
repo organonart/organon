@@ -1,0 +1,5 @@
+### PBR text §15 — the gap between the first render and the plates, as a plan
+
+The first tiles came up on a GPU on 2026-09-02 and were held against the three plates committed beside the spec. `doc/pbr_text_engine.md` §15 records what was measured — the inert default held, the logo renders as emissive beveled tiles, the T5 dwell **goes dark** because the ray-traced passes shade from tint and have never seen the emit buffer, the auto-orbit never stops so accumulation restarts every frame, the grid inherits the cube field's camera distance — and turns the distance to the plates into tiers T8–T15 with file ownership, so they can run in parallel without two workers on one file.
+
+📌 **Most of it is wiring, and the section says which rows are not.** Clearcoat, anisotropy and emissive-cubes-as-lights already exist in the cube shader and the world; what the plates add that this document never named is phosphor persistence and the scatter phase's motion streaks. ⚠️ The dark dwell is the one that gates everything: T5 as merged makes the screensaver worse, not better, until T8 lets the tracer see emission.
