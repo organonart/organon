@@ -1143,15 +1143,25 @@ impl World {
         if seq == 0 {
             return None;
         }
+        // One reading of the world clock for both the arrival and the build, so a
+        // frame read and built in the same call sees `since == 0` exactly.
+        let now_s = self.glyph_t0.elapsed().as_secs_f64();
         if seq != self.glyph_seen_seq {
-            // A new frame: what was current becomes previous — unless the copy tears on
-            // every retry, in which case keep drawing the frame we already had.
-            std::mem::swap(&mut self.glyph_prev, &mut self.glyph_grid);
-            if self.glyph_ring.latest_into(&mut self.glyph_grid) {
+            // A new frame is read into the scratch grid first, so the blend clock can
+            // say what it is before anything rotates: a heartbeat (same `epoch` and
+            // `tick` — the settle publish, a dwell republish, a T11 trail decaying)
+            // replaces the current grid and leaves the previous one and the clock
+            // alone; a tick or a cut rotates current → previous. A copy that tears on
+            // every retry keeps drawing the frame we already had.
+            if self.glyph_ring.latest_into(&mut self.glyph_next) {
+                let cur = (self.glyph_seen_seq != 0).then_some(&self.glyph_grid.frame);
+                let arrival = self.glyph_clock.arrive(cur, &self.glyph_next.frame, self.glyph_next.tick_hz, now_s);
+                if arrival != glyph_ring::Arrival::Heartbeat {
+                    std::mem::swap(&mut self.glyph_prev, &mut self.glyph_grid);
+                }
+                std::mem::swap(&mut self.glyph_grid, &mut self.glyph_next);
                 self.glyph_seen_seq = seq;
                 self.glyph_seen_at = Instant::now();
-            } else {
-                std::mem::swap(&mut self.glyph_prev, &mut self.glyph_grid);
             }
         }
         if self.glyph_seen_seq == 0 {
@@ -1161,16 +1171,13 @@ impl World {
         if since > GLYPH_SILENCE_S {
             return None;
         }
-        // The §7 blend: how far through the producer's tick this frame is. A new epoch
-        // is a new effect — a cut by definition — so it never slides from the old one.
-        let tick_hz = if self.glyph_grid.tick_hz > 0.0 { self.glyph_grid.tick_hz } else { 60.0 };
-        let blend = if self.glyph_grid.frame.epoch != self.glyph_prev.frame.epoch
-            || self.glyph_prev.frame.seq == 0
-        {
-            1.0
-        } else {
-            (since * tick_hz).clamp(0.0, 1.0)
-        };
+        // The §7 blend: how far between its two grids this frame is, on producer time
+        // (`glyph_ring::BlendClock` — the pair's `Δtick / tick_hz`, the time since the
+        // pair started, and this world's own frame interval as the lead, because the
+        // frame built now is shown one interval later). A new epoch is a new effect —
+        // a cut by definition — and the clock answers 1 for it, so it never slides
+        // from the old one; the lowering's `blend < 1` gate then ignores `prev`.
+        let blend = self.glyph_clock.blend(now_s);
         self.geom.instances.clear();
         self.geom.tints.clear();
         self.geom.emits.clear();
@@ -1498,17 +1505,26 @@ pub struct World {
     mind_ring: mind_ring::MindRingReader,
     // organon#217 T1 — the glyph-ring reader and the two grids it hands the lowering:
     // `glyph_grid` is the latest frame, `glyph_prev` the one before it (the §7 slide
-    // interpolates between them, gated per cell on `SGR_ACTIVE_PATH`). `glyph_seen_seq`
-    // is the ring `seq` the current grid came from (0 = none yet) and `glyph_seen_at`
-    // when it arrived — the blend clock, and the silence detector that hands the frame
-    // back to the generator once a producer has stopped. Like `mind_ring`, opened
-    // lazily; unlike it, re-open attempts are throttled (`glyph_reopen_at`), because a
-    // missing ring is this reader's NORMAL state and a stat per frame is not free.
+    // interpolates between them, gated per cell on `SGR_ACTIVE_PATH`), `glyph_next`
+    // the scratch a new frame is read into BEFORE anything rotates — so the clock can
+    // say what it is first (a heartbeat replaces `glyph_grid` and leaves `glyph_prev`
+    // alone; a tick or a cut rotates). `glyph_seen_seq` is the ring `seq` the current
+    // grid came from (0 = none yet) and `glyph_seen_at` when it arrived — the silence
+    // detector that hands the frame back to the generator once a producer has stopped,
+    // and ONLY that: the blend clock is `glyph_clock` (`glyph_ring::BlendClock`, T12's
+    // finding — measured from the read over a fixed tick and evaluated at build time,
+    // the old clock drew a 120 Hz producer two ticks behind on a 60 Hz display and never
+    // between), fed in seconds since `glyph_t0`. Like `mind_ring`, opened lazily;
+    // unlike it, re-open attempts are throttled (`glyph_reopen_at`), because a missing
+    // ring is this reader's NORMAL state and a stat per frame is not free.
     glyph_ring: glyph_ring::GlyphRingReader,
     glyph_grid: glyph_ring::GlyphGrid,
     glyph_prev: glyph_ring::GlyphGrid,
+    glyph_next: glyph_ring::GlyphGrid,
     glyph_seen_seq: u32,
     glyph_seen_at: Instant,
+    glyph_clock: glyph_ring::BlendClock,
+    glyph_t0: Instant,
     glyph_reopen_at: Instant,
     // organon#217 T5 — this frame's answer to "is the ring drawing, at which
     // generation, and is it held": written beside `glyph_grid_geometry`'s call, read
@@ -1946,8 +1962,11 @@ impl World {
             glyph_ring: glyph_ring::GlyphRingReader::open(),
             glyph_grid: glyph_ring::GlyphGrid::default(),
             glyph_prev: glyph_ring::GlyphGrid::default(),
+            glyph_next: glyph_ring::GlyphGrid::default(),
             glyph_seen_seq: 0,
             glyph_seen_at: Instant::now(),
+            glyph_clock: glyph_ring::BlendClock::default(),
+            glyph_t0: Instant::now(),
             glyph_reopen_at: Instant::now(),
             glyph_pt: GlyphPtState::default(),
             glyph_bounds: math::Bounds::new(),
