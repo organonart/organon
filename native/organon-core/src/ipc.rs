@@ -2028,7 +2028,7 @@ pub struct Shared {
     /// "express depth in cell units, never pixels"; `[0]` is the one world-unit anchor
     /// and everything else scales with it):
     /// `[cell_w, depth, gap, gain, faceplate, back_r, back_g, back_b,
-    ///   margin, back_depth, default_fg, bevel, crown, _, _, _]`.
+    ///   margin, back_depth, default_fg, bevel, crown, profile, dark_tiles, _]`.
     ///
     /// - `[0]` **cell_w** — world units per column (1.0).
     /// - `[1]` **depth** — full-block extrusion, in column widths (0.18).
@@ -2049,9 +2049,18 @@ pub struct Shared {
     ///   tile face so light moves across the flat 95 % (0 = flat, today). Normal-only, no
     ///   geometry: the silhouette, the depth prepass and the RT/path-trace hit shading
     ///   are untouched.
-    /// - `[13..16]` reserved, written 0.
+    /// - `[13]` **profile** — T9's emission-profile strength, `cube.wgsl::tile_profile`
+    ///   through `Uniforms.shape.z` while a ring is live (0 = flat, exactly the even glow
+    ///   T1 drew; `tile_profile` is bit-for-bit 1.0 at zero). `glyph_profile`.
+    /// - `[14]` **dark_tiles** — `> 0.5` gives every symbol-less cell a dark quarter-depth
+    ///   tile at zero emission (`glyph_ring::LowerOptions::dark_tiles`; 0 = only lit cells
+    ///   get tiles, T1). A flag on an `f32` lane, spelled 0/1 like `glyph_cam[0]`.
+    ///   `glyph_dark_tiles`.
+    /// - `[15]` reserved, written 0.
     ///
-    /// Captured **Look**. (Tail-appended after `mindview_gen`; LAYOUT_VERSION 0x0285→0x0286.)
+    /// Captured **Look**. (Tail-appended after `mindview_gen`; LAYOUT_VERSION 0x0285→0x0286.
+    /// `[13]`/`[14]` were reserved lanes of that layout, written 0 until T9's wire took
+    /// them — no layout move.)
     pub glyph: [f32; 16],
     /// organon#217 T3 — the **held camera** for a live glyph ring. Layout:
     /// `[hold, tilt_deg, zoom, _, _, _, _, _]`.

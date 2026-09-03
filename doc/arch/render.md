@@ -1032,9 +1032,11 @@ albedo-modulated legacy glow, the ripple and the RD term belong to other generat
 are untouched — and at `k = 0` it is **exactly** `1.0` (not close to it), so the
 expression reduces bit for bit to T1's and every draw today is byte-identical (invariant
 #4). The strength rides `Uniforms.shape.z`, which the shader never read before and
-`build_uniforms` writes as 0; the world's `glyph_shape` is the one place to lift it from
-`Shared.glyph[13]` for a live ring (W10's file — not done here; until it is, the lane is
-0 and the profile is inert). Pure, so `glyph_tile.rs` mirrors it and pins zero-strength-
+`build_uniforms` writes as 0; the world's `glyph_shape` lifts it from `Shared.glyph[13]`
+for a live ring (`glyph_profile` on the param chain; with no ring the lane stays the
+frame's own 0), and `render()` zeroes `shape.z` off the generator cube draw beside `x`
+and `y`, so a live ring cannot hand the profile to another draw's per-instance emission.
+Pure, so `glyph_tile.rs` mirrors it and pins zero-strength-
 is-exactly-one, sign and axis-swap symmetry, monotone-along-every-ray and the curve's
 values, plus a source check that `cube.wgsl` still defines both functions with the
 mirrored signatures.
@@ -1059,8 +1061,9 @@ local hit point; named here rather than done, since `rt_*` is another worker's f
 
 🚨 Nothing here has been looked at on a GPU: green and ready to try. A GPU session must
 load `faceplate` with a producer running and see a lit cell's core fall off toward its
-edges once `glyph[13]` is wired and raised; a dark cell (with the full-grid lowering) show
-the environment's sheen with zero emission; and the bevel highlight unchanged, since the
+edges (`glyph_profile` is 0.5 there, wired since the two lanes landed as parameters); a
+dark cell (`glyph_dark_tiles` on, the full-grid lowering) show the environment's sheen
+with zero emission; and the bevel highlight unchanged, since the
 profile touches no normal and no vertex.
 
 ### Hardware ray tracing (#195 — the `rt_*` modules + shaders)

@@ -1363,8 +1363,8 @@ param_block! {
     (f32, glyph_default_fg), // [10] grey for a cell with no fg colour
     (f32, glyph_bevel),      // [11] the tiles' rounded-box morph (own lane, not `bevel`)
     (f32, glyph_crown),      // [12] face crown — per-fragment dome normal
-    _,                       // [13] reserved
-    _,                       // [14] reserved
+    (f32, glyph_profile),    // [13] T9 emission profile strength → `Uniforms.shape.z`
+    (bool, glyph_dark_tiles),// [14] T9 every cell a tile → `LowerOptions::dark_tiles`
     _,                       // [15] reserved
 }
 
@@ -3681,12 +3681,18 @@ mod tests {
         assert!(!p.values.bg_visible, "a dark room: background hidden");
         assert!(p.values.env_intensity < 0.5, "a dark room: the IBL dimmed to a sheen");
         assert!(p.values.glyph_bevel > 0.0 && p.values.glyph_crown > 0.0, "the two normal-varying controls");
+        // organon#217 T9 — the spec-sheet tile: a soft core, and every cell tiled.
+        assert!(p.values.glyph_profile > 0.0, "faceplate must ask for an emission profile");
+        assert!(p.values.glyph_dark_tiles, "faceplate must tile every cell (the spec-sheet plate)");
         assert!(p.values.fx_enabled, "halation lives in the FX pass, which must be on");
         assert!(p.values.hal_amount > 0.0);
         // The preset's glyph values reach the Shared slots, in the contract's order.
         let s = p.values.to_shared();
         assert_eq!(s.glyph[11], p.values.glyph_bevel);
         assert_eq!(s.glyph[12], p.values.glyph_crown);
+        assert_eq!(s.glyph[13], p.values.glyph_profile, "profile rides slot 13 (`Uniforms.shape.z`)");
+        assert_eq!(s.glyph[14], 1.0, "dark tiles ride slot 14 as a 0/1 flag");
+        assert_eq!(s.glyph[15], 0.0, "slot 15 is still reserved");
         assert_eq!(s.glyph_cam[0], 1.0);
         assert_eq!(s.glyph_cam[1], p.values.glyph_cam_tilt);
         assert_eq!(s.capsule[0], 0.0, "faceplate is not the bottled rung");

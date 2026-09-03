@@ -522,6 +522,17 @@ pub fn param_desc(id: &str) -> Option<&'static str> {
             "Face crown — a dome across each tile face so light moves across the flat of a \
              key as the camera or lights move. 0 = flat. Normal-only: no geometry changes."
         }
+        // ---- PBR text — the tile (organon#217 T9) ----
+        "glyph_profile" => {
+            "Emission profile — how far a tile's glow falls off from its core toward its \
+             edges. 0 = flat, even glow; 1 = the edges go dark, the phosphor seen through the \
+             faceplate. Scales the tile's own emission only; no geometry, no normal."
+        }
+        "glyph_dark_tiles" => {
+            "1 = every cell gets a tile: a cell with no symbol lowers as a dark, quarter-depth \
+             glass tile at zero emission that shows only the room's sheen. 0 = only lit cells \
+             get tiles (bare backplane between them). Costs cols × rows tiles per frame."
+        }
         // ---- PBR text — the held camera (organon#217 T3) ----
         "glyph_cam_hold" => {
             "1 = while a glyph ring is live, hold the camera on a rig fitted to the text grid \
@@ -690,6 +701,9 @@ pub fn id_range(id: &str) -> Option<(f32, f32)> {
         "glyph_back_depth" => (0.0, 2.0),
         "glyph_default_fg" => (0.0, 1.0),
         "glyph_bevel" | "glyph_crown" => (0.0, 1.0),
+        // organon#217 T9 — the profile strength, and the dark-tile switch (a `BoolParam`).
+        "glyph_profile" => (0.0, 1.0),
+        "glyph_dark_tiles" => (0.0, 1.0),
         // A `BoolParam`, spelled 0/1 on the lane like `bell_physical`.
         "glyph_cam_hold" => (0.0, 1.0),
         "glyph_cam_tilt" => (-60.0, 60.0),
@@ -764,6 +778,8 @@ pub fn current(s: &Shared, id: &str) -> Option<f32> {
         "glyph_default_fg" => s.glyph[10],
         "glyph_bevel" => s.glyph[11],
         "glyph_crown" => s.glyph[12],
+        "glyph_profile" => s.glyph[13],
+        "glyph_dark_tiles" => s.glyph[14],
         "glyph_cam_hold" => s.glyph_cam[0],
         "glyph_cam_tilt" => s.glyph_cam[1],
         "glyph_cam_zoom" => s.glyph_cam[2],
@@ -839,6 +855,8 @@ pub fn actuate(s: &mut Shared, id: &str, v: f32) -> bool {
         "glyph_default_fg" => s.glyph[10] = v,
         "glyph_bevel" => s.glyph[11] = v,
         "glyph_crown" => s.glyph[12] = v,
+        "glyph_profile" => s.glyph[13] = v,
+        "glyph_dark_tiles" => s.glyph[14] = v,
         "glyph_cam_hold" => s.glyph_cam[0] = v,
         "glyph_cam_tilt" => s.glyph_cam[1] = v,
         "glyph_cam_zoom" => s.glyph_cam[2] = v,
@@ -1008,6 +1026,7 @@ pub const ACTUATABLE_IDS: &[&str] = &[
     "glyph_cell_w", "glyph_depth", "glyph_gap", "glyph_gain", "glyph_faceplate",
     "glyph_back_r", "glyph_back_g", "glyph_back_b", "glyph_margin", "glyph_back_depth",
     "glyph_default_fg", "glyph_bevel", "glyph_crown", //
+    "glyph_profile", "glyph_dark_tiles", // organon#217 T9 — the tile's two lanes
     "glyph_cam_hold", "glyph_cam_tilt", "glyph_cam_zoom", //
     "capsule_core", "capsule_absorb",
 ];
@@ -2776,7 +2795,8 @@ mod tests {
         }
     }
 
-    /// organon#217 T3's eighteen ids each own one `Shared` slot, and no two share one.
+    /// organon#217 T3's eighteen ids — twenty with T9's `glyph_profile` and
+    /// `glyph_dark_tiles` — each own one `Shared` slot, and no two share one.
     ///
     /// Distinct markers go in through `actuate`, every one reads back through `current`
     /// unchanged, and the three blocks hold exactly those markers and nothing else — so a
@@ -2787,10 +2807,11 @@ mod tests {
     /// injective and in range.
     #[test]
     fn t3_ids_round_trip_through_distinct_shared_slots() {
-        const T3: [&str; 18] = [
+        const T3: [&str; 20] = [
             "glyph_cell_w", "glyph_depth", "glyph_gap", "glyph_gain", "glyph_faceplate",
             "glyph_back_r", "glyph_back_g", "glyph_back_b", "glyph_margin", "glyph_back_depth",
             "glyph_default_fg", "glyph_bevel", "glyph_crown", //
+            "glyph_profile", "glyph_dark_tiles", // T9
             "glyph_cam_hold", "glyph_cam_tilt", "glyph_cam_zoom", //
             "capsule_core", "capsule_absorb",
         ];

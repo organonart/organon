@@ -294,6 +294,9 @@ mod tests {
         pv.glyph_default_fg = 0.22;
         pv.glyph_bevel = 0.23;
         pv.glyph_crown = 0.24;
+        // organon#217 T9 — slots 13 and 14. The flag packs as 1.0, so its marker IS 1.0.
+        pv.glyph_profile = 0.31;
+        pv.glyph_dark_tiles = true;
         pv.glyph_cam_hold = true;
         pv.glyph_cam_tilt = 0.26;
         pv.glyph_cam_zoom = 0.27;
@@ -305,14 +308,19 @@ mod tests {
         s.glyph_cam = crate::param_table::pack_glyph_cam_preset(&pv);
         s.capsule = crate::param_table::pack_capsule_preset(&pv);
 
-        let want: [(&str, f32); 18] = [
+        let want: [(&str, f32); 20] = [
             ("glyph_cell_w", 0.11), ("glyph_depth", 0.12), ("glyph_gap", 0.13),
             ("glyph_gain", 0.14), ("glyph_faceplate", 0.15), ("glyph_back_r", 0.16),
             ("glyph_back_g", 0.17), ("glyph_back_b", 0.18), ("glyph_margin", 0.19),
             ("glyph_back_depth", 0.21), ("glyph_default_fg", 0.22), ("glyph_bevel", 0.23),
-            ("glyph_crown", 0.24), ("glyph_cam_hold", 1.0), ("glyph_cam_tilt", 0.26),
+            ("glyph_crown", 0.24), ("glyph_profile", 0.31), ("glyph_dark_tiles", 1.0),
+            ("glyph_cam_hold", 1.0), ("glyph_cam_tilt", 0.26),
             ("glyph_cam_zoom", 0.27), ("capsule_core", 0.28), ("capsule_absorb", 0.29),
         ];
+        // The two T9 slots are exactly where the table says, and the reserved one is still 0.
+        assert_eq!(s.glyph[13], 0.31, "glyph_profile packs to slot 13");
+        assert_eq!(s.glyph[14], 1.0, "glyph_dark_tiles packs to slot 14 as a 0/1 flag");
+        assert_eq!(s.glyph[15], 0.0, "slot 15 is reserved and stays 0");
         for (id, v) in want {
             assert_eq!(
                 current(&s, id),

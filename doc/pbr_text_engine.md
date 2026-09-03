@@ -613,7 +613,7 @@ already exists, because most of this is wiring:
 
 | Plate | On screen, `1c1c3ba` | Closes it | Owns |
 |---|---|---|---|
-| Every cell is a tile; a dark cell shows the room through a glass faceplate | Only lit cells get tiles; dark cells are bare slab | Full-grid tiles with the existing clearcoat lobe (`cube.wgsl` `coat`) — both halves landed: the shader's profile and coat (#233), and the lowering as `lower_grid_with(…, LowerOptions { dark_tiles })`, off by default, `Shared.glyph[14]` proposed as the lane (§15.1) | `cube.wgsl`, `glyph_ring.rs::lower_grid` |
+| Every cell is a tile; a dark cell shows the room through a glass faceplate | Only lit cells get tiles; dark cells are bare slab | Full-grid tiles with the existing clearcoat lobe (`cube.wgsl` `coat`) — all three parts landed: the shader's profile and coat (#233), the lowering as `lower_grid_with(…, LowerOptions { dark_tiles })` (#236), and the wire — `glyph_profile` → `Shared.glyph[13]` → `Uniforms.shape.z`, `glyph_dark_tiles` → `Shared.glyph[14]` → `LowerOptions::dark_tiles`, both on the full param chain and both **on** in `faceplate` (§15.1) | `cube.wgsl`, `glyph_ring.rs::lower_grid`, `world.rs` (wired) |
 | The emissive core has a soft falloff, seen *through* the faceplate | Flat, uniform emission across the face | A per-tile emission profile in the cube shader, keyed on the instance's own UV | `cube.wgsl` |
 | Glyphs as lights: the green pool on the backplane, a contact shadow in each well | Nothing spills; no well shadow | **T10, landed:** the point-light node set is lowered from the grid's *emission* while a ring is live — one candidate per run of up to four adjacent lit tiles, at the run's centroid on the front face, carrying its summed linear radiance, ranked by linear luminance; the radius lane is in column widths while a ring is live. The tiles and the backplane are the TLAS geometry already (T1 cleared `rt_instances`, so `rt_geo` is `instances`); RT shadow + AO in the wells wait on the passes reading emission (T8) | `world.rs` (selection, done), `rt_shadow`/`rt_ao` (T8) |
 | A brushed dark-metal backplane with a warm rim | A flat dark slab | **Measured (T10): neither is reachable from `world.rs` or a preset.** The anisotropy lobe is a per-draw uniform gated on the material type or an overlay flag, with no per-instance amount, and the one second draw the renderer has (the Demo sub-batch path) zeroes `shape` — the tiles would lose bevel and crown — and every material overlay. The key light is white (`key_rad = key_light.w`) and no lane colours it. What landed is the rig: `faceplate` keys from low on the right (15°, 70°) with a faint fill, so the bevels catch one side. The brush needs a second instanced draw in `render.rs` for the backplane instance alone (its own patched group-0 uniform: `amb.y = Anisotropic`, `shape` kept, overlays kept); the warmth needs a key colour on the chain and in `cube.wgsl` | `render.rs` (the draw), the param chain + `cube.wgsl` (the colour) |
@@ -653,8 +653,9 @@ until it lands.
   core reads as behind glass rather than painted on. Owns `cube.wgsl` (shading, not uniforms) and
   `glyph_ring.rs::lower_grid`. Can run **beside T8** — different files. **Landed, shader half:**
   `tile_profile` on the face UV (`doc/arch/render.md`, "The tile"), strength on
-  `Uniforms.shape.z` from `Shared.glyph[13]` (the lane is named; the world's `glyph_shape` lifts
-  it — W10). The faceplate turned out to be preset data: the clearcoat lobe already transmits
+  `Uniforms.shape.z` from `Shared.glyph[13]` — **wired**: the world's `glyph_shape` lifts it while
+  a ring is live, and `glyph_profile` (0..1, default 0 = flat) is the parameter on the full
+  §17 chain and the CLI vocabulary. The faceplate turned out to be preset data: the clearcoat lobe already transmits
   `emissive` through `(1 − fc)` and adds its environment sheen independently. **Landed, lowering
   half:** `glyph_ring::lower_grid_with` with `LowerOptions { dark_tiles }` — a symbol-less cell
   (empty, space, a control) is a full-cell tile at the `░` depth (`DARK_TILE`, a quarter as proud
@@ -663,8 +664,12 @@ until it lands.
   space *character* on a path is a real ttfx thing, and its tile is the faceplate's, not the
   character's); backplane, wells and bounds unchanged. **Default off and byte-identical to
   `lower_grid`**, which the world still calls — pinned by lowering an asymmetric fixture both
-  ways. Wire proposed: **`Shared.glyph[14]`** (`[13]` is the profile strength above), the world
-  passing the flag where it calls `lower_grid` today. **Measured** (release, 200×80 = 16 000
+  ways. **Wired** on **`Shared.glyph[14]`** (`[13]` is the profile strength above): the world
+  passes `LowerOptions { dark_tiles: glyph[14] > 0.5 }` to `lower_grid_with` where it called
+  `lower_grid`, and `glyph_dark_tiles` (a flag, default off) is the parameter. `faceplate`
+  carries both: `glyph_profile = 0.5`, `glyph_dark_tiles = on` — the spec-sheet plate — behind
+  a `seeded_text_v2` marker that replaces a *factory-shaped* `faceplate` (one nobody has
+  captured over) and leaves a user's own alone. **Measured** (release, 200×80 = 16 000
   cells, one in seven lit and sliding, best of fifty interleaved): 92 µs without dark tiles
   (2 286 instances), 125 µs with (16 001, sliding), 92 µs with (settled) — the CPU lowering is
   not where the fullscreen cost will be; the 16 000-instance draw is, and that waits on a GPU

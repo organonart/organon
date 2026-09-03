@@ -73,7 +73,9 @@ organon recipe nebula                                # a whole described look at
 
 The **PBR text look** is on the same vocabulary: the glyph tiles (`glyph_cell_w`,
 `glyph_depth`, `glyph_gap`, `glyph_gain`, `glyph_faceplate`, `glyph_back_r/g/b`,
-`glyph_margin`, `glyph_back_depth`, `glyph_default_fg`, `glyph_bevel`, `glyph_crown`),
+`glyph_margin`, `glyph_back_depth`, `glyph_default_fg`, `glyph_bevel`, `glyph_crown`,
+`glyph_profile` — the emission falloff across a tile face, 0 = flat — and
+`glyph_dark_tiles`, the flag that gives every symbol-less cell a dark glass tile),
 the held camera (`glyph_cam_hold`, `glyph_cam_tilt`, `glyph_cam_zoom`) and the capsule
 core (`capsule_core`, `capsule_absorb`). Ids are the parameter **field names**, never the
 four-character host ids the DAW sees (`gtbv`), and a flag is set as 0 / 1. They draw
@@ -82,6 +84,7 @@ in the editor) sets the whole first rung at once, and these are how you tune it 
 
 ```
 organon set glyph_cam_hold 1 glyph_bevel 0.12 glyph_crown 0.35 glyph_gain 3
+organon set glyph_profile 0.5 glyph_dark_tiles 1     # the spec-sheet tile: soft core, dark cells tiled
 ```
 
 `organon console …` is a **separate namespace, and it drives the console itself** —
