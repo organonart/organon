@@ -4819,6 +4819,21 @@ pub(crate) fn editor_ui(
                     srow(ui, w1, "speed (global)", &params.inc_scale, setter);
                     srow(ui, w1, "speed power", &params.speed_exp, setter);
                 });
+                // PBR text (organon#217 T3): the held camera for a live glyph ring. A
+                // Motion control because it IS a camera — a preset's Look bucket must
+                // not be able to move the viewpoint. Inert without a ring.
+                card(&mut c[0], "Text Camera (#217)", |ui| {
+                    crow(ui, "hold on a live ring", &params.glyph_cam_hold, setter);
+                    srow(ui, w1, "tilt (deg)", &params.glyph_cam_tilt, setter);
+                    srow(ui, w1, "zoom", &params.glyph_cam_zoom, setter);
+                    help(ui, "While a text producer is publishing, hold the camera on an \
+                             absolute rig fitted to the grid: yaw 0, pitch = tilt, distance \
+                             computed from the grid's bounds and the FOV (zoom scales it; 1 \
+                             = fills the frame). The auto-orbit, drag and follow are \
+                             bypassed, so the view is identical frame to frame and the path \
+                             tracer can converge through the text's dwell. Off = the ring \
+                             inherits the orbit rig above. A captured Motion setting.");
+                });
                 card(&mut c[0], "Camera (Auto-Orbit)", |ui| {
                     param_combo(ui, w1, "path", &params.cam_path, setter);
                     srow(ui, w1, "flow speed", &params.cam_speed, setter);
@@ -5029,6 +5044,40 @@ pub(crate) fn editor_ui(
                                  a halo ring + an anamorphic streak from the bright points. Off → \
                                  image unchanged. A captured Look.");
                     }
+                });
+                // PBR text (organon#217 T3): the glyph ring's look — every field of
+                // T1's `GlyphLook::DEFAULT` as a control, plus the tiles' own bevel and
+                // the §5.1 face crown — and T6's coaxial capsule core. Inert unless a
+                // producer (`organon-glyphs`) is publishing a ring; the capsule pair
+                // reaches every Glass/Refractive capsule impostor draw regardless.
+                card(&mut c[2], panels::LOOK_TEXT.title, |ui| {
+                    srow(ui, w2, "cell width", &params.glyph_cell_w, setter);
+                    srow(ui, w2, "extrusion", &params.glyph_depth, setter);
+                    srow(ui, w2, "gap", &params.glyph_gap, setter);
+                    srow(ui, w2, "emission gain", &params.glyph_gain, setter);
+                    srow(ui, w2, "bevel", &params.glyph_bevel, setter);
+                    srow(ui, w2, "face crown", &params.glyph_crown, setter);
+                    srow(ui, w2, "faceplate", &params.glyph_faceplate, setter);
+                    srow(ui, w2, "default fg", &params.glyph_default_fg, setter);
+                    ui.label(egui::RichText::new("— backplane —").weak().small());
+                    srow(ui, w2, "tint R", &params.glyph_back_r, setter);
+                    srow(ui, w2, "tint G", &params.glyph_back_g, setter);
+                    srow(ui, w2, "tint B", &params.glyph_back_b, setter);
+                    srow(ui, w2, "margin", &params.glyph_margin, setter);
+                    srow(ui, w2, "depth", &params.glyph_back_depth, setter);
+                    ui.label(egui::RichText::new("— coaxial capsule core (T6) —").weak().small());
+                    srow(ui, w2, "core fraction", &params.capsule_core, setter);
+                    srow(ui, w2, "absorption", &params.capsule_absorb, setter);
+                    help(ui, "A terminal text effect rendered as lit tiles (a producer feeds \
+                             the glyph ring; nothing here draws without one). All lengths \
+                             are in CELL widths; cell width is the one world-unit anchor. \
+                             Emission gain is in SDR-white units — 1 = the terminal's \
+                             brightness, higher crosses the bloom threshold on its own. \
+                             Bevel rounds the tile; face crown domes each face's normal so \
+                             light moves across it. The capsule core lights a glowing wire \
+                             inside every Glass/Refractive capsule (arms, plexus); 0 = off. \
+                             The held camera for a live ring is on the Motion tab. A \
+                             captured Look.");
                 });
                 // Scene Kaleidoscope (#361 Tier 1): a post-stage kaleidoscopic
                 // fold of the resolved HDR scene — applies to EVERY generator +

@@ -285,12 +285,15 @@ pub struct Uniforms {
     // mode 0 → byte-identical. Appended at the tail (siblings/rt keep their shorter
     // prefix struct).
     pub cal: [f32; 4],
-    // Node bevel (#bevel): x = bevel amount (0 = sharp cube → 1 = sphere), yzw
-    // reserved. Drives the cube shader's rounded-box vertex morph (`vs_main`/
-    // `vs_depth`). Set nonzero ONLY on the Original / Flow-Aligned instanced-cube
+    // Node bevel (#bevel): x = bevel amount (0 = sharp cube → 1 = sphere); y = the
+    // organon#217 T3 **face crown** — a per-fragment dome normal across each cube face
+    // (`fs_main`, gated on y > 0; normal-only, so no geometry / depth / RT change); zw
+    // reserved. x drives the cube shader's rounded-box vertex morph (`vs_main`/
+    // `vs_depth`). Both set nonzero ONLY on the Original / Flow-Aligned instanced-cube
     // draw (render() gates it; scenery/liquid/water copies zero it), so the shared
-    // cube mesh rounds only for the generator. x = 0 → today's sharp cube
-    // (byte-identical). Appended at the very tail (siblings/rt keep their prefix).
+    // cube mesh rounds only for the generator. x = y = 0 → today's sharp, flat cube
+    // (byte-identical). The world writes y only for a live glyph ring. Appended at the
+    // very tail (siblings/rt keep their prefix).
     pub shape: [f32; 4],
     // Procedural / texture-mapped materials (#472 Tier 1). `mtl` = [material_on
     // (0 → today's scalar-uniform PBR, byte-identical), projection_mode (0 triplanar
@@ -1505,6 +1508,12 @@ pub struct Surface<'a> {
     pub plexus_edge_caps: &'a [ArmInstance],
     pub plexus_node_mat: PlexMat,
     pub plexus_edge_mat: PlexMat,
+    /// organon#217 T6/T3 — the coaxial-glass core for every capsule impostor draw this
+    /// frame (arms + both plexus batches): `[core_frac, absorb]`, `Shared.capsule[0..2]`.
+    /// Handed to `ParticleSystem::set_capsule_core` before the uploads it affects; `[0, 0]`
+    /// (the default) is T6's inert gate. ⚠️ `ORGANON_CAPSULE_CORE`, when set, overrides
+    /// it inside the particle system — see `particles::capsule_core::resolve`.
+    pub capsule_core: [f32; 2],
     /// Plexus Tier-1 shape morph: when `Some`, the plexus instance buffer is drawn as
     /// two sub-batches (markers with the morphed node mesh, struts with the morphed
     /// strut mesh) instead of the single cube mesh. The two meshes ride below (uploaded
@@ -3319,6 +3328,7 @@ impl Renderer {
             plexus_edge_caps,
             plexus_node_mat,
             plexus_edge_mat,
+            capsule_core,
             plexus_batches,
             plexus_node_verts,
             plexus_node_idx,
@@ -3803,7 +3813,11 @@ impl Renderer {
         // future height-displacing material stays consistent between the two by construction.
         let material_draw = cube_draw || (membrane && !membrane_arms);
         if !cube_draw {
+            // Both lanes the cube shader reads: `x` the vertex bevel, `y` the organon#217
+            // T3 face crown (a fragment-stage normal dome, gated on `y > 0`). Same
+            // scoping, same reason — the crown is meant for the generator's cubes only.
             u.shape[0] = 0.0;
+            u.shape[1] = 0.0;
         }
         if !material_draw {
             // #472 Tier 1: every other draw keeps the scalar PBR path (byte-identical
@@ -4327,6 +4341,11 @@ impl Renderer {
         } else {
             self.particles.simulate(device, queue, &mut encoder, particles, None, &particle_shade);
         }
+        // organon#217 T6/T3: the coaxial-glass core for this frame's capsule draws, from
+        // the param chain (`Shared.capsule` → `Surface.capsule_core`). Set BEFORE the two
+        // uploads below, which is when `set_capsule_core` says it takes effect. [0, 0]
+        // is the inert gate; the env seed, if set, overrides inside.
+        self.particles.set_capsule_core(capsule_core[0], capsule_core[1]);
         // Membrane Skin-Arms capsule impostors (Stage 2): upload this frame's arm
         // segments + the scene material/PBR context (Material card via the cube
         // uniforms). Empty `arm_caps` clears the draw. Uses the particles' unscaled

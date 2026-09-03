@@ -2013,6 +2013,72 @@ pub struct Shared {
     /// `0` = no saved layout has been loaded → the default arrangement.
     /// (Tail-appended after `mindview_pane`; part of LAYOUT_VERSION 0x0283→0x0284.)
     pub mindview_gen: u32,
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // organon#217 T3 — PBR text look controls (`doc/pbr_text_engine.md` §14).
+    //
+    // T1 drew the glyph ring's tiles from one `const`, `glyph_ring::GlyphLook::DEFAULT`;
+    // these three blocks lift that look, the held camera and T6's capsule core onto the
+    // param chain so a preset can carry them. ⚠️ Every default below is **exactly the
+    // constant it replaces** (invariant #4): `world.rs::glyph_look_from` on a default
+    // `Shared` reproduces `GlyphLook::DEFAULT` field for field, pinned by test, so a
+    // preset saved before T3 renders the grid it rendered yesterday.
+    // ═════════════════════════════════════════════════════════════════════════
+    /// organon#217 T3 — the **glyph look**. Layout, all in **cell units** (§5.1 —
+    /// "express depth in cell units, never pixels"; `[0]` is the one world-unit anchor
+    /// and everything else scales with it):
+    /// `[cell_w, depth, gap, gain, faceplate, back_r, back_g, back_b,
+    ///   margin, back_depth, default_fg, bevel, crown, _, _, _]`.
+    ///
+    /// - `[0]` **cell_w** — world units per column (1.0).
+    /// - `[1]` **depth** — full-block extrusion, in column widths (0.18).
+    /// - `[2]` **gap** — tile back face → backplane front face, the contact-shadow well (0.06).
+    /// - `[3]` **gain** — emission gain in **SDR-white units** (§4; 3.0). ⚠️ The harness
+    ///   (`legibility.rs`) measures linear light; this is the one colour convention here.
+    /// - `[4]` **faceplate** — the near-black dielectric tint, one grey level (0.03).
+    /// - `[5..8]` **backplane** RGB tint (0.06, 0.06, 0.065 — a shade lighter, faintly cool).
+    /// - `[8]` **margin** — backplane beyond the grid, in column widths (1.5).
+    /// - `[9]` **back_depth** — backplane thickness, in column widths (0.25).
+    /// - `[10]` **default_fg** — grey used for a cell with a symbol but no fg colour (0.75).
+    /// - `[11]` **bevel** — the tiles' rounded-box morph, `cube.wgsl::round_local` (0 =
+    ///   sharp tile, exactly what T1 drew: it rode `Shared.bevel`, whose default is 0).
+    ///   ⚠️ Its **own** lane, not `Shared.bevel`: that one is a Generator-bucket surface
+    ///   control for the field's cubes, and a *Look* preset must carry the whole glyph
+    ///   look; and on a 1×2×0.18 tile the same number rounds a different shape.
+    /// - `[12]` **crown** — §5.1's face curvature: a per-fragment dome normal across each
+    ///   tile face so light moves across the flat 95 % (0 = flat, today). Normal-only, no
+    ///   geometry: the silhouette, the depth prepass and the RT/path-trace hit shading
+    ///   are untouched.
+    /// - `[13..16]` reserved, written 0.
+    ///
+    /// Captured **Look**. (Tail-appended after `mindview_gen`; LAYOUT_VERSION 0x0285→0x0286.)
+    pub glyph: [f32; 16],
+    /// organon#217 T3 — the **held camera** for a live glyph ring. Layout:
+    /// `[hold, tilt_deg, zoom, _, _, _, _, _]`.
+    ///
+    /// - `[0]` **hold** — non-zero: while a ring is live the camera is an *absolute* rig
+    ///   (the `substrate_rig` shape — centre, yaw 0, pitch = tilt, distance fitted to the
+    ///   grid's bounds and the frame's FOV, roll 0), so the auto-orbit, the drag orbit and
+    ///   the AABB follow are all bypassed and `pt_moved` is false every frame — which is
+    ///   what lets T5's converge-on-hold actually converge. `0` = today: the ring inherits
+    ///   whatever the orbit rig is doing, including the cube field's default distance.
+    /// - `[1]` **tilt** — camera pitch in degrees (0 = straight on; a few degrees gives
+    ///   §5.1's letterpress). `[2]` **zoom** — multiplier on the fitted distance (1 = the
+    ///   grid fills the frame edge to edge; < 1 closer, > 1 further).
+    /// - `[3..8]` reserved, written 0.
+    ///
+    /// Captured **Motion** (it is a camera). (Tail-appended after `glyph`; part of
+    /// LAYOUT_VERSION 0x0285→0x0286.)
+    pub glyph_cam: [f32; 8],
+    /// organon#217 T6/T3 — the **coaxial capsule core** (`doc/pbr_text_engine.md` §11 route
+    /// 1): `[core_frac, absorb, _, _]`. `[0]` is the inner emissive capsule's radius as a
+    /// fraction of the outer (0 = off, pixel-identical to the pre-T6 frame); `[1]` the
+    /// Beer–Lambert density per outer radius. Reaches `ParticleSystem::set_capsule_core`
+    /// through the render frame's `Surface.capsule_core`. ⚠️ `ORGANON_CAPSULE_CORE` still
+    /// **overrides** it when set — the seed stays, because no CPU test can prove the GPU
+    /// draw read the param; a GPU session retires it once it has looked. Captured **Look**.
+    /// (Tail-appended after `glyph_cam`; part of LAYOUT_VERSION 0x0285→0x0286.)
+    pub capsule: [f32; 4],
 }
 
 /// #541 S2 T1 — panes the mindview selector can address.
@@ -2255,7 +2321,17 @@ impl Shared {
 //        and the reader would reject every frame. Bumping makes a mixed pair fail
 //        the way mixed pairs already fail (defaults, loudly) instead of going blank
 //        for reasons nothing explains. Close and reopen the visual after this lands.
-pub const LAYOUT_VERSION: u32 = 0x0_2_8_5; // "om" sentinel
+// 0x0286 tail-appends the organon#217 T3 **PBR text look controls**: `glyph[16]` (the
+//        glyph ring's look — cell width, extrusion, gap, emission gain, faceplate,
+//        backplane tint / margin / depth, default fg, the tiles' own bevel, the face
+//        crown; captured Look), `glyph_cam[8]` (hold / tilt / zoom — the held, fitted
+//        camera a live ring needs for T5's converge-on-hold to converge; captured
+//        Motion) and `capsule[4]` (T6's coaxial-glass core fraction + absorption;
+//        captured Look), after `mindview_gen`. Every default is the constant it
+//        replaces — `GlyphLook::DEFAULT`, bevel 0, crown 0, hold off, core 0 — so a
+//        ring session and a no-ring session both render byte-identically to 0x0285.
+//        Shared 8512 → 8624 bytes.
+pub const LAYOUT_VERSION: u32 = 0x0_2_8_6; // "om" sentinel
 
 /// Copy into `dst` every lane in which `mine` disagrees with `base`, leaving the rest alone.
 ///
@@ -3000,6 +3076,19 @@ impl Default for Shared {
             mindview: [0.0; 8],
             mindview_pane: [0.0; MINDVIEW_PANES * MINDVIEW_PANE_SLOTS],
             mindview_gen: 0,
+            // organon#217 T3: exactly `glyph_ring::GlyphLook::DEFAULT` (T1's one const),
+            // plus bevel 0 (T1 rode `Shared.bevel`, default 0) and crown 0 (new, inert).
+            // `world::glyph_look_from` pins the round trip.
+            glyph: [
+                1.0, 0.18, 0.06, 3.0, // cell_w, depth, gap, gain
+                0.03, 0.06, 0.06, 0.065, // faceplate, backplane rgb
+                1.5, 0.25, 0.75, 0.0, // margin, back_depth, default_fg, bevel
+                0.0, 0.0, 0.0, 0.0, // crown, reserved ×3
+            ],
+            // Hold off (the ring inherits the orbit rig, as T1 did), tilt 0°, zoom 1.
+            glyph_cam: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            // T6's inert gate: core fraction 0 → `shade_bead` exactly as before.
+            capsule: [0.0; 4],
         }
     }
 }
@@ -4157,8 +4246,9 @@ mod mindview_tests {
         // moved the size, so the version had to move with it.
         // 0x0285 (#618 T0a) changed no offset and no size — it re-defined `seq` as a
         // seqlock counter, which a size or offset check cannot see. The mindview
-        // append is still the reason this is ≥ 0x0284.
-        assert_eq!(LAYOUT_VERSION, 0x0285, "the seqlock re-defines `seq`; the mindview append sized it");
+        // append is still the reason this is ≥ 0x0284. 0x0286 (organon#217 T3) appended
+        // `glyph` / `glyph_cam` / `capsule` after `mindview_gen`, growing the struct again.
+        assert_eq!(LAYOUT_VERSION, 0x0286, "the T3 look-control append sized it (0x0286)");
     }
 }
 

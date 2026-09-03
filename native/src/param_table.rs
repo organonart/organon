@@ -1344,6 +1344,53 @@ param_block! {
     _,                       // [7] reserved
 }
 
+// organon#217 T3 — the glyph ring's look → Shared.glyph[16]. Every slot is a field of
+// `glyph_ring::GlyphLook` (cell units, §5.1) plus the tiles' own bevel and the face
+// crown; `world.rs::glyph_look_from` is the reader and its test pins that a default
+// `Shared` reproduces `GlyphLook::DEFAULT` exactly.
+param_block! {
+    pack_glyph, pack_glyph_preset, [16];
+    (f32, glyph_cell_w),     // [0] world units per column
+    (f32, glyph_depth),      // [1] extrusion, in column widths
+    (f32, glyph_gap),        // [2] tile → backplane gap, in column widths
+    (f32, glyph_gain),       // [3] emission gain, SDR-white units (§4)
+    (f32, glyph_faceplate),  // [4] faceplate grey
+    (f32, glyph_back_r),     // [5] backplane tint R
+    (f32, glyph_back_g),     // [6] backplane tint G
+    (f32, glyph_back_b),     // [7] backplane tint B
+    (f32, glyph_margin),     // [8] backplane margin, in column widths
+    (f32, glyph_back_depth), // [9] backplane thickness, in column widths
+    (f32, glyph_default_fg), // [10] grey for a cell with no fg colour
+    (f32, glyph_bevel),      // [11] the tiles' rounded-box morph (own lane, not `bevel`)
+    (f32, glyph_crown),      // [12] face crown — per-fragment dome normal
+    _,                       // [13] reserved
+    _,                       // [14] reserved
+    _,                       // [15] reserved
+}
+
+// organon#217 T3 — the held camera for a live ring → Shared.glyph_cam[8].
+param_block! {
+    pack_glyph_cam, pack_glyph_cam_preset, [8];
+    (bool, glyph_cam_hold),  // [0] absolute fitted rig while the ring is live
+    (f32, glyph_cam_tilt),   // [1] pitch, degrees
+    (f32, glyph_cam_zoom),   // [2] multiplier on the fitted distance
+    _,                       // [3] reserved
+    _,                       // [4] reserved
+    _,                       // [5] reserved
+    _,                       // [6] reserved
+    _,                       // [7] reserved
+}
+
+// organon#217 T6/T3 — the coaxial capsule core → Shared.capsule[4]. Reaches
+// `ParticleSystem::set_capsule_core` through the render frame's `Surface.capsule_core`.
+param_block! {
+    pack_capsule, pack_capsule_preset, [4];
+    (f32, capsule_core),     // [0] inner emissive radius / outer radius (0 = off)
+    (f32, capsule_absorb),   // [1] Beer–Lambert density per outer radius
+    _,                       // [2] reserved
+    _,                       // [3] reserved
+}
+
 param_block! {
     pack_minimal_surface, pack_minimal_surface_preset, [16];
     (enum, ms_family),     // [0] 0 Gyroid / 1 Schwarz P / 2 Schwarz D
@@ -2634,7 +2681,10 @@ mod tests {
     //   writes it, all-zero = today's single viewport): mindview[8] = 8348 + 32 = 8380,
     //   mindview_pane[4*8] = 8380 + 128 = 8508, mindview_gen: u32 = 8508 + 4 = 8512.
     //   Tail append after material_live; LAYOUT_VERSION 0x0283→0x0284.
-    const EXPECTED_SHARED_SIZE: usize = 8512;
+    // + the organon#217 T3 PBR-text look controls: glyph[16] = 8512 + 64 = 8576,
+    //   glyph_cam[8] = 8576 + 32 = 8608, capsule[4] = 8608 + 16 = 8624. Tail append after
+    //   mindview_gen; LAYOUT_VERSION 0x0285→0x0286.
+    const EXPECTED_SHARED_SIZE: usize = 8624;
 
     #[test]
     fn shared_layout_is_stable() {
@@ -2786,6 +2836,15 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(Shared, mindview_pane), 8380, "mindview_pane offset drift");
         assert_eq!(std::mem::offset_of!(Shared, mindview_gen), 8508, "mindview_gen offset drift");
+        // organon#217 T3 — the PBR-text look controls sit at the tail; the mindview
+        // spine (the previous tail) must NOT have moved.
+        assert_eq!(
+            std::mem::offset_of!(Shared, glyph),
+            8512,
+            "the T3 append must begin exactly at the old Shared size"
+        );
+        assert_eq!(std::mem::offset_of!(Shared, glyph_cam), 8576, "glyph_cam offset drift");
+        assert_eq!(std::mem::offset_of!(Shared, capsule), 8608, "capsule offset drift");
     }
 
     // --- Pilot: the generated bell packing is byte-identical to the old hand code.
@@ -3475,7 +3534,16 @@ mod tests {
     //   before hashing, so it stays green across ANY version bump and keeps proving
     //   the other 8508 bytes did not move. If this hash moves and the prefix test
     //   also fails, something real shifted — do not re-pin, go find it.
-    const GOLDEN_DEFAULT_SHARED_HASH: u64 = 8436249494989495788;
+    // + organon#217 T3 — glyph[16] (cell_w 1, depth 0.18, gap 0.06, gain 3, faceplate
+    //   0.03, backplane 0.06/0.06/0.065, margin 1.5, back_depth 0.25, default_fg 0.75,
+    //   bevel 0, crown 0, reserved 0) + glyph_cam[8] (hold 0, tilt 0, zoom 1, reserved 0)
+    //   + capsule[4] (all 0), tail-appended after mindview_gen; LAYOUT_VERSION
+    //   0x0285→0x0286, Shared 8512 → 8624 bytes. Non-zero defaults grow the byte image,
+    //   so the whole-struct hash necessarily moves → re-pinned from the live `cargo test`
+    //   print → 11090782705610843067. The companion `the_glyph_append_leaves_every_pre_
+    //   append_byte_where_it_was` proves the first 8512 bytes still hash to the previous
+    //   golden, which is what makes this re-pin a growth and not a shift.
+    const GOLDEN_DEFAULT_SHARED_HASH: u64 = 11090782705610843067;
 
     /// The byte image of every field that existed before the #541 T1 append, and the
     /// hash it produced. Saved Ableton sets and stored presets are decoded against
@@ -3486,6 +3554,14 @@ mod tests {
     /// The `LAYOUT_VERSION` that `PRE_MINDVIEW_GOLDEN_HASH` was pinned at. The field is
     /// stored inside the prefix, so the append changes it by design.
     const PRE_MINDVIEW_LAYOUT_VERSION: u32 = 0x0283;
+
+    /// organon#217 T3 — the same guard one append later: the byte image of every field
+    /// that existed before `glyph` / `glyph_cam` / `capsule`, and the hash it produced
+    /// (the 0x0285 `GOLDEN_DEFAULT_SHARED_HASH`, which was the hash of the whole 8512-
+    /// byte struct at the time).
+    const PRE_GLYPH_SHARED_SIZE: usize = 8512;
+    const PRE_GLYPH_GOLDEN_HASH: u64 = 8436249494989495788;
+    const PRE_GLYPH_LAYOUT_VERSION: u32 = 0x0285;
 
 
     // #187 Tier 3: the factory Rails presets must stay recallable — well-formed,
@@ -3560,6 +3636,63 @@ mod tests {
              offsets, so this corrupts sessions rather than merely failing a test. Do \
              NOT re-pin this value to make it pass."
         );
+    }
+
+    /// organon#217 T3 — the same proof for the look-control append: the first 8512
+    /// bytes of today's struct, with `layout_version` rewound to 0x0285, still hash to
+    /// the 0x0285 golden. So the three new blocks are purely an append; nothing ahead
+    /// of them moved or repacked, and a preset saved yesterday decodes at the same
+    /// offsets today.
+    #[test]
+    fn the_glyph_append_leaves_every_pre_append_byte_where_it_was() {
+        let mut s = OrganicMathParams::default().to_shared();
+        s.layout_version = PRE_GLYPH_LAYOUT_VERSION;
+        let bytes = bytemuck::bytes_of(&s);
+        assert!(
+            bytes.len() > PRE_GLYPH_SHARED_SIZE,
+            "Shared should have grown past the pre-append size, got {}",
+            bytes.len()
+        );
+        assert_eq!(
+            fnv1a(&bytes[..PRE_GLYPH_SHARED_SIZE]),
+            PRE_GLYPH_GOLDEN_HASH,
+            "the bytes ahead of the T3 append moved — an existing field changed offset \
+             or packing. Do NOT re-pin this value to make it pass."
+        );
+    }
+
+    /// organon#217 T3 — the factory `faceplate` preset must stay recallable: uniquely
+    /// named, serde-round-trippable, and asking for exactly the things the ladder rung
+    /// promises (the held camera, a dark room, the bevel + crown, halation), each of
+    /// which is a link a recall has to reach. Its Look-side glyph values pack to the
+    /// `Shared.glyph` slots `world::glyph_look_from` reads.
+    #[test]
+    fn builtin_text_presets_are_wellformed() {
+        let b = crate::preset::builtin_text_presets();
+        assert_eq!(b.len(), 1);
+        let p = &b[0];
+        assert_eq!(p.name, "faceplate");
+        let json = serde_json::to_string(&p.values).unwrap();
+        let back: PresetValues = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p.values, "faceplate does not round-trip");
+        assert!(p.values.glyph_cam_hold, "faceplate must hold the camera (T5 cannot converge otherwise)");
+        assert_eq!(p.values.cam_path, crate::params::CamPath::Off.to_u32(), "and the orbit path is off");
+        assert!(!p.values.atmos_enabled, "a dark room: no atmosphere");
+        assert!(!p.values.bg_visible, "a dark room: background hidden");
+        assert!(p.values.env_intensity < 0.5, "a dark room: the IBL dimmed to a sheen");
+        assert!(p.values.glyph_bevel > 0.0 && p.values.glyph_crown > 0.0, "the two normal-varying controls");
+        assert!(p.values.fx_enabled, "halation lives in the FX pass, which must be on");
+        assert!(p.values.hal_amount > 0.0);
+        // The preset's glyph values reach the Shared slots, in the contract's order.
+        let s = p.values.to_shared();
+        assert_eq!(s.glyph[11], p.values.glyph_bevel);
+        assert_eq!(s.glyph[12], p.values.glyph_crown);
+        assert_eq!(s.glyph_cam[0], 1.0);
+        assert_eq!(s.glyph_cam[1], p.values.glyph_cam_tilt);
+        assert_eq!(s.capsule[0], 0.0, "faceplate is not the bottled rung");
+        // Everything the rung does not name is T1's look — the T1 grid, dressed.
+        let d = OrganicMathParams::default().to_shared();
+        assert_eq!(s.glyph[..11], d.glyph[..11]);
     }
 
     // --- Capture/apply drift guard (#103, PR 4) -------------------------------

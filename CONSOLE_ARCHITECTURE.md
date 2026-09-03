@@ -4341,7 +4341,7 @@ those are the top level tabs… and these choices will map to the panels that ar
 Organon."* Not a command tree beside the instrument — **the instrument's own shape, walked from
 the composer.**
 
-`/organon` → the eight tabs. `/organon look` → the Look tab's twenty-five panels. `/organon
+`/organon` → the eight tabs. `/organon look` → the Look tab's twenty-six panels. `/organon
 look surface` → that panel, as an element in the flow.
 
 ✏️ **That last arrow now ends somewhere else: the panel goes into a region's PANEL STACK, and
@@ -4355,7 +4355,7 @@ corrected in place at the two subsections it invalidates rather than being rewri
 which that module already calls "the single source of truth the editor's tab bar iterates". The
 panels are the new `organon_core::panels::PANELS` — and the arrow between it and the editor
 points the way that cannot rot: **`lib.rs` reads its card headings out of the table**, written
-`card(&mut c[0], panels::LOOK_SURFACE.title, |ui| …)` at all twenty-five Look-tab call sites. A
+`card(&mut c[0], panels::LOOK_SURFACE.title, |ui| …)` at all twenty-six Look-tab call sites. A
 renamed panel is one edit and the compiler finds the other end. ⚠️ **Only the Look tab is joined
 that way**; the other seven are *absent* from the table rather than transcribed into it, because
 an entry whose title nothing reads is exactly the un-joined copy the table exists to prevent. A
@@ -4364,7 +4364,7 @@ tab joins by converting its `card()` sites, one tab at a time.
 #### 🚨 Seven of the eight tabs lead nowhere, and the ring says so in its own line
 
 James typed `/organon generator 2` on a running build and was told *"`2` is not one of surface |
-colour | material | …"* — the Look tab's twenty-five panels, on a line that said `generator`.
+colour | material | …"* — the Look tab's twenty-six panels, on a line that said `generator`.
 He read it as the console failing to register the word, which is the only reading available: a
 Look-shaped answer to a Generator-shaped question. Two separate defects made that one sentence,
 and both are the same failure — **a surface that knew and did not say**.
@@ -4372,7 +4372,7 @@ and both are the same failure — **a surface that knew and did not say**.
 **The tabs stay, all eight, and the empty ones are marked.** The alternative was to offer only
 the tabs with panels, which is honest and self-maintaining and was rejected: `UiTab::ALL` *is*
 Organon's hierarchy, and a first ring showing one wedge of it would misrepresent the product as
-having one section. So `look` carries `25 panels` and the other seven carry `not mapped yet — no
+having one section. So `look` carries `26 panels` and the other seven carry `not mapped yet — no
 panels in the table`, **counted off `panels::in_tab` rather than listed**, so a tab stops being
 marked on the day its `card()` sites are converted and no line here changes. That is the same
 honesty `Status::Declared` already uses one ring down: named, offered, and truthful about what
@@ -4388,7 +4388,7 @@ invisible: the band drew empty, which is indistinguishable from a band that is b
 
 ⚠️ **The refusal consults the hook, so it names the ring it is refusing against.** `coerce`
 refused against the declared `Choice`, which for a dependent argument is the union across tabs —
-hence twenty-five slugs for a tab that has none. It now asks the hook first wherever the parent
+hence twenty-six slugs for a tab that has none. It now asks the hook first wherever the parent
 word is in hand: `/organon generator 2` answers with the unmapped-tab sentence, and `/organon
 look 2` answers *"`/organon look`: `2` is not one of surface | colour | …"*, the head carrying
 the words that **chose** that list. ⚠️ **This does not fix itself as tabs are joined — it gets
@@ -8571,7 +8571,7 @@ path silently breaks the three-products-simultaneously guarantee that
   `/organon look surface`, drag `node bevel`, watch the cubes round; (1) **that the two rings
   feel like Organon's own hierarchy when
   a hand walks them** — James described `l` → `look` completing while the ring beneath it
-  changes as one motion, and whether twenty-five candidates in the second ring reads as a menu
+  changes as one motion, and whether twenty-six candidates in the second ring reads as a menu
   or as a wall is a question about a running window; (2) that the slugs are the words a person
   reaches for — `lmat` for Liquid Material and `fx` for Surface FX exist to satisfy the
   no-prefix rule, and a slug nobody guesses is worse than a longer one; (3) ✏️ **withdrawn by
@@ -8579,7 +8579,7 @@ path silently breaks the three-products-simultaneously guarantee that
   or as broken beside a panel which **is** transplanted. There is no such line: those panels are
   refused at the door and never draw a card, so the question has no subject; (4) that §1.9's
   eight-row candidate cap
-  is survivable at twenty-five — the Look ring overflows it by seventeen and nobody has seen
+  is survivable at twenty-six — the Look ring overflows it by eighteen and nobody has seen
   "+N more" against a list that long.
 - ✏️ **`OrganonDraw` carries a widget now.** It was retained through the tier that built it as a
   seam nothing filled — `console_main` passed a closure that ignored its arguments, and the
@@ -8746,10 +8746,10 @@ path silently breaks the three-products-simultaneously guarantee that
   single 3 GB `rustc` still going; the bar names that trap and CI is where those nine tests
   (six in `panel_surface`, three in `param_sink`) first execute. Everything above about them is
   a claim about code that compiles and has been read, not about a green run.
-- ⚠️ **Only the Look tab's twenty-five `card()` titles are joined to `panels::PANELS`.** The
+- ⚠️ **Only the Look tab's twenty-six `card()` titles are joined to `panels::PANELS`.** The
   other seven tabs draw string literals as before, so the table cannot yet claim to be Organon's
   whole panel taxonomy — and `panels::the_look_tab_is_whole` guards a count, not a join: a
-  twenty-sixth Look card added without a table entry fails that test, but a *renamed* title on
+  twenty-seventh Look card added without a table entry fails that test, but a *renamed* title on
   any other tab is invisible to everything here.
   ✏️ **What has changed is what the surface says about it, not how much of it is joined.** The
   first ring still offers all eight tabs; the seven unjoined ones are marked `not mapped yet — no
