@@ -537,3 +537,85 @@ Each is independently shippable and each defaults to inert per invariant #4.
 
 ⚠️ **T7 is not a prerequisite for anything before it**, and treating it as one is how this project
 would fail to ship.
+
+---
+
+## 15. The gap to the plates — measured on the first GPU look
+
+Three plates were committed beside this document (`doc/images/`): the before/after, the spec
+sheet, and the resolve arc. They are the claim. On 2026-09-02 the first tiles came up on
+organon-one (RTX 5090, `main @ 0b0f3e6`, then `1c1c3ba` with T5) and were held against them.
+**Measured, not inferred, and the honest summary is: the spine is there and almost none of the
+skin.** What follows is the gap as a plan, so that it can be worked in parallel by file ownership
+rather than argued about.
+
+**What the plates show that the first render did not** — each row names the machinery that
+already exists, because most of this is wiring:
+
+| Plate | On screen, `1c1c3ba` | Closes it | Owns |
+|---|---|---|---|
+| Every cell is a tile; a dark cell shows the room through a glass faceplate | Only lit cells get tiles; dark cells are bare slab | Full-grid tiles with the existing clearcoat lobe (`cube.wgsl` `coat`) | `cube.wgsl`, `glyph_ring.rs::lower_grid` |
+| The emissive core has a soft falloff, seen *through* the faceplate | Flat, uniform emission across the face | A per-tile emission profile in the cube shader, keyed on the instance's own UV | `cube.wgsl` |
+| Glyphs as lights: the green pool on the backplane, a contact shadow in each well | Nothing spills; no well shadow | Emission-driven selection for the brightest-N point lights (`world.rs:9146`), RT shadow + AO for the wells | `world.rs` (selection), `rt_shadow`/`rt_ao` |
+| A brushed dark-metal backplane with a warm rim | A flat dark slab | The existing anisotropy lobe (`cube.wgsl` `aniso`, brush along local +Z) on the backplane instance, and a light rig | `world.rs` (rig), T3's backplane params |
+| The path-traced still: caustics, converged, **lit** | 🚨 **The dwell goes dark.** T5 hands the held frame to the tracer, and the tracer shades from `tint` — it has never seen the emit buffer | Every `rt_*` pass and `rt_pathtrace` read the per-instance emission | `rt_pathtrace.{rs,wgsl}`, `rt_*.rs`, their binding sites in `render.rs` |
+| Camera held, framed, slightly tilted; dark environment | Orbiting, far, the atmosphere's fog behind the grid | T3 (in flight): framing from the grid's bounds in cell units, a held camera while a ring is live, `faceplate` with a dark environment and TAA off | T3 |
+| Phosphor persistence | **Not in this document until now** | Producer-side per-cell decay in linear light, published as the cell's colour, with a `persist` flag so the renderer can tell a trail from a lit cell | `organon-glyphs` |
+| The scatter phase: motion streaks with dispersion | **Not in this document until now** | A velocity-keyed streak in post, RGB-split; the one row that is new rendering work rather than wiring | `fx.wgsl`, `post.rs` |
+| Six preset rungs (§10) | Only `faceplate` is scoped (T3) | Preset data once T3's knobs exist; `bottled`/`cathode` ride T6's capsule core, already landed | `preset.rs` (data), after T3 |
+
+📌 **Confidence, stated plainly.** The still "after" plate is reachable with what exists — every
+row above except two names a lobe, a pass or a selection that is already in the tree. The two
+that are not: the scatter streaks (new post work), and whether the anisotropic lobe can be applied
+to the backplane *instance alone* while the tiles stay isotropic (the lobe is a per-draw uniform
+today; the backplane may need its own draw). The resolve-arc plate is therefore medium confidence
+until those two are tried.
+
+### 15.1 Tiers, continued — and the order they can run in
+
+Each independently shippable, each inert by default (invariant #4), each owning files no other
+running worker touches. **T3 is the gate**: it owns `world.rs`, `render.rs`'s uniform builders,
+`cube.wgsl`'s uniforms and the whole param chain, so nothing below that names those files starts
+until it lands.
+
+- **T8 — the tracer sees emission.** Every `rt_*` pass and `rt_pathtrace` bind and read the
+  emit buffer beside the tint buffer, so a ray-traced reflection of the grid is lit glyphs and the
+  T5 dwell converges to a photograph rather than to black. Owns `rt_*.{rs,wgsl}` and their binding
+  sites in `render.rs`. **After T3.** Nothing else in this list is worth looking at until this is
+  in — a dark dwell is worse than no dwell.
+- **T9 — the tile itself.** Full-grid tiles (dark cells too), the faceplate as a clearcoat lobe
+  over a near-black dielectric, and an emission *profile* across the face — a soft falloff so the
+  core reads as behind glass rather than painted on. Owns `cube.wgsl` (shading, not uniforms) and
+  `glyph_ring.rs::lower_grid`. Can run **beside T8** — different files.
+- **T10 — glyphs as lights and the backplane rig.** Emission-driven brightest-N selection so the
+  green pools onto the backplane; the anisotropic brushed backplane; the warm rim; RT shadow and
+  AO in the wells. Owns `world.rs`. **After T3; beside T8/T9.**
+- **T11 — persistence.** Producer-side per-cell decay in linear light; a trail is a cell whose
+  colour is decaying and whose `persist` flag is set. Owns `organon-glyphs` and the reserved cell
+  flags. **After the sub-cell producer work (in flight), which owns the same crate.**
+- **T12 — sub-cell rendering.** The ring already carries `sub_x`/`sub_y` (in flight); the
+  renderer slides a tile whose character is on a path and cuts one that teleported
+  (`ACTIVE_PATH`). Owns the grid lowering only. **After T3 and T9.**
+- **T13 — the gate on a real render.** T2's harness over a `faceplate` frame read from the HDR
+  buffer, in `verify.sh`, with the thresholds beside the goldens. **After T3 and T8.**
+- **T14 — the preset ladder.** `nixie`, `foundry`, `anodized`, `bottled`, `cathode` as preset
+  data over T3's knobs and T6's core. **After T3; needs a GPU look per rung.**
+- **T15 — the scatter.** Velocity-keyed motion streaks with an RGB split for the raster phase.
+  New post work; **last**, and allowed to fail without blocking anything above.
+
+T4 (Omarchy) and T7 (letterforms) stand as written in §14; T4 waits for T3's self-contained
+preset, T7 for `world.rs` to be free.
+
+### 15.2 What the first look settled (§12, continued)
+
+**Measured 2026-09-02 on organon-one:** with no producer the visual is byte-for-byte its ordinary
+self and the grid appears only once the ring exists (invariant #4 held); the logo renders as
+emissive beveled tiles over a dark slab, half-blocks as half-height tiles, bloom on the lit glyphs
+only, `decrypt` animating live through the ring and resolving to the correct text; the tiles
+arrive small and far because the grid inherits the cube field's default camera distance; the
+auto-orbit never stops, so T5's accumulation restarts every frame (W5 found the same in the code);
+the T5 dwell renders **dark** because the tracer shades from `tint` (W1 named the gap before
+merge; this is it on screen); and the out-of-the-box environment is the physical atmosphere, which
+reads as fog over terrain behind the grid. **Retired from §12:** `ttfx` is a Rust rewrite (§2.1);
+every effect settles (measured over all 37). **Not yet measured:** the ~14–16k-cell fullscreen
+case — the logo is 81×10, and nothing larger has been drawn.
