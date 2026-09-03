@@ -5127,6 +5127,14 @@ impl World {
             self.demo_lights.clear();
             self.neural_batches = None;
             self.geom.swept_mesh.clear();
+            // organon#217 T10, read for the record: clearing `rt_instances` is what puts
+            // the tiles in the TLAS. The RT geometry choice below (`rt_geo`) is
+            // `rt_instances` when that is non-empty and `instances` otherwise, and the
+            // tiles + backplane ARE `instances` now — so every `rt_*` pass and the path
+            // tracer trace the grid (the backplane is real geometry for exactly this,
+            // §5), under the same gates as any instanced frame: the generator's path
+            // is `Instanced`, it is not hidden, no boids creature. What the RT passes
+            // cannot yet see is the emit buffer — T8 / `render.rs`.
             self.geom.rt_instances.clear();
             self.geom.rt_tints.clear();
         }
@@ -5738,17 +5746,51 @@ impl World {
                 } else {
                     (&self.geom.instances, &self.geom.tints)
                 };
-            for (m, t) in src_inst.iter().zip(src_tint.iter()) {
-                let p = m.w_axis.truncate();
-                let c = if palette_active {
-                    Vec3::new(t.x, t.y, t.z)
+            if self.glyph_pt.live {
+                // organon#217 T10 — glyphs as lights. The tiles replaced the generator's
+                // instances above, so this node set would otherwise be every tile
+                // (backplane included) coloured by the faceplate tint or by position —
+                // and the "brightest N" point lights would be the top-right corner of
+                // the grid. Lower the EMISSION instead: one candidate per run of lit
+                // tiles, on the front face, coloured by the linear radiance the surface
+                // itself emits (`glyph_light_candidates`). Off ReSTIR the set is
+                // pre-trimmed to the preset's count by the same luminance the renderer
+                // ranks by, so its own select is the identity; under ReSTIR it gets the
+                // whole pool to rotate through. The per-node radius stays the surface
+                // mode's (the lights read the uniform radius, not `pos.w`).
+                let cell_h = glyph_look.cell_w
+                    * if self.glyph_grid.cell_aspect > 0.0 { self.glyph_grid.cell_aspect } else { glyph_ring::TTFX_CELL_ASPECT };
+                let cands = glyph_light_candidates(
+                    &self.geom.instances,
+                    &self.geom.emits,
+                    glyph_look.cell_w,
+                    cell_h,
+                    self.glyph_grid.rows(),
+                );
+                let lights = if s.restir[0] != 0.0 {
+                    cands
                 } else {
-                    (p - bounds.min) / span
+                    brightest_glyph_lights(cands, s.manylight[3].max(0.0) as usize)
                 };
-                self.meta_nodes.push(render::MetaNode {
-                    pos: [p.x, p.y, p.z, radius],
-                    color: [c.x, c.y, c.z, 1.0],
-                });
+                for l in lights {
+                    self.meta_nodes.push(render::MetaNode {
+                        pos: [l.pos.x, l.pos.y, l.pos.z, radius],
+                        color: [l.radiance.x, l.radiance.y, l.radiance.z, 1.0],
+                    });
+                }
+            } else {
+                for (m, t) in src_inst.iter().zip(src_tint.iter()) {
+                    let p = m.w_axis.truncate();
+                    let c = if palette_active {
+                        Vec3::new(t.x, t.y, t.z)
+                    } else {
+                        (p - bounds.min) / span
+                    };
+                    self.meta_nodes.push(render::MetaNode {
+                        pos: [p.x, p.y, p.z, radius],
+                        color: [c.x, c.y, c.z, 1.0],
+                    });
+                }
             }
         }
         // Field Volume (#348): the density-cloud source selector for SurfaceMode::Volume.
@@ -9175,7 +9217,14 @@ impl World {
                 // lights the cube shader loops. Radius is a fraction of the scene diagonal.
                 ml_on: manylight_on,
                 ml_intensity: s.manylight[1],
-                ml_radius: s.manylight[2],
+                // organon#217 T10: in COLUMN WIDTHS while a glyph ring is live (§5.1 —
+                // every glyph length is in cell units), converted against the same
+                // bounds the renderer scales the fraction back by; the lane itself with
+                // no ring. ⚠️ The renderer still multiplies the uploaded radiance by its
+                // `radiance_scale` (`glow + 0.3·key`, `render.rs`): a glyph light's
+                // colour is already radiance, so that factor is the one thing between
+                // the preset's `ml_intensity` and SDR-white units — `render.rs`, W8.
+                ml_radius: glyph_light_radius_frac(s.manylight[2], self.glyph_pt.live, glyph_look.cell_w, light_min, light_max),
                 ml_count: s.manylight[3] as i32,
                 // ReSTIR many-lights (#200 Tier 5d): reservoir importance sampling
                 // of the emissive-cube light set. restir[0] = enable.
@@ -14171,6 +14220,291 @@ fn glyph_camera_rig(
         .clamp(scene_input::DISTANCE_MIN, scene_input::DISTANCE_MAX);
     let pitch = cam[1].to_radians().clamp(-scene_input::PITCH_LIMIT, scene_input::PITCH_LIMIT);
     Some((centre, 0.0, pitch, distance, 0.0, fov_deg))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// organon#217 T10 — glyphs as lights (`doc/pbr_text_engine.md` §4.1, §15).
+//
+// The emissive-cubes-as-lights path (#167 T3) is the renderer's: `gi.rs::update_lights`
+// takes `Surface.meta_nodes`, ranks them by luminance, and uploads the brightest N as
+// point lights `cube.wgsl::many_lights` loops. The world owns what goes INTO that node
+// set, and with a glyph ring live the answer used to be wrong in a way nothing reported:
+// the tiles had replaced the generator's instances, so the node builder handed the
+// renderer every tile — the backplane included — coloured by its TINT (the near-black
+// faceplate) or, with no palette, by its POSITION in the bounds, so the "brightest"
+// cells were the ones nearest the grid's top-right corner. The functions below lower
+// the grid's EMISSION into that set instead: a lit tile becomes a candidate at its
+// front face carrying `emit.rgb * emit.w` — the exact value the shader adds to
+// `emissive` — so the pool a glyph throws onto the backplane is the colour the glyph
+// shows. Pure, so the selection is pinned without a GPU; with no ring the node builder
+// takes the branch it always took, byte for byte (invariant #4).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A point-light candidate lowered from the glyph grid. `pos` is on the tile's FRONT
+/// face — the phosphor's own surface, where the emission leaves — so the light shines
+/// past the tile's edges onto the backplane behind it and never lights the face it sits
+/// on (a light in the face's plane has `n·l = 0` there). `radiance` is linear,
+/// `emit.rgb * emit.w`: SDR-white units, the same the surface emits in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GlyphLight {
+    pos: Vec3,
+    radiance: Vec3,
+}
+
+/// Rec. 709 luminance of a LINEAR colour — the weights `gi.rs::update_lights` ranks by,
+/// so the world's pre-selection and the renderer's own cannot disagree about which
+/// candidate is brighter. ⚠️ Linear, never sRGB-encoded: the encode compresses the top
+/// of every channel, so under it a mid grey out-ranks a saturated green it is dimmer
+/// than (`lights_are_ranked_by_linear_luminance_not_srgb` pins the pair).
+fn linear_luminance(c: Vec3) -> f32 {
+    0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z
+}
+
+/// How many adjacent lit tiles of one row fold into ONE light, and how far apart (in
+/// column widths) two tiles may sit and still count as adjacent. A glyph stroke is a
+/// line of tiles, and sixteen thousand cells cannot each be a light: with the cap at 64
+/// an unclustered logo lights only its 64 brightest cells, and a stroke lit at one end
+/// reads as a stroke with a bulb in it. A folded run is one light at the luminance-
+/// weighted centroid carrying the SUM of its members' radiance — exact in the far
+/// field, and within the pool radius the ends of a run of four are 1.5 cells from its
+/// centre, well inside the falloff. Four rather than a whole stroke because the pool
+/// under a long run would otherwise peak at its middle and fade at its ends. The gap
+/// admits half-width tiles (`▌` then `▐` in the next cell are 1.5 widths apart) and
+/// refuses one empty cell (2.0).
+const GLYPH_LIGHT_RUN: usize = 4;
+const GLYPH_LIGHT_GAP: f32 = 1.6;
+
+/// Pure: the light candidates for a lowered grid — one per RUN of adjacent lit tiles
+/// in a row (see [`GLYPH_LIGHT_RUN`]), at the run's luminance-weighted centroid on the
+/// tiles' front faces, carrying the run's summed linear radiance. `instances` /
+/// `emits` are the parallel buffers `lower_grid` filled; a length mismatch is the
+/// renderer's own "no emission" convention and yields nothing, as does a grid whose
+/// every cell is dark — an unlit terminal sheds no light, and the backplane (emission
+/// zero) is never a candidate. `rows` decides which cell row a tile's `y` falls in:
+/// cell centres sit at half-integer row pitches when `rows` is even and at integers
+/// when it is odd, and a sub-cell tile (`▄`, `▁`) is offset from its centre by up to
+/// 3/8 of a row, so rounding `y / cell_h` would split one row's tiles two ways.
+fn glyph_light_candidates(instances: &[Mat4], emits: &[Vec4], cell_w: f32, cell_h: f32, rows: usize) -> Vec<GlyphLight> {
+    if instances.len() != emits.len() || !(cell_w > 0.0) || !(cell_h > 0.0) {
+        return Vec::new();
+    }
+    let row_phase = if rows % 2 == 0 { 0.0 } else { 0.5 };
+    let row_of = |y: f32| (y / cell_h + row_phase).floor() as i64;
+    let mut lit: Vec<(i64, GlyphLight)> = instances
+        .iter()
+        .zip(emits)
+        .filter_map(|(m, e)| {
+            let radiance = Vec3::new(e.x, e.y, e.z) * e.w;
+            if !(linear_luminance(radiance) > 0.0) {
+                return None;
+            }
+            // `lower_grid` builds every tile as scale·identity·translate, so the front
+            // face is the translation plus half the z extent along +z.
+            let centre = m.w_axis.truncate();
+            let depth = m.z_axis.truncate().length();
+            let pos = centre + Vec3::new(0.0, 0.0, depth * 0.5);
+            Some((row_of(pos.y), GlyphLight { pos, radiance }))
+        })
+        .collect();
+    lit.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.pos.x.partial_cmp(&b.1.pos.x).unwrap_or(std::cmp::Ordering::Equal)));
+    let gap = GLYPH_LIGHT_GAP * cell_w;
+    let mut out = Vec::with_capacity(lit.len());
+    let mut i = 0;
+    while i < lit.len() {
+        let row = lit[i].0;
+        let mut j = i + 1;
+        while j < lit.len() && j - i < GLYPH_LIGHT_RUN && lit[j].0 == row && lit[j].1.pos.x - lit[j - 1].1.pos.x <= gap {
+            j += 1;
+        }
+        let mut radiance = Vec3::ZERO;
+        let mut weighted = Vec3::ZERO;
+        let mut weight = 0.0f32;
+        for (_, l) in &lit[i..j] {
+            let lum = linear_luminance(l.radiance);
+            radiance += l.radiance;
+            weighted += l.pos * lum;
+            weight += lum;
+        }
+        out.push(GlyphLight { pos: weighted / weight, radiance });
+        i = j;
+    }
+    out
+}
+
+/// Pure: the brightest `n` candidates by LINEAR luminance (a partial select — order
+/// within the chosen set is the renderer's business). `n == 0` is no light; fewer
+/// candidates than `n` is all of them. The renderer's `update_lights` ranks the node set
+/// by the same weights, so handing it exactly `n` makes its own select the identity;
+/// under ReSTIR (`restir[0]`) the caller hands it every candidate instead, because
+/// reservoir sampling wants the dim ones as a pool to rotate through.
+fn brightest_glyph_lights(mut cands: Vec<GlyphLight>, n: usize) -> Vec<GlyphLight> {
+    if n == 0 {
+        cands.clear();
+    } else if cands.len() > n {
+        cands.select_nth_unstable_by(n - 1, |a, b| {
+            linear_luminance(b.radiance).partial_cmp(&linear_luminance(a.radiance)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        cands.truncate(n);
+    }
+    cands
+}
+
+/// Pure: the many-lights radius lane (`manylight[2]`) as the renderer wants it — a
+/// fraction of the light bounds' diagonal — **re-denominated in column widths while a
+/// ring is live.** §5.1's rule ("express depth in cell units, never pixels") holds for
+/// every glyph length, and a pool radius is one: as a fraction of the scene diagonal
+/// the same lane is 2.6 cells on the 81×10 logo and 6.8 on a 200×50 fullscreen grid,
+/// so the pool a glyph throws would grow with the amount of text on screen. With no
+/// ring the lane is returned untouched, so a generator frame is byte-identical
+/// (invariant #4); a degenerate diagonal (nothing lowered yet) leaves it untouched too.
+/// `light_min` / `light_max` must be the SAME bounds the renderer multiplies the
+/// fraction back by (`gi_min` / `gi_max`), or the round trip is not one.
+fn glyph_light_radius_frac(lane: f32, glyph_live: bool, cell_w: f32, light_min: Vec3, light_max: Vec3) -> f32 {
+    if !glyph_live {
+        return lane;
+    }
+    let diag = (light_max - light_min).length();
+    if !(diag.is_finite() && diag > 1e-6 && cell_w > 0.0) {
+        return lane;
+    }
+    lane.max(0.0) * cell_w / diag
+}
+
+#[cfg(test)]
+mod glyph_light_tests {
+    use super::*;
+    use glam::Quat;
+
+    /// A tile as `lower_grid` builds it: `size` × identity × `pos`.
+    fn tile(pos: (f32, f32, f32), size: (f32, f32, f32)) -> Mat4 {
+        Mat4::from_scale_rotation_translation(
+            Vec3::new(size.0, size.1, size.2),
+            Quat::IDENTITY,
+            Vec3::new(pos.0, pos.1, pos.2),
+        )
+    }
+
+    /// A full-block tile at column `c` of a one-row grid (cell 1×2, depth 0.18), with
+    /// `emit` = (rgb, gain).
+    fn block(c: f32, y: f32, emit: [f32; 4]) -> (Mat4, Vec4) {
+        (tile((c, y, 0.09), (1.0, 2.0, 0.18)), Vec4::new(emit[0], emit[1], emit[2], emit[3]))
+    }
+
+    fn split(v: Vec<(Mat4, Vec4)>) -> (Vec<Mat4>, Vec<Vec4>) {
+        v.into_iter().unzip()
+    }
+
+    /// The pair the encode flips: a saturated green whose LINEAR luminance (0.2146)
+    /// beats a mid grey's (0.2), and whose sRGB-encoded luminance (0.418) loses to the
+    /// grey's (0.484). Ranking by the encoded value picks the grey.
+    #[test]
+    fn lights_are_ranked_by_linear_luminance_not_srgb() {
+        let green = GlyphLight { pos: Vec3::ZERO, radiance: Vec3::new(0.0, 0.3, 0.0) };
+        let grey = GlyphLight { pos: Vec3::X * 5.0, radiance: Vec3::splat(0.2) };
+        assert!(linear_luminance(green.radiance) > linear_luminance(grey.radiance));
+        let chosen = brightest_glyph_lights(vec![grey, green], 1);
+        assert_eq!(
+            chosen,
+            vec![green],
+            "brightest-1 must be chosen by LINEAR luminance (green 0.2146 > grey 0.2); an sRGB-encoded rank picks the grey"
+        );
+        // And the count is honoured both ways: 0 is no light, more than there are is all.
+        assert!(brightest_glyph_lights(vec![grey, green], 0).is_empty());
+        assert_eq!(brightest_glyph_lights(vec![grey, green], 5).len(), 2);
+    }
+
+    /// Emission is `rgb * gain` in linear light — a brighter GAIN on a dimmer colour can
+    /// out-rank a brighter colour at unit gain, and the candidate carries the product.
+    #[test]
+    fn a_candidate_carries_rgb_times_gain() {
+        let (i, e) = split(vec![block(0.0, 0.0, [0.2, 0.2, 0.2, 3.0]), block(2.0, 0.0, [0.0, 0.5, 0.0, 1.0])]);
+        let c = glyph_light_candidates(&i, &e, 1.0, 2.0, 1);
+        assert_eq!(c.len(), 2, "one cell apart is a gap, not a run");
+        let chosen = brightest_glyph_lights(c, 1);
+        assert!((chosen[0].radiance - Vec3::splat(0.6)).length() < 1e-6, "grey at gain 3 = 0.6 linear, out-ranks green 0.5: {chosen:?}");
+    }
+
+    /// An all-dark grid sheds no light — and the backplane, which never emits, is never
+    /// a candidate whatever its tint. A generator frame (no `emits`) yields nothing too.
+    #[test]
+    fn a_dark_grid_and_a_generator_frame_shed_no_light() {
+        let (i, e) = split(vec![block(0.0, 0.0, [0.0; 4]), block(1.0, 0.0, [1.0, 1.0, 1.0, 0.0])]);
+        assert!(glyph_light_candidates(&i, &e, 1.0, 2.0, 1).is_empty(), "zero rgb, or zero gain, is dark");
+        // The backplane: a big slab with a visible tint and `Vec4::ZERO` emission.
+        let (i, e) = split(vec![(tile((0.0, 0.0, -0.2), (84.0, 23.0, 0.25)), Vec4::ZERO)]);
+        assert!(glyph_light_candidates(&i, &e, 1.0, 2.0, 1).is_empty());
+        // A generator's instances arrive with an EMPTY emit buffer: nothing to lower.
+        let (i, _) = split(vec![block(0.0, 0.0, [1.0; 4])]);
+        assert!(glyph_light_candidates(&i, &[], 1.0, 2.0, 1).is_empty(), "length mismatch is the renderer's 'no emission'");
+    }
+
+    /// The light sits on the tile's FRONT face: the translation plus half the z extent.
+    #[test]
+    fn the_light_sits_on_the_front_face() {
+        let (i, e) = split(vec![block(0.0, 0.0, [0.0, 1.0, 0.0, 1.0])]);
+        let c = glyph_light_candidates(&i, &e, 1.0, 2.0, 1);
+        assert_eq!(c.len(), 1);
+        assert!((c[0].pos.z - 0.18).abs() < 1e-6, "front face of a 0.18-deep tile at z 0.09 is z 0.18: {}", c[0].pos.z);
+        assert_eq!(c[0].pos.x, 0.0);
+    }
+
+    /// A horizontal stroke of three lit tiles folds into ONE light at its centroid
+    /// carrying three tiles' radiance; a run longer than `GLYPH_LIGHT_RUN` splits; a
+    /// one-cell gap splits; a second row is a second light.
+    #[test]
+    fn a_horizontal_stroke_folds_into_one_light_at_its_centroid() {
+        let g = [0.0, 1.0, 0.0, 1.0];
+        let (i, e) = split(vec![block(0.0, 0.0, g), block(1.0, 0.0, g), block(2.0, 0.0, g)]);
+        let c = glyph_light_candidates(&i, &e, 1.0, 2.0, 1);
+        assert_eq!(c.len(), 1, "three adjacent tiles → one light: {c:?}");
+        assert!((c[0].pos.x - 1.0).abs() < 1e-6, "at the centroid, the middle tile: {}", c[0].pos.x);
+        assert!((c[0].radiance - Vec3::new(0.0, 3.0, 0.0)).length() < 1e-6, "summed radiance: {:?}", c[0].radiance);
+        // Order of arrival does not matter — the fold sorts by row then x.
+        let (i, e) = split(vec![block(2.0, 0.0, g), block(0.0, 0.0, g), block(1.0, 0.0, g)]);
+        assert_eq!(glyph_light_candidates(&i, &e, 1.0, 2.0, 1).len(), 1);
+        // A run of five: four and one.
+        let (i, e) = split((0..5).map(|c| block(c as f32, 0.0, g)).collect());
+        let c = glyph_light_candidates(&i, &e, 1.0, 2.0, 1);
+        assert_eq!(c.len(), 2, "GLYPH_LIGHT_RUN caps a run at {GLYPH_LIGHT_RUN}: {c:?}");
+        // A gap of one empty cell breaks the run.
+        let (i, e) = split(vec![block(0.0, 0.0, g), block(2.0, 0.0, g)]);
+        assert_eq!(glyph_light_candidates(&i, &e, 1.0, 2.0, 1).len(), 2);
+        // Two rows, one tile each, same x: two lights (a vertical stroke does not fold).
+        let (i, e) = split(vec![block(0.0, 1.0, g), block(0.0, -1.0, g)]);
+        assert_eq!(glyph_light_candidates(&i, &e, 1.0, 2.0, 2).len(), 2);
+    }
+
+    /// The row key must not split one row's tiles: on an even-row grid a full block at
+    /// `y = 4.5·h` and a lower half block at `y = 4.0·h` are the same row (adjacent
+    /// columns → one light); on an odd-row grid the centres are integer pitches and a
+    /// `▄` sits at `r − 0.25`. Rounding `y / h` would put the two halves in different rows.
+    #[test]
+    fn the_row_key_keeps_sub_cell_tiles_in_their_row() {
+        let g = [1.0, 1.0, 1.0, 1.0];
+        // rows = 10: row 0's centre is 4.5·h = 9.0; a lower half block in the next column is at 8.5.
+        let full = (tile((0.0, 9.0, 0.09), (1.0, 2.0, 0.18)), Vec4::new(1.0, 1.0, 1.0, 1.0));
+        let lower = (tile((1.0, 8.5, 0.09), (1.0, 1.0, 0.18)), Vec4::new(g[0], g[1], g[2], g[3]));
+        let (i, e) = split(vec![full, lower]);
+        assert_eq!(glyph_light_candidates(&i, &e, 1.0, 2.0, 10).len(), 1, "same row, adjacent → one light");
+        // rows = 3: row 1's centre is 0; a lower half block beside it is at −0.5.
+        let (i, e) = split(vec![block(0.0, 0.0, g), (tile((1.0, -0.5, 0.09), (1.0, 1.0, 0.18)), Vec4::new(1.0, 1.0, 1.0, 1.0))]);
+        assert_eq!(glyph_light_candidates(&i, &e, 1.0, 2.0, 3).len(), 1);
+    }
+
+    /// The radius lane is in CELLS while a ring is live and untouched otherwise: with
+    /// bounds whose diagonal is 50 world units and a 1-unit column, a lane of 2.0 (two
+    /// columns) becomes the fraction 0.04 — which the renderer multiplies by the same
+    /// diagonal back to 2.0 world units.
+    #[test]
+    fn the_radius_is_in_cells_while_live_and_the_lane_otherwise() {
+        let (lo, hi) = (Vec3::new(-15.0, -20.0, 0.0), Vec3::new(15.0, 20.0, 0.0));
+        assert_eq!(glyph_light_radius_frac(0.5, false, 1.0, lo, hi), 0.5, "no ring: the lane, untouched");
+        let frac = glyph_light_radius_frac(2.0, true, 1.0, lo, hi);
+        assert!((frac - 0.04).abs() < 1e-6, "{frac}");
+        assert!((frac * (hi - lo).length() - 2.0).abs() < 1e-5, "the round trip through the renderer's diagonal is two columns");
+        assert_eq!(glyph_light_radius_frac(2.0, true, 1.0, lo, lo), 2.0, "no diagonal yet: the lane, untouched");
+        assert_eq!(glyph_light_radius_frac(-1.0, true, 1.0, lo, hi), 0.0, "a negative lane is no radius, not a negative one");
+    }
 }
 
 #[cfg(test)]

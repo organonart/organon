@@ -593,8 +593,8 @@ already exists, because most of this is wiring:
 |---|---|---|---|
 | Every cell is a tile; a dark cell shows the room through a glass faceplate | Only lit cells get tiles; dark cells are bare slab | Full-grid tiles with the existing clearcoat lobe (`cube.wgsl` `coat`) | `cube.wgsl`, `glyph_ring.rs::lower_grid` |
 | The emissive core has a soft falloff, seen *through* the faceplate | Flat, uniform emission across the face | A per-tile emission profile in the cube shader, keyed on the instance's own UV | `cube.wgsl` |
-| Glyphs as lights: the green pool on the backplane, a contact shadow in each well | Nothing spills; no well shadow | Emission-driven selection for the brightest-N point lights (`world.rs:9146`), RT shadow + AO for the wells | `world.rs` (selection), `rt_shadow`/`rt_ao` |
-| A brushed dark-metal backplane with a warm rim | A flat dark slab | The existing anisotropy lobe (`cube.wgsl` `aniso`, brush along local +Z) on the backplane instance, and a light rig | `world.rs` (rig), T3's backplane params |
+| Glyphs as lights: the green pool on the backplane, a contact shadow in each well | Nothing spills; no well shadow | **T10, landed:** the point-light node set is lowered from the grid's *emission* while a ring is live — one candidate per run of up to four adjacent lit tiles, at the run's centroid on the front face, carrying its summed linear radiance, ranked by linear luminance; the radius lane is in column widths while a ring is live. The tiles and the backplane are the TLAS geometry already (T1 cleared `rt_instances`, so `rt_geo` is `instances`); RT shadow + AO in the wells wait on the passes reading emission (T8) | `world.rs` (selection, done), `rt_shadow`/`rt_ao` (T8) |
+| A brushed dark-metal backplane with a warm rim | A flat dark slab | **Measured (T10): neither is reachable from `world.rs` or a preset.** The anisotropy lobe is a per-draw uniform gated on the material type or an overlay flag, with no per-instance amount, and the one second draw the renderer has (the Demo sub-batch path) zeroes `shape` — the tiles would lose bevel and crown — and every material overlay. The key light is white (`key_rad = key_light.w`) and no lane colours it. What landed is the rig: `faceplate` keys from low on the right (15°, 70°) with a faint fill, so the bevels catch one side. The brush needs a second instanced draw in `render.rs` for the backplane instance alone (its own patched group-0 uniform: `amb.y = Anisotropic`, `shape` kept, overlays kept); the warmth needs a key colour on the chain and in `cube.wgsl` | `render.rs` (the draw), the param chain + `cube.wgsl` (the colour) |
 | The path-traced still: caustics, converged, **lit** | 🚨 **The dwell goes dark.** T5 hands the held frame to the tracer, and the tracer shades from `tint` — it has never seen the emit buffer | Every `rt_*` pass and `rt_pathtrace` read the per-instance emission | `rt_pathtrace.{rs,wgsl}`, `rt_*.rs`, their binding sites in `render.rs` |
 | Camera held, framed, slightly tilted; dark environment | Orbiting, far, the atmosphere's fog behind the grid | T3 (in flight): framing from the grid's bounds in cell units, a held camera while a ring is live, `faceplate` with a dark environment and TAA off | T3 |
 | Phosphor persistence | **Not in this document until now** | Producer-side per-cell decay in linear light, published as the cell's colour, with a `persist` flag so the renderer can tell a trail from a lit cell — **landed as T11** (`organon-glyphs --persist-ms`, `SGR_PERSIST`; §15.1) | `organon-glyphs` |
@@ -626,7 +626,10 @@ until it lands.
   `glyph_ring.rs::lower_grid`. Can run **beside T8** — different files.
 - **T10 — glyphs as lights and the backplane rig.** Emission-driven brightest-N selection so the
   green pools onto the backplane; the anisotropic brushed backplane; the warm rim; RT shadow and
-  AO in the wells. Owns `world.rs`. **After T3; beside T8/T9.**
+  AO in the wells. Owns `world.rs`. **After T3; beside T8/T9.** *Landed: the selection, the
+  radius in cells, the rig in `faceplate`. The brush and the warm rim were measured as out of
+  `world.rs`'s reach — the table above names the `render.rs` draw and the key-colour lane
+  they need; the well shadows wait on T8.*
 - **T11 — persistence. Shipped.** `organon-glyphs --persist-ms <τ>` (default **0 = off**, and
   off is byte-identical to a producer without it — invariant #4, pinned over a whole effect).
   `organon-glyphs/src/persist.rs` keeps one phosphor per cell **in linear light** and rewrites

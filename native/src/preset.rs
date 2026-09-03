@@ -7157,6 +7157,15 @@ fn text_seed_marker() -> PathBuf {
 /// faceplate" — so `organon console preset load faceplate` and the editor's list
 /// need no guessing; the seed only appends when no preset of that name exists, so a
 /// user's own `faceplate` is never replaced.
+///
+/// ⚠️ **Amending this rung in place reaches a FRESH store only.** The seed is one-shot
+/// behind `seeded_text_v1`; a store that already carries `faceplate` keeps the
+/// values it was seeded with, and the marker keeps the seed from running again. That
+/// is by design (the rung above says why a user's `faceplate` is never replaced), so a
+/// rung amended here — T10's lights and rig were — is picked up on a machine that has
+/// already seeded only by deleting its `faceplate` and the marker file, or by a `v2`
+/// marker that replaces the factory-named entry the way `seed_rails_presets` does.
+/// Neither is done here; the coordinator decides which.
 pub fn builtin_text_presets() -> Vec<Preset> {
     let base = PresetValues::capture(&OrganicMathParams::default());
     let mk = |name: &str, f: &dyn Fn(&mut PresetValues)| -> Preset {
@@ -7189,6 +7198,30 @@ pub fn builtin_text_presets() -> Vec<Preset> {
         // CRT finishing that already exists: halation (`fx.wgsl`), gated by the FX pass.
         v.fx_enabled = true;
         v.hal_amount = 0.35;
+        // organon#217 T10 — glyphs as lights (§4.1): the brightest-N point lights, fed
+        // from the grid's EMISSION while a ring is live (`world.rs`), so the green pools
+        // onto the backplane around each lit stroke. Every slot the shader has, and the
+        // radius in COLUMN WIDTHS (the world re-denominates the lane while a ring is
+        // live): two columns is a pool that reaches the next cell and no further.
+        // Brightest-N, not ReSTIR — text holds still, and a rotating light set on a
+        // held frame is a twinkle the dwell would then converge INTO.
+        v.ml_enabled = true;
+        v.ml_intensity = 1.0;
+        v.ml_radius = 2.0;
+        v.ml_count = 64;
+        v.ml_restir = false;
+        // The backplane rig: a key from low on the right (elevation 15°, azimuth 70° —
+        // `dir_from_angles` puts azimuth 90° at +x, grazing the grid from the side) so
+        // it catches the tiles' bevelled edges from ONE side and rakes the backplane,
+        // and a faint fill so the shadow side is not black. ⚠️ Not warm: the key is
+        // white in `cube.wgsl` (`key_rad = key_light.w`) and no lane colours it — the
+        // plate's warm rim needs a key colour on the chain and in the shader. And not
+        // brushed: the anisotropy lobe is a per-draw uniform, so switching it on here
+        // would brush every tile too; the backplane's brush needs its own draw.
+        v.key_intensity = 1.6;
+        v.fill_intensity = 0.25;
+        v.elevation = 15.0;
+        v.azimuth = 70.0;
     })]
 }
 
@@ -7714,6 +7747,37 @@ mod preset_io_tests {
     /// deserialize and `load()` silently returned an EMPTY list — every preset
     /// vanished on reopen. Every subset must strict-parse and round-trip to a
     /// non-empty list, keeping the bucket's own fields.
+    /// organon#217 T10 — the `faceplate` rung carries the glyphs-as-lights set and the
+    /// backplane rig: every point-light slot the shader has, a radius in column widths
+    /// (the world re-denominates the lane while a ring is live), brightest-N rather than
+    /// ReSTIR on a held frame, and a key from low on ONE side with a fainter fill. Each
+    /// is a link a recall has to reach; the mutation each guards is named.
+    #[test]
+    fn faceplate_carries_the_glyph_lights_and_the_rig() {
+        let b = builtin_text_presets();
+        let p = &b[0];
+        assert_eq!(p.name, "faceplate");
+        let v = &p.values;
+        assert!(v.ml_enabled, "glyphs as lights: the many-lights path must be ON, or nothing pools");
+        assert_eq!(v.ml_count, 64, "every slot `cube.wgsl` has (MAX_LIGHTS)");
+        assert!(v.ml_radius > 1.0 && v.ml_radius < 4.0, "a pool of a few COLUMNS, not a fraction of the scene: {}", v.ml_radius);
+        assert!(v.ml_intensity > 0.0);
+        assert!(!v.ml_restir, "brightest-N: a rotating set on a held frame is a twinkle the dwell converges into");
+        assert!(v.key_intensity > v.fill_intensity, "a rig with a side, not a flat wash");
+        assert!(v.fill_intensity > 0.0, "the shadow side must not be black");
+        assert!(v.elevation > 0.0 && v.elevation < 30.0, "low, so the bevels catch it: {}", v.elevation);
+        assert!(v.azimuth.abs() > 45.0 && v.azimuth.abs() < 90.0, "from one side, still in front of the grid: {}", v.azimuth);
+        assert!(!v.aniso_overlay, "the brush is per-draw: on here it would brush every tile");
+        // And the rig reaches the wire in the contract's order (`Shared.lighting`,
+        // `Shared.manylight`), so a recall drives what the world reads.
+        let s = v.to_shared();
+        assert_eq!(s.lighting[1], v.key_intensity);
+        assert_eq!(s.lighting[2], v.fill_intensity);
+        assert_eq!(s.lighting[3], v.elevation);
+        assert_eq!(s.lighting[4], v.azimuth);
+        assert_eq!(s.manylight, [1.0, v.ml_intensity, v.ml_radius, v.ml_count as f32]);
+    }
+
     #[test]
     fn subset_presets_survive_a_save_load_round_trip() {
         let mut v = PresetValues::capture(&OrganicMathParams::default());
