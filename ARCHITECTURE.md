@@ -523,7 +523,11 @@ The heart of the two-process design.
   member (links `ttfx`, ticks an effect under a virtual clock, walks `arena` into cells,
   publishes; holds the settled text for a dwell, then the next effect). Reader: `world.rs`'s
   `glyph_grid_geometry`, which replaces the generator's instances with the grid's tiles while
-  the ring is live and hands the frame back three seconds after a producer goes quiet. **Double
+  the ring is live and hands the frame back three seconds after a producer goes quiet. While
+  it is live the emissive-cubes-as-lights node set (`Surface.meta_nodes`, ranked and uploaded
+  by `gi.rs::update_lights`) is lowered from the grid's **emission** rather than its tints
+  (`glyph_light_candidates` — one candidate per run of adjacent lit tiles, linear radiance,
+  front face), and the `manylight` radius lane is read in column widths (T10). **Double
   buffer with a lap guard**, not a slot ring: two slots, the writer fills the one the reader is
   not on, the reader re-reads `write_seq` after its copy and retries if it advanced by two. Per
   cell: symbol, fg/bg (sRGB8 — decoded to linear only at the consumer, §4), SGR bits, `layer`,

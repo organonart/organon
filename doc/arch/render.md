@@ -1302,7 +1302,20 @@ key ≈1 almost always (a stable core), so it degrades toward brightest-N as `co
 count`. `enable = 0` = brightest-N, byte-identical. Pure primitive `math::es_key`/
 `restir_rand`/`Reservoir` (+ the RIS contribution weight) is unit-tested (WRS ∝ weight, RIS
 unbiasedness). Per-light **RT visibility** (shadowed cube-lights via the TLAS) + per-pixel
-spatiotemporal reservoir reuse are the documented follow-ups (the "RT half"). `EnvSource` is `Procedural(DEFAULT_SKY)` (the
+spatiotemporal reservoir reuse are the documented follow-ups (the "RT half"). **With a glyph
+ring live (organon#217 T10) the node set the renderer ranks is not the tiles.** `world.rs`'s
+`glyph_light_candidates` lowers the grid's *emission* into `Surface.meta_nodes` instead: a lit
+tile is a candidate on its front face carrying `emit.rgb * emit.w` (linear, SDR-white units —
+the value the shader adds to `emissive`), adjacent lit tiles in one row fold into ONE
+candidate per run of ≤4 at the luminance-weighted centroid with the summed radiance, and the
+world pre-trims to `count` by the same linear Rec. 709 luminance `update_lights` ranks by
+(ReSTIR gets the whole pool). Without it the tiles arrived coloured by tint or by position in
+the bounds, so the "brightest" cells were the grid's corner. `manylight[2]` is read in
+**column widths** while a ring is live — the world converts against the same `gi_min/gi_max`
+diagonal this pass multiplies back — and is the scene fraction otherwise. ⚠️ The
+`glow + 0.3·key` radiance estimate still scales these colours, and for a glyph light it is
+one factor too many (the colour is already radiance, not albedo); until this pass skips the
+scale when emission is live, the preset's `ml_intensity` absorbs it. `EnvSource` is `Procedural(DEFAULT_SKY)` (the
 always-on fallback), a loaded `.hdr` (capped 4096×2048), or **`Atmosphere(AtmosphereParams)`
 — a physically based single-scattering sky (#100)** baked into the env equirect (the
 `fs_atmosphere`/`atmosphere()` Nishita pass in `ibl.wgsl`) then run through the same
