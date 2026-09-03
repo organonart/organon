@@ -193,6 +193,15 @@ fn run(args: &Args) -> Result<(), String> {
         // already watches. The settle publish itself is the same instant as the last
         // motion frame, so it advances the phosphors by zero and republishes the same
         // trails — with persistence off this is byte-identical to before.
+        //
+        // W16: this publish and every heartbeat below carry the SAME `meta.tick` as the
+        // last motion frame, and that is a contract, not an accident — `tick` is the
+        // producer's clock on the wire (`GlyphFrame::tick`), and a republish at the same
+        // tick is what `glyph_ring::classify_arrival` calls a `Heartbeat`: the world
+        // replaces its picture without restarting the slide in progress or rotating
+        // its previous grid. Stamp a heartbeat with a fresh tick and the settle frame
+        // would cut the last tick of motion short and every dwell beat would start a
+        // slide that goes nowhere.
         let (cols, rows) = p.walk(&mut cells);
         persist.apply(&mut cells, cols, rows, 0.0);
         meta.cols = cols;

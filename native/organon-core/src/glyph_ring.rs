@@ -2050,6 +2050,8 @@ mod tests {
         let cur = frame_at(3, 10);
         assert_eq!(classify_arrival(None, &cur, 120.0), Arrival::Cut, "the first frame");
         assert_eq!(classify_arrival(Some(&cur), &frame_at(4, 1), 120.0), Arrival::Cut, "a new effect");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(4, 11), 120.0), Arrival::Cut, "a new effect is a cut whatever its tick says");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(4, 10), 120.0), Arrival::Cut, "a new effect at the same tick is a cut, not a heartbeat");
         assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 7), 120.0), Arrival::Cut, "a restarted producer");
         assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 10), 120.0), Arrival::Heartbeat);
         assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 11), 120.0), Arrival::Tick(1.0 / 120.0));
