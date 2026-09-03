@@ -910,7 +910,9 @@ loops (the "lights are emitters" simplification — a lit tile's tint is the nea
 faceplate, so the dropped continuation is ≤ albedo × incident, and a fullscreen grid then
 costs one ray per pixel instead of `bounces`); the gate is the emission's *value*, so a dark
 tile with `emit == 0` keeps bouncing and shows the room. In GI-add mode the primary-hit
-emission is skipped like the other primary terms (the raster already shows it). Its
+emission is skipped like the other primary terms (the raster already shows it) **and the
+path continues** — the tracer owes that pixel its indirect light, so the termination sits
+inside the same guard (#232 review). Its
 next-event estimation reaches only the key and fill directions — there is **no light list
 and no light selection** — so a lit tile is found by the cosine bounce landing on it, which
 converges over the dwell but is noisier than NEE; an emitter list would ride T10's
@@ -925,7 +927,13 @@ byte-identical. ⚠️ The binding is a bind-group entry, not a vertex slot, and
 it at *draw* time — a layout entry with no matching `create_bind_group` entry is a runtime
 panic CI cannot reach — so each pass's layout is a pure `layout_entries()` its unit test
 holds: index, read-only storage, fragment visibility, and that the WGSL declares `emits` at
-the **same** `@binding`. Nothing here has been looked at on a GPU: what a session must see
+the **same** `@binding`. 🚨 And the buffer itself must be *created* with `STORAGE`, or
+wgpu refuses the bind group at creation — `make_emit_buf` was `VERTEX | COPY_DST` only,
+and nothing but a GPU would have said so (#232 review). Every buffer an RT layout binds as
+storage — instances, tints, emission, in `new` and on every regrow path — is now created
+with one `RT_HIT_BUFFER_USAGE`, and `rt_hit_buffer_tests` walks every `BufferDescriptor`
+in `render.rs` and fails naming the label if one of those is created any other way.
+Nothing here has been looked at on a GPU: what a session must see
 is the dwell converging to a *lit* still, and a glossy backplane reflecting lit glyphs.
 This is the **cube pipeline's** emission only: the capsule impostors have their own
 per-instance emission in `particles.wgsl` (the `ArmInstance` colour), which is what T6's

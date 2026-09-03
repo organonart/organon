@@ -26,8 +26,10 @@ that T10 owns in `world.rs`, and is left as a documented hook rather than half-b
 
 📌 **In the path tracer an emissive hit terminates the path.** Its radiance is added
 (throughput × emission) and the loop breaks — in both the RGB and the hero-wavelength
-integrators, and in GI-add mode the primary-hit emission is skipped like the other primary
-terms, since the raster already shows it. This is the "lights are emitters" simplification,
+integrators; in GI-add mode the primary-hit emission is skipped like the other primary
+terms, since the raster already shows it, and the path *continues* there — the tracer owes
+that pixel its indirect light (the review on #232 caught the first version terminating
+outside that guard). This is the "lights are emitters" simplification,
 taken deliberately: a lit tile's tint is the near-black faceplate (§4), so what the
 continuation would have added is ≤ albedo × incident — under 4 % — and a fullscreen grid that
 terminates at the first lit tile costs one ray per pixel where it cost `bounces`. What is given
@@ -50,7 +52,13 @@ pass's layout is now a pure `layout_entries()` a test can hold: it asserts the e
 index (5 for reflections and GI, 7 for the tracer, after the caustic map and the cache
 weights), that it is read-only storage, fragment-visible, and — the drift that actually bites —
 that the shader source declares `emits` at the **same** `@binding`. Mutation-tested by dropping
-the entry from one pass: the test names the pass and the missing binding. What no test here
+the entry from one pass: the test names the pass and the missing binding. 🚨 **And the buffer
+has to be created with `STORAGE`** — `make_emit_buf` made it `VERTEX | COPY_DST` only, which the
+raster path never minded and wgpu would have refused at bind-group creation on the first real
+GPU; the review on #232 caught it. Every buffer an RT layout binds as storage (instances,
+tints, emission — in `new` and on every regrow) is now created with one `RT_HIT_BUFFER_USAGE`,
+and a test walks every `BufferDescriptor` in `render.rs` and fails naming the label if one of
+them is created any other way, so the class is closed rather than the instance. What no test here
 can do is light the traced image; **green and ready to try**, and what a GPU session must look
 at is the `faceplate` preset with `organon-glyphs` running and the camera hold on: the dwell
 should converge to a *lit* photograph where at `2a06e06` it went dark, and a ray-traced

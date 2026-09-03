@@ -472,8 +472,10 @@ fn fs_main(in: VsOut) -> Out {
                 // an emitter TERMINATES the path — see the RGB loop for the reasoning.
                 // `spectral_response(0, λ)` is exactly 0 and `+ 0.0` is exact, so with the
                 // all-zero buffer the sum and the RNG stream are byte-identical.
-                if (!(gi_only && b == 0u)) { l_rad += tp * spectral_response(h.emit, lambda); }
-                if (any(h.emit > vec3<f32>(0.0))) { break; }
+                if (!(gi_only && b == 0u)) {
+                    l_rad += tp * spectral_response(h.emit, lambda);
+                    if (any(h.emit > vec3<f32>(0.0))) { break; }
+                }
                 if (dielectric && mat_type >= 0.5 && mat_type < 1.5 && !use_lens) {
                     // Chrome: perfect specular mirror (matches the RGB path — no colour,
                     // no NEE); dispersion only shows on refractive surfaces.
@@ -615,17 +617,20 @@ fn fs_main(in: VsOut) -> Out {
         // is exact, so the all-zero buffer leaves the sum byte-identical.
         if (!(gi_only && b == 0u)) {
             radiance += throughput * h.albedo * u.mat.z + throughput * h.emit;
+            // organon#217 T8 — an emissive instance is a LIGHT: its radiance is in, and the
+            // path terminates here (the "lights are emitters" simplification). A lit tile's
+            // tint is the near-black faceplate (§4), so what the continuation would have
+            // added is ≤ albedo × incident — under 4 % — and a fullscreen grid then costs
+            // one ray per pixel instead of `bounces`. What is given up is the faceplate's own
+            // sheen over a LIT cell. Gated on the emission's VALUE, never on "is this a glyph
+            // instance": a dark tile with emit == 0 keeps bouncing and shows the room. With
+            // the all-zero buffer every non-glyph draw binds this is never taken —
+            // byte-identical, invariant #4. INSIDE the GI-add guard on purpose (#232
+            // review): in GI-add the raster already shows the tile's emission and the
+            // tracer owes the pixel its INDIRECT light, so a primary ray on a lit tile
+            // continues into the bounce instead of returning nothing.
+            if (any(h.emit > vec3<f32>(0.0))) { break; }
         }
-        // organon#217 T8 — an emissive instance is a LIGHT: its radiance is in, and the
-        // path terminates here (the "lights are emitters" simplification). A lit tile's
-        // tint is the near-black faceplate (§4), so what the continuation would have
-        // added is ≤ albedo × incident — under 4 % — and a fullscreen grid then costs
-        // one ray per pixel instead of `bounces`. What is given up is the faceplate's own
-        // sheen over a LIT cell. Gated on the emission's VALUE, never on "is this a glyph
-        // instance": a dark tile with emit == 0 keeps bouncing and shows the room. With
-        // the all-zero buffer every non-glyph draw binds this is never taken —
-        // byte-identical, invariant #4.
-        if (any(h.emit > vec3<f32>(0.0))) { break; }
 
         var did_specular = false;
         if (dielectric) {

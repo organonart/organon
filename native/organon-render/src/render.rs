@@ -2588,9 +2588,7 @@ impl Renderer {
         let inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
             size: (inst_cap * std::mem::size_of::<Mat4>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE,
+            usage: RT_HIT_BUFFER_USAGE,
             mapped_at_creation: false,
         });
 
@@ -2665,7 +2663,7 @@ impl Renderer {
         let tint_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("tints"),
             size: (inst_cap * std::mem::size_of::<Vec4>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+            usage: RT_HIT_BUFFER_USAGE,
             mapped_at_creation: false,
         });
         // organon#217 T1 — per-instance emission, parallel to `tint_buf`. wgpu zero-
@@ -3477,16 +3475,14 @@ impl Renderer {
             self.inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instances"),
                 size: want_bytes,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE,
+                usage: RT_HIT_BUFFER_USAGE,
                 mapped_at_creation: false,
             });
             self.inst_gen = self.inst_gen.wrapping_add(1);
             self.tint_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("tints"),
                 size: (self.inst_cap * std::mem::size_of::<Vec4>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+                usage: RT_HIT_BUFFER_USAGE,
                 mapped_at_creation: false,
             });
             // Grown with `tint_buf`, and fresh = zero (see `make_emit_buf`).
@@ -6215,11 +6211,26 @@ fn emit_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 /// every buffer it creates, so a buffer nothing has written reads `vec4(0)` per
 /// instance and `cube.wgsl`'s emission term contributes exactly nothing. That is the
 /// inert default of invariant #4, and it holds without a single upload.
+/// The usage every per-instance buffer the hit shading reads is created with — the
+/// instances, the tints, and (organon#217 T8) the emission. `VERTEX` for the cube draw,
+/// `COPY_DST` for the per-frame upload, and `STORAGE` because the RT passes
+/// (`rt_pathtrace` / `rt_reflect` / `rt_gi` / `rt_caustic`) bind the same buffers as
+/// read-only storage and index them by the TLAS custom index. ⚠️ A buffer created
+/// without `STORAGE` is refused by wgpu at bind-group creation — on a real GPU, which
+/// no leg of the bar has (#232 review caught `make_emit_buf` doing exactly that). One
+/// constant so every creation and every regrow path agrees; `rt_hit_buffer_tests`
+/// walks every `BufferDescriptor` in this file and pins that the labelled buffers the
+/// RT layouts bind all use it.
+pub(crate) const RT_HIT_BUFFER_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::VERTEX
+    .union(wgpu::BufferUsages::COPY_DST)
+    .union(wgpu::BufferUsages::STORAGE);
+
 fn make_emit_buf(device: &wgpu::Device, label: &str, cap: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: (cap.max(1) * std::mem::size_of::<Vec4>()) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        // organon#217 T8: STORAGE as well — the RT passes bind this beside the tints.
+        usage: RT_HIT_BUFFER_USAGE,
         mapped_at_creation: false,
     })
 }
@@ -6238,6 +6249,79 @@ fn make_emit_buf(device: &wgpu::Device, label: &str, cap: usize) -> wgpu::Buffer
 /// sequence read frame one's phosphor on frame three.
 fn emit_upload_plan(high: usize, lit: usize) -> (std::ops::Range<usize>, usize) {
     (lit..high.max(lit), lit)
+}
+
+#[cfg(test)]
+mod rt_hit_buffer_tests {
+    //! organon#217 T8 (#232 review) — the buffers the RT passes bind as read-only
+    //! storage must be CREATED with `STORAGE`, or wgpu refuses the bind group at
+    //! creation on a real GPU, which no leg of the bar has. The instance/tint buffers
+    //! had it and the emit buffer did not; this closes the class rather than the
+    //! instance by walking every `BufferDescriptor` in this file and checking the
+    //! labelled buffers the RT layouts index (`insts` / `tints` / `emits` in
+    //! `rt_pathtrace.wgsl`, `rt_reflect.wgsl`, `rt_gi.wgsl`, `rt_caustic.wgsl`).
+    use super::RT_HIT_BUFFER_USAGE;
+
+    const SRC: &str = include_str!("render.rs");
+    /// The labels of the buffers handed to an RT storage binding, as `create_buffer`
+    /// spells them. `make_emit_buf` labels through its parameter (`emits` / the
+    /// `zero-emits` twin), so its descriptor is recognised by the function it sits in
+    /// rather than by a literal — other factories (`mk_vbuf`, `mk_ibuf`) also label
+    /// through a parameter and are not RT storage.
+    const RT_STORAGE_LABELS: [&str; 3] = ["instances", "tints", "emits"];
+
+    #[test]
+    fn the_hit_buffer_usage_carries_storage_beside_vertex_and_copy_dst() {
+        for (flag, why) in [
+            (wgpu::BufferUsages::STORAGE, "the RT passes bind these as read-only storage"),
+            (wgpu::BufferUsages::VERTEX, "the cube draw reads them as vertex slots 1-3"),
+            (wgpu::BufferUsages::COPY_DST, "they are uploaded every frame with write_buffer"),
+        ] {
+            assert!(
+                RT_HIT_BUFFER_USAGE.contains(flag),
+                "RT_HIT_BUFFER_USAGE lacks {flag:?}: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_buffer_the_rt_passes_bind_as_storage_is_created_with_the_hit_usage() {
+        let src = SRC.replace('\r', "");
+        let mut seen: std::collections::BTreeMap<&str, usize> = Default::default();
+        let mut at = 0usize;
+        while let Some(i) = src[at..].find("wgpu::BufferDescriptor {") {
+            let start = at + i;
+            let end = start + src[start..].find("})").expect("unterminated BufferDescriptor");
+            let block = &src[start..end];
+            at = end;
+            let Some(l) = block.find("label: Some(") else { continue };
+            let raw = &block[l + "label: Some(".len()..];
+            let raw = &raw[..raw.find(')').expect("label without a closing paren")];
+            let in_emit_factory = src[..start]
+                .rfind("fn ")
+                .is_some_and(|f| src[f..start].starts_with("fn make_emit_buf("));
+            let name = if raw == "label" {
+                if in_emit_factory { "emits" } else { continue }
+            } else {
+                raw.trim_matches('"')
+            };
+            if !RT_STORAGE_LABELS.contains(&name) {
+                continue;
+            }
+            *seen.entry(name).or_default() += 1;
+            let line = src[..start].matches('\n').count() + 1;
+            assert!(
+                block.contains("usage: RT_HIT_BUFFER_USAGE,"),
+                "render.rs:{line}: the `{name}` buffer is bound as read-only storage by the RT passes but this create_buffer does not use RT_HIT_BUFFER_USAGE — without STORAGE wgpu refuses the bind group at creation, on a GPU CI does not have"
+            );
+        }
+        // Each label is created in `new` and again on the regrow path (the emit buffer
+        // through `make_emit_buf`, its one factory) — a label that vanishes from this
+        // walk means the descriptor moved somewhere the walk cannot see.
+        assert_eq!(seen.get("instances"), Some(&2), "instances: {seen:?}");
+        assert_eq!(seen.get("tints"), Some(&2), "tints: {seen:?}");
+        assert_eq!(seen.get("emits"), Some(&1), "emits (make_emit_buf): {seen:?}");
+    }
 }
 
 #[cfg(test)]
