@@ -11106,5 +11106,162 @@ impl Vst3Plugin for OrganicMath {
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Tools];
 }
 
+// ===========================================================================
+// organon#217 W19b — the editor's apply-channel mirror, pinned.
+//
+// `apply_agent_change` is the seventh vocabulary site #235 counted and the one it said
+// nothing pins: leave an id out of its `match` and `organon set` still moves the picture
+// (the visual's override lane draws), while the editor's slider — and `Shared`, which the
+// editor publishes from `params.to_shared()`, which `organon describe` reads — stays put.
+// That is the shape a GPU session measured after #246 (`describe atmos_enabled` unchanged
+// after `set atmos_enabled 0`, `glyph_gain` fine). These drive one `ApplyOp` per
+// actuatable id through the real function with a recording `GuiContext` and check the two
+// things the mirror is responsible for: WHICH param it wrote (the `ParamPtr`, resolved to
+// the host id a DAW sees) and WHAT plain value. ⚠️ A test cannot move a nih_plug param —
+// the setters live in the crate-private `ParamMut`, and only a wrapper reaches them — so
+// the params → `Shared` → `current` leg is pinned separately by slot default: the slot
+// `current` names for an id must carry that id's own default, which a neighbour's would
+// not (`atmosphere[1]` is turbidity 2.0 against `atmos_enabled`'s 1.0).
+// ===========================================================================
+#[cfg(test)]
+mod agent_mirror_tests {
+    use super::*;
+    use crate::agent::{self, ApplyOp};
+    use crate::params::OrganicMathParams;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Records what the standalone wrapper would queue for its audio thread
+    /// (`(ParamPtr, normalized)`, nih_plug `wrapper/standalone/wrapper.rs`).
+    struct Recorder {
+        writes: Mutex<Vec<(ParamPtr, f32)>>,
+    }
+    impl GuiContext for Recorder {
+        fn plugin_api(&self) -> PluginApi {
+            PluginApi::Standalone
+        }
+        fn request_resize(&self) -> bool {
+            false
+        }
+        unsafe fn raw_begin_set_parameter(&self, _param: ParamPtr) {}
+        unsafe fn raw_set_parameter_normalized(&self, param: ParamPtr, normalized: f32) {
+            self.writes.lock().unwrap().push((param, normalized));
+        }
+        unsafe fn raw_end_set_parameter(&self, _param: ParamPtr) {}
+        fn get_state(&self) -> PluginState {
+            unreachable!("the mirror never reads plugin state")
+        }
+        fn set_state(&self, _state: PluginState) {
+            unreachable!("the mirror never writes plugin state")
+        }
+    }
+
+    fn wire_ids(params: &OrganicMathParams) -> HashMap<ParamPtr, String> {
+        params.param_map().into_iter().map(|(wire_id, ptr, _group)| (ptr, wire_id)).collect()
+    }
+
+    /// Drive one `set` through the mirror; return the write it produced as
+    /// `(host id, plain value the wrapper would apply)`, or `None` for no write.
+    fn mirror(params: &OrganicMathParams, rec: &Recorder, id: &str, v: f32) -> Option<(String, f32)> {
+        let setter = ParamSetter::new(rec);
+        let n0 = rec.writes.lock().unwrap().len();
+        apply_agent_change(params, &setter, &ApplyOp::Set(id.to_string(), v));
+        let writes = rec.writes.lock().unwrap();
+        if writes.len() == n0 {
+            return None;
+        }
+        assert_eq!(writes.len(), n0 + 1, "{id}: one set is one write");
+        let (ptr, n) = writes[n0];
+        let host = wire_ids(params)
+            .get(&ptr)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} wrote a pointer that is not in param_map"));
+        Some((host, unsafe { ptr.preview_plain(n) }))
+    }
+
+    /// Every id on the vocabulary has a live arm that writes a param at the plain value
+    /// asked for, and reads back through a `Shared` slot carrying that param's own default.
+    /// A missing or dead arm is named, not a slider that quietly stops following.
+    #[test]
+    fn the_editor_mirror_writes_every_actuatable_param() {
+        let params = OrganicMathParams::default();
+        let rec = Recorder { writes: Mutex::new(Vec::new()) };
+        let shared = params.to_shared();
+        let mut unwritten: Vec<&str> = Vec::new();
+        let mut wrong: Vec<String> = Vec::new();
+        for id in agent::ACTUATABLE_IDS {
+            let (lo, hi) = agent::id_range(id).expect("every actuatable id has a range");
+            let cur = agent::current(&shared, id).expect("every actuatable id has a read route");
+            // Aim at the top of the range, or the bottom when the default already sits
+            // there — inside the range either way, so no clamp is exercised.
+            let target = if (cur - hi).abs() < 1e-6 { lo } else { hi };
+            match mirror(&params, &rec, id, target) {
+                None => unwritten.push(id),
+                Some((host, plain)) => {
+                    if (plain - target).abs() > 1e-3 * target.abs().max(1.0) {
+                        wrong.push(format!(
+                            "{id} ({host}): asked {target}, the wrapper would apply {plain}"
+                        ));
+                    }
+                    // The read leg: the slot `current` reads carries this param's default.
+                    let (ptr, _) = *rec.writes.lock().unwrap().last().unwrap();
+                    let def = unsafe { ptr.default_plain_value() };
+                    if (cur - def).abs() > 1e-6 {
+                        wrong.push(format!(
+                            "{id} ({host}): `current` reads {cur} from Shared but the param \
+                             defaults to {def} — a wrong slot, or a transform between them"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            unwritten.is_empty(),
+            "the editor mirror (`apply_agent_change` in lib.rs) has no arm for {unwritten:?} — \
+             `organon set` moves the visual and the slider stays put"
+        );
+        assert!(
+            wrong.is_empty(),
+            "arms that write the wrong value or read the wrong slot:\n  {}",
+            wrong.join("\n  ")
+        );
+    }
+
+    /// The measurement a GPU session took after #246, editor-side: `glyph_gain 0.7` then
+    /// the nine dark-room ids at `faceplate`'s values, each landing on the param whose
+    /// host id the DAW sees, at the value asked for — a flag from `0`/`1`, the count an
+    /// integer.
+    #[test]
+    fn the_editor_mirror_lands_the_dark_room_on_the_right_params() {
+        let params = OrganicMathParams::default();
+        let rec = Recorder { writes: Mutex::new(Vec::new()) };
+        const SETS: [(&str, f32, &str); 10] = [
+            ("glyph_gain", 0.7, "gtgn"),
+            ("atmos_enabled", 0.0, "atmen"),
+            ("bg_visible", 0.0, "bgsh"),
+            ("fx_enabled", 1.0, "fxen"),
+            ("hal_amount", 0.35, "halamt"),
+            ("ml_enabled", 1.0, "mlen"),
+            ("ml_intensity", 1.0, "mlint"),
+            ("ml_radius", 2.0, "mlrad"),
+            ("ml_count", 64.0, "mlcnt"),
+            ("ml_restir", 0.0, "mlrst"),
+        ];
+        for (id, v, host) in SETS {
+            let (got_host, plain) = mirror(&params, &rec, id, v)
+                .unwrap_or_else(|| panic!("{id}: the editor mirror has no arm — the slider stays put"));
+            assert_eq!(got_host, host, "{id} wrote a different param");
+            assert_eq!(plain, v, "{id}: the editor mirror asked the wrapper for the wrong value");
+        }
+        assert_eq!(rec.writes.lock().unwrap().len(), SETS.len(), "ten sets, ten writes, nothing else");
+        // The threshold: a flag spelled 0.7 on the lane is ON in the editor, as it is on
+        // the visual's lane (`organon-agent::actuate`), and 0.3 is OFF.
+        assert_eq!(mirror(&params, &rec, "atmos_enabled", 0.7).unwrap().1, 1.0, "0.7 thresholds to on");
+        assert_eq!(mirror(&params, &rec, "ml_restir", 0.3).unwrap().1, 0.0, "0.3 thresholds to off");
+        // The count truncates like the loop counts.
+        assert_eq!(mirror(&params, &rec, "ml_count", 63.9).unwrap().1, 63.0, "ml_count truncates");
+    }
+}
+
 nih_export_clap!(OrganicMath);
 nih_export_vst3!(OrganicMath);
