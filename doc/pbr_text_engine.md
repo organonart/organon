@@ -623,7 +623,13 @@ until it lands.
 - **T9 — the tile itself.** Full-grid tiles (dark cells too), the faceplate as a clearcoat lobe
   over a near-black dielectric, and an emission *profile* across the face — a soft falloff so the
   core reads as behind glass rather than painted on. Owns `cube.wgsl` (shading, not uniforms) and
-  `glyph_ring.rs::lower_grid`. Can run **beside T8** — different files.
+  `glyph_ring.rs::lower_grid`. Can run **beside T8** — different files. **Landed, shader half:**
+  `tile_profile` on the face UV (`doc/arch/render.md`, "The tile"), strength on
+  `Uniforms.shape.z` from `Shared.glyph[13]` (the lane is named; the world's `glyph_shape` lifts
+  it — W10). The faceplate turned out to be preset data: the clearcoat lobe already transmits
+  `emissive` through `(1 − fc)` and adds its environment sheen independently. **Not landed:**
+  the full-grid lowering, because `lower_grid` was in another worker's hands (T11) — one tile per
+  cell, dark cells at the shade-`░` depth with `emit = 0`, is the follow-up.
 - **T10 — glyphs as lights and the backplane rig.** Emission-driven brightest-N selection so the
   green pools onto the backplane; the anisotropic brushed backplane; the warm rim; RT shadow and
   AO in the wells. Owns `world.rs`. **After T3; beside T8/T9.**

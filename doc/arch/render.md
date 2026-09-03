@@ -970,6 +970,61 @@ other draw writes as 0. 🚨 Nothing here has been looked at on a GPU: what a GP
 see is the frame visibly sharpening over the dwell after an effect settles, and restarting
 cleanly — no after-image of the held text — when the next effect begins.
 
+#### The tile (organon#217 T9)
+
+The plates show every cell as a **tile**: an emissive core with a soft falloff across
+the face, seen *through* a thin glossy faceplate over a near-black body, and a dark cell
+that still carries a sheen of the room. T9 is the shading half of that, in `cube.wgsl`;
+the lowering half (a tile for every cell, dark ones too) is `glyph_ring.rs::lower_grid`'s
+and is a follow-up.
+
+**The emission profile.** `fs_main`'s per-instance term is now
+`emit.rgb * emit.w * tile_profile(face_uv(local_pos), shape.z)`. `face_uv` is the
+fragment's two coordinates across the face it sits on — the dominant axis of the
+**un-rounded** mesh-local position, the same rule (and now the same function,
+`face_axis`) the T3 crown uses, so a bevelled band still belongs to its face and the
+crown and the profile cannot disagree about which face that is. The rounded-box mesh
+carries no UV attribute; it needs none, because `VsOut.local_pos` is `VsIn.position`,
+still on the flat unit cube, and a 1×2 tile's face is a square in it — so the profile
+stretches with the tile and is keyed on the tile's own extent, never on screen space.
+`tile_profile` is `mix(1, (1 − s)², k)` with `s = (2u)⁴ + (2v)⁴` clamped to 1: a p=4
+squircle, flat-topped at the centre, soft-landing at the edge, `1 − k` on the edge
+midlines and in the corners. ⚠️ It multiplies the **per-instance term only** — the
+albedo-modulated legacy glow, the ripple and the RD term belong to other generators and
+are untouched — and at `k = 0` it is **exactly** `1.0` (not close to it), so the
+expression reduces bit for bit to T1's and every draw today is byte-identical (invariant
+#4). The strength rides `Uniforms.shape.z`, which the shader never read before and
+`build_uniforms` writes as 0; the world's `glyph_shape` is the one place to lift it from
+`Shared.glyph[13]` for a live ring (W10's file — not done here; until it is, the lane is
+0 and the profile is inert). Pure, so `glyph_tile.rs` mirrors it and pins zero-strength-
+is-exactly-one, sign and axis-swap symmetry, monotone-along-every-ray and the curve's
+values, plus a source check that `cube.wgsl` still defines both functions with the
+mirrored signatures.
+
+**The faceplate needs no code.** The clearcoat lobe (#214 T2) already composes the
+Standard branch as `color * base_scale + coat_spec`, with `emissive` inside `color` and
+`base_scale = 1 − fc` — so under a Clearcoat the phosphor is already seen *through* the
+coat's Fresnel transmission, and `coat_spec` (the coat's prefiltered environment along
+the isotropic reflection) is computed without `emissive` and added after it. A tile with
+`emit == 0` therefore shades as its near-black body plus that sheen: the dark cell that
+reflects the room (`doc/pbr_text_engine.md` §4.1). T3's `faceplate` preset sets the
+Clearcoat material at roughness 0.22, so the faceplate is **preset data**. ⚠️ The coat is
+a per-draw uniform and the backplane is an instance of the same draw, so it wears the
+same coat; giving the backplane its own lobe is the same "own draw" question §15 raises
+for the anisotropic backplane, and is T10's.
+
+📌 **What does NOT see the profile:** the hardware-RT and path-trace hit shading (T8
+reads `emit.rgb * emit.w` flat), so a T5 dwell converges to a flat-cored tile where the
+raster frame showed a falloff. `tile_profile` and `face_uv` are pure functions of the
+hit's mesh-local position, so the tracer can apply the same two lines once it has the
+local hit point; named here rather than done, since `rt_*` is another worker's file.
+
+🚨 Nothing here has been looked at on a GPU: green and ready to try. A GPU session must
+load `faceplate` with a producer running and see a lit cell's core fall off toward its
+edges once `glyph[13]` is wired and raised; a dark cell (with the full-grid lowering) show
+the environment's sheen with zero emission; and the bevel highlight unchanged, since the
+profile touches no normal and no vertex.
+
 ### Hardware ray tracing (#195 — the `rt_*` modules + shaders)
 
 The plumbing every later RT effect (shadows / reflections / AO / GI) will trace
