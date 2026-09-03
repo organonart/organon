@@ -5567,6 +5567,7 @@ impl Renderer {
                     uniforms,
                     &self.inst_buf,
                     &self.tint_buf,
+                    &self.emit_buf, // organon#217 T8: the hit reads its own emission
                     tube,
                     ssr_first, // hybrid: load + blend RT over the SSR fill
                     &p,
@@ -5675,6 +5676,7 @@ impl Renderer {
                     uniforms,
                     &self.inst_buf,
                     &self.tint_buf,
+                    &self.emit_buf, // organon#217 T8: a lit tile is a neighbour that emits
                     tube,
                     &p,
                 );
@@ -5924,7 +5926,9 @@ impl Renderer {
                     .get_or_insert_with(|| rt_pathtrace::PathTracer::new(device));
                 pt.trace(
                     device, queue, &mut encoder, hdr, size, uniforms,
-                    &self.inst_buf, &self.tint_buf, tube, &pf,
+                    // organon#217 T8: the tracer reads the per-instance emission the
+                    // cube pipeline draws, so the T5 dwell converges lit, not dark.
+                    &self.inst_buf, &self.tint_buf, &self.emit_buf, tube, &pf,
                 );
             }
         }

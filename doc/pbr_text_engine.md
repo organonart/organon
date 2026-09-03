@@ -619,7 +619,13 @@ until it lands.
   emit buffer beside the tint buffer, so a ray-traced reflection of the grid is lit glyphs and the
   T5 dwell converges to a photograph rather than to black. Owns `rt_*.{rs,wgsl}` and their binding
   sites in `render.rs`. **After T3.** Nothing else in this list is worth looking at until this is
-  in — a dark dwell is worse than no dwell.
+  in — a dark dwell is worse than no dwell. **Landed** (organon#217 T8): the three passes that
+  shade a hit — `rt_pathtrace`, `rt_reflect`, `rt_gi` — bind `emit_buf` and add `cube.wgsl`'s
+  own `emit.rgb * emit.w` at the hit; an emissive hit terminates a camera path. `rt_shadow` and
+  `rt_ao` are visibility-only and bind nothing; `rt_caustic` shades the photon's BSDF, where the
+  landing surface's emission plays no part — *emitters as photon sources* is its own tier, and so
+  is NEE toward emitters (the tracer has no light list; it reaches key + fill only). Green and
+  ready to try; the GPU look this needs is the one §15's row names: the dwell converging lit.
 - **T9 — the tile itself.** Full-grid tiles (dark cells too), the faceplate as a clearcoat lobe
   over a near-black dielectric, and an emission *profile* across the face — a soft falloff so the
   core reads as behind glass rather than painted on. Owns `cube.wgsl` (shading, not uniforms) and

@@ -50,6 +50,10 @@ struct RtGiU {
 @group(0) @binding(2) var depth_tex: texture_depth_2d;
 @group(0) @binding(3) var<storage, read> insts: array<mat4x4<f32>>;
 @group(0) @binding(4) var<storage, read> tints: array<vec4<f32>>;
+// organon#217 T8 — the per-instance EMISSION the cube pipeline reads at @location(8):
+// linear radiance in rgb, gain in w (the same `emit_buf` the raster path binds at vertex
+// slot 3). A lit tile is a neighbour that emits, so its light bounces onto the backplane.
+@group(0) @binding(5) var<storage, read> emits: array<vec4<f32>>;
 @group(1) @binding(0) var tlas: acceleration_structure;
 
 // The indirect fraction of a hit's direct key light that leaves it toward the
@@ -108,6 +112,15 @@ fn cosine_dir(n: vec3<f32>, xi: vec2<f32>) -> vec3<f32> {
     let a = xi.y * 6.28318530718;
     let z = sqrt(max(0.0, 1.0 - xi.x));
     return normalize(t * (r * cos(a)) + b * (r * sin(a)) + n * z);
+}
+
+// organon#217 T8 — the per-instance emission at a hit: THE SAME EXPRESSION `cube.wgsl` adds
+// into its emissive term from @location(8) (`emit.rgb * emit.w`), so raster and traced agree
+// on what a lit cell is worth (§9's second law). The all-zero buffer every non-glyph draw
+// binds makes this exactly vec3(0.0) — invariant #4.
+fn instance_emission(idx: u32) -> vec3<f32> {
+    let e = emits[idx];
+    return e.rgb * e.w;
 }
 
 // Inverse of the 3x3 linear part of an instance transform (rotation·scale).
@@ -209,9 +222,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let sh = rayQueryGetCommittedIntersection(&rq);
             key_vis = select(1.0, 0.0, sh.kind == RAY_QUERY_INTERSECTION_TRIANGLE);
         }
-        // The neighbour's outgoing radiance toward the receiver: its glow plus
-        // an indirect fraction of its direct key light.
-        let emit = albedo * u.mat.z;
+        // The neighbour's outgoing radiance toward the receiver: its glow, its own
+        // per-instance emission (organon#217 T8 — the glyph ring's phosphor; `+ 0.0`
+        // is exact, so the all-zero buffer is byte-identical), plus an indirect
+        // fraction of its direct key light.
+        let emit = albedo * u.mat.z + instance_emission(idx);
         let direct = albedo * u.key_light.w * max(dot(hn, l_key), 0.0) * key_vis;
         accum = accum + emit + GI_FRACTION * direct;
     }

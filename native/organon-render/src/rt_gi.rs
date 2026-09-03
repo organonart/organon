@@ -61,20 +61,16 @@ pub struct RtGi {
     frame: u32,
 }
 
+/// organon#217 T8 — where this pass's group 0 carries the per-instance emission
+/// buffer (`rt_gi.wgsl`'s `emits`): after the instances (3) and tints (4).
+pub(crate) const EMIT_BINDING: u32 = 5;
+
 impl RtGi {
-    /// Requires a device with `EXPERIMENTAL_RAY_QUERY` (the caller only
-    /// constructs this once a TLAS exists, which already implies it).
-    pub fn new(device: &wgpu::Device) -> Self {
-        let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
+    /// The group-0 layout as data — pure, so a CPU test can hold it (wgpu only
+    /// checks a bind group against its layout at draw time; see
+    /// `rt_pathtrace::PathTracer::layout_entries`).
+    pub(crate) fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+        let storage_entry = super::rt_pathtrace::readonly_storage_entry;
         let uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -85,24 +81,34 @@ impl RtGi {
             },
             count: None,
         };
+        vec![
+            uniform_entry(0),
+            uniform_entry(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            storage_entry(3),
+            storage_entry(4),
+            // organon#217 T8: the per-instance emission (`emit_buf`), so a lit tile
+            // bounces its light onto the backplane. All-zero on every non-glyph
+            // frame → byte-identical.
+            storage_entry(EMIT_BINDING),
+        ]
+    }
+
+    /// Requires a device with `EXPERIMENTAL_RAY_QUERY` (the caller only
+    /// constructs this once a TLAS exists, which already implies it).
+    pub fn new(device: &wgpu::Device) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("rt-gi-bgl"),
-            entries: &[
-                uniform_entry(0),
-                uniform_entry(1),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                storage_entry(3),
-                storage_entry(4),
-            ],
+            entries: &Self::layout_entries(),
         });
         let tlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("rt-gi-tlas-bgl"),
@@ -166,9 +172,9 @@ impl RtGi {
 
     /// Gather this frame's one-bounce GI into `target` (the composite's SSGI
     /// buffer). `depth_view` is the shared single-sample prepass depth;
-    /// `uniforms` the (jittered) scene uniforms; `inst_buf`/`tint_buf` the
-    /// live instance/tint buffers (storage-bound; the TLAS custom indices
-    /// point into them).
+    /// `uniforms` the (jittered) scene uniforms; `inst_buf`/`tint_buf`/`emit_buf`
+    /// the live instance/tint/emission buffers (storage-bound; the TLAS custom
+    /// indices point into all three — `emit_buf` is organon#217 T8's addition).
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
@@ -180,6 +186,7 @@ impl RtGi {
         uniforms: &super::Uniforms,
         inst_buf: &wgpu::Buffer,
         tint_buf: &wgpu::Buffer,
+        emit_buf: &wgpu::Buffer,
         tube: bool,
         p: &RtGiFrame,
     ) {
@@ -216,6 +223,9 @@ impl RtGi {
                 },
                 wgpu::BindGroupEntry { binding: 3, resource: inst_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: tint_buf.as_entire_binding() },
+                // organon#217 T8: the per-instance emission (every layout entry must be
+                // supplied here, or wgpu rejects the bind group at draw time).
+                wgpu::BindGroupEntry { binding: EMIT_BINDING, resource: emit_buf.as_entire_binding() },
             ],
         });
         let tlas_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -246,5 +256,29 @@ impl RtGi {
         pass.set_bind_group(0, &bind, &[]);
         pass.set_bind_group(1, &tlas_bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_gi_pass_binds_the_emit_buffer_where_its_shader_reads_it() {
+        // organon#217 T8 — see `rt_pathtrace::emit_binding` for what this pins and why
+        // it has to be pinned on the CPU.
+        let entries = RtGi::layout_entries();
+        super::super::rt_pathtrace::emit_binding::check(
+            "rt_gi",
+            &entries,
+            EMIT_BINDING,
+            include_str!("rt_gi.wgsl"),
+        );
+        // Five bindings before T8 (scene, params, depth, insts, tints) + one.
+        assert_eq!(entries.len(), 6, "rt_gi: group 0 should carry exactly six entries");
+        assert!(
+            include_str!("rt_gi.wgsl").contains("let emit = albedo * u.mat.z + instance_emission(idx);"),
+            "rt_gi.wgsl: the neighbour's outgoing radiance no longer includes its own emission"
+        );
     }
 }

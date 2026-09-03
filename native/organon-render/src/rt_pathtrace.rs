@@ -150,10 +150,34 @@ pub struct PathTracer {
     nrc_wbuf: wgpu::Buffer,
 }
 
+/// organon#217 T8 — where the tracer's group 0 carries the per-instance emission
+/// buffer (`rt_pathtrace.wgsl`'s `emits`): after the caustic map (5) and the cache
+/// weights (6). One constant, used by the layout, the bind group and the test.
+pub(crate) const EMIT_BINDING: u32 = 7;
+
+/// A fragment-visible, read-only storage-buffer layout entry — the shape every
+/// per-instance buffer the hit shading reads (instances, tints, emission) takes.
+pub(crate) fn readonly_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
 impl PathTracer {
-    /// Requires a device with `EXPERIMENTAL_RAY_QUERY` (the caller only builds
-    /// this once a TLAS exists, which already implies it).
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// The group-0 layout as data — one entry per `@binding` the shader declares.
+    /// Pure (no device) so a CPU test can hold it: wgpu validates a bind group
+    /// against its layout at **draw** time, so an entry declared here with no
+    /// matching `create_bind_group` entry, or a shader `@binding` that disagrees,
+    /// is a runtime panic no leg of the bar can reach (`tests` pins the
+    /// organon#217 T8 emit entry against the shader source).
+    pub(crate) fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         let uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -164,48 +188,49 @@ impl PathTracer {
             },
             count: None,
         };
-        let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        let storage_entry = readonly_storage_entry;
+        vec![
+            uniform_entry(0),
+            uniform_entry(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
             },
-            count: None,
-        };
+            storage_entry(3),
+            storage_entry(4),
+            // #258 T5: the resolved photon-caustic map (a zero dummy when off).
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // #256 T0: the live radiance cache's SIREN weights (read-only storage;
+            // a zeroed 419-float buffer when the cache is off — the shader gates).
+            storage_entry(6),
+            // organon#217 T8: the per-instance emission the cube pipeline draws at
+            // @location(8) — `emit_buf`, bound as storage beside the instances and
+            // tints. All-zero on every non-glyph frame, so the trace is byte-identical.
+            storage_entry(EMIT_BINDING),
+        ]
+    }
+
+    /// Requires a device with `EXPERIMENTAL_RAY_QUERY` (the caller only builds
+    /// this once a TLAS exists, which already implies it).
+    pub fn new(device: &wgpu::Device) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("rt-pt-bgl"),
-            entries: &[
-                uniform_entry(0),
-                uniform_entry(1),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                storage_entry(3),
-                storage_entry(4),
-                // #258 T5: the resolved photon-caustic map (a zero dummy when off).
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                // #256 T0: the live radiance cache's SIREN weights (read-only storage;
-                // a zeroed 419-float buffer when the cache is off — the shader gates).
-                storage_entry(6),
-            ],
+            entries: &Self::layout_entries(),
         });
         let tlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("rt-pt-tlas-bgl"),
@@ -368,8 +393,10 @@ impl PathTracer {
 
     /// Path-trace one sample into `hdr_target` (the post HDR scene buffer),
     /// progressively averaged into the internal accumulation. `inst_buf`/
-    /// `tint_buf` are the live instance/tint buffers (the TLAS custom indices
-    /// point into them). Call INSTEAD of the raster scene pass while active.
+    /// `tint_buf`/`emit_buf` are the live instance/tint/emission buffers (the TLAS
+    /// custom indices point into all three; `emit_buf` is the organon#217 T8
+    /// addition — the cube pipeline's `@location(8)` buffer, all-zero on every
+    /// non-glyph frame). Call INSTEAD of the raster scene pass while active.
     #[allow(clippy::too_many_arguments)]
     pub fn trace(
         &mut self,
@@ -381,6 +408,7 @@ impl PathTracer {
         uniforms: &super::Uniforms,
         inst_buf: &wgpu::Buffer,
         tint_buf: &wgpu::Buffer,
+        emit_buf: &wgpu::Buffer,
         tube: bool,
         p: &PathtraceFrame,
     ) {
@@ -484,6 +512,9 @@ impl PathTracer {
                 wgpu::BindGroupEntry { binding: 4, resource: tint_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(caustic_view) },
                 wgpu::BindGroupEntry { binding: 6, resource: self.nrc_wbuf.as_entire_binding() },
+                // organon#217 T8: the per-instance emission (every entry the layout
+                // declares must be supplied here, or wgpu rejects the bind group at draw).
+                wgpu::BindGroupEntry { binding: EMIT_BINDING, resource: emit_buf.as_entire_binding() },
             ],
         });
         let tlas_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -525,5 +556,121 @@ impl PathTracer {
         pass.set_bind_group(0, &bind, &[]);
         pass.set_bind_group(1, &tlas_bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+/// organon#217 T8 — the one invariant shared by the three passes that shade a hit,
+/// checked without a device. wgpu validates a bind group against its layout at
+/// **draw** time and a shader's `@binding` against the layout at pipeline creation —
+/// both on a GPU, which no leg of the bar has. So the CPU pins the two halves it can
+/// read: the layout entry (index, read-only storage, fragment-visible) and the shader
+/// source declaring `emits` at the same index.
+#[cfg(test)]
+pub(crate) mod emit_binding {
+    pub fn check(pass: &str, entries: &[wgpu::BindGroupLayoutEntry], binding: u32, shader: &str) {
+        let mut seen = std::collections::HashSet::new();
+        for e in entries {
+            assert!(seen.insert(e.binding), "{pass}: @binding({}) is declared twice in the layout", e.binding);
+        }
+        let e = entries.iter().find(|e| e.binding == binding).unwrap_or_else(|| {
+            panic!(
+                "{pass}: no bind-group layout entry for the emit buffer at @binding({binding}) — \
+                 the shader's `emits` would be rejected at pipeline creation, on a GPU CI does not have"
+            )
+        });
+        assert_eq!(
+            e.visibility,
+            wgpu::ShaderStages::FRAGMENT,
+            "{pass}: the emit buffer must be fragment-visible (the hit is shaded in fs_main)"
+        );
+        assert_eq!(
+            e.ty,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            "{pass}: the emit buffer must be a read-only storage buffer, like the instances and tints"
+        );
+        let decl = format!("@group(0) @binding({binding}) var<storage, read> emits: array<vec4<f32>>;");
+        assert!(
+            shader.contains(&decl),
+            "{pass}: the shader does not declare `emits` at @binding({binding}) — layout and shader have drifted"
+        );
+    }
+
+    /// The text of a shader's `instance_emission` function, from its `fn` line to the
+    /// closing brace — what the three passes must agree on. Line endings are
+    /// normalised first: this checkout is CRLF on Windows and LF elsewhere, and the
+    /// agreement is about the expression, not the platform.
+    pub fn instance_emission_fn(shader: &str) -> String {
+        let shader = shader.replace('\r', "");
+        let start = shader
+            .find("fn instance_emission(")
+            .expect("the shader has no `instance_emission` function");
+        let end = shader[start..].find("\n}").expect("unterminated `instance_emission`") + start + 2;
+        shader[start..end].to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const SHADER: &str = include_str!("rt_pathtrace.wgsl");
+
+    #[test]
+    fn the_tracer_binds_the_emit_buffer_where_its_shader_reads_it() {
+        let entries = PathTracer::layout_entries();
+        emit_binding::check("rt_pathtrace", &entries, EMIT_BINDING, SHADER);
+        // Seven bindings before T8 (scene, params, accum, insts, tints, caustic, nrc) + one.
+        assert_eq!(entries.len(), 8, "rt_pathtrace: group 0 should carry exactly eight entries");
+    }
+
+    #[test]
+    fn an_emissive_hit_terminates_both_integrators() {
+        // The RGB loop and the hero-wavelength loop each shade a hit; an emitter must
+        // end the path in BOTH, gated on the emission's value (never on "is a glyph").
+        let gate = "if (any(h.emit > vec3<f32>(0.0))) { break; }";
+        assert_eq!(
+            SHADER.matches(gate).count(),
+            2,
+            "rt_pathtrace.wgsl: the emissive-hit termination must appear in the RGB and the spectral loop"
+        );
+        // And the term itself is added as its own product, so `throughput * 0.0 + 0.0`
+        // leaves the pre-T8 sum byte-identical (invariant #4).
+        assert!(SHADER.contains("radiance += throughput * h.albedo * u.mat.z + throughput * h.emit;"));
+        assert!(SHADER.contains("l_rad += tp * spectral_response(h.emit, lambda);"));
+    }
+
+    #[test]
+    fn the_three_traced_passes_add_the_same_expression_cube_wgsl_adds() {
+        // §9's second law: a cell's apparent brightness must track the effect's value on
+        // BOTH paths. The raster term is `in.emit.rgb * in.emit.w` at @location(8); every
+        // traced pass must add the same product, and the three must not drift apart.
+        let pt = emit_binding::instance_emission_fn(SHADER);
+        let rf = emit_binding::instance_emission_fn(include_str!("rt_reflect.wgsl"));
+        let gi = emit_binding::instance_emission_fn(include_str!("rt_gi.wgsl"));
+        assert_eq!(pt, rf, "rt_pathtrace and rt_reflect disagree on `instance_emission`");
+        assert_eq!(pt, gi, "rt_pathtrace and rt_gi disagree on `instance_emission`");
+        assert!(pt.contains("let e = emits[idx];") && pt.contains("return e.rgb * e.w;"), "{pt}");
+        assert!(
+            include_str!("cube.wgsl").contains("+ in.emit.rgb * in.emit.w"),
+            "cube.wgsl no longer adds `emit.rgb * emit.w` — the traced passes copy that expression"
+        );
+    }
+
+    #[test]
+    fn the_visibility_only_passes_and_the_photon_pass_do_not_read_emission() {
+        // rt_shadow / rt_ao never shade a hit (a hit is a boolean), and rt_caustic shades
+        // the photon's BSDF, where the landing surface's emission plays no part. If one of
+        // them grows an `emits` binding, that is a design change this test should make
+        // someone write down (the caustic layout comment names the tier it belongs to).
+        for (name, src) in [
+            ("rt_shadow.wgsl", include_str!("rt_shadow.wgsl")),
+            ("rt_ao.wgsl", include_str!("rt_ao.wgsl")),
+            ("rt_caustic.wgsl", include_str!("rt_caustic.wgsl")),
+        ] {
+            assert!(!src.contains("var<storage, read> emits"), "{name} binds the emit buffer; see rt_caustic.rs");
+        }
     }
 }
