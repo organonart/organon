@@ -21,6 +21,13 @@
 //! ⚠️ **Never call ttfx's signal plumbing** (`install_sigint_handler` and friends in its
 //! `lib.rs`): it is Unix-only `signal(2)` and a library caller has no use for it. Nothing
 //! here does, which is why this crate builds on Windows.
+//!
+//! **Persistence is a pass over the walk, not part of it** (T11, [`persist`]): the
+//! walk stays the engine's truth, and [`Persistence::apply`] rewrites a copy of it into
+//! what the ring carries. `walk_grid` never knows a phosphor exists.
+
+pub mod persist;
+pub use persist::{Persistence, PERSIST_FLOOR};
 
 use clap::{CommandFactory, Parser};
 use organon_core::glyph_ring::{

@@ -16,7 +16,7 @@ use clap::Parser;
 use organon_core::glyph_ring::{
     set_frame_name, GlyphFrame, GlyphRingWriter, FRAME_SETTLED, TTFX_CELL_ASPECT,
 };
-use organon_glyphs::{effect_names, pick_next, Producer};
+use organon_glyphs::{effect_names, pick_next, Persistence, Producer};
 use std::time::{Duration, Instant};
 use ttfx::utils::rng::Rng;
 
@@ -49,6 +49,12 @@ struct Args {
     /// Heartbeat interval during the dwell, in milliseconds.
     #[arg(long = "heartbeat-ms", default_value_t = 250)]
     heartbeat_ms: u64,
+    /// Phosphor persistence: the time constant, in milliseconds, over which a cell's
+    /// emission decays after its source goes dark or dims (§15 T11). A trail keeps its
+    /// symbol and is flagged `PERSIST` in the ring. 0 = off, and off is byte-identical
+    /// to a producer without it.
+    #[arg(long = "persist-ms", default_value_t = 0.0)]
+    persist_ms: f64,
     /// Seed for effect choice and every effect's own randomness. Omit for entropy.
     #[arg(long = "seed")]
     seed: Option<u64>,
@@ -129,6 +135,13 @@ fn run(args: &Args) -> Result<(), String> {
     let mut cells = Vec::new();
     let mut previous: Option<String> = None;
     let mut epoch: u32 = 0;
+    // T11: one set of phosphors for the whole run, so the settled text of one effect
+    // fades under the opening of the next. Off (the default) touches nothing.
+    let mut persist = Persistence::new(args.persist_ms);
+    if persist.enabled() {
+        eprintln!("organon-glyphs: persistence τ = {} ms", args.persist_ms);
+    }
+    let beat = Duration::from_millis(args.heartbeat_ms.max(10));
     loop {
         let name = match &args.effect {
             Some(n) => n.clone(),
@@ -144,6 +157,8 @@ fn run(args: &Args) -> Result<(), String> {
         let mut next = Instant::now();
         while p.step() {
             let (cols, rows) = p.walk(&mut cells);
+            // Nominal period, never the measured one: a seed reproduces a run.
+            persist.apply(&mut cells, cols, rows, period.as_secs_f32());
             meta.cols = cols;
             meta.rows = rows;
             meta.tick = p.tick;
@@ -166,7 +181,20 @@ fn run(args: &Args) -> Result<(), String> {
         // Settle + dwell: the last grid is the held one (§8 — colour keeps moving to
         // the last frame, so it is the FINAL walk that is the still). Republish it as
         // a heartbeat; `generation` does not move because the payload does not.
+        //
+        // T11: **the effect has settled when the SOURCE has.** `FRAME_SETTLED` is set
+        // here whatever the phosphors are doing, so a trail can never hold the settle
+        // off — but the trails keep decaying through the dwell (each heartbeat re-walks
+        // the settled source and advances them by the heartbeat interval), so the
+        // payload keeps changing, `generation` keeps moving, and T5's accumulation keeps
+        // restarting, until the last trail crosses the floor (~7τ from a full-white
+        // cell). That is the right order: the tracer converges on the picture once the
+        // picture has stopped changing, and the world learns that from the counter it
+        // already watches. The settle publish itself is the same instant as the last
+        // motion frame, so it advances the phosphors by zero and republishes the same
+        // trails — with persistence off this is byte-identical to before.
         let (cols, rows) = p.walk(&mut cells);
+        persist.apply(&mut cells, cols, rows, 0.0);
         meta.cols = cols;
         meta.rows = rows;
         meta.tick = p.tick;
@@ -175,9 +203,15 @@ fn run(args: &Args) -> Result<(), String> {
         eprintln!("organon-glyphs: [{epoch}] {name} settled after {} ticks", p.tick);
         if !args.no_pace {
             let until = Instant::now() + Duration::from_secs_f64(args.dwell.max(0.0));
-            let beat = Duration::from_millis(args.heartbeat_ms.max(10));
             while Instant::now() < until {
                 std::thread::sleep(beat.min(until.saturating_duration_since(Instant::now())));
+                if persist.enabled() {
+                    // The source is settled and the engine is not ticked, so the walk
+                    // is the same grid every time; only the phosphors move. Nominal
+                    // interval, as in the motion loop.
+                    p.walk(&mut cells);
+                    persist.apply(&mut cells, cols, rows, beat.as_secs_f32());
+                }
                 writer.publish(&meta, &cells).map_err(|e| format!("publish: {e}"))?;
             }
         }
