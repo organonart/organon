@@ -14185,9 +14185,14 @@ fn glyph_shape(frame: [f32; 4], glyph_live: bool, glyph: &[f32; 16]) -> [f32; 4]
 /// the dark-tile switch, a flag on an `f32` lane read as `> 0.5` the way the held
 /// camera's `glyph_cam[0]` is. A default snapshot yields `LowerOptions::default()`,
 /// under which `lower_grid_with` is `lower_grid` byte for byte — so a preset saved before
-/// the switch lowers the grid it lowered yesterday (invariant #4).
+/// the switch lowers the grid it lowered yesterday (invariant #4). ⚠️ `..Default::default()`
+/// on purpose: `LowerOptions` is a struct precisely so the next lowering-only switch is a
+/// field, not a signature (T12's `motion`, proposed on `glyph[15]`, is in flight in
+/// another branch), and a bare literal here would leave `main` not compiling the moment
+/// both land while each was green alone. A new field arrives at its inert default until
+/// its own one-line wire is added below.
 fn glyph_lower_options(glyph: &[f32; 16]) -> glyph_ring::LowerOptions {
-    glyph_ring::LowerOptions { dark_tiles: glyph[14] > 0.5 }
+    glyph_ring::LowerOptions { dark_tiles: glyph[14] > 0.5, ..Default::default() }
 }
 
 /// The distance at which a box of `half_w × half_h` (world units, facing the camera)

@@ -317,10 +317,11 @@ mod tests {
             ("glyph_cam_hold", 1.0), ("glyph_cam_tilt", 0.26),
             ("glyph_cam_zoom", 0.27), ("capsule_core", 0.28), ("capsule_absorb", 0.29),
         ];
-        // The two T9 slots are exactly where the table says, and the reserved one is still 0.
+        // The two T9 slots are exactly where the table says; slot 15 (T12's proposed
+        // motion lane) is not marked here, so it packs at its inert default.
         assert_eq!(s.glyph[13], 0.31, "glyph_profile packs to slot 13");
         assert_eq!(s.glyph[14], 1.0, "glyph_dark_tiles packs to slot 14 as a 0/1 flag");
-        assert_eq!(s.glyph[15], 0.0, "slot 15 is reserved and stays 0");
+        assert_eq!(s.glyph[15], 0.0, "slot 15 is not one of these two and packs 0 unmarked");
         for (id, v) in want {
             assert_eq!(
                 current(&s, id),

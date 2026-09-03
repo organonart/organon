@@ -3692,7 +3692,7 @@ mod tests {
         assert_eq!(s.glyph[12], p.values.glyph_crown);
         assert_eq!(s.glyph[13], p.values.glyph_profile, "profile rides slot 13 (`Uniforms.shape.z`)");
         assert_eq!(s.glyph[14], 1.0, "dark tiles ride slot 14 as a 0/1 flag");
-        assert_eq!(s.glyph[15], 0.0, "slot 15 is still reserved");
+        assert_eq!(s.glyph[15], 0.0, "slot 15 is untouched by this rung (T12's lane, inert at 0)");
         assert_eq!(s.glyph_cam[0], 1.0);
         assert_eq!(s.glyph_cam[1], p.values.glyph_cam_tilt);
         assert_eq!(s.capsule[0], 0.0, "faceplate is not the bottled rung");

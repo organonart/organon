@@ -2056,7 +2056,9 @@ pub struct Shared {
     ///   tile at zero emission (`glyph_ring::LowerOptions::dark_tiles`; 0 = only lit cells
     ///   get tiles, T1). A flag on an `f32` lane, spelled 0/1 like `glyph_cam[0]`.
     ///   `glyph_dark_tiles`.
-    /// - `[15]` reserved, written 0.
+    /// - `[15]` reserved, written 0 — **spoken for**: T12 (organon#238) proposes it for the
+    ///   sub-cell motion mode (`glyph_ring::Motion::from_lane`, 0 = slide, today's picture).
+    ///   Once that lands `glyph[16]` is full; the next glyph lane is a new block.
     ///
     /// Captured **Look**. (Tail-appended after `mindview_gen`; LAYOUT_VERSION 0x0285→0x0286.
     /// `[13]`/`[14]` were reserved lanes of that layout, written 0 until T9's wire took

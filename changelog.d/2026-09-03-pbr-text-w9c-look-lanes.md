@@ -5,11 +5,14 @@ put `tile_profile` in `cube.wgsl` keyed on `Uniforms.shape.z`, which nothing wro
 #236 gave `glyph_ring::lower_grid_with` a `LowerOptions { dark_tiles }` the world never
 passed. This is the wire, on the whole of `ARCHITECTURE.md` §17: **`glyph_profile`**
 (`gtpf`, 0..1, default 0) and **`glyph_dark_tiles`** (`gtdt`, a flag, default off) in
-`params.rs`; `pack_glyph` slots **13** and **14**, the two lanes T3 reserved — `[15]` stays
-reserved, no `Shared` field moves and `LAYOUT_VERSION` does not; `PresetValues` fields with
-serde defaults in the Look bucket; `world.rs::glyph_shape` lifting `glyph[13]` into
-`shape.z` while a ring is live, and a pure `glyph_lower_options` reading `glyph[14] > 0.5`
-into the `lower_grid_with` call that replaces `lower_grid`; the seven vocabulary sites
+`params.rs`; `pack_glyph` slots **13** and **14**, the two lanes T3 reserved — `[15]` is left for
+T12's motion mode (organon#238 proposes it; `glyph[16]` is then full), no `Shared` field
+moves and `LAYOUT_VERSION` does not; `PresetValues` fields with serde defaults in the Look
+bucket; `world.rs::glyph_shape` lifting `glyph[13]` into `shape.z` while a ring is live,
+and a pure `glyph_lower_options` reading `glyph[14] > 0.5` into the `lower_grid_with` call
+that replaces `lower_grid` — spelled `LowerOptions { dark_tiles, ..Default::default() }`,
+⚠️ because #238 adds a `motion` field to that struct in parallel and a bare literal would
+leave `main` not compiling once both landed while each was green alone; the seven vocabulary sites
 #235 counted (`ACTUATABLE_IDS`, `id_range`, `current`, `actuate`, the gloss, the
 `engine_ranges` join, the editor mirror in `lib.rs`), so `organon set glyph_profile 0.5
 glyph_dark_tiles 1` is a sentence; two rows in the PBR Text card; and two rows in
