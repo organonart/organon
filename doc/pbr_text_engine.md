@@ -613,8 +613,8 @@ self and the grid appears only once the ring exists (invariant #4 held); the log
 emissive beveled tiles over a dark slab, half-blocks as half-height tiles, bloom on the lit glyphs
 only, `decrypt` animating live through the ring and resolving to the correct text; the tiles
 arrive small and far because the grid inherits the cube field's default camera distance; the
-auto-orbit never stops, so T5's accumulation restarts every frame (W5 found the same in the code);
-the T5 dwell renders **dark** because the tracer shades from `tint` (W1 named the gap before
+auto-orbit never stops, so T5's accumulation restarts every frame (the T5 worker, #227, found the same in the code);
+the T5 dwell renders **dark** because the tracer shades from `tint` (the T1 worker named the gap in #224 before
 merge; this is it on screen); and the out-of-the-box environment is the physical atmosphere, which
 reads as fog over terrain behind the grid. **Retired from §12:** `ttfx` is a Rust rewrite (§2.1);
 every effect settles (measured over all 37). **Not yet measured:** the ~14–16k-cell fullscreen
