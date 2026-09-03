@@ -1531,6 +1531,11 @@ pub struct PresetValues {
     #[serde(default = "def_glyph_default_fg")] pub glyph_default_fg: f32,
     #[serde(default)] pub glyph_bevel: f32,
     #[serde(default)] pub glyph_crown: f32,
+    // organon#217 T9 — the emission profile and the dark-tile switch. Both default to
+    // off (flat glow; only lit cells tiled), so a preset saved before them — the first
+    // `faceplate` included — lowers and shades the grid it did yesterday.
+    #[serde(default)] pub glyph_profile: f32,
+    #[serde(default)] pub glyph_dark_tiles: bool,
     // organon#217 T6 — the coaxial capsule core (old presets predate it → inert).
     #[serde(default)] pub capsule_core: f32,
     #[serde(default)] pub capsule_absorb: f32,
@@ -4180,6 +4185,8 @@ macro_rules! for_each_tab_field {
         $op!(Look, glyph_default_fg, scalar);
         $op!(Look, glyph_bevel, scalar);
         $op!(Look, glyph_crown, scalar);
+        $op!(Look, glyph_profile, scalar);
+        $op!(Look, glyph_dark_tiles, scalar);
         $op!(Look, capsule_core, scalar);
         $op!(Look, capsule_absorb, scalar);
         $op!(Generator, palette, enum, HostPalette);
@@ -5606,6 +5613,8 @@ impl PresetValues {
             glyph_default_fg: p.glyph_default_fg.value(),
             glyph_bevel: p.glyph_bevel.value(),
             glyph_crown: p.glyph_crown.value(),
+            glyph_profile: p.glyph_profile.value(),
+            glyph_dark_tiles: p.glyph_dark_tiles.value(),
             capsule_core: p.capsule_core.value(),
             capsule_absorb: p.capsule_absorb.value(),
             plexus_radius: p.plexus_radius.value(),
@@ -7135,7 +7144,9 @@ fn text_seed_marker() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("OrganicMath");
     let _ = std::fs::create_dir_all(&dir);
-    dir.join("seeded_text_v1")
+    // v2 (organon#217 T9): `faceplate` gained the emission profile and the dark tiles.
+    // A bump replaces the FACTORY-SHAPED rung a v1 store carries; see `seed_text_into`.
+    dir.join("seeded_text_v2")
 }
 
 /// The factory PBR-text presets (organon#217 T3 — `doc/pbr_text_engine.md` §10's
@@ -7158,14 +7169,19 @@ fn text_seed_marker() -> PathBuf {
 /// need no guessing; the seed only appends when no preset of that name exists, so a
 /// user's own `faceplate` is never replaced.
 ///
-/// ⚠️ **Amending this rung in place reaches a FRESH store only.** The seed is one-shot
-/// behind `seeded_text_v1`; a store that already carries `faceplate` keeps the
-/// values it was seeded with, and the marker keeps the seed from running again. That
-/// is by design (the rung above says why a user's `faceplate` is never replaced), so a
-/// rung amended here — T10's lights and rig were — is picked up on a machine that has
-/// already seeded only by deleting its `faceplate` and the marker file, or by a `v2`
-/// marker that replaces the factory-named entry the way `seed_rails_presets` does.
-/// Neither is done here; the coordinator decides which.
+/// ⚠️ **Amending this rung in place reaches a store that has already seeded only through
+/// a marker bump.** The seed is one-shot: a store that carries `faceplate` keeps the
+/// values it was seeded with and the marker keeps the seed from running again — T10
+/// amended the rung (lights, rig) under `seeded_text_v1` and found exactly that. So the
+/// T9 wire bumped it to `seeded_text_v2`, and [`seed_text_into`] at a bump **replaces
+/// the factory-shaped `faceplate`** — the entry with no stated `exposed` set, which is
+/// what [`Preset::unstated`] writes here and what an editor save ([`Preset::capture`])
+/// never does — while a `faceplate` a person has captured over is theirs and stays. That
+/// keeps the promise above (a user's own is never replaced) and still delivers the
+/// amended rung to every store nobody has edited. ⚠️ The rails precedent
+/// (`seed_rails_presets` at `v2`) replaces by *name*, which would have taken a user's
+/// `faceplate` with it; the `exposed` discriminator is what this one adds. The next
+/// amendment bumps to `v3` the same way — the marker name is the only line to touch.
 pub fn builtin_text_presets() -> Vec<Preset> {
     let base = PresetValues::capture(&OrganicMathParams::default());
     let mk = |name: &str, f: &dyn Fn(&mut PresetValues)| -> Preset {
@@ -7178,6 +7194,12 @@ pub fn builtin_text_presets() -> Vec<Preset> {
         // varying normal — a slight bevel (the rim) and a crown (the roll).
         v.glyph_bevel = 0.12;
         v.glyph_crown = 0.35;
+        // organon#217 T9 — the tile: the phosphor's glow falls off toward the tile's
+        // edges (half strength: the core still reads flat-topped, the rim goes soft),
+        // and EVERY cell is a tile — the spec-sheet plate, where a dark cell is a low
+        // glass tile showing the room. Off is the before/after plate; this rung is on.
+        v.glyph_profile = 0.5;
+        v.glyph_dark_tiles = true;
         // §4's material sketch: a near-black dielectric faceplate under a thin coat.
         v.mat_type = crate::params::MaterialType::Clearcoat.to_u32();
         v.metallic = 0.0;
@@ -7226,20 +7248,41 @@ pub fn builtin_text_presets() -> Vec<Preset> {
 }
 
 /// One-shot seeding of the factory PBR-text presets — the `seed_rails_presets` shape:
-/// runs only while its marker is absent, appends only names that don't already exist.
+/// runs only while its marker is absent; the store edit itself is [`seed_text_into`].
 fn seed_text_presets(presets: &mut Vec<Preset>) -> bool {
     if text_seed_marker().exists() {
         return false;
     }
-    let mut changed = false;
-    for p in builtin_text_presets() {
-        if !presets.iter().any(|e| e.name == p.name) {
-            presets.push(p);
-            changed = true;
-        }
-    }
+    let changed = seed_text_into(presets);
     if !changed {
         mark_text_seeded();
+    }
+    changed
+}
+
+/// The text seed with the marker read out of it, so a test can drive it: for each
+/// factory rung, a **factory-shaped** entry of that name (no stated `exposed` set — the
+/// shape `Preset::unstated` writes and an editor capture never does) that differs from
+/// the current rung is replaced in place; an entry a person captured over is theirs and
+/// is left alone; a missing rung is appended. Returns whether the store changed — and
+/// `false` on a store already carrying the current rungs, so the marker drops without a
+/// save.
+fn seed_text_into(presets: &mut Vec<Preset>) -> bool {
+    let mut changed = false;
+    for p in builtin_text_presets() {
+        match presets.iter().position(|e| e.name == p.name) {
+            Some(i) if presets[i].exposed.is_none() => {
+                if presets[i].values != p.values {
+                    presets[i] = p;
+                    changed = true;
+                }
+            }
+            Some(_) => {}
+            None => {
+                presets.push(p);
+                changed = true;
+            }
+        }
     }
     changed
 }
@@ -8074,6 +8117,39 @@ mod preset_io_tests {
         let p = Preset::unstated("old", v);
         assert_eq!(p.exposed, None, "nobody has said");
         assert_eq!(p.exposed_fields(), vec!["ambient"], "so the diff answers");
+    }
+
+    /// organon#217 T9 — the `seeded_text_v2` bump. A factory-shaped `faceplate` (no
+    /// stated `exposed` set — what the v1 seed wrote) carrying the pre-T9 rung is
+    /// replaced in place by the amended one; a `faceplate` a person captured over is
+    /// theirs and stays byte for byte; a missing rung is appended; and a store already
+    /// carrying the amended rung reports nothing to persist, so the marker can drop.
+    #[test]
+    fn the_v2_text_seed_replaces_a_factory_faceplate_and_keeps_a_captured_one() {
+        let rung = builtin_text_presets().remove(0);
+        assert!(rung.exposed.is_none(), "the factory rung is unstated — that is the discriminator");
+        // A v1 store: factory-shaped, with both T9 lanes still off.
+        let mut old = rung.values.clone();
+        old.glyph_profile = 0.0;
+        old.glyph_dark_tiles = false;
+        assert_ne!(old, rung.values);
+        let mut store = vec![Preset::unstated("faceplate", old.clone())];
+        assert!(seed_text_into(&mut store), "a stale factory rung must be replaced");
+        assert_eq!(store.len(), 1, "replaced in place, not appended beside");
+        assert_eq!(store[0].values, rung.values);
+        assert!(store[0].values.glyph_dark_tiles && store[0].values.glyph_profile > 0.0);
+        // Idempotent: the amended rung reports nothing to persist.
+        assert!(!seed_text_into(&mut store), "nothing to do on a current store");
+        // A captured `faceplate` is the user's: kept, both lanes still off.
+        let mut mine = vec![Preset::capture("faceplate", old.clone())];
+        assert!(!seed_text_into(&mut mine), "a captured faceplate is never replaced");
+        assert_eq!(mine[0].values, old);
+        assert!(!mine[0].values.glyph_dark_tiles);
+        // No `faceplate` at all: appended.
+        let mut empty: Vec<Preset> = Vec::new();
+        assert!(seed_text_into(&mut empty));
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].name, "faceplate");
     }
 
     /// 🚨 **The compatibility guarantee, on the wire.** `presets.json` is a real file on real

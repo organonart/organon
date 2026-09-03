@@ -5974,6 +5974,18 @@ pub struct OrganicMathParams {
     /// across the flat 95 % of a tile. 0 = flat. Normal-only — no geometry, no depth
     /// change. Captured **Look**.
     #[id = "gtcr"] pub glyph_crown: FloatParam,
+    /// Emission profile strength (organon#217 T9, `cube.wgsl::tile_profile` via
+    /// `Uniforms.shape.z`): how far a tile's glow falls off from its core toward its
+    /// edges — 0 = flat, the even glow T1 drew; 1 = the edge midlines and corners go
+    /// dark, the phosphor seen through the faceplate. Multiplies the per-instance
+    /// emission only — no normal, no vertex, no other generator's glow. Captured **Look**.
+    #[id = "gtpf"] pub glyph_profile: FloatParam,
+    /// Every cell gets a tile (organon#217 T9, `glyph_ring::LowerOptions::dark_tiles`):
+    /// a symbol-less cell — empty, space, a control — lowers as a dark quarter-depth
+    /// tile at exactly zero emission, showing only the faceplate's sheen of the room.
+    /// Off = only lit cells get tiles (T1; the before/after plate). Cost: `cols × rows`
+    /// tiles per frame instead of one per glyph. Captured **Look**.
+    #[id = "gtdt"] pub glyph_dark_tiles: BoolParam,
 
     // --- Coaxial capsule core (organon#217 T6, `Shared.capsule`) ---
     /// Inner emissive capsule radius as a fraction of the outer, for every Glass /
@@ -8649,6 +8661,11 @@ impl Default for OrganicMathParams {
             glyph_default_fg: flin("Text Default Foreground", 0.75, 0.0, 1.0),
             glyph_bevel: flin("Text Bevel", 0.0, 0.0, 1.0),
             glyph_crown: flin("Text Face Crown", 0.0, 0.0, 1.0),
+            // organon#217 T9 — the two look lanes the tile landed inert: profile 0 =
+            // flat (`tile_profile` is exactly 1.0 at k = 0), dark tiles off = only lit
+            // cells get tiles. Both match ipc::Shared::default().glyph[13..15] (0, 0).
+            glyph_profile: flin("Text Emission Profile", 0.0, 0.0, 1.0),
+            glyph_dark_tiles: BoolParam::new("Text Dark Tiles", false),
             // organon#217 T6 — the coaxial capsule core, inert at 0.
             capsule_core: flin("Capsule Core", 0.0, 0.0, 1.0),
             capsule_absorb: flin("Capsule Absorption", 0.0, 0.0, 8.0),

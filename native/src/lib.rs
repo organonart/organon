@@ -5057,6 +5057,10 @@ pub(crate) fn editor_ui(
                     srow(ui, w2, "emission gain", &params.glyph_gain, setter);
                     srow(ui, w2, "bevel", &params.glyph_bevel, setter);
                     srow(ui, w2, "face crown", &params.glyph_crown, setter);
+                    // organon#217 T9 — the tile: the glow's falloff across a face, and
+                    // whether a symbol-less cell gets a dark tile of its own.
+                    srow(ui, w2, "emission profile", &params.glyph_profile, setter);
+                    crow(ui, "dark tiles (every cell)", &params.glyph_dark_tiles, setter);
                     srow(ui, w2, "faceplate", &params.glyph_faceplate, setter);
                     srow(ui, w2, "default fg", &params.glyph_default_fg, setter);
                     ui.label(egui::RichText::new("— backplane —").weak().small());
@@ -7405,6 +7409,9 @@ fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &age
                 "glyph_default_fg" => set!(&params.glyph_default_fg, v),
                 "glyph_bevel" => set!(&params.glyph_bevel, v),
                 "glyph_crown" => set!(&params.glyph_crown, v),
+                // organon#217 T9 — the tile's two lanes; the flag from `v > 0.5` like the hold.
+                "glyph_profile" => set!(&params.glyph_profile, v),
+                "glyph_dark_tiles" => set!(&params.glyph_dark_tiles, v > 0.5),
                 "glyph_cam_hold" => set!(&params.glyph_cam_hold, v > 0.5),
                 "glyph_cam_tilt" => set!(&params.glyph_cam_tilt, v),
                 "glyph_cam_zoom" => set!(&params.glyph_cam_zoom, v),

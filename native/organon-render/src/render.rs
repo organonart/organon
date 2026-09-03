@@ -3809,11 +3809,16 @@ impl Renderer {
         // future height-displacing material stays consistent between the two by construction.
         let material_draw = cube_draw || (membrane && !membrane_arms);
         if !cube_draw {
-            // Both lanes the cube shader reads: `x` the vertex bevel, `y` the organon#217
-            // T3 face crown (a fragment-stage normal dome, gated on `y > 0`). Same
-            // scoping, same reason — the crown is meant for the generator's cubes only.
+            // The three lanes the cube shader reads: `x` the vertex bevel, `y` the
+            // organon#217 T3 face crown (a fragment-stage normal dome, gated on `y > 0`),
+            // `z` the T9 emission profile (`tile_profile`, exactly 1.0 at 0 — it scales
+            // the PER-INSTANCE emit term). Same scoping, same reason — all three are meant
+            // for the generator's cubes only, and while a glyph ring is live the world
+            // writes `z` for the tiles, which ARE that draw; a plexus node or a membrane
+            // sheet shading through the same uniform must not inherit the falloff.
             u.shape[0] = 0.0;
             u.shape[1] = 0.0;
+            u.shape[2] = 0.0;
         }
         if !material_draw {
             // #472 Tier 1: every other draw keeps the scalar PBR path (byte-identical

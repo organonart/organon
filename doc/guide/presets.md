@@ -42,10 +42,17 @@ touched.
   as lit, bevelled, emissive tiles (`doc/pbr_text_engine.md`). It needs a text producer
   publishing the glyph ring to draw anything; with one live it holds the camera on the
   grid, dims the room, and lets the path tracer sharpen the held text through each dwell.
-  The look it dresses — cell width, extrusion, gap, emission gain, bevel, face crown,
+  Every cell is a tile in it — a dark cell is a low glass tile that shows the room, a lit
+  cell's glow falls off toward its edges — because it switches **dark tiles** on and sets
+  the **emission profile** to 0.5; both are off by default in every other preset, where
+  only lit cells get tiles and a tile glows evenly. The look it dresses — cell width,
+  extrusion, gap, emission gain, bevel, face crown, emission profile, dark tiles,
   faceplate, backplane — is the **PBR Text** card on the Look tab, and the held camera
   (hold / tilt / zoom) is the **Text Camera** card on the Motion tab. Both are inert until
-  a producer is running, so they cost nothing in any other preset. Every control on both
+  a producer is running, so they cost nothing in any other preset. If you had `faceplate`
+  before dark tiles and the profile existed, the factory copy is replaced with the new
+  one on the next start — unless you have saved over it, in which case yours is kept and
+  the two new controls are simply off in it. Every control on both
   cards, plus the capsule core, is also on the CLI vocabulary
   (`organon set glyph_bevel 0.12 glyph_cam_hold 1`) — the ids and ranges are in
   [the parameter reference](../reference/parameters.md), so a script can dress the look

@@ -1123,7 +1123,7 @@ impl World {
     /// `geom.tints` / `geom.emits` (replacing the generator's) and return the tiles'
     /// bounds. `None` — the ordinary case — leaves the frame exactly as the generator
     /// built it.
-    fn glyph_grid_geometry(&mut self, look: &glyph_ring::GlyphLook) -> Option<math::Bounds> {
+    fn glyph_grid_geometry(&mut self, look: &glyph_ring::GlyphLook, opts: glyph_ring::LowerOptions) -> Option<math::Bounds> {
         // Lazily re-open, throttled: a missing ring is the normal state.
         if !self.glyph_ring.is_open() {
             let now = Instant::now();
@@ -1176,12 +1176,15 @@ impl World {
         self.geom.emits.clear();
         let prev = (self.glyph_prev.frame.seq != 0).then_some(&self.glyph_prev);
         // organon#217 T3: `look` is `glyph_look_from(&s)` — the param chain's
-        // `Shared.glyph`, which on a default snapshot IS `GlyphLook::DEFAULT`.
-        let bounds = glyph_ring::lower_grid(
+        // `Shared.glyph`, which on a default snapshot IS `GlyphLook::DEFAULT`. T9: `opts`
+        // is `glyph_lower_options(&s.glyph)` — the dark-tile switch off `glyph[14]`, and
+        // at its default `lower_grid_with` IS `lower_grid` (pinned in `glyph_ring`).
+        let bounds = glyph_ring::lower_grid_with(
             &self.glyph_grid,
             prev,
             blend,
             look,
+            opts,
             glyph_ring::TileOut {
                 instances: &mut self.geom.instances,
                 tints: &mut self.geom.tints,
@@ -5115,7 +5118,7 @@ impl World {
         // organon#217 T3: the look comes off the param chain (`Shared.glyph`), and the
         // tiles' bounds are kept for the held camera (`glyph_camera_rig`).
         let glyph_look = glyph_look_from(&s);
-        if let Some(b) = self.glyph_grid_geometry(&glyph_look) {
+        if let Some(b) = self.glyph_grid_geometry(&glyph_look, glyph_lower_options(&s.glyph)) {
             bounds = b;
             self.glyph_bounds = b;
             self.glyph_pt = GlyphPtState {
@@ -14166,14 +14169,30 @@ fn glyph_look_from(s: &ipc::Shared) -> glyph_ring::GlyphLook {
 }
 
 /// `Uniforms.shape` for this frame: with a glyph ring drawing, `x` is the glyph look's
-/// own bevel and `y` its face crown (`Shared.glyph[11]`, `[12]`); with no ring, the
-/// frame's own lanes, untouched — byte-identical to before T3.
+/// own bevel, `y` its face crown and `z` T9's emission-profile strength
+/// (`Shared.glyph[11]`, `[12]`, `[13]` — `cube.wgsl::tile_profile` reads `shape.z`, and
+/// is exactly 1.0 at 0, so a default lane is T1's even glow); with no ring, the frame's
+/// own lanes, untouched — byte-identical to before T3.
 fn glyph_shape(frame: [f32; 4], glyph_live: bool, glyph: &[f32; 16]) -> [f32; 4] {
     if glyph_live {
-        [glyph[11].clamp(0.0, 1.0), glyph[12].clamp(0.0, 1.0), frame[2], frame[3]]
+        [glyph[11].clamp(0.0, 1.0), glyph[12].clamp(0.0, 1.0), glyph[13].clamp(0.0, 1.0), frame[3]]
     } else {
         frame
     }
+}
+
+/// The lowering options off the param chain (organon#217 T9): `Shared.glyph[14]` is
+/// the dark-tile switch, a flag on an `f32` lane read as `> 0.5` the way the held
+/// camera's `glyph_cam[0]` is. A default snapshot yields `LowerOptions::default()`,
+/// under which `lower_grid_with` is `lower_grid` byte for byte — so a preset saved before
+/// the switch lowers the grid it lowered yesterday (invariant #4). ⚠️ `..Default::default()`
+/// on purpose: `LowerOptions` is a struct precisely so the next lowering-only switch is a
+/// field, not a signature (T12's `motion`, proposed on `glyph[15]`, is in flight in
+/// another branch), and a bare literal here would leave `main` not compiling the moment
+/// both land while each was green alone. A new field arrives at its inert default until
+/// its own one-line wire is added below.
+fn glyph_lower_options(glyph: &[f32; 16]) -> glyph_ring::LowerOptions {
+    glyph_ring::LowerOptions { dark_tiles: glyph[14] > 0.5, ..Default::default() }
 }
 
 /// The distance at which a box of `half_w × half_h` (world units, facing the camera)
@@ -14536,6 +14555,49 @@ mod glyph_look_tests {
         // flat tile (it rode `Shared.bevel`, default 0).
         assert_eq!(s.glyph[11], 0.0, "bevel default must be T1's sharp tile");
         assert_eq!(s.glyph[12], 0.0, "crown default must be flat");
+        // organon#217 T9 — and the two lanes the tile added: a flat emission profile
+        // (`tile_profile` is exactly 1.0 at 0) and only lit cells tiled.
+        assert_eq!(s.glyph[13], 0.0, "profile default must be flat (T1's even glow)");
+        assert_eq!(s.glyph[14], 0.0, "dark tiles default off (only lit cells get tiles)");
+        assert_eq!(
+            glyph_shape([0.5, 0.0, 0.0, 7.0], true, &s.glyph),
+            [0.0, 0.0, 0.0, 7.0],
+            "a live ring on a default snapshot writes shape.z = 0, the inert profile"
+        );
+        assert_eq!(
+            glyph_lower_options(&s.glyph),
+            glyph_ring::LowerOptions::default(),
+            "a default snapshot lowers exactly as `lower_grid` does"
+        );
+    }
+
+    /// organon#217 T9 — the two wires, each a pure twin of the world's read so dropping
+    /// either is a named failure rather than a tile that looks wrong: `glyph[13]` rides
+    /// `Uniforms.shape.z` clamped to 0..1, and `glyph[14]` is a flag read as `> 0.5`
+    /// into `LowerOptions::dark_tiles`.
+    #[test]
+    fn the_profile_lane_rides_shape_z_and_the_dark_tile_lane_is_a_flag() {
+        let mut s = ipc::Shared::default();
+        s.glyph[13] = 0.5;
+        assert_eq!(
+            glyph_shape([0.0, 0.0, 0.9, 0.0], true, &s.glyph)[2],
+            0.5,
+            "shape.z must be glyph[13] while a ring is live — the profile wire is missing"
+        );
+        s.glyph[13] = 3.0;
+        assert_eq!(glyph_shape([0.0; 4], true, &s.glyph)[2], 1.0, "the profile clamps to 1");
+        s.glyph[13] = -1.0;
+        assert_eq!(glyph_shape([0.0; 4], true, &s.glyph)[2], 0.0, "and to 0");
+        assert_eq!(glyph_shape([0.0, 0.0, 0.9, 0.0], false, &s.glyph)[2], 0.9, "no ring: untouched");
+
+        s.glyph[14] = 1.0;
+        assert!(glyph_lower_options(&s.glyph).dark_tiles, "glyph[14] = 1 must switch dark tiles on — the wire is missing");
+        s.glyph[14] = 0.5;
+        assert!(!glyph_lower_options(&s.glyph).dark_tiles, "exactly 0.5 is off (`> 0.5`, the flag rule)");
+        s.glyph[14] = 0.51;
+        assert!(glyph_lower_options(&s.glyph).dark_tiles);
+        s.glyph[14] = 0.0;
+        assert!(!glyph_lower_options(&s.glyph).dark_tiles);
     }
 
     /// Every slot reaches the field the contract names — the "drop one link" test.
@@ -14558,10 +14620,12 @@ mod glyph_look_tests {
         assert_eq!(l.margin, 18.0);
         assert_eq!(l.backplane_depth, 19.0);
         assert_eq!(l.default_fg, [20.0; 3]);
-        assert_eq!(glyph_shape([0.0; 4], true, &s.glyph), [1.0, 1.0, 0.0, 0.0], "bevel/crown clamp to 1");
+        assert_eq!(glyph_shape([0.0; 4], true, &s.glyph), [1.0, 1.0, 1.0, 0.0], "bevel/crown/profile clamp to 1");
         s.glyph[11] = 0.3;
         s.glyph[12] = 0.4;
-        assert_eq!(glyph_shape([0.9, 0.0, 5.0, 6.0], true, &s.glyph), [0.3, 0.4, 5.0, 6.0]);
+        s.glyph[13] = 0.5;
+        assert_eq!(glyph_shape([0.9, 0.0, 5.0, 6.0], true, &s.glyph), [0.3, 0.4, 0.5, 6.0]);
+        assert!(glyph_lower_options(&s.glyph).dark_tiles, "slot 14 (24.0) reads as the switch on");
     }
 
     /// No ring → the frame's own `shape` lanes, untouched, whatever the look says.
