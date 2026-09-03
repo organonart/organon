@@ -495,7 +495,14 @@ fn read_ring(source: &RingSource) -> Result<GlyphGrid, String> {
         RingSource::File(p) => GlyphRingReader::open_at(p),
     };
     if !reader.is_open() {
-        return Err(format!("no glyph ring at {source:?} — is the producer running in this namespace?"));
+        // The line a person reads when `verify.sh --legibility` finds no ring: name the
+        // namespace or the path plainly, not the enum's Debug shape (review nit on #240).
+        return Err(match source {
+            RingSource::Namespace(ns) => {
+                format!("no glyph ring in IPC namespace `{ns}` — is organon-glyphs running with ORGANON_IPC_NS={ns}?")
+            }
+            RingSource::File(p) => format!("no glyph ring file at {} — nothing has written it", p.display()),
+        });
     }
     let mut grid = GlyphGrid::default();
     if !reader.latest_into(&mut grid) {
