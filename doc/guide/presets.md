@@ -38,23 +38,45 @@ Organon loads it. Rename or delete them freely — the seed never re-adds a name
 touched.
 
 - **Rails — …** — five finished rides for the scenery corridor.
-- **`faceplate`** — the first rung of the PBR-text ladder: a terminal text effect rendered
-  as lit, bevelled, emissive tiles (`doc/pbr_text_engine.md`). It needs a text producer
-  publishing the glyph ring to draw anything; with one live it holds the camera on the
-  grid, dims the room, and lets the path tracer sharpen the held text through each dwell.
-  Every cell is a tile in it — a dark cell is a low glass tile that shows the room, a lit
-  cell's glow falls off toward its edges — because it switches **dark tiles** on and sets
-  the **emission profile** to 0.5; both are off by default in every other preset, where
-  only lit cells get tiles and a tile glows evenly. The look it dresses — cell width,
-  extrusion, gap, emission gain, bevel, face crown, emission profile, dark tiles,
-  faceplate, backplane — is the **PBR Text** card on the Look tab, and the held camera
-  (hold / tilt / zoom) is the **Text Camera** card on the Motion tab. Both are inert until
-  a producer is running, so they cost nothing in any other preset. If you had `faceplate`
-  before dark tiles and the profile existed, the factory copy is replaced with the new
-  one on the next start — unless you have saved over it, in which case yours is kept and
-  the two new controls are simply off in it. Every control on both
-  cards, plus the capsule core, is also on the CLI vocabulary
-  (`organon set glyph_bevel 0.12 glyph_cam_hold 1`) — the ids and ranges are in
+- **The PBR-text ladder** — six presets, `faceplate` · `nixie` · `foundry` · `anodized` ·
+  `bottled` · `cathode`, each a terminal text effect rendered as a lit, physically shaded
+  object (`doc/pbr_text_engine.md` §10). All six need a text producer publishing the
+  glyph ring to draw anything; with one live, each holds the camera on the grid, dims
+  the room, and lets the path tracer sharpen the held text through each dwell. They
+  share that room and differ in the material the text is made of:
+  - **`faceplate`** — the classic: phosphor tiles behind a thin clearcoat, slightly
+    bevelled and crowned, every cell a tile (a dark cell is a low glass tile that shows
+    the room; a lit cell's glow falls off toward its edges), the lit glyphs pooling
+    their colour onto the backplane.
+  - **`nixie`** — each cell a glass envelope: a deeper, domed tile whose glow is
+    gathered to a filament-thin core, with a faint colour split in the glass and a warm
+    halation. The glow sits at the envelope's surface — a filament *inside* it is not
+    something the tile can do yet.
+  - **`foundry`** — hot metal type: dark, rough, with a dull-cherry blackbody ember
+    under everything and the effect's own colour held low at the slug's centre. The
+    ember is one temperature across the whole plate; the effect's value cannot drive it.
+  - **`anodized`** — an iridescent film over a dark metal, the colour rolling across
+    each tile with the viewing angle; the phosphor turned down so the film is what you
+    see.
+  - **`bottled`** and **`cathode`** — the two that leave tiles behind: the lit cells
+    become a **Plexus** web (the Surface controls, Generator bucket), wired to their four
+    neighbours and drawn as impostors — glass beads on glass rods with a glowing core
+    seen through the shell, looked at steeply along the rods (`bottled`), or emissive
+    nodes on thin wires (`cathode`). ⚠️ Both are **monochrome** today — the web keeps the
+    tiles' faceplate grey and drops their colour — and a one-column gap is wired like a
+    vertical neighbour; they are the closest honest reading of the spec's rungs, not the
+    finished picture.
+
+  The look the tile presets dress — cell width, extrusion, gap, emission gain, bevel,
+  face crown, emission profile, dark tiles, faceplate, backplane — is the **PBR Text**
+  card on the Look tab, and the held camera (hold / tilt / zoom) is the **Text Camera**
+  card on the Motion tab. Both are inert until a producer is running, so they cost
+  nothing in any other preset. The factory copies are seeded once and then amended in
+  place when a release changes them — unless you have saved over one, in which case
+  yours is kept; and a preset of yours that happens to share one of the five new names
+  is never touched, whenever you saved it. Every control on both cards, plus the
+  capsule core, is also on the CLI vocabulary (`organon set glyph_bevel 0.12
+  glyph_cam_hold 1`) — the ids and ranges are in
   [the parameter reference](../reference/parameters.md), so a script can dress the look
   without opening the editor.
 

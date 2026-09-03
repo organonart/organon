@@ -3665,40 +3665,63 @@ mod tests {
     /// named, serde-round-trippable, and asking for exactly the things the ladder rung
     /// promises (the held camera, a dark room, the bevel + crown, halation), each of
     /// which is a link a recall has to reach. Its Look-side glyph values pack to the
-    /// `Shared.glyph` slots `world::glyph_look_from` reads.
+    /// `Shared.glyph` slots `world::glyph_look_from` reads. T14 — the same for all
+    /// six rungs of §10: every rung shares the room (held camera, orbit off, dark, FX
+    /// on) and round-trips; the tile rungs tile every cell (the spec sheet); the two
+    /// Plexus rungs do not (a node per cell is a lattice). The value that makes each
+    /// rung its own is pinned in `preset.rs` (`each_rung_is_pinned_by_the_value_that_
+    /// makes_it`); this is the part every rung must satisfy.
     #[test]
     fn builtin_text_presets_are_wellformed() {
         let b = crate::preset::builtin_text_presets();
-        assert_eq!(b.len(), 1);
-        let p = &b[0];
-        assert_eq!(p.name, "faceplate");
-        let json = serde_json::to_string(&p.values).unwrap();
-        let back: PresetValues = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, p.values, "faceplate does not round-trip");
-        assert!(p.values.glyph_cam_hold, "faceplate must hold the camera (T5 cannot converge otherwise)");
-        assert_eq!(p.values.cam_path, crate::params::CamPath::Off.to_u32(), "and the orbit path is off");
-        assert!(!p.values.atmos_enabled, "a dark room: no atmosphere");
-        assert!(!p.values.bg_visible, "a dark room: background hidden");
-        assert!(p.values.env_intensity < 0.5, "a dark room: the IBL dimmed to a sheen");
-        assert!(p.values.glyph_bevel > 0.0 && p.values.glyph_crown > 0.0, "the two normal-varying controls");
-        // organon#217 T9 — the spec-sheet tile: a soft core, and every cell tiled.
-        assert!(p.values.glyph_profile > 0.0, "faceplate must ask for an emission profile");
-        assert!(p.values.glyph_dark_tiles, "faceplate must tile every cell (the spec-sheet plate)");
-        assert!(p.values.fx_enabled, "halation lives in the FX pass, which must be on");
-        assert!(p.values.hal_amount > 0.0);
-        // The preset's glyph values reach the Shared slots, in the contract's order.
-        let s = p.values.to_shared();
-        assert_eq!(s.glyph[11], p.values.glyph_bevel);
-        assert_eq!(s.glyph[12], p.values.glyph_crown);
-        assert_eq!(s.glyph[13], p.values.glyph_profile, "profile rides slot 13 (`Uniforms.shape.z`)");
-        assert_eq!(s.glyph[14], 1.0, "dark tiles ride slot 14 as a 0/1 flag");
-        assert_eq!(s.glyph[15], 0.0, "slot 15 is untouched by this rung (T12's lane, inert at 0)");
-        assert_eq!(s.glyph_cam[0], 1.0);
-        assert_eq!(s.glyph_cam[1], p.values.glyph_cam_tilt);
-        assert_eq!(s.capsule[0], 0.0, "faceplate is not the bottled rung");
-        // Everything the rung does not name is T1's look — the T1 grid, dressed.
+        assert_eq!(b.len(), 6, "§10's ladder has six rungs");
+        let mut seen = std::collections::HashSet::new();
+        let plexus = crate::params::SurfaceMode::Plexus.to_u32();
         let d = OrganicMathParams::default().to_shared();
-        assert_eq!(s.glyph[..11], d.glyph[..11]);
+        for p in &b {
+            let n = p.name.as_str();
+            assert!(seen.insert(n), "{n}: rung names must be unique");
+            assert!(p.exposed.is_none(), "{n}: a factory rung is unstated (the seed's discriminator)");
+            let json = serde_json::to_string(&p.values).unwrap();
+            let back: PresetValues = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, p.values, "{n} does not round-trip");
+            // The room every rung shares.
+            assert!(p.values.glyph_cam_hold, "{n} must hold the camera (T5 cannot converge otherwise)");
+            assert_eq!(p.values.cam_path, crate::params::CamPath::Off.to_u32(), "{n}: the orbit path is off");
+            assert!(!p.values.atmos_enabled, "{n}: a dark room: no atmosphere");
+            assert!(!p.values.bg_visible, "{n}: a dark room: background hidden");
+            assert!(p.values.env_intensity < 0.5, "{n}: a dark room: the IBL dimmed to a sheen ({})", p.values.env_intensity);
+            assert!(p.values.fx_enabled, "{n}: halation lives in the FX pass, which must be on");
+            assert!(p.values.hal_amount > 0.0, "{n}: some halation");
+            assert!(p.values.glyph_cam_tilt.abs() <= 60.0, "{n}: the tilt param clamps at ±60 ({})", p.values.glyph_cam_tilt);
+            // The wire: the camera hold and tilt ride `Shared.glyph_cam`, the profile
+            // and dark-tile lanes their slots, and slot 15 (T12's) is left alone.
+            let s = p.values.to_shared();
+            assert_eq!(s.glyph_cam[0], 1.0, "{n}");
+            assert_eq!(s.glyph_cam[1], p.values.glyph_cam_tilt, "{n}");
+            assert_eq!(s.glyph[13], p.values.glyph_profile, "{n}: profile rides slot 13 (`Uniforms.shape.z`)");
+            assert_eq!(s.glyph[14], if p.values.glyph_dark_tiles { 1.0 } else { 0.0 }, "{n}: dark tiles ride slot 14 as a 0/1 flag");
+            assert_eq!(s.glyph[15], 0.0, "{n}: slot 15 is untouched (T12's lane, inert at 0)");
+            if p.values.surface_mode == plexus {
+                // A web: the tiles are the node cloud, so every cell must NOT be a node.
+                assert!(!p.values.glyph_dark_tiles, "{n}: a node per cell would be a lattice");
+                assert!(p.values.plexus_impostor, "{n}: the T6 core reaches the impostor draw only");
+                assert_eq!(s.plexus2[0], 1.0, "{n}: impostors ride `Shared.plexus2[0]`");
+            } else {
+                // A tile rung: the spec sheet tiles every cell, and the two
+                // normal-varying controls give a flat tile a varying normal.
+                assert!(p.values.glyph_dark_tiles, "{n} must tile every cell (the spec-sheet plate)");
+                assert!(p.values.glyph_profile > 0.0, "{n} must ask for an emission profile");
+                assert!(p.values.glyph_bevel > 0.0 && p.values.glyph_crown > 0.0, "{n}: bevel and crown");
+                assert_eq!(s.glyph[11], p.values.glyph_bevel, "{n}");
+                assert_eq!(s.glyph[12], p.values.glyph_crown, "{n}");
+                assert_eq!(s.capsule[0], 0.0, "{n}: a tile rung cannot use the capsule core, so it must not claim it");
+            }
+        }
+        // `faceplate` first (the seed test and the guide count on it), and everything
+        // it does not name is T1's look — the T1 grid, dressed.
+        assert_eq!(b[0].name, "faceplate");
+        assert_eq!(b[0].values.to_shared().glyph[..11], d.glyph[..11]);
     }
 
     // --- Capture/apply drift guard (#103, PR 4) -------------------------------

@@ -476,6 +476,31 @@ Ordered by how far they depart, all satisfying §9. Each names the existing mach
 channel drives a *physical* parameter rather than a colour. The gradient TTE authored becomes a
 physical gradient. That is the most Organon-ish reading of the whole idea.
 
+### 10.1 What shipped, rung by rung (T14, measured against `main @ 997cd96`)
+
+All six are factory presets in `preset.rs::builtin_text_presets`, seeded under the
+`seeded_text_v3` marker, named literally so `preset load nixie` needs no guessing. Every rung
+shares the room the first GPU look settled — held camera, orbit off, atmosphere off, background
+hidden, IBL at a sheen, FX pass on — and each departs in one direction. ⚠️ **None has been looked
+at on a GPU**; per rung, what to look for is in the changelog fragment. The rule this section
+keeps: a rung sets **only knobs that reach its draw**. A knob set where nothing reads it is a
+preset lying about what it does, so where §10's table names machinery that does not reach the
+rung, the rung says so here rather than setting it anyway.
+
+| Rung | Shipped as | What is missing, and where it lives |
+|---|---|---|
+| **`faceplate`** | T3/T9/T10 — unchanged | the brush and the warm rim (§15's table) |
+| **`nixie`** | Glass **tiles** (`mat_type` Glass, IOR 1.5, roughness 0.12), a deeper domed tile (depth 0.45, crown 0.7, bevel 0.25), emission gain 4.5 gathered to a filament by `glyph_profile` 0.85, every cell an envelope, the cube glass path's `glass_dispersion` 0.12, warm halation, glyphs as lights | **The filament inside the envelope.** `cube.wgsl`'s glass branch adds `tile_emit` at the surface, not behind it; T6's coaxial core is capsule-only (`Shared.capsule` is read by `fs_capsule` alone), so `capsule_core`/`capsule_absorb` are deliberately **not** set — on a tile they reach nothing. A core inside a *box* is the T6 idea applied to the cube path. And "orange" is the effect's: a look cannot recolour the ring's emission (§4) |
+| **`foundry`** | A dark rough metal (`metallic` 1, `roughness` 0.55, faceplate 0.22 — a metal's albedo is its F0), the **blackbody** lane on (`incandescence` 0.12, `temperature` 1600 K), the effect's emission at gain 1.4 gathered to the slug's centre (profile 0.9), every cell a slug, warm halation | **Value → temperature.** `cube.wgsl` computes `blackbody(u.emit.w) * u.emit.z` from a per-draw uniform: the same ember on every tile and on the backplane. The per-instance `emit.w` is a *gain*, not a Kelvin. The rung needs a per-instance temperature lane (or the producer publishing a value channel the world lowers to one) — `cube.wgsl` + `glyph_ring::lower_grid` |
+| **`anodized`** | A mid-grey metal (`metallic` 1, faceplate 0.4, roughness 0.28) under the **iridescence** lobe (`iridescence` 1, `irid_scale` 3.5, `irid_shift` 0.2), crown 0.45 so `n·v` rolls the bands across each tile, emission held at gain 0.9, IBL at 0.4 (the film needs a room to reflect) | **Not a material type** — `MaterialType` has no thin-film variant, and the *physical* Airy model (`film_thickness`, `film_ior`, marbling, drainage — `cube.wgsl` `thin_film_physical`) is evaluated only inside the **Glass/Refractive** branch, so a metal gets the view-angle cosine lobe. Nothing maps value → thickness. Both are `cube.wgsl` |
+| **`bottled`** | The **Plexus** surface with impostors: while a ring is live `world.rs` runs the plexus pass after the grid lowers, so the lit tiles are the node cloud — Glass beads (node type Glass, IOR 1.5) on Glass rods (edge type Glass, radius 0.16 spacings), each showing the T6 **coaxial core** (`capsule_core` 0.4, `capsule_absorb` 1.5), wired to the four neighbours of a stroke (`plexus_radius` 2.05, `plexus_links` 4), camera tilted 55° to look along the rods, IBL 0.3 | **Colour, dispersion, and the tracer.** The plexus pass takes the tiles' *tints* (the faceplate grey) and drops their emission, so the web is monochrome — the rung raises `glyph_faceplate` to 0.55 so the beads have an albedo to glow with (`albedo × emissive` is the core), and the effect's colours are lost; a hue lane cannot help (`apply_hsv` on a grey is a grey). Fix: feed `emits` as the plexus tints while a ring is live (`world.rs`). No dispersion reaches a rod: `glass_dispersion` is the cube path's and the spectral lane traces the TLAS, which the impostors are not in — so **the T5 dwell under this rung traces no geometry** (unreasoned-through, not measured). The backplane instance is a node. Above `NODE_CAP` (1400) lit cells the web sub-samples |
+| **`cathode`** | The same web as circuitry: emissive Standard nodes (emissive 5, radius 0.28) on thin metallic wires (emissive 1.2, radius 0.07), tilt 12° | The same three gaps as `bottled`, plus: **proximity has no glyph identity.** "Edges wire the cells *within* each glyph" needs the ring's `character_id` as a group key; at 2.05 spacings the wiring reaches a stroke's vertical neighbour (2.0 on a 2:1 cell) and therefore also bridges a one-column gap (also 2.0) — `math::plexus_graph` would need a per-node group |
+
+Every rung: `glyph_dark_tiles` **on** for the four tile rungs (the spec sheet tiles every cell)
+and **off** for the two webs (a node per cell is a lattice); glyphs-as-lights **off** for the two
+webs (the impostor path empties `instances`, so there is nothing to lower). TAA cannot be
+carried by any of them — `temporal[0]` is param-only, said once in T3 and still true.
+
 ---
 
 ## 11. Light in a bottle — and the one gap
@@ -659,7 +684,7 @@ already exists, because most of this is wiring:
 | Camera held, framed, slightly tilted; dark environment | Orbiting, far, the atmosphere's fog behind the grid | T3 (in flight): framing from the grid's bounds in cell units, a held camera while a ring is live, `faceplate` with a dark environment and TAA off | T3 |
 | Phosphor persistence | **Not in this document until now** | Producer-side per-cell decay in linear light, published as the cell's colour, with a `persist` flag so the renderer can tell a trail from a lit cell — **landed as T11** (`organon-glyphs --persist-ms`, `SGR_PERSIST`; §15.1) | `organon-glyphs` |
 | The scatter phase: motion streaks with dispersion | **Not in this document until now** | A velocity-keyed streak in post, RGB-split; the one row that is new rendering work rather than wiring | `fx.wgsl`, `post.rs` |
-| Six preset rungs (§10) | Only `faceplate` is scoped (T3) | Preset data once T3's knobs exist; `bottled`/`cathode` ride T6's capsule core, already landed | `preset.rs` (data), after T3 |
+| Six preset rungs (§10) | Only `faceplate` is scoped (T3) | **T14, landed:** all six as preset data over T3's knobs (§10.1 — shipped values and the knob each rung is missing, per rung). `bottled`/`cathode` ride T6's core through the Plexus impostor path, the one draw it reaches; the three gaps they share are `world.rs`'s (the plexus pass keeps the tiles' tint, not their emission) | `preset.rs` (data), after T3 |
 
 📌 **Confidence, stated plainly.** The still "after" plate is reachable with what exists — every
 row above except two names a lobe, a pass or a selection that is already in the tree. The two
@@ -782,8 +807,20 @@ until it lands.
   with `glyph_margin 0` so the grid rather than the backplane fills the frame. Registering
   those ids, or a harness leg that runs the standalone, closes the gap. No GPU touched this;
   the first real number is the coordinator's to take.
-- **T14 — the preset ladder.** `nixie`, `foundry`, `anodized`, `bottled`, `cathode` as preset
-  data over T3's knobs and T6's core. **After T3; needs a GPU look per rung.**
+- **T14 — the preset ladder. Landed** (`main @ 997cd96` + this change): `nixie`, `foundry`,
+  `anodized`, `bottled`, `cathode` as preset data over T3's knobs and T6's core, seeded under
+  `seeded_text_v3` beside `faceplate`. §10.1 is the per-rung ledger — what each is built from
+  and the knob it is missing. Three things the brief assumed that the tree contradicted, each
+  settled by reading the draw rather than the vocabulary: the capsule core reaches **only** the
+  capsule impostor draw, so `nixie` (a tile rung) does not set it; there is no thin-film
+  `MaterialType`, and the physical film model is Glass-only, so `anodized` is the iridescence
+  lobe over a metal; and the two web rungs are honest only because `world.rs` already runs the
+  plexus pass *after* the grid lowers — which also means the plexus takes the faceplate tint and
+  drops the emission, so both webs are monochrome until that pass reads `emits`. The seed
+  gained one rule: a rung name no earlier marker wrote is **never replaced** whatever its
+  shape (`TEXT_RUNGS_SEEDED_BEFORE`), because a pre-organon#124 save has no `exposed` set and a
+  user's own `nixie` from that era would otherwise read as factory. **Needs a GPU look per
+  rung**; none has had one.
 - **T15 — the scatter.** Velocity-keyed motion streaks with an RGB split for the raster phase.
   New post work; **last**, and allowed to fail without blocking anything above.
 
