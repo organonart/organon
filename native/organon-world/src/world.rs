@@ -5174,9 +5174,18 @@ impl World {
         if plexus && boids_creature < 0 && !self.geom.instances.is_empty() {
             plex.nodes.clear();
             plex.ntints.clear();
-            for (m, t) in self.geom.instances.iter().zip(self.geom.tints.iter()) {
+            // organon#217 W17: while a ring is live the cloud IS the lowered grid, and a
+            // node takes the tile's EMISSION, not its faceplate tint — this loop used to
+            // copy `tints` and drop `emits`, which is why `bottled` / `cathode` came up
+            // grey (`plexus_node_colour`). The gate is the renderer's own parallel-buffer
+            // convention (`emits.len() == instances.len()`, else no emission); `lower_grid`
+            // is the only filler of all three, so a live ring always passes it, and a
+            // generator frame (no ring, `emits` empty) keeps its tint byte for byte.
+            let glyph_emits = self.glyph_pt.live && self.geom.emits.len() == self.geom.instances.len();
+            for (i, (m, t)) in self.geom.instances.iter().zip(self.geom.tints.iter()).enumerate() {
                 plex.nodes.push(m.w_axis.truncate());
-                plex.ntints.push(*t);
+                let e = if glyph_emits { self.geom.emits[i] } else { Vec4::ZERO };
+                plex.ntints.push(plexus_node_colour(glyph_emits, *t, e));
             }
             // Plexus replaces the instance buffer, so any Demo/Neural sub-batches the
             // generator emitted no longer describe it — clear them, or the renderer
@@ -14406,6 +14415,66 @@ fn glyph_light_radius_frac(lane: f32, glyph_live: bool, cell_w: f32, light_min: 
         return lane;
     }
     lane.max(0.0) * cell_w / diag
+}
+
+/// Pure: the colour a Plexus node carries for one instance of the cloud it is built from
+/// (organon#217 W17). With no glyph ring the node keeps the generator's tint — every
+/// field the web has ever wired, byte for byte (invariant #4). **While a ring is live the
+/// cloud is the lowered grid, and the node's colour is the tile's EMISSION**: `emit.rgb ×
+/// emit.w`, the linear radiance `cube.wgsl` adds past the albedo and the light lowering
+/// (`glyph_light_candidates`) ranks by — never the faceplate tint, which is the near-black
+/// dielectric in FRONT of the phosphor (§4) and reads as the same grey on every tile, so
+/// no hue lane could recolour it (`apply_hsv` on a grey is a grey). It feeds `ntints`
+/// because that is the only lane there is: the plexus impostor (`ArmInstance::color`)
+/// carries one colour and `fs_capsule` derives BOTH its albedo and, × the material's
+/// glow, its emission from it — the T6 core shows exactly that emission through the
+/// shell — and Tier 1's markers ride `tints` the same way. A dark tile (`emit.rgb == 0`)
+/// is a dark node, not a faceplate-grey one; the backplane (emission zero) likewise. `w`
+/// is kept from the tint: neither tier reads it, and `lower_grid` writes 1.
+fn plexus_node_colour(glyph_live: bool, tint: Vec4, emit: Vec4) -> Vec4 {
+    if !glyph_live {
+        return tint;
+    }
+    Vec4::new(emit.x * emit.w, emit.y * emit.w, emit.z * emit.w, tint.w)
+}
+
+#[cfg(test)]
+mod plexus_glyph_tests {
+    use super::*;
+
+    /// `GlyphLook::DEFAULT.faceplate`, as `lower_grid` tints every tile.
+    fn faceplate() -> Vec4 {
+        Vec4::new(0.03, 0.03, 0.03, 1.0)
+    }
+
+    /// A lit tile's node is its emission — the linear radiance `emit.rgb × emit.w`, the
+    /// term `cube.wgsl` adds — and not the faceplate the tile was tinted with.
+    #[test]
+    fn a_lit_tile_makes_its_node_the_emission_not_the_faceplate() {
+        let emit = Vec4::new(0.0, 0.8, 0.1, 3.0);
+        let got = plexus_node_colour(true, faceplate(), emit);
+        assert_eq!(got.truncate(), Vec3::new(0.0, 2.4, 0.3), "a lit tile's node must carry the tile's emission scaled by its gain, not the faceplate");
+        assert_ne!(got.truncate(), faceplate().truncate(), "a lit tile's node must not be the faceplate grey");
+    }
+
+    /// A dark tile — or the backplane, whose emission is zero — makes a dark node, not a
+    /// faceplate-grey (or backplane-grey) one.
+    #[test]
+    fn a_dark_tile_makes_a_dark_node_not_a_faceplate_grey_one() {
+        let dark = plexus_node_colour(true, faceplate(), Vec4::new(0.0, 0.0, 0.0, 3.0));
+        assert_eq!(dark.truncate(), Vec3::ZERO, "a dark tile's node must be dark");
+        let backplane = plexus_node_colour(true, Vec4::new(0.06, 0.06, 0.065, 1.0), Vec4::ZERO);
+        assert_eq!(backplane.truncate(), Vec3::ZERO, "the backplane node must be dark");
+    }
+
+    /// Invariant #4: with no ring the generator's tint is the node's colour, whatever
+    /// sits in the emit lane.
+    #[test]
+    fn with_no_ring_the_node_keeps_the_generator_tint() {
+        let tint = Vec4::new(0.9, 0.2, 0.4, 1.0);
+        assert_eq!(plexus_node_colour(false, tint, Vec4::new(1.0, 1.0, 1.0, 5.0)), tint);
+        assert_eq!(plexus_node_colour(false, tint, Vec4::ZERO), tint);
+    }
 }
 
 #[cfg(test)]

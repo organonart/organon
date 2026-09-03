@@ -903,7 +903,11 @@ wired to its up-to-`max_links` nearest neighbours within a radius by a thin stru
 `visual.rs`). The radius/strut/marker sizes are unitless multipliers of the field's
 characteristic node spacing (bbox diag ÷ n^⅓), so the web reads consistently across
 generators; struts inherit their endpoints' average tint. Raymarch generators emit no
-instances, so it's a no-op for them. `Shared.plexus[4]` = `[radius_mul, max_links,
+instances, so it's a no-op for them. ⚠️ **While the glyph ring is live the cloud is the
+lowered grid, and a node's colour is the tile's *emission*, not its faceplate tint**
+(`world.rs::plexus_node_colour`, organon#217 W17): `emit.rgb × emit.w`, the linear radiance
+`cube.wgsl` adds — fed as the node tint because the impostor has one colour lane (`fs_capsule`
+derives both albedo and, × glow, emission from it). No ring: the generator's tint, byte for byte. `Shared.plexus[4]` = `[radius_mul, max_links,
 strut_mul, marker_mul]`, captured **Generator**, inert unless `surface_mode == 9`. **Shape
 morph** (`plexus4[0..2]` = `[node_shape, edge_shape]`): Tier-1 markers morph cube → rounded
 cube → sphere (`math::morph_cube_mesh`) and struts morph a sharp-square → circle cross-section
