@@ -893,14 +893,52 @@ generator draw would have read. `emit_upload_plan(high, lit)` — pure, tested w
 GPU — returns the dirty range beyond this upload, `[lit, high)`, and the new mark, so
 after any sequence of frames the possibly-non-zero set is exactly `[0, last lit)`.
 
-📌 **What does NOT see the emission yet:** the hardware-RT and path-trace passes take
-`inst_buf`/`tint_buf` as storage and shade the hit from the tint, so a ray-traced
-reflection of the glyph grid is a reflection of dark faceplates. Carrying `emit_buf` into
-the hit shading is the same shape of change one layer down, and it is named rather than
-done in T1. This is the **cube pipeline's** emission only: the capsule impostors have
-their own per-instance emission in `particles.wgsl` (the `ArmInstance` colour), which is
-what T6's coaxial glass capsule shows through its shell (the "Shaders" entry below) — the
-`bottled` / `cathode` presets will ride that path, not this attribute.
+📌 **The ray-traced passes read it too (organon#217 T8).** T1 named the gap — the
+hardware-RT and path-trace passes took `inst_buf`/`tint_buf` as storage and shaded a hit
+from the tint alone, so a ray-traced reflection of the glyph grid was a reflection of dark
+faceplates and the T5 dwell (below) converged to **black**, measured on the first GPU look
+(2026-09-02, `doc/pbr_text_engine.md` §15). T8 closes it for the three passes that shade a
+hit: `rt_pathtrace`, `rt_reflect` and `rt_gi` bind `emit_buf` as a read-only storage
+buffer beside the instance and tint buffers (`emits` at `@binding(7)` in the tracer — after
+the caustic map and the cache weights — and `@binding(5)` in the other two), index it by
+the same `instance_custom_data` the hit reports, and add `instance_emission(idx)` = **the
+same expression `cube.wgsl` adds**, `emit.rgb * emit.w`, into the hit's radiance — pinned
+textually identical across the three shaders by test, so raster and traced agree on what a
+lit cell is worth (§9's second law). The tracer treats an emissive hit as a light: the
+radiance is added and the path **terminates**, in both the RGB and the hero-wavelength
+loops (the "lights are emitters" simplification — a lit tile's tint is the near-black
+faceplate, so the dropped continuation is ≤ albedo × incident, and a fullscreen grid then
+costs one ray per pixel instead of `bounces`); the gate is the emission's *value*, so a dark
+tile with `emit == 0` keeps bouncing and shows the room. In GI-add mode the primary-hit
+emission is skipped like the other primary terms (the raster already shows it) **and the
+path continues** — the tracer owes that pixel its indirect light, so the termination sits
+inside the same guard (#232 review). Its
+next-event estimation reaches only the key and fill directions — there is **no light list
+and no light selection** — so a lit tile is found by the cosine bounce landing on it, which
+converges over the dwell but is noisier than NEE; an emitter list would ride T10's
+brightest-N selection and is a documented hook, not built. **What does not read it, and
+why:** `rt_shadow` and `rt_ao` trace visibility only (a hit is a boolean, never shaded), and
+`rt_caustic` shades hits for the *photon's* BSDF, where the landing surface's emission plays
+no part — emitters as photon *sources* would need a per-frame CDF over instances and is a
+tier of its own (its layout comment names the binding it would take). 🚨 **Inert by
+construction still holds**: the all-zero buffer every non-glyph draw binds makes every added
+term exactly zero and the termination gate false, so each pass's output and RNG stream is
+byte-identical. ⚠️ The binding is a bind-group entry, not a vertex slot, and wgpu validates
+it at *draw* time — a layout entry with no matching `create_bind_group` entry is a runtime
+panic CI cannot reach — so each pass's layout is a pure `layout_entries()` its unit test
+holds: index, read-only storage, fragment visibility, and that the WGSL declares `emits` at
+the **same** `@binding`. 🚨 And the buffer itself must be *created* with `STORAGE`, or
+wgpu refuses the bind group at creation — `make_emit_buf` was `VERTEX | COPY_DST` only,
+and nothing but a GPU would have said so (#232 review). Every buffer an RT layout binds as
+storage — instances, tints, emission, in `new` and on every regrow path — is now created
+with one `RT_HIT_BUFFER_USAGE`, and `rt_hit_buffer_tests` walks every `BufferDescriptor`
+in `render.rs` and fails naming the label if one of those is created any other way.
+Nothing here has been looked at on a GPU: what a session must see
+is the dwell converging to a *lit* still, and a glossy backplane reflecting lit glyphs.
+This is the **cube pipeline's** emission only: the capsule impostors have their own
+per-instance emission in `particles.wgsl` (the `ArmInstance` colour), which is what T6's
+coaxial glass capsule shows through its shell (the "Shaders" entry below) — the `bottled` /
+`cathode` presets will ride that path, not this attribute.
 
 The producer of the only non-empty `emits` today is `world.rs`'s `glyph_grid_geometry`
 (the glyph ring, `organon-core/src/glyph_ring.rs::lower_grid` — see `ARCHITECTURE.md`'s

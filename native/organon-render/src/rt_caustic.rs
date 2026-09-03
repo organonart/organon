@@ -65,6 +65,14 @@ impl CausticMap {
                 storage_entry(2, false), // photon splat accumulator (atomics)
                 storage_entry(3, true),  // instances
                 storage_entry(4, true),  // tints
+                // organon#217 T8 — deliberately NO emit buffer here. Photons leave the
+                // KEY light and walk the specular chain; `shade_hit` below is the
+                // landing surface's BSDF, and that surface's own emission plays no part
+                // in the photon's transport. What emission would mean for this pass is
+                // "emitters as photon SOURCES" — sampling tiles proportionally to their
+                // emitted flux, which needs a per-frame CDF over `emits` — and that is a
+                // tier of its own. It would bind `emit_buf` read-only at binding 6, beside
+                // these, exactly as `rt_pathtrace` binds it at 7 (`EMIT_BINDING`).
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::COMPUTE,

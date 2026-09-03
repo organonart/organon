@@ -13,7 +13,9 @@
 //
 // Hits are shaded from the hit instance's transform + tint (the #195 local-space
 // reconstruction: for the unit cube the local hit position IS both the RGB-cube
-// albedo and the face normal). Diffuse is the default; when the #258 Tier-2
+// albedo and the face normal) — and, since organon#217 T8, from its per-instance
+// emission (`emits`, the cube pipeline's @location(8) buffer): an emissive hit adds
+// `emit.rgb * emit.w` and terminates the path. Diffuse is the default; when the #258 Tier-2
 // dielectric enable (`p.params2.x`) is on the bounce loop grows a real material:
 // Glass/Refractive (`u.amb.y` 2/3) shade as a STOCHASTIC two-interface dielectric
 // (exact-Fresnel reflect/transmit split, `refract` on entry AND exit, total-
@@ -76,6 +78,10 @@ struct PtU {
 // #256 T0: the live radiance cache's trained SIREN weights (419 floats); zeroed +
 // unread when the cache is off (`p.nrc0.x == 0`). `NRC_WEIGHTS` comes from nrc.wgsl.
 @group(0) @binding(6) var<storage, read> nrc_w: array<f32, NRC_WEIGHTS>;
+// organon#217 T8 — the per-instance EMISSION the cube pipeline reads at @location(8):
+// linear radiance in rgb, gain in w. The same `emit_buf` the raster path binds at vertex
+// slot 3, indexed by the same instance id the hit reports (`instance_custom_data`).
+@group(0) @binding(7) var<storage, read> emits: array<vec4<f32>>;
 @group(1) @binding(0) var tlas: acceleration_structure;
 
 const PI: f32 = 3.14159265359;
@@ -145,10 +151,20 @@ fn sky(dir: vec3<f32>) -> vec3<f32> {
 }
 
 // Shade a committed hit into (albedo, world normal facing the ray, world pos).
+// organon#217 T8 — the per-instance emission at a hit: THE SAME EXPRESSION `cube.wgsl` adds
+// into its emissive term from @location(8) (`emit.rgb * emit.w`), so raster and traced agree
+// on what a lit cell is worth (§9's second law). The all-zero buffer every non-glyph draw
+// binds makes this exactly vec3(0.0) — invariant #4.
+fn instance_emission(idx: u32) -> vec3<f32> {
+    let e = emits[idx];
+    return e.rgb * e.w;
+}
+
 struct Hit {
     albedo: vec3<f32>,
     n: vec3<f32>,
     pos: vec3<f32>,
+    emit: vec3<f32>, // organon#217 T8: the instance's own radiance (0 for the lens / no glyph)
 };
 fn shade_hit(origin: vec3<f32>, dir: vec3<f32>, idx: u32, t: f32, tube: bool) -> Hit {
     let m = insts[idx];
@@ -177,6 +193,7 @@ fn shade_hit(origin: vec3<f32>, dir: vec3<f32>, idx: u32, t: f32, tube: bool) ->
     o.albedo = albedo_loc * tints[idx].rgb;
     o.n = hn;
     o.pos = hp;
+    o.emit = instance_emission(idx);
     return o;
 }
 
@@ -450,6 +467,15 @@ fn fs_main(in: VsOut) -> Out {
                     let idx = min(hit.instance_custom_data, arrayLength(&insts) - 1u);
                     h = shade_hit(so, sd, idx, hit.t, tube);
                 }
+                // organon#217 T8 — the per-instance emission's response at λ (all
+                // materials; the primary hit is skipped in GI-add like the RGB path), and
+                // an emitter TERMINATES the path — see the RGB loop for the reasoning.
+                // `spectral_response(0, λ)` is exactly 0 and `+ 0.0` is exact, so with the
+                // all-zero buffer the sum and the RNG stream are byte-identical.
+                if (!(gi_only && b == 0u)) {
+                    l_rad += tp * spectral_response(h.emit, lambda);
+                    if (any(h.emit > vec3<f32>(0.0))) { break; }
+                }
                 if (dielectric && mat_type >= 0.5 && mat_type < 1.5 && !use_lens) {
                     // Chrome: perfect specular mirror (matches the RGB path — no colour,
                     // no NEE); dispersion only shows on refractive surfaces.
@@ -584,10 +610,26 @@ fn fs_main(in: VsOut) -> Out {
             h = shade_hit(origin, dir, idx, hit.t, tube);
         }
 
-        // Emissive: the surface's own glow (all materials). Skipped at the primary
-        // hit in GI-add mode (the raster already shows the surface's own glow).
+        // Emissive: the surface's own glow (all materials), plus its per-instance
+        // emission (organon#217 T8 — the glyph ring's phosphor, `cube.wgsl`'s exact
+        // term). Skipped at the primary hit in GI-add mode (the raster already shows
+        // both). Two products, not one factored one: `throughput * 0.0` then `+ 0.0`
+        // is exact, so the all-zero buffer leaves the sum byte-identical.
         if (!(gi_only && b == 0u)) {
-            radiance += throughput * h.albedo * u.mat.z;
+            radiance += throughput * h.albedo * u.mat.z + throughput * h.emit;
+            // organon#217 T8 — an emissive instance is a LIGHT: its radiance is in, and the
+            // path terminates here (the "lights are emitters" simplification). A lit tile's
+            // tint is the near-black faceplate (§4), so what the continuation would have
+            // added is ≤ albedo × incident — under 4 % — and a fullscreen grid then costs
+            // one ray per pixel instead of `bounces`. What is given up is the faceplate's own
+            // sheen over a LIT cell. Gated on the emission's VALUE, never on "is this a glyph
+            // instance": a dark tile with emit == 0 keeps bouncing and shows the room. With
+            // the all-zero buffer every non-glyph draw binds this is never taken —
+            // byte-identical, invariant #4. INSIDE the GI-add guard on purpose (#232
+            // review): in GI-add the raster already shows the tile's emission and the
+            // tracer owes the pixel its INDIRECT light, so a primary ray on a lit tile
+            // continues into the bounce instead of returning nothing.
+            if (any(h.emit > vec3<f32>(0.0))) { break; }
         }
 
         var did_specular = false;

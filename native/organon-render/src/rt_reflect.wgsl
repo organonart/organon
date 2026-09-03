@@ -55,6 +55,10 @@ struct RtReflectU {
 @group(0) @binding(2) var depth_tex: texture_depth_2d;
 @group(0) @binding(3) var<storage, read> insts: array<mat4x4<f32>>;
 @group(0) @binding(4) var<storage, read> tints: array<vec4<f32>>;
+// organon#217 T8 — the per-instance EMISSION the cube pipeline reads at @location(8):
+// linear radiance in rgb, gain in w (the same `emit_buf` the raster path binds at vertex
+// slot 3), so a reflection of the glyph grid is lit glyphs, not dark faceplates.
+@group(0) @binding(5) var<storage, read> emits: array<vec4<f32>>;
 @group(1) @binding(0) var tlas: acceleration_structure;
 
 struct VsOut {
@@ -110,6 +114,15 @@ fn cone_dir(dir: vec3<f32>, radius: f32, xi: vec2<f32>) -> vec3<f32> {
     let rr = sqrt(xi.x) * radius;
     let a = xi.y * 6.28318530718;
     return normalize(dir + (t * cos(a) + b * sin(a)) * rr);
+}
+
+// organon#217 T8 — the per-instance emission at a hit: THE SAME EXPRESSION `cube.wgsl` adds
+// into its emissive term from @location(8) (`emit.rgb * emit.w`), so raster and traced agree
+// on what a lit cell is worth (§9's second law). The all-zero buffer every non-glyph draw
+// binds makes this exactly vec3(0.0) — invariant #4.
+fn instance_emission(idx: u32) -> vec3<f32> {
+    let e = emits[idx];
+    return e.rgb * e.w;
 }
 
 // Inverse of the 3x3 linear part of an instance transform (rotation·scale —
@@ -229,7 +242,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 + u.fill_light.w * max(dot(hn, l_fill), 0.0));
         let ambient = albedo * u.amb.x * u.env_tint.rgb * 0.3;
         let emissive = albedo * u.mat.z;
-        radiance = radiance + emissive + diffuse + ambient;
+        // organon#217 T8 — the instance's own radiance (the glyph ring's phosphor);
+        // `+ vec3(0.0)` is exact, so the all-zero buffer is byte-identical.
+        let phosphor = instance_emission(idx);
+        radiance = radiance + emissive + phosphor + diffuse + ambient;
         hitcount = hitcount + 1u;
     }
     if (hitcount == 0u) {
