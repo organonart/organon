@@ -294,12 +294,29 @@ as stepping. Three fixes now, ranked cheapest first, and they compose:
   path and `None` when an effect calls `set_coordinate` to teleport it, and `previous_coord` is
   public. Interpolate `previous → current` only while a path is active, and the "slides where it
   should cut" failure of the first draft goes away without touching ttfx. **Tier 1 does this.**
-- **Carry the pre-rounded point.** `geometry.rs` already has a private `FloatPoint` for
-  De Casteljau intermediates. A `Motion.current_point: (f64, f64)` written beside `current_coord`
-  is an *additive* field — the rounded output is unchanged, so ttfx's byte-for-byte parity suite
-  against Python is untouched, which is what makes this an upstream PR rather than a fork.
-  Exact, small, and worth sending.
-- **Fork.** Not needed on any evidence so far.
+- **Carry the pre-rounded point.** ✅ **Done — W6, organonart/ttfx#1.** `Motion.current_pos:
+  (f64, f64)` (the field this section first called `current_point`) is written beside
+  `current_coord` at every write: `path_step` now returns the float pair and `motion_move` rounds
+  it through `Motion::set_position`, so `round_half_even(current_pos) == current_coord` holds by
+  construction; `set_coordinate` sets it to the integer coordinate's exact value, and the two
+  direct writes in `matrix.rs` plus the `SetCoordinate` event action go through it. `Motion::
+  sub_cell()` is the remainder. The rounded output is unchanged — same banker's rounding at the
+  same moment — which is what makes this an upstream PR rather than a fork. **Checked, not
+  reasoned:** ttfx's Python-traced engine golden (`engine_traces_match_python`, which logs
+  `current_coord` every tick of every motion scenario) passes, and failed with 317 mismatches
+  when the new rounding site was deliberately given swapped axes; and every case in
+  `tools/parity/cases.txt` at both suite seeds was dumped with `--parity-dump` from a binary
+  built at the previous commit and from this one and `cmp`'d byte for byte (numbers in §12).
+  ⚠️ The parity suite *proper* is Linux/glibc-pinned and did not run on the Windows box; the
+  differential run is the stronger claim for this change anyway, since it measures "unchanged"
+  directly rather than through Python. **On the Organon side** the producer fills the ring's
+  reserved `sub_x`/`sub_y` with `current_pos − current_coord` (cells, `+y` up on both sides — the
+  row *index* is flipped, the remainder is not; `f64→f32` is the only loss), and `lower_grid`
+  slides between the two **exact** positions. ⚠️ That last part was not optional: the T1
+  consumer already added `sub_x`/`sub_y` after lerping cell *centres*, so the moment a producer
+  filled them a character at 0.3 cells/tick would have jumped *back* toward the cell boundary at
+  the start of every tick. Zero-sub producers lower byte-identically.
+- **Fork.** Not needed on any evidence so far, and the upstream PR above is the proof.
 
 ⚠️ **Two things the effects were authored against that a tile grid must not break.** First, the
 integer step is also what the effects' *timing* is authored against — `max_steps =
@@ -310,7 +327,10 @@ effect set is authored for a cell twice as tall as it is wide. Render the grid a
 and every ring becomes an ellipse. Keep the cell aspect, and put it in the ring header where the
 renderer cannot guess it.
 
-📌 This was "the highest-risk unknown". It is now a Tier 1 gate plus an optional upstream patch.
+📌 This was "the highest-risk unknown". It became a Tier 1 gate plus an upstream patch, and
+**the patch is sent and the field is filled (W6)** — the risk is retired. What remains is
+taste, not risk: whether a slide between exact positions reads better than the cell-quantised
+one on a real render, which is a GPU question T3's look controls are the place to answer.
 
 ---
 
@@ -459,6 +479,23 @@ search ttfx` (absent); `cargo check` and `cargo build --release` on Windows; the
 settle/hold table in §8 (dumps in the session scratchpad, reproducible from the command given
 there); `bin/omarchy-screensaver`'s invocation (`--frame-rate 120`, no `--xterm-colors`, `while
 true`); the 2:1 cell aspect in `geometry.rs` (`double_row_diff`, the doubled x on circles).
+
+**Measured 2026-09-02, W6, against `organonart/ttfx @ 8d79d82` (this branch's head; its base is
+`7203e35`):** `path_step` returns the pre-rounded pair and `Motion::set_position` is the only
+float→`Coord` site; `cargo test` in ttfx on Windows — 20 unit + 5 golden/trace + 5 new tests,
+all green, and `engine_traces_match_python` failing with **317** mismatched lines under a
+deliberately swapped rounding axis; the **differential parity run** — every case in
+`tools/parity/cases.txt` at seeds 42 and 1337, `--parity-dump --max-frames 400`, pre-change
+binary against post-change binary, both built `--release` on the same Windows toolchain:
+**354 of 354 identical** (177 cases × 2 seeds, compared by SHA-256 and exit code; one case,
+`laseretch-group-quirk`, is a 48-byte dump on both sides and proves nothing about motion —
+every other dump is tens to hundreds of kilobytes of frames). The parity suite proper (Python reference, Linux/glibc) was **not** run here.
+On the Organon side: `sub_x`/`sub_y` round-trip through the ring as the exact `f32` pair, a
+placed character encodes `(0, 0)`, the producer's remainder equals `current_pos − current_coord`
+computed inline through a real engine tick (a swapped helper axis fails with the pair
+reversed), and a swapped consumer axis fails `lower_grid`'s tile-placement test — all four
+mutation-tested. ⚠️ Not measured: the look. No frame has been rendered with a non-zero
+remainder; "smoother" is reasoned from the arithmetic.
 
 **Attributed, not measured:** that `ttfx` is DHH's Rust port of TTE, written by having an agent
 port the Python — **James, 2026-09-02.** ttfx's own `LICENSE` names 37signals / omacom-io and
