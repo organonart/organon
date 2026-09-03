@@ -1382,10 +1382,15 @@ mod tests {
             metallic, roughness, exposure, env_intensity, env_rotation, bloom_intensity,
             bloom_threshold, ior, //
             subsurface, sss_distortion, sss_power, iridescence, irid_scale, irid_shift, //
-            cam_speed, cam_kick, cam_damping, mat_hue, tempo,
+            cam_speed, cam_kick, cam_damping, mat_hue, tempo, //
+            // organon#217 T3 — the PBR text look, its held camera, the capsule core.
+            glyph_cell_w, glyph_depth, glyph_gap, glyph_gain, glyph_faceplate, //
+            glyph_back_r, glyph_back_g, glyph_back_b, glyph_margin, glyph_back_depth,
+            glyph_default_fg, glyph_bevel, glyph_crown, //
+            glyph_cam_tilt, glyph_cam_zoom, capsule_core, capsule_absorb,
         );
         int!(loop_count_x, loop_count_y, loop_count_z, loop_count_q);
-        boolean!(bell_physical, animate, pulse);
+        boolean!(bell_physical, animate, pulse, glyph_cam_hold);
         choice!(
             cam_path: HostCamPath,
             rot_func: HostFuncName,

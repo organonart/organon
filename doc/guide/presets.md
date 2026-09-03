@@ -45,7 +45,11 @@ touched.
   The look it dresses — cell width, extrusion, gap, emission gain, bevel, face crown,
   faceplate, backplane — is the **PBR Text** card on the Look tab, and the held camera
   (hold / tilt / zoom) is the **Text Camera** card on the Motion tab. Both are inert until
-  a producer is running, so they cost nothing in any other preset.
+  a producer is running, so they cost nothing in any other preset. Every control on both
+  cards, plus the capsule core, is also on the CLI vocabulary
+  (`organon set glyph_bevel 0.12 glyph_cam_hold 1`) — the ids and ranges are in
+  [the parameter reference](../reference/parameters.md), so a script can dress the look
+  without opening the editor.
 
 ## Beat-quantized recall
 

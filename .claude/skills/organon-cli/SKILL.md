@@ -71,6 +71,19 @@ organon do '{"moves":[{"op":"set_param","id":"glow","value":1.0}]}'   # a batch 
 organon recipe nebula                                # a whole described look at once
 ```
 
+The **PBR text look** is on the same vocabulary: the glyph tiles (`glyph_cell_w`,
+`glyph_depth`, `glyph_gap`, `glyph_gain`, `glyph_faceplate`, `glyph_back_r/g/b`,
+`glyph_margin`, `glyph_back_depth`, `glyph_default_fg`, `glyph_bevel`, `glyph_crown`),
+the held camera (`glyph_cam_hold`, `glyph_cam_tilt`, `glyph_cam_zoom`) and the capsule
+core (`capsule_core`, `capsule_absorb`). Ids are the parameter **field names**, never the
+four-character host ids the DAW sees (`gtbv`), and a flag is set as 0 / 1. They draw
+nothing until a text producer is publishing a glyph ring; the `faceplate` preset (recalled
+in the editor) sets the whole first rung at once, and these are how you tune it from here:
+
+```
+organon set glyph_cam_hold 1 glyph_bevel 0.12 glyph_crown 0.35 glyph_gain 3
+```
+
 `organon console …` is a **separate namespace, and it drives the console itself** —
 the lit surface behind the terminal text and the shape of the transcript, not the
 world in front of it:

@@ -472,6 +472,80 @@ pub fn param_desc(id: &str) -> Option<&'static str> {
             "Manual BPM for the beat-driven motion when NOT locked to a host — the free-running \
              clock speed."
         }
+        // ---- PBR text — the glyph ring's look (organon#217 T3). Nothing here draws until
+        // a text producer is publishing a glyph ring; the `faceplate` preset is the first
+        // rung, and these are how a script tunes it. Cell units unless said otherwise. ----
+        "glyph_cell_w" => {
+            "World units per text column — the one world-unit anchor of the glyph look; \
+             every other text dimension is a multiple of it. Raise to make the whole grid \
+             larger in the room."
+        }
+        "glyph_depth" => {
+            "How far each glyph tile extrudes from the backplane, in column widths. 0 = a \
+             flat printed face; higher = chunky keycaps that cast their own shadows."
+        }
+        "glyph_gap" => {
+            "Gap between a tile's back and the backplane, in column widths — the contact-shadow \
+             well. A little gives the tiles lift; 0 seats them flush."
+        }
+        "glyph_gain" => {
+            "Emission gain of the lit cells in SDR-white units — 1 = the terminal's own \
+             brightness; above ~2 the phosphor crosses the bloom threshold on its own and \
+             starts to glow."
+        }
+        "glyph_faceplate" => {
+            "Grey level of every tile's faceplate — the near-black dielectric the glyph is \
+             lit through. Keep it low (~0.03) so dark cells read as dark; raise for a \
+             lighter, plastic-looking key."
+        }
+        "glyph_back_r" => "Backplane tint, red channel (0..1). With G and B it sets the colour of the plate the tiles sit on.",
+        "glyph_back_g" => "Backplane tint, green channel (0..1).",
+        "glyph_back_b" => "Backplane tint, blue channel (0..1). Slightly above R and G gives the plate a cool cast.",
+        "glyph_margin" => {
+            "How far the backplane extends beyond the text grid, in column widths — the \
+             bezel around the text."
+        }
+        "glyph_back_depth" => {
+            "Thickness of the backplane slab, in column widths — matters when the camera \
+             tilts and its edge shows."
+        }
+        "glyph_default_fg" => {
+            "Grey used for a cell that has a symbol but no foreground colour of its own \
+             (the terminal default) — the brightness of plain, uncoloured text."
+        }
+        "glyph_bevel" => {
+            "The tiles' own rounded-box bevel — 0 = a sharp-edged tile, 1 = an ellipsoid. \
+             Separate from the cube field's `bevel`; a little (~0.1) is where light starts \
+             to catch the edges."
+        }
+        "glyph_crown" => {
+            "Face crown — a dome across each tile face so light moves across the flat of a \
+             key as the camera or lights move. 0 = flat. Normal-only: no geometry changes."
+        }
+        // ---- PBR text — the held camera (organon#217 T3) ----
+        "glyph_cam_hold" => {
+            "1 = while a glyph ring is live, hold the camera on a rig fitted to the text grid \
+             (auto-orbit, drag and follow bypassed) so the frame is identical frame to frame \
+             and the path tracer can converge. 0 = the ring inherits the orbit camera."
+        }
+        "glyph_cam_tilt" => {
+            "Camera pitch over the held text grid, in degrees — 0 = straight on; a few degrees \
+             is the letterpress look. Needs glyph_cam_hold = 1."
+        }
+        "glyph_cam_zoom" => {
+            "Multiplier on the fitted camera distance — 1 = the text grid fills the frame; \
+             below 1 moves in, above 1 pulls back. Needs glyph_cam_hold = 1."
+        }
+        // ---- Coaxial capsule core (organon#217 T6) ----
+        "capsule_core" => {
+            "Inner emissive core radius as a fraction of the outer radius, for every Glass / \
+             Refractive capsule impostor (arms, plexus edges). 0 = off. A lit wire inside a \
+             glass tube."
+        }
+        "capsule_absorb" => {
+            "Beer–Lambert density per outer radius through a capsule's glass, in the \
+             instance's own colour — 0 = a clear shell; higher = a tinted, murkier tube."
+        }
         _ => return None,
     })
 }
@@ -602,6 +676,26 @@ pub fn id_range(id: &str) -> Option<(f32, f32)> {
         // Harmonic generator for a jellyfish.
         "bell_physical" => (0.0, 1.0),
         "tempo" => (40.0, 240.0),
+        // organon#217 T3 — the PBR text look (`Shared.glyph`), its held camera
+        // (`Shared.glyph_cam`) and the capsule core (`Shared.capsule`). Bounds are the
+        // `flin(...)` calls in `params.rs`; `taper_round_trips_against_the_engine_range`
+        // pins them there.
+        "glyph_cell_w" => (0.1, 10.0),
+        "glyph_depth" => (0.0, 2.0),
+        "glyph_gap" => (0.0, 1.0),
+        "glyph_gain" => (0.0, 12.0),
+        "glyph_faceplate" => (0.0, 1.0),
+        "glyph_back_r" | "glyph_back_g" | "glyph_back_b" => (0.0, 1.0),
+        "glyph_margin" => (0.0, 10.0),
+        "glyph_back_depth" => (0.0, 2.0),
+        "glyph_default_fg" => (0.0, 1.0),
+        "glyph_bevel" | "glyph_crown" => (0.0, 1.0),
+        // A `BoolParam`, spelled 0/1 on the lane like `bell_physical`.
+        "glyph_cam_hold" => (0.0, 1.0),
+        "glyph_cam_tilt" => (-60.0, 60.0),
+        "glyph_cam_zoom" => (0.25, 4.0),
+        "capsule_core" => (0.0, 1.0),
+        "capsule_absorb" => (0.0, 8.0),
         _ => return None,
     };
     Some(r)
@@ -655,6 +749,26 @@ pub fn current(s: &Shared, id: &str) -> Option<f32> {
         "mat_hue" => s.matcol[0],
         "bell_physical" => s.bell[0],
         "tempo" => s.tempo,
+        // organon#217 T3 — slot order is `param_table.rs`'s `pack_glyph` / `pack_glyph_cam`
+        // / `pack_capsule` lists; `t3_ids_round_trip_through_their_shared_slots` pins it.
+        "glyph_cell_w" => s.glyph[0],
+        "glyph_depth" => s.glyph[1],
+        "glyph_gap" => s.glyph[2],
+        "glyph_gain" => s.glyph[3],
+        "glyph_faceplate" => s.glyph[4],
+        "glyph_back_r" => s.glyph[5],
+        "glyph_back_g" => s.glyph[6],
+        "glyph_back_b" => s.glyph[7],
+        "glyph_margin" => s.glyph[8],
+        "glyph_back_depth" => s.glyph[9],
+        "glyph_default_fg" => s.glyph[10],
+        "glyph_bevel" => s.glyph[11],
+        "glyph_crown" => s.glyph[12],
+        "glyph_cam_hold" => s.glyph_cam[0],
+        "glyph_cam_tilt" => s.glyph_cam[1],
+        "glyph_cam_zoom" => s.glyph_cam[2],
+        "capsule_core" => s.capsule[0],
+        "capsule_absorb" => s.capsule[1],
         _ => return None,
     })
 }
@@ -711,6 +825,25 @@ pub fn actuate(s: &mut Shared, id: &str, v: f32) -> bool {
         "mat_hue" => s.matcol[0] = v,
         "bell_physical" => s.bell[0] = v,
         "tempo" => s.tempo = v,
+        // organon#217 T3 — same slots as `current`, one per line so a swap is a diff.
+        "glyph_cell_w" => s.glyph[0] = v,
+        "glyph_depth" => s.glyph[1] = v,
+        "glyph_gap" => s.glyph[2] = v,
+        "glyph_gain" => s.glyph[3] = v,
+        "glyph_faceplate" => s.glyph[4] = v,
+        "glyph_back_r" => s.glyph[5] = v,
+        "glyph_back_g" => s.glyph[6] = v,
+        "glyph_back_b" => s.glyph[7] = v,
+        "glyph_margin" => s.glyph[8] = v,
+        "glyph_back_depth" => s.glyph[9] = v,
+        "glyph_default_fg" => s.glyph[10] = v,
+        "glyph_bevel" => s.glyph[11] = v,
+        "glyph_crown" => s.glyph[12] = v,
+        "glyph_cam_hold" => s.glyph_cam[0] = v,
+        "glyph_cam_tilt" => s.glyph_cam[1] = v,
+        "glyph_cam_zoom" => s.glyph_cam[2] = v,
+        "capsule_core" => s.capsule[0] = v,
+        "capsule_absorb" => s.capsule[1] = v,
         _ => return false,
     }
     true
@@ -870,7 +1003,13 @@ pub const ACTUATABLE_IDS: &[&str] = &[
     "subsurface", "sss_distortion", "sss_power", "iridescence", "irid_scale",
     "irid_shift", //
     "cam_path", "cam_speed", "cam_kick", "cam_damping", //
-    "mat_hue", "bell_physical", "tempo",
+    "mat_hue", "bell_physical", "tempo", //
+    // organon#217 T3 — the PBR text look, its held camera, the capsule core.
+    "glyph_cell_w", "glyph_depth", "glyph_gap", "glyph_gain", "glyph_faceplate",
+    "glyph_back_r", "glyph_back_g", "glyph_back_b", "glyph_margin", "glyph_back_depth",
+    "glyph_default_fg", "glyph_bevel", "glyph_crown", //
+    "glyph_cam_hold", "glyph_cam_tilt", "glyph_cam_zoom", //
+    "capsule_core", "capsule_absorb",
 ];
 
 /// #452: the CLI channel's startup seed — the cursor adopts the lines present
@@ -2635,6 +2774,46 @@ mod tests {
             assert_eq!(apply_ops(&AgentAction::SetParams(vec![(id.into(), v)])),
                        vec![ApplyOp::Set(id.into(), v)]);
         }
+    }
+
+    /// organon#217 T3's eighteen ids each own one `Shared` slot, and no two share one.
+    ///
+    /// Distinct markers go in through `actuate`, every one reads back through `current`
+    /// unchanged, and the three blocks hold exactly those markers and nothing else — so a
+    /// route that lands two ids on one slot, or one id outside its block, is a named
+    /// failure. Which slot each id names is pinned against `param_table.rs`'s slot lists
+    /// in the root crate (`agent::tests::t3_routes_agree_with_the_param_table_slot_lists`);
+    /// this crate cannot see those lists, so this half checks only that the routes are
+    /// injective and in range.
+    #[test]
+    fn t3_ids_round_trip_through_distinct_shared_slots() {
+        const T3: [&str; 18] = [
+            "glyph_cell_w", "glyph_depth", "glyph_gap", "glyph_gain", "glyph_faceplate",
+            "glyph_back_r", "glyph_back_g", "glyph_back_b", "glyph_margin", "glyph_back_depth",
+            "glyph_default_fg", "glyph_bevel", "glyph_crown", //
+            "glyph_cam_hold", "glyph_cam_tilt", "glyph_cam_zoom", //
+            "capsule_core", "capsule_absorb",
+        ];
+        let mut s = Shared::default();
+        // Markers inside every id's range — `actuate` clamps, so a marker outside a
+        // range reads back as the bound and looks like a wrong slot. The tightest floor
+        // is `glyph_cam_zoom`'s 0.25, the tightest top is 1.0; 0.3 … 0.81 fits them all.
+        let marker = |i: usize| 0.3 + i as f32 * 0.03;
+        for (i, id) in T3.iter().enumerate() {
+            assert!(ACTUATABLE_IDS.contains(id), "{id} is not actuatable");
+            assert!(actuate(&mut s, id, marker(i)), "{id} has no Shared write route");
+        }
+        for (i, id) in T3.iter().enumerate() {
+            let marker = marker(i);
+            assert_eq!(current(&s, id), Some(marker), "{id} did not read back its own marker");
+        }
+        // The three blocks hold exactly 18 non-zero slots — one per id, none shared.
+        let written = s.glyph.iter().chain(s.glyph_cam.iter()).chain(s.capsule.iter());
+        assert_eq!(
+            written.filter(|v| **v != 0.0).count(),
+            T3.len(),
+            "two T3 ids share a Shared slot, or one landed outside its block"
+        );
     }
 
     #[test]

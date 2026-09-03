@@ -246,6 +246,10 @@ pub(crate) fn slot_facts(p: &OrganicMathParams) -> Vec<SlotFacts> {
     crate::param_table::pack_pbr::facts(p, &mut out);
     crate::param_table::pack_surface_fx::facts(p, &mut out);
     crate::param_table::pack_camera::facts(p, &mut out);
+    // organon#217 T3 — the PBR text look, its held camera, the capsule core.
+    crate::param_table::pack_glyph::facts(p, &mut out);
+    crate::param_table::pack_glyph_cam::facts(p, &mut out);
+    crate::param_table::pack_capsule::facts(p, &mut out);
 
     // --- blocks holding an actuatable id outside the curated core ---------------
     crate::param_table::pack_matcol::facts(p, &mut out); // mat_hue
