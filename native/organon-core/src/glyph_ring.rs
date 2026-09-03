@@ -72,6 +72,18 @@
 //! builds `GlyphLook` by full struct literal (`world.rs::glyph_look_from`), and a new
 //! field there would not compile until the wire lands; an option with a `Default` lets
 //! this land first and the wire follow.
+//!
+//! **The blend is a clock, and the clock lives here** (T12's finding, §7). The world
+//! holds two grids and draws a path character between them; how far between is
+//! [`BlendClock`]'s answer, computed from what the ring already carries — `tick` is the
+//! producer's clock, `Δtick / tick_hz` the span of the pair — plus the world's own
+//! frame interval as a lead, because a frame built now is shown one interval later.
+//! The old clock measured from the read over a fixed tick and evaluated at build time,
+//! which at a producer faster than the display put every frame at `blend ≈ 0`: the
+//! grid read one frame earlier, two ticks behind, never between. A heartbeat (same
+//! `tick`) replaces the picture without touching the clock. Nothing new travels on the
+//! wire and `layout_version` does not move; the section above the lowering has the
+//! arithmetic and the reason a publish stamp alone would not have been enough.
 
 use bytemuck::{Pod, Zeroable};
 use std::fs::OpenOptions;
@@ -175,7 +187,14 @@ pub struct GlyphFrame {
     pub seq: u32,
     pub cols: u32,
     pub rows: u32,
-    /// Effect frame index, 0-based, reset when a new effect starts.
+    /// Effect frame index, reset when a new effect starts — and **the producer's
+    /// clock**: `tick / tick_hz` is this grid's publish time in producer seconds within
+    /// its `epoch`, nominal rather than measured (the producer paces by a drift-free
+    /// deadline and a seed reproduces a run — T11 keeps its phosphor time nominal for the
+    /// same reason). The settle publish and every dwell heartbeat republish at the
+    /// **same** `tick`, which is how a reader tells a heartbeat from a tick without a
+    /// wall stamp (see [`classify_arrival`]). No wall time travels on the wire: the
+    /// world needs the *span* between two grids, never the producer's absolute clock.
     pub tick: u32,
     /// Bumps when the cell payload **differs** from the previously published grid. A
     /// dwell republish (heartbeat) keeps it — that is the counter T5 hangs `pt_content`
@@ -637,6 +656,161 @@ impl GlyphRingReader {
     }
 }
 
+// ── The blend clock (§7; T12's finding) ─────────────────────────────────────────
+//
+// The world draws a path character at `lerp(prev_exact, exact, blend)` (`lower_grid`),
+// and `blend` is a clock: how far the frame being built sits between the two grids it
+// holds. T12 read the world's version of that clock and found it wrong in a way no
+// test had seen, because no test had a display: it measured time from the instant the
+// world READ a grid, over a fixed `1 / tick_hz`, evaluated at BUILD time. At a producer
+// faster than the display (the default: 120 Hz over 60 Hz) every frame reads a fresh
+// grid at `since ≈ 0`, so `blend ≈ 0` on every frame and the tile sits at the grid read
+// one frame EARLIER — `Exact`, one read late, two ticks behind, never between. At equal
+// rates the same arithmetic draws one tick behind. A path only ever slid when the
+// display outran the producer.
+//
+// Two things were wrong, and a publish stamp on the wire fixes only the smaller one.
+// (1) The period was `1 / tick_hz` whatever the pair actually spanned: at 120/60 the
+// two grids the world holds are two ticks apart. (2) The blend was evaluated at build
+// time, for a frame that is SHOWN a display period later. Stamp the frames with the
+// producer's clock and measure from the publish instead of the read, and 120/60 still
+// lands at `blend ∈ 0..0.5` (the newest grid is 0–8 ms old at the read, over a 16.7 ms
+// pair) — drawn between two and one ticks behind, never at the newest sample. What
+// closes it is the LEAD: the world knows its own frame interval, and a frame built now
+// is the picture at `now + one interval`. So
+//
+//     blend = (now − tick_at + lead) / period
+//
+// with `period` the producer-time span of the pair (`Δtick / tick_hz`, from what is
+// already on the wire), `tick_at` the world instant the pair started and `lead` the
+// world's last frame interval. 120/60: period 16.7 ms, lead 16.7 ms → 1 at every frame
+// — the newest sample, two ticks a frame, uniform. 30/120: period 33 ms, lead 8.3 →
+// 0.25, 0.5, 0.75, 1.0 — four interpolated frames. 60/60 → 1: the sample itself, not
+// the one before it. A stalled producer clamps at 1 and holds. What `Slide` costs is
+// now exactly one producer period, and only while the display outruns the producer.
+//
+// ⚠️ A heartbeat does not restart the clock. The settle publish and every dwell
+// republish carry the SAME `tick` (`organon-glyphs/src/main.rs`): `classify_arrival`
+// calls that a `Heartbeat`, the world replaces its current grid without rotating the
+// previous one, and `tick_at` / `period` are untouched — so the last tick of an effect
+// slides to completion under the settle frame instead of snapping to it, and T11's
+// trails decaying through the dwell (a payload change at the same tick) move nothing.
+// T5 and T11 depend on a heartbeat keeping the tile still; `heartbeat_does_not_restart_
+// the_clock` pins it and names the mutation.
+//
+// ⚠️ Not a phase lock. The lead is the world's own frame interval, not an estimate of
+// where the producer's clock is; at ratios that are neither `1:n` nor `n:1` (100 Hz over
+// 60) the drawn step varies by up to a fraction of a tick per frame, because `Δtick`
+// per read alternates and the lead does not. A locked render clock — a wall stamp on the
+// frame, an offset estimated as a running minimum, a constant latency — would make that
+// uniform too, at the cost of state that has to re-estimate on every epoch; it is the
+// step to take if the GPU look shows judder at an odd ratio, and not before. All the
+// arithmetic here is pure over synthetic seconds, so it is pinned without a display.
+
+/// What a newly read frame is, relative to the grid the world is drawing — the answer
+/// to "does this start a new slide, continue the current one, or replace the picture
+/// without moving anything?".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Arrival {
+    /// Nothing to slide from: the first frame ever, another effect run (`epoch`
+    /// differs — a cut by definition), or a producer that restarted mid-run (`tick`
+    /// went backwards). Drawn exactly, `blend = 1`, until the next tick.
+    Cut,
+    /// The next sample of the same run — `tick` advanced. Carries the pair's span in
+    /// producer seconds, `(new.tick − cur.tick) / tick_hz`: one tick when the display
+    /// keeps up, several when the producer outruns it.
+    Tick(f32),
+    /// A republish at the same `tick` and `epoch` — the settle publish, a dwell
+    /// heartbeat, a T11 trail decaying under held text. The payload may differ (and
+    /// `generation` may move) but no character moved: it replaces the current grid,
+    /// the previous grid stays, and the blend clock runs on.
+    Heartbeat,
+}
+
+/// Classify a frame the world has just read against the one it is drawing (`None`
+/// before the first). `tick_hz` is the ring header's; a non-positive one falls back to
+/// 60, as the world always has.
+pub fn classify_arrival(cur: Option<&GlyphFrame>, new: &GlyphFrame, tick_hz: f32) -> Arrival {
+    let Some(cur) = cur else { return Arrival::Cut };
+    if new.epoch != cur.epoch {
+        return Arrival::Cut;
+    }
+    match new.tick.cmp(&cur.tick) {
+        std::cmp::Ordering::Equal => Arrival::Heartbeat,
+        std::cmp::Ordering::Less => Arrival::Cut,
+        std::cmp::Ordering::Greater => {
+            let hz = if tick_hz > 0.0 { tick_hz } else { 60.0 };
+            Arrival::Tick((new.tick - cur.tick) as f32 / hz)
+        }
+    }
+}
+
+/// The blend for a frame: `(since_tick + lead) / period`, clamped to `0..=1`, where
+/// `since_tick` is how long ago (caller seconds) the current pair started, `lead` the
+/// caller's own frame interval (a frame built now is shown one interval later) and
+/// `period` the pair's producer-time span. `None` — no pair, a cut, a heartbeat that
+/// never started one — is `1`: draw the current grid exactly. Never overshoots: a
+/// stalled producer holds at the newest sample.
+pub fn blend_for(since_tick: f32, lead: f32, period: Option<f32>) -> f32 {
+    match period {
+        Some(p) if p > 0.0 => ((since_tick.max(0.0) + lead.max(0.0)) / p).clamp(0.0, 1.0),
+        _ => 1.0,
+    }
+}
+
+/// The world's blend clock over the ring: one per reader, fed every frame that is
+/// read ([`arrive`](Self::arrive)) and asked once per frame built
+/// ([`blend`](Self::blend)). Times are the caller's own seconds — any monotonic
+/// origin, `f64` so an hours-long session keeps sub-millisecond resolution — which is
+/// what lets the schedules in the tests run on synthetic time.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlendClock {
+    /// When the current pair started (the last `Tick` or `Cut`).
+    tick_at: f64,
+    /// The pair's producer-time span; `None` until a `Tick` follows a `Cut`.
+    period: Option<f32>,
+    /// When the last frame was built — the next frame's lead is the interval since.
+    last_build: Option<f64>,
+}
+
+impl BlendClock {
+    /// Register a frame the world has just read, at caller time `now`, and say how to
+    /// place it: `Heartbeat` replaces the current grid (the previous one stays, the
+    /// clock is untouched); `Tick` and `Cut` rotate current → previous and restart the
+    /// clock, with and without a period respectively.
+    pub fn arrive(&mut self, cur: Option<&GlyphFrame>, new: &GlyphFrame, tick_hz: f32, now: f64) -> Arrival {
+        let a = classify_arrival(cur, new, tick_hz);
+        match a {
+            Arrival::Heartbeat => {}
+            Arrival::Tick(p) => {
+                self.tick_at = now;
+                self.period = Some(p);
+            }
+            Arrival::Cut => {
+                self.tick_at = now;
+                self.period = None;
+            }
+        }
+        a
+    }
+
+    /// The blend for the frame being built at `now`. Records the build, so the next
+    /// call's lead is this frame's interval; the first call has no lead (the frame is
+    /// still one interval from being shown, but the interval is unknown, and 0 errs
+    /// toward the earlier sample by less than a frame, once).
+    pub fn blend(&mut self, now: f64) -> f32 {
+        let lead = self.last_build.map_or(0.0, |b| (now - b).max(0.0) as f32);
+        self.last_build = Some(now);
+        let since = (now - self.tick_at).max(0.0) as f32;
+        blend_for(since, lead, self.period)
+    }
+
+    /// The current pair's producer-time span, if a slide is in progress.
+    pub fn period(&self) -> Option<f32> {
+        self.period
+    }
+}
+
 // ── Lowering: grid → instanced tiles (§3, §5, §7) ───────────────────────────────
 
 /// The look constants T1 hard-codes. ⚠️ **T3 lifts every one of these onto the param
@@ -727,8 +901,10 @@ pub fn cell_centre(c: usize, r: usize, cols: usize, rows: usize, look: &GlyphLoo
 /// between where it exactly was and where it exactly is changes where it is *between*
 /// ticks and never when it arrives. A cell without the bit was placed by
 /// `set_coordinate` — a cut — and is drawn where it is; interpolating it would invent
-/// motion the effect never authored. `blend` is `0..=1`, the caller's
-/// `elapsed / (1 / tick_hz)`.
+/// motion the effect never authored. `blend` is `0..=1`, the caller's [`BlendClock`]:
+/// `(time since the pair started + the caller's frame interval) / the pair's
+/// producer-time span`, so it reaches 1 exactly when the next tick is due and never
+/// earlier than the frame it is built for is shown.
 ///
 /// Extent, depth and position are all in cell units scaled by `look.cell_w`; the row
 /// pitch honours `grid.cell_aspect` (§7: 2:1, or every ring becomes an ellipse).
@@ -776,9 +952,13 @@ pub struct LowerOptions {
 /// applies a second interpolation on top of the first, and once `blend` reaches 1 `Slide`
 /// and `Exact` are byte-identical (pinned) — the world's blend only bridges the producer's
 /// tick rate to the render rate, and a tick that arrives late clamps at 1 and holds. What
-/// `Slide` costs is **one tick of latency**: at blend 0 the tile is drawn where the
-/// character *was*. `Exact` has none, and at a 120 Hz producer the sub-cell path alone
-/// may be smooth enough — which is the GPU question this switch exists to make askable.
+/// `Slide` costs is **up to one producer period of latency, and only while the display
+/// outruns the producer**: the world can only interpolate toward the newest sample it
+/// holds, so at 30 Hz over 120 the tile reaches each tick as the next one lands, and at
+/// 120 over 60 (or 60 over 60) [`BlendClock`] puts it AT the newest sample on every frame
+/// — the two-ticks-behind reading T12 took from the old clock is gone. `Exact` has none,
+/// and at a 120 Hz producer the sub-cell path alone may be smooth enough — which is the
+/// GPU question this switch exists to make askable.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Motion {
     /// Today's lowering (T1 + W6): a character on a path is drawn at
@@ -1710,5 +1890,179 @@ mod tests {
         let a = tile_for('A' as u32).unwrap();
         assert_eq!((a.x0, a.x1, a.y0, a.y1), (0.0, 1.0, 0.0, 1.0));
         assert!(a.emission < 1.0 && a.depth < 1.0);
+    }
+
+    // ── The blend clock (T12's finding) ──────────────────────────────────────────
+
+    fn frame_at(epoch: u32, tick: u32) -> GlyphFrame {
+        GlyphFrame { epoch, tick, cols: 1, rows: 1, ..Default::default() }
+    }
+
+    /// A display over a producer, on one ideal clock: tick `k` is published at `k / hz`
+    /// (`k ≥ 1`), a frame is built at `phase + j / fps`, and each frame reads the newest
+    /// published tick if it changed — exactly the world's loop. Returns, per frame from
+    /// the first tick read, `(blend, drawn position in ticks)` for a character moving
+    /// one cell a tick: `prev + blend × (cur − prev)`, which is what `lower_grid` draws.
+    fn schedule(hz: f64, fps: f64, phase: f64, frames: usize) -> Vec<(f32, f64)> {
+        let mut clock = BlendClock::default();
+        let mut cur: Option<GlyphFrame> = None;
+        let mut prev_tick = 0u32;
+        let mut out = Vec::new();
+        for j in 0..frames {
+            let now = phase + j as f64 / fps;
+            let newest = (now * hz + 1e-9).floor() as u32;
+            if newest >= 1 && cur.map_or(true, |c| c.tick != newest) {
+                let new = frame_at(0, newest);
+                if clock.arrive(cur.as_ref(), &new, hz as f32, now) != Arrival::Heartbeat {
+                    prev_tick = cur.map_or(newest, |c| c.tick);
+                }
+                cur = Some(new);
+            }
+            let Some(c) = cur else { continue };
+            let blend = clock.blend(now);
+            out.push((blend, prev_tick as f64 + blend as f64 * (c.tick - prev_tick) as f64));
+        }
+        out
+    }
+
+    fn steps(s: &[(f32, f64)]) -> Vec<f64> {
+        s.windows(2).map(|w| w[1].1 - w[0].1).collect()
+    }
+
+    /// T12's case, the producer's default over an ordinary display. The old clock drew
+    /// every frame at `blend ≈ 0` — the grid read one frame earlier, two ticks behind —
+    /// because it measured from the read and evaluated at build time. With the lead the
+    /// blend is 1 on every frame: the newest sample, two ticks a frame, uniform.
+    #[test]
+    fn a_120hz_producer_on_a_60hz_display_draws_the_newest_sample_every_frame() {
+        // Phase a quarter-tick past a publish, so the read is never exactly on one.
+        let s = schedule(120.0, 60.0, 1.0 / 480.0, 12);
+        // The first read is a cut (nothing to slide from); every frame after it is a
+        // pair two ticks apart, read at its start, shown a frame later.
+        for (j, (blend, _)) in s.iter().enumerate().skip(1) {
+            assert_eq!(*blend, 1.0, "120/60 frame {j}: blend {blend} — drawn behind the newest sample");
+        }
+        for (j, st) in steps(&s).iter().enumerate().skip(1) {
+            assert!((st - 2.0).abs() < 1e-9, "120/60 step {j}: {st} ticks a frame, not 2");
+        }
+        // And the arithmetic of the finding itself, as one number each way: a two-tick
+        // pair read `since ≈ 0`, with no lead, is the old answer; with the frame's own
+        // interval as the lead it is the new one.
+        assert_eq!(blend_for(0.0, 0.0, Some(1.0 / 60.0)), 0.0, "the old clock: 0 at every read");
+        assert_eq!(blend_for(0.0, 1.0 / 60.0, Some(1.0 / 60.0)), 1.0, "the lead closes it");
+    }
+
+    /// The other direction: the display outruns the producer, and the four frames
+    /// between two ticks are four interpolated positions — 0.25, 0.5, 0.75, 1.0 —
+    /// reaching the newest sample exactly as the next tick lands. Quarter-tick steps.
+    #[test]
+    fn a_30hz_producer_on_a_120hz_display_gets_four_interpolated_frames() {
+        // Frames 0..4 precede the first publish (tick 1 lands at 33 ms) and are not
+        // reported; frames 4..8 are that first tick (a cut, blend 1); from the second
+        // tick on, the quartet repeats.
+        let s = schedule(30.0, 120.0, 0.0, 4 + 4 + 4 * 3);
+        let blends: Vec<f32> = s.iter().skip(4).map(|b| b.0).collect();
+        assert_eq!(blends, [0.25, 0.5, 0.75, 1.0, 0.25, 0.5, 0.75, 1.0, 0.25, 0.5, 0.75, 1.0], "30/120 blends: {blends:?}");
+        for (j, st) in steps(&s[4..]).iter().enumerate() {
+            assert!((st - 0.25).abs() < 1e-9, "30/120 step {j}: {st} ticks a frame, not 0.25");
+        }
+    }
+
+    /// Equal rates: the old clock drew one tick behind (a fresh grid every frame at
+    /// `since ≈ 0`); now the sample itself, one tick a frame.
+    #[test]
+    fn equal_rates_draw_the_sample_itself() {
+        let s = schedule(60.0, 60.0, 1.0 / 240.0, 10);
+        for (j, (blend, _)) in s.iter().enumerate().skip(1) {
+            assert_eq!(*blend, 1.0, "60/60 frame {j}: blend {blend}");
+        }
+        for st in steps(&s).iter().skip(1) {
+            assert!((st - 1.0).abs() < 1e-9, "60/60 step: {st}");
+        }
+    }
+
+    /// A ratio that is `n:1` in neither direction. `Δtick` per read alternates 1, 2 and
+    /// the lead does not, yet the drawn step is 1.5 ticks a frame throughout: a one-tick
+    /// pair lands on its sample and a two-tick pair three quarters along it.
+    #[test]
+    fn a_90hz_producer_on_a_60hz_display_steps_evenly() {
+        let s = schedule(90.0, 60.0, 1.0 / 360.0, 14);
+        for (j, st) in steps(&s).iter().enumerate().skip(2) {
+            assert!((st - 1.5).abs() < 1e-9, "90/60 step {j}: {st} ticks a frame, not 1.5");
+        }
+    }
+
+    /// The settle publish and every dwell heartbeat republish at the same `tick`. They
+    /// replace the picture (a T11 trail decays; `generation` may move) and they must not
+    /// touch the clock: a slide in progress runs to completion under them, and one that
+    /// has completed stays at 1. T5 and T11 depend on a heartbeat moving nothing.
+    #[test]
+    fn heartbeat_does_not_restart_the_clock() {
+        let hz = 30.0;
+        let dt = 1.0 / 120.0;
+        let mut c = BlendClock::default();
+        let f1 = frame_at(0, 1);
+        assert_eq!(c.arrive(None, &f1, hz, 0.0), Arrival::Cut);
+        assert_eq!(c.blend(0.0), 1.0, "a cut draws exactly");
+        let f2 = frame_at(0, 2);
+        assert_eq!(c.arrive(Some(&f1), &f2, hz, dt), Arrival::Tick(1.0 / 30.0));
+        assert_eq!(c.blend(dt), 0.25);
+        // The settle publish, 10 ms into the pair: same tick, different payload.
+        let settle = GlyphFrame { flags: FRAME_SETTLED, generation: 9, ..f2 };
+        assert_eq!(c.arrive(Some(&f2), &settle, hz, dt + 0.010), Arrival::Heartbeat);
+        assert_eq!(c.period(), Some(1.0 / 30.0), "the pair is still the pair");
+        assert_eq!(c.blend(2.0 * dt), 0.5, "a heartbeat must not restart the blend clock: the slide from tick 1 to tick 2 is half-way at +16.7 ms whether or not a settle frame arrived at +18 ms");
+        assert_eq!(c.blend(3.0 * dt), 0.75);
+        assert_eq!(c.blend(4.0 * dt), 1.0);
+        // Dwell heartbeats every 250 ms after the slide completed: held at 1.
+        let mut last = settle;
+        for k in 1..=4 {
+            let hb = GlyphFrame { generation: 9 + k, ..last };
+            let t = 4.0 * dt + 0.25 * k as f64;
+            assert_eq!(c.arrive(Some(&last), &hb, hz, t), Arrival::Heartbeat);
+            assert_eq!(c.blend(t), 1.0, "heartbeat {k}: held at the settled grid");
+            last = hb;
+        }
+    }
+
+    /// A producer that stops mid-slide: the blend clamps at 1 and holds at the newest
+    /// sample, however long the silence — never past it.
+    #[test]
+    fn a_stalled_producer_clamps_at_one() {
+        let mut c = BlendClock::default();
+        let f1 = frame_at(0, 1);
+        c.arrive(None, &f1, 30.0, 0.0);
+        c.blend(0.0);
+        c.arrive(Some(&f1), &frame_at(0, 2), 30.0, 0.01);
+        let b = c.blend(0.01);
+        assert!((b - 0.3).abs() < 1e-6, "0.3 = the 10 ms lead over a 33 ms pair: {b}");
+        for t in [0.05, 0.1, 1.0, 10.0, 3600.0] {
+            let b = c.blend(t);
+            assert_eq!(b, 1.0, "at +{t} s: {b}");
+        }
+        assert_eq!(blend_for(100.0, 100.0, Some(0.01)), 1.0, "never overshoots");
+        assert_eq!(blend_for(-1.0, -1.0, Some(0.01)), 0.0, "negative time is 0, not a NaN");
+        assert_eq!(blend_for(0.5, 0.0, Some(0.0)), 1.0, "a zero period is a cut");
+    }
+
+    #[test]
+    fn arrivals_are_classified_by_epoch_and_tick() {
+        let cur = frame_at(3, 10);
+        assert_eq!(classify_arrival(None, &cur, 120.0), Arrival::Cut, "the first frame");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(4, 1), 120.0), Arrival::Cut, "a new effect");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(4, 11), 120.0), Arrival::Cut, "a new effect is a cut whatever its tick says");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(4, 10), 120.0), Arrival::Cut, "a new effect at the same tick is a cut, not a heartbeat");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 7), 120.0), Arrival::Cut, "a restarted producer");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 10), 120.0), Arrival::Heartbeat);
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 11), 120.0), Arrival::Tick(1.0 / 120.0));
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 12), 120.0), Arrival::Tick(1.0 / 60.0), "two ticks apart is a two-tick pair");
+        assert_eq!(classify_arrival(Some(&cur), &frame_at(3, 11), 0.0), Arrival::Tick(1.0 / 60.0), "a header with no rate falls back to 60, as the world always has");
+        // A cut leaves the clock with no period, and the next tick starts one.
+        let mut c = BlendClock::default();
+        c.arrive(Some(&cur), &frame_at(4, 1), 120.0, 5.0);
+        assert_eq!(c.period(), None);
+        assert_eq!(c.blend(5.0), 1.0);
+        c.arrive(Some(&frame_at(4, 1)), &frame_at(4, 2), 120.0, 5.0 + 1.0 / 120.0);
+        assert_eq!(c.period(), Some(1.0 / 120.0));
     }
 }

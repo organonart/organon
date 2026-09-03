@@ -251,7 +251,10 @@ cross-product invariant: that a Mind session and an Organon session can run simu
 **Decouple the rates.** The effect ticks at its own cadence; the renderer runs at 120 and
 interpolates. With ttfx linked (§2) the cadence is ours — `Clock::Virtual` steps a fixed `dt` per
 `next_frame` and never sleeps — so "capped at the effect's frame rate" stops being a constraint
-and becomes a dial.
+and becomes a dial. The interpolation runs on the **producer's** clock: `tick / tick_hz` is the
+publish time within an effect run, the renderer blends across the span between the two grids it
+holds, and its own frame interval is the lead (`glyph_ring::BlendClock`, §7 — the ring carries
+no wall time, because the renderer needs a span, not an absolute clock).
 
 ### 6.1 The ring survives the library route — and the producer is its own crate
 
@@ -344,12 +347,29 @@ no variant can smear a scatter. **Checked, not reasoned: the two smoothings are 
 `Slide` is one linear reconstruction between two exact samples and nothing filters the
 remainder, so at `blend ≥ 1` `Slide` and `Exact` lower byte-identically (pinned on T9's
 asymmetric fixture); a tick that arrives late clamps at 1 and holds, and the next tick starts a
-fresh pair — a tile is never smoothed twice. ⚠️ What `Slide` costs is **latency, not blur**: at
-blend 0 the tile is drawn where the character *was*, one tick behind; and when the render rate
-is *below* the producer's tick rate the world reads a new grid every frame with `since ≈ 0`, so
-the tile sits at the previously-read grid — two ticks behind at 120 Hz over 60 Hz. Whether that
-buys anything a 120 Hz producer does not already give is the GPU question the switch makes
-askable: `organon-glyphs --effect slide` under `Slide` and `Exact`, and `scattered` / `unstable`
+fresh pair — a tile is never smoothed twice. ⚠️ What `Slide` costs is **latency, not blur** —
+and, **read at the code and corrected (W16)**, less of it than T12 first found. The world's
+blend clock started at the *read*, ran over a fixed `1 / tick_hz` and was evaluated at build
+time, so at 120 Hz over 60 Hz every frame read a fresh grid at `since ≈ 0` and drew the grid
+read one frame *earlier* — two ticks behind, never between — and at 60 over 60 it drew one
+tick behind; a path only ever slid when the display outran the producer. The clock now runs on
+producer time from what the ring already carries — `tick / tick_hz` is the producer's clock
+within an epoch, the pair's span is `Δtick / tick_hz` — with the world's own frame interval as
+a lead, because a frame built now is shown one interval later: `blend = (now − tick_at + lead)
+/ period` (`glyph_ring::BlendClock`). 120/60 draws the newest sample on every frame, two ticks
+a frame; 30/120 gets 0.25 / 0.5 / 0.75 / 1.0; 60/60 the sample itself; 90/60 an even 1.5 ticks
+a frame; a stall clamps at 1; and a heartbeat — the settle publish and every dwell republish
+carry the *same* `tick` — replaces the picture without rotating the previous grid or touching
+the clock, so the last tick of an effect slides to completion under the settle frame instead of
+snapping to it. ⚠️ A publish stamp on the wire alone would **not** have closed it: measured from
+the publish rather than the read, 120/60 lands at `blend ∈ 0..0.5` — between two and one ticks
+behind, never at the newest sample. The lead is the half that matters, and **nothing new travels
+on the wire**; `layout_version` does not move. So the cost of `Slide` is up to one producer
+period, and only while the display outruns the producer. Not a phase lock: at a ratio that is
+neither `1:n` nor `n:1` (100 over 60) the step still varies by a fraction of a tick, and a
+locked render clock — a wall stamp, a running-minimum offset, a constant latency — is the step
+to take only if the GPU look shows judder there. Whether `Slide` buys anything a 120 Hz
+producer does not already give is the GPU question the switch makes askable: `organon-glyphs --effect slide` under `Slide` and `Exact`, and `scattered` / `unstable`
 under either (a cut must look like a cut). Proposed lane `Shared.glyph[15]` through
 `Motion::from_lane` (0 / 1 / 2 to the nearest integer; anything else — including a lane never
 written — is `Slide`, invariant #4).
@@ -740,7 +760,10 @@ until it lands.
   variant. Owns the grid lowering only; wire proposed as **`Shared.glyph[15]`** through
   `Motion::from_lane` (`[13]` profile, `[14]` dark tiles, `[15]` the last free slot of
   `glyph[16]`). Not yet looked at on a GPU: no frame has been rendered under `Exact` or
-  `Cells`, and "one tick of latency" is read from `world.rs`'s blend clock, not seen.
+  `Cells`. The blend clock that "one tick of latency" was read from has since been **corrected
+  (W16)**: it drew a 120 Hz producer two ticks behind on a 60 Hz display and never between,
+  because it started at the read and was evaluated at build time; it now runs on producer time
+  with the world's frame interval as the lead (§7), still with nothing on a GPU.
 - **T13 — the gate on a real render.** T2's harness over a `faceplate` frame read from the HDR
   buffer, in `verify.sh`, with the thresholds beside the goldens. **After T3 and T8.**
   **Landed, green and ready to try:** `native/verify.sh --legibility-only` (or `--legibility`
