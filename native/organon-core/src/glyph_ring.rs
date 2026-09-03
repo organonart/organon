@@ -756,6 +756,58 @@ pub struct LowerOptions {
     /// tiles per frame instead of one per glyph. Proposed wire: `Shared.glyph[14]`
     /// (`> 0.5`), `[13]` being the profile strength #233 named.
     pub dark_tiles: bool,
+    /// **How a tile moves between the producer's ticks** (T12, §7). Defaults to
+    /// [`Motion::Slide`], which is today's lowering exactly. Proposed wire:
+    /// `Shared.glyph[15]` through [`Motion::from_lane`] (`[13]` is the profile strength,
+    /// `[14]` the dark tiles; `[15]` is the last free slot of `glyph[16]`).
+    pub motion: Motion,
+}
+
+/// How [`lower_grid_with`] places a tile between the producer's ticks (§7, T12). The
+/// ring carries two signals: `SGR_ACTIVE_PATH` (the character is on a path, so its
+/// position last tick and this tick are two samples of one motion) and `sub_x`/`sub_y`
+/// (the exact sub-cell position the effect computed before rounding it to a cell). A
+/// character *without* the bit was placed by `set_coordinate` — many effects teleport —
+/// and its two positions are not samples of anything, so it **cuts** under every variant:
+/// no variant ever interpolates a teleport, because that smears a scatter across the grid.
+///
+/// ⚠️ These are **not** a smoothing stack. `Slide` is one linear reconstruction between
+/// two exact samples; `Exact` is the samples alone. Nothing here filters the remainder or
+/// applies a second interpolation on top of the first, and once `blend` reaches 1 `Slide`
+/// and `Exact` are byte-identical (pinned) — the world's blend only bridges the producer's
+/// tick rate to the render rate, and a tick that arrives late clamps at 1 and holds. What
+/// `Slide` costs is **one tick of latency**: at blend 0 the tile is drawn where the
+/// character *was*. `Exact` has none, and at a 120 Hz producer the sub-cell path alone
+/// may be smooth enough — which is the GPU question this switch exists to make askable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Motion {
+    /// Today's lowering (T1 + W6): a character on a path is drawn at
+    /// `lerp(prev_exact, exact, blend)`, both ends being `centre + sub`; a teleport, a
+    /// trail and a dark tile are drawn where they are.
+    #[default]
+    Slide,
+    /// No inter-tick interpolation: every tile at its exact current position,
+    /// `centre + sub`, whatever `blend` and `prev` say. The producer's sub-cell path is
+    /// the only source of smoothness. Zero latency; steps at the producer's tick rate.
+    Exact,
+    /// The terminal's own picture, for the A/B §7 left open: every tile at its **cell
+    /// centre**, the remainder ignored, nothing sliding. What a producer that carries no
+    /// remainder shows under `Exact`; what a terminal shows always.
+    Cells,
+}
+
+impl Motion {
+    /// The proposed `Shared.glyph[15]` mapping: `0` = `Slide`, `1` = `Exact`, `2` =
+    /// `Cells`, read to the nearest integer. **Anything else — including a NaN or a lane
+    /// that was never written — is `Slide`**, so a snapshot that predates the lane and a
+    /// garbage value both draw today's picture (invariant #4).
+    pub fn from_lane(v: f32) -> Motion {
+        match v.round() as i32 {
+            1 => Motion::Exact,
+            2 => Motion::Cells,
+            _ => Motion::Slide,
+        }
+    }
 }
 
 /// The tile a symbol-less cell becomes under [`LowerOptions::dark_tiles`]: the whole
@@ -777,18 +829,23 @@ pub fn lower_grid_with(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, l
         return bounds;
     }
     // Where a character exactly is: its cell's centre plus the sub-cell remainder the
-    // producer carried (§7; zero from a producer that carries none).
+    // producer carried (§7; zero from a producer that carries none). Under
+    // `Motion::Cells` the remainder is ignored — the terminal's own picture (T12).
+    let use_sub = opts.motion != Motion::Cells;
     let exact = |c: usize, r: usize, cell: &GlyphCell| {
         let mut p = cell_centre(c, r, cols, rows, look, aspect);
-        p.x += cell.sub_x * w;
-        p.y += cell.sub_y * h;
+        if use_sub {
+            p.x += cell.sub_x * w;
+            p.y += cell.sub_y * h;
+        }
         p
     };
-    // Where each character exactly was last frame, for the slide. Built only when a
-    // previous grid exists and the blend is not already complete (then the answer is
-    // `exact` of the current cell).
+    // Where each character exactly was last frame, for the slide. Built only under
+    // `Motion::Slide`, when a previous grid exists and the blend is not already
+    // complete (then the answer is `exact` of the current cell). An empty map is what
+    // makes `Exact` and `Cells` never interpolate: nothing has an origin.
     let prev_pos: std::collections::HashMap<u32, Vec3> = match prev {
-        Some(p) if blend < 1.0 && p.cols() == cols && p.rows() == rows => {
+        Some(p) if opts.motion == Motion::Slide && blend < 1.0 && p.cols() == cols && p.rows() == rows => {
             let mut m = std::collections::HashMap::with_capacity(p.cells.len() / 4 + 1);
             for (i, cell) in p.cells.iter().enumerate() {
                 // A trail (T11) keeps the `character_id` of the character that left it,
@@ -1033,7 +1090,7 @@ mod lower_tests {
 
     // ── T9: every cell gets a tile ──────────────────────────────────────────────
 
-    const DARK: LowerOptions = LowerOptions { dark_tiles: true };
+    const DARK: LowerOptions = LowerOptions { dark_tiles: true, motion: Motion::Slide };
 
     fn lower_opts(g: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, opts: LowerOptions) -> (Vec<Mat4>, Vec<Vec4>, Vec<Vec4>, crate::math::Bounds) {
         let (mut i, mut t, mut e) = (Vec::new(), Vec::new(), Vec::new());
@@ -1150,7 +1207,7 @@ mod lower_tests {
             let lit: Vec<&Mat4> = i2.iter().zip(&e2).filter(|(_, e)| e.truncate() != glam::Vec3::ZERO).map(|(m, _)| m).collect();
             assert_eq!(lit, i0[..i0.len() - 1].iter().collect::<Vec<_>>(), "lit tiles are byte-identical with the switch on");
         }
-        assert_eq!(LowerOptions::default(), LowerOptions { dark_tiles: false }, "every option defaults to off");
+        assert_eq!(LowerOptions::default(), LowerOptions { dark_tiles: false, motion: Motion::Slide }, "every option defaults to off / today");
         // The case a lit fixture cannot see: with NO lit cell, folding dark tiles into
         // the bounds would lift `max.z` off the backplane's face to a quarter depth
         // and the camera would frame a different box for the same grid.
@@ -1209,6 +1266,140 @@ mod lower_tests {
             cols * rows,
             if cfg!(debug_assertions) { "DEBUG — not the number, rerun --release" } else { "release" }
         );
+    }
+
+    // ── T12: slide on a path, cut on a teleport ─────────────────────────────────
+
+    const EXACT: LowerOptions = LowerOptions { dark_tiles: false, motion: Motion::Exact };
+    const CELLS: LowerOptions = LowerOptions { dark_tiles: false, motion: Motion::Cells };
+
+    fn xy(i: &[Mat4], n: usize) -> (f32, f32) {
+        let p = i[n].to_scale_rotation_translation().2;
+        (p.x, p.y)
+    }
+
+    /// §7's rule on one two-tick grid, under the default motion: a path character with a
+    /// remainder is at `centre + sub` once the tick completes and half-way between its
+    /// two exact positions at blend 0.5; a teleport (no `ACTIVE_PATH`, cell changed) is
+    /// at its NEW cell at every blend — a cut, never a smear; a trail is never a slide's
+    /// origin even when it sits at the higher index, and never moves itself.
+    #[test]
+    fn t12_a_two_tick_grid_slides_the_path_cuts_the_teleport_and_never_starts_from_a_trail() {
+        let e = GlyphCell::default;
+        let look = GlyphLook::default();
+        let (cols, rows) = (4usize, 2usize);
+        let w = look.cell_w;
+        let centre = |c: usize, r: usize| cell_centre(c, r, cols, rows, &look, 2.0);
+        // Last tick: id 7 live on a path at (0,0) with remainder +0.4, its trail (two
+        // ticks old) at (3,0) — the HIGHER index, so it would win the origin map without
+        // T11's exclusion — and id 8 sitting at (0,1) with no path bit.
+        let prev = grid_of(4, 2, vec![
+            GlyphCell { sub_x: 0.4, ..c('█', 7, SGR_ACTIVE_PATH) }, e(), e(), c('█', 7, SGR_PERSIST),
+            c('█', 8, 0), e(), e(), e(),
+        ]);
+        // This tick: id 7 at (1,0) with remainder −0.3, its trail where it just was, and
+        // id 8 teleported by `set_coordinate` to (3,1).
+        let cur = grid_of(4, 2, vec![
+            GlyphCell { sub_x: 0.4, ..c('█', 7, SGR_PERSIST) }, GlyphCell { sub_x: -0.3, ..c('█', 7, SGR_ACTIVE_PATH) }, e(), e(),
+            e(), e(), e(), c('█', 8, 0),
+        ]);
+        // Instance order: the trail (0), the path character (1), the teleport (2), the backplane.
+        let at = |blend: f32, p: Option<&GlyphGrid>| lower_opts(&cur, p, blend, LowerOptions::default()).0;
+        let was = centre(0, 0).x + 0.4 * w;
+        let is = centre(1, 0).x - 0.3 * w;
+
+        // Blend 1: exactly `centre + sub`, and no trace of `prev` — with it, without it,
+        // and past 1 (a late tick clamps and holds).
+        for (label, i) in [("blend 1 with prev", at(1.0, Some(&prev))), ("blend 1 no prev", at(1.0, None)), ("blend 1.5 with prev", at(1.5, Some(&prev)))] {
+            let (x, y) = xy(&i, 1);
+            assert!((x - is).abs() < 1e-5 && (y - centre(1, 0).y).abs() < 1e-5, "{label}: the path character sits at centre + sub: ({x}, {y}) vs ({is}, {})", centre(1, 0).y);
+        }
+        // Blend 0.5: half-way between the two EXACT positions.
+        let (x, _) = xy(&at(0.5, Some(&prev)), 1);
+        assert!((x - (was + is) * 0.5).abs() < 1e-5, "mid-tick the path character is half-way between where it was ({was}) and is ({is}): {x}");
+        // Blend 0: where it WAS — the live cell, never the trail at (3,0).
+        let (x, _) = xy(&at(0.0, Some(&prev)), 1);
+        assert!((x - was).abs() < 1e-5, "at blend 0 the slide starts where the character exactly was ({was}), not at its trail ({}): {x}", centre(3, 0).x);
+        // The teleport: at its new cell at every blend. A cut, exactly.
+        for blend in [0.0, 0.5, 1.0] {
+            let (x, y) = xy(&at(blend, Some(&prev)), 2);
+            assert_eq!((x, y), (centre(3, 1).x, centre(3, 1).y), "a teleport (no ACTIVE_PATH) is drawn at its NEW cell at blend {blend}, never between: it would smear the scatter across the grid");
+        }
+        // The trail: drawn where it is, at its own remainder, at every blend.
+        for blend in [0.0, 0.5] {
+            let (x, _) = xy(&at(blend, Some(&prev)), 0);
+            assert!((x - was).abs() < 1e-5, "a trail never moves (blend {blend}): {x} vs {was}");
+        }
+    }
+
+    /// `Exact` never interpolates, and it agrees with `Slide` byte-for-byte once the
+    /// tick completes — the two are not a smoothing stack, and a tile is never smoothed
+    /// twice. Also the pin that `Slide` really does something at blend 0.5.
+    #[test]
+    fn t12_exact_never_interpolates_and_equals_slide_once_the_tick_completes() {
+        let (prev, cur) = fixture();
+        let reference = lower_opts(&cur, Some(&prev), 1.0, LowerOptions::default());
+        for (label, got) in [
+            ("Slide, blend 1, no prev", lower_opts(&cur, None, 1.0, LowerOptions::default())),
+            ("Exact, blend 0.5, with prev", lower_opts(&cur, Some(&prev), 0.5, EXACT)),
+            ("Exact, blend 0, with prev", lower_opts(&cur, Some(&prev), 0.0, EXACT)),
+            ("Exact, blend 1, no prev", lower_opts(&cur, None, 1.0, EXACT)),
+        ] {
+            assert_eq!(got.0, reference.0, "{label}: instances must equal Slide at blend 1 — Exact interpolated, or Slide at blend 1 still saw prev");
+            assert_eq!(got.1, reference.1, "{label}: tints");
+            assert_eq!(got.2, reference.2, "{label}: emits");
+            assert_eq!((got.3.min, got.3.max), (reference.3.min, reference.3.max), "{label}: bounds");
+        }
+        let slid = lower_opts(&cur, Some(&prev), 0.5, LowerOptions::default());
+        assert_ne!(slid.0, reference.0, "the fixture has a path character with a remainder, so Slide at blend 0.5 must differ from blend 1");
+        // Dark tiles are indifferent to the motion: they never slide under any variant.
+        let dark_exact = LowerOptions { dark_tiles: true, motion: Motion::Exact };
+        let (i_slide, _, e_slide, _) = lower_opts(&cur, Some(&prev), 0.5, DARK);
+        let (i_exact, _, e_exact, _) = lower_opts(&cur, Some(&prev), 0.5, dark_exact);
+        let darks = |i: &[Mat4], e: &[Vec4]| i.iter().zip(e).filter(|(_, e)| e.truncate() == glam::Vec3::ZERO).map(|(m, _)| *m).collect::<Vec<_>>();
+        assert_eq!(darks(&i_slide, &e_slide), darks(&i_exact, &e_exact), "dark tiles are byte-identical under Slide and Exact");
+        assert_eq!(i_exact.len(), i_slide.len());
+    }
+
+    /// `Cells` is the terminal's own picture: the remainder ignored and nothing sliding
+    /// — byte-identical to lowering the same grid with every remainder zeroed and no
+    /// previous grid. And it differs from `Slide` on a grid that carries remainders.
+    #[test]
+    fn t12_cells_ignores_the_remainder_and_never_slides() {
+        let (prev, cur) = fixture();
+        let zeroed = GlyphGrid { cells: cur.cells.iter().map(|c| GlyphCell { sub_x: 0.0, sub_y: 0.0, ..*c }).collect(), ..cur.clone() };
+        for opts in [CELLS, LowerOptions { dark_tiles: true, motion: Motion::Cells }] {
+            let reference = lower_opts(&zeroed, None, 1.0, LowerOptions { motion: Motion::Slide, ..opts });
+            for blend in [0.0, 0.5, 1.0] {
+                let got = lower_opts(&cur, Some(&prev), blend, opts);
+                assert_eq!(got.0, reference.0, "Cells at blend {blend} (dark {}): every tile at its cell centre, nothing slid", opts.dark_tiles);
+                assert_eq!(got.2, reference.2);
+                assert_eq!((got.3.min, got.3.max), (reference.3.min, reference.3.max));
+            }
+        }
+        let settled = lower_opts(&cur, None, 1.0, LowerOptions::default());
+        assert_ne!(lower_opts(&cur, None, 1.0, CELLS).0, settled.0, "the fixture carries remainders, so Cells and Slide must differ even when settled");
+        // A grid with no remainder and no previous frame: the three variants agree.
+        let cells = lower_opts(&zeroed, None, 1.0, CELLS);
+        assert_eq!(cells.0, lower_opts(&zeroed, None, 1.0, EXACT).0);
+        assert_eq!(cells.0, lower_opts(&zeroed, None, 1.0, LowerOptions::default()).0);
+    }
+
+    /// Invariant #4 at the switch and at the wire: the default is today's motion, and the
+    /// proposed `Shared.glyph[15]` mapping sends `0`, an unwritten lane and garbage to it.
+    #[test]
+    fn t12_motion_defaults_to_slide_and_the_lane_maps_everything_else_to_it() {
+        assert_eq!(Motion::default(), Motion::Slide);
+        assert_eq!(LowerOptions::default().motion, Motion::Slide);
+        assert_eq!(Motion::from_lane(0.0), Motion::Slide);
+        assert_eq!(Motion::from_lane(1.0), Motion::Exact);
+        assert_eq!(Motion::from_lane(2.0), Motion::Cells);
+        assert_eq!(Motion::from_lane(0.4), Motion::Slide, "nearest integer");
+        assert_eq!(Motion::from_lane(1.4), Motion::Exact, "nearest integer");
+        assert_eq!(Motion::from_lane(1.6), Motion::Cells, "nearest integer");
+        for garbage in [-1.0, 3.0, 7.0, 1e9, -1e9, f32::NAN, f32::INFINITY] {
+            assert_eq!(Motion::from_lane(garbage), Motion::Slide, "a lane value of {garbage} draws today's picture");
+        }
     }
 }
 
