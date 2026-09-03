@@ -60,6 +60,18 @@
 //! arrives already decayed, and the flag is all a reader needs. A bit in an existing
 //! word, so again no `layout_version` move — a reader that predates the bit draws a
 //! dimmer tile, which is the right picture, just without knowing why.
+//!
+//! **Every cell is a tile** (T9, §15 — the lowering half; the shading half is
+//! `cube.wgsl`'s clearcoat and emission profile). The spec-sheet plate shows a dark cell
+//! as a dark, glass-capped tile that reflects the room, a quarter as proud as a lit
+//! glyph; T1 drew a dark cell as nothing, i.e. bare backplane. Behind
+//! [`LowerOptions::dark_tiles`] — **off by default and byte-identical off** (invariant
+//! #4) — [`lower_grid_with`] lowers a symbol-less cell as a full-cell tile at the `░`
+//! depth with zero emission, so the faceplate's environment sheen is all it shows.
+//! The switch is a lowering option rather than a `GlyphLook` field because the world
+//! builds `GlyphLook` by full struct literal (`world.rs::glyph_look_from`), and a new
+//! field there would not compile until the wire lands; an option with a `Default` lets
+//! this land first and the wire follow.
 
 use bytemuck::{Pod, Zeroable};
 use std::fs::OpenOptions;
@@ -720,7 +732,40 @@ pub fn cell_centre(c: usize, r: usize, cols: usize, rows: usize, look: &GlyphLoo
 ///
 /// Extent, depth and position are all in cell units scaled by `look.cell_w`; the row
 /// pitch honours `grid.cell_aspect` (§7: 2:1, or every ring becomes an ellipse).
+///
+/// This is [`lower_grid_with`] at [`LowerOptions::default()`] — T1's lowering exactly,
+/// one tile per **non-empty** cell. The world calls this until the dark-tile lane is
+/// wired.
 pub fn lower_grid(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, look: &GlyphLook, out: TileOut<'_>) -> crate::math::Bounds {
+    lower_grid_with(grid, prev, blend, look, LowerOptions::default(), out)
+}
+
+/// What [`lower_grid_with`] does beyond T1's lowering. Every field defaults to **off**,
+/// and off is byte-identical to [`lower_grid`] (invariant #4, pinned by test) — so the
+/// world can keep calling `lower_grid` and a preset saved before a switch existed lowers
+/// the grid it lowered yesterday. A struct rather than a `bool` parameter so the next
+/// lowering-only switch (T12's sub-cell rendering) is a field, not a signature.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LowerOptions {
+    /// **Every cell gets a tile** (T9, §15). A cell that draws no symbol — empty, space,
+    /// a control — lowers as a full-cell tile at the shade-`░` depth (a quarter as proud
+    /// as a lit glyph, on the shared `look.depth` scale), faceplate tint, and **zero**
+    /// emission: the faceplate's environment sheen is all it shows, which is §4.1's dark
+    /// cell that still shows the room. Symbol cells lower exactly as before; a T11
+    /// trail is a *lit* cell with a small colour, never a dark one. Cost: `cols × rows`
+    /// tiles per frame instead of one per glyph. Proposed wire: `Shared.glyph[14]`
+    /// (`> 0.5`), `[13]` being the profile strength #233 named.
+    pub dark_tiles: bool,
+}
+
+/// The tile a symbol-less cell becomes under [`LowerOptions::dark_tiles`]: the whole
+/// cell, at the `░` depth, emitting nothing. `emission` is what makes it dark — the
+/// lowering multiplies the cell's colour by it, so a dark tile's emit is exactly zero
+/// whatever colour a producer left in an empty cell's `fg`.
+pub const DARK_TILE: Tile = Tile { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0, depth: 0.25, emission: 0.0 };
+
+/// [`lower_grid`] with [`LowerOptions`]. See both.
+pub fn lower_grid_with(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, look: &GlyphLook, opts: LowerOptions, out: TileOut<'_>) -> crate::math::Bounds {
     use glam::{Mat4, Quat, Vec3, Vec4};
     let (cols, rows) = (grid.cols(), grid.rows());
     let aspect = if grid.cell_aspect > 0.0 { grid.cell_aspect } else { TTFX_CELL_ASPECT };
@@ -764,17 +809,28 @@ pub fn lower_grid(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, look: 
     for r in 0..rows {
         for c in 0..cols {
             let cell = grid.at(c, r);
-            let Some(tile) = tile_for(cell.symbol) else { continue };
-            // The slide runs between the two EXACT positions — never between cell
-            // centres with this tick's remainder added on top, which would start every
-            // tick with a jump back toward the cell boundary. `lerp(a, a, t)` is `a`,
-            // so a character that did not move is drawn where it is.
-            let mut centre = exact(c, r, cell);
-            if cell.sgr & SGR_ACTIVE_PATH != 0 {
-                if let Some(&from) = prev_pos.get(&cell.character_id) {
-                    centre = from.lerp(centre, blend);
+            let (tile, centre, dark) = match tile_for(cell.symbol) {
+                Some(tile) => {
+                    // The slide runs between the two EXACT positions — never between
+                    // cell centres with this tick's remainder added on top, which would
+                    // start every tick with a jump back toward the cell boundary.
+                    // `lerp(a, a, t)` is `a`, so a character that did not move is drawn
+                    // where it is.
+                    let mut centre = exact(c, r, cell);
+                    if cell.sgr & SGR_ACTIVE_PATH != 0 {
+                        if let Some(&from) = prev_pos.get(&cell.character_id) {
+                            centre = from.lerp(centre, blend);
+                        }
+                    }
+                    (tile, centre, false)
                 }
-            }
+                // A dark cell is the faceplate's cell, not a character's: it sits on the
+                // grid at the cell's centre and never slides, whatever `sub_x`/`sub_y`
+                // or the path bit say (a space character on a path is a real thing in
+                // ttfx, and its tile must not go for a walk).
+                None if opts.dark_tiles => (DARK_TILE, cell_centre(c, r, cols, rows, look, aspect), true),
+                None => continue,
+            };
             let sx = (tile.x1 - tile.x0) * w;
             let sy = (tile.y1 - tile.y0) * h;
             let sz = (look.depth * tile.depth * w).max(1e-4);
@@ -786,8 +842,13 @@ pub fn lower_grid(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, look: 
             let rgb = if cell.sgr & SGR_HAS_FG != 0 { linear_rgb(cell.fg) } else { look.default_fg };
             let e = tile.emission;
             out.emits.push(Vec4::new(rgb[0] * e, rgb[1] * e, rgb[2] * e, look.gain));
-            bounds.min = bounds.min.min(pos - Vec3::new(sx, sy, sz) * 0.5);
-            bounds.max = bounds.max.max(pos + Vec3::new(sx, sy, sz) * 0.5);
+            // The bounds frame the camera and are unchanged by dark tiles: a dark tile
+            // is inside the backplane's footprint and a quarter as proud as any lit
+            // glyph, so the switch cannot move the camera.
+            if !dark {
+                bounds.min = bounds.min.min(pos - Vec3::new(sx, sy, sz) * 0.5);
+                bounds.max = bounds.max.max(pos + Vec3::new(sx, sy, sz) * 0.5);
+            }
         }
     }
     // The backplane: one slab behind the whole grid, its front face `gap` behind the
@@ -968,6 +1029,186 @@ mod lower_tests {
         // The trail still lowers to a tile, at its (decayed) colour — the renderer does
         // not need to know the bit to draw the right picture.
         assert_eq!(lower(&trail_now, None, 1.0).0.len(), 3, "live + trail + backplane");
+    }
+
+    // ── T9: every cell gets a tile ──────────────────────────────────────────────
+
+    const DARK: LowerOptions = LowerOptions { dark_tiles: true };
+
+    fn lower_opts(g: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, opts: LowerOptions) -> (Vec<Mat4>, Vec<Vec4>, Vec<Vec4>, crate::math::Bounds) {
+        let (mut i, mut t, mut e) = (Vec::new(), Vec::new(), Vec::new());
+        let b = lower_grid_with(g, prev, blend, &GlyphLook::default(), opts, TileOut { instances: &mut i, tints: &mut t, emits: &mut e });
+        (i, t, e, b)
+    }
+
+    /// The asymmetric fixture every T9 test lowers: 4 wide, 2 tall, holes in different
+    /// places on each row, a sliding character with a remainder, a letter (the
+    /// unknown-symbol rule), a trail, and a space CHARACTER on a path — a real ttfx
+    /// thing, and the one cell that must be dark yet must not move.
+    fn fixture() -> (GlyphGrid, GlyphGrid) {
+        let e = GlyphCell::default;
+        let sp = |id: u32| GlyphCell { symbol: 0x20, character_id: id, sgr: SGR_ACTIVE_PATH | SGR_HAS_FG, fg: pack_rgb(255, 255, 255), sub_x: 0.4, sub_y: 0.2, ..Default::default() };
+        let slide = |id: u32, sx: f32| GlyphCell { sub_x: sx, ..c('▀', id, SGR_ACTIVE_PATH) };
+        let trail = GlyphCell { fg: pack_rgb(9, 40, 3), ..c('█', 7, SGR_PERSIST) };
+        let prev = grid_of(4, 2, vec![slide(7, 0.3), e(), c('A', 8, 0), sp(9), e(), e(), e(), e()]);
+        let cur = grid_of(4, 2, vec![e(), slide(7, -0.2), c('A', 8, 0), e(), trail, e(), e(), sp(9)]);
+        (prev, cur)
+    }
+
+    /// §15's pin: with the switch on, `cols × rows + 1` instances, the buffers parallel.
+    #[test]
+    fn with_dark_tiles_on_every_cell_gets_a_tile_plus_the_backplane() {
+        let (prev, cur) = fixture();
+        let (i, t, e, _) = lower_opts(&cur, Some(&prev), 0.5, DARK);
+        assert_eq!(i.len(), 4 * 2 + 1, "cols × rows + 1");
+        assert_eq!(t.len(), i.len());
+        assert_eq!(e.len(), i.len());
+        assert_eq!(e[i.len() - 1], Vec4::ZERO, "the backplane is still last and still does not emit");
+        // The logo's number from §15's spec: an 81×10 grid is 810 tiles + 1.
+        let logo = grid_of(81, 10, vec![GlyphCell::default(); 810]);
+        assert_eq!(lower_opts(&logo, None, 1.0, DARK).0.len(), 811);
+        assert_eq!(lower(&logo, None, 1.0).0.len(), 1, "…and off, an empty grid is the backplane alone");
+    }
+
+    /// A dark cell's emit is EXACTLY zero (not small — zero, so the bloom prefilter and
+    /// the brightest-N light selection can never pick one), its tint is the faceplate,
+    /// its depth is a quarter of `look.depth` — the `░` depth, on the shared scale —
+    /// and it fills its cell.
+    #[test]
+    fn a_dark_tile_emits_exactly_nothing_and_is_a_quarter_as_proud_as_a_lit_glyph() {
+        let look = GlyphLook::default();
+        let g = grid_of(2, 1, vec![GlyphCell::default(), c('█', 1, 0)]);
+        let (i, t, e, _) = lower_opts(&g, None, 1.0, DARK);
+        assert_eq!(e[0].truncate(), glam::Vec3::ZERO, "a dark cell emits nothing: {}", e[0]);
+        assert_eq!(e[0].w, look.gain, "the gain lane is kept so the buffer stays uniform");
+        assert_eq!(t[0], Vec4::new(look.faceplate[0], look.faceplate[1], look.faceplate[2], 1.0));
+        // Read the matrix directly — a scale/rotation/translation decomposition goes
+        // through a square root, and "exactly" means exactly.
+        let (s, p) = (glam::Vec3::new(i[0].x_axis.x, i[0].y_axis.y, i[0].z_axis.z), i[0].w_axis.truncate());
+        assert_eq!(s.z, look.depth * 0.25 * look.cell_w, "exactly 0.25 × look.depth");
+        let full = glam::Vec3::new(i[1].x_axis.x, i[1].y_axis.y, i[1].z_axis.z);
+        assert!((full.z / s.z - 4.0).abs() < 1e-5, "a lit full block is four times as proud: {} vs {}", full.z, s.z);
+        assert_eq!((s.x, s.y), (look.cell_w, look.cell_w * 2.0), "the whole cell, at the 2:1 aspect");
+        assert_eq!(p.z, s.z * 0.5, "its back face sits on z = 0 like every tile");
+        assert_eq!(p.truncate(), cell_centre(0, 0, 2, 1, &look, 2.0).truncate(), "at its cell centre");
+        // An empty cell's colour is whatever the producer left there; it is never emitted.
+        let stale = GlyphCell { fg: pack_rgb(255, 255, 255), sgr: SGR_HAS_FG, ..Default::default() };
+        let (_, _, e, _) = lower_opts(&grid_of(1, 1, vec![stale]), None, 1.0, DARK);
+        assert_eq!(e[0].truncate(), glam::Vec3::ZERO, "a stale fg in an empty cell must not light it");
+        // And the dark depth IS the shade block's depth — one number, not two.
+        assert_eq!(DARK_TILE.depth, tile_for('░' as u32).unwrap().depth);
+    }
+
+    /// A T11 trail is a lit cell with a small colour, never a dark one: the rule fires
+    /// only on symbol-less cells. Its depth is its symbol's and its emit its decayed
+    /// colour.
+    #[test]
+    fn a_persist_trail_still_lowers_as_a_lit_cell() {
+        let trail = GlyphCell { fg: pack_rgb(9, 40, 3), ..c('█', 7, SGR_PERSIST) };
+        let (i, _, e, _) = lower_opts(&grid_of(1, 1, vec![trail]), None, 1.0, DARK);
+        let want = linear_rgb(pack_rgb(9, 40, 3));
+        assert_eq!(e[0].truncate(), glam::Vec3::from(want), "a trail emits its decayed colour, dim but not zero");
+        assert!(e[0].y > 0.0);
+        let look = GlyphLook::default();
+        assert_eq!(i[0].z_axis.z, look.depth * look.cell_w, "a full-block trail is a full-depth tile");
+    }
+
+    /// A dark cell never slides: a space CHARACTER on a path (a real ttfx thing) with a
+    /// remainder and a previous position is a dark tile at its cell centre — the tile
+    /// is the faceplate's, not the character's.
+    #[test]
+    fn a_dark_tile_sits_at_its_cell_centre_and_never_slides() {
+        let (prev, cur) = fixture();
+        let look = GlyphLook::default();
+        // The space character (id 9) is at cell (3, 1) in `cur`, (3, 0) in `prev`.
+        let (i, ..) = lower_opts(&cur, Some(&prev), 0.5, DARK);
+        let p = i[7].w_axis.truncate();
+        assert_eq!(p.truncate(), cell_centre(3, 1, 4, 2, &look, 2.0).truncate(), "not slid, not offset: {p}");
+        // While the real sliding character (id 7, cell 1 of row 0) still slides.
+        let x0 = i[1].to_scale_rotation_translation().2.x;
+        let x1 = lower_opts(&cur, Some(&prev), 1.0, DARK).0[1].to_scale_rotation_translation().2.x;
+        assert!(x0 < x1, "the block on a path is mid-slide at blend 0.5: {x0} < {x1}");
+    }
+
+    /// Invariant #4: off is byte-identical to T1's lowering — every instance, tint and
+    /// emit, in order, and the bounds — and `lower_grid` IS the default-options call.
+    /// And on, the bounds do not move: a dark tile cannot re-frame the camera.
+    #[test]
+    fn dark_tiles_off_is_byte_identical_to_lower_grid_and_on_leaves_the_bounds_alone() {
+        let (prev, cur) = fixture();
+        for (blend, p) in [(0.5, Some(&prev)), (1.0, None), (0.0, Some(&prev))] {
+            let (i0, t0, e0, b0) = lower(&cur, p, blend);
+            let (i1, t1, e1, b1) = lower_opts(&cur, p, blend, LowerOptions::default());
+            assert_eq!(i0, i1, "instances differ with the switch off (blend {blend})");
+            assert_eq!(t0, t1);
+            assert_eq!(e0, e1);
+            assert_eq!((b0.min, b0.max), (b1.min, b1.max));
+            let (i2, _, e2, b2) = lower_opts(&cur, p, blend, DARK);
+            assert_eq!((b0.min, b0.max), (b2.min, b2.max), "the bounds are unchanged by dark tiles (blend {blend})");
+            assert_eq!(i2.len(), i0.len() + 5, "the fixture has five symbol-less cells (four empty, one space character): {} -> {}", i0.len(), i2.len());
+            // Every lit tile is where it was, in order, with the dark ones interleaved.
+            let lit: Vec<&Mat4> = i2.iter().zip(&e2).filter(|(_, e)| e.truncate() != glam::Vec3::ZERO).map(|(m, _)| m).collect();
+            assert_eq!(lit, i0[..i0.len() - 1].iter().collect::<Vec<_>>(), "lit tiles are byte-identical with the switch on");
+        }
+        assert_eq!(LowerOptions::default(), LowerOptions { dark_tiles: false }, "every option defaults to off");
+        // The case a lit fixture cannot see: with NO lit cell, folding dark tiles into
+        // the bounds would lift `max.z` off the backplane's face to a quarter depth
+        // and the camera would frame a different box for the same grid.
+        let empty = grid_of(5, 3, vec![GlyphCell::default(); 15]);
+        let (_, _, _, b_off) = lower(&empty, None, 1.0);
+        let (_, _, _, b_on) = lower_opts(&empty, None, 1.0, DARK);
+        assert_eq!((b_off.min, b_off.max), (b_on.min, b_on.max), "an all-dark grid frames exactly as an empty one: {:?} vs {:?}", b_off.max, b_on.max);
+        assert!(b_on.max.z < 0.0, "…which is the backplane alone, wholly behind z = 0: {}", b_on.max.z);
+    }
+
+    /// §15.2's "not yet measured": the ~16 000-cell fullscreen case. Prints, never
+    /// gates — run `cargo test -p organon-core --release fullscreen -- --nocapture` for
+    /// a number that means something (an unoptimised build measures a different program).
+    #[test]
+    fn fullscreen_lowering_cost_is_printed_not_gated() {
+        use std::time::Instant;
+        let (cols, rows) = (200usize, 80usize);
+        // A plausible fullscreen frame: ~one cell in seven lit, on paths, with remainders.
+        let mk = |shift: usize| {
+            let cells = (0..cols * rows)
+                .map(|i| if (i + shift) % 7 == 0 { GlyphCell { sub_x: 0.1, ..c('█', i as u32, SGR_ACTIVE_PATH) } } else { GlyphCell::default() })
+                .collect();
+            grid_of(cols as u32, rows as u32, cells)
+        };
+        let (prev, cur) = (mk(0), mk(1));
+        let look = GlyphLook::default();
+        // Three conditions, measured in interleaved rounds (best of all runs per
+        // condition) so that clock ramp, cache warmth and allocator state do not land
+        // on whichever condition happened to run first — the first draft ran them in
+        // a fixed order and "on" came out faster than "off".
+        let conds: [(&str, LowerOptions, Option<&GlyphGrid>); 3] =
+            [("off, sliding", LowerOptions::default(), Some(&prev)), ("on, sliding", DARK, Some(&prev)), ("on, settled", DARK, None)];
+        let mut best = [f64::MAX; 3];
+        let mut count = [0usize; 3];
+        let (mut i, mut t, mut e) = (Vec::with_capacity(cols * rows + 1), Vec::with_capacity(cols * rows + 1), Vec::with_capacity(cols * rows + 1));
+        for _round in 0..5 {
+            for (k, (_, opts, p)) in conds.iter().enumerate() {
+                for _ in 0..10 {
+                    i.clear();
+                    t.clear();
+                    e.clear();
+                    let t0 = Instant::now();
+                    lower_grid_with(&cur, *p, 0.5, &look, *opts, TileOut { instances: &mut i, tints: &mut t, emits: &mut e });
+                    best[k] = best[k].min(t0.elapsed().as_secs_f64() * 1e6);
+                    count[k] = i.len();
+                }
+            }
+        }
+        let (n_off, us_off) = (count[0], best[0]);
+        let (n_on, us_on, us_on_still) = (count[1], best[1], best[2]);
+        assert_eq!(n_on, cols * rows + 1);
+        println!(
+            "fullscreen {cols}x{rows} = {} cells: off {n_off} instances, best {us_off:.0} us; \
+             dark tiles on {n_on} instances, best {us_on:.0} us (sliding), {us_on_still:.0} us (settled) \
+             [{} build]",
+            cols * rows,
+            if cfg!(debug_assertions) { "DEBUG — not the number, rerun --release" } else { "release" }
+        );
     }
 }
 

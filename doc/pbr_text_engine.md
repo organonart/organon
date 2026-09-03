@@ -591,7 +591,7 @@ already exists, because most of this is wiring:
 
 | Plate | On screen, `1c1c3ba` | Closes it | Owns |
 |---|---|---|---|
-| Every cell is a tile; a dark cell shows the room through a glass faceplate | Only lit cells get tiles; dark cells are bare slab | Full-grid tiles with the existing clearcoat lobe (`cube.wgsl` `coat`) | `cube.wgsl`, `glyph_ring.rs::lower_grid` |
+| Every cell is a tile; a dark cell shows the room through a glass faceplate | Only lit cells get tiles; dark cells are bare slab | Full-grid tiles with the existing clearcoat lobe (`cube.wgsl` `coat`) — both halves landed: the shader's profile and coat (#233), and the lowering as `lower_grid_with(…, LowerOptions { dark_tiles })`, off by default, `Shared.glyph[14]` proposed as the lane (§15.1) | `cube.wgsl`, `glyph_ring.rs::lower_grid` |
 | The emissive core has a soft falloff, seen *through* the faceplate | Flat, uniform emission across the face | A per-tile emission profile in the cube shader, keyed on the instance's own UV | `cube.wgsl` |
 | Glyphs as lights: the green pool on the backplane, a contact shadow in each well | Nothing spills; no well shadow | Emission-driven selection for the brightest-N point lights (`world.rs:9146`), RT shadow + AO for the wells | `world.rs` (selection), `rt_shadow`/`rt_ao` |
 | A brushed dark-metal backplane with a warm rim | A flat dark slab | The existing anisotropy lobe (`cube.wgsl` `aniso`, brush along local +Z) on the backplane instance, and a light rig | `world.rs` (rig), T3's backplane params |
@@ -627,9 +627,20 @@ until it lands.
   `tile_profile` on the face UV (`doc/arch/render.md`, "The tile"), strength on
   `Uniforms.shape.z` from `Shared.glyph[13]` (the lane is named; the world's `glyph_shape` lifts
   it — W10). The faceplate turned out to be preset data: the clearcoat lobe already transmits
-  `emissive` through `(1 − fc)` and adds its environment sheen independently. **Not landed:**
-  the full-grid lowering, because `lower_grid` was in another worker's hands (T11) — one tile per
-  cell, dark cells at the shade-`░` depth with `emit = 0`, is the follow-up.
+  `emissive` through `(1 − fc)` and adds its environment sheen independently. **Landed, lowering
+  half:** `glyph_ring::lower_grid_with` with `LowerOptions { dark_tiles }` — a symbol-less cell
+  (empty, space, a control) is a full-cell tile at the `░` depth (`DARK_TILE`, a quarter as proud
+  on the shared `look.depth` scale), faceplate tint, emit exactly `(0, 0, 0, gain)`; a T11 trail
+  is still a *lit* cell; a dark tile sits on the grid at its cell centre and never slides (a
+  space *character* on a path is a real ttfx thing, and its tile is the faceplate's, not the
+  character's); backplane, wells and bounds unchanged. **Default off and byte-identical to
+  `lower_grid`**, which the world still calls — pinned by lowering an asymmetric fixture both
+  ways. Wire proposed: **`Shared.glyph[14]`** (`[13]` is the profile strength above), the world
+  passing the flag where it calls `lower_grid` today. **Measured** (release, 200×80 = 16 000
+  cells, one in seven lit and sliding, best of fifty interleaved): 92 µs without dark tiles
+  (2 286 instances), 125 µs with (16 001, sliding), 92 µs with (settled) — the CPU lowering is
+  not where the fullscreen cost will be; the 16 000-instance draw is, and that waits on a GPU
+  look.
 - **T10 — glyphs as lights and the backplane rig.** Emission-driven brightest-N selection so the
   green pools onto the backplane; the anisotropic brushed backplane; the warm rim; RT shadow and
   AO in the wells. Owns `world.rs`. **After T3; beside T8/T9.**
@@ -690,5 +701,7 @@ auto-orbit never stops, so T5's accumulation restarts every frame (the T5 worker
 the T5 dwell renders **dark** because the tracer shades from `tint` (the T1 worker named the gap in #224 before
 merge; this is it on screen); and the out-of-the-box environment is the physical atmosphere, which
 reads as fog over terrain behind the grid. **Retired from §12:** `ttfx` is a Rust rewrite (§2.1);
-every effect settles (measured over all 37). **Not yet measured:** the ~14–16k-cell fullscreen
-case — the logo is 81×10, and nothing larger has been drawn.
+every effect settles (measured over all 37). **Not yet drawn:** the ~14–16k-cell fullscreen
+case — the logo is 81×10, and nothing larger has been rendered. Its CPU lowering *is*
+measured (§15.1, T9: ~125 µs for 16 000 cells with dark tiles on, release); the
+16 000-instance draw is not.
