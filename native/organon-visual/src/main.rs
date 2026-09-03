@@ -105,9 +105,10 @@ struct WindowSurface {
     config: wgpu::SurfaceConfiguration,
     /// Whether the swapchain is **actually** the fp16 extended-linear HDR surface right now —
     /// the grant, as opposed to `hdr_applied`'s request (organon#237). Set by every
-    /// `configure` from the format it chose, and it is what gates the headroom read, the
-    /// layer tag and the `HDR output: ON` line: a request that the surface could not honour
-    /// leaves this `false`, `hdr_max` at `1.0` and the composite in its SDR arm.
+    /// successful `configure` from the format it chose and **cleared by a failed one**
+    /// (`surface_format::Grant::after_configure`), and it is what gates the headroom read,
+    /// the layer tag and the `HDR output: ON` line: a request that the surface could not
+    /// honour leaves this `false`, `hdr_max` at `1.0` and the composite in its SDR arm.
     ///
     /// This replaces the `sdr_format` / `hdr_format` / `hdr_color_space` triple that was
     /// resolved **once** in `resumed`. That single read is what killed the visual twice on
@@ -212,7 +213,16 @@ impl WindowSurface {
         let e_internal = pollster::block_on(internal.pop());
         let e_oom = pollster::block_on(oom.pop());
         let e_validation = pollster::block_on(validation.pop());
-        if let Some(err) = e_internal.or(e_oom).or(e_validation) {
+        let err = e_internal.or(e_oom).or(e_validation);
+        // The grant is a function of (what was asked for, whether the configure raised),
+        // on BOTH paths: a failed configure clears `hdr_active` as well as `configured`, so
+        // nothing downstream — `apply_hdr_output` through `sync_hdr`'s wide-gamut-only
+        // branch, say — can read a stale grant and drive the platform HDR API over a
+        // swapchain that no longer exists. Pure and tested in `surface_format.rs`.
+        let grant = surface_format::Grant::after_configure(hdr, err.is_some());
+        self.configured = grant.configured;
+        self.hdr_active = grant.hdr_active;
+        if let Some(err) = err {
             let msg = err.to_string();
             if self.last_configure_error.as_deref() != Some(msg.as_str()) {
                 eprintln!(
@@ -225,14 +235,11 @@ impl WindowSurface {
                 );
                 self.last_configure_error = Some(msg);
             }
-            self.configured = false;
             return Configure::Failed;
         }
         if self.last_configure_error.take().is_some() {
             eprintln!("surface: configure recovered ({format:?}).");
         }
-        self.configured = true;
-        self.hdr_active = hdr;
         let changed = before != (format, hdr);
         if want_hdr && !hdr && (announce || changed) {
             eprintln!("{}", surface_format::fallback_line(&caps.formats, format, fp16_offered));

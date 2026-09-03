@@ -71,6 +71,35 @@ pub fn pick_surface_format(
     (offered.first().copied().unwrap_or(F::Bgra8UnormSrgb), false)
 }
 
+/// The grant a configure leaves behind: whether the swapchain is usable at all, and whether
+/// it is the fp16 extended-linear HDR surface.
+///
+/// A pure transition, because the invariant it carries was caught in review rather than by
+/// a test: a configure that *fails* must clear `hdr_active` as well as `configured`. The
+/// failure need not be fp16 leaving the list — an out-of-memory or internal error, or an
+/// alpha mode the surface no longer offers after an adapter change, fails the same way —
+/// and a stale `true` grant would let `apply_hdr_output` drive the platform HDR API over a
+/// swapchain that no longer exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Grant {
+    /// The last configure succeeded; the surface may be acquired from.
+    pub configured: bool,
+    /// The configured swapchain is `Rgba16Float` in an extended-linear colour space.
+    pub hdr_active: bool,
+}
+
+impl Grant {
+    /// The grant after a configure that asked for `chosen_hdr` and did (`failed == false`)
+    /// or did not (`failed == true`) succeed.
+    pub fn after_configure(chosen_hdr: bool, failed: bool) -> Grant {
+        if failed {
+            Grant { configured: false, hdr_active: false }
+        } else {
+            Grant { configured: true, hdr_active: chosen_hdr }
+        }
+    }
+}
+
 /// The stderr line for "HDR was wanted and the surface could not give it", naming the format
 /// actually configured and what the surface offered — so the operator can see *which* of the
 /// two refusals it was: fp16 absent from the list, or present without an extended-linear
@@ -167,6 +196,28 @@ mod tests {
         // wgpu promises at least one format; the promise is not what keeps a lock-screen
         // process alive, this is. `configure` then fails inside its error scope.
         assert_eq!(pick_surface_format(true, &[]), (F::Bgra8UnormSrgb, false));
+    }
+
+    #[test]
+    fn a_failed_configure_clears_the_grant() {
+        // Review finding on #247: HDR granted, then a configure fails for a reason other
+        // than fp16 leaving the list. `configured` went false but `hdr_active` stayed true,
+        // and `sync_hdr`'s wide-gamut-only branch read it through `apply_hdr_output`.
+        assert_eq!(
+            Grant::after_configure(true, true),
+            Grant { configured: false, hdr_active: false },
+            "a failed configure must clear hdr_active, not only configured"
+        );
+        assert_eq!(Grant::after_configure(false, true), Grant::default());
+        // A successful configure records exactly what it asked for.
+        assert_eq!(
+            Grant::after_configure(true, false),
+            Grant { configured: true, hdr_active: true }
+        );
+        assert_eq!(
+            Grant::after_configure(false, false),
+            Grant { configured: true, hdr_active: false }
+        );
     }
 
     #[test]
