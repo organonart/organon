@@ -365,12 +365,12 @@ is a silent always-false rather than a fallback.
 The heart of the two-process design.
 
 - **`Shared`** — a `#[repr(C)]` `Pod`/`Zeroable` struct (`ipc.rs`), a flat block of
-  `f32`/`u32` arrays, currently **8512 bytes** at `LAYOUT_VERSION` **`0x0285`**.
+  `f32`/`u32` arrays, currently **8624 bytes** at `LAYOUT_VERSION` **`0x0286`**.
   > **Read them, don't trust this line** — the two numbers live in **different files**,
   > and that is why one of them rotted here while the other didn't:
   > ```bash
-  > grep -n 'EXPECTED_SHARED_SIZE'      native/src/param_table.rs   # → 8512
-  > grep -n 'pub const LAYOUT_VERSION'  native/organon-core/src/ipc.rs   # → 0x0285
+  > grep -n 'EXPECTED_SHARED_SIZE'      native/src/param_table.rs   # → 8624
+  > grep -n 'pub const LAYOUT_VERSION'  native/organon-core/src/ipc.rs   # → 0x0286
   > ```
   > Both are golden-pinned, but **in different places**: the size by
   > `shared_layout_is_stable` (`param_table.rs`, alongside the offset table and the
@@ -536,6 +536,15 @@ The heart of the two-process design.
   when the glyphs move and accumulates through the dwell, and `pathtrace_active` (the preset's
   toggle OR a live `FRAME_SETTLED` frame) is the raster → path-trace handover. With no ring
   both reduce to what they were before T5. `doc/arch/render.md`'s "Converge on hold" owns it.
+  **T3 put the look on the param chain** — the one place this ring *does* touch `Shared`: three
+  tail-appended blocks (`glyph[16]`, `glyph_cam[8]`, `capsule[4]`; LAYOUT_VERSION 0x0285→0x0286)
+  carry every field of T1's `GlyphLook::DEFAULT` in cell units, the tiles' own bevel and a
+  per-fragment face crown (`Uniforms.shape.y`), the **held camera** (`world.rs::glyph_camera_rig`
+  — an absolute rig fitted to the tiles' bounds and the frame's FOV, the `substrate_rig` shape,
+  which is what lets `pt_moved` stay false through a dwell), and T6's capsule core
+  (`Surface.capsule_core` → `ParticleSystem::set_capsule_core`). Every default is the constant
+  it replaced, pinned by `glyph_look_tests::a_default_snapshot_is_exactly_the_t1_look`; the
+  factory preset `faceplate` (`preset.rs::builtin_text_presets`) is §10's first rung.
 
 ### Append-only layout discipline (critical)
 
@@ -1715,6 +1724,31 @@ pass; gate the instanced/SSAO/early-Z paths off (see `mandelbulb.rs`/`kifs.rs`).
 + `capture`/`apply` (`preset.rs`), and **one** `param_block!` slot (`param_table.rs`) —
 the packing for both `to_shared`s is then generated. Append to an existing `Shared`
 block or a new one. The layout-golden test will fail until you re-pin it (intentional).
+
+Four things this checklist did not say until organon#217 T3 walked it for sixteen
+parameters at once:
+
+- **`apply` is generated, but the tab partition is not.** `preset.rs`'s `apply` is
+  `for_each_tab_field!` — so the field you add is *also* a `$op!(Tab, field, scalar)` line in
+  that macro, and the tab you pick is the preset bucket it saves and recalls in. A field with a
+  `PresetValues` slot but no `$op!` line captures and never recalls; the
+  `tab_partition_is_exactly_the_captured_fields` test names it.
+- **A new `Shared` block needs the pack call in *both* `to_shared`s** (`params.rs` and
+  `preset.rs`), the `ipc::Shared::default()` entry with the same defaults, and — for a tail
+  append — the offset pin, `EXPECTED_SHARED_SIZE`, the whole-struct hash re-pin, and a
+  *prefix* golden proving the bytes ahead of the append did not move
+  (`the_glyph_append_leaves_every_pre_append_byte_where_it_was` is the template).
+- **`clip.rs` is not per-parameter.** It maps 32 fixed CC slots to a hand-picked core set; a
+  new look control does not join it unless it is meant to be played from a controller.
+  Likewise `doc/reference/` lists only `agent::core_catalog()` ∪ `ACTUATABLE_IDS`, so a
+  parameter that is not CLI-settable adds no row — the `organon docs` regeneration is a check
+  that nothing drifted, not a step that necessarily changes a file.
+- **A param-only block cannot be carried by a preset.** `pack_temporal` (TAA) declares one
+  packer, so no preset can turn TAA off, whatever a spec asks a preset to do; check the
+  block's shape before promising a preset a setting. And a value that has to reach a
+  *render-side setter* rather than a uniform (T6's `set_capsule_core`) travels as a field
+  on the `RenderFrame` sub-struct (`Surface.capsule_core`) — that struct is constructed in
+  exactly one place (`world.rs`), so the compiler names the site.
 
 **Add a render subsystem** (a new world layer, post effect, or light-transport pass):
 add a module + shader (naga-validate it), thread it through `RenderFrame`'s relevant

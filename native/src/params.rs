@@ -5936,6 +5936,54 @@ pub struct OrganicMathParams {
     /// baked/loaded height offsets each vertex along its normal). Captured **Look**.
     #[id = "mdsp"] pub mat_displace: FloatParam,
 
+    // --- PBR text — the glyph ring's look (organon#217 T3, `Shared.glyph`) ---
+    // T1 drew the ring's tiles from `glyph_ring::GlyphLook::DEFAULT`; these lift every
+    // field of it. All in CELL units (§5.1) except `glyph_cell_w`, the world-unit anchor.
+    // Defaults are exactly the const's values, so a pre-T3 preset renders identically.
+    /// World units per column; everything else scales with it. Captured **Look**.
+    #[id = "gtcw"] pub glyph_cell_w: FloatParam,
+    /// Full-block extrusion depth, in column widths. Captured **Look**.
+    #[id = "gtdp"] pub glyph_depth: FloatParam,
+    /// Gap between a tile's back face and the backplane (the contact-shadow well), in
+    /// column widths. Captured **Look**.
+    #[id = "gtgp"] pub glyph_gap: FloatParam,
+    /// Emission gain in SDR-white units (§4): 1 = the terminal's brightness; above it the
+    /// phosphor crosses the bloom threshold on its own. Captured **Look**.
+    #[id = "gtgn"] pub glyph_gain: FloatParam,
+    /// The faceplate: the near-black dielectric tint of every tile, one grey level.
+    /// Captured **Look**.
+    #[id = "gtfp"] pub glyph_faceplate: FloatParam,
+    /// Backplane tint, red. Captured **Look**.
+    #[id = "gtbr"] pub glyph_back_r: FloatParam,
+    /// Backplane tint, green. Captured **Look**.
+    #[id = "gtbg"] pub glyph_back_g: FloatParam,
+    /// Backplane tint, blue. Captured **Look**.
+    #[id = "gtbb"] pub glyph_back_b: FloatParam,
+    /// Backplane margin beyond the grid, in column widths. Captured **Look**.
+    #[id = "gtmg"] pub glyph_margin: FloatParam,
+    /// Backplane thickness, in column widths. Captured **Look**.
+    #[id = "gtbd"] pub glyph_back_depth: FloatParam,
+    /// Grey used for a cell that has a symbol but no foreground colour (ttfx's terminal
+    /// default). Captured **Look**.
+    #[id = "gtfg"] pub glyph_default_fg: FloatParam,
+    /// The tiles' own rounded-box bevel (0 = sharp tile → 1 = ellipsoid). Its own lane,
+    /// not the Generator bucket's `bevel`: a Look preset must carry the whole glyph look,
+    /// and on a thin 1×2 tile the same number rounds a different shape. Captured **Look**.
+    #[id = "gtbv"] pub glyph_bevel: FloatParam,
+    /// Face crown (§5.1): a per-fragment dome normal across each tile face so light moves
+    /// across the flat 95 % of a tile. 0 = flat. Normal-only — no geometry, no depth
+    /// change. Captured **Look**.
+    #[id = "gtcr"] pub glyph_crown: FloatParam,
+
+    // --- Coaxial capsule core (organon#217 T6, `Shared.capsule`) ---
+    /// Inner emissive capsule radius as a fraction of the outer, for every Glass /
+    /// Refractive capsule impostor (arms + plexus). 0 = off, pixel-identical to the pre-T6
+    /// frame. `ORGANON_CAPSULE_CORE` still overrides when set. Captured **Look**.
+    #[id = "cpcf"] pub capsule_core: FloatParam,
+    /// Beer–Lambert density per outer radius through the capsule's glass, in the
+    /// instance's colour. 0 = a clear shell. Captured **Look**.
+    #[id = "cpab"] pub capsule_absorb: FloatParam,
+
     // --- Plexus surface mode (proximity web; all × node spacing, scale-invariant) ---
     /// Link radius as a multiple of the field's node spacing — how far a node
     /// reaches to find neighbours. Higher = denser web. Shared.
@@ -6171,6 +6219,18 @@ pub struct OrganicMathParams {
     /// Dolly-zoom (Hitchcock): couple FOV to the dolly breath so pushing in widens the
     /// lens. 0 = fixed FOV; up = more vertigo warp.
     #[id = "cfvz"] pub cam_fov_dolly: FloatParam,
+    // --- PBR text — the held camera (organon#217 T3, `Shared.glyph_cam`) ---
+    /// While a glyph ring is live, hold the camera on an absolute rig fitted to the grid
+    /// (yaw 0, pitch = tilt, distance from the grid's bounds and the FOV): the auto-orbit,
+    /// the drag and the AABB follow are bypassed, so the view-proj is identical frame to
+    /// frame and T5's converge-on-hold can converge. Off = the ring inherits the orbit rig
+    /// (T1's behaviour, including the cube field's default distance). Captured **Motion**.
+    #[id = "gtch"] pub glyph_cam_hold: BoolParam,
+    /// Camera pitch over the held grid, degrees (0 = straight on; a few degrees is §5.1's
+    /// letterpress). Captured **Motion**.
+    #[id = "gtct"] pub glyph_cam_tilt: FloatParam,
+    /// Multiplier on the fitted distance (1 = the grid fills the frame). Captured **Motion**.
+    #[id = "gtcz"] pub glyph_cam_zoom: FloatParam,
 
     // --- Sequencer Tier 2 richness (#307) ---
     /// Chance (0..1) the sequencer holds the current shot for another period instead
@@ -8573,6 +8633,26 @@ impl Default for OrganicMathParams {
             mat_flow_y: flin("Flow Y", 0.0, -1.0, 1.0),
             mat_displace: flin("Height Displace", 0.0, 0.0, 2.0),
 
+            // organon#217 T3 — the glyph look. Match `glyph_ring::GlyphLook::DEFAULT` and
+            // ipc::Shared::default().glyph exactly (byte-identical; `world::glyph_look_from`
+            // pins the round trip). Bevel 0 = T1's sharp tile; crown 0 = flat.
+            glyph_cell_w: flin("Text Cell Width", 1.0, 0.1, 10.0),
+            glyph_depth: flin("Text Extrusion", 0.18, 0.0, 2.0),
+            glyph_gap: flin("Text Gap", 0.06, 0.0, 1.0),
+            glyph_gain: flin("Text Emission Gain", 3.0, 0.0, 12.0),
+            glyph_faceplate: flin("Text Faceplate", 0.03, 0.0, 1.0),
+            glyph_back_r: flin("Text Backplane R", 0.06, 0.0, 1.0),
+            glyph_back_g: flin("Text Backplane G", 0.06, 0.0, 1.0),
+            glyph_back_b: flin("Text Backplane B", 0.065, 0.0, 1.0),
+            glyph_margin: flin("Text Backplane Margin", 1.5, 0.0, 10.0),
+            glyph_back_depth: flin("Text Backplane Depth", 0.25, 0.0, 2.0),
+            glyph_default_fg: flin("Text Default Foreground", 0.75, 0.0, 1.0),
+            glyph_bevel: flin("Text Bevel", 0.0, 0.0, 1.0),
+            glyph_crown: flin("Text Face Crown", 0.0, 0.0, 1.0),
+            // organon#217 T6 — the coaxial capsule core, inert at 0.
+            capsule_core: flin("Capsule Core", 0.0, 0.0, 1.0),
+            capsule_absorb: flin("Capsule Absorption", 0.0, 0.0, 8.0),
+
             // Plexus defaults: radius 1.6× spacing, up to 8 links, thin struts, small
             // node markers. Match ipc::Shared::default().plexus (byte-identical).
             plexus_radius: flin("Plexus Link Radius", 1.6, 0.3, 20.0),
@@ -8716,6 +8796,11 @@ impl Default for OrganicMathParams {
             cam_roll: flin("Camera Roll (deg)", 0.0, -45.0, 45.0),
             cam_fov: flin("Field of View (deg)", 45.0, 20.0, 90.0),
             cam_fov_dolly: flin("Dolly Zoom", 0.0, 0.0, 1.0),
+            // organon#217 T3 — the held camera: off (the ring inherits the orbit rig, as
+            // T1 did), straight on, distance = the fit. Match ipc::Shared::default().glyph_cam.
+            glyph_cam_hold: BoolParam::new("Text Camera Hold", false),
+            glyph_cam_tilt: flin("Text Camera Tilt", 0.0, -60.0, 60.0),
+            glyph_cam_zoom: flin("Text Camera Zoom", 1.0, 0.25, 4.0),
             cam_hold_prob: flin("Shot Hold Chance", 0.0, 0.0, 1.0),
             cam_phrase_lock: BoolParam::new("Phrase-Locked Facing", false),
             // 1.0 = fully sequencer (the original Tier-2 behaviour when the
@@ -9623,6 +9708,10 @@ impl OrganicMathParams {
             mindview: [0.0; 8],
             mindview_pane: [0.0; crate::ipc::MINDVIEW_PANES * crate::ipc::MINDVIEW_PANE_SLOTS],
             mindview_gen: 0,
+            // organon#217 T3 — PBR text look controls, held camera, capsule core.
+            glyph: crate::param_table::pack_glyph(self),
+            glyph_cam: crate::param_table::pack_glyph_cam(self),
+            capsule: crate::param_table::pack_capsule(self),
         }
     }
 }

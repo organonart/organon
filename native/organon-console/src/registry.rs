@@ -2896,7 +2896,7 @@ mod tests {
     #[test]
     fn the_second_ring_depends_on_the_first() {
         let look = labels("/organon look ");
-        assert_eq!(look.len(), 25, "every card the editor draws on the Look tab");
+        assert_eq!(look.len(), 26, "every card the editor draws on the Look tab");
         assert_eq!(look[0], "surface");
         assert!(look.contains(&"bloom".to_string()));
         assert!(
@@ -2937,7 +2937,7 @@ mod tests {
         let ring = reg.candidates("/organon ").unwrap().candidates;
         assert_eq!(ring.len(), UiTab::ALL.len(), "every tab Organon has");
         let look = ring.iter().find(|c| c.label == "look").unwrap();
-        assert_eq!(look.doc, "25 panels");
+        assert_eq!(look.doc, "26 panels");
         for word in ["generator", "motion", "environment", "synth", "audio", "settings", "mind"] {
             let tab = ring.iter().find(|c| c.label == word).unwrap();
             assert_eq!(tab.doc, TAB_NOT_MAPPED, "{word} has no panels in the table");
@@ -2991,7 +2991,7 @@ mod tests {
         assert_eq!(only.completion, "/organon look ");
         assert!(!only.completes, "a tab alone is not a command — the panel is still needed");
         // …and asking again with that line is the next ring. One loop, no new machinery.
-        assert_eq!(labels(&only.completion).len(), 25);
+        assert_eq!(labels(&only.completion).len(), 26);
     }
 
     /// `su` leaves exactly one panel, and accepting it completes the command — so a hand types

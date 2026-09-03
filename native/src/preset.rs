@@ -1516,6 +1516,24 @@ pub struct PresetValues {
     #[serde(default = "def_one")] pub mat_flow_x: f32,
     #[serde(default)] pub mat_flow_y: f32,
     #[serde(default)] pub mat_displace: f32,
+    // organon#217 T3 — the glyph ring's look (old presets predate it → exactly
+    // `GlyphLook::DEFAULT`, bevel 0, crown 0: the grid T1 drew).
+    #[serde(default = "def_one")] pub glyph_cell_w: f32,
+    #[serde(default = "def_glyph_depth")] pub glyph_depth: f32,
+    #[serde(default = "def_glyph_gap")] pub glyph_gap: f32,
+    #[serde(default = "def_glyph_gain")] pub glyph_gain: f32,
+    #[serde(default = "def_glyph_faceplate")] pub glyph_faceplate: f32,
+    #[serde(default = "def_glyph_back_rg")] pub glyph_back_r: f32,
+    #[serde(default = "def_glyph_back_rg")] pub glyph_back_g: f32,
+    #[serde(default = "def_glyph_back_b")] pub glyph_back_b: f32,
+    #[serde(default = "def_glyph_margin")] pub glyph_margin: f32,
+    #[serde(default = "def_glyph_back_depth")] pub glyph_back_depth: f32,
+    #[serde(default = "def_glyph_default_fg")] pub glyph_default_fg: f32,
+    #[serde(default)] pub glyph_bevel: f32,
+    #[serde(default)] pub glyph_crown: f32,
+    // organon#217 T6 — the coaxial capsule core (old presets predate it → inert).
+    #[serde(default)] pub capsule_core: f32,
+    #[serde(default)] pub capsule_absorb: f32,
     // Plexus surface-mode controls (old presets predate it → neutral defaults).
     #[serde(default = "def_plexus_radius")]
     pub plexus_radius: f32,
@@ -1735,6 +1753,11 @@ pub struct PresetValues {
     pub cam_fov: f32,
     #[serde(default)] // 0 = no dolly-zoom
     pub cam_fov_dolly: f32,
+    // organon#217 T3 — the held camera for a live glyph ring (old presets predate it →
+    // hold off, straight on, distance = the fit).
+    #[serde(default)] pub glyph_cam_hold: bool,
+    #[serde(default)] pub glyph_cam_tilt: f32,
+    #[serde(default = "def_one")] pub glyph_cam_zoom: f32,
     #[serde(default)] // 0 = never hold
     pub cam_hold_prob: f32,
     #[serde(default)] // false
@@ -3315,6 +3338,18 @@ fn def_metallic() -> f32 { 0.0 }
 fn def_ior() -> f32 { 1.45 }
 fn def_roughness() -> f32 { 0.35 }
 fn def_plexus_radius() -> f32 { 1.6 }
+// organon#217 T3 — `glyph_ring::GlyphLook::DEFAULT`, field for field, so a preset saved
+// before the look was a parameter recalls the grid T1 drew. `world::glyph_look_from`'s
+// test pins these against the const through `Shared`.
+fn def_glyph_depth() -> f32 { 0.18 }
+fn def_glyph_gap() -> f32 { 0.06 }
+fn def_glyph_gain() -> f32 { 3.0 }
+fn def_glyph_faceplate() -> f32 { 0.03 }
+fn def_glyph_back_rg() -> f32 { 0.06 }
+fn def_glyph_back_b() -> f32 { 0.065 }
+fn def_glyph_margin() -> f32 { 1.5 }
+fn def_glyph_back_depth() -> f32 { 0.25 }
+fn def_glyph_default_fg() -> f32 { 0.75 }
 fn def_plexus_links() -> f32 { 8.0 }
 fn def_plexus_strut() -> f32 { 0.07 }
 fn def_plexus_marker() -> f32 { 0.24 }
@@ -4131,6 +4166,22 @@ macro_rules! for_each_tab_field {
         $op!(Look, mat_flow_x, scalar);
         $op!(Look, mat_flow_y, scalar);
         $op!(Look, mat_displace, scalar);
+        // organon#217 T3 — PBR text look (Look) + T6 capsule core (Look).
+        $op!(Look, glyph_cell_w, scalar);
+        $op!(Look, glyph_depth, scalar);
+        $op!(Look, glyph_gap, scalar);
+        $op!(Look, glyph_gain, scalar);
+        $op!(Look, glyph_faceplate, scalar);
+        $op!(Look, glyph_back_r, scalar);
+        $op!(Look, glyph_back_g, scalar);
+        $op!(Look, glyph_back_b, scalar);
+        $op!(Look, glyph_margin, scalar);
+        $op!(Look, glyph_back_depth, scalar);
+        $op!(Look, glyph_default_fg, scalar);
+        $op!(Look, glyph_bevel, scalar);
+        $op!(Look, glyph_crown, scalar);
+        $op!(Look, capsule_core, scalar);
+        $op!(Look, capsule_absorb, scalar);
         $op!(Generator, palette, enum, HostPalette);
         $op!(Generator, metaball_radius, scalar);
         $op!(Generator, metaball_threshold, scalar);
@@ -4234,6 +4285,10 @@ macro_rules! for_each_tab_field {
         $op!(Motion, cam_roll, scalar);
         $op!(Motion, cam_fov, scalar);
         $op!(Motion, cam_fov_dolly, scalar);
+        // organon#217 T3 — the held camera for a live glyph ring (Motion).
+        $op!(Motion, glyph_cam_hold, scalar);
+        $op!(Motion, glyph_cam_tilt, scalar);
+        $op!(Motion, glyph_cam_zoom, scalar);
         $op!(Motion, cam_hold_prob, scalar);
         $op!(Motion, cam_phrase_lock, scalar);
         $op!(Motion, cam_seq_mix, scalar);
@@ -5538,6 +5593,21 @@ impl PresetValues {
             mat_flow_x: p.mat_flow_x.value(),
             mat_flow_y: p.mat_flow_y.value(),
             mat_displace: p.mat_displace.value(),
+            glyph_cell_w: p.glyph_cell_w.value(),
+            glyph_depth: p.glyph_depth.value(),
+            glyph_gap: p.glyph_gap.value(),
+            glyph_gain: p.glyph_gain.value(),
+            glyph_faceplate: p.glyph_faceplate.value(),
+            glyph_back_r: p.glyph_back_r.value(),
+            glyph_back_g: p.glyph_back_g.value(),
+            glyph_back_b: p.glyph_back_b.value(),
+            glyph_margin: p.glyph_margin.value(),
+            glyph_back_depth: p.glyph_back_depth.value(),
+            glyph_default_fg: p.glyph_default_fg.value(),
+            glyph_bevel: p.glyph_bevel.value(),
+            glyph_crown: p.glyph_crown.value(),
+            capsule_core: p.capsule_core.value(),
+            capsule_absorb: p.capsule_absorb.value(),
             plexus_radius: p.plexus_radius.value(),
             plexus_links: p.plexus_links.value(),
             plexus_strut: p.plexus_strut.value(),
@@ -5648,6 +5718,9 @@ impl PresetValues {
             cam_roll: p.cam_roll.value(),
             cam_fov: p.cam_fov.value(),
             cam_fov_dolly: p.cam_fov_dolly.value(),
+            glyph_cam_hold: p.glyph_cam_hold.value(),
+            glyph_cam_tilt: p.glyph_cam_tilt.value(),
+            glyph_cam_zoom: p.glyph_cam_zoom.value(),
             cam_hold_prob: p.cam_hold_prob.value(),
             cam_phrase_lock: p.cam_phrase_lock.value(),
             cam_seq_mix: p.cam_seq_mix.value(),
@@ -6624,6 +6697,10 @@ impl PresetValues {
             mindview: [0.0; 8],
             mindview_pane: [0.0; crate::ipc::MINDVIEW_PANES * crate::ipc::MINDVIEW_PANE_SLOTS],
             mindview_gen: 0,
+            // organon#217 T3 — PBR text look controls, held camera, capsule core.
+            glyph: crate::param_table::pack_glyph_preset(self),
+            glyph_cam: crate::param_table::pack_glyph_cam_preset(self),
+            capsule: crate::param_table::pack_capsule_preset(self),
         }
     }
 }
@@ -6864,6 +6941,10 @@ pub fn load() -> Vec<Preset> {
     if seed_rails_presets(&mut presets) && save(&presets) {
         mark_rails_seeded();
     }
+    // organon#217 T3: the factory PBR-text preset(s), same one-shot shape.
+    if seed_text_presets(&mut presets) && save(&presets) {
+        mark_text_seeded();
+    }
     presets
 }
 
@@ -7047,6 +7128,91 @@ fn seed_rails_presets(presets: &mut Vec<Preset>) -> bool {
 /// Drop the one-shot marker — only after the seeded store is safely on disk.
 fn mark_rails_seeded() {
     let _ = std::fs::write(rails_seed_marker(), "1");
+}
+
+fn text_seed_marker() -> PathBuf {
+    let dir = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("OrganicMath");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("seeded_text_v1")
+}
+
+/// The factory PBR-text presets (organon#217 T3 — `doc/pbr_text_engine.md` §10's
+/// ladder). One rung today, **`faceplate`**: the classic done properly — phosphor
+/// emission behind a thin clearcoat, a slight bevel and face crown so light moves
+/// across each tile, halation, a dark room so the grid is not read against fog over
+/// terrain, and the **held camera** so T5's converge-on-hold can converge. Built as
+/// deltas on the factory default capture, exactly as the Rails rides are, so every
+/// look control not named stays at its (T1) default and future params inherit theirs.
+///
+/// ⚠️ **What this preset cannot carry, and why.** TAA is `temporal[0]`, a param-only
+/// block that no preset captures (a Settings matter), so §8's "do not use TAA" is met
+/// by TAA's default of OFF rather than by this file — a session that switched TAA on
+/// keeps it on through a recall. MSAA is Settings too. And the path tracer's own
+/// toggle is a session state, not a look; the dwell is traced by T5's handover, not by
+/// this preset asking for it.
+///
+/// ⚠️ Named `faceplate` **literally** — the ladder's word, not a namespaced "Text —
+/// faceplate" — so `organon console preset load faceplate` and the editor's list
+/// need no guessing; the seed only appends when no preset of that name exists, so a
+/// user's own `faceplate` is never replaced.
+pub fn builtin_text_presets() -> Vec<Preset> {
+    let base = PresetValues::capture(&OrganicMathParams::default());
+    let mk = |name: &str, f: &dyn Fn(&mut PresetValues)| -> Preset {
+        let mut v = base.clone();
+        f(&mut v);
+        Preset::unstated(name, v)
+    };
+    vec![mk("faceplate", &|v| {
+        // The tiles: T1's look with the two T3 additions that give a flat tile a
+        // varying normal — a slight bevel (the rim) and a crown (the roll).
+        v.glyph_bevel = 0.12;
+        v.glyph_crown = 0.35;
+        // §4's material sketch: a near-black dielectric faceplate under a thin coat.
+        v.mat_type = crate::params::MaterialType::Clearcoat.to_u32();
+        v.metallic = 0.0;
+        v.roughness = 0.22;
+        // The held, fitted camera, tilted a few degrees (§5.1's letterpress) — and the
+        // auto-orbit path off, so the preset is still even with no ring live.
+        v.glyph_cam_hold = true;
+        v.glyph_cam_tilt = 6.0;
+        v.glyph_cam_zoom = 1.0;
+        v.cam_path = crate::params::CamPath::Off.to_u32();
+        // A dark room: the physical atmosphere off and the background hidden (measured
+        // on the first GPU look: the default sky behind the grid reads as fog over
+        // terrain), the IBL dimmed to a faint sheen so dark cells still show the room
+        // (§4.1) without lighting the backplane.
+        v.atmos_enabled = false;
+        v.bg_visible = false;
+        v.env_intensity = 0.15;
+        // CRT finishing that already exists: halation (`fx.wgsl`), gated by the FX pass.
+        v.fx_enabled = true;
+        v.hal_amount = 0.35;
+    })]
+}
+
+/// One-shot seeding of the factory PBR-text presets — the `seed_rails_presets` shape:
+/// runs only while its marker is absent, appends only names that don't already exist.
+fn seed_text_presets(presets: &mut Vec<Preset>) -> bool {
+    if text_seed_marker().exists() {
+        return false;
+    }
+    let mut changed = false;
+    for p in builtin_text_presets() {
+        if !presets.iter().any(|e| e.name == p.name) {
+            presets.push(p);
+            changed = true;
+        }
+    }
+    if !changed {
+        mark_text_seeded();
+    }
+    changed
+}
+
+fn mark_text_seeded() {
+    let _ = std::fs::write(text_seed_marker(), "1");
 }
 
 /// Which preset list a save/recall/rename/delete acts on (#145): the full-state

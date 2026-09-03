@@ -69,7 +69,7 @@ struct Uniforms {
                             // 1 Calibrated), y=lut (0 Turbo/1 Viridis/2 Inferno/3 Magma),
                             // z=amount (0..1 blend over the aesthetic albedo), w=cal_t
                             // (the CPU-computed db_to_colour_t coord). mode<0.5 → identity.
-    shape: vec4<f32>,       // Node bevel: x=bevel (0 sharp cube → 1 sphere), yzw reserved.
+    shape: vec4<f32>,       // x=bevel (0 sharp cube → 1 sphere), y=face crown (organon#217 T3, fs-only normal dome), zw reserved.
                             // Rounds the (subdivided) cube mesh via a rounded-box morph in
                             // the vertex stages. Set nonzero only on the Original / Flow-
                             // Aligned cube draw (render() gates it). x=0 → sharp cube.
@@ -1390,6 +1390,39 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let f0_override   = clamp(u.reflect_ctl.w, 0.0, 1.0); // Standard reflectance lift
 
     var n = normalize(in.world_normal);
+    // organon#217 T3 — face crown (`doc/pbr_text_engine.md` §5.1): a slight keycap dome
+    // across every face of the cube, as a PER-FRAGMENT normal, so the flat 95 % of a
+    // glyph tile carries a varying normal and light moves across it. Normal-only: the
+    // vertex positions, the depth prepass (`vs_depth`, `@invariant`) and the RT hit
+    // shading are untouched, so there is no silhouette change and nothing to keep in
+    // step. The dome is `z = h·(1 − 4(x² + y²))` on the face whose axis dominates the
+    // un-rounded local position (`in.local_pos` is `in.position`, still on the flat
+    // cube even when the mesh is bevelled), whose normal is `(2·crown·x, 2·crown·y, 1)`
+    // — `crown` (u.shape.y) is the tangent of the tilt at the face edge. In the bevel's
+    // rounded band `round_local` owns the normal, so the crown yields to it there. The
+    // local normal goes to world through the inverse-transpose of the instance frame:
+    // `inv0..2` are the COLUMNS of the inverse 3×3, so `(inv0·n, inv1·n, inv2·n)` is
+    // exactly `transpose(inverse(M)) · n`. Gated on `u.shape.y > 0`, which every draw
+    // today writes as 0 (render() zeroes `shape` off the generator cube draw and the
+    // world writes it only for a live glyph ring), so the frame is byte-identical.
+    if (u.shape.y > 0.0) {
+        let p = in.local_pos;
+        let ap = abs(p);
+        var axis = vec3<f32>(0.0, 0.0, sign(p.z));
+        if (ap.x >= ap.y && ap.x >= ap.z) {
+            axis = vec3<f32>(sign(p.x), 0.0, 0.0);
+        } else if (ap.y >= ap.z) {
+            axis = vec3<f32>(0.0, sign(p.y), 0.0);
+        }
+        let tangential = p - axis * dot(p, axis);
+        var n_local = normalize(axis + 2.0 * u.shape.y * tangential);
+        let rounded = round_local(p, u.shape.x);
+        if (rounded.has_normal) {
+            n_local = rounded.normal;
+        }
+        let nw = vec3<f32>(dot(in.inv0, n_local), dot(in.inv1, n_local), dot(in.inv2, n_local));
+        n = normalize(nw);
+    }
     let v = normalize(u.camera_pos.xyz - in.world_pos);
     // Double-sided lighting: flip the normal toward the viewer. A no-op on the
     // closed cubes/tubes (visible faces already face the camera), but it lets the

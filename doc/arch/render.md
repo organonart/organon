@@ -948,14 +948,25 @@ a stale grid is never traced as though it were held. All of it is pinned in
 `organon-world`'s tests (`the_dwell_converges_and_the_next_effect_restarts_it` walks one
 whole motion → settle → dwell → next cycle).
 
-⚠️ **Two things this does not do, on purpose.** It does not touch TAA: the jitter is the
-preset's `Shared.temporal[0]`, not a glyph setting, and §8's warning (`temporal.rs`
-reprojects by camera only; teleporting glyphs ghost) is T3's to act on when it lifts the
-look onto the param chain. And it does not still the camera: `pt_moved` compares the
-unjittered view-proj, so a preset whose auto-orbit is running restarts accumulation every
-frame and the dwell never converges — a ring session needs a held camera (Demo's
-`static_cam` is the existing shape), which is a preset / screensaver-mode matter (T3 / T4),
-not a renderer one. 🚨 Nothing here has been looked at on a GPU: what a GPU session must
+⚠️ **Two things this did not do, and what T3 did about them.** It does not touch TAA: the
+jitter is `Shared.temporal[0]`, and that block is **param-only** (`pack_temporal` declares
+one packer), so no preset — `faceplate` included — can switch it; §8's warning
+(`temporal.rs` reprojects by camera only; teleporting glyphs ghost) is met by TAA's default
+of OFF, and a session that turned it on keeps it on through a recall. And it did not still
+the camera: `pt_moved` compares the unjittered view-proj, so a preset whose auto-orbit is
+running restarts accumulation every frame and the dwell never converges — measured on the
+first GPU look (2026-09-02). **T3 holds it** (organon#217): `world.rs::glyph_camera_rig` is a
+second absolute arm on the camera selection, below the Console's `substrate_rig` and above
+rails and the orbit — `(centre, yaw 0, pitch = tilt, distance, roll 0, fov)` with the
+distance computed from the tiles' bounds and the frame's FOV/aspect
+(`fit_distance`), never from the wheel — active only while a ring is live *and* the
+preset's `glyph_cam[0]` (hold) is set, so a no-ring session and a preset that did not ask
+stay on the orbit rig. `a_held_rig_lets_the_dwell_converge_where_an_orbit_cannot` walks
+the same restart logic with a held rig (accumulates) and an advancing yaw (restarts every
+frame). T3 also patches `Uniforms.shape` for a live ring: `x` the glyph look's own bevel,
+`y` the **face crown** — a per-fragment dome normal in `fs_main` (normal-only; the depth
+prepass, the silhouette and the RT hit shading are untouched), gated on `y > 0`, which every
+other draw writes as 0. 🚨 Nothing here has been looked at on a GPU: what a GPU session must
 see is the frame visibly sharpening over the dwell after an effect settles, and restarting
 cleanly — no after-image of the held text — when the next effect begins.
 

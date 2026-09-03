@@ -218,7 +218,12 @@ pub struct ParticleSystem {
     // Not a param-chain value (look controls are T3): `set_capsule_core` is the
     // render-side API, and `ORGANON_CAPSULE_CORE` seeds it so a GPU session can
     // look before any control exists.
+    // organon#217 T3: the control exists now (`Shared.capsule` → `Surface.capsule_core`
+    // → `set_capsule_core`), and the seed stays as an OVERRIDE — `capsule_env` is what
+    // it parsed at construction, `None` when unset — because no CPU test can prove the
+    // GPU draw read the param; a GPU session retires it once it has looked.
     capsule_core: [f32; 2],
+    capsule_env: Option<[f32; 2]>,
 }
 
 impl ParticleSystem {
@@ -393,7 +398,8 @@ impl ParticleSystem {
             count: 0,
             drew_this_frame: false,
             beads: false,
-            capsule_core: capsule_core::from_env(),
+            capsule_core: capsule_core::from_env().unwrap_or([0.0, 0.0]),
+            capsule_env: capsule_core::from_env(),
         }
     }
 
@@ -404,7 +410,7 @@ impl ParticleSystem {
     /// Glass/Refractive capsules read it. Takes effect at the next `set_arms` /
     /// `set_plexus` upload.
     pub fn set_capsule_core(&mut self, core_frac: f32, absorb: f32) {
-        self.capsule_core = capsule_core::lanes(core_frac, absorb);
+        self.capsule_core = capsule_core::resolve(self.capsule_env, core_frac, absorb);
     }
 
     fn capsule_lanes(&self) -> [f32; 4] {
@@ -1105,13 +1111,26 @@ mod capsule_core {
         [c, a]
     }
 
-    /// `ORGANON_CAPSULE_CORE="<core_frac>[,<absorb>]"` — the only way to see the
-    /// core before T3 wires a control. Unset, empty or unparsable → `[0, 0]` (inert).
-    pub fn from_env() -> [f32; 2] {
-        std::env::var("ORGANON_CAPSULE_CORE")
-            .ok()
-            .and_then(|s| parse(&s))
-            .unwrap_or([0.0, 0.0])
+    /// `ORGANON_CAPSULE_CORE="<core_frac>[,<absorb>]"` — the seed that let a GPU session
+    /// see the core before T3 wired a control, kept as an **override** (see [`resolve`]).
+    /// Unset, empty or unparsable → `None` (no override; the param decides).
+    pub fn from_env() -> Option<[f32; 2]> {
+        std::env::var("ORGANON_CAPSULE_CORE").ok().and_then(|s| parse(&s))
+    }
+
+    /// organon#217 T3 — what `set_capsule_core` actually stores: the env seed when one
+    /// was parsed at construction, else the param-chain value (`Shared.capsule` →
+    /// `Surface.capsule_core`), clamped exactly as the seed is. ⚠️ The seed wins on
+    /// purpose. The chain from `params.rs` to this setter is pinned link by link on the
+    /// CPU, but the last hop — the GPU draw reading the uniform — is not provable
+    /// without a GPU, and retiring the only knob that has been *looked at* on the
+    /// strength of an unlooked-at one would be the wrong order. Once a GPU session has
+    /// seen the param move the core, delete `capsule_env` and this collapses to `lanes`.
+    pub fn resolve(env: Option<[f32; 2]>, core_frac: f32, absorb: f32) -> [f32; 2] {
+        match env {
+            Some(seed) => seed,
+            None => lanes(core_frac, absorb),
+        }
     }
 
     pub fn parse(s: &str) -> Option<[f32; 2]> {
@@ -1326,6 +1345,19 @@ mod capsule_core {
             assert_eq!(parse(""), None);
             assert_eq!(parse("core"), None);
             assert_eq!(parse("0.4,abc"), None);
+        }
+
+        /// organon#217 T3: the param reaches the lanes exactly as the seed did (same
+        /// clamps), and a parsed seed overrides it — in both directions, so a session
+        /// that set the env to look at the core cannot have a preset silently switch it
+        /// off, and a preset cannot be blamed for a core the env put there.
+        #[test]
+        fn the_param_reaches_the_lanes_unless_the_seed_overrides_it() {
+            assert_eq!(resolve(None, 0.4, 1.5), [0.4, 1.5], "no seed → the param");
+            assert_eq!(resolve(None, 0.0, 0.0), [0.0, 0.0], "no seed, default param → inert");
+            assert_eq!(resolve(None, 1.7, -2.0), lanes(1.7, -2.0), "the param is clamped like the seed");
+            assert_eq!(resolve(Some([0.4, 1.5]), 0.0, 0.0), [0.4, 1.5], "the seed wins over an inert param");
+            assert_eq!(resolve(Some([0.0, 0.0]), 0.6, 2.0), [0.0, 0.0], "an explicit inert seed wins too");
         }
     }
 }

@@ -31,6 +31,22 @@ what gets saved. There is one exception, and it is deliberate: the **Surface** c
 on the Look tab but belong to the Generator bucket, because a surface without its generator
 is meaningless.
 
+## Factory presets
+
+Two families ship inside the binary and are seeded into your store once, the first time
+Organon loads it. Rename or delete them freely — the seed never re-adds a name you have
+touched.
+
+- **Rails — …** — five finished rides for the scenery corridor.
+- **`faceplate`** — the first rung of the PBR-text ladder: a terminal text effect rendered
+  as lit, bevelled, emissive tiles (`doc/pbr_text_engine.md`). It needs a text producer
+  publishing the glyph ring to draw anything; with one live it holds the camera on the
+  grid, dims the room, and lets the path tracer sharpen the held text through each dwell.
+  The look it dresses — cell width, extrusion, gap, emission gain, bevel, face crown,
+  faceplate, backplane — is the **PBR Text** card on the Look tab, and the held camera
+  (hold / tilt / zoom) is the **Text Camera** card on the Motion tab. Both are inert until
+  a producer is running, so they cost nothing in any other preset.
+
 ## Beat-quantized recall
 
 Two dropdowns in the Sync/Tempo card set when a recall actually lands — one for Scenes, one

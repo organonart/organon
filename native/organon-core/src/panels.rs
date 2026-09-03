@@ -147,6 +147,10 @@ pub const LOOK_BLOOM: Panel = look("bloom", "Bloom", Status::Live);
 
 /// Every panel this table knows, in tab order then editor order.
 ///
+/// organon#217 T3 — the glyph ring's look controls (cell width, extrusion, gap, emission
+/// gain, faceplate, backplane, bevel, face crown) and T6's capsule core. Declared, not
+/// transplanted: its body is a `card()` in the editor's Look pass.
+pub const LOOK_TEXT: Panel = look("text", "PBR Text (#217)", Status::Declared);
 /// ⚠️ A `pub const` above that is missing from this array is **unreachable** — the editor would
 /// still draw its title, but no ring would offer it. [`the_look_tab_is_whole`] counts the arm,
 /// which is the cheapest guard available; Rust cannot enumerate the constants of a module.
@@ -167,6 +171,7 @@ pub const PANELS: &[Panel] = &[
     LOOK_BIOLUMINESCENCE,
     LOOK_SKIN,
     LOOK_POST,
+    LOOK_TEXT,
     LOOK_KALEIDOSCOPE,
     LOOK_INSTRUMENTATION,
     LOOK_TEMPORAL,
@@ -232,7 +237,7 @@ mod tests {
     /// there and this is not, the new panel is unreachable from `/organon` — see [`PANELS`].
     #[test]
     fn the_look_tab_is_whole() {
-        assert_eq!(in_tab(UiTab::Look).len(), 25);
+        assert_eq!(in_tab(UiTab::Look).len(), 26);
     }
 
     /// The rule that makes `/organon look su` complete to `surface` at all. See the module doc:

@@ -1123,7 +1123,7 @@ impl World {
     /// `geom.tints` / `geom.emits` (replacing the generator's) and return the tiles'
     /// bounds. `None` — the ordinary case — leaves the frame exactly as the generator
     /// built it.
-    fn glyph_grid_geometry(&mut self) -> Option<math::Bounds> {
+    fn glyph_grid_geometry(&mut self, look: &glyph_ring::GlyphLook) -> Option<math::Bounds> {
         // Lazily re-open, throttled: a missing ring is the normal state.
         if !self.glyph_ring.is_open() {
             let now = Instant::now();
@@ -1175,12 +1175,13 @@ impl World {
         self.geom.tints.clear();
         self.geom.emits.clear();
         let prev = (self.glyph_prev.frame.seq != 0).then_some(&self.glyph_prev);
-        // ⚠️ T3 lifts the look onto the param chain; until then it is `GlyphLook::DEFAULT`.
+        // organon#217 T3: `look` is `glyph_look_from(&s)` — the param chain's
+        // `Shared.glyph`, which on a default snapshot IS `GlyphLook::DEFAULT`.
         let bounds = glyph_ring::lower_grid(
             &self.glyph_grid,
             prev,
             blend,
-            &glyph_ring::GlyphLook::DEFAULT,
+            look,
             glyph_ring::TileOut {
                 instances: &mut self.geom.instances,
                 tints: &mut self.geom.tints,
@@ -1510,6 +1511,10 @@ pub struct World {
     // generation, and is it held": written beside `glyph_grid_geometry`'s call, read
     // by the path tracer's gate and its accumulation restart. `Default` = no ring.
     glyph_pt: GlyphPtState,
+    // organon#217 T3 — the bounds `lower_grid` returned this frame (tiles + backplane),
+    // in world units: what the held camera frames. Meaningful only while
+    // `glyph_pt.live`; stale otherwise and never read then.
+    glyph_bounds: math::Bounds,
     // Ingested MLP (#226 Tier 4): trained weights loaded from the same sidecar
     // (auto-detected by format); its live forward pass builds the graph each frame.
     neural_mlp: Option<math::NeuralMlp>,
@@ -1942,6 +1947,7 @@ impl World {
             glyph_seen_at: Instant::now(),
             glyph_reopen_at: Instant::now(),
             glyph_pt: GlyphPtState::default(),
+            glyph_bounds: math::Bounds::new(),
             neural_mlp: None,
             neural_attn_data: None,
             brain_cache: None,
@@ -5106,8 +5112,12 @@ impl World {
         // drawing, at which payload generation, and whether it is held — captured here,
         // once, so the tracer's gate and its restart cannot disagree with the geometry.
         self.glyph_pt = GlyphPtState::default();
-        if let Some(b) = self.glyph_grid_geometry() {
+        // organon#217 T3: the look comes off the param chain (`Shared.glyph`), and the
+        // tiles' bounds are kept for the held camera (`glyph_camera_rig`).
+        let glyph_look = glyph_look_from(&s);
+        if let Some(b) = self.glyph_grid_geometry(&glyph_look) {
             bounds = b;
+            self.glyph_bounds = b;
             self.glyph_pt = GlyphPtState {
                 live: true,
                 generation: self.glyph_grid.frame.generation,
@@ -6862,7 +6872,17 @@ impl World {
         // (and the axes/decoration eye) need no rails-specific path. Auto-orbit
         // and scroll-zoom don't apply while riding.
         let substrate = self.substrate_rig;
+        // organon#217 T3 — the held camera for a live glyph ring: a second absolute arm
+        // on the same selection, below the substrate rig (the Console owns its backdrop
+        // outright) and above rails and the orbit. `glyph_camera_rig` is pure: `None`
+        // unless the ring is live AND `glyph_cam[0]` (hold) is set, so a session with no
+        // ring — or a preset that has not asked — never enters this arm. The rig frames
+        // the tiles' bounds at this frame's FOV and aspect, so the view-proj is identical
+        // frame to frame and T5's accumulation is never restarted by `pt_moved`.
+        let glyph_rig = glyph_camera_rig(self.glyph_pt.live, &s.glyph_cam, &self.glyph_bounds, render_size, fov_deg);
         let (cam_center, yaw, pitch, distance, cam_roll, fov_deg) = if let Some(rig) = substrate {
+            rig
+        } else if let Some(rig) = glyph_rig {
             rig
         } else if self.rails_ride {
             let max = self.rails_bore * 0.8;
@@ -7119,6 +7139,12 @@ impl World {
             build_uniforms(&s, cam_center, yaw, pitch, distance, render_size, breath_scale, sun_elev_eff, self.beat_pos as f32, cam_roll, fov_deg, gfx.renderer.material_present_mask());
         // Patch the ripple's live phase + field extent (build_uniforms has neither).
         uniforms.ripple[1] = self.ripple_phase as f32;
+        // organon#217 T3: while a glyph ring is drawing, the tiles ARE the generator's
+        // instanced-cube draw (they replaced its instances), so `Uniforms.shape` carries
+        // the glyph look's own bevel and face crown instead of the Generator bucket's
+        // `bevel`. `glyph_shape` is pure and pinned; with no ring it returns the frame's
+        // own lanes untouched, byte-identical to before.
+        uniforms.shape = glyph_shape(uniforms.shape, self.glyph_pt.live, &s.glyph);
         // Demo point light (#288 Tier 3): drive the shader's placeable light from the
         // brightest scene emitter, so a light-stage / ceiling emitter actually
         // illuminates (on top of blooming as emissive geometry). Off for every other
@@ -8997,6 +9023,8 @@ impl World {
                     glow: s.plexus_edge_mat[7],
                     hsv: Vec4::new(s.plexus_edge_mat[4], s.plexus_edge_mat[5], s.plexus_edge_mat[6], 0.0),
                 },
+                // organon#217 T6/T3: the coaxial capsule core, straight off the chain.
+                capsule_core: [s.capsule[0], s.capsule[1]],
                 plexus_batches: self.plexus.batches,
                 plexus_node_verts: &self.plexus.node_mesh.verts,
                 plexus_node_idx: &self.plexus.node_mesh.indices,
@@ -14058,5 +14086,267 @@ mod tests {
         // Exotic unbounded funcs (tan) are clamped, so the spin can't blow up.
         let near_pole = wind_velocity(FuncName::Tan, 0.2499 * TAU, 1.0);
         assert!((0.0..=8.0).contains(&near_pole), "tan not clamped: {near_pole}");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// organon#217 T3 — PBR text look controls: the three pure readers of the chain's
+// tail (`Shared.glyph`, `Shared.glyph_cam`) and the uniform patch. Pure so every
+// link can be pinned without a GPU, and so dropping one (`to_shared` for a slot, a
+// packer line, a field here) is named by a test rather than discovered on screen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The glyph look off the param chain. Slot order is `Shared.glyph`'s contract
+/// (`ipc.rs`); on a default snapshot this is exactly `GlyphLook::DEFAULT`, which is
+/// what makes T3 inert for a preset saved before it (invariant #4). Bevel and crown
+/// (`[11]`, `[12]`) are not `GlyphLook` fields — they ride `Uniforms.shape` through
+/// [`glyph_shape`] — so they are not read here.
+fn glyph_look_from(s: &ipc::Shared) -> glyph_ring::GlyphLook {
+    let g = &s.glyph;
+    glyph_ring::GlyphLook {
+        cell_w: g[0].max(1e-3),
+        depth: g[1].max(0.0),
+        gap: g[2].max(0.0),
+        gain: g[3].max(0.0),
+        faceplate: [g[4], g[4], g[4]],
+        backplane: [g[5], g[6], g[7]],
+        margin: g[8].max(0.0),
+        backplane_depth: g[9].max(0.0),
+        default_fg: [g[10], g[10], g[10]],
+    }
+}
+
+/// `Uniforms.shape` for this frame: with a glyph ring drawing, `x` is the glyph look's
+/// own bevel and `y` its face crown (`Shared.glyph[11]`, `[12]`); with no ring, the
+/// frame's own lanes, untouched — byte-identical to before T3.
+fn glyph_shape(frame: [f32; 4], glyph_live: bool, glyph: &[f32; 16]) -> [f32; 4] {
+    if glyph_live {
+        [glyph[11].clamp(0.0, 1.0), glyph[12].clamp(0.0, 1.0), frame[2], frame[3]]
+    } else {
+        frame
+    }
+}
+
+/// The distance at which a box of `half_w × half_h` (world units, facing the camera)
+/// exactly fills a frame of vertical FOV `fov_deg` and aspect `aspect` (w / h):
+/// the larger of the vertical fit and the horizontal fit. ⚠️ Computed from the bounds
+/// and the FOV, never sized by feel from the wheel — a notch on the visual is
+/// `distance *= 1 − dy·0.001`, which is no unit at all.
+fn fit_distance(half_w: f32, half_h: f32, fov_deg: f32, aspect: f32) -> f32 {
+    let t = (fov_deg.clamp(4.0, 120.0).to_radians() * 0.5).tan().max(1e-4);
+    let a = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.0 };
+    (half_h / t).max(half_w / (t * a))
+}
+
+/// The held camera for a live glyph ring (`doc/pbr_text_engine.md` §5.1 / §8), as the
+/// same absolute tuple the substrate rig uses — `(centre, yaw, pitch, distance, roll,
+/// fov_deg)` — or `None` when it does not apply: no ring drawing, or `glyph_cam[0]`
+/// (hold) off. Yaw 0 looks down −z at the grid's front (`+z` is toward the camera in
+/// `cell_centre`'s frame); pitch is `glyph_cam[1]` in degrees, clamped to the orbit's
+/// own `PITCH_LIMIT`; distance is [`fit_distance`] over the bounds' `x`/`y` extent
+/// times `glyph_cam[2]` (zoom), clamped to the viewpoint's `DISTANCE_MIN..=MAX`; roll
+/// 0; the FOV is the frame's own, so a preset's `cam_fov` still applies. The tiles'
+/// bounds already include the backplane margin, so "fills the frame" means the
+/// backplane does. Empty or non-finite bounds (nothing drawn yet) → `None`, so the
+/// orbit rig keeps the camera rather than a NaN taking it.
+fn glyph_camera_rig(
+    glyph_live: bool,
+    cam: &[f32; 8],
+    bounds: &math::Bounds,
+    size: (u32, u32),
+    fov_deg: f32,
+) -> Option<(Vec3, f32, f32, f32, f32, f32)> {
+    if !glyph_live || cam[0] < 0.5 {
+        return None;
+    }
+    if !(bounds.min.is_finite() && bounds.max.is_finite()) || bounds.max.x <= bounds.min.x || bounds.max.y <= bounds.min.y {
+        return None;
+    }
+    let centre = bounds.center();
+    let half_w = (bounds.max.x - bounds.min.x) * 0.5;
+    let half_h = (bounds.max.y - bounds.min.y) * 0.5;
+    let aspect = if size.1 > 0 { size.0 as f32 / size.1 as f32 } else { 1.0 };
+    let zoom = if cam[2].is_finite() && cam[2] > 0.0 { cam[2] } else { 1.0 };
+    let distance = (fit_distance(half_w, half_h, fov_deg, aspect) * zoom)
+        .clamp(scene_input::DISTANCE_MIN, scene_input::DISTANCE_MAX);
+    let pitch = cam[1].to_radians().clamp(-scene_input::PITCH_LIMIT, scene_input::PITCH_LIMIT);
+    Some((centre, 0.0, pitch, distance, 0.0, fov_deg))
+}
+
+#[cfg(test)]
+mod glyph_look_tests {
+    use super::*;
+
+    fn bounds(min: (f32, f32, f32), max: (f32, f32, f32)) -> math::Bounds {
+        math::Bounds { min: Vec3::new(min.0, min.1, min.2), max: Vec3::new(max.0, max.1, max.2) }
+    }
+
+    /// Invariant #4, stated as bytes: a default `Shared` reads back as T1's one const,
+    /// field for field. Every default in `ipc::Shared::default().glyph` is pinned here
+    /// against `GlyphLook::DEFAULT`, so neither can drift from the other unnoticed.
+    #[test]
+    fn a_default_snapshot_is_exactly_the_t1_look() {
+        let s = ipc::Shared::default();
+        let got = glyph_look_from(&s);
+        let want = glyph_ring::GlyphLook::DEFAULT;
+        assert_eq!(got.cell_w, want.cell_w);
+        assert_eq!(got.depth, want.depth);
+        assert_eq!(got.gap, want.gap);
+        assert_eq!(got.gain, want.gain);
+        assert_eq!(got.faceplate, want.faceplate);
+        assert_eq!(got.backplane, want.backplane);
+        assert_eq!(got.margin, want.margin);
+        assert_eq!(got.backplane_depth, want.backplane_depth);
+        assert_eq!(got.default_fg, want.default_fg);
+        // And the two lanes that ride the uniform rather than the look: T1 drew a sharp,
+        // flat tile (it rode `Shared.bevel`, default 0).
+        assert_eq!(s.glyph[11], 0.0, "bevel default must be T1's sharp tile");
+        assert_eq!(s.glyph[12], 0.0, "crown default must be flat");
+    }
+
+    /// Every slot reaches the field the contract names — the "drop one link" test.
+    /// Writing a distinct value into each slot and reading it back at the field it
+    /// documents fails on a swapped, skipped or duplicated slot, which is the way a
+    /// hand-maintained slot list goes wrong.
+    #[test]
+    fn every_look_slot_reaches_its_field() {
+        let mut s = ipc::Shared::default();
+        for (i, v) in s.glyph.iter_mut().enumerate() {
+            *v = 10.0 + i as f32;
+        }
+        let l = glyph_look_from(&s);
+        assert_eq!(l.cell_w, 10.0);
+        assert_eq!(l.depth, 11.0);
+        assert_eq!(l.gap, 12.0);
+        assert_eq!(l.gain, 13.0);
+        assert_eq!(l.faceplate, [14.0; 3]);
+        assert_eq!(l.backplane, [15.0, 16.0, 17.0]);
+        assert_eq!(l.margin, 18.0);
+        assert_eq!(l.backplane_depth, 19.0);
+        assert_eq!(l.default_fg, [20.0; 3]);
+        assert_eq!(glyph_shape([0.0; 4], true, &s.glyph), [1.0, 1.0, 0.0, 0.0], "bevel/crown clamp to 1");
+        s.glyph[11] = 0.3;
+        s.glyph[12] = 0.4;
+        assert_eq!(glyph_shape([0.9, 0.0, 5.0, 6.0], true, &s.glyph), [0.3, 0.4, 5.0, 6.0]);
+    }
+
+    /// No ring → the frame's own `shape` lanes, untouched, whatever the look says.
+    #[test]
+    fn the_shape_patch_is_inert_without_a_ring() {
+        let mut s = ipc::Shared::default();
+        s.glyph[11] = 0.8;
+        s.glyph[12] = 0.9;
+        assert_eq!(glyph_shape([0.25, 0.0, 0.0, 0.0], false, &s.glyph), [0.25, 0.0, 0.0, 0.0]);
+    }
+
+    /// A degenerate look cannot reach `lower_grid`: cell width is floored above zero
+    /// (a zero-width cell makes every tile a NaN transform) and the lengths are >= 0.
+    #[test]
+    fn a_degenerate_look_is_floored() {
+        let mut s = ipc::Shared::default();
+        s.glyph[0] = 0.0;
+        s.glyph[1] = -1.0;
+        let l = glyph_look_from(&s);
+        assert!(l.cell_w > 0.0);
+        assert_eq!(l.depth, 0.0);
+    }
+
+    /// `fit_distance` is the textbook frustum fit: at 90 deg the tangent is 1, so a box
+    /// of half-height 10 fills a square frame at distance 10, and a wider box is limited
+    /// by the horizontal fit (half-width over tan * aspect).
+    #[test]
+    fn the_fit_is_computed_from_the_bounds_and_the_fov() {
+        let d = fit_distance(10.0, 10.0, 90.0, 1.0);
+        assert!((d - 10.0).abs() < 1e-4, "{d}");
+        // Wide box, square frame: the width governs.
+        let d = fit_distance(30.0, 10.0, 90.0, 1.0);
+        assert!((d - 30.0).abs() < 1e-4, "{d}");
+        // Same wide box in a 3:1 frame: the width fits at 10 again, so the height governs.
+        let d = fit_distance(30.0, 10.0, 90.0, 3.0);
+        assert!((d - 10.0).abs() < 1e-4, "{d}");
+        // A longer lens stands further back: 45 deg needs 1/tan(22.5 deg) ~ 2.414x.
+        let d = fit_distance(10.0, 10.0, 45.0, 1.0);
+        assert!((d - 10.0 / (22.5f32.to_radians()).tan()).abs() < 1e-3, "{d}");
+    }
+
+    /// The rig exists exactly when a ring is drawing AND the preset asked to hold —
+    /// the two gates that keep a session with no ring, and a ring under a preset that
+    /// did not ask, on the orbit rig they had before T3.
+    #[test]
+    fn the_rig_needs_both_a_live_ring_and_the_hold() {
+        let b = bounds((-50.0, -30.0, -1.0), (50.0, 30.0, 0.2));
+        let hold = [1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let off = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert!(glyph_camera_rig(true, &hold, &b, (1920, 1080), 45.0).is_some());
+        assert!(glyph_camera_rig(false, &hold, &b, (1920, 1080), 45.0).is_none(), "no ring");
+        assert!(glyph_camera_rig(true, &off, &b, (1920, 1080), 45.0).is_none(), "hold off");
+        assert!(glyph_camera_rig(true, &hold, &math::Bounds::new(), (1920, 1080), 45.0).is_none(), "nothing drawn");
+    }
+
+    /// The rig looks straight down -z at the grid's centre from the fitted distance,
+    /// tilts by `glyph_cam[1]` degrees, scales by `glyph_cam[2]`, keeps the frame's FOV,
+    /// and rolls nothing. And it is a pure function of its inputs: the same frame twice
+    /// gives the same tuple, which is the property the path tracer's `pt_moved` needs.
+    #[test]
+    fn the_rig_frames_the_grid_and_holds_still() {
+        let b = bounds((-50.0, -30.0, -1.0), (50.0, 30.0, 0.2));
+        let cam = [1.0, 6.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let rig = glyph_camera_rig(true, &cam, &b, (1920, 1080), 45.0).unwrap();
+        let (centre, yaw, pitch, distance, roll, fov) = rig;
+        assert_eq!(centre, b.center());
+        assert_eq!(yaw, 0.0);
+        assert!((pitch - 6.0f32.to_radians()).abs() < 1e-6);
+        assert_eq!(roll, 0.0);
+        assert_eq!(fov, 45.0);
+        let want = fit_distance(50.0, 30.0, 45.0, 1920.0 / 1080.0);
+        assert!((distance - want).abs() < 1e-3, "{distance} vs {want}");
+        assert_eq!(glyph_camera_rig(true, &cam, &b, (1920, 1080), 45.0).unwrap(), rig, "held still");
+        // Zoom scales the fitted distance; the tilt is clamped to the orbit's own limit.
+        let cam2 = [1.0, 500.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let (_, _, p2, d2, _, _) = glyph_camera_rig(true, &cam2, &b, (1920, 1080), 45.0).unwrap();
+        assert!((d2 - 2.0 * want).abs() < 1e-3);
+        assert_eq!(p2, scene_input::PITCH_LIMIT);
+    }
+
+    /// The whole point of the hold, end to end with T5's pure pieces: with the rig
+    /// fixed the unjittered view-proj is bit-identical frame to frame, so `pt_moved`
+    /// is false and the dwell accumulates; with the orbit running it restarts every
+    /// frame and never converges — which is what the first GPU look saw.
+    #[test]
+    fn a_held_rig_lets_the_dwell_converge_where_an_orbit_cannot() {
+        let b = bounds((-50.0, -30.0, -1.0), (50.0, 30.0, 0.2));
+        let cam = [1.0, 6.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let vp_of = |(c, yaw, pitch, dist, _roll, fov): (Vec3, f32, f32, f32, f32, f32)| {
+            let eye = c + dist * Vec3::new(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos());
+            Mat4::perspective_rh(fov.to_radians(), 16.0 / 9.0, 0.1, 5000.0) * Mat4::look_at_rh(eye, c, Vec3::Y)
+        };
+        let settled = GlyphPtState { live: true, generation: 3, settled: true };
+        // Held: the same tuple every frame.
+        let mut prev_vp = Mat4::ZERO;
+        let mut spp = 0u32;
+        for _ in 0..4 {
+            let vp = vp_of(glyph_camera_rig(true, &cam, &b, (1920, 1080), 45.0).unwrap());
+            let moved = vp != prev_vp;
+            if pathtrace_restarts(moved, false, false, pathtrace_active(false, settled)) {
+                spp = 0;
+            }
+            prev_vp = vp;
+            spp += 1;
+        }
+        assert_eq!(spp, 4, "a held camera restarts once (the first frame) and then accumulates");
+        // Orbiting: a yaw that advances every frame restarts every frame.
+        let mut prev_vp = Mat4::ZERO;
+        let mut spp = 0u32;
+        for f in 0..4 {
+            let yaw = 0.01 * f as f32;
+            let vp = vp_of((b.center(), yaw, 0.1, 300.0, 0.0, 45.0));
+            let moved = vp != prev_vp;
+            if pathtrace_restarts(moved, false, false, pathtrace_active(false, settled)) {
+                spp = 0;
+            }
+            prev_vp = vp;
+            spp += 1;
+        }
+        assert_eq!(spp, 1, "an orbiting camera never accumulates past one sample");
     }
 }
