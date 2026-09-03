@@ -4388,7 +4388,7 @@ invisible: the band drew empty, which is indistinguishable from a band that is b
 
 ⚠️ **The refusal consults the hook, so it names the ring it is refusing against.** `coerce`
 refused against the declared `Choice`, which for a dependent argument is the union across tabs —
-hence twenty-five slugs for a tab that has none. It now asks the hook first wherever the parent
+hence twenty-six slugs for a tab that has none. It now asks the hook first wherever the parent
 word is in hand: `/organon generator 2` answers with the unmapped-tab sentence, and `/organon
 look 2` answers *"`/organon look`: `2` is not one of surface | colour | …"*, the head carrying
 the words that **chose** that list. ⚠️ **This does not fix itself as tabs are joined — it gets
@@ -8571,7 +8571,7 @@ path silently breaks the three-products-simultaneously guarantee that
   `/organon look surface`, drag `node bevel`, watch the cubes round; (1) **that the two rings
   feel like Organon's own hierarchy when
   a hand walks them** — James described `l` → `look` completing while the ring beneath it
-  changes as one motion, and whether twenty-five candidates in the second ring reads as a menu
+  changes as one motion, and whether twenty-six candidates in the second ring reads as a menu
   or as a wall is a question about a running window; (2) that the slugs are the words a person
   reaches for — `lmat` for Liquid Material and `fx` for Surface FX exist to satisfy the
   no-prefix rule, and a slug nobody guesses is worse than a longer one; (3) ✏️ **withdrawn by
@@ -8579,7 +8579,7 @@ path silently breaks the three-products-simultaneously guarantee that
   or as broken beside a panel which **is** transplanted. There is no such line: those panels are
   refused at the door and never draw a card, so the question has no subject; (4) that §1.9's
   eight-row candidate cap
-  is survivable at twenty-five — the Look ring overflows it by seventeen and nobody has seen
+  is survivable at twenty-six — the Look ring overflows it by eighteen and nobody has seen
   "+N more" against a list that long.
 - ✏️ **`OrganonDraw` carries a widget now.** It was retained through the tier that built it as a
   seam nothing filled — `console_main` passed a closure that ignored its arguments, and the
