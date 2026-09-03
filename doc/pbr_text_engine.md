@@ -332,6 +332,28 @@ renderer cannot guess it.
 taste, not risk: whether a slide between exact positions reads better than the cell-quantised
 one on a real render, which is a GPU question T3's look controls are the place to answer.
 
+**T12 landed the lowering half of that question and put the taste behind a switch.** Read
+before changing: a teleport **already cut** — `lower_grid` gates the lerp on `ACTIVE_PATH`
+and had pinned it since T1 (`active_path_slides_and_a_cut_does_not`), so the rule above was
+true and only its second half was open. `LowerOptions.motion` is now `Slide` (today, the
+default: a path character at `lerp(prev_exact, exact, blend)`, a teleport where it is),
+`Exact` (no inter-tick interpolation at all — every tile at `centre + sub` *this* tick, the
+producer's sub-cell path the only smoothness) or `Cells` (cell centres, the remainder ignored,
+nothing sliding: the terminal's own picture, for the A/B). A teleport cuts under every variant;
+no variant can smear a scatter. **Checked, not reasoned: the two smoothings are not a stack.**
+`Slide` is one linear reconstruction between two exact samples and nothing filters the
+remainder, so at `blend ≥ 1` `Slide` and `Exact` lower byte-identically (pinned on T9's
+asymmetric fixture); a tick that arrives late clamps at 1 and holds, and the next tick starts a
+fresh pair — a tile is never smoothed twice. ⚠️ What `Slide` costs is **latency, not blur**: at
+blend 0 the tile is drawn where the character *was*, one tick behind; and when the render rate
+is *below* the producer's tick rate the world reads a new grid every frame with `since ≈ 0`, so
+the tile sits at the previously-read grid — two ticks behind at 120 Hz over 60 Hz. Whether that
+buys anything a 120 Hz producer does not already give is the GPU question the switch makes
+askable: `organon-glyphs --effect slide` under `Slide` and `Exact`, and `scattered` / `unstable`
+under either (a cut must look like a cut). Proposed lane `Shared.glyph[15]` through
+`Motion::from_lane` (0 / 1 / 2 to the nearest integer; anything else — including a lane never
+written — is `Slide`, invariant #4).
+
 ---
 
 ## 8. A screensaver has time — converge on hold
@@ -686,9 +708,16 @@ until it lands.
   `wipe`, `expand`, `slice` or `middleout` — what persistence does in `decrypt` is the
   bright→dim fade of each resolving character, not tails. Tails behind moving characters are
   `rain`, `pour`, `print`, `beams`, `swarm`, `bubbles`, `crumble`. Not yet looked at on a GPU.
-- **T12 — sub-cell rendering.** The ring already carries `sub_x`/`sub_y` (in flight); the
-  renderer slides a tile whose character is on a path and cuts one that teleported
-  (`ACTIVE_PATH`). Owns the grid lowering only. **After T3 and T9.**
+- **T12 — sub-cell rendering. Landed, lowering half.** The ring carries `sub_x`/`sub_y` (W6)
+  and the lowering already slid a path character and cut a teleport (`ACTIVE_PATH`, pinned
+  since T1). What landed is the switch §7 describes: `LowerOptions.motion` — `Slide` (the
+  default, today exactly), `Exact` (no inter-tick interpolation; the sub-cell path alone) and
+  `Cells` (the terminal's quantised picture, for the A/B) — with `Slide` and `Exact` pinned
+  byte-identical at `blend ≥ 1` (no double smoothing) and a teleport cutting under every
+  variant. Owns the grid lowering only; wire proposed as **`Shared.glyph[15]`** through
+  `Motion::from_lane` (`[13]` profile, `[14]` dark tiles, `[15]` the last free slot of
+  `glyph[16]`). Not yet looked at on a GPU: no frame has been rendered under `Exact` or
+  `Cells`, and "one tick of latency" is read from `world.rs`'s blend clock, not seen.
 - **T13 — the gate on a real render.** T2's harness over a `faceplate` frame read from the HDR
   buffer, in `verify.sh`, with the thresholds beside the goldens. **After T3 and T8.**
 - **T14 — the preset ladder.** `nixie`, `foundry`, `anodized`, `bottled`, `cathode` as preset
