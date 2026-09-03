@@ -25,8 +25,10 @@ These are his, not the project's; they override anything below.
 3. **Show it in the context it will run in.** A near-black room with the words on it, like the
    screensaver. Never glyphs over the generated landscape or the atmosphere sky. The nine
    `faceplate` fields that make the room dark (`atmos_enabled`, `bg_visible`, `fx_enabled`,
-   `hal_amount`, `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) are being
-   put on the CLI vocabulary by W19; until that lands, do not send a frame taken without them.
+   `hal_amount`, `ml_enabled`, `ml_intensity`, `ml_radius`, `ml_count`, `ml_restir`) are on the
+   CLI vocabulary since #246 — **and `env_intensity 0`**, because the environment map is drawn as
+   the sky at any intensity above zero. §5 has the exact `organon set` line. Do not send a frame
+   taken without them.
 4. **The two claims to keep honest:** "green and ready to try" without a GPU look, and the
    plates (`doc/images/`) are the claim being measured against — §15's table is the gap.
 5. He wants to see it. Send frames with `SendUserFile` as they happen, not at the end.
@@ -57,17 +59,27 @@ the spec (#218) through #243 is merged and was gated on `main` after each merge:
 | Plexus keeps the emits | #243 | done |
 | Registry tests read the machine store (unrelated red CI, fixed) | #226 | done |
 
-**In flight when this was written** — check `gh pr list` first; they may have landed:
+Landed after the first draft of this file:
 
-- **W18 — #237, the EDR surface panic.** `Surface::configure` asks for `Rgba16Float` on a
-  surface that offers only 8/10-bit; happened twice on a *running* visual (22:19 on 2 Sep, 10:56
-  on 3 Sep), most likely on a display event. Owns `organon-visual/src/`. Merge, rebuild, then try
-  to provoke it: move the window between the two displays, toggle HDR.
-- **W19 — the dark-room fields on the CLI vocabulary + `native/assets/text/organon.txt`** (+ a
-  gate fixture for it, `verify.sh --legibility --text`). Owns the vocabulary files
-  (`organon-agent/src/lib.rs`, `src/agent.rs`, `src/cli.rs`, `src/console_catalog.rs`,
-  `src/lib.rs`), `verify/legibility/faceplate.scene`, `assets/text/`. May also add
-  `organon preset <name>` if cheap.
+| Tier | PR(s) | State |
+|---|---|---|
+| Dark-room fields on the CLI vocabulary + `native/assets/text/organon.txt` + gate fixture + `verify.sh --text` | #246 | done |
+| #237 — swapchain format chosen per configure, no panic when fp16 leaves the surface | #247 | done — the fallback line printed on this box's Vulkan surface at launch |
+| Editor apply-mirror pinned for every actuatable id (74), after a false alarm | #248 | **check `gh pr list`** — was on CI when this was written; merge if green |
+
+**The false alarm, so it is not repeated:** after #246 merged, `organon set atmos_enabled 0` queued
+but never landed while `glyph_gain` did, and it read like a broken mirror. It was a **stale
+visual**: the id-route filter (`organon-agent::id_range`) is compiled into the visual too, and the
+visual had not been rebuilt after the vocabulary changed. §5 now says which binaries to rebuild
+after what. `organon preset <name>` was specced in #246's body, not built (five files, well over
+40 lines).
+
+**The last frame James saw** (2026-09-03 ~12:55, `main @ cf25a7e`): ORGANON on its slab of dark
+tiles in a black room, `rain` with 300 ms persistence, path-traced dwell. It needed
+`env_intensity 0` — the `faceplate` preset's 0.15 still paints the environment map as a grey sky
+even with `atmos_enabled 0` and `bg_visible 0`. Decide whether the preset goes to 0 (the many-light
+rig then carries the faceplate sheen) or the world gains a sky-off switch that keeps the IBL for
+reflections; not decided.
 
 ## 3. What is open, in order of value
 
@@ -130,8 +142,11 @@ the spec (#218) through #243 is merged and was gated on `main` after each merge:
 ## 5. Running the demo on organon-one (the GPU is here)
 
 Binaries live in `native/target/release/` of the coordinator's worktree; rebuild after every merge
-that touches what they link (the visual after `world.rs`/render; the producer after `glyph_ring`
-or `organon-glyphs`; `organon` and `organon-standalone` after the vocabulary or presets):
+that touches what they link — and when in doubt rebuild all five, because the split is not what it
+looks like: the visual links `organon-agent` (the id-route filter `id_range`), so **a vocabulary
+change needs the visual rebuilt too**, not just the CLI and editor (the false alarm in §2); the
+producer after `glyph_ring` or `organon-glyphs`; `organon` and `organon-standalone` after the
+vocabulary or presets; the visual after `world.rs`, render, or `organon-visual`:
 
 ```bash
 cd native
@@ -153,8 +168,11 @@ Launch order (PowerShell `Start-Process` for the producer — `cmd start` hung o
    `seeded_text_vN`), then `organic-math-visual.exe` if it did not spawn one.
 3. The look through the CLI — field names, never wire ids:
    `organon material clearcoat` then `organon set glyph_bevel 0.12 glyph_crown 0.35 metallic 0 roughness 0.22 glyph_cam_hold 1 glyph_cam_tilt 6 glyph_cam_zoom 1 cam_path 0 env_intensity 0.15 bloom_intensity 0.25 glyph_gain 1.2 glyph_profile 0.5 glyph_dark_tiles 1`
-   plus, once W19 lands, `atmos_enabled 0 bg_visible 0 fx_enabled 1 hal_amount 0.35 ml_enabled 1 …`.
-   `organon status` needs the standalone; `organon snap` needs the visual unoccluded.
+   then the room: `organon set atmos_enabled 0 bg_visible 0 fx_enabled 1 hal_amount 0.35 ml_enabled 1 ml_intensity 1 ml_radius 2 ml_count 64 env_intensity 0`.
+   Send the sets in two or three batches with a second between them and read one back with
+   `organon describe <id>` — a `no live Organon snapshot detected` warning during a batch means the
+   editor's heartbeat was stale at that instant, and a set can be dropped. `organon status` needs
+   the standalone; `organon snap` needs the visual unoccluded.
 4. `organon-glyphs.exe --input native/assets/text/organon.txt --effect rain --persist-ms 300 --dwell 25 --seed 3`
    (`--list` for effects; trails need `rain`/`pour`/`print`/`beams`/`swarm`; `decrypt` never
    lets a cell go dark; `--effect slide --tick-hz 30` is the blend-clock case).
