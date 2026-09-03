@@ -45,9 +45,12 @@
 //! SGR flags are the terminal's atom; `layer`, `character_id` and `active_path` are what
 //! the library knows and the terminal forgets. `active_path` is the slide-versus-cut
 //! signal — the consumer interpolates `previous → current` only while it is set (§7).
-//! `sub_x` / `sub_y` are RESERVED: the pre-rounded sub-cell offset §7 describes, which
-//! nothing writes yet. They are in the layout on day one because widening a ring is
-//! cheap now and expensive on day thirty.
+//! `sub_x` / `sub_y` carry the pre-rounded sub-cell offset §7 describes — the
+//! remainder the effect's integer coordinate dropped — so a tile sits where the path
+//! put the character, not on the nearest cell. They were reserved from day one and
+//! filled by the producer once ttfx exposed `Motion.current_pos` (organonart/ttfx PR);
+//! the encoding is on the fields. No `layout_version` move: the bytes were already in
+//! the cell and already zero, and a reader that ignores them sees exactly what it saw.
 
 use bytemuck::{Pod, Zeroable};
 use std::fs::OpenOptions;
@@ -119,9 +122,15 @@ pub struct GlyphCell {
     /// `EffectCharacter.character_id` — the identity a cell's contents came from. This is
     /// what lets the consumer find *where this character was last frame* and slide it.
     pub character_id: u32,
-    /// RESERVED (§6.1 / §7): sub-cell offset in cell units, `+x` right, `+y` up, from the
-    /// cell's centre. Always `0.0` today; a producer carrying the pre-rounded path point
-    /// will fill it, and a consumer that adds it now is already correct then.
+    /// Sub-cell offset (§7): where the character *exactly* is, relative to this cell's
+    /// centre, in cell units — `+x` right, `+y` up, each axis in `-0.5..=0.5`. The
+    /// producer writes `Motion.current_pos - Motion.current_coord` (ttfx's pre-rounded
+    /// path point minus its banker's rounding; `f64` narrowed to `f32`, the only loss).
+    /// A character placed by `set_coordinate` — a cut — carries exactly `0.0, 0.0`, and
+    /// so does every cell from a producer that predates the field, which is why this
+    /// was reserved-to-defined with no `layout_version` move. ⚠️ Same sign as ttfx's
+    /// own axes: the *row index* is flipped top-down by the producer, the remainder is
+    /// not — `+y` is up on both sides of the ring.
     pub sub_x: f32,
     pub sub_y: f32,
 }
@@ -663,12 +672,14 @@ pub fn cell_centre(c: usize, r: usize, cols: usize, rows: usize, look: &GlyphLoo
 /// decoded from sRGB first), a near-black faceplate as tint, plus one backplane slab
 /// behind the grid. Returns the scene bounds so the camera can frame it.
 ///
-/// **Motion (§7).** A cell whose `SGR_ACTIVE_PATH` bit is set and whose `character_id`
-/// sat in a *different* cell of `prev` is drawn at `lerp(prev_centre, centre, blend)`:
-/// the character is sliding along a path, so smoothing between the two integer cells
-/// changes where it is *between* ticks and never when it arrives. A cell without the
-/// bit was placed by `set_coordinate` — a cut — and is drawn where it is; interpolating
-/// it would invent motion the effect never authored. `blend` is `0..=1`, the caller's
+/// **Motion (§7).** A tile sits at its cell's centre plus the cell's `sub_x`/`sub_y` —
+/// the exact position the producer carried (zero from one that carries none). A cell
+/// whose `SGR_ACTIVE_PATH` bit is set and whose `character_id` was in `prev` is drawn at
+/// `lerp(prev_exact, exact, blend)`: the character is sliding along a path, so smoothing
+/// between where it exactly was and where it exactly is changes where it is *between*
+/// ticks and never when it arrives. A cell without the bit was placed by
+/// `set_coordinate` — a cut — and is drawn where it is; interpolating it would invent
+/// motion the effect never authored. `blend` is `0..=1`, the caller's
 /// `elapsed / (1 / tick_hz)`.
 ///
 /// Extent, depth and position are all in cell units scaled by `look.cell_w`; the row
@@ -684,14 +695,23 @@ pub fn lower_grid(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, look: 
     if cols == 0 || rows == 0 {
         return bounds;
     }
-    // Where each character was last frame, for the slide. Built only when a previous
-    // grid exists and the blend is not already complete (then the answer is `centre`).
-    let prev_pos: std::collections::HashMap<u32, (usize, usize)> = match prev {
+    // Where a character exactly is: its cell's centre plus the sub-cell remainder the
+    // producer carried (§7; zero from a producer that carries none).
+    let exact = |c: usize, r: usize, cell: &GlyphCell| {
+        let mut p = cell_centre(c, r, cols, rows, look, aspect);
+        p.x += cell.sub_x * w;
+        p.y += cell.sub_y * h;
+        p
+    };
+    // Where each character exactly was last frame, for the slide. Built only when a
+    // previous grid exists and the blend is not already complete (then the answer is
+    // `exact` of the current cell).
+    let prev_pos: std::collections::HashMap<u32, Vec3> = match prev {
         Some(p) if blend < 1.0 && p.cols() == cols && p.rows() == rows => {
             let mut m = std::collections::HashMap::with_capacity(p.cells.len() / 4 + 1);
             for (i, cell) in p.cells.iter().enumerate() {
                 if cell.symbol != 0 && tile_for(cell.symbol).is_some() {
-                    m.insert(cell.character_id, (i % cols, i / cols));
+                    m.insert(cell.character_id, exact(i % cols, i / cols, cell));
                 }
             }
             m
@@ -703,19 +723,16 @@ pub fn lower_grid(grid: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32, look: 
         for c in 0..cols {
             let cell = grid.at(c, r);
             let Some(tile) = tile_for(cell.symbol) else { continue };
-            let mut centre = cell_centre(c, r, cols, rows, look, aspect);
+            // The slide runs between the two EXACT positions — never between cell
+            // centres with this tick's remainder added on top, which would start every
+            // tick with a jump back toward the cell boundary. `lerp(a, a, t)` is `a`,
+            // so a character that did not move is drawn where it is.
+            let mut centre = exact(c, r, cell);
             if cell.sgr & SGR_ACTIVE_PATH != 0 {
-                if let Some(&(pc, pr)) = prev_pos.get(&cell.character_id) {
-                    if (pc, pr) != (c, r) {
-                        let from = cell_centre(pc, pr, cols, rows, look, aspect);
-                        centre = from.lerp(centre, blend);
-                    }
+                if let Some(&from) = prev_pos.get(&cell.character_id) {
+                    centre = from.lerp(centre, blend);
                 }
             }
-            // Reserved sub-cell offset (§6.1): honoured now so a producer that starts
-            // writing it needs no consumer change. Zero today.
-            centre.x += cell.sub_x * w;
-            centre.y += cell.sub_y * h;
             let sx = (tile.x1 - tile.x0) * w;
             let sy = (tile.y1 - tile.y0) * h;
             let sz = (look.depth * tile.depth * w).max(1e-4);
@@ -842,6 +859,42 @@ mod lower_tests {
         assert_eq!(x_at(&slide, Some(&other), 0.5), x2);
     }
 
+    /// §7, retired: the producer carries the remainder the effect's rounding dropped and
+    /// the tile sits there — `+x` right, `+y` up, in cells. And a slide runs between the
+    /// two EXACT positions: a character at 0.3 cells/tick must never jump back toward a
+    /// cell boundary at the start of a tick, which is what lerping cell centres and then
+    /// adding the new tick's remainder would do.
+    #[test]
+    fn the_sub_cell_offset_places_the_tile_and_the_slide_runs_between_exact_positions() {
+        let with = |sx: f32, sy: f32, sgr: u32| GlyphCell { sub_x: sx, sub_y: sy, ..c('█', 7, sgr) };
+        let at = |g: &GlyphGrid, prev: Option<&GlyphGrid>, blend: f32| lower(g, prev, blend).0[0].to_scale_rotation_translation().2;
+        let look = GlyphLook::default();
+        let (w, h) = (look.cell_w, look.cell_w * 2.0);
+        let e = GlyphCell::default;
+        let zero = grid_of(3, 1, vec![e(), c('█', 7, 0), e()]);
+        let off = grid_of(3, 1, vec![e(), with(0.25, -0.5, 0), e()]);
+        let p0 = at(&zero, None, 1.0);
+        let p1 = at(&off, None, 1.0);
+        assert!((p1.x - p0.x - 0.25 * w).abs() < 1e-5, "sub_x moves the tile RIGHT by a quarter cell: {p0} -> {p1}");
+        assert!((p1.y - p0.y + 0.5 * h).abs() < 1e-5, "sub_y = -0.5 moves it DOWN by half a (2:1) cell: {p0} -> {p1}");
+        // Last tick: cell 0 with remainder +0.4 (x = 0.4 cells). This tick: cell 1 with
+        // remainder -0.3 (x = 0.7 cells). Blend 0 is 0.4 — not cell 0's centre, and not
+        // cell 0's centre minus 0.3 — and blend 1 is 0.7.
+        let prev = grid_of(3, 1, vec![with(0.4, 0.0, SGR_ACTIVE_PATH), e(), e()]);
+        let cur = grid_of(3, 1, vec![e(), with(-0.3, 0.0, SGR_ACTIVE_PATH), e()]);
+        let x_cell0 = at(&grid_of(3, 1, vec![c('█', 7, 0), e(), e()]), None, 1.0).x;
+        let start = at(&cur, Some(&prev), 0.0).x;
+        let end = at(&cur, Some(&prev), 1.0).x;
+        assert!((start - (x_cell0 + 0.4 * w)).abs() < 1e-5, "blend 0 starts where the character exactly WAS: {start}");
+        assert!((end - (x_cell0 + 0.7 * w)).abs() < 1e-5, "blend 1 lands where it exactly IS: {end}");
+        assert!(start < end, "the slide runs forward, never back toward the boundary");
+        let mid = at(&cur, Some(&prev), 0.5).x;
+        assert!((mid - (start + end) * 0.5).abs() < 1e-5);
+        // A cut with a remainder is drawn at its exact position, never between.
+        let cut = grid_of(3, 1, vec![e(), with(-0.3, 0.0, 0), e()]);
+        assert_eq!(at(&cut, Some(&prev), 0.5).x, end);
+    }
+
     #[test]
     fn an_empty_grid_lowers_to_nothing() {
         let g = grid_of(0, 0, vec![]);
@@ -925,6 +978,28 @@ mod tests {
         assert_eq!(g.frame.seq, 1);
         assert_eq!(g.frame.generation, 1);
         assert_eq!(unpack_rgb(g.at(0, 0).fg), [1, 2, 3]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// §7: the sub-cell offset survives the ring byte for byte (it is stored as the
+    /// `f32` pair it is, no quantisation), a whole-cell position is exactly zero on both
+    /// axes, and the two axes are not confused on the way through.
+    #[test]
+    fn the_sub_cell_offset_round_trips_and_a_whole_cell_position_is_zero() {
+        let p = tmp_path("sub");
+        let _ = std::fs::remove_file(&p);
+        let (meta, cells) = grid(2, 1, |c, _| match c {
+            0 => GlyphCell { sub_x: 0.25, sub_y: -0.5, ..cell('A', 1) },
+            _ => cell('B', 2),
+        });
+        {
+            let mut w = GlyphRingWriter::create_at(&p, 2.0, 30.0).unwrap();
+            w.publish(&meta, &cells).unwrap();
+        }
+        let g = GlyphRingReader::open_at(&p).latest().expect("published");
+        assert_eq!((g.at(0, 0).sub_x, g.at(0, 0).sub_y), (0.25, -0.5), "exact: x is x and y is y");
+        assert_eq!((g.at(1, 0).sub_x, g.at(1, 0).sub_y), (0.0, 0.0), "a placed character has no remainder");
+        assert_eq!(g.cells, cells);
         let _ = std::fs::remove_file(&p);
     }
 

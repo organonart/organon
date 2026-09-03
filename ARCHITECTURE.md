@@ -525,7 +525,11 @@ The heart of the two-process design.
   not on, the reader re-reads `write_seq` after its copy and retries if it advanced by two. Per
   cell: symbol, fg/bg (sRGB8 — decoded to linear only at the consumer, §4), SGR bits, `layer`,
   `character_id`, an `active_path` bit (the slide-vs-cut signal — `lower_grid` interpolates
-  `previous → current` only when it is set), and a **reserved** sub-cell offset pair. Header:
+  `previous → current` only when it is set), and the **sub-cell offset pair** `sub_x`/`sub_y`
+  (§7 of the design: `Motion.current_pos − current_coord`, the remainder ttfx's rounding
+  dropped, in cells, `+y` up on both sides of the ring — reserved at T1, filled by W6 once
+  ttfx carried the pre-rounded point; `lower_grid` slides between the two *exact* positions,
+  and a producer that writes zeros lowers exactly as before). Header:
   layout version + cell stride (the reader refuses a disagreeing writer — the `mind_ring`
   `frame_bytes` lesson), the **cell aspect** (ttfx is 2:1; square tiles make ellipses of every
   ring the effects draw), and the producer's tick rate (the interpolation window). ⚠️ **Rows are
@@ -1968,7 +1972,7 @@ guard fails the run outright rather than shipping the broken manifest.
 | `params.rs` | nih-plug params + enums + `to_shared` |
 | `param_table.rs` | `param_block!` SSoT packing + layout goldens |
 | `ipc.rs` | `Shared` Pod + mmap Writer/Reader + Feedback channel + mind-ring path + glyph-ring path (`glyph_ring_path` / `_in`, organon#217 T1) + the **edition-namespaced** `$TMPDIR` path builders (`namespace`/`ns_file`, plus the caller-named `ns_file_checked`/`mind_ring_path_in`, §4.1) |
-| `organon-core/src/glyph_ring.rs` | organon#217 T1 — the **glyph ring**: `GlyphCell` (32 B, offsets pinned by test) / `GlyphFrame` / `GlyphRingHeader` + `GlyphRingWriter`/`GlyphRingReader` (double buffer with a lap guard; layout-version + cell-stride refusal), the symbol→tile table `tile_for` (block/shade glyphs → sub-cell extent + extrusion depth; unknown → full block at reduced emission), `srgb8_to_linear`, and `lower_grid` — grid → instances/tints/**emits** + backplane, sliding `active_path` cells between `previous → current` (+ tests). In core because the writer (`organon-glyphs`) and the reader (`world.rs`) must share ONE definition and core is the only crate both see |
+| `organon-core/src/glyph_ring.rs` | organon#217 T1 — the **glyph ring**: `GlyphCell` (32 B, offsets pinned by test) / `GlyphFrame` / `GlyphRingHeader` + `GlyphRingWriter`/`GlyphRingReader` (double buffer with a lap guard; layout-version + cell-stride refusal), the symbol→tile table `tile_for` (block/shade glyphs → sub-cell extent + extrusion depth; unknown → full block at reduced emission), `srgb8_to_linear`, and `lower_grid` — grid → instances/tints/**emits** + backplane, each tile at its cell centre **plus the cell's `sub_x`/`sub_y`** and `active_path` cells sliding between the previous and current *exact* positions (+ tests). In core because the writer (`organon-glyphs`) and the reader (`world.rs`) must share ONE definition and core is the only crate both see |
 | `organon-core/src/edition.rs` | #483 Tier 1 — build-time product editions: `Edition` (`Full`/`Mind`) + `EDITION`, driving product name / IPC namespace / visible `UiTab`s. Pure + unit-tested for both editions from a default build (§4.1). **#626 T3: moved to `organon-core`**; re-exported as `crate::edition` |
 | `organon-core/src/tabs.rs` | #626 T3 — the editor's **tab taxonomy**: `UiTab` (the tab bar) + `EditorTab` (the 7-way preset partition). Lifted out of `preset.rs`, which keeps its nih-plug `ParamSetter` logic. Re-exported as `crate::preset::{UiTab, EditorTab}` (§19.0) |
 | `organon-core/src/kind.rs` | #48 T1 — the console's **kind** vocabulary: `Kind` (`scene`/`panel`), `KIND_WORDS`, and `resolve`, whose refusal carries the known list. Here because the two front-ends that had a copy each are in *different* crates (`cli.rs`, `organon-console/conversation.rs`) and this is the only one both can see; a closed set of words needs no host, GPU or UI. ⚠️ No `Default` — the "a kindless `patch` line means `scene`" rule is that lane's and lives in `cli::PATCH_DEFAULT_KIND` |

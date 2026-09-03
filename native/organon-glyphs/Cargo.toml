@@ -39,5 +39,5 @@ path = "src/main.rs"
 
 [dependencies]
 organon-core = { path = "../organon-core" }
-ttfx = { git = "https://github.com/organonart/ttfx.git", rev = "7203e35" }
+ttfx = { git = "https://github.com/organonart/ttfx.git", rev = "8d79d82" }
 clap = { version = "4", features = ["derive"] }

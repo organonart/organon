@@ -134,6 +134,21 @@ impl Producer {
     }
 }
 
+/// The ring's sub-cell offset for a character (§7): `current_pos - current_coord`, the
+/// remainder ttfx's banker's rounding dropped on the way to `current_coord`, in cells,
+/// each axis in `-0.5..=0.5`. ttfx carries the pre-rounded point as
+/// `Motion.current_pos` (organonart/ttfx PR — see `doc/pbr_text_engine.md` §7).
+///
+/// ⚠️ **No flip, unlike the row index.** ttfx's row grows UP, and the ring's `sub_y` is
+/// "+y up from the cell's centre" (`GlyphCell`), so the remainder is carried as it is;
+/// only the *cell index* is flipped top-down in [`walk_grid`]. A character placed by
+/// `set_coordinate` has no remainder and encodes as exactly `(0.0, 0.0)`, so a cut is a
+/// cut. `f64 → f32` is the only loss, and it is far below a pixel.
+pub fn sub_cell_offset(motion: &ttfx::engine::motion::Motion) -> (f32, f32) {
+    let (x, y) = motion.sub_cell();
+    (x as f32, y as f32)
+}
+
 /// The painter's walk (see the module doc): fill `out` with `cols × rows` cells in the
 /// ring's top-down orientation and return `(cols, rows)`.
 pub fn walk_grid(term: &Terminal, out: &mut Vec<GlyphCell>) -> (u32, u32) {
@@ -207,6 +222,7 @@ pub fn walk_grid(term: &Terminal, out: &mut Vec<GlyphCell>) -> (u32, u32) {
                         sgr |= SGR_HAS_BG;
                     }
                 }
+                let (sub_x, sub_y) = sub_cell_offset(&ch.motion);
                 GlyphCell {
                     symbol: v.symbol.chars().next().map(|c| c as u32).unwrap_or(0),
                     fg,
@@ -214,8 +230,8 @@ pub fn walk_grid(term: &Terminal, out: &mut Vec<GlyphCell>) -> (u32, u32) {
                     sgr,
                     layer: ch.layer as i32,
                     character_id: ch.character_id,
-                    sub_x: 0.0,
-                    sub_y: 0.0,
+                    sub_x,
+                    sub_y,
                 }
             }
         });
@@ -333,6 +349,65 @@ mod tests {
         };
         assert_eq!(run(7), run(7));
         assert_ne!(run(7), run(8), "a different seed must move something in 40 frames");
+    }
+
+    /// §7: a character between two cells carries the remainder its integer coordinate
+    /// dropped, in ttfx's own frame (+x right, +y up — the ring's, so no flip); a
+    /// character *placed* on a cell carries exactly zero. Driven through the real engine
+    /// so the convention is measured, not assumed: the last character (`d`, input cell
+    /// (2,1) — the highest id, so it wins any cell it shares; `a` moved onto `b` in the
+    /// first draft and vanished from the walk) on a path up and to the right, one tick at
+    /// 0.7 cells/tick, lands at (2.48, 1.26): remainder (+0.48, +0.26) against its rounded
+    /// cell (2,1). The expected pair is computed inline from the motion, NOT through
+    /// `sub_cell_offset`, so a swapped axis in the helper fails here.
+    #[test]
+    fn a_character_between_cells_carries_its_remainder_and_a_placed_one_carries_zero() {
+        use ttfx::engine::ctx::NoopHooks;
+        use ttfx::engine::terminal::{CharacterFilter, CharacterSort};
+        use ttfx::utils::geometry::Coord;
+        let mut ctx = EngineCtx::new(
+            "ab\ncd",
+            terminal_config(60, Some(20), Some(10)),
+            Rng::seeded(0),
+            Clock::virtual_with_frame_rate(60),
+        )
+        .unwrap();
+        let ids = ctx.terminal.get_characters(
+            &mut Rng::seeded(0),
+            CharacterFilter::default(),
+            CharacterSort::TopToBottomLeftToRight,
+        );
+        for &id in &ids {
+            ctx.terminal.set_character_visibility(id, true);
+        }
+        let id = *ids.last().unwrap();
+        let cid = ctx.terminal.arena[id.0 as usize].character_id;
+        {
+            let m = &mut ctx.terminal.arena[id.0 as usize].motion;
+            m.new_path(0.7, None, None, 0, false, "diag").unwrap();
+            m.paths.get_mut("diag").unwrap().new_waypoint(Coord::new(15, 8), None, "").unwrap();
+        }
+        ctx.activate_path(&mut NoopHooks, id, "diag");
+        ctx.tick(&mut NoopHooks, id);
+        let mut cells = Vec::new();
+        let find = |cells: &[GlyphCell]| *cells.iter().find(|c| c.symbol != 0 && c.character_id == cid).expect("walked");
+        walk_grid(&ctx.terminal, &mut cells);
+        let cell = find(&cells);
+        let m = &ctx.terminal.arena[id.0 as usize].motion;
+        assert!(m.active_path.is_some() && cell.sgr & SGR_ACTIVE_PATH != 0);
+        let expect_x = (m.current_pos.0 - m.current_coord.column as f64) as f32;
+        let expect_y = (m.current_pos.1 - m.current_coord.row as f64) as f32;
+        assert_eq!((cell.sub_x, cell.sub_y), (expect_x, expect_y), "the cell carries the motion's remainder, x as x and y as y");
+        assert!(expect_x != expect_y && expect_x > 0.0 && expect_y > 0.0, "the fixture must tell the axes apart: {:?}", (expect_x, expect_y));
+        assert!(cell.sub_x.abs() <= 0.5 && cell.sub_y.abs() <= 0.5);
+        // A placement has no remainder: the cell it lands in encodes zero.
+        ctx.terminal.arena[id.0 as usize].motion.set_coordinate(Coord::new(5, 5));
+        walk_grid(&ctx.terminal, &mut cells);
+        let placed = find(&cells);
+        assert_eq!((placed.sub_x, placed.sub_y), (0.0, 0.0));
+        // And the cell index is the flipped one: row 5 of 10, bottom-up, is ring row 5.
+        let idx = cells.iter().position(|c| c.symbol != 0 && c.character_id == cid).unwrap();
+        assert_eq!((idx % 20, idx / 20), (4, 5));
     }
 
     #[test]

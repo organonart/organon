@@ -4284,7 +4284,7 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 [[package]]
 name = "ttfx"
 version = "0.3.2"
-source = "git+https://github.com/organonart/ttfx.git?rev=7203e35#7203e354498462064b7c0a89375051f65cf2ce99"
+source = "git+https://github.com/organonart/ttfx.git?rev=8d79d82#8d79d82edfe3998bf51d6a3564843ff85223eda2"
 dependencies = [
  "clap",
  "clap_complete",
