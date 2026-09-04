@@ -3498,6 +3498,21 @@ impl Renderer {
         let inst_gpu_used = !up_inst.is_empty()
             && !hide_generator
             && !(metaball || volume || voxel || mandelbulb || creature_ray || minimal || kifs_on || neural_on || lens_on);
+        // 🚨 organon#217 T8b — how many emissive instances the PHOTON pass may index
+        // this frame, and it is deliberately NOT `emit_hi`. That mark is a high-water
+        // across frames — it exists so a later, shorter upload knows how far to zero —
+        // and it is only refreshed inside the branch below, so a frame that uploads
+        // nothing (every raymarch/bake mode, and the hidden-generator case) leaves it
+        // frozen at whatever a previous glyph-ring frame set, beside an equally frozen
+        // `inst_buf`/`emit_buf`. That is harmless for the three passes that SHADE with
+        // emission: they only ever index at an instance a live TLAS hit reported, so a
+        // stale entry is unreachable. `cs_cdf`/`cs_photon` index `insts[i]`/`emits[i]`
+        // directly with no hit test, so a stale mark would spawn photons from a ring
+        // that left the scene — a ghost caustic from geometry that is not there, and
+        // nothing without a GPU would have said so (#250 review). Declared here at
+        // ZERO so the fail-safe is the default: any future path that skips the upload
+        // gets "no photon sources" without having to remember to say so.
+        let mut emit_sources: u32 = 0;
         if inst_gpu_used {
             queue.write_buffer(&self.inst_buf, 0, bytemuck::cast_slice(up_inst));
             // `up_tint` is built parallel to `up_inst` (same length).
@@ -3525,6 +3540,9 @@ impl Renderer {
                 queue.write_buffer(&self.emit_buf, off, bytemuck::cast_slice(&zeros));
             }
             self.emit_hi = high;
+            // Same number as the mark on THIS frame; the two differ only on a frame
+            // that does not reach here, which is exactly the case above.
+            emit_sources = lit as u32;
         }
 
         // Scenery layer (#187 pivot): grow-and-upload its instance/tint pair.
@@ -5929,10 +5947,12 @@ impl Renderer {
                     device, queue, &mut encoder, hdr, size, uniforms,
                     // organon#217 T8: the tracer reads the per-instance emission the
                     // cube pipeline draws, so the T5 dwell converges lit, not dark.
-                    // T8b passes the high-water mark beside it — how many entries may
-                    // be lit this frame, 0 on every non-glyph frame — which is what
-                    // lets the photon pass treat the tiles as light sources.
-                    &self.inst_buf, &self.tint_buf, &self.emit_buf, self.emit_hi as u32, tube, &pf,
+                    // T8b passes how many of its entries were uploaded THIS frame —
+                    // which is what lets the photon pass treat the tiles as light
+                    // sources. ⚠️ `emit_sources`, never `self.emit_hi`: see the note
+                    // where it is declared. The mark survives a frame that uploads
+                    // nothing; a pass that indexes without a hit test must not.
+                    &self.inst_buf, &self.tint_buf, &self.emit_buf, emit_sources, tube, &pf,
                 );
             }
         }

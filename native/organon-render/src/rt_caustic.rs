@@ -338,6 +338,12 @@ mod tests {
 
     const SHADER: &str = include_str!("rt_caustic.wgsl");
     const SRC: &str = include_str!("rt_caustic.rs");
+    /// The hand-off site lives one module up, and so does the only way to get the
+    /// count wrong — see `the_photon_source_count_is_this_frames_upload`. The test
+    /// sits here rather than in `render.rs` because the invariant belongs to this
+    /// pass: `render.rs` has no reason to know that indexing without a hit test is
+    /// what makes a stale count dangerous.
+    const RENDER: &str = include_str!("render.rs");
 
     /// A shader `struct`'s body, `\r` stripped — this checkout is CRLF on Windows and
     /// LF elsewhere, and every property below is about the text, not the platform.
@@ -437,6 +443,54 @@ mod tests {
         assert_eq!((mat4s, vec4s), (1, 7), "rt_caustic.wgsl's CaU changed shape");
         assert_eq!(std::mem::size_of::<CaU>(), 64 + 7 * 16);
         assert!(body.contains("emit: vec4<f32>,"), "the emitter count left the uniform");
+    }
+
+    #[test]
+    fn the_photon_source_count_is_this_frames_upload_not_the_high_water_mark() {
+        // 🚨 #250 review. `emit_hi` is a HIGH-WATER mark across frames — it exists so a
+        // later, shorter upload knows how far to zero — and it is refreshed only on a
+        // frame that actually uploads the instance buffers. Every raymarch/bake mode
+        // and the hidden-generator case upload nothing, so on those frames the mark,
+        // `inst_buf` and `emit_buf` all stay frozen at whatever a previous glyph-ring
+        // frame left. The three passes that SHADE with emission are safe from that by
+        // construction — they index only where a live TLAS hit pointed. This pass is
+        // not: `cs_cdf`/`cs_photon` walk `insts[i]`/`emits[i]` directly, so a stale
+        // count spawns photons from a ring that has left the scene. There is no GPU on
+        // any leg of the bar, so the call site is the only place this is observable.
+        // `\r` stripped first: this checkout is CRLF on Windows and LF elsewhere, and
+        // every property below is about the argument list, not the platform.
+        let render = RENDER.replace('\r', "");
+        let call = render.find("pt.trace(").expect("render.rs no longer calls the tracer");
+        let end = render[call..].find(");\n").expect("unterminated trace call") + call;
+        // ⚠️ Comments stripped, and the reason is not hypothetical: the comment at that
+        // call site NAMES `emit_hi` to say what must not be passed, which a naive scan
+        // reads as the very thing it forbids. The invariant is about the code. (No
+        // string literal appears in that argument list, so cutting at `//` is exact.)
+        let code: String = render[call..end]
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or("").trim_end())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let args = code.as_str();
+        assert!(
+            !args.contains("emit_hi"),
+            "render.rs hands the photon pass `emit_hi` — a mark that SURVIVES a frame \
+             which uploads nothing, so a raymarch/bake frame after a glyph ring would \
+             spawn photons from geometry no longer in the scene (a ghost caustic). \
+             Pass this frame's own uploaded count instead:\n{args}"
+        );
+        assert!(
+            args.contains("emit_sources"),
+            "render.rs no longer hands the photon pass a per-frame source count:\n{args}"
+        );
+        // And that count defaults to ZERO before the upload branch, so a path added
+        // later that skips the upload is inert without having to remember to say so.
+        let decl = render.find("let mut emit_sources: u32 = 0;").expect(
+            "the photon source count lost its fail-safe zero default — a new early \
+             return or a new non-uploading mode would inherit the last ring's count",
+        );
+        let gate = render.find("if inst_gpu_used {").expect("the upload gate moved");
+        assert!(decl < gate, "the source count is declared after the upload branch it guards");
     }
 
     #[test]

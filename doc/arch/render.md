@@ -976,9 +976,27 @@ from a tile to the floor is still direct light the tracer owns, and nothing is d
 `emits` sits at `@binding(6)` — the index the layout comment reserved before either half
 existed — and the CDF at `@binding(7)`, read-write because one dispatch produces it and the
 next consumes it inside the same compute pass. 🚨 **No parameter turns this on**: the
-renderer hands the pass its emissive **high-water mark** (`emit_hi`, the glyph frame's
-instance count and **0** on every other frame), which is also why the count travels beside
-the buffer at all — an all-zero buffer cannot say how long it is without reading every entry.
+renderer hands the pass **the count it uploaded this frame** — the glyph frame's instance
+count, and **0** on every other frame — which is also why a count travels beside the buffer
+at all, since an all-zero buffer cannot say how long its live prefix is without reading every
+entry of it.
+
+⚠️ **And it is emphatically *not* `emit_hi`, which is the trap this cost a review round to
+find (#250).** That mark is a high-water across frames — it exists so a later, shorter upload
+knows how far to zero — and it is refreshed only inside the `inst_gpu_used` branch. Every
+raymarch/bake mode and the hidden-generator case upload nothing, so those frames leave the
+mark, `inst_buf` and `emit_buf` all frozen at whatever a previous glyph-ring frame left.
+**That is harmless for the three passes that shade with emission and dangerous for this one**,
+and the difference is the hit test: they index only where a live TLAS hit pointed, so a stale
+entry is unreachable, while `cs_cdf`/`cs_photon` walk `insts[i]`/`emits[i]` directly. A stale
+mark would therefore keep spawning photons from a ring that had left the scene — a ghost
+caustic from geometry that is not there, on any frame that switched from a ring into a
+raymarch mode with caustics still on. The per-frame count is declared **at zero before** the
+upload branch, so the fail-safe is the default and a path added later that skips the upload is
+inert without having to remember to be; a test in `rt_caustic.rs` reads the call site and
+fails naming the ghost caustic if either half is undone. 📌 The general shape is worth
+keeping: **a value that is only refreshed on upload is safe to read behind a hit test and
+unsafe to index with**, and nothing without a GPU distinguishes the two.
 At zero the CDF pass is not dispatched, and the source draw sits inside an explicit guard so
 the photon walk consumes the **same random stream** it consumed before T8b — a shader test
 holds that line, because short-circuiting would read identically and hide the intent.

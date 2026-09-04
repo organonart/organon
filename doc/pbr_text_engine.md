@@ -727,11 +727,22 @@ until it lands.
   deposit gate is unchanged and shared — a photon must have been redirected by ≥ 1 specular
   event — so light going *straight* from a tile to the floor is still direct light the tracer
   owns and nothing is double-counted. 🚨 **No parameter, by construction**: the renderer hands
-  the pass its emissive high-water mark (the glyph frame's instance count, **0** on every other
-  frame), so there is nothing to turn on and nothing to leave on. At zero the CDF pass is not
+  the pass the emissive count it uploaded **this frame** (the glyph frame's instance count,
+  **0** on every other frame), so there is nothing to turn on and nothing to leave on. At zero
+  the CDF pass is not
   dispatched *and* the source draw sits inside an explicit guard, so an ordinary Organon frame
   walks the identical random stream and every existing caustic lands where it landed — a shader
   test holds that line, because a short-circuiting `&&` would read the same and hide the intent.
+  ⚠️ **Not `emit_hi`** — the first version passed it and the review caught it (#250). That mark
+  is a high-water across frames and is refreshed only when the instance buffers are actually
+  uploaded, which every raymarch/bake mode and the hidden-generator case skip; those frames
+  leave the mark and both buffers frozen at the last ring. Harmless for the passes that shade
+  with emission (they index only where a TLAS hit pointed) and a **ghost caustic** for this one,
+  which indexes with no hit test — photons spawning from a ring that had left the scene. The
+  per-frame count defaults to zero *before* the upload branch, so a future non-uploading path is
+  inert without having to remember to be, and a test reads the call site and fails naming the
+  ghost. 📌 The lesson generalises past this tier: **a value refreshed only on upload is safe
+  behind a hit test and unsafe to index with**, and no GPU-less leg distinguishes the two.
   Owns `rt_caustic.{rs,wgsl}`; the hand-off is one extra argument through `PathTracer::trace`
   and one at its `render.rs` call site. **Green and ready to try, never looked at on a GPU** —
   what a session must see is a lit ring in front of glass throwing its own colour onto the

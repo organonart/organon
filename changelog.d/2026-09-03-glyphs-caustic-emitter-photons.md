@@ -31,9 +31,9 @@ by at least one specular event — so light going straight from a tile to the fl
 direct light the tracer owns, and nothing is double-counted.
 
 🚨 **There is no parameter, and there was never going to be one.** The renderer hands the
-pass its emissive high-water mark — the glyph frame's instance count, and **0** on every
-other frame — so the feature is on exactly while a ring is live and there is nothing to
-leave switched on. At zero the CDF pass is not dispatched at all, *and* the source draw sits
+pass the emissive count it uploaded **this frame** — the glyph frame's instance count, and
+**0** on every other frame — so the feature is on exactly while a ring is live and there is
+nothing to leave switched on. At zero the CDF pass is not dispatched at all, *and* the source draw sits
 inside an explicit `if (e_total > 0.0)` guard rather than being short-circuited by one: the
 photon walk must consume the identical random stream it consumed before this change, or
 every caustic in an ordinary Organon frame moves. ⚠️ A short-circuiting `&&` would read the
@@ -43,7 +43,23 @@ same and hide that intent, so a shader test holds the guarded line verbatim.
 did not anticipate: an all-zero emission buffer cannot say how long its live prefix is
 without reading every entry of it, and the buffer is sized to the instance *capacity*. So
 `PathTracer::trace` gained one `u32` argument and passes it through; `render.rs`'s call site
-is the only place that knows the mark. Nothing else in `render.rs` moved.
+is the only place that knows it. Nothing else in `render.rs` moved.
+
+🚨 **And that count must be this frame's upload, not `emit_hi` — which the first version
+passed, and which review caught.** `emit_hi` is a high-water mark *across* frames (it exists
+so a later, shorter upload knows how far to zero) and it is refreshed only inside the
+`inst_gpu_used` branch. Every raymarch/bake mode and the hidden-generator case upload nothing,
+so those frames leave the mark, `inst_buf` and `emit_buf` all frozen at whatever a previous
+glyph-ring frame set. **That is harmless for the three passes that shade with emission and a
+live bug for this one, and the whole difference is the hit test**: they index only where a
+TLAS hit pointed, so a stale entry is unreachable, while `cs_cdf`/`cs_photon` walk
+`insts[i]`/`emits[i]` directly. Switching from a ring into a raymarch mode with caustics still
+on would have kept spawning photons from a ring that had left the scene — a ghost caustic from
+geometry that is not there. The per-frame count is declared **at zero before** the upload
+branch so the fail-safe is the default, and a test reads the call site and fails naming the
+ghost caustic if either half is undone. 📌 The shape is worth carrying past this tier: **a
+value refreshed only on upload is safe to read behind a hit test and unsafe to index with**,
+and nothing without a GPU tells the two apart.
 
 Green and ready to try — **not looked at on a GPU**, and there is none here. What a session
 must see is a lit ring in front of glass throwing its own colour onto the floor, and an
