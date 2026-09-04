@@ -88,16 +88,21 @@ fn the_logo_fixture_reproduces_the_spec_census() {
 /// `organon-glyphs` and judges the ring against this fixture, so the two must describe one
 /// grid or the gate answers "could not measure". Full blocks and blanks only, so there is
 /// no half-block coverage and no `colours` block to disagree.
+///
+/// ⚠️ W20 — **seven rows, not nine.** It shipped with a blank padding row above and below,
+/// and that grid cannot be published: see `no_fixture_carries_a_blank_bottom_row` below for
+/// the producer's rule and the measurement behind it. The blanks are gone from both files;
+/// the word's breathing room is `glyph_margin`'s job, which is the knob that exists for it.
 #[test]
 fn the_organon_fixture_is_the_demo_text_cell_for_cell() {
     const ORGANON: &str = include_str!("fixtures/organon.txt");
     const ASSET: &str = include_str!("../../assets/text/organon.txt");
     let f = Fixture::parse(ORGANON).expect("the ORGANON fixture parses");
-    assert_eq!((f.cols, f.rows), (82, 9), "seven glyph rows plus a blank row above and below");
+    assert_eq!((f.cols, f.rows), (82, 7), "the seven glyph rows, and nothing else");
     assert_eq!(f.aspect, 2.0);
     let census = f.census();
     assert_eq!(census[&'█'], 240);
-    assert_eq!(census[&' '], 9 * 82 - 240);
+    assert_eq!(census[&' '], 7 * 82 - 240);
     assert_eq!(census.len(), 2, "full blocks and blank — nothing else");
     assert_eq!(f.lit_count(), 240);
     assert!(f.cells().iter().all(|c| c.fg == [0xc0, 0xca, 0xf5]), "one colour, the logo's");
@@ -105,7 +110,7 @@ fn the_organon_fixture_is_the_demo_text_cell_for_cell() {
     // The asset, row by row: 82 cells each, padded (ttfx trims trailing blanks, so the
     // gate pins `--cols 82`; the file carries the padding anyway so a person sees the grid).
     let rows: Vec<&str> = ASSET.lines().collect();
-    assert_eq!(rows.len(), 9, "the asset is nine lines");
+    assert_eq!(rows.len(), 7, "the asset is seven lines");
     for (r, line) in rows.iter().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         assert_eq!(chars.len(), 82, "asset row {r} is not 82 cells wide");
@@ -118,6 +123,56 @@ fn the_organon_fixture_is_the_demo_text_cell_for_cell() {
     let derived = organon_render::legibility_gate::emit_text(&f);
     let trimmed: String = rows.iter().map(|l| format!("{}\n", l.trim_end_matches(' '))).collect();
     assert_eq!(derived, trimmed, "emit_text(fixture) is the asset with trailing blanks trimmed");
+}
+
+/// organon#217 W20 — **no fixture may end in an all-blank row**, and the reason is the
+/// producer rather than taste.
+///
+/// `verify.sh --legibility` feeds `organon-glyphs` a text and pins `--cols`/`--rows` to the
+/// fixture's, then cross-checks the settled ring against the fixture cell for cell. Three
+/// ttfx behaviours decide where the text lands in that canvas: it strips trailing spaces
+/// from an input line, so an all-space row arrives as an **empty** line; it then drops
+/// trailing empty lines outright; and its default `sw` text anchor resolves to a row delta
+/// of `bottom - 1`, i.e. zero, which leaves the glyph block sitting on the canvas floor. So
+/// **every row of slack between the text and `--rows` surfaces at the TOP of the published
+/// grid and none at the bottom.**
+///
+/// Measured on the Windows box, 2026-09-04, against the real producer at `--cols 82
+/// --rows 9` over the then-nine-row ORGANON asset: a candidate fixture with two blank rows
+/// above the word and none below passed the ring cross-check, one with two below and none
+/// above failed at 272 cells, and the shipped blank-above-and-below fixture failed at 220 —
+/// which is the abort `--text …/organon.txt` had returned since #246, having never once
+/// produced a number.
+///
+/// A leading blank row is therefore fine (it is reproduced), and a trailing one is not: it
+/// makes the fixture describe a grid `organon-glyphs` cannot publish for **any** `--rows`,
+/// and the gate answers "could not measure" instead of scoring. Every fixture in the
+/// directory is checked, not a hand-kept list, so one added tomorrow is covered.
+#[test]
+fn no_fixture_carries_a_blank_bottom_row() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).expect("the fixtures directory is readable") {
+        let path = entry.expect("a fixture directory entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a fixture reads as UTF-8");
+        let f = Fixture::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let last = f.rows - 1;
+        let blank = (0..f.cols).all(|c| !f.cell(c, last).is_lit());
+        assert!(
+            !blank,
+            "{}: its bottom row is all blank, so `organon-glyphs` cannot publish this grid \
+             — ttfx drops trailing blank lines and anchors the text to the canvas floor, so \
+             every row of slack lands on TOP. Drop the padding row (the rig's `glyph_margin` \
+             is what gives the text room), or the legibility gate answers \"could not \
+             measure\" on it forever.",
+            path.display()
+        );
+        seen += 1;
+    }
+    assert!(seen >= 3, "expected the logo, the asymmetric probe and ORGANON — saw {seen}");
 }
 
 #[test]

@@ -964,6 +964,75 @@ until it lands.
   Brightness** dial now reaches the tracer too. At the shipped default (1.0) that is a no-op;
   at any other value the two paths previously disagreed and now agree. Say so at review if
   the narrower gate was wanted. **No GPU touched this.**
+- **W21 — the ORGANON gate produces a number, and the harness can no longer look successful
+  without one. Landed** (`main @ dcae5ab` + this change). Two findings, and the second is the
+  larger.
+  **(1) The fixture described a grid the producer cannot publish.** `--text
+  native/assets/text/organon.txt` had aborted since #246 with *"the ring's text is not the
+  fixture's: 220 cell(s) differ, first at (2,1)"* and had never once produced a number.
+  Measured, not inferred — the gate's ring cross-check runs *before* it loads the frame, so
+  `organon-glyphs` plus `legibility-gate <a path that does not exist>.png <fixture> --ring
+  <ns>` settles it in seconds with no GPU. Against the real producer at `--cols 82 --rows 9`:
+  a candidate fixture with two blank rows **above** the word passed; two **below** failed at
+  272 cells; the shipped blank-above-and-below failed at 220. Three ttfx behaviours compose
+  to that — trailing spaces are stripped per line, so an all-space row arrives as an *empty*
+  line; trailing empty lines are then dropped outright; and the default `sw` text anchor
+  resolves to `row_delta = bottom - 1`, i.e. zero, leaving the block on the canvas floor. So
+  **every row of slack between the text and `--rows` surfaces at the TOP and none at the
+  bottom**, and a fixture padded above *and* below is unpublishable for **any** `--rows`.
+  Fixed on the fixture's side, which is the side that was wrong: the asset and the fixture
+  are the seven glyph rows, 82×7, 240 lit, nothing inert in either.
+  `no_fixture_carries_a_blank_bottom_row` walks the whole fixtures directory rather than a
+  list, so the class is closed and not just the instance.
+  ⚠️ **Nothing to fix in `organon-glyphs`** — it hands the text to ttfx and
+  `terminal_config` takes ttfx's own defaults. ⚠️ And **`Anchor::C` is not the tidy
+  alternative** (derived, not measured, since the anchor has no override): canvas top 9 gives
+  `center_row` 5, the block's `input_height` 7 gives `floor_div` 3, `row_delta` 2 — the glyphs
+  move to canvas rows 3..9, i.e. two blank rows at the **bottom** and none at the top, the
+  mirror image of the bug. Symmetric padding needs `row_delta` 1 and no anchor produces it.
+  The rig's `glyph_margin` is the knob for breathing room; padding rows cannot be one.
+  ⚠️ **The demo changes, slightly, and it is an improvement rather than a no-op.** The
+  nine-line asset published an **82×8** grid — measured — so the trailing blank row never
+  reached the screen at all while the leading one did, as a rendered row of dark glass tiles
+  (`glyph_dark_tiles` is on in `faceplate`). The word is byte-identical; the slab is now
+  seven rows rather than eight and the held camera refits to it, so ORGANON sits slightly
+  larger in frame and the slab stops being asymmetric about the word for no reason.
+  **(2) `verify.sh` reported "could not measure" as exit 1.** Its own header promised 2, and
+  `record` set one `FAILED` flag for every non-`ok` verdict over `exit "$FAILED"` — so the one
+  path that had never produced a number returned the code that means *go and read the
+  numbers*. A second hole beside it: `FAILED` started at 0 and nothing required a check to
+  exist, so a run that recorded nothing printed **All checks passed**. There are three
+  verdicts now (`ok` / `FAIL` / `UNMEASURED`), `exit_code_for` is the whole decision, 2
+  outranks 1, an empty report is 2, and `./verify.sh --self-test` pins every case in
+  milliseconds without a GPU. ⚠️ The line between FAIL and UNMEASURED is **whether a number
+  was taken**, not how bad it is: `frame is black` is a FAIL (it was scored), `snap failed` is
+  UNMEASURED (there was no frame).
+  **The 17 `no live Organon snapshot` warnings are noise, and the receipt says so.** They fire
+  on `is_live()`, which polls `Shared`'s seqlock for motion; this harness deliberately runs no
+  `Shared` writer, so the line prints on every write command whatever happens to the ops — a
+  status line that cannot be right or wrong. The ops travel a sidecar the visual drains off a
+  cursor seeded at *its* construction. That is an argument, so the harness now takes a
+  receipt: `<ns>-agent-apply.txt` gets one `set <id> <value>` line per op the visual actually
+  actuates, and the run refuses to measure unless every id comes back. **Measured: all 37 ids
+  of `faceplate.scene`'s 14 `set` lines came back, twice.**
+  **The first ORGANON numbers, organon-one, 2026-09-04, `--effect expand --seed 217`,
+  1100×760, geometry `--geom -1.10,288.09,13.441`:** `corr 0.9230 ok · lit-only 0.912 · bleed
+  0.334 at (1,0) FAIL · stray 0.1317 FAIL · spread 0.0009 ok`, exit **1**. A second whole run
+  gave `corr 0.9231 · bleed 0.334 · stray 0.1317` — so the numbers are reproducible across
+  runs, not merely across the two snaps inside one. ⚠️ **Nothing was tuned toward them**;
+  `thresholds.toml` is untouched and the threshold question is open.
+  ⚠️ **Unexplained, and it is the thing to look at next: the plate is not a dark room.**
+  The frame carries a light blue-grey field behind the word and a faint ghost of the text
+  above it, and `stray` is exactly the number a bright field inflates. It is **not** the
+  atmosphere sky: `atmos_enabled 1` and `atmos_enabled 0` snapped back to back differ by
+  `mean_abs 0.0018`, `diff_frac 0.0012` — nothing. It is not `env_intensity`, and it is not
+  the dark tiles (`glyph_dark_tiles 0` moves 2.6% of pixels). Most likely the backplane, not
+  confirmed. ⚠️ Two earlier probes were **confounded** and are recorded so nobody repeats
+  them: `--keep-visual` keeps the visual but always kills the producer, so the ring expires
+  and the world drops the grid entirely — a black frame with a diagonal of cubes that reads
+  exactly like "the toggle did that"; and comparing every snap against the first is worthless
+  while the tracer is still accumulating, since `atmos-off-again` differs from the control it
+  restores by `mean_abs 0.095`. Adjacent pairs are the only honest comparison here.
 
 T4 (Omarchy) and T7 (letterforms) stand as written in §14; T4 waits for T3's self-contained
 preset, T7 for `world.rs` to be free.
