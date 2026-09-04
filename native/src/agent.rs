@@ -62,6 +62,11 @@ pub fn core_catalog() -> Vec<CatSlot> {
     crate::param_table::pack_glyph::catalog(&mut out);
     crate::param_table::pack_glyph_cam::catalog(&mut out);
     crate::param_table::pack_capsule::catalog(&mut out);
+    // organon#217 T15 — the scatter. `pack_scatter` is exactly the three ids the tier
+    // adds plus one reserved slot, so walking it brings nothing the prompt has no route
+    // for — unlike `pack_fx` / `pack_finishing`, which is why the dark room's ids reach
+    // the catalog through `ACTUATABLE_IDS` instead (see the note above).
+    crate::param_table::pack_scatter::catalog(&mut out);
     // organon#217 T13 / #240 — the glyph-lights: `pack_manylight` is exactly the four ids
     // `faceplate` sets, and `pack_restir` is `ml_restir` plus three reserved slots, so
     // neither brings an id the prompt has no route for. ⚠️ The dark room's other four are

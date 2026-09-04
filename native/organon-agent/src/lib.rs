@@ -557,6 +557,22 @@ pub fn param_desc(id: &str) -> Option<&'static str> {
             "Beer–Lambert density per outer radius through a capsule's glass, in the \
              instance's own colour — 0 = a clear shell; higher = a tinted, murkier tube."
         }
+        // ---- The scatter (organon#217 T15) ----
+        "scatter_amount" => {
+            "Motion streaks keyed to the picture's own measured velocity — what moves \
+             smears, what has settled does not. 0 = off. Needs fx_enabled = 1."
+        }
+        "scatter_length" => {
+            "How far a streak reaches, in CELL WIDTHS of the live text grid — 1 is one \
+             whole cell, which is the ceiling: past that a stroke's light would land in \
+             its neighbour, which is the one thing that destroys legibility. With no text \
+             on screen it falls back to a small fraction of the frame."
+        }
+        "scatter_split" => {
+            "Dispersion along the streak — 0 = a plain grey smear; higher pulls red \
+             toward the streak's tail and blue toward its head, the colour-fringed \
+             scatter of a fast frame."
+        }
         // ---- The dark room (organon#217 T13, #240) — `faceplate`'s other nine fields. A
         // text demo is a near-black room with the words on it, never glyphs over the
         // generated landscape or the atmosphere sky; these are the switches that make it
@@ -754,6 +770,9 @@ pub fn id_range(id: &str) -> Option<(f32, f32)> {
         "glyph_cam_zoom" => (0.25, 4.0),
         "capsule_core" => (0.0, 1.0),
         "capsule_absorb" => (0.0, 8.0),
+        "scatter_amount" => (0.0, 1.0),
+        "scatter_length" => (0.0, 1.0),
+        "scatter_split" => (0.0, 1.0),
         // organon#217 T13 / #240 — `faceplate`'s dark room, halation and glyph-lights. Bounds
         // are `params.rs`'s (`flin("Halation", …, 0.0, 2.0)`, `flin("Cube Light Intensity",
         // …, 0.0, 8.0)`, `flin("Cube Light Radius", …, 0.05, 2.0)`, `ilin("Cube Light Count",
@@ -838,6 +857,9 @@ pub fn current(s: &Shared, id: &str) -> Option<f32> {
         "glyph_cam_zoom" => s.glyph_cam[2],
         "capsule_core" => s.capsule[0],
         "capsule_absorb" => s.capsule[1],
+        "scatter_amount" => s.scatter[0],
+        "scatter_length" => s.scatter[1],
+        "scatter_split" => s.scatter[2],
         // organon#217 T13 / #240 — the dark room. Slot 0 of `pack_atmosphere` / `pack_fx` /
         // `pack_finishing` / `pack_restir`, slots 0..4 of `pack_manylight`; `bg_visible` is
         // the one SCALAR — a `u32` flag packed by hand in `params.rs::to_shared`, so it is
@@ -929,6 +951,9 @@ pub fn actuate(s: &mut Shared, id: &str, v: f32) -> bool {
         "glyph_cam_zoom" => s.glyph_cam[2] = v,
         "capsule_core" => s.capsule[0] = v,
         "capsule_absorb" => s.capsule[1] = v,
+        "scatter_amount" => s.scatter[0] = v,
+        "scatter_length" => s.scatter[1] = v,
+        "scatter_split" => s.scatter[2] = v,
         // organon#217 T13 / #240 — same slots as `current`, one per line so a swap is a diff.
         "atmos_enabled" => s.atmosphere[0] = v,
         // The scalar: a `u32` flag, so the lane's value is THRESHOLDED the way the editor
@@ -1109,6 +1134,7 @@ pub const ACTUATABLE_IDS: &[&str] = &[
     "glyph_profile", "glyph_dark_tiles", // organon#217 T9 — the tile's two lanes
     "glyph_cam_hold", "glyph_cam_tilt", "glyph_cam_zoom", //
     "capsule_core", "capsule_absorb",
+    "scatter_amount", "scatter_length", "scatter_split", // organon#217 T15 — the scatter
     // organon#217 T13 / #240 — `faceplate`'s dark room, halation and glyph-lights.
     "atmos_enabled", "bg_visible", "fx_enabled", "hal_amount", //
     "ml_enabled", "ml_intensity", "ml_radius", "ml_count", "ml_restir",

@@ -658,13 +658,37 @@ pass two). The ~600-line body is unchanged — it derives the old local bools fr
 6c. **Post-composite creative FX** (optional, #152 Tier 1 — `fx.rs` + `fx.wgsl`). When the
    "Post FX" master is on, the composite (step 6) — or the temporal pass (6b) if it ran —
    feeds an FX **source texture**; this pass then applies the screen-space stack —
-   pixelate → DoF (scene depth) → chromatic aberration → NPR style
+   pixelate → DoF (scene depth) → chromatic aberration → **the scatter** (organon#217
+   T15, `Shared.scatter[4]`) → NPR style
    (Toon/Outline/Halftone/Dither) → colour grade → **halation + lens flares** (#167 Tier 1,
    `Shared.finishing[8]`) → vignette → film grain → feedback
    trail — and writes the result to the **view** *and* a **history texture** (MRT)
    sampled next frame for the trails. Halation is a wide, warm, red-weighted bright-pass
    halo around highlights (≠ bloom); lens flares add screen-space ghosts + a halo ring +
    an anamorphic streak keyed off the bright points — both additive, inert at amount 0.
+
+   **The scatter** is a velocity-keyed motion streak with an RGB split, and the velocity
+   is **measured from the image**, not reprojected: it solves the normal-flow relation
+   `dI/dt + v·∇I = 0` per pixel against the previous frame, then gathers `src` back along
+   `v` with per-channel tap weights (red pulled to the tail, blue to the head; at split 0
+   every weight is exactly 1, so the result is a plain achromatic directional blur). It
+   is mixed in convexly, never added, so it moves a cell's energy without changing how
+   much there is. ⚠️ **The previous frame it differences against is the ALPHA lane of the
+   feedback history** — a channel written as the literal `1.0` and read by nothing since
+   #152 — carrying last frame's un-streaked `luma(base)`. So there is no new attachment,
+   no second pipeline, and with the scatter off the history is byte-identical to what it
+   always held. ⚠️ **Reading the reference before the streak is mixed in is what stops it
+   compounding**: a reference taken afterwards would see its own smear as motion and grow
+   it every frame. ⚠️ **TAA's velocity is deliberately not used** — `temporal.rs`
+   reconstructs camera reprojection only, and its own doc says per-object deformation
+   ghosts; a glyph teleports cell to cell, so that velocity describes the wrong motion.
+   The reach is bounded in **cell widths** (`fx.rs::scatter_max_px`, against the live
+   grid's on-screen cell width measured in `world.rs::glyph_cell_px`) rather than in
+   pixels, which is what makes `doc/pbr_text_engine.md` §9's first law hold at every
+   zoom; with no ring live it falls back to a fraction of the frame's short side. Inert
+   at amount 0, and the first frame after it is switched on has no reference yet, so it
+   is held off for exactly that frame (`Fx::scatter_primed`).
+
    Leaves `composite.wgsl` untouched (the
    HDR/EDR/gamut path is unchanged); off → the upstream stage writes straight to the view
    (byte-identical). Runs at the full output resolution. Preset-captured (a Look).

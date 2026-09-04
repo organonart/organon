@@ -8569,6 +8569,21 @@ impl World {
             lf_visibility,
             cam_near: CAM_NEAR,
             cam_far: CAM_FAR,
+            // organon#217 T15 — the scatter (Shared.scatter). `scatter_cell_px` is a
+            // MEASUREMENT rather than a parameter — the live grid's cell width as this
+            // frame's projection lands it — so it rides `FxParams` beside the lens-flare
+            // anchor and not the wire. 0 = no ring, and `fx.rs` falls back to a frame
+            // fraction there.
+            scatter: s.scatter[0],
+            scatter_len_cells: s.scatter[1],
+            scatter_split: s.scatter[2],
+            scatter_cell_px: glyph_cell_px(
+                self.glyph_pt.live,
+                glyph_look.cell_w,
+                &self.glyph_bounds,
+                &Mat4::from_cols_array_2d(&uniforms.view_proj),
+                render_size,
+            ),
         };
         // Hardware RT (#195): rebuild the TLAS over this frame's instance matrices
         // (the whole field animates every frame → full rebuild, not a refit).
@@ -14269,6 +14284,65 @@ fn glyph_camera_rig(
     Some((centre, 0.0, pitch, distance, 0.0, fov_deg))
 }
 
+/// organon#217 T15 — **one glyph cell's width on screen, in pixels**, or `0.0` when
+/// there is no cell to measure.
+///
+/// This is what turns §9's first law ("the cell's energy stays in the cell") from a
+/// caution into arithmetic: `fx.rs::scatter_max_px` multiplies the scatter's reach — a
+/// number of *cell widths* — by this, so the streak is bounded in the unit the law is
+/// written in rather than in pixels, which mean different things at different zooms.
+///
+/// It is **measured through the frame's own view-projection**, not derived from the
+/// camera rig, for two reasons: the rig is `None` unless `glyph_cam[0]` (hold) is set, so
+/// a ring under the orbit camera would get no measurement at all; and the projection is
+/// the thing that actually decides how big a cell lands, tilt and FOV and aspect
+/// included. The same trick the lens-flare anchor uses one screen up — take a world
+/// vector to clip space and read the screen delta.
+///
+/// The grid's tiles lie in the `x`/`y` plane facing `+z` (`glyph_ring::cell_centre`), so
+/// a cell's width is one `cell_w` along world **x**. The two ends are projected at the
+/// bounds' centre depth, which is the plane the text is on. Returns `0.0` — "no cell",
+/// which `scatter_max_px` reads as its frame-fraction fallback — when no ring is live,
+/// when the bounds are empty or non-finite (nothing lowered yet), when either end lands
+/// behind the camera, or when the result is not a finite positive number.
+fn glyph_cell_px(
+    glyph_live: bool,
+    cell_w: f32,
+    bounds: &math::Bounds,
+    vp: &Mat4,
+    size: (u32, u32),
+) -> f32 {
+    if !glyph_live || !cell_w.is_finite() || cell_w <= 0.0 || size.0 == 0 || size.1 == 0 {
+        return 0.0;
+    }
+    if !(bounds.min.is_finite() && bounds.max.is_finite()) || bounds.max.x <= bounds.min.x {
+        return 0.0;
+    }
+    let c = bounds.center();
+    let to_px = |p: Vec3| -> Option<Vec2> {
+        let clip = *vp * p.extend(1.0);
+        // `w` is the view-space depth: at or behind the eye there is no screen position,
+        // and dividing by a tiny `w` would report a cell the width of a continent.
+        if !(clip.w > 1e-4) {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        Some(Vec2::new(
+            ndc.x * 0.5 * size.0 as f32,
+            ndc.y * 0.5 * size.1 as f32,
+        ))
+    };
+    let half = cell_w * 0.5;
+    let (Some(a), Some(b)) = (
+        to_px(c - Vec3::new(half, 0.0, 0.0)),
+        to_px(c + Vec3::new(half, 0.0, 0.0)),
+    ) else {
+        return 0.0;
+    };
+    let px = (b - a).length();
+    if px.is_finite() && px > 0.0 { px } else { 0.0 }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // organon#217 T10 — glyphs as lights (`doc/pbr_text_engine.md` §4.1, §15).
 //
@@ -14767,6 +14841,58 @@ mod glyph_look_tests {
         assert!(glyph_camera_rig(false, &hold, &b, (1920, 1080), 45.0).is_none(), "no ring");
         assert!(glyph_camera_rig(true, &off, &b, (1920, 1080), 45.0).is_none(), "hold off");
         assert!(glyph_camera_rig(true, &hold, &math::Bounds::new(), (1920, 1080), 45.0).is_none(), "nothing drawn");
+    }
+
+    /// organon#217 T15 — the cell measurement the scatter's §9 bound is denominated in.
+    ///
+    /// A grid 100 world units wide fitted to a 1000-pixel frame puts a 1-unit cell on
+    /// ten pixels; halve the cell and it is five; pull the camera twice as far back and
+    /// it is half again. That last one is the property the whole thing exists for: a
+    /// bound expressed in pixels would mean a different fraction of a cell at every
+    /// zoom, so §9's law would only hold at the distance somebody happened to tune at.
+    #[test]
+    fn a_cell_is_measured_through_the_frames_own_projection() {
+        // Centred on the origin in z, so "distance d" in the arithmetic below is the
+        // distance to the plane the cells are measured on — the bounds' CENTRE, which
+        // includes the backplane's own thickness in the general case.
+        let b = bounds((-50.0, -30.0, -0.2), (50.0, 30.0, 0.2));
+        let size = (1000u32, 1000u32);
+        // A camera on +z looking at the origin, 90 deg vertical FOV: at distance d the
+        // frame spans 2d world units, so one unit is `size.1 / (2d)` pixels.
+        let vp = |d: f32| {
+            Mat4::perspective_rh(90f32.to_radians(), 1.0, 0.1, 1000.0)
+                * Mat4::look_at_rh(Vec3::new(0.0, 0.0, d), Vec3::ZERO, Vec3::Y)
+        };
+        let at = |cell: f32, d: f32| glyph_cell_px(true, cell, &b, &vp(d), size);
+        let px = at(1.0, 50.0);
+        assert!((px - 10.0).abs() < 0.05, "one unit at distance 50 is ten pixels, got {px}");
+        assert!((at(0.5, 50.0) - px * 0.5).abs() < 0.05, "half the cell, half the pixels");
+        assert!((at(1.0, 100.0) - px * 0.5).abs() < 0.05, "twice as far, half the pixels");
+    }
+
+    /// It is a MEASUREMENT, so every case where there is nothing to measure answers
+    /// `0.0` — which `fx::scatter_max_px` reads as "no cell, use the frame fraction"
+    /// rather than as a zero-length streak. ⚠️ Note the first case: the measurement does
+    /// NOT require the held camera, unlike `glyph_camera_rig`. A ring drawn under the
+    /// orbit rig still has cells, and gating on the hold would have left the scatter
+    /// unbounded in cell terms in exactly the session most likely to be moving.
+    #[test]
+    fn nothing_to_measure_reads_zero_not_a_guess() {
+        let b = bounds((-50.0, -30.0, -1.0), (50.0, 30.0, 0.2));
+        let size = (1000u32, 1000u32);
+        let vp = Mat4::perspective_rh(90f32.to_radians(), 1.0, 0.1, 1000.0)
+            * Mat4::look_at_rh(Vec3::new(0.0, 0.0, 50.0), Vec3::ZERO, Vec3::Y);
+        assert!(glyph_cell_px(true, 1.0, &b, &vp, size) > 0.0, "the live case measures");
+        assert_eq!(glyph_cell_px(false, 1.0, &b, &vp, size), 0.0, "no ring, no cell");
+        assert_eq!(glyph_cell_px(true, 0.0, &b, &vp, size), 0.0, "a zero-width cell is not a cell");
+        assert_eq!(glyph_cell_px(true, f32::NAN, &b, &vp, size), 0.0);
+        assert_eq!(glyph_cell_px(true, 1.0, &math::Bounds::new(), &vp, size), 0.0, "nothing lowered yet");
+        assert_eq!(glyph_cell_px(true, 1.0, &b, &vp, (0, 0)), 0.0, "no frame");
+        // Behind the camera: `w` is at or below zero, and a naive divide would report a
+        // cell hundreds of pixels wide (or negative) instead of nothing.
+        let behind = Mat4::perspective_rh(90f32.to_radians(), 1.0, 0.1, 1000.0)
+            * Mat4::look_at_rh(Vec3::new(0.0, 0.0, -50.0), Vec3::new(0.0, 0.0, -100.0), Vec3::Y);
+        assert_eq!(glyph_cell_px(true, 1.0, &b, &behind, size), 0.0, "the grid is behind the eye");
     }
 
     /// The rig looks straight down -z at the grid's centre from the fitted distance,

@@ -1411,6 +1411,8 @@ mod tests {
             glyph_back_r, glyph_back_g, glyph_back_b, glyph_margin, glyph_back_depth,
             glyph_default_fg, glyph_bevel, glyph_crown, glyph_profile, // (T9: profile)
             glyph_cam_tilt, glyph_cam_zoom, capsule_core, capsule_absorb,
+            // organon#217 T15 — the scatter.
+            scatter_amount, scatter_length, scatter_split,
             // organon#217 T13 / #240 — the halation and the glyph-lights.
             hal_amount, ml_intensity, ml_radius,
         );
