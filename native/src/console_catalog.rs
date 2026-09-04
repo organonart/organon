@@ -250,6 +250,9 @@ pub(crate) fn slot_facts(p: &OrganicMathParams) -> Vec<SlotFacts> {
     crate::param_table::pack_glyph::facts(p, &mut out);
     crate::param_table::pack_glyph_cam::facts(p, &mut out);
     crate::param_table::pack_capsule::facts(p, &mut out);
+    // organon#217 T15 — the scatter, in the core for the same reason: the block is
+    // exactly its three ids plus a reserved slot.
+    crate::param_table::pack_scatter::facts(p, &mut out);
     // organon#217 T13 / #240 — the glyph-lights, in the core because they bring nothing extra.
     crate::param_table::pack_manylight::facts(p, &mut out);
     crate::param_table::pack_restir::facts(p, &mut out);

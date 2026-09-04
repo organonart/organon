@@ -36,6 +36,10 @@ struct FxU {
     p6: vec4<f32>,
     // camera projection near / far (for the DoF focus-distance remap), _, _
     p7: vec4<f32>,
+    // organon#217 T15 the scatter: amount, max streak length in PIXELS (the §9 bound,
+    // already converted from cell widths CPU-side), RGB split, primed (0/1 — whether
+    // last frame's pass wrote a luminance reference into the history's alpha lane)
+    p8: vec4<f32>,
 };
 
 @group(0) @binding(0) var src_tex: texture_2d<f32>;
@@ -333,6 +337,112 @@ fn lensflare(uv: vec2<f32>) -> vec3<f32> {
     return acc * vis * amount;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// organon#217 T15 — the scatter: velocity-keyed motion streaks with an RGB split.
+//
+// WHERE THE VELOCITY COMES FROM. Not from the camera. `temporal.rs` reconstructs
+// velocity by reprojecting the previous camera, which describes how the WORLD moved
+// under a moving eye — and a glyph does not move that way: it teleports cell to cell
+// while the camera is held still (§8's held camera is the whole point of T3/T5). So the
+// flow is MEASURED from the image, by the standard normal-flow relation
+//
+//     dI/dt + v·grad(I) = 0   =>   v = -(dI/dt) * grad(I) / |grad(I)|^2
+//
+// which is the only component of v an image can give you (the aperture problem): the
+// part along the local gradient, i.e. perpendicular to the edge that moved. That is
+// exactly the direction a streak should run — a smeared edge smears across itself.
+//
+// WHERE THE PREVIOUS FRAME COMES FROM. `hist_tex` already holds last frame's output for
+// the feedback trail, and the trail reads `.rgb` only — so its ALPHA has been a lane
+// written as the literal 1.0 and read by nothing since #152. The scatter stores last
+// frame's `luma(base)` there. No new attachment, no new texture, no second pipeline, and
+// with the scatter off the alpha is written 1.0 exactly as before, so the feedback path
+// and the presented image are both untouched byte for byte.
+//
+// WHY IT DOES NOT COMPOUND. The reference is the picture BEFORE the streak is mixed in,
+// so this frame's streak never feeds the next frame's velocity estimate. A reference
+// taken after the mix would see its own smear as motion and grow it every frame.
+//
+// §9 LAW 1 — "the cell's energy stays in the cell". A streak moves energy out of a cell
+// by definition, so it is bounded twice. (1) The reach is expressed in CELL WIDTHS with
+// a range that stops at one cell, converted to pixels CPU-side against the live grid's
+// measured on-screen cell width (`fx.rs::scatter_max_px`), so no setting can throw a
+// stroke past its neighbour's centre. (2) It is transient by construction: dI/dt is zero
+// on a settled frame, so the streak vanishes the moment the effect stops — and the
+// settled frame is the one §9's harness scores and the one T5's tracer converges to.
+
+// Below this the gradient carries no usable direction (a flat region, or grain), and a
+// division by |grad|^2 would turn noise into a long streak pointing anywhere.
+const SCATTER_GRAD_FLOOR: f32 = 4.0e-4;   // |grad(luma)| >= 0.02 per texel
+// Temporal deadband: |dI/dt| under this is not motion. Film grain lands here — it is
+// added to `col` before the history is written, so it is present on BOTH sides of the
+// difference as uncorrelated noise of its own amplitude.
+const SCATTER_DT_FLOOR: f32 = 0.01;
+const SCATTER_TAPS: i32 = 10;
+
+fn hist_luma(uv: vec2<f32>) -> f32 {
+    return textureSampleLevel(hist_tex, samp, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).a;
+}
+
+// The streaked colour at `uv`, given this pixel's un-streaked `base` and its luminance.
+// Returns `base` unchanged whenever the estimate is not trustworthy — which is every
+// pixel of a settled frame, the first frame after the scatter is switched on, and every
+// pixel at all when `amount` is 0.
+fn scatter(uv: vec2<f32>, base: vec3<f32>, base_luma: f32) -> vec3<f32> {
+    let amount = clamp(u.p8.x, 0.0, 1.0);
+    let max_px = u.p8.y;
+    if (amount <= 0.0 || max_px < 0.5 || u.p8.w < 0.5) {
+        return base;
+    }
+    let t = u.texel.xy;
+    let prev = hist_luma(uv);
+    let dt = base_luma - prev;
+    if (abs(dt) < SCATTER_DT_FLOOR) {
+        return base; // nothing moved here
+    }
+    // grad of the PREVIOUS frame, central differences, per texel. Using the previous
+    // frame rather than this one is what makes it one texture fetch pattern instead of
+    // re-running the whole chain at four neighbours; for the small displacements this
+    // effect is bounded to, grad(I_prev) ~ grad(I_cur).
+    let g = vec2<f32>(
+        (hist_luma(uv + vec2<f32>(t.x, 0.0)) - hist_luma(uv - vec2<f32>(t.x, 0.0))) * 0.5,
+        (hist_luma(uv + vec2<f32>(0.0, t.y)) - hist_luma(uv - vec2<f32>(0.0, t.y))) * 0.5,
+    );
+    let g2 = dot(g, g);
+    if (g2 < SCATTER_GRAD_FLOOR) {
+        return base; // no edge here: the direction is not recoverable
+    }
+    let v = -dt * g / g2;             // texels per frame, along the gradient
+    let speed = length(v);
+    if (speed < 0.5) {
+        return base; // sub-pixel travel: there is nothing to smear
+    }
+    let len_px = min(speed, max_px);
+    let dir = v / speed;
+    // Gather back along the travel — where this pixel's light came from.
+    let split = clamp(u.p8.z, 0.0, 1.0);
+    var acc = base;
+    var wsum = vec3<f32>(1.0);
+    for (var i = 1; i <= SCATTER_TAPS; i = i + 1) {
+        let k = f32(i) / f32(SCATTER_TAPS);   // 0 < k <= 1 along the streak
+        let s = sample_src(uv - dir * (len_px * k) * t);
+        // The RGB split. At `split` = 0 every channel weight is exactly 1, so the result
+        // is a plain achromatic directional blur — the dispersion cannot leak in at the
+        // off position. Above 0, red is pulled toward the tail and blue toward the head,
+        // symmetrically about the middle of the streak, so the mean travel is unchanged.
+        let d = split * (k - 0.5) * 2.0;
+        let w = max(vec3<f32>(1.0 + d, 1.0, 1.0 - d), vec3<f32>(0.0));
+        acc = acc + s * w;
+        wsum = wsum + w;
+    }
+    let streak = acc / wsum;
+    // A convex mix, never an addition: the streak is a weighted mean of source samples,
+    // so mixing preserves the cell's integrated luminance (§9 law 2) where adding would
+    // brighten whatever moves.
+    let confidence = smoothstep(SCATTER_DT_FLOOR, SCATTER_DT_FLOOR * 2.0, abs(dt));
+    return mix(base, streak, amount * confidence);
+}
+
 struct FragOut {
     @location(0) view: vec4<f32>,
     @location(1) hist: vec4<f32>,
@@ -363,6 +473,13 @@ fn fs_fx(in: VsOut) -> FragOut {
     } else {
         base = dof(uv);
     }
+
+    // organon#217 T15 — the scatter, on `base`: the composited picture as DoF and the
+    // aberration left it, and BEFORE the history reference is taken, so the streak never
+    // feeds its own estimate. Everything below (style, grade, halation, flare, vignette,
+    // grain, feedback) then runs over the streaked picture exactly as it always has.
+    let base_luma = luma(base);
+    base = scatter(uv, base, base_luma);
 
     // NPR style.
     var col = apply_style(base, uv);
@@ -403,6 +520,12 @@ fn fs_fx(in: VsOut) -> FragOut {
 
     var o: FragOut;
     o.view = vec4<f32>(col, 1.0);
-    o.hist = vec4<f32>(col, 1.0);
+    // The history's alpha is the scatter's motion reference (see the block above): this
+    // frame's un-streaked `luma(base)` while the scatter is on, and otherwise the literal
+    // 1.0 it has been written as since #152 — so with the scatter off this texture is
+    // byte-identical to what it always held, and the feedback trail (which reads `.rgb`)
+    // cannot tell the difference either way.
+    let ref_a = select(1.0, base_luma, u.p8.x > 0.0);
+    o.hist = vec4<f32>(col, ref_a);
     return o;
 }

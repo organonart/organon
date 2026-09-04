@@ -1391,6 +1391,17 @@ param_block! {
     _,                       // [3] reserved
 }
 
+// organon#217 T15 — the scatter → Shared.scatter[4]. Velocity-keyed motion streaks with
+// an RGB split, inside the FX pass (`fx.wgsl::scatter`). A Look — preset-captured.
+// `scatter_amount = 0` → the pass returns the un-streaked colour (today's look).
+param_block! {
+    pack_scatter, pack_scatter_preset, [4];
+    (f32, scatter_amount),   // [0] streak mix (0 = off)
+    (f32, scatter_length),   // [1] streak reach in CELL WIDTHS (§9 law 1, made structural)
+    (f32, scatter_split),    // [2] RGB dispersion along the streak (0 = achromatic)
+    _,                       // [3] reserved
+}
+
 param_block! {
     pack_minimal_surface, pack_minimal_surface_preset, [16];
     (enum, ms_family),     // [0] 0 Gyroid / 1 Schwarz P / 2 Schwarz D
@@ -2684,7 +2695,9 @@ mod tests {
     // + the organon#217 T3 PBR-text look controls: glyph[16] = 8512 + 64 = 8576,
     //   glyph_cam[8] = 8576 + 32 = 8608, capsule[4] = 8608 + 16 = 8624. Tail append after
     //   mindview_gen; LAYOUT_VERSION 0x0285→0x0286.
-    const EXPECTED_SHARED_SIZE: usize = 8624;
+    // + the organon#217 T15 scatter: scatter[4] = 8624 + 16 = 8640. Tail append after
+    //   capsule; LAYOUT_VERSION 0x0286→0x0287.
+    const EXPECTED_SHARED_SIZE: usize = 8640;
 
     #[test]
     fn shared_layout_is_stable() {
@@ -2845,6 +2858,12 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(Shared, glyph_cam), 8576, "glyph_cam offset drift");
         assert_eq!(std::mem::offset_of!(Shared, capsule), 8608, "capsule offset drift");
+        // organon#217 T15 — the scatter is the new tail; `capsule` must not have moved.
+        assert_eq!(
+            std::mem::offset_of!(Shared, scatter),
+            8624,
+            "the T15 append must begin exactly at the old Shared size"
+        );
     }
 
     // --- Pilot: the generated bell packing is byte-identical to the old hand code.
@@ -3543,7 +3562,13 @@ mod tests {
     //   print → 11090782705610843067. The companion `the_glyph_append_leaves_every_pre_
     //   append_byte_where_it_was` proves the first 8512 bytes still hash to the previous
     //   golden, which is what makes this re-pin a growth and not a shift.
-    const GOLDEN_DEFAULT_SHARED_HASH: u64 = 11090782705610843067;
+    // + organon#217 T15 — scatter[4] (amount 0 — the tier inert — length 0.5, split 0.5,
+    //   reserved 0), tail-appended after capsule; LAYOUT_VERSION 0x0286→0x0287, Shared
+    //   8624 → 8640 bytes. Same shape of re-pin: two non-zero defaults grow the byte
+    //   image, so the whole-struct hash moves → re-pinned from the live `cargo test`
+    //   print → 6436067693623511418, with `the_scatter_append_leaves_every_pre_append_
+    //   byte_where_it_was` proving the first 8624 bytes still hash to the value above.
+    const GOLDEN_DEFAULT_SHARED_HASH: u64 = 6436067693623511418;
 
     /// The byte image of every field that existed before the #541 T1 append, and the
     /// hash it produced. Saved Ableton sets and stored presets are decoded against
@@ -3562,6 +3587,13 @@ mod tests {
     const PRE_GLYPH_SHARED_SIZE: usize = 8512;
     const PRE_GLYPH_GOLDEN_HASH: u64 = 8436249494989495788;
     const PRE_GLYPH_LAYOUT_VERSION: u32 = 0x0285;
+
+    /// organon#217 T15 — the same guard one append further on: the byte image of every
+    /// field that existed before `scatter`, and the hash it produced (the 0x0286
+    /// `GOLDEN_DEFAULT_SHARED_HASH`, the whole 8624-byte struct at the time).
+    const PRE_SCATTER_SHARED_SIZE: usize = 8624;
+    const PRE_SCATTER_GOLDEN_HASH: u64 = 11090782705610843067;
+    const PRE_SCATTER_LAYOUT_VERSION: u32 = 0x0286;
 
 
     // #187 Tier 3: the factory Rails presets must stay recallable — well-formed,
@@ -3659,6 +3691,60 @@ mod tests {
             "the bytes ahead of the T3 append moved — an existing field changed offset \
              or packing. Do NOT re-pin this value to make it pass."
         );
+    }
+
+    /// organon#217 T15 — and again for the scatter append. This is what makes the
+    /// `GOLDEN_DEFAULT_SHARED_HASH` re-pin above defensible: the whole-struct hash was
+    /// always going to move (the struct grew, and two of the four new lanes are
+    /// non-zero), so on its own it can hide a shift. This says the 8624 bytes ahead of
+    /// the append hash to exactly what they did before it, which is the claim that
+    /// actually matters to a saved Ableton set.
+    #[test]
+    fn the_scatter_append_leaves_every_pre_append_byte_where_it_was() {
+        let mut s = OrganicMathParams::default().to_shared();
+        s.layout_version = PRE_SCATTER_LAYOUT_VERSION;
+        let bytes = bytemuck::bytes_of(&s);
+        assert!(
+            bytes.len() > PRE_SCATTER_SHARED_SIZE,
+            "Shared should have grown past the pre-append size, got {}",
+            bytes.len()
+        );
+        assert_eq!(
+            fnv1a(&bytes[..PRE_SCATTER_SHARED_SIZE]),
+            PRE_SCATTER_GOLDEN_HASH,
+            "the bytes ahead of the T15 append moved — an existing field changed offset \
+             or packing. Do NOT re-pin this value to make it pass."
+        );
+    }
+
+    /// organon#217 T15, invariant #4 in the form that matters for a whole EFFECT rather
+    /// than for one lane: **with the scatter's amount at 0 the frame is the frame it was
+    /// before the tier existed**, and the only thing that can carry it into the renderer
+    /// is `Shared.scatter[0]`.
+    ///
+    /// The default snapshot is the pin (the append is at the tail, so the 8624 bytes
+    /// ahead of it are the same bytes the pre-T15 build wrote — the test above), and
+    /// this adds the half that a golden hash cannot state: that the *default* of the
+    /// lane which gates the effect is exactly zero, and that raising the two shape knobs
+    /// on their own moves nothing else in the block.
+    #[test]
+    fn the_scatter_is_inert_until_its_amount_is_raised() {
+        let d = OrganicMathParams::default().to_shared();
+        assert_eq!(d.scatter[0], 0.0, "the scatter's amount defaults to off — this is invariant #4");
+        assert_eq!(d.scatter[3], 0.0, "the reserved slot is written 0");
+        // The shape knobs carry the look the scatter WOULD have; they are not a second
+        // way to switch it on, and `fx.rs` reads only `[0]` to decide whether it runs.
+        // (A `FloatParam`'s setters are `pub(crate)` to nih_plug, so the preset packer —
+        // which `param_block!` generates from the same slot list — is how a test drives
+        // a value through this block.)
+        let mut pv = crate::preset::PresetValues::capture_params_only(&OrganicMathParams::default());
+        pv.scatter_length = 1.0;
+        pv.scatter_split = 1.0;
+        let packed = pack_scatter_preset(&pv);
+        assert_eq!(packed[0], 0.0, "length and split cannot switch the scatter on");
+        assert_eq!(packed[1], 1.0);
+        assert_eq!(packed[2], 1.0);
+        assert_eq!(packed[3], 0.0);
     }
 
     /// organon#217 T3 — the factory `faceplate` preset must stay recallable: uniquely

@@ -1539,6 +1539,10 @@ pub struct PresetValues {
     // organon#217 T6 — the coaxial capsule core (old presets predate it → inert).
     #[serde(default)] pub capsule_core: f32,
     #[serde(default)] pub capsule_absorb: f32,
+    // organon#217 T15 — the scatter (old presets predate it → amount 0 → inert).
+    #[serde(default)] pub scatter_amount: f32,
+    #[serde(default = "def_scatter_length")] pub scatter_length: f32,
+    #[serde(default = "def_scatter_split")] pub scatter_split: f32,
     // Plexus surface-mode controls (old presets predate it → neutral defaults).
     #[serde(default = "def_plexus_radius")]
     pub plexus_radius: f32,
@@ -3343,6 +3347,13 @@ fn def_metallic() -> f32 { 0.0 }
 fn def_ior() -> f32 { 1.45 }
 fn def_roughness() -> f32 { 0.35 }
 fn def_plexus_radius() -> f32 { 1.6 }
+// organon#217 T15 — the scatter's shape when a preset predates it. The AMOUNT defaults
+// to 0 (plain `#[serde(default)]`), which is what makes an old preset inert; these two
+// only decide what the streak would look like once someone raises it, so they carry the
+// param defaults rather than 0 — a length of 0 would be a streak that cannot appear even
+// at full amount, which reads as a broken knob rather than as an off one.
+fn def_scatter_length() -> f32 { 0.5 }
+fn def_scatter_split() -> f32 { 0.5 }
 // organon#217 T3 — `glyph_ring::GlyphLook::DEFAULT`, field for field, so a preset saved
 // before the look was a parameter recalls the grid T1 drew. `world::glyph_look_from`'s
 // test pins these against the const through `Shared`.
@@ -4189,6 +4200,9 @@ macro_rules! for_each_tab_field {
         $op!(Look, glyph_dark_tiles, scalar);
         $op!(Look, capsule_core, scalar);
         $op!(Look, capsule_absorb, scalar);
+        $op!(Look, scatter_amount, scalar);
+        $op!(Look, scatter_length, scalar);
+        $op!(Look, scatter_split, scalar);
         $op!(Generator, palette, enum, HostPalette);
         $op!(Generator, metaball_radius, scalar);
         $op!(Generator, metaball_threshold, scalar);
@@ -5617,6 +5631,9 @@ impl PresetValues {
             glyph_dark_tiles: p.glyph_dark_tiles.value(),
             capsule_core: p.capsule_core.value(),
             capsule_absorb: p.capsule_absorb.value(),
+            scatter_amount: p.scatter_amount.value(),
+            scatter_length: p.scatter_length.value(),
+            scatter_split: p.scatter_split.value(),
             plexus_radius: p.plexus_radius.value(),
             plexus_links: p.plexus_links.value(),
             plexus_strut: p.plexus_strut.value(),
@@ -6710,6 +6727,8 @@ impl PresetValues {
             glyph: crate::param_table::pack_glyph_preset(self),
             glyph_cam: crate::param_table::pack_glyph_cam_preset(self),
             capsule: crate::param_table::pack_capsule_preset(self),
+            // organon#217 T15 — the scatter.
+            scatter: crate::param_table::pack_scatter_preset(self),
         }
     }
 }
@@ -7149,7 +7168,11 @@ fn text_seed_marker() -> PathBuf {
     // `anodized`, `bottled`, `cathode`. A bump replaces the FACTORY-SHAPED rungs an
     // earlier marker wrote and appends the rest; see `seed_text_into` and
     // `TEXT_RUNGS_SEEDED_BEFORE`.
-    dir.join("seeded_text_v3")
+    // v4 (organon#217 T15): `bottled` and `cathode` drop the `glyph_faceplate = 0.55`
+    // that W17 made inert. A data-only amendment to two rungs `v3` wrote — which is
+    // exactly the case the paragraph above says needs a bump, because the seed is
+    // one-shot and a v3 store would otherwise keep the dead value forever.
+    dir.join("seeded_text_v4")
 }
 
 /// The rung names every marker **before** the current one could have written. At a
@@ -7158,8 +7181,9 @@ fn text_seed_marker() -> PathBuf {
 /// its shape — is the user's and is kept. ⚠️ **Grows at every bump**: when `vN+1`
 /// amends a rung first seeded at `vN`, that name goes here or the amendment never
 /// reaches a store that seeded at `vN`. Today `v3` follows `v1`/`v2`, which wrote
-/// `faceplate` alone.
-const TEXT_RUNGS_SEEDED_BEFORE: &[&str] = &["faceplate"];
+/// `faceplate` alone; `v4` follows `v3`, which wrote the other five.
+const TEXT_RUNGS_SEEDED_BEFORE: &[&str] =
+    &["faceplate", "nixie", "foundry", "anodized", "bottled", "cathode"];
 
 /// The factory PBR-text presets — `doc/pbr_text_engine.md` §10's ladder, all six rungs
 /// (organon#217 T3 seeded `faceplate`; T14 the other five). Each is built as deltas on
@@ -7201,11 +7225,11 @@ const TEXT_RUNGS_SEEDED_BEFORE: &[&str] = &["faceplate"];
 /// - **`cathode`** — the same web as circuitry: emissive nodes on thin wires, the
 ///   letterform emerging from the wiring.
 ///
-/// ⚠️ **What the two plexus rungs cannot do yet, measured in `world.rs`.** The plexus
-/// pass takes the tiles' **tints** — the faceplate grey — and drops their emission, so
-/// the web is monochrome: both rungs raise `glyph_faceplate` to a mid grey so the beads
-/// and rods have an albedo to glow with, and the effect's colours are lost. A hue lane
-/// cannot help (`apply_hsv` on a grey is a grey). Proximity has no glyph identity, so
+/// ⚠️ **What the two plexus rungs cannot do yet, measured in `world.rs`.** Colour is no
+/// longer one of it: **W17** made the plexus pass take each node's **emission** while a
+/// ring is live, so the beads and rods now carry the effect's own colours, and the mid
+/// grey `glyph_faceplate` these two rungs used to set for an albedo to glow with is gone
+/// with the reason for it (organon#217 T15). Proximity has no glyph identity, so
 /// the wiring is by distance — at 2.05 spacings the four neighbours of a stroke, which
 /// also bridges a one-column gap (the same 2.0 as a vertical neighbour on a 2:1 cell).
 /// The backplane instance is a node too, and above `NODE_CAP` (1400) lit cells the web
@@ -7240,8 +7264,10 @@ const TEXT_RUNGS_SEEDED_BEFORE: &[&str] = &["faceplate"];
 /// by history — no marker before `v3` ever wrote `nixie` — which is what
 /// [`TEXT_RUNGS_SEEDED_BEFORE`] records: only a name an earlier marker wrote is ever
 /// replaced. The rails precedent (`seed_rails_presets` at `v2`) replaces by *name*,
-/// which would have taken a user's `faceplate` with it. The next amendment bumps to
-/// `v4`, adds every name `v3` wrote to that list, and touches nothing else.
+/// which would have taken a user's `faceplate` with it. **T15 is that next amendment**:
+/// `v4` drops the inert `glyph_faceplate` from `bottled`/`cathode` and puts every name
+/// `v3` wrote on that list — which is now all six, so the guard has no live case left in
+/// the ladder and is pinned through [`seed_text_into_given`] instead.
 pub fn builtin_text_presets() -> Vec<Preset> {
     let base = PresetValues::capture(&OrganicMathParams::default());
     // The room every rung shares — what the first GPU look settled (§15.2): a held,
@@ -7453,9 +7479,17 @@ pub fn builtin_text_presets() -> Vec<Preset> {
     // horizontal neighbour is 1.0 cell widths away, a vertical one 2.0 (a 2:1 cell),
     // a diagonal 2.24; four links, nearest first. Dark tiles OFF — a node per cell
     // would be a lattice — and glyphs-as-lights off: the impostor path empties
-    // `instances`, so there is nothing to lower. The faceplate raised to a mid grey
-    // because the plexus reads the tiles' TINT, not their emission: it is the only
-    // colour the beads and rods have.
+    // `instances`, so there is nothing to lower.
+    //
+    // ⚠️ These two rungs used to raise `glyph_faceplate` to 0.55, because the plexus pass
+    // read the tiles' TINT and the faceplate grey was the only colour a bead or a rod
+    // had. **W17 changed the producer** — while a ring is live the pass now colours each
+    // node from the tile's EMISSION (`world::plexus_node_colour`) — so that 0.55 stopped
+    // reaching either web and became a number these rungs asserted and nothing consumed.
+    // It is dropped rather than kept "in case": a preset field that does nothing is a
+    // claim about the look that the look does not honour, and the next person to read it
+    // would spend the same hour finding that out. The faceplate now stays at its default
+    // near-black, which is what a dark cell should look like when the web is off.
     let web = |v: &mut PresetValues| {
         v.surface_mode = crate::params::SurfaceMode::Plexus.to_u32();
         v.plexus_impostor = true;
@@ -7465,7 +7499,6 @@ pub fn builtin_text_presets() -> Vec<Preset> {
         v.plexus_signal = false;
         v.glyph_dark_tiles = false;
         v.glyph_profile = 0.0;
-        v.glyph_faceplate = 0.55;
         v.ml_enabled = false;
     };
 
@@ -7552,10 +7585,22 @@ fn seed_text_presets(presets: &mut Vec<Preset>) -> bool {
 /// changed — and `false` on a store already carrying the current rungs, so the marker
 /// drops without a save.
 fn seed_text_into(presets: &mut Vec<Preset>) -> bool {
+    seed_text_into_given(presets, TEXT_RUNGS_SEEDED_BEFORE)
+}
+
+/// [`seed_text_into`] with the "names an earlier marker wrote" list passed in.
+///
+/// ⚠️ It is a parameter and not just the const because at `v4` **every** rung name is on
+/// that list, so a test written against the const alone can no longer construct the case
+/// the guard exists for — it would pass whether the guard were there or not, which is
+/// [#133](https://github.com/organonart/organon/issues/133)'s failure exactly. Passing
+/// the list keeps the guard mutation-testable at every future bump, not only at the one
+/// where a rung happened to be new.
+fn seed_text_into_given(presets: &mut Vec<Preset>, seeded_before: &[&str]) -> bool {
     let mut changed = false;
     for p in builtin_text_presets() {
         match presets.iter().position(|e| e.name == p.name) {
-            Some(i) if presets[i].exposed.is_none() && TEXT_RUNGS_SEEDED_BEFORE.contains(&p.name.as_str()) => {
+            Some(i) if presets[i].exposed.is_none() && seeded_before.contains(&p.name.as_str()) => {
                 if presets[i].values != p.values {
                     presets[i] = p;
                     changed = true;
@@ -8188,11 +8233,19 @@ mod preset_io_tests {
         assert!(!v.glyph_dark_tiles);
         assert_eq!(v.to_shared().plexus_node_mat[7], v.plexus_node_emissive, "the node emissive rides `Shared.plexus_node_mat[7]`");
 
-        // Both webs: the tiles' tint is the only colour the plexus keeps, so it must
-        // not be the near-black faceplate; and the four-neighbour wiring.
+        // Both webs: since W17 the plexus takes each node's EMISSION while a ring is
+        // live, so the mid-grey faceplate these rungs used to set as an albedo is inert
+        // and must be gone — a rung that keeps setting it is asserting a mechanism the
+        // renderer no longer has (organon#217 T15). And the four-neighbour wiring.
+        let default_faceplate = PresetValues::capture(&OrganicMathParams::default()).glyph_faceplate;
         for n in ["bottled", "cathode"] {
             let v = find(n);
-            assert!(v.glyph_faceplate >= 0.4, "{n}: the plexus reads the TINT, not the emission — a near-black web is invisible ({})", v.glyph_faceplate);
+            assert_eq!(
+                v.glyph_faceplate, default_faceplate,
+                "{n}: the plexus reads the EMISSION since W17, so the rung must not still \
+                 be raising the faceplate for it ({})",
+                v.glyph_faceplate
+            );
             assert!(v.plexus_radius > 2.0 && v.plexus_radius < 2.2, "{n}: reach a vertical neighbour (2.0 on a 2:1 cell), not a diagonal (2.24): {}", v.plexus_radius);
             assert_eq!(v.plexus_links, 4.0, "{n}: the four neighbours of a stroke");
         }
@@ -8543,30 +8596,63 @@ mod preset_io_tests {
 
     /// organon#217 T14 — a name no earlier marker wrote is never replaced, whatever its
     /// shape. A preset saved before organon#124 has no `exposed` set, so a user's own
-    /// `nixie` from that era is factory-shaped by every test but history; `v3` is the
-    /// first marker to write `nixie`, so any `nixie` already in the store is theirs.
-    /// `faceplate` — which `v1`/`v2` did write — is still replaced when stale. Mutation:
-    /// drop the `TEXT_RUNGS_SEEDED_BEFORE` guard in `seed_text_into` and the first
-    /// assertion fails.
+    /// `nixie` from that era is factory-shaped by every test but history, and only the
+    /// seed's own history tells the two apart. `faceplate` — which every marker wrote —
+    /// is still replaced when stale.
+    ///
+    /// ⚠️ **At `v4` every rung name is on the list**, so this can no longer be written
+    /// against the const: it would pass with the guard deleted, which is a test that
+    /// proves nothing (#133). It drives [`seed_text_into_given`] with a list that omits
+    /// the name instead — the state a future `vN` is in for the rung it introduces.
+    /// Mutation: drop the `seeded_before.contains(…)` clause and the first block fails.
     #[test]
     fn a_rung_never_seeded_before_never_replaces_an_entry_of_its_name() {
         let rungs = builtin_text_presets();
         let nixie = rungs.iter().find(|p| p.name == "nixie").expect("nixie is a rung");
-        assert!(!TEXT_RUNGS_SEEDED_BEFORE.contains(&"nixie"), "v3 is the first marker to write nixie");
-        assert!(TEXT_RUNGS_SEEDED_BEFORE.contains(&"faceplate"), "v1/v2 wrote faceplate");
+        // The v3-era list: `faceplate` written, `nixie` not yet.
+        const AS_OF_V3: &[&str] = &["faceplate"];
         // A pre-#124 user preset called `nixie`: unstated, and nothing like the rung.
         let theirs = PresetValues::capture(&OrganicMathParams::default());
         assert_ne!(theirs, nixie.values);
         let mut store = vec![Preset::unstated("nixie", theirs.clone())];
-        assert!(seed_text_into(&mut store));
+        assert!(seed_text_into_given(&mut store, AS_OF_V3));
         let kept = store.iter().find(|p| p.name == "nixie").unwrap();
         assert_eq!(kept.values, theirs, "an unstated `nixie` predates every seed that could have written it — it is the user's");
         assert_eq!(store.iter().filter(|p| p.name == "nixie").count(), 1, "kept in place, not doubled");
         assert_eq!(store.len(), rungs.len(), "the other five rungs still arrive");
         // The contrast: an unstated, stale `faceplate` IS replaced — that name has a seed history.
         let mut stale = vec![Preset::unstated("faceplate", theirs.clone())];
-        assert!(seed_text_into(&mut stale));
+        assert!(seed_text_into_given(&mut stale, AS_OF_V3));
         assert_eq!(stale[0].values, rungs[0].values, "a factory-shaped faceplate is amended in place");
+    }
+
+    /// organon#217 T15 — the `v4` obligation, which is the one an amendment forgets: a
+    /// bump that amends a rung an earlier marker wrote must add **every** name that
+    /// marker wrote to [`TEXT_RUNGS_SEEDED_BEFORE`], or the amendment never reaches a
+    /// store that seeded at the earlier version and the miss is completely silent — the
+    /// store looks current, the marker file exists, and the rung keeps a dead value.
+    /// `v4` amends `bottled` and `cathode`, so the whole `v3` ladder goes on the list.
+    #[test]
+    fn every_rung_the_current_marker_amends_may_be_replaced_in_place() {
+        for p in builtin_text_presets() {
+            assert!(
+                TEXT_RUNGS_SEEDED_BEFORE.contains(&p.name.as_str()),
+                "{}: a marker has written this rung, so a later amendment to it can only \
+                 reach an existing store through TEXT_RUNGS_SEEDED_BEFORE",
+                p.name
+            );
+        }
+        // And the amendment itself: a v3-shaped `bottled` (the mid-grey faceplate W17
+        // made inert) is replaced by the current one, which no longer sets it.
+        let rungs = builtin_text_presets();
+        let bottled = rungs.iter().find(|p| p.name == "bottled").expect("bottled is a rung");
+        let mut v3 = bottled.values.clone();
+        v3.glyph_faceplate = 0.55;
+        assert_ne!(v3, bottled.values, "the v4 amendment must actually change bottled");
+        let mut store = vec![Preset::unstated("bottled", v3)];
+        assert!(seed_text_into(&mut store), "a v3-shaped bottled must be amended");
+        let got = store.iter().find(|p| p.name == "bottled").unwrap();
+        assert_eq!(got.values.glyph_faceplate, bottled.values.glyph_faceplate);
     }
 
     /// 🚨 **The compatibility guarantee, on the wire.** `presets.json` is a real file on real

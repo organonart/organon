@@ -5037,6 +5037,14 @@ pub(crate) fn editor_ui(
                         srow(ui, w2, "flare ghosts", &params.lf_ghosts, setter);
                         srow(ui, w2, "flare halo", &params.lf_halo, setter);
                         srow(ui, w2, "flare streak", &params.lf_streak, setter);
+                        // organon#217 T15 — the scatter. It lives in this card, not in the
+                        // PBR-text one, because it is a property of the FX pass: it runs
+                        // over whatever the composite produced, ring or no ring. What the
+                        // ring changes is only the unit its LENGTH is measured in.
+                        ui.label(egui::RichText::new("— the scatter (organon#217 T15) —").weak().small());
+                        srow(ui, w2, "scatter", &params.scatter_amount, setter);
+                        srow(ui, w2, "scatter length (cells)", &params.scatter_length, setter);
+                        srow(ui, w2, "scatter RGB split", &params.scatter_split, setter);
                         help(ui, "Screen-space post on the final image (composite untouched). \
                                  Style: Toon / Outline / Halftone / Dither / Pixelate. DoF \
                                  uses scene depth on the node-field paths. Halation is the warm \
@@ -7417,6 +7425,10 @@ fn apply_agent_change(params: &OrganicMathParams, setter: &ParamSetter, op: &age
                 "glyph_cam_zoom" => set!(&params.glyph_cam_zoom, v),
                 "capsule_core" => set!(&params.capsule_core, v),
                 "capsule_absorb" => set!(&params.capsule_absorb, v),
+                // organon#217 T15 — the scatter.
+                "scatter_amount" => set!(&params.scatter_amount, v),
+                "scatter_length" => set!(&params.scatter_length, v),
+                "scatter_split" => set!(&params.scatter_split, v),
                 // organon#217 T13 / #240 — `faceplate`'s dark room, halation and glyph-lights:
                 // five flags from 0/1 like the hold, the count an IntParam truncated like
                 // the loop counts. ⚠️ Nothing pins this arm (see #235's fragment) — leave an

@@ -5996,6 +5996,24 @@ pub struct OrganicMathParams {
     /// instance's colour. 0 = a clear shell. Captured **Look**.
     #[id = "cpab"] pub capsule_absorb: FloatParam,
 
+    // --- The scatter (organon#217 T15, `Shared.scatter`) ---
+    /// Velocity-keyed motion streaks, inside the FX pass. 0 = off, and off is
+    /// byte-identical. The velocity is measured from the image itself (the previous
+    /// frame's luminance, kept in the feedback history's alpha lane), never from the
+    /// camera — a glyph teleports cell to cell, so a reprojection velocity would smear
+    /// the wrong thing. Needs `fx_enabled = 1`. Captured **Look**.
+    #[id = "scat"] pub scatter_amount: FloatParam,
+    /// The streak's maximum reach, in **cell widths** of the live glyph grid — §9's
+    /// "the cell's energy stays in the cell", made structural: the range stops at one
+    /// cell, so no setting can carry a stroke into its neighbour's centre. With no ring
+    /// live the cap falls back to a small fraction of the frame's short side.
+    /// Captured **Look**.
+    #[id = "scln"] pub scatter_length: FloatParam,
+    /// RGB dispersion along the streak — 0 = achromatic (a plain directional blur, the
+    /// three channels taking identical tap weights); higher pulls red toward the tail
+    /// and blue toward the head. Captured **Look**.
+    #[id = "scsl"] pub scatter_split: FloatParam,
+
     // --- Plexus surface mode (proximity web; all × node spacing, scale-invariant) ---
     /// Link radius as a multiple of the field's node spacing — how far a node
     /// reaches to find neighbours. Higher = denser web. Shared.
@@ -8669,6 +8687,12 @@ impl Default for OrganicMathParams {
             // organon#217 T6 — the coaxial capsule core, inert at 0.
             capsule_core: flin("Capsule Core", 0.0, 0.0, 1.0),
             capsule_absorb: flin("Capsule Absorption", 0.0, 0.0, 8.0),
+            // organon#217 T15 — the scatter, inert at amount 0. The length's top is 1.0
+            // ON PURPOSE: it is the §9 bound, not a taste dial, so the range is where the
+            // guarantee lives. Match ipc::Shared::default().scatter (0, 0.5, 0.5, 0).
+            scatter_amount: flin("Scatter Amount", 0.0, 0.0, 1.0),
+            scatter_length: flin("Scatter Length", 0.5, 0.0, 1.0),
+            scatter_split: flin("Scatter Split", 0.5, 0.0, 1.0),
 
             // Plexus defaults: radius 1.6× spacing, up to 8 links, thin struts, small
             // node markers. Match ipc::Shared::default().plexus (byte-identical).
@@ -9729,6 +9753,7 @@ impl OrganicMathParams {
             glyph: crate::param_table::pack_glyph(self),
             glyph_cam: crate::param_table::pack_glyph_cam(self),
             capsule: crate::param_table::pack_capsule(self),
+            scatter: crate::param_table::pack_scatter(self),
         }
     }
 }

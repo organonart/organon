@@ -2090,6 +2090,31 @@ pub struct Shared {
     /// draw read the param; a GPU session retires it once it has looked. Captured **Look**.
     /// (Tail-appended after `glyph_cam`; part of LAYOUT_VERSION 0x0285→0x0286.)
     pub capsule: [f32; 4],
+    /// organon#217 T15 — **the scatter**: velocity-keyed motion streaks with an RGB split,
+    /// inside the FX pass. Layout: `[amount, length_cells, split, _]`.
+    ///
+    /// - `[0]` **amount** — how far the streak is mixed in (0 = off, and off is
+    ///   byte-identical: `fx.wgsl` returns the un-streaked colour and still writes the
+    ///   history alpha as the literal `1.0` it has always written).
+    /// - `[1]` **length** — the streak's maximum reach, in **cell widths**. This is §9's
+    ///   first law made structural: the world measures the live glyph cell's on-screen
+    ///   width and `fx.rs` converts cells → pixels, so the streak cannot reach past one
+    ///   cell however the knob is set. With no ring live there is no cell and the cap
+    ///   falls back to a small fraction of the frame's short side.
+    /// - `[2]` **split** — the RGB dispersion along the streak (0 = achromatic: the three
+    ///   channels take identical tap weights, so the result is a plain directional blur).
+    /// - `[3]` reserved, written 0.
+    ///
+    /// The velocity is **measured, not reprojected**: the pass keeps the previous frame's
+    /// luminance in the alpha lane of the feedback-history texture it already writes, and
+    /// solves the normal-flow equation (`∂I/∂t + v·∇I = 0`) per pixel. TAA's velocity is
+    /// deliberately not used — it reconstructs camera reprojection only, and a glyph
+    /// teleports cell to cell. A settled frame has `∂I/∂t = 0`, so the streak is
+    /// identically zero once the effect stops moving — which is the frame §9's harness
+    /// scores and the frame T5's tracer converges to. Only acts when the **Post FX**
+    /// master is on. Captured **Look**.
+    /// (Tail-appended after `capsule`; LAYOUT_VERSION 0x0286→0x0287.)
+    pub scatter: [f32; 4],
 }
 
 /// #541 S2 T1 — panes the mindview selector can address.
@@ -2342,7 +2367,11 @@ impl Shared {
 //        replaces — `GlyphLook::DEFAULT`, bevel 0, crown 0, hold off, core 0 — so a
 //        ring session and a no-ring session both render byte-identically to 0x0285.
 //        Shared 8512 → 8624 bytes.
-pub const LAYOUT_VERSION: u32 = 0x0_2_8_6; // "om" sentinel
+// 0x0287 tail-appends the organon#217 T15 **scatter** — `scatter[4]` (amount, streak
+//        length in cell widths, RGB split, one reserved slot), after `capsule`. Amount
+//        defaults to 0 and `fx.wgsl` returns the un-streaked colour there, so a session
+//        renders byte-identically to 0x0286. Shared 8624 → 8640 bytes.
+pub const LAYOUT_VERSION: u32 = 0x0_2_8_7; // "om" sentinel
 
 /// Copy into `dst` every lane in which `mine` disagrees with `base`, leaving the rest alone.
 ///
@@ -3100,6 +3129,10 @@ impl Default for Shared {
             glyph_cam: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             // T6's inert gate: core fraction 0 → `shade_bead` exactly as before.
             capsule: [0.0; 4],
+            // organon#217 T15 — the scatter off (amount 0), with a half-cell reach and a
+            // half-strength split ready for the moment it is raised. Amount 0 is what
+            // makes the whole tier inert.
+            scatter: [0.0, 0.5, 0.5, 0.0],
         }
     }
 }
@@ -4258,8 +4291,9 @@ mod mindview_tests {
         // 0x0285 (#618 T0a) changed no offset and no size — it re-defined `seq` as a
         // seqlock counter, which a size or offset check cannot see. The mindview
         // append is still the reason this is ≥ 0x0284. 0x0286 (organon#217 T3) appended
-        // `glyph` / `glyph_cam` / `capsule` after `mindview_gen`, growing the struct again.
-        assert_eq!(LAYOUT_VERSION, 0x0286, "the T3 look-control append sized it (0x0286)");
+        // `glyph` / `glyph_cam` / `capsule` after `mindview_gen`, growing the struct again,
+        // and 0x0287 (organon#217 T15) appended `scatter` after `capsule`.
+        assert_eq!(LAYOUT_VERSION, 0x0287, "the T15 scatter append sized it (0x0287)");
     }
 }
 

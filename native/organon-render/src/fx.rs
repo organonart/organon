@@ -62,6 +62,50 @@ pub struct FxParams {
     /// exponential near→far world distance, converted to raw depth in the shader.
     pub cam_near: f32,
     pub cam_far: f32,
+    // The scatter (organon#217 T15) — velocity-keyed motion streaks with an RGB split.
+    /// Streak mix, 0 = off (and off is byte-identical: `apply` then writes the uniform's
+    /// scatter lanes as zeros and `fx.wgsl` takes the early return).
+    pub scatter: f32,
+    /// Streak reach in **cell widths** of the live glyph grid — §9's first law as a
+    /// range rather than as a caution. See [`scatter_max_px`].
+    pub scatter_len_cells: f32,
+    /// RGB dispersion along the streak (0 = achromatic).
+    pub scatter_split: f32,
+    /// The live glyph cell's measured on-screen width in pixels, or **0 when there is
+    /// no ring** — computed in `world.rs` by projecting one cell width through this
+    /// frame's view-projection, the same way the lens-flare anchor is computed. It is a
+    /// measurement, not a parameter, so it does not ride `Shared`.
+    pub scatter_cell_px: f32,
+}
+
+/// With no glyph grid on screen there is no cell to bound the streak against, so the
+/// cap falls back to this fraction of the frame's SHORT side per unit of
+/// `scatter_len_cells`. Chosen so a full-length streak in the general visualiser is a
+/// couple of percent of the frame — visible, and nowhere near the smear a free-running
+/// length would give at 4K.
+const SCATTER_FALLBACK_FRAC: f32 = 0.02;
+
+/// **§9 law 1, in one place: the streak's maximum reach in pixels.**
+///
+/// `len_cells` is clamped to one cell before anything else, so even a hand-written
+/// preset or a `Shared` snapshot from another build cannot ask for a streak that reaches
+/// past the neighbouring cell's centre — the range in `params.rs` is the first guard and
+/// this is the one that cannot be edited around. `cell_px` is the world's measurement of
+/// the live grid's on-screen cell width; `0` (no ring live, or a degenerate projection)
+/// falls back to [`SCATTER_FALLBACK_FRAC`] of the frame's short side. A non-finite input
+/// yields 0 — no streak — rather than a NaN reaching the uniform.
+pub fn scatter_max_px(len_cells: f32, cell_px: f32, size: (u32, u32)) -> f32 {
+    if !len_cells.is_finite() || len_cells <= 0.0 {
+        return 0.0;
+    }
+    let cells = len_cells.min(1.0);
+    let short = size.0.min(size.1) as f32;
+    let per_cell = if cell_px.is_finite() && cell_px > 0.0 {
+        cell_px
+    } else {
+        short * SCATTER_FALLBACK_FRAC
+    };
+    (cells * per_cell).max(0.0)
 }
 
 /// Matches `FxU` in fx.wgsl.
@@ -77,6 +121,7 @@ struct FxU {
     p5: [f32; 4],    // #167 T1 lens flare: amount, ghosts, halo, streak
     p6: [f32; 4],    // #167 T1 lens flare anchor: light_u, light_v, visibility, _
     p7: [f32; 4],    // camera near, camera far (DoF focus remap), _, _
+    p8: [f32; 4],    // organon#217 T15 scatter: amount, max streak px, split, primed
 }
 
 struct Targets {
@@ -100,6 +145,13 @@ pub struct Fx {
     surface_format: wgpu::TextureFormat,
     targets: Option<Targets>,
     parity: usize,
+    /// organon#217 T15 — did the LAST pass write a luminance reference into the history's
+    /// alpha lane? Only a pass with the scatter engaged does; every other pass writes the
+    /// literal 1.0. So the first frame after the scatter is switched on (and the first
+    /// after a resize, which clears the histories to black) has no reference, and a
+    /// difference taken against 1.0 or against 0.0 would streak the whole screen once.
+    /// `apply` sends this to the shader as `p8.w`.
+    scatter_primed: bool,
 }
 
 impl Fx {
@@ -207,6 +259,7 @@ impl Fx {
             surface_format,
             targets: None,
             parity: 0,
+            scatter_primed: false,
         }
     }
 
@@ -220,6 +273,7 @@ impl Fx {
         self.surface_format = format;
         self.pipeline = make_pipeline(device, &self.module, &self.layout, format);
         self.targets = None; // force a rebuild at the new format
+        self.scatter_primed = false; // and with it, the scatter's motion reference
     }
 
     /// (Re)create the source + history textures if the size changed. Call before
@@ -229,6 +283,9 @@ impl Fx {
         if stale && size.0 > 0 && size.1 > 0 {
             self.targets = Some(self.build_targets(device, size));
             self.parity = 0;
+            // Fresh histories are cleared to black, so the alpha lane holds 0 rather than
+            // a luminance: the scatter has to re-prime before it may difference against it.
+            self.scatter_primed = false;
         }
     }
 
@@ -284,6 +341,22 @@ impl Fx {
         let (w, h) = t.size;
 
         let dof_enabled = if depth.is_some() && p.dof > 0.0 { 1.0 } else { 0.0 };
+        // organon#217 T15 — the scatter's four lanes, all zeroed when it is off so the
+        // shader's early return is reached on a value the CPU wrote rather than on one it
+        // happened to inherit. `scatter_primed` is what the PREVIOUS pass left behind;
+        // this pass writes a reference iff the scatter is engaged now.
+        let scatter_on = p.scatter > 0.0 && p.scatter.is_finite();
+        let p8 = if scatter_on {
+            [
+                p.scatter,
+                scatter_max_px(p.scatter_len_cells, p.scatter_cell_px, (w, h)),
+                p.scatter_split.clamp(0.0, 1.0),
+                if self.scatter_primed { 1.0 } else { 0.0 },
+            ]
+        } else {
+            [0.0; 4]
+        };
+        self.scatter_primed = scatter_on;
         queue.write_buffer(
             &self.ub,
             0,
@@ -297,6 +370,7 @@ impl Fx {
                 p5: [p.lf_amount, p.lf_ghosts, p.lf_halo, p.lf_streak],
                 p6: [p.lf_light_x, p.lf_light_y, p.lf_visibility, 0.0],
                 p7: [p.cam_near, p.cam_far, 0.0, 0.0],
+                p8,
             }),
         );
 
@@ -395,4 +469,66 @@ fn make_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+#[cfg(test)]
+mod scatter_tests {
+    use super::*;
+
+    /// **§9 law 1 is the RANGE, not a caution.** Whatever the knob says, the streak's
+    /// reach is at most one measured cell width — so a stroke's light can never be thrown
+    /// past the centre of the cell next to it, which is the inter-cell bleed §9 names as
+    /// the one thing that actually destroys text.
+    ///
+    /// Mutation: drop the `.min(1.0)` in [`scatter_max_px`] and the over-range case
+    /// returns 240 where it must return 24.
+    #[test]
+    fn the_streak_can_never_reach_past_one_cell() {
+        let size = (1920, 1080);
+        assert_eq!(scatter_max_px(1.0, 24.0, size), 24.0, "a full-length streak is exactly one cell");
+        assert_eq!(scatter_max_px(0.5, 24.0, size), 12.0, "half a cell");
+        // A hand-written preset, or a `Shared` snapshot from a build whose range was
+        // wider, cannot buy itself a longer streak.
+        assert_eq!(scatter_max_px(10.0, 24.0, size), 24.0, "clamped to one cell");
+    }
+
+    /// With no ring live there is no cell, and the cap falls back to a fraction of the
+    /// frame's SHORT side — short, so a wide frame does not get a wider streak than a
+    /// tall one at the same setting.
+    #[test]
+    fn with_no_cell_the_cap_is_a_fraction_of_the_short_side() {
+        let want = 1080.0 * SCATTER_FALLBACK_FRAC;
+        assert_eq!(scatter_max_px(1.0, 0.0, (1920, 1080)), want);
+        assert_eq!(scatter_max_px(1.0, 0.0, (1080, 1920)), want, "the short side, either way round");
+        // A degenerate or non-finite measurement is "no cell", not a NaN on the wire.
+        assert_eq!(scatter_max_px(1.0, -3.0, (1920, 1080)), want);
+        assert_eq!(scatter_max_px(1.0, f32::NAN, (1920, 1080)), want);
+        assert_eq!(scatter_max_px(1.0, f32::INFINITY, (1920, 1080)), want);
+    }
+
+    /// A zero or broken length is **no streak**, not a zero-length gather that still
+    /// costs ten taps and a mix. An infinite request fails toward off, which is the
+    /// direction §9 wants: the one thing worse than no streak is an unbounded one.
+    #[test]
+    fn a_zero_or_broken_length_is_no_streak() {
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(scatter_max_px(bad, 24.0, (1920, 1080)), 0.0, "len_cells = {bad}");
+        }
+    }
+
+    /// The result is always a real, non-negative number. A NaN reaching `p8.y` would make
+    /// the shader's `max_px < 0.5` guard false (every NaN comparison is), and an
+    /// unbounded streak would run through the hole it left.
+    #[test]
+    fn the_cap_is_always_finite_and_non_negative() {
+        for len in [0.0, 0.25, 1.0, 4.0, f32::NAN, f32::INFINITY] {
+            for cell in [0.0, 1.0, 24.0, 1e9, f32::NAN, f32::INFINITY] {
+                let px = scatter_max_px(len, cell, (1280, 720));
+                assert!(px.is_finite() && px >= 0.0, "len {len}, cell {cell} -> {px}");
+            }
+        }
+        // Including the degenerate frame the fallback divides nothing by, but would
+        // otherwise read a zero short side from.
+        assert_eq!(scatter_max_px(1.0, 0.0, (0, 0)), 0.0);
+    }
 }
