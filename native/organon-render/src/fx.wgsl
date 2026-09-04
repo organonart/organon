@@ -374,9 +374,13 @@ fn lensflare(uv: vec2<f32>) -> vec3<f32> {
 // Below this the gradient carries no usable direction (a flat region, or grain), and a
 // division by |grad|^2 would turn noise into a long streak pointing anywhere.
 const SCATTER_GRAD_FLOOR: f32 = 4.0e-4;   // |grad(luma)| >= 0.02 per texel
-// Temporal deadband: |dI/dt| under this is not motion. Film grain lands here — it is
-// added to `col` before the history is written, so it is present on BOTH sides of the
-// difference as uncorrelated noise of its own amplitude.
+// Temporal deadband: |dI/dt| under this is not motion — a slow fade, a dithered edge,
+// the last of a phosphor. ⚠️ Film grain is NOT what it is for, and the earlier claim that
+// grain "is present on BOTH sides of the difference" was wrong about this file's own
+// order: `base_luma` is taken from `base` at the top of `fs_fx`, BEFORE style, grade,
+// halation, vignette and grain touch `col`, and it is `base_luma` — not `col` — that is
+// written to the history's alpha. So grain reaches the streak's `.rgb` and never the
+// motion estimate at all: it is excluded structurally, not damped by this floor.
 const SCATTER_DT_FLOOR: f32 = 0.01;
 const SCATTER_TAPS: i32 = 10;
 

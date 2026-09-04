@@ -80,8 +80,16 @@ cell measurement (`a_cell_is_measured_through_the_frames_own_projection`,
 (`every_rung_the_current_marker_amends_may_be_replaced_in_place`). Four mutation-tested,
 quoted in the PR. `fx.wgsl` validates under naga (`organon-render --test wgsl`, 50 passed).
 
-🚨 **No GPU touched this: green and ready to try.** Two things a CPU cannot answer and a
-GPU session must — whether the temporal deadband actually clears film grain at the
-amplitudes a rung uses (grain is added before the history is written, so it is on both
-sides of the difference), and whether ten taps read as a smear rather than as a comb at a
-full one-cell reach.
+🚨 **No GPU touched this: green and ready to try.** One thing a CPU cannot answer and a GPU
+session must: whether ten taps read as a smear rather than as a comb at a full one-cell
+reach.
+
+⚠️ **A second open question was withdrawn in review, because it rested on a misreading of
+this file's own order.** It asked whether the temporal deadband clears film grain, on the
+grounds that grain "is added before the history is written, so it is on both sides of the
+difference". It is not. `base_luma` is taken from `base` at the top of `fs_fx`, before
+style, grade, halation, vignette and grain touch `col`, and it is `base_luma` — never
+`col` — that is written to the history's alpha. Grain reaches the streaked `.rgb` and
+never the motion estimate, so it is excluded **structurally** rather than damped by the
+floor, and no amplitude of it can produce a streak. The comment on `SCATTER_DT_FLOOR` said
+the same wrong thing and is corrected with it.

@@ -365,12 +365,12 @@ is a silent always-false rather than a fallback.
 The heart of the two-process design.
 
 - **`Shared`** — a `#[repr(C)]` `Pod`/`Zeroable` struct (`ipc.rs`), a flat block of
-  `f32`/`u32` arrays, currently **8624 bytes** at `LAYOUT_VERSION` **`0x0286`**.
+  `f32`/`u32` arrays, currently **8640 bytes** at `LAYOUT_VERSION` **`0x0287`**.
   > **Read them, don't trust this line** — the two numbers live in **different files**,
   > and that is why one of them rotted here while the other didn't:
   > ```bash
-  > grep -n 'EXPECTED_SHARED_SIZE'      native/src/param_table.rs   # → 8624
-  > grep -n 'pub const LAYOUT_VERSION'  native/organon-core/src/ipc.rs   # → 0x0286
+  > grep -n 'EXPECTED_SHARED_SIZE'      native/src/param_table.rs   # → 8640
+  > grep -n 'pub const LAYOUT_VERSION'  native/organon-core/src/ipc.rs   # → 0x0287
   > ```
   > Both are golden-pinned, but **in different places**: the size by
   > `shared_layout_is_stable` (`param_table.rs`, alongside the offset table and the
