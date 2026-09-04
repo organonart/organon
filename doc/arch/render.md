@@ -951,10 +951,56 @@ next-event estimation reaches only the key and fill directions — there is **no
 and no light selection** — so a lit tile is found by the cosine bounce landing on it, which
 converges over the dwell but is noisier than NEE; an emitter list would ride T10's
 brightest-N selection and is a documented hook, not built. **What does not read it, and
-why:** `rt_shadow` and `rt_ao` trace visibility only (a hit is a boolean, never shaded), and
-`rt_caustic` shades hits for the *photon's* BSDF, where the landing surface's emission plays
-no part — emitters as photon *sources* would need a per-frame CDF over instances and is a
-tier of its own (its layout comment names the binding it would take). 🚨 **Inert by
+why:** `rt_shadow` and `rt_ao` trace visibility only (a hit is a boolean, never shaded).
+
+📌 **`rt_caustic` binds it too, and for the opposite reason (organon#217 T8b — "emitters as
+photon sources").** The photon pass still does not *shade* with emission — a photon's
+transport is the landing surface's BSDF and that surface's own glow plays no part in it, so
+its shader has no `instance_emission` and its deposit is still throughput × albedo, both
+pinned by test. It reads the buffer to decide where a photon **starts**. The tracer has no
+light list and no NEE toward an emitter (above), so the one path a camera-first walk
+essentially never finds is *lit tile → glass/lens → floor* — which is exactly the path this
+pass exists to trace from the other end. `cs_cdf` builds a per-frame inclusive CDF over the
+live emissive instances in **emitted power** — Φ = π · A · L for world area A and radiance
+L = `emit.rgb * emit.w`, the same product `cube.wgsl` adds, so a tile that looks twice as
+bright throws twice the photons — in one workgroup, two passes over the live instances, no
+readback. `cs_photon` then draws its source from the key light or a tile in proportion to
+power and gives **every** photon the same flux `(key_power + emitter_power) / N`, so each
+source deposits exactly its own power however the draw falls, and with nothing emitting the
+expression reduces to the pre-T8b `key.w · π r² / N` term for term. The emitter's hue rides
+the photon as a unit-luminance throughput (grey through its response at λ in spectral mode),
+which is what keeps `flux` a scalar. A tile is sampled by face area then uniformly across
+the face (the tube mode samples `cyl_mesh`'s open wall); the deposit gate is unchanged and
+shared — a photon must have been redirected by ≥ 1 specular event, so light going *straight*
+from a tile to the floor is still direct light the tracer owns, and nothing is double-counted.
+`emits` sits at `@binding(6)` — the index the layout comment reserved before either half
+existed — and the CDF at `@binding(7)`, read-write because one dispatch produces it and the
+next consumes it inside the same compute pass. 🚨 **No parameter turns this on**: the
+renderer hands the pass **the count it uploaded this frame** — the glyph frame's instance
+count, and **0** on every other frame — which is also why a count travels beside the buffer
+at all, since an all-zero buffer cannot say how long its live prefix is without reading every
+entry of it.
+
+⚠️ **And it is emphatically *not* `emit_hi`, which is the trap this cost a review round to
+find (#250).** That mark is a high-water across frames — it exists so a later, shorter upload
+knows how far to zero — and it is refreshed only inside the `inst_gpu_used` branch. Every
+raymarch/bake mode and the hidden-generator case upload nothing, so those frames leave the
+mark, `inst_buf` and `emit_buf` all frozen at whatever a previous glyph-ring frame left.
+**That is harmless for the three passes that shade with emission and dangerous for this one**,
+and the difference is the hit test: they index only where a live TLAS hit pointed, so a stale
+entry is unreachable, while `cs_cdf`/`cs_photon` walk `insts[i]`/`emits[i]` directly. A stale
+mark would therefore keep spawning photons from a ring that had left the scene — a ghost
+caustic from geometry that is not there, on any frame that switched from a ring into a
+raymarch mode with caustics still on. The per-frame count is declared **at zero before** the
+upload branch, so the fail-safe is the default and a path added later that skips the upload is
+inert without having to remember to be; a test in `rt_caustic.rs` reads the call site and
+fails naming the ghost caustic if either half is undone. 📌 The general shape is worth
+keeping: **a value that is only refreshed on upload is safe to read behind a hit test and
+unsafe to index with**, and nothing without a GPU distinguishes the two.
+At zero the CDF pass is not dispatched, and the source draw sits inside an explicit guard so
+the photon walk consumes the **same random stream** it consumed before T8b — a shader test
+holds that line, because short-circuiting would read identically and hide the intent.
+🚨 **Inert by
 construction still holds**: the all-zero buffer every non-glyph draw binds makes every added
 term exactly zero and the termination gate false, so each pass's output and RNG stream is
 byte-identical. ⚠️ The binding is a bind-group entry, not a vertex slot, and wgpu validates

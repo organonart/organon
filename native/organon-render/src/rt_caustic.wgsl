@@ -6,8 +6,14 @@
 // through a delta chain, so projected caustics resolve over thousands of
 // samples. This pass traces the SAME light transport from the OTHER end:
 //
+//   cs_cdf — organon#217 T8b. One workgroup builds a per-frame inclusive CDF over
+//     the live emissive instances in emitted power, so `cs_photon` can pick a lit
+//     glyph tile in proportion to how bright it looks. Dispatched only while
+//     something is emitting; its total is what turns emitter photons on at all.
 //   cs_photon — one photon per invocation, emitted from the key light over a
-//     disc covering the scene's bounding sphere. Each photon follows the exact
+//     disc covering the scene's bounding sphere — or, once the CDF says the scene
+//     has emitters, from a lit tile's own surface, the two sources sharing one
+//     photon budget in proportion to their power. Each photon follows the exact
 //     dielectric chain the tracer uses (`rt_pathtrace.wgsl`): Fresnel
 //     reflect/transmit split, refract on entry AND exit, TIR, Beer–Lambert
 //     absorption, the analytic lens body, and — when spectral dispersion is on
@@ -64,6 +70,7 @@ struct CaU {
     spectral: vec4<f32>,    // x = spectral_on, y = Abbe number, z = tube flag
     params_a: vec4<f32>,    // x = absorption, y = photon count N, z = frame seed, w = pixel scale
     params_b: vec4<f32>,    // x = intensity, y = gather radius (px), z = width, w = height
+    emit: vec4<f32>,        // x = live emissive instance count (organon#217 T8b; 0 = none)
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -73,6 +80,17 @@ struct CaU {
 @group(0) @binding(3) var<storage, read> insts: array<mat4x4<f32>>;
 @group(0) @binding(4) var<storage, read> tints: array<vec4<f32>>;
 @group(0) @binding(5) var caustic_out: texture_storage_2d<rgba16float, write>;
+// organon#217 T8b — emitters as photon SOURCES. Read ONLY to decide where a photon
+// STARTS (which tile, where on it, how bright, what colour); the landing surface's
+// own emission still plays no part in the photon's transport, so nothing below adds
+// `emits[...]` into a deposit. That asymmetry is the whole design: `rt_pathtrace`
+// binds this buffer to SHADE with, this pass binds it to SAMPLE with.
+@group(0) @binding(6) var<storage, read> emits: array<vec4<f32>>;
+// Per-frame inclusive CDF over the live emissive instances, in emitted power
+// (`cs_cdf`). `cdf[n-1]` is the scene's total emitted power — the one number that
+// decides how the photon budget splits between the key light and the tiles. Sized to
+// the instance capacity and written only for `[0, n)`, so nothing below reads past it.
+@group(0) @binding(7) var<storage, read_write> cdf: array<f32>;
 @group(1) @binding(0) var tlas: acceleration_structure;
 
 const PI: f32 = 3.14159265359;
@@ -305,6 +323,157 @@ fn lens_hit(ro: vec3<f32>, rd: vec3<f32>, tmin: f32) -> LensHit {
     return res;
 }
 
+// ================= Emitters as photon sources (organon#217 T8b) =================
+// A lit glyph tile is a light the tracer can only find by a cosine bounce landing on
+// it (there is no light list and no NEE toward emitters — `doc/arch/render.md`), so
+// the ONE path it essentially never finds is the one this pass exists for: tile →
+// glass/lens → floor. Photons therefore leave the tiles as well as the key light,
+// chosen in proportion to emitted power so the two sources are one population.
+//
+// Power, not radiance: Φ = π · A · L for a Lambertian emitter of world area A and
+// radiance L = `emit.rgb * emit.w` — the same product `cube.wgsl` adds, so a tile
+// that looks twice as bright throws twice the photons. The CDF's scalar is that
+// power's luminance; the emitter's hue rides the photon as a unit-luminance
+// throughput, which keeps `flux` a scalar exactly as the key-light path had it.
+
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+// One workgroup builds the whole CDF (see `cs_cdf`).
+const CDF_WG: u32 = 256u;
+
+// How many instances may carry emission this frame. `c.emit.x` is the renderer's
+// high-water mark — exactly the glyph frame's instance count, 0 on every other frame
+// — and the array lengths are the belt: a stale mark can never read past either buffer.
+fn live_emitters() -> u32 {
+    let n = u32(max(c.emit.x, 0.0));
+    return min(n, min(arrayLength(&emits), arrayLength(&insts)));
+}
+
+// World surface area of instance `i`'s unit primitive under its transform. The cube
+// spans [-0.5, 0.5]³, so a face's world edges are two of the matrix's basis vectors
+// and its area is their cross product; the tube is `cyl_mesh`'s OPEN wall (radius 0.5
+// in local xy, length 1 along z, no caps), whose lateral area is the transformed
+// circle's circumference times the axis length — π(p+q) for semi-axes p, q is exact
+// for a circular cross-section and a slight under-estimate for a squashed one.
+fn instance_area(i: u32) -> f32 {
+    let m = insts[i];
+    let a = m[0].xyz;
+    let b = m[1].xyz;
+    let cz = m[2].xyz;
+    if (c.spectral.z > 0.5) {
+        return PI * 0.5 * (length(a) + length(b)) * length(cz);
+    }
+    return 2.0 * (length(cross(a, b)) + length(cross(b, cz)) + length(cross(cz, a)));
+}
+
+// Instance `i`'s emitted power as one scalar — the CDF's weight.
+fn emitter_power(i: u32) -> f32 {
+    let e = emits[i];
+    let lum = dot(e.rgb * e.w, LUMA);
+    if (lum <= 0.0) { return 0.0; }
+    return lum * PI * instance_area(i);
+}
+
+// Sized from the same constant the entry point below is, so the two cannot drift.
+var<workgroup> partial: array<f32, CDF_WG>;
+
+// Inclusive prefix sum of `emitter_power` over `[0, n)`, in ONE workgroup: each
+// thread sums its own contiguous chunk, then re-walks it writing the running total
+// from the exclusive prefix of the chunks before it. Two passes over the live
+// instances per frame and nothing else — n is the glyph grid's instance count, not
+// the buffer capacity, so a non-glyph frame dispatches this at all only if something
+// else is emitting. A tree scan would save the 256-step serial prefix and buy
+// nothing: the data pass dominates by orders of magnitude at any grid worth drawing.
+@compute @workgroup_size(CDF_WG)
+fn cs_cdf(@builtin(local_invocation_id) lid: vec3<u32>) {
+    let n = live_emitters();
+    let tid = lid.x;
+    let chunk = (n + CDF_WG - 1u) / CDF_WG;
+    let lo = min(tid * chunk, n);
+    let hi = min(lo + chunk, n);
+    var s = 0.0;
+    for (var i = lo; i < hi; i = i + 1u) { s = s + emitter_power(i); }
+    partial[tid] = s;
+    workgroupBarrier();
+    var run = 0.0;
+    for (var j = 0u; j < tid; j = j + 1u) { run = run + partial[j]; }
+    for (var i = lo; i < hi; i = i + 1u) {
+        run = run + emitter_power(i);
+        cdf[i] = run;
+    }
+}
+
+struct PhotonSrc {
+    pos: vec3<f32>,
+    n: vec3<f32>,
+    dir: vec3<f32>,
+    tint: vec3<f32>, // unit-luminance emitter colour (grey when it has none)
+};
+
+// Pick an emitter in proportion to its power, a point on its surface uniformly by
+// area, and a cosine-weighted direction off that point — the Lambertian emission the
+// π in `emitter_power` integrates.
+fn sample_emitter(seed: ptr<function, u32>, n: u32, total: f32) -> PhotonSrc {
+    // Binary search the inclusive CDF. A zero-power instance has a zero-width bucket
+    // and can never be selected, which is what lets the buffer's unlit tail sit in
+    // the array without a second "is this one live" test.
+    // (`target` is a WGSL reserved word — hence the name.)
+    let want = rand(seed) * total;
+    var lo = 0u;
+    var hi = n - 1u;
+    loop {
+        if (lo >= hi) { break; }
+        let mid = (lo + hi) / 2u;
+        if (cdf[mid] < want) { lo = mid + 1u; } else { hi = mid; }
+    }
+    let idx = lo;
+    let m = insts[idx];
+    var lp: vec3<f32>;
+    var n_loc: vec3<f32>;
+    if (c.spectral.z > 0.5) {
+        let th = rand(seed) * 2.0 * PI;
+        lp = vec3<f32>(0.5 * cos(th), 0.5 * sin(th), rand(seed) - 0.5);
+        n_loc = vec3<f32>(cos(th), sin(th), 0.0);
+    } else {
+        // Face by WORLD area (a glyph tile is a flattened cube — its two faceplates
+        // carry almost all of it), then uniform across the face.
+        let a = m[0].xyz;
+        let b = m[1].xyz;
+        let cz = m[2].xyz;
+        let ax = length(cross(b, cz));
+        let ay = length(cross(cz, a));
+        let az = length(cross(a, b));
+        let pick = rand(seed) * max(ax + ay + az, 1e-20);
+        let sg = select(-0.5, 0.5, rand(seed) < 0.5);
+        let su = rand(seed) - 0.5;
+        let sv = rand(seed) - 0.5;
+        if (pick < ax) {
+            lp = vec3<f32>(sg, su, sv);
+            n_loc = vec3<f32>(sign(sg), 0.0, 0.0);
+        } else if (pick < ax + ay) {
+            lp = vec3<f32>(su, sg, sv);
+            n_loc = vec3<f32>(0.0, sign(sg), 0.0);
+        } else {
+            lp = vec3<f32>(su, sv, sg);
+            n_loc = vec3<f32>(0.0, 0.0, sign(sg));
+        }
+    }
+    let ainv = inv3(m);
+    let nw = normalize(transpose(ainv) * n_loc);
+    let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(nw.y) > 0.9);
+    let b1 = normalize(cross(up, nw));
+    let b2 = cross(nw, b1);
+    let r = sqrt(rand(seed));
+    let phi = rand(seed) * 2.0 * PI;
+    let e = emits[idx];
+    let l = e.rgb * e.w;
+    var o: PhotonSrc;
+    o.pos = m[3].xyz + m[0].xyz * lp.x + m[1].xyz * lp.y + m[2].xyz * lp.z;
+    o.n = nw;
+    o.dir = normalize(b1 * (r * cos(phi)) + b2 * (r * sin(phi)) + nw * sqrt(max(0.0, 1.0 - r * r)));
+    o.tint = l / max(dot(l, LUMA), 1e-20);
+    return o;
+}
+
 // ============================ Photon tracing ============================
 
 @compute @workgroup_size(64)
@@ -314,19 +483,44 @@ fn cs_photon(@builtin(global_invocation_id) gid: vec3<u32>) {
     var rq: ray_query; // hoisted (the #195 T3 loop-local ray_query crash)
     var seed = pcg(gid.x * 9781u + u32(c.params_a.z) * 26699u + 77u);
 
-    // Emit from a disc covering the scene bounding sphere, facing down the key
-    // light (a directional light: intensity is irradiance E, matching the
-    // tracer's NEE `key.w · cosθ`, so photon flux = E · disc area / N).
+    // TWO sources, one population (organon#217 T8b). The key light emits from a disc
+    // covering the scene bounding sphere (a directional light: intensity is
+    // irradiance E, matching the tracer's NEE `key.w · cosθ`, so its power is
+    // E · disc area); each lit tile emits from its own surface. A photon comes from
+    // the tiles with probability equal to their share of the total power and every
+    // photon carries the SAME flux — so each source deposits exactly its own power
+    // however the draw falls, and with nothing emitting the flux is the pre-T8b
+    // `E · disc area / N` unchanged.
     let kd = normalize(u.key_light.xyz); // dir TO the light
-    let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(kd.y) > 0.9);
-    let t1 = normalize(cross(up, kd));
-    let t2 = cross(kd, t1);
     let radius = max(c.sphere.w, 1e-3);
-    let dr = radius * sqrt(rand(&seed));
-    let da = rand(&seed) * 2.0 * PI;
-    var so = c.sphere.xyz + kd * (2.0 * radius) + (t1 * cos(da) + t2 * sin(da)) * dr;
-    var sd = -kd;
-    let flux = u.key_light.w * PI * radius * radius / f32(n_photons);
+    let key_power = u.key_light.w * PI * radius * radius;
+    let n_emit = live_emitters();
+    var e_total = 0.0;
+    if (n_emit > 0u) { e_total = max(cdf[n_emit - 1u], 0.0); }
+    // ⚠️ The draw sits INSIDE the guard rather than being short-circuited by it: with
+    // nothing emitting this pass must consume the same random stream it consumed
+    // before T8b, or every caustic in an ordinary Organon frame moves (invariant #4).
+    var from_emitter = false;
+    if (e_total > 0.0) { from_emitter = rand(&seed) * (key_power + e_total) < e_total; }
+
+    var so: vec3<f32>;
+    var sd: vec3<f32>;
+    var tp = vec3<f32>(1.0);          // path throughput (grey in spectral mode)
+    if (from_emitter) {
+        let src = sample_emitter(&seed, n_emit, e_total);
+        so = src.pos + src.n * 1e-2;
+        sd = src.dir;
+        tp = src.tint;                // the emitter's hue; its power is in `flux`
+    } else {
+        let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(kd.y) > 0.9);
+        let t1 = normalize(cross(up, kd));
+        let t2 = cross(kd, t1);
+        let dr = radius * sqrt(rand(&seed));
+        let da = rand(&seed) * 2.0 * PI;
+        so = c.sphere.xyz + kd * (2.0 * radius) + (t1 * cos(da) + t2 * sin(da)) * dr;
+        sd = -kd;
+    }
+    let flux = (key_power + e_total) / f32(n_photons);
 
     let tube = c.spectral.z > 0.5;
     let absorb = max(c.params_a.x, 0.0);
@@ -337,9 +531,11 @@ fn cs_photon(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Hero wavelength: stratified across the photon population so the spectrum
     // fills evenly each frame (the prism rainbow ON the floor).
     let lambda = 380.0 + 350.0 * ((f32(gid.x % 64u) + rand(&seed)) / 64.0);
+    // A monochromatic path carries no hue: an emitter's colour acts through its
+    // response at λ, exactly as a receiver's albedo does at the deposit below.
+    if (from_emitter && spectral_on) { tp = vec3<f32>(spectral_response(tp, lambda)); }
 
     let reach = radius * 8.0;
-    var tp = vec3<f32>(1.0);          // path throughput (grey in spectral mode)
     var inside = false;
     var medium_sigma = vec3<f32>(0.0); // Beer–Lambert σ of the current body
     var spec_events = 0u;              // specular redirects so far (deposit gate)
