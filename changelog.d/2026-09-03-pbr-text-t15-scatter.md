@@ -58,7 +58,7 @@ they are the HDR bloom chain and the composite, which run *before* the tonemap o
 linear scene buffer. A streak belongs after the picture is a picture, which is `fx.wgsl`.
 
 **Also here, closing §3 item 8:** `bottled` and `cathode` drop the `glyph_faceplate = 0.55`
-that W17 (#251) made inert when the Plexus pass started colouring nodes from emission
+that W17 (#243) made inert when the Plexus pass started colouring nodes from emission
 rather than tint. ⚠️ Dropping the value is not enough on its own — the text seed is
 one-shot, so the marker bumps to **`seeded_text_v4`** and every name `v3` wrote joins
 `TEXT_RUNGS_SEEDED_BEFORE`, or the amendment never reaches a store that already seeded and
