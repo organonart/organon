@@ -31,8 +31,15 @@ on a feature that did not exist yesterday.
 
 Artifacts land in `target/verify/`: `report.md` (a table plus every frame and diff
 image inline), `summary.json` (the same verdicts, for a CI job to post), `frames/`,
-`diffs/`, and `visual.log`. Exit `0` all passed · `1` a check failed · `2` the harness
-could not run.
+`diffs/`, and `visual.log`. Exit `0` every check passed · `1` something was **measured**
+and failed · `2` something was **not measured** — including a run that recorded no check at
+all. 🚨 The third of those was wrong until organon#217 W20: one flag carried every
+non-`ok` verdict and the script ended `exit "$FAILED"`, so a gate that aborted without
+scoring anything returned the same `1` as one that scored and missed a threshold. **2
+outranks 1**, because a run with a hole in it cannot honestly be summarised as "a check
+failed" — whoever reads the 1 goes looking for numbers nobody took. `exit_code_for` in
+`verify.sh` is the whole decision, and `./verify.sh --self-test` (`verify/selftest.sh`)
+pins it with no GPU.
 
 ## Why it exists
 
@@ -208,9 +215,11 @@ named; several if several), the row is red, and `diffs/legibility-faceplate-cell
 81×10 measured grid as a picture — open it beside the frame, the bright blank cells are
 where the light went. Exit 1. **"Could not measure"** is a third thing and is kept apart
 from a fail: the producer never settled, the ring's text is not the fixture's (the
-cross-check names the cell), a snap failed. The row is red with that reason and no number.
+cross-check names the cell), a snap failed, the look did not fully apply. The row reads
+`UNMEASURED` with that reason and no number, **and the run exits 2** — which it did not do
+until W20, when the exit code stopped agreeing with this paragraph only in prose.
 
-**Four things to know before reading a number.**
+**Five things to know before reading a number.**
 
 - **The fixture's colours come from the ring.** `omarchy-logo.txt` is a *shape* census in
   one colour; what TTE said each cell was is the effect's own final gradient, which lives on
@@ -236,6 +245,19 @@ cross-check names the cell), a snap failed. The row is red with that reason and 
   text derived from the logo fixture, judged against `organon-render/tests/fixtures/<same
   basename>` unless `--fixture` names another; `--text native/assets/text/organon.txt` is
   the demo text, and its fixture is `organon.txt` beside the logo's.
+- **The look is confirmed applied, id by id.** Driving `faceplate.scene` prints
+  `organon: warning — no live Organon snapshot detected` once per command — 17 times — and
+  ⚠️ **that warning cannot be right or wrong here.** It fires on `is_live()`, which polls the
+  `Shared` mmap's seqlock for motion, and this harness deliberately runs no `Shared` writer
+  at all: the same structural fact that makes `organon status` impossible here. It prints
+  identically whether every op landed or none did. The ops travel a different road —
+  `organon` is never an IPC writer; it appends `CliOp` lines to a sidecar the visual drains
+  per frame off a cursor seeded at *its* construction, and the visual is up and has answered
+  a snap before the look is driven. That is an argument, not a receipt. The receipt is
+  `<ns>-agent-apply.txt`, where the visual appends one `set <id> <value>` line per op it
+  actually actuates and an id off the vocabulary produces nothing: the harness clears it,
+  drives the look, and refuses to measure unless every id comes back. A gate scoring a
+  partly-applied look is a gate scoring something nobody chose.
 - **Determinism is measured, not assumed.** The held frame is path-traced and
   accumulating, so the two snaps are two noise realisations of one picture; `spread` is the
   largest change over the three judged numbers and `max_spread` bounds it. Per-cell

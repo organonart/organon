@@ -15,6 +15,7 @@
 #   ./verify.sh                     # the standing suite, diffed against goldens
 #   ./verify.sh --pr                # ALSO run verify/pr/ — this PR's own checks
 #   ./verify.sh 02-chrome 03-glass  # just these scenes (name or file stem)
+#   ./verify.sh --self-test         # the verdict arithmetic, no GPU (verify/selftest.sh)
 #   ./verify.sh --update-golden     # re-baseline: adopt this run's frames as truth
 #   ./verify.sh --strict            # a missing golden is a failure (for CI)
 #   ./verify.sh --legibility        # ALSO run the legibility gate (PBR text T13, below)
@@ -43,10 +44,24 @@
 #                   settle and the held frame to accumulate, snaps it TWICE, and runs
 #                   `legibility-gate` over the pair against `thresholds.toml`, with the
 #                   fixture's colours taken from the settled ring. Exit 1 below a
-#                   threshold. verify/README.md says what a pass looks like.
+#                   threshold, 2 if it never got as far as a number. verify/README.md
+#                   says what a pass looks like.
 #
 # Artifacts land in target/verify/ — report.md, summary.json, frames/, diffs/.
-# Exit: 0 all checks passed · 1 a check failed · 2 the harness could not run.
+#
+# Exit: 0 every check passed · 1 something was MEASURED and failed · 2 something was NOT
+# MEASURED. 🚨 **The third of those is the whole point and it was wrong until W20**
+# (organon#217): `record` set one `FAILED` flag for every non-`ok` verdict and the script
+# ended `exit "$FAILED"`, so "the look leaks" and "I never scored anything" came back as the
+# same number — against this header's own promise, and on the one path that had never
+# produced a number (`--text …/organon.txt`, whose gate aborted on the fixture mismatch and
+# still reported 1). A harness that cannot tell those apart is worse than none: the first
+# means read the numbers, the second means there are no numbers to read. So there are three
+# verdicts now — `ok`, `FAIL` (a threshold was missed) and `UNMEASURED` (no judgement was
+# reached) — 2 outranks 1, because a run with a hole in it cannot honestly be summarised as
+# "a check failed", and **a run that recorded nothing at all is also 2**, which the old
+# zero-initialised counter reported as success. `exit_code_for` is the whole decision and
+# `verify/selftest.sh` pins it without a GPU.
 #
 # Runs anywhere the visual runs. On the Mac that is today, with no extra hardware.
 # On Linux it needs a real GPU and a display; with none it will reach for xvfb-run.
@@ -86,6 +101,63 @@ LEG_SETTLE_TIMEOUT=90
 # fixture's shape against the ring cell for cell and refuses to measure otherwise.
 LEG_TEXT="${LEG_TEXT:-}"
 LEG_FIXTURE="${LEG_FIXTURE:-}"
+# --- verdicts, and the one place the exit code is decided ---------------------------
+# Three counters, because there are three answers a check can give and the old code had
+# two. `CHECKS` is not bookkeeping: without it an empty report is indistinguishable from a
+# clean one, and `FAILED=0` alone made "nothing ran" print **All checks passed**.
+CHECKS=0
+FAILED=0
+UNMEASURED=0
+
+# The exit code, as a pure function of the three counters — arguments rather than globals so
+# `verify/selftest.sh` can drive every case in milliseconds with no GPU and no visual.
+#
+# ⚠️ The precedence is deliberate and it is the fix W20 exists for: **2 outranks 1.** A run
+# where something could not be measured has a hole in it, and reporting that as "a check
+# failed" tells a reader to go and look at numbers that were never taken. The reverse
+# ordering would be defensible for a human reading the report and is wrong for anything
+# reading the code — CI, a script, another agent — which is who an exit code is for.
+exit_code_for() { # checks failed unmeasured
+  if [ "$1" -eq 0 ] || [ "$3" != "0" ]; then
+    printf '2'
+  elif [ "$2" != "0" ]; then
+    printf '1'
+  else
+    printf '0'
+  fi
+}
+
+# Detail strings quote scene commands verbatim, and a scene command legitimately
+# contains double quotes (`surface "swept tubes"`) — which would otherwise emit
+# invalid JSON exactly when a scene fails, i.e. when the summary matters most.
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# A bare `|` in a detail silently splits the report's table row into extra columns.
+md_escape() { printf '%s' "$1" | sed 's/|/\\|/g'; }
+
+# `record <scene> <verdict> <metric> <detail>` — one row of the report, and the only thing
+# that moves the counters. Verdicts: `ok`, `skip`, `FAIL` (measured, a threshold missed) and
+# `UNMEASURED` (no judgement was reached — a missing input, a refused command, a snap that
+# did not come back, a gate that exited 2). ⚠️ The line between the last two is *not* how bad
+# it is; it is whether a number was taken. `frame is black` is a FAIL — the frame was scored
+# and it scored nothing — while `snap failed` is UNMEASURED, because there was no frame.
+record() { # scene verdict metric detail
+  printf '| `%s` | %s | %s | %s |\n' \
+    "$(md_escape "$1")" "$(md_escape "$2")" "$(md_escape "$3")" "$(md_escape "$4")" >>"$ROWS"
+  printf '{"scene":"%s","verdict":"%s","metric":"%s","detail":"%s"}\n' \
+    "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" "$(json_escape "$4")" >>"$JSON"
+  CHECKS=$((CHECKS + 1))
+  case "$2" in
+    FAIL)       FAILED=1 ;;
+    UNMEASURED) UNMEASURED=1 ;;
+  esac
+  return 0
+}
+
+# Sourcing the script with this set defines the block above and stops — the self-test's
+# entry point. It sits here, before the option loop, because everything after it either
+# parses arguments, deletes target/verify or launches a GPU process.
+if [ -n "${VERIFY_SH_DEFINE_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
+
 # macOS still ships bash 3.2, where `"${ARR[@]}"` on an EMPTY array under `set -u` is an
 # unbound-variable error. Hence the parallel counter and the `${ARR[@]+…}` guards below —
 # this script has to survive /bin/bash on the Mac, not just a modern Homebrew bash.
@@ -94,6 +166,7 @@ FILTER_N=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --self-test)     exec bash verify/selftest.sh ;;
     --update-golden) UPDATE_GOLDEN=1 ;;
     --strict)        STRICT=1 ;;
     --no-build)      BUILD=0 ;;
@@ -354,7 +427,6 @@ fle() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a<=b)}'; }
 fge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a>=b)}'; }
 has() { case ",$1," in *",$2,"*) return 0 ;; *) return 1 ;; esac; }
 
-FAILED=0
 ROWS="$OUT/.rows"
 JSON="$OUT/.json"
 : >"$ROWS"
@@ -367,22 +439,6 @@ NOTES="$OUT/.notes"
 # later in the run, and so ordering never becomes load-bearing.
 EXPECTS="$OUT/.expects"
 : >"$EXPECTS"
-
-# Detail strings quote scene commands verbatim, and a scene command legitimately
-# contains double quotes (`surface "swept tubes"`) — which would otherwise emit
-# invalid JSON exactly when a scene fails, i.e. when the summary matters most.
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-# A bare `|` in a detail silently splits the report's table row into extra columns.
-md_escape() { printf '%s' "$1" | sed 's/|/\\|/g'; }
-
-record() { # scene verdict metric detail
-  printf '| `%s` | %s | %s | %s |\n' \
-    "$(md_escape "$1")" "$(md_escape "$2")" "$(md_escape "$3")" "$(md_escape "$4")" >>"$ROWS"
-  printf '{"scene":"%s","verdict":"%s","metric":"%s","detail":"%s"}\n' \
-    "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" "$(json_escape "$4")" >>"$JSON"
-  [ "$2" = "FAIL" ] && FAILED=1
-  return 0
-}
 
 # --- run the scenes ----------------------------------------------------------------
 for scene in ${SCENES[@]+"${SCENES[@]}"}; do
@@ -417,7 +473,7 @@ for scene in ${SCENES[@]+"${SCENES[@]}"}; do
     # xargs, not eval: it does shell-style quote parsing (so `generator "swept tubes"`
     # arrives as one argument) without handing the file the shell.
     if ! printf '%s' "$line" | xargs "$ORGANON" >/dev/null; then
-      record "$name" FAIL "—" "scene command failed: \`$line\`"
+      record "$name" UNMEASURED "—" "scene command failed: \`$line\`"
       applied=0
       break
     fi
@@ -429,7 +485,7 @@ for scene in ${SCENES[@]+"${SCENES[@]}"}; do
   frame="$OUT/frames/$name.png"
   raise_visual
   if ! "$ORGANON" snap -o "$frame" >/dev/null 2>&1; then
-    record "$name" FAIL "—" "snap failed — the visual is wedged or died (see visual.log)"
+    record "$name" UNMEASURED "—" "snap failed — the visual is wedged or died (see visual.log)"
     continue
   fi
 
@@ -451,7 +507,7 @@ for scene in ${SCENES[@]+"${SCENES[@]}"}; do
     frame_b="$OUT/frames/$name-b.png"
     raise_visual
     if ! "$ORGANON" snap -o "$frame_b" >/dev/null 2>&1; then
-      record "$name" FAIL "—" "second snap failed"
+      record "$name" UNMEASURED "—" "second snap failed"
       continue
     fi
     d=$("$IMGDIFF" "$frame" "$frame_b" --diff-out "$OUT/diffs/$name-motion.png")
@@ -537,7 +593,7 @@ legibility_step() {
     fi
   fi
   if [ ! -f "$fixture" ]; then
-    record "$name" FAIL "—" "no legibility fixture at $fixture — pass --fixture, or add one in the T2 format (organon-render/src/legibility.rs)"
+    record "$name" UNMEASURED "—" "no legibility fixture at $fixture — pass --fixture, or add one in the T2 format (organon-render/src/legibility.rs)"
     return
   fi
   local subject
@@ -554,11 +610,11 @@ legibility_step() {
   # implies (so there is no second copy of the logo to drift).
   if [ -n "$LEG_TEXT" ]; then
     if ! cp "$LEG_TEXT" "$text"; then
-      record "$name" FAIL "—" "could not read the producer input $LEG_TEXT"
+      record "$name" UNMEASURED "—" "could not read the producer input $LEG_TEXT"
       return
     fi
   elif ! "$GATE" --emit-text "$fixture" >"$text"; then
-    record "$name" FAIL "—" "could not derive the producer input from $fixture"
+    record "$name" UNMEASURED "—" "could not derive the producer input from $fixture"
     return
   fi
   # `--once --dwell 600`: one effect, then hold the settled grid for ten minutes (we kill
@@ -568,14 +624,76 @@ legibility_step() {
     --cols "$cols" --rows "$rows" --once --dwell 600 >"$OUT/glyphs.log" 2>&1 &
   GLYPHS_PID=$!
 
+  # THE RECEIPT (W20, organon#217). Everything below exists because driving the look prints
+  # `organon: warning — no live Organon snapshot detected; queued commands are NOT replayed`
+  # once per command — 17 times for this scene — and **that warning cannot be right or wrong
+  # here.** It fires on `ipc::Reader::open().is_live()`, which polls the `Shared` mmap's
+  # seqlock for motion; `Shared` is written by the plugin/standalone/editor lane and this
+  # harness deliberately runs none of them (the same structural fact that makes `organon
+  # status` impossible here — see the readiness probe below). So it prints identically
+  # whether every op landed or none did, which is exactly the kind of status line this tree
+  # keeps learning to distrust. The ops themselves travel a different road: `organon` is
+  # never an IPC writer, it appends `CliOp` lines to a sidecar the visual drains per frame
+  # off a cursor seeded at ITS construction — and the visual is up and has answered a snap
+  # before we get here, so they drain.
+  #
+  # That is an argument, not a receipt. The receipt is `<ns>-agent-apply.txt`: the visual
+  # appends one `set <id> <value>` / `gen` / `surf` / `mat` line per op it actually actuates
+  # (`world.rs::append_agent_apply`, inside the lane lock), and an id that never reaches the
+  # vocabulary produces no line at all. So this collects the ids the scene asks for, clears
+  # the channel, drives the look, and then insists every one of them came back. A gate
+  # scoring a look that was only partly applied is a gate scoring something nobody chose,
+  # and every threshold argument on this project rests on its numbers.
+  #
+  # ⚠️ The path is DERIVED FROM THE PRODUCER'S OWN LOG LINE (`organon-glyphs: ring at …`),
+  # not rebuilt from `$TMPDIR` here: `ipc::ns_file` is the one place IPC filenames are
+  # composed, and a second copy of that rule in bash would be free to drift from it — and
+  # would drift silently, since the failure is a file that is simply never found.
+  local apply=""
+  local i
+  for i in $(seq 1 40); do
+    apply=$(sed -n 's/^organon-glyphs: ring at \(.*\) ([0-9]* Hz.*$/\1/p' "$OUT/glyphs.log" 2>/dev/null | head -1 | tr '\\' '/')
+    [ -n "$apply" ] && break
+    sleep 0.25
+  done
+  if [ -z "$apply" ]; then
+    record "$name" UNMEASURED "—" "the producer never said where its ring is, so the look could not be confirmed applied — see glyphs.log"
+    return
+  fi
+  apply="${apply%-glyphs.bin}-agent-apply.txt"
+  rm -f "$apply"
+
+  # Every id the scene sets, in order, one per line. `set a 1 b 2` sets two.
+  local want="$OUT/legibility-look-ids.txt"
+  : >"$want"
   "$ORGANON" release >/dev/null 2>&1 || true
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     if ! printf '%s' "$line" | xargs "$ORGANON" >/dev/null; then
-      record "$name" FAIL "—" "look command failed: \`$line\` (is every id on the vocabulary?)"
+      record "$name" UNMEASURED "—" "look command failed: \`$line\` (is every id on the vocabulary?)"
       return
     fi
+    case "$line" in
+      set\ *) printf '%s\n' "$line" | awk '{for (i = 2; i < NF; i += 2) print $i}' >>"$want" ;;
+    esac
   done < <(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$look" || true)
+
+  # The visual appends on its own frame loop, so give it a moment before believing a
+  # missing id. Ten seconds is two orders of magnitude past a frame and still bounded.
+  local wanted missing
+  wanted=$(wc -l <"$want" | tr -d ' ')
+  for i in $(seq 1 40); do
+    missing=$(while IFS= read -r id; do
+      grep -q "^set $id " "$apply" 2>/dev/null || printf '%s ' "$id"
+    done <"$want")
+    [ -z "$missing" ] && break
+    sleep 0.25
+  done
+  if [ -n "$missing" ]; then
+    record "$name" UNMEASURED "—" "the look is only partly applied: the visual actuated no param for ${missing% } — so the gate would have scored a look nobody asked for. Receipts in \`$apply\`; ⚠️ the \`no live Organon snapshot\` warnings are NOT this (they fire in this harness whatever happens — nothing writes \`Shared\` here)."
+    return
+  fi
+  echo "   look applied — all $wanted ids came back on the apply channel"
 
   # The producer logs `… settled after N ticks` when the effect returns None and the
   # held grid goes on the ring with FRAME_SETTLED. The gate refuses an unsettled ring
@@ -587,7 +705,7 @@ legibility_step() {
     sleep 0.25
   done
   if [ "$settled" != "1" ]; then
-    record "$name" FAIL "—" "the producer never settled within ${LEG_SETTLE_TIMEOUT}s — see glyphs.log"
+    record "$name" UNMEASURED "—" "the producer never settled within ${LEG_SETTLE_TIMEOUT}s — see glyphs.log"
     tail -5 "$OUT/glyphs.log" >&2 || true
     return
   fi
@@ -598,13 +716,13 @@ legibility_step() {
   local frame_b="$OUT/frames/$name-b.png"
   raise_visual
   if ! "$ORGANON" snap -o "$frame" >/dev/null 2>&1; then
-    record "$name" FAIL "—" "snap failed — the visual is wedged or died (see visual.log)"
+    record "$name" UNMEASURED "—" "snap failed — the visual is wedged or died (see visual.log)"
     return
   fi
   sleep "$LEG_SPREAD_WAIT"
   raise_visual
   if ! "$ORGANON" snap -o "$frame_b" >/dev/null 2>&1; then
-    record "$name" FAIL "—" "second snap failed"
+    record "$name" UNMEASURED "—" "second snap failed"
     return
   fi
 
@@ -619,7 +737,7 @@ legibility_step() {
   case "$rc" in
     0) record "$name" ok "$summary" "$verdict — full report in $name.txt" ;;
     1) record "$name" FAIL "$summary" "**$verdict** — see $name.txt and diffs/$name-cells.png" ;;
-    *) record "$name" FAIL "—" "the gate could not measure (exit $rc): $verdict" ;;
+    *) record "$name" UNMEASURED "—" "the gate could not measure (exit $rc): $verdict" ;;
   esac
   printf '%s\n' "$name|the legibility gate (PBR text T13): \`faceplate\` over \`$subject\` (fixture \`$fixture\`), effect \`$LEG_EFFECT\` seed $LEG_SEED, two snaps ${LEG_SPREAD_WAIT}s apart after ${LEG_CONVERGE}s of accumulation. Numbers in \`$name.txt\`; the per-cell picture in \`diffs/$name-cells.png\`." >>"$NOTES"
 
@@ -644,7 +762,7 @@ while IFS='|' read -r sname kind_target tol; do
   a="$OUT/frames/$sname.png"
   b="$OUT/frames/$target.png"
   if [ ! -f "$a" ] || [ ! -f "$b" ]; then
-    record "$sname" FAIL "—" "expect $kind \`$target\`: a frame is missing (was that scene run?)"
+    record "$sname" UNMEASURED "—" "expect $kind \`$target\`: a frame is missing (was that scene run?)"
     continue
   fi
   d=$("$IMGDIFF" "$a" "$b" --diff-out "$OUT/diffs/$sname-vs-$target.png")
@@ -663,7 +781,7 @@ while IFS='|' read -r sname kind_target tol; do
         record "$sname" ok "diff_frac=$df" "has effect: differs from \`$target\` (tol $tol)"
       fi ;;
     *)
-      record "$sname" FAIL "—" "unknown expect kind \`$kind\` (want same-as | differs-from)" ;;
+      record "$sname" UNMEASURED "—" "unknown expect kind \`$kind\` (want same-as | differs-from)" ;;
   esac
 done <"$EXPECTS"
 
@@ -672,10 +790,17 @@ REPORT="$OUT/report.md"
 {
   echo "# Organon frame verification"
   echo
-  if [ "$FAILED" = "0" ]; then
-    echo "**All checks passed.**"
+  # The headline says which of the three things happened, in the same precedence the exit
+  # code uses — a report whose first line disagreed with the number the script returned
+  # would be its own version of the defect this replaced.
+  if [ "$CHECKS" = "0" ]; then
+    echo "**NOTHING WAS CHECKED** — no check was recorded, so this run says nothing at all."
+  elif [ "$UNMEASURED" != "0" ]; then
+    echo "**COULD NOT MEASURE** — at least one check reached no judgement. Its numbers do not exist; do not read the others as though they cover it."
+  elif [ "$FAILED" != "0" ]; then
+    echo "**FAILED** — at least one check was measured and did not pass. Details below."
   else
-    echo "**FAILED** — at least one check did not pass. Details below."
+    echo "**All checks passed.**"
   fi
   echo
   echo "\`$(uname -s)\` · $(date -u '+%Y-%m-%d %H:%M UTC') · commit \`$(git rev-parse --short HEAD 2>/dev/null || echo '?')\`"
@@ -719,7 +844,12 @@ REPORT="$OUT/report.md"
 
 {
   echo "{"
-  echo "  \"passed\": $([ "$FAILED" = "0" ] && echo true || echo false),"
+  # `passed` keeps its old meaning for anything already reading it — every check said ok.
+  # `measured` is the new bit and it is the one that matters: false means at least one
+  # check reached no judgement, so a reader must not treat the remaining rows as coverage.
+  echo "  \"passed\": $([ "$CHECKS" != "0" ] && [ "$FAILED" = "0" ] && [ "$UNMEASURED" = "0" ] && echo true || echo false),"
+  echo "  \"measured\": $([ "$CHECKS" != "0" ] && [ "$UNMEASURED" = "0" ] && echo true || echo false),"
+  echo "  \"checks_recorded\": $CHECKS,"
   echo "  \"host\": \"$(uname -s)\","
   echo "  \"commit\": \"$(git rev-parse --short HEAD 2>/dev/null || echo '?')\","
   echo "  \"checks\": ["
@@ -739,4 +869,4 @@ if [ "$KEEP_VISUAL" = "1" ]; then
   echo "visual left running (pid $VISUAL_PID, ns=$ORGANON_IPC_NS) — kill it yourself"
 fi
 
-exit "$FAILED"
+exit "$(exit_code_for "$CHECKS" "$FAILED" "$UNMEASURED")"
