@@ -396,7 +396,11 @@ impl PathTracer {
     /// `tint_buf`/`emit_buf` are the live instance/tint/emission buffers (the TLAS
     /// custom indices point into all three; `emit_buf` is the organon#217 T8
     /// addition — the cube pipeline's `@location(8)` buffer, all-zero on every
-    /// non-glyph frame). Call INSTEAD of the raster scene pass while active.
+    /// non-glyph frame). `emit_lit` is how many of its entries may be non-zero this
+    /// frame (the renderer's high-water mark, 0 when no ring is live); it is passed
+    /// straight through to the photon pass, which needs a *count* to build its
+    /// emitter CDF over and cannot learn one from an all-zero buffer without reading
+    /// every entry of it. Call INSTEAD of the raster scene pass while active.
     #[allow(clippy::too_many_arguments)]
     pub fn trace(
         &mut self,
@@ -409,6 +413,7 @@ impl PathTracer {
         inst_buf: &wgpu::Buffer,
         tint_buf: &wgpu::Buffer,
         emit_buf: &wgpu::Buffer,
+        emit_lit: u32,
         tube: bool,
         p: &PathtraceFrame,
     ) {
@@ -432,9 +437,22 @@ impl PathTracer {
             && p.pt_dielectric
             && (p.lens[3] > 0.5 || (uniforms.amb[1] >= 0.5 && uniforms.amb[1] < 3.5));
         if caustics_live {
-            self.caustic
-                .get_or_insert_with(|| super::rt_caustic::CausticMap::new(device))
-                .run(device, queue, encoder, size, &self.scene_ubuf, inst_buf, tint_buf, tube, p);
+            // organon#217 T8b: the photon pass takes the emission buffer too — not to
+            // shade with, but to sample photon SOURCES from. `emit_lit` (0 on every
+            // non-glyph frame) is what turns that on; there is no dial.
+            self.caustic.get_or_insert_with(|| super::rt_caustic::CausticMap::new(device)).run(
+                device,
+                queue,
+                encoder,
+                size,
+                &self.scene_ubuf,
+                inst_buf,
+                tint_buf,
+                emit_buf,
+                emit_lit,
+                tube,
+                p,
+            );
         }
         let caustic_view = if caustics_live {
             self.caustic.as_ref().and_then(|c| c.view()).unwrap_or(&self.dummy_caustic)
@@ -567,7 +585,21 @@ impl PathTracer {
 /// source declaring `emits` at the same index.
 #[cfg(test)]
 pub(crate) mod emit_binding {
+    /// The three passes that SHADE a hit read the emission in `fs_main`, so their
+    /// entry is fragment-visible. organon#217 T8b's photon pass reads the same buffer
+    /// from a compute entry point, to sample photon sources rather than to shade —
+    /// same invariant, other stage.
     pub fn check(pass: &str, entries: &[wgpu::BindGroupLayoutEntry], binding: u32, shader: &str) {
+        check_visible(pass, entries, binding, shader, wgpu::ShaderStages::FRAGMENT);
+    }
+
+    pub fn check_visible(
+        pass: &str,
+        entries: &[wgpu::BindGroupLayoutEntry],
+        binding: u32,
+        shader: &str,
+        visibility: wgpu::ShaderStages,
+    ) {
         let mut seen = std::collections::HashSet::new();
         for e in entries {
             assert!(seen.insert(e.binding), "{pass}: @binding({}) is declared twice in the layout", e.binding);
@@ -579,9 +611,8 @@ pub(crate) mod emit_binding {
             )
         });
         assert_eq!(
-            e.visibility,
-            wgpu::ShaderStages::FRAGMENT,
-            "{pass}: the emit buffer must be fragment-visible (the hit is shaded in fs_main)"
+            e.visibility, visibility,
+            "{pass}: the emit buffer must be visible to the stage that reads it"
         );
         assert_eq!(
             e.ty,
@@ -660,17 +691,38 @@ mod tests {
     }
 
     #[test]
-    fn the_visibility_only_passes_and_the_photon_pass_do_not_read_emission() {
-        // rt_shadow / rt_ao never shade a hit (a hit is a boolean), and rt_caustic shades
-        // the photon's BSDF, where the landing surface's emission plays no part. If one of
-        // them grows an `emits` binding, that is a design change this test should make
-        // someone write down (the caustic layout comment names the tier it belongs to).
+    fn the_visibility_only_passes_do_not_read_emission() {
+        // rt_shadow / rt_ao never shade a hit — a hit is a boolean — so emission cannot
+        // mean anything to them. If one grows an `emits` binding, that is a design change
+        // this test should make someone write down.
         for (name, src) in [
             ("rt_shadow.wgsl", include_str!("rt_shadow.wgsl")),
             ("rt_ao.wgsl", include_str!("rt_ao.wgsl")),
-            ("rt_caustic.wgsl", include_str!("rt_caustic.wgsl")),
         ] {
-            assert!(!src.contains("var<storage, read> emits"), "{name} binds the emit buffer; see rt_caustic.rs");
+            assert!(!src.contains("var<storage, read> emits"), "{name} binds the emit buffer");
         }
+    }
+
+    #[test]
+    fn the_photon_pass_reads_emission_to_sample_with_never_to_shade_with() {
+        // organon#217 T8b: rt_caustic DOES bind the emit buffer now — the entry the layout
+        // comment here reserved. What has not changed is why the pass would not have: a
+        // photon's transport is the LANDING surface's BSDF, and that surface's own emission
+        // plays no part in it. So the caustic shader must never grow the `instance_emission`
+        // the three shading passes agree on, and its deposit must stay the BSDF product.
+        const CAUSTIC: &str = include_str!("rt_caustic.wgsl");
+        assert!(
+            CAUSTIC.contains("var<storage, read> emits"),
+            "rt_caustic.wgsl no longer binds the emit buffer — T8b's photon sources are gone"
+        );
+        assert!(
+            !CAUSTIC.contains("fn instance_emission("),
+            "rt_caustic.wgsl grew `instance_emission` — it would be adding a landing \
+             surface's emission into a photon deposit, which is not what a photon carries"
+        );
+        assert!(
+            CAUSTIC.replace('\r', "").contains("            dep = tp * alb;\n"),
+            "rt_caustic.wgsl's deposit is no longer throughput × the receiver's albedo"
+        );
     }
 }

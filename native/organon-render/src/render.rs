@@ -5929,7 +5929,10 @@ impl Renderer {
                     device, queue, &mut encoder, hdr, size, uniforms,
                     // organon#217 T8: the tracer reads the per-instance emission the
                     // cube pipeline draws, so the T5 dwell converges lit, not dark.
-                    &self.inst_buf, &self.tint_buf, &self.emit_buf, tube, &pf,
+                    // T8b passes the high-water mark beside it — how many entries may
+                    // be lit this frame, 0 on every non-glyph frame — which is what
+                    // lets the photon pass treat the tiles as light sources.
+                    &self.inst_buf, &self.tint_buf, &self.emit_buf, self.emit_hi as u32, tube, &pf,
                 );
             }
         }
