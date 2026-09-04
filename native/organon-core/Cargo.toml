@@ -50,6 +50,23 @@ mind-edition = []
 # OFF by default: the default-inert contract is unchanged.
 console-edition = []
 
+# organon#217 T7 phase one — `src/letterform.rs`: a glyph outline as an extruded,
+# bevelled mesh. OPTIONAL, and off by default, because it is the ONLY thing in this crate
+# that wants a seventh dependency: `ab_glyph`. The header's rule — "before adding ANY
+# dependency, ask whether the thing needing it belongs in core at all" — is answered yes
+# on the merits (an outline is file parsing plus arithmetic, the shape of `gguf` and
+# `lora`) and hedged anyway, so `cargo tree -p organon-core` still reports six deps and
+# the acceptance test is untouched.
+#
+# ⚠️ A default-off feature means the DEFAULT BUILD DOES NOT COMPILE THE MODULE. A green
+# `cargo test -p organon-core` says nothing about it; run
+# `cargo test -p organon-core --features letterform` as well.
+#
+# Nothing forwards this feature. The native crate does not need it and neither does the
+# renderer — T7 is geometry, not adoption, and `doc/pbr_text_engine.md` §14 says treating
+# it as a prerequisite is how this project would fail to ship.
+letterform = ["dep:ab_glyph"]
+
 # 🚨 BLOCKS `cargo publish` UNTIL TIER 5 DEALS WITH IT (#626 §2.5).
 #
 # math.rs carries 7 `include_str!("../../assets/…")` sites reaching UP OUT of this
@@ -80,3 +97,9 @@ glam = { version = "0.33", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# letterform.rs ONLY, and only under the `letterform` feature — see the note there.
+# Version pinned to match native/Cargo.toml:345 and organon-world/Cargo.toml:192 exactly,
+# per this file's header: two versions of one crate in a graph is a silent duplicate.
+# `ab_glyph` itself carries no host, GPU or UI surface — it is `owned_ttf_parser` plus a
+# coverage rasteriser this module never calls.
+ab_glyph = { version = "0.2", optional = true }

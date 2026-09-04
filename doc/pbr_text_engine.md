@@ -861,3 +861,125 @@ every effect settles (measured over all 37). **Not yet drawn:** the ~14–16k-ce
 case — the logo is 81×10, and nothing larger has been rendered. Its CPU lowering *is*
 measured (§15.1, T9: ~125 µs for 16 000 cells with dark tiles on, release); the
 16 000-instance draw is not.
+
+---
+
+## 16. T7 phase one — the letterform geometry, as built
+
+**Landed 2026-09-03 as `organon-core/src/letterform.rs`, behind the default-off
+`letterform` cargo feature. It is the geometry and nothing else: no `wgpu`, no buffers, no
+draw call, and not one line of the renderer or of the tile path changed.** §14's warning is
+the reason — *"T7 is not a prerequisite for anything before it, and treating it as one is
+how this project would fail to ship"* — so this tier deliberately produces something a
+later tier may adopt rather than an adoption. ⚠️ §15.1's line *"T7 [waits] for `world.rs`
+to be free"* was true of the adoption and never of the geometry; phase one did not wait
+and did not need to.
+
+### 16.1 The pipeline
+
+`ab_glyph` outline → flattened contours → per-contour inset → a non-zero **scanline** cap →
+a bevel band → an extruded side wall → an LRU mesh atlas. Vertices carry position and
+normal only, as plain `Vec`s; indices are `u32`. **Everything is in em units** — the bridge
+divides by `units_per_em` once, at the boundary, and nothing below it sees a font unit —
+so `depth`, `bevel` and `tolerance` are fractions of an em and transfer between faces.
+
+**The cap is a sampler, not a triangulator.** The plane is cut into horizontal bands at
+every contour vertex's `y` *and at every self-intersection's `y`*, and the non-zero winding
+rule is evaluated once per band at its midpoint; inside a band no vertex and no crossing
+exists, so every crossing edge spans it and each filled span is an **exact** trapezoid.
+That is the answer to the two hardest inputs at once. An ear-clipper asks "is this a valid
+polygon"; this asks "what does the rasteriser fill", which has an answer for every input.
+
+**Non-zero rather than even-odd is not taste.** A composite glyph — nearly every accented
+letter — is two overlapping components; even-odd punches the overlap out of the middle of
+the letter. The counter of an `o` stays a hole under either rule because its contour winds
+the other way; the overlap is where they differ.
+
+### 16.2 Measured, on `site/fonts/CommitMono-400-Regular.otf` (CFF/OpenType)
+
+**ORGANON**, `depth 0.15 em`, `bevel 0.02 em`:
+
+| tolerance (em) | triangles | vertices | flattened points |
+|---|---|---|---|
+| 0.020 | 1 394 | 4 182 | 140 |
+| 0.010 | 1 632 | 4 896 | 159 |
+| **0.005** (default) | **2 286** | 6 858 | 216 |
+| 0.002 | 2 970 | 8 910 | 272 |
+| 0.001 | 4 456 | 13 368 | 411 |
+
+**The atlas over all 95 printable ASCII glyphs, `--release`:** cold **1.82 ms**
+(19 µs/glyph), warm **11.4 µs** for the same 95 lookups (120 ns each) — **160× faster
+warm**, 95 misses then 95 hits, zero evictions, **28 438 triangles held**. That is the
+budget answer for a 200×80 grid: the atlas is 28 k triangles *total* and a cell is an
+instance of one, so the tolerance column above prices the atlas, never the draw.
+
+Vertices are **not welded** — `vertices == 3 × triangles` exactly, which the table shows —
+because welding needs a spatial hash keyed on position *and* normal and getting it wrong
+smooths a corner that should be sharp. The numbers are reported honestly so a later tier
+can see what welding would buy.
+
+### 16.3 The six things that were easy to get wrong
+
+- **Contours and holes.** `ab_glyph::Outline::curves` is a **flat list with no contour
+  delimiter**; its builder emits `move_to` as nothing and `close()` as an explicit
+  `Line(last, first)`. A contour is therefore recovered by watching for a curve whose end
+  returns to the contour's start. The alternative rule — "start a new contour when the next
+  curve does not continue the last" — merges two contours that happen to begin at the same
+  point, which real fonts do.
+- **Self-intersection and degeneracy.** Handled by construction in the cap (above). Cleaning
+  drops only what genuinely cannot bound anything: fewer than three distinct points, or
+  every point on one line. ⚠️ It does **not** drop a contour for having zero *signed* area,
+  which the first draft did: a figure-eight with equal lobes has signed area exactly zero
+  and *filled* area twice one lobe, because under non-zero both lobes have winding ±1.
+  ⚠️ Remaining limitation, stated rather than hidden: **the side wall follows the source
+  contours**, so a self-intersecting contour puts a wall segment inside the solid —
+  invisible for an opaque material, not for glass. Resolving it needs a real boolean on the
+  filled region.
+- **The bevel is the whole point, and its normals are generated.** The face is the contour
+  **inset** by `bevel`; the band from the inset ring at `+depth/2` out to the true contour
+  at `+depth/2 − bevel` is a 45° chamfer, and each of its vertices takes
+  `normalize(outward_miter, ±1)` — computed from the chamfer's own rise and run, never
+  copied from the cap. A test pins `|n.z| = 1/√2` on exactly `3 × bevel_triangles`
+  vertices and no others.
+- **Flattening tolerance is in em units** and is a real distance bound, not a subdivision
+  count: the test measures the flattened polyline against 2 001 samples of the true Bézier
+  rather than trusting the predicate that produced it. Budget, from the table: at a 200×80
+  grid on a 2160-line display a cell is ~27 px, so the 0.005 em default is ~0.14 px — under
+  what any anti-aliaser can see, at 2 286 triangles for seven letters.
+- **The cache key** is `(font id, glyph id, depth, bevel, tolerance)`, with the font id an
+  FNV-1a of the font's **bytes** — a key derived from a *name* serves one face's glyph for
+  another's, and the symptom is a single wrong letter in an otherwise perfect string.
+  A parameter missing from the key is not a slow cache but a **wrong mesh, served
+  silently**; the negative is proved by building the broken key in a test and watching two
+  bevels collide.
+- **§9 law 1 — the cell's energy stays in the cell.** Split honestly: **z is bounded by a
+  parameter** (the mesh spans exactly `±depth/2`), **x/y is bounded by the font**. This
+  module can only ever *shrink* the silhouette, since the bevel insets — but the contour's
+  own bounds routinely leave the em square. Measured: CommitMono's `g` occupies
+  y `[−0.210, 0.550]` em, so it does not fit any cell centred on the em square. A consumer
+  that needs the law must measure `GlyphMesh::bounds` against its cell and scale or accept
+  the overhang; `Bounds3::fits_cell` asks it in the only form that has an answer.
+
+### 16.4 The one that was not on anyone's list
+
+🚨 **The material is not on the side the contour's winding says it is, and both wrong
+answers look right on a square.** The obvious rule — interior is left of travel for a
+counter-clockwise ring, right for a clockwise one — is correct for an *isolated* ring and
+wrong for a nested one, **and the two cases are the same clockwise ring**: an isolated
+clockwise square has its material on the right, while a clockwise counter inside a
+counter-clockwise `O` has material on its left. So neither "always inset left" nor "inset
+along `sign(area) × left`" is right; the first grows half the cases and the second shrinks
+a counter that must grow. What decides it is the winding number of the whole ring **set**
+on either side, which is what the module now measures — a probe a hair to each side of the
+middle of the ring's longest edge, halving the probe distance on a tie so a stem thinner
+than the epsilon still gets an answer. This matters beyond one bevel: **TrueType and CFF
+wind their outer contours opposite ways**, so a module that guesses is a module that works
+on half the fonts on the machine.
+
+📌 **And a test can pass against a broken tessellator because area is not shape.** Removing
+the self-intersection scanlines makes the bowtie fixture tessellate as **one** triangle of
+area exactly 4 where the true fill is two lobes of area 2 — the same number, a completely
+different picture, and an area assertion reported success. Every fill test now pins
+covered and uncovered *points* as well as the total. That is #133's failure mode found
+twice in one afternoon by the mutation harness, in two different tests, and neither would
+have been found by reading.
