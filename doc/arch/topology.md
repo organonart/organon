@@ -119,7 +119,7 @@ because a second repository's licence CI reads the same graph. See the table's r
 
 | Crate | Its own direct deps | The rule it is held to |
 |---|---|---|
-| `organon-core` | `bytemuck`, `glam`, `half`, `memmap2`, `serde`, `serde_json` | **no `nih_plug`, no `wgpu`, no `egui`** — `cargo tree -p organon-core` is the acceptance test |
+| `organon-core` | `bytemuck`, `glam`, `half`, `memmap2`, `serde`, `serde_json`; **+ `ab_glyph` behind the optional `letterform` feature** | **no `nih_plug`, no `wgpu`, no `egui`** — `cargo tree -p organon-core` is the acceptance test. ⚠️ **The seventh dep is opt-in and the default reading is unchanged**: organon#217 T7's `letterform.rs` (a glyph outline as an extruded, bevelled mesh) needs an outline parser, so it sits behind a feature that nothing forwards, and a plain `cargo tree -p organon-core` still prints the six above. `--features letterform` adds `ab_glyph` and *only* `ab_glyph` — `owned_ttf_parser` plus a coverage rasteriser the module never calls, no host, no GPU, no UI — so the bar holds under both readings and both are worth taking. 🚨 The other half of "off by default" is that **the default build does not compile the module**, so a green `cargo test -p organon-core` says nothing about it; the feature leg is a separate run |
 | `organon-render` | `organon-core`, `bytemuck`, `glam`, `half`, `image`, `wgpu` | no `nih_plug`, no `egui`, no `winit` |
 | `organon-scene` | `organon-core`, `bytemuck`, `glam` | no `nih_plug`, no `wgpu`, no `egui` — the substrate's own arithmetic, host-free like core |
 | `organon-mind` | `organon-core`, `bytemuck`, `dirs`, `egui`, `memmap2` | no `nih_plug` |

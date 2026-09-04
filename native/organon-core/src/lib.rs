@@ -106,6 +106,17 @@ pub mod ipc;
 pub mod glyph_ring;
 pub mod gguf_data;
 pub mod kind;
+/// organon#217 T7 phase one — a glyph outline as an extruded, bevelled mesh: `ab_glyph`
+/// outlines → flattened contours → a non-zero scanline cap → a bevel band → a side wall →
+/// an LRU mesh atlas. Plain `Vec`s of vertices and indices; **no `wgpu`, no draw**, and
+/// nothing in the renderer reads it yet — §14 of `doc/pbr_text_engine.md` says treating
+/// T7 as a prerequisite is how this project would fail to ship.
+///
+/// ⚠️ **Behind the optional `letterform` feature**, so the default build does not compile
+/// it and `cargo tree -p organon-core` still reports six dependencies. A green default
+/// `cargo test -p organon-core` therefore says nothing about this module.
+#[cfg(feature = "letterform")]
+pub mod letterform;
 /// #147 Tier 2 — the LoRA adapter reader. `‖ΔW‖_F` and the effective rank of the update
 /// per adapted module, read from `adapter_config.json` + `adapter_model.safetensors`.
 /// Pure arithmetic over a directory: no network, no `Shared`, no renderer, and `ΔW` is

@@ -2967,6 +2967,7 @@ dependencies = [
 name = "organon-core"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
  "glam",
  "half",
