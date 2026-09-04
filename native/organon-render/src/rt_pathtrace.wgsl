@@ -35,7 +35,11 @@ struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
     mat: vec4<f32>,        // x=metallic, y=roughness, z=glow, w=prefilter_mip_count
-    env: vec4<f32>,        // x=exposure, y=env_intensity, z=env_rotation, w=opacity
+    // organon#217 — x is `bg_brightness` (Background Brightness gated by Background
+    // Visible), NOT exposure: exposure moved to the composite long ago and left this
+    // lane a hardcoded 1.0. It is the raster's `SkyUniforms.params.w`, arriving on the
+    // one block this pass actually binds. See `bg_gate` below.
+    env: vec4<f32>,        // x=bg_brightness, y=env_intensity, z=env_rotation, w=opacity
     key_light: vec4<f32>,  // xyz = dir TO key light (unit), w = intensity
     fill_light: vec4<f32>, // xyz = dir TO fill light (unit), w = intensity
     amb: vec4<f32>,        // x=ambient/IBL mult, y=material_type, z=glass IOR
@@ -148,6 +152,28 @@ fn sky(dir: vec3<f32>) -> vec3<f32> {
     let sun = max(dot(dir, normalize(u.key_light.xyz)), 0.0);
     col += vec3<f32>(1.0, 0.95, 0.85) * pow(sun, 220.0) * u.key_light.w;
     return col * u.env_tint.rgb;
+}
+
+// organon#217 — how much of that sky the CAMERA is allowed to see.
+//
+// `skybox.wgsl` paints the raster background as `hdr * env_intensity * bg_brightness`,
+// so `bg_visible 0` blacks the room. The tracer's sky carried only `env_intensity`, so
+// the moment T5's dwell handed the frame over, a hidden backdrop came back as a
+// blue-grey gradient — and the only way to lose it was `env_intensity 0`, which also
+// takes the IBL sheen off the tiles. This is the missing factor, and nothing else.
+//
+// ⚠️ It applies to the PRIMARY miss only, and that distinction is the point. A camera
+// ray that hits nothing IS the backdrop, so it obeys the flag. A BOUNCE ray reaching
+// the sky is indirect ILLUMINATION arriving from the environment — the same light the
+// raster's IBL keeps delivering when the backdrop is hidden — so it keeps
+// `env_intensity` and must not be gated. Flattening the two would make `bg_visible 0`
+// unlight the scene, which is exactly what this tier exists to stop.
+//
+// 🚨 The gate is 1.0 for every bounce and `bg_brightness` (default 1.0) at the camera,
+// so at the shipped defaults every term here is multiplied by exactly 1.0 — the IEEE-754
+// identity, bit-for-bit. Nothing about today's traced frame moves.
+fn bg_gate(bounce: u32) -> f32 {
+    return select(1.0, u.env.x, bounce == 0u);
 }
 
 // Shade a committed hit into (albedo, world normal facing the ray, world pos).
@@ -454,7 +480,9 @@ fn fs_main(in: VsOut) -> Out {
                 if (!tlas_hit && !use_lens) {
                     // GI-add: skip the primary miss (the raster shows the background).
                     if (!(gi_only && b == 0u)) {
-                        l_rad += tp * spectral_response(sky(sd), lambda); // miss → sky
+                        // miss → sky; at b == 0 that IS the backdrop, so it obeys
+                        // `bg_visible` (organon#217). Deeper bounces are env light.
+                        l_rad += tp * spectral_response(sky(sd), lambda) * bg_gate(b);
                     }
                     break;
                 }
@@ -588,7 +616,9 @@ fn fs_main(in: VsOut) -> Out {
             // GI-add: the primary miss is the background the raster already shows —
             // skip it; a bounce ray reaching the sky IS indirect illumination — keep.
             if (!(gi_only && b == 0u)) {
-                radiance += throughput * sky(dir); // miss → sky, terminate
+                // miss → sky, terminate; at b == 0 that IS the backdrop, so it obeys
+                // `bg_visible` (organon#217). Deeper bounces are env light.
+                radiance += throughput * sky(dir) * bg_gate(b);
             }
             break;
         }

@@ -10829,6 +10829,25 @@ impl World {
     }
 }
 
+/// How bright the **backdrop** is allowed to be: the Background Brightness dial,
+/// gated by the Background Visible flag. `bg_visible = 0` → 0, i.e. the backdrop
+/// goes black while `env_intensity` keeps lighting the geometry — that split is
+/// the whole point of the flag, and it is why this is a term of its own rather
+/// than a scale on the environment.
+///
+/// organon#217 — this is the ONE place the term is computed, because it now feeds
+/// TWO uniform blocks: `render::SkyUniforms.params.w` (the raster skybox draw) and
+/// `render::Uniforms.env.x` (the path tracer's analytic sky). Before this it fed
+/// only the first, so `bg_visible 0` gave a black room right up until T5's dwell
+/// handed the frame to the tracer, which had never heard of the flag.
+fn bg_brightness(bg_visible: u32, bg_intensity: f32) -> f32 {
+    if bg_visible != 0 {
+        bg_intensity
+    } else {
+        0.0
+    }
+}
+
 /// Environment tint colour from a hue (degrees) + amount (0..1 saturation).
 /// `amount = 0` → white (no tint); higher pulls the colour toward the hue at
 /// `value = 1`, so it shifts hue without dimming the brightest channel.
@@ -11213,7 +11232,7 @@ fn build_uniforms(
     // env contribution (white when amount = 0). Background brightness folds the
     // visibility flag in so the backdrop can hide while the IBL keeps lighting.
     let tint = env_tint_rgb(s.env_tint_hue, s.env_tint_amt);
-    let bg_brightness = if s.bg_visible != 0 { s.bg_intensity } else { 0.0 };
+    let bg_brightness = bg_brightness(s.bg_visible, s.bg_intensity);
 
     // Neural Tissue membrane (#260 Tier 1): a waxy translucent membrane driven by
     // the neural_surface material dials, layered onto the shared Surface-FX
@@ -11225,14 +11244,18 @@ fn build_uniforms(
         (0.0, 0.0)
     };
 
-    // Scene shaders output LINEAR HDR; exposure/tonemap live in the composite,
-    // so the cube/sky uniforms carry no exposure (env.x kept for layout only).
+    // Scene shaders output LINEAR HDR; exposure/tonemap live in the composite, so
+    // the cube/sky uniforms carry no exposure. organon#217 — `env.x` was the empty
+    // slot exposure left behind (a hardcoded 1.0, read by nothing); it now carries
+    // `bg_brightness` so the HARDWARE-RT passes can see the Background Visible flag.
+    // The raster gets it via `SkyUniforms.params.w` below; the tracer has no
+    // `SkyUniforms` binding, so this is the only lane that reaches it.
     let uniforms = render::Uniforms {
         view_proj: scene_view_proj.to_cols_array_2d(),
         camera_pos: [eye.x, eye.y, eye.z, 0.0],
         // mat[3] (prefilter_mip_count) is overwritten by Renderer::render.
         mat: [metallic, roughness, glow, 0.0],
-        env: [1.0, env_intensity, env_rotation, opacity],
+        env: [bg_brightness, env_intensity, env_rotation, opacity],
         key_light: [key_dir.x, key_dir.y, key_dir.z, key_intensity],
         fill_light: [fill_dir.x, fill_dir.y, fill_dir.z, fill_intensity],
         // amb.w = palette-active flag: when an explicit LUT is selected, the
@@ -14960,5 +14983,65 @@ mod glyph_look_tests {
             spp += 1;
         }
         assert_eq!(spp, 1, "an orbiting camera never accumulates past one sample");
+    }
+}
+
+#[cfg(test)]
+mod dark_room_tests {
+    use super::*;
+
+    /// organon#217 — the source of `world.rs`, so the two uniform blocks that carry the
+    /// background term can be pinned against each other without a GPU. Both are built in
+    /// one function a few lines apart; nothing else can see them.
+    const WORLD_RS: &str = include_str!("world.rs");
+
+    #[test]
+    fn hiding_the_backdrop_is_a_gate_on_the_backdrop_alone() {
+        // `bg_visible 0` → the room goes black. `bg_visible 1` → the Background
+        // Brightness dial passes through untouched, so the shipped default (1.0) is the
+        // identity and today's frame is unchanged on both paths.
+        assert_eq!(bg_brightness(0, 1.0), 0.0);
+        assert_eq!(bg_brightness(0, 2.0), 0.0);
+        assert_eq!(bg_brightness(1, 1.0), 1.0);
+        assert_eq!(bg_brightness(1, 0.25), 0.25);
+        // ⚠️ And it must not touch `env_intensity`. That is the whole point of the tier:
+        // `env_intensity 0` was the only previous route to a black dwell, and it takes
+        // the IBL sheen off the tiles with it — the sheen the spec-sheet plate is built
+        // on. Nothing this function can reach is the environment's own intensity.
+        let s = ipc::Shared::default();
+        assert_eq!(s.bg_visible, 1, "the shipped default shows the backdrop");
+        assert_eq!(
+            bg_brightness(s.bg_visible, s.bg_intensity),
+            1.0,
+            "and at the shipped Background Brightness the gate is the identity"
+        );
+    }
+
+    #[test]
+    fn the_raster_sky_and_the_traced_sky_are_fed_from_one_term() {
+        // 🚨 The bug this closes was exactly a second consumer that never got the value:
+        // the raster read `bg_brightness`, the tracer had no lane for it, and the flag
+        // silently stopped meaning anything 45 seconds into a dwell. One computation,
+        // two blocks — this is what stops them drifting apart again.
+        // ⚠️ Every needle is ASSEMBLED, never written out. `WORLD_RS` is this file, so a
+        // literal would match the test's own source: the count below would read 2 with
+        // one real call site, and — far worse — the two `contains` would pass with the
+        // construction deleted outright, which is a test that passes against broken
+        // code. Split them and the test can only see the code it is about.
+        let one = |parts: &[&str]| parts.concat();
+        assert_eq!(
+            WORLD_RS.matches(&one(&["let bg_brightness = bg_", "brightness("]) as &str).count(),
+            1,
+            "the background term is computed somewhere other than the one helper"
+        );
+        assert!(
+            WORLD_RS.contains(&one(&["env: [bg_", "brightness, env_intensity, env_rotation, opacity],"])),
+            "render::Uniforms.env.x no longer carries the background term — the hardware-RT \
+             passes bind no SkyUniforms, so this is the only lane that reaches them"
+        );
+        assert!(
+            WORLD_RS.contains(&one(&["params: [1.0, env_intensity, env_rotation, bg_", "brightness],"])),
+            "render::SkyUniforms.params.w no longer carries the background term"
+        );
     }
 }
