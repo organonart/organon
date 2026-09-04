@@ -913,6 +913,58 @@ until it lands.
   (`SCATTER_DT_FLOOR`) actually clears film grain at the amplitudes a rung uses, and
   whether ten taps is enough that the streak reads as a smear rather than as a comb.
 
+- **W20 — the tracer's dark room. Landed, green and ready to try.** The demo's premise is a
+  black room, and `bg_visible 0` gave one *for forty-five seconds*: measured on organon-one at
+  `main @ 4683d72`, the raster phase is black and the dwell floods blue-grey the moment T5
+  hands the frame to the path tracer. The flag worked; the tracer had never heard of it.
+  **One value, one shader, no new parameter and no preset touched.** `skybox.wgsl` paints the
+  raster backdrop as `hdr × env_intensity × bg_brightness`; the tracer's own **analytic** sky
+  (`rt_pathtrace.wgsl::sky`) carried only `env_intensity`, and the block that holds
+  `bg_brightness` — `SkyUniforms` — is one the tracer does not bind. So the only dimmer it had
+  was `env_intensity`, which is also the IBL: to *"how dark is the room"* and *"how much light
+  is on the tiles"* the tracer answered with a single number, and `env_intensity 0` — the one
+  route to a black dwell — takes off the faint sheen §10's shared `room` closure exists to
+  provide, i.e. the spec-sheet plate's own premise.
+  **The lane was already there.** `render::Uniforms.env.x` is where exposure used to live
+  before it moved to the composite; since then `world.rs` has written a literal 1.0 into it and
+  nothing — no shader, in any spelling, `.x`/`.r`/`[0]` — has read it. It now carries
+  `bg_brightness`. No `Shared` field, no `LAYOUT_VERSION` bump, no binding change, no layout
+  move. `world.rs::bg_brightness` is the single computation feeding **both** blocks, which is
+  the actual defect being closed: the term had one consumer and gained a second silently.
+  📌 **The gate is on the PRIMARY miss only, and that is the tier's one real judgement.** A
+  camera ray that hits nothing *is* the backdrop, so it obeys the flag; a **bounce** ray
+  reaching the sky is indirect **illumination** — the same environment light the raster's IBL
+  keeps delivering with the backdrop hidden — so it keeps `env_intensity` untouched. Gating
+  both would make `bg_visible 0` *unlight the scene*, which is precisely the failure this tier
+  exists to remove. The distinction is not new: `rt_pathtrace.wgsl` already drew it for
+  GI-add composite mode ("skip the primary miss — the raster shows the background"), and this
+  reuses it rather than flattening it. Same reasoning covers looking *through* glass: a
+  refracted ray is a bounce, and the raster shows the environment through glass with the
+  backdrop hidden too.
+  ⚠️ **`rt_reflect` and `rt_gi` do NOT have the same gap, and the answer is not symmetry —
+  it is that neither has a sky.** Both return `vec4(0.0)` on a miss: rt_reflect so the raster
+  env/IBL reflection stands through the missed fraction, rt_gi so the receiver's own ambient
+  stands. A mirror showing the environment is showing reflected *light*, which `bg_visible`
+  deliberately leaves alone on the raster path as well. Pinned by test, so if either grows one
+  the question gets asked again rather than answered by silence.
+  🚨 **What nobody anticipated: taking the lane makes ~nine stale comments load-bearing.**
+  A dozen shaders mirror `Uniforms` and most still label the slot `x=exposure` — harmless
+  while the slot is dead, a confidently wrong number the moment it is not. Two of those files
+  belong to other workers this wave, so the mitigation is a guard rather than a sweep:
+  `only_the_tracer_reads_the_background_lane` **scans `organon-render/src/*.wgsl` on disk**
+  (not a hand-kept list, so a shader added tomorrow is covered), strips comments first, and
+  fails if anything but `rt_pathtrace.wgsl` reads the component. The three Rust sites that
+  copy `env[0]` into the chamber/particle/splat blocks now pass a literal `1.0`, so each of
+  those keeps the meaning its own comment claims.
+  **Byte-identity where the raster already agreed:** the gate is exactly `1.0` for every
+  bounce and `bg_brightness` (default 1.0) at the camera, and 1.0 is the IEEE-754 identity —
+  pinned as bits over subnormals, both zeros and both infinities, plus the shader literal, so
+  a future `0.999` fails. ⚠️ One deliberate widening the brief did not ask for: because the
+  term is the raster's *whole* `bg_brightness` rather than a bare on/off, the **Background
+  Brightness** dial now reaches the tracer too. At the shipped default (1.0) that is a no-op;
+  at any other value the two paths previously disagreed and now agree. Say so at review if
+  the narrower gate was wanted. **No GPU touched this.**
+
 T4 (Omarchy) and T7 (letterforms) stand as written in §14; T4 waits for T3's self-contained
 preset, T7 for `world.rs` to be free.
 

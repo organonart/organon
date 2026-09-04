@@ -28,7 +28,12 @@ struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
     mat: vec4<f32>,        // x=metallic, y=roughness, z=glow, w=prefilter_mip_count
-    env: vec4<f32>,        // x=exposure, y=env_intensity, z=env_rotation, w=opacity
+    // organon#217: x is `bg_brightness`, not exposure (see render.rs::Uniforms). This
+    // pass never reads it — a missed reflection ray returns 0 so the env/IBL reflection
+    // stands, and a reflection of the environment is reflected LIGHT, not the backdrop
+    // the camera sees. Hiding the backdrop leaves the IBL alone in the raster too, so
+    // there is nothing here to gate.
+    env: vec4<f32>,        // x=bg_brightness, y=env_intensity, z=env_rotation, w=opacity
     key_light: vec4<f32>,  // xyz = dir TO key light, w = intensity
     fill_light: vec4<f32>, // xyz = dir TO fill light, w = intensity
     amb: vec4<f32>,        // x=ambient/IBL mult, y=material_type, z=glass IOR

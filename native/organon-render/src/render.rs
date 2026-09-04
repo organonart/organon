@@ -197,7 +197,15 @@ pub struct Uniforms {
     pub view_proj: [[f32; 4]; 4],
     pub camera_pos: [f32; 4], // xyz = camera world pos
     pub mat: [f32; 4],        // metallic, roughness, glow, prefilter_mip_count
-    pub env: [f32; 4],        // exposure, env_intensity, env_rotation_rad, opacity
+    // x = bg_brightness, y = env_intensity, z = env_rotation_rad, w = opacity.
+    // ⚠️ organon#217: `env.x` USED to be exposure and has not been since exposure moved
+    // to the composite — it sat as a hardcoded 1.0 that nothing read. It now carries the
+    // background-brightness term (`bg_intensity` gated by `bg_visible`) so the hardware-RT
+    // passes, which bind no `SkyUniforms`, can black the backdrop the way `skybox.wgsl`
+    // does. THIS declaration is the authority; the shader-side mirrors are copies, and
+    // several still label the lane "exposure". Only `rt_pathtrace.wgsl` reads it —
+    // `rt_pathtrace.rs`'s `only_the_tracer_reads_the_background_lane` pins that.
+    pub env: [f32; 4],
     pub key_light: [f32; 4],  // xyz = world dir TO key light (unit), w = intensity
     pub fill_light: [f32; 4], // xyz = world dir TO fill light (unit), w = intensity
     pub amb: [f32; 4],        // x = ambient/IBL mult, y = material_type, z = glass IOR, w reserved
@@ -4300,7 +4308,9 @@ impl Renderer {
             prefilter_mips: u.mat[3],
             key_light: Vec4::from_array(u.key_light),
             fill_light: Vec4::from_array(u.fill_light),
-            env: Vec4::new(u.env[0], u.env[1], u.env[2], u.amb[0]),
+            // x = exposure (unused here), NOT `Uniforms::env.x` — organon#217 gave that
+            // lane the background-brightness term, which is not this block's meaning.
+            env: Vec4::new(1.0, u.env[1], u.env[2], u.amb[0]),
             env_tint: Vec3::from_slice(&u.env_tint[..3]),
             skyrefl: Vec4::from_array(u.skyrefl),
         };
@@ -4342,7 +4352,8 @@ impl Renderer {
             lit: splat_params.lit,
             key_light: Vec4::from_array(u.key_light),
             fill_light: Vec4::from_array(u.fill_light),
-            env: Vec4::new(u.env[0], u.env[1], u.env[2], u.amb[0]),
+            // x = exposure (unused here), NOT `Uniforms::env.x` — see the note above.
+            env: Vec4::new(1.0, u.env[1], u.env[2], u.amb[0]),
             env_tint: Vec3::from_slice(&u.env_tint[..3]),
             metallic: u.mat[0],
             roughness: u.mat[1],
@@ -5142,7 +5153,8 @@ impl Renderer {
             prefilter_mips: uniforms.mat[3],
             key_light: uniforms.key_light,
             fill_light: uniforms.fill_light,
-            env: [uniforms.env[0], uniforms.env[1], uniforms.env[2], uniforms.amb[0]],
+            // x = exposure (unused here), NOT `Uniforms::env.x` — see the note on that field.
+            env: [1.0, uniforms.env[1], uniforms.env[2], uniforms.amb[0]],
             env_tint: [uniforms.env_tint[0], uniforms.env_tint[1], uniforms.env_tint[2]],
             material: chamber_material,
             opacity: chamber_opacity,

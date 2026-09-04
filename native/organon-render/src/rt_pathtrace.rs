@@ -725,4 +725,205 @@ mod tests {
             "rt_caustic.wgsl's deposit is no longer throughput × the receiver's albedo"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // organon#217 — the tracer's dark room.
+    //
+    // `bg_visible 0` blacks the raster backdrop (`skybox.wgsl` multiplies by
+    // `sky.params.w`). It did nothing once T5's dwell handed the frame to the path
+    // tracer: the tracer's analytic sky is scaled only by `env_intensity`, and the one
+    // uniform block it binds carried no background term at all. The lane exposure left
+    // behind — `render::Uniforms.env.x` — now carries it.
+    // ---------------------------------------------------------------------------
+
+    /// WGSL with its comments removed. ⚠️ Every scan below runs over this, not over the
+    /// raw source: a test looking for a forbidden identifier will otherwise trip on the
+    /// comment that explains why the identifier is forbidden, and the next person to
+    /// document the trap breaks the guard.
+    fn decommented(src: &str) -> String {
+        let src = src.replace('\r', "");
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src.as_str();
+        loop {
+            let line = rest.find("//").unwrap_or(usize::MAX);
+            let block = rest.find("/*").unwrap_or(usize::MAX);
+            if line == usize::MAX && block == usize::MAX {
+                out.push_str(rest);
+                return out;
+            }
+            if line < block {
+                out.push_str(&rest[..line]);
+                match rest[line..].find('\n') {
+                    Some(nl) => rest = &rest[line + nl..],
+                    None => return out,
+                }
+            } else {
+                out.push_str(&rest[..block]);
+                match rest[block..].find("*/") {
+                    Some(e) => rest = &rest[block + e + 2..],
+                    None => return out,
+                }
+            }
+        }
+    }
+
+    /// The text of one WGSL function, `fn` line to closing brace.
+    fn wgsl_fn(src: &str, head: &str) -> String {
+        let start = src.find(head).unwrap_or_else(|| panic!("no `{head}` in this shader"));
+        let end = src[start..].find("\n}").unwrap_or_else(|| panic!("unterminated `{head}`")) + start + 2;
+        src[start..end].to_string()
+    }
+
+    #[test]
+    fn the_camera_rays_miss_is_where_the_background_flag_lands() {
+        // A camera ray that hits nothing IS the backdrop. Both integrators shade a miss
+        // — the RGB loop and the hero-wavelength loop — and a fix that reached only one
+        // would black the room until dispersion was switched on.
+        let src = decommented(SHADER);
+        assert!(
+            src.contains("l_rad += tp * spectral_response(sky(sd), lambda) * bg_gate(b);"),
+            "rt_pathtrace.wgsl: the spectral loop's miss no longer carries the background gate"
+        );
+        assert!(
+            src.contains("radiance += throughput * sky(dir) * bg_gate(b);"),
+            "rt_pathtrace.wgsl: the RGB loop's miss no longer carries the background gate"
+        );
+        // `fn sky(` + exactly those two call sites: no third, ungated path to the sky.
+        assert_eq!(
+            src.matches("sky(").count(),
+            3,
+            "rt_pathtrace.wgsl: the analytic sky is evaluated somewhere other than the two gated misses"
+        );
+    }
+
+    #[test]
+    fn a_bounce_that_reaches_the_sky_is_still_light_not_backdrop() {
+        // ⚠️ The distinction the shader already drew for GI-add, kept: the primary miss
+        // is the background, a bounce miss is indirect ILLUMINATION. Gating both would
+        // make `bg_visible 0` unlight the scene — which is the thing this tier exists to
+        // avoid, since `env_intensity 0` (the only previous route to a black dwell) takes
+        // the IBL sheen off the tiles with it.
+        let src = decommented(SHADER);
+        assert!(
+            src.contains("return select(1.0, u.env.x, bounce == 0u);"),
+            "rt_pathtrace.wgsl: `bg_gate` must be exactly 1.0 for every bounce past the first"
+        );
+        // And the sky function itself must stay free of the lane, or every bounce would
+        // be gated through the back door.
+        let sky = wgsl_fn(&src, "fn sky(");
+        assert!(
+            !sky.contains("env.x"),
+            "rt_pathtrace.wgsl: `sky()` reads the background lane — a bounce miss would be gated too:\n{sky}"
+        );
+    }
+
+    #[test]
+    fn a_visible_backdrop_leaves_the_traced_sky_bit_for_bit() {
+        // The gate's other arm. `bg_brightness` is 1.0 at the shipped defaults
+        // (`bg_visible 1`, `bg_intensity 1.0`), so every miss is multiplied by exactly
+        // 1.0 — and 1.0 is the IEEE-754 multiplicative identity for every finite value,
+        // every subnormal, both zeros and both infinities. Nothing about today's traced
+        // frame moves. This is the claim; here it is as bits.
+        for bits in [
+            0x0000_0000u32, // +0
+            0x8000_0000,    // −0
+            0x0000_0001,    // smallest subnormal
+            0x007f_ffff,    // largest subnormal
+            0x3f80_0000,    // 1.0
+            0x3e4c_cccd,    // 0.2
+            0x4170_0000,    // 15.0
+            0x7f7f_ffff,    // f32::MAX
+            0x7f80_0000,    // +inf
+            0xff80_0000,    // −inf
+        ] {
+            let v = f32::from_bits(bits);
+            assert_eq!(
+                (v * 1.0f32).to_bits(),
+                bits,
+                "multiplying by the gate's bounce arm must be the identity for {v}"
+            );
+        }
+        // And the shader's own literal, so a future edit to 0.999 fails here too.
+        assert!(decommented(SHADER).contains("select(1.0, u.env.x,"));
+    }
+
+    #[test]
+    fn only_the_tracer_reads_the_background_lane() {
+        // 🚨 The whole reason this lane was free to take: `env.x` was exposure, exposure
+        // moved to the composite, and `world.rs` has been writing a hardcoded 1.0 that
+        // nothing read. Several shaders still MIRROR the block with the old
+        // `x=exposure` label — harmless while nobody reads the slot, a silent wrong
+        // number the moment somebody does. This is what makes that safe: the directory
+        // is scanned, not a hand-kept list, so a shader added tomorrow is covered.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut readers: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("organon-render/src is readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wgsl") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let src = decommented(&std::fs::read_to_string(&path).expect("readable shader"));
+            // `env.x` covers every `.x`-leading swizzle; `.r` and `[0]` are the other
+            // two spellings of the same component. Guard the identifier boundary so
+            // `env_tint.rgb` and `nrc_env.x` are not mistaken for this block's `env`.
+            let hit = ["env.x", "env.r", "env[0]"].iter().any(|pat| {
+                src.match_indices(pat).any(|(i, _)| {
+                    !src[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                })
+            });
+            if hit {
+                readers.push(name);
+            }
+        }
+        readers.sort();
+        assert_eq!(
+            readers,
+            vec!["rt_pathtrace.wgsl".to_string()],
+            "the background lane (`Uniforms.env.x`) is read outside the path tracer — \
+             every other mirror of that block still labels it `x=exposure`, so a reader \
+             there is reading a background brightness and calling it an exposure"
+        );
+    }
+
+    #[test]
+    fn the_reflection_and_the_gather_have_no_sky_to_dim() {
+        // The brief's second question, answered as a test rather than as prose. Neither
+        // sibling pass has an analytic sky: rt_reflect returns 0 on a miss so the raster
+        // env/IBL reflection stands (a reflection of the environment is reflected LIGHT,
+        // which `bg_visible` deliberately leaves alone — the raster does the same), and
+        // rt_gi returns 0 so the receiver's own ambient stands. If either grows a sky,
+        // this fails and the question has to be answered again.
+        for (name, src) in [
+            ("rt_reflect.wgsl", include_str!("rt_reflect.wgsl")),
+            ("rt_gi.wgsl", include_str!("rt_gi.wgsl")),
+        ] {
+            let src = decommented(src);
+            assert!(!src.contains("fn sky("), "{name} grew an analytic sky — does it need the background gate?");
+            assert!(!src.contains("bg_gate"), "{name} gates a background it does not draw");
+            assert!(
+                src.contains("return vec4<f32>(0.0);"),
+                "{name}: a missed ray no longer returns 0 — the env fallback it relied on may be gone"
+            );
+        }
+    }
+
+    #[test]
+    fn the_traced_backdrop_carries_the_same_two_terms_the_raster_does() {
+        // §9's second law applied to the room: the raster paints the backdrop as
+        // `hdr × env_intensity × bg_brightness`, and the tracer now paints it as
+        // `sky(...) [× env_intensity, inside] × bg_brightness [the gate]`. Same pair,
+        // same meaning. If the raster ever drops one, the tracer is the odd one out and
+        // someone should be told here rather than by looking at a frame.
+        let sky = decommented(include_str!("skybox.wgsl"));
+        assert!(
+            sky.contains("hdr * sky.params.y * sky.params.w * sky.env_tint.rgb"),
+            "skybox.wgsl no longer scales the backdrop by env_intensity × bg_brightness"
+        );
+        let pt = decommented(SHADER);
+        assert!(
+            wgsl_fn(&pt, "fn sky(").contains("u.env.y"),
+            "rt_pathtrace.wgsl's sky no longer carries env_intensity"
+        );
+    }
 }

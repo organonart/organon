@@ -1434,6 +1434,29 @@ default** (the default environment); an explicitly loaded `.hdr` overrides it. A
 IBL + skybox; `terrain.wgsl` carries its own copy of `atmosphere()` for the terrain-on sky
 + aerial perspective.
 
+**Hiding the backdrop is a term on the backdrop, and it reaches the tracer through
+`Uniforms.env.x`** (organon#217). `skybox.wgsl` paints the background as
+`hdr × env_intensity × bg_brightness`, where `bg_brightness` is the Background Brightness
+dial gated by Background Visible (`world.rs::bg_brightness`) — so `bg_visible 0` blacks the
+room while the IBL keeps lighting the geometry. That split is the point of the flag: the
+alternative, `env_intensity 0`, takes the sheen off the surfaces with it. ⚠️ **The hardware-RT
+path tracer binds no `SkyUniforms`**, so until this landed it never saw the term at all: its
+own **analytic** sky (`rt_pathtrace.wgsl::sky` — a horizon→zenith gradient plus a key-light
+disc) was scaled only by `env_intensity`, and a hidden backdrop came back as a blue-grey
+gradient the moment T5's dwell handed the frame over. The value now rides
+`render::Uniforms.env.x` — the lane exposure left behind when it moved to the composite,
+a hardcoded 1.0 that nothing read — and `bg_gate(bounce)` applies it to the **primary miss
+only**. 📌 That asymmetry is deliberate and matches the raster: a camera ray that hits
+nothing *is* the backdrop, while a bounce ray reaching the sky is indirect **illumination**,
+the same light the IBL keeps delivering when the backdrop is hidden. It is the distinction
+the shader already drew for GI-add composite mode, reused rather than flattened.
+`rt_reflect` and `rt_gi` have no analytic sky — both return 0 on a miss so the raster
+env/IBL stands — so neither has the gap, and both are pinned that way by test. ⚠️ Several
+shaders still **mirror** `Uniforms` with the old `x=exposure` label; the authority is
+`render.rs::Uniforms`, and `rt_pathtrace.rs::only_the_tracer_reads_the_background_lane`
+scans `organon-render/src/*.wgsl` so a second reader of that lane fails the build rather
+than quietly reading a background brightness as an exposure.
+
 ### Pipeline specialisation (#618 Tier 3, `cube.wgsl` + `render.rs`)
 
 **The scene shader is compiled per configuration, not once.** `cube.wgsl` declares a
@@ -1552,7 +1575,9 @@ stochastic two-interface dielectric — exact-Fresnel reflect/transmit split, `r
 AND exit, TIR, Beer–Lambert body absorption over the traversed segment — and Chrome as a perfect
 mirror; enable off → diffuse-only, byte-identical; organon#217 T5 — the accumulation
 restart and the raster → path-trace handover for a glyph ring's dwell are decided in
-`world.rs`, see "Converge on hold" under the per-instance emission section),
+`world.rs`, see "Converge on hold" under the per-instance emission section; and the
+**primary** miss carries `bg_gate`, so `bg_visible 0` blacks the traced backdrop the way it
+blacks the raster one — see "Hiding the backdrop" under Lighting / IBL),
 `rt_shadow.wgsl` (#195 Tier 1 RT shadow mask — per-pixel any-hit rays at the key/fill),
 `rt_denoise.wgsl` (#200 Tier 4½ p2 edge-aware à-trous over the RT reflection/GI buffers),
 `rt_temporal.wgsl` (#200 Tier 4½ p3/p4 beat-aware temporal accumulator for the RT
